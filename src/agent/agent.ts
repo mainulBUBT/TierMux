@@ -23,6 +23,8 @@ const MAX_SUBTASKS = 6;
 export interface AgentCallbacks {
   onModel?: (platform: string, model: string) => void;
   onTool?: (event: ToolEvent) => void;
+  /** Coarse phase signal for the live "agent is working" status line. */
+  onStep?: (phase: 'thinking' | 'synthesizing' | 'done', label: string) => void;
 }
 
 /** Per-run options threaded from the chat provider down to the router. */
@@ -80,6 +82,10 @@ export class Agent {
     opts: RunOpts,
     cb: AgentCallbacks = {},
   ): Promise<AgentResult> {
+    // Show the "Thinking…" indicator immediately — before grounding/context prep and
+    // the (slow, free-tier) model call — so the UI never looks frozen while waiting.
+    cb.onStep?.('thinking', 'Thinking…');
+
     // Classify the latest user message once; drives both mode (in Auto) and model routing.
     const latestText = contentToString([...history].reverse().find((m) => m.role === 'user')?.content ?? '');
     const kind = classifyTask(latestText);
@@ -121,6 +127,7 @@ export class Agent {
     const system = `You are ${PRODUCT_NAME}, a friendly AI coding assistant in VS Code. Reply to the user's greeting or small talk warmly and in one short sentence, then invite them to tell you what they'd like to build or fix. Do not analyze the project, run steps, or write long explanations.`;
     const latest = [...history].reverse().find((m) => m.role === 'user');
     const messages: ChatMessage[] = [{ role: 'system', content: system }, ...(latest ? [latest] : [])];
+    cb.onStep?.('thinking', 'Thinking…');
     const result = await this.router.route(messages, {
       model: opts.model,
       taskKind: 'trivial',
@@ -173,6 +180,7 @@ export class Agent {
     cb: AgentCallbacks,
   ): Promise<AgentResult> {
     const messages: ChatMessage[] = [{ role: 'system', content: system }, ...history];
+    cb.onStep?.('thinking', 'Thinking…');
     const result = await this.router.route(messages, {
       model: opts.model,
       reasoningEffort: opts.reasoningEffort,
@@ -207,6 +215,7 @@ export class Agent {
     for (let i = 0; i < this.maxIterations(); i++) {
       if (opts.token?.isCancellationRequested) return { text: '_Cancelled._', platform: lastPlatform, model: lastModel };
 
+      cb.onStep?.('thinking', 'Thinking…');
       const result = await this.router.route(messages, {
         model: opts.model,
         reasoningEffort: opts.reasoningEffort,

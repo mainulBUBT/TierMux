@@ -19,7 +19,8 @@ import { allPlatformInfo, getPlatformInfo } from './providers';
 import { parseSlash, resolveMentions, searchMentions } from './context/mentions';
 import { contentToString } from './agent/content';
 import { estimateMessagesTokens } from './agent/budget';
-import { SUMMARY_SYSTEM } from './agent/prompts';
+import { SUMMARY_SYSTEM, TITLE_SYSTEM } from './agent/prompts';
+import { parseClarifying, type ClarifyingQuestion } from './agent/clarify';
 
 const SLASH_PROMPTS: Record<string, string> = {
   explain: 'Explain the following / the referenced code clearly:',
@@ -91,6 +92,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.sessionId = current.id;
       this.history = current.history ?? [];
       this.transcript = current.transcript ?? [];
+      this.sessionTitle = current.title;
+      this.titleGenerated = !!current.title;
     } else {
       this.sessionId = this.newSessionId();
     }
@@ -110,6 +113,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const firstUser = this.transcript.find((t) => t.role === 'user');
     const base = (firstUser?.text ?? '').trim().replace(/\s+/g, ' ');
     return base ? base.slice(0, 60) : 'New chat';
+  }
+
+  /** Push the current session title into the webview header; the chrome shows just the brand. */
+  private updateViewTitle(): void {
+    // Chrome shows only the product name; the live, editable title lives in the webview header.
+    if (this.view) this.view.title = PRODUCT_NAME;
+    this.post({ type: 'sessionTitle', title: this.sessionTitle?.trim() || this.deriveTitle() || PRODUCT_NAME });
   }
 
   /** Save the current conversation into the session list (most-recent first). */
@@ -139,13 +149,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (window && tokens > window * threshold) await this.handleCompact();
   }
 
+  /** Best-effort: ask a free LLM for a short title once we have a first exchange. */
+  /** Best-effort: ask a free LLM for a short title from the user's first message. */
+  private async maybeGenerateTitle(): Promise<void> {
+    if (this.titleGenerated) return;
+    const firstUser = this.transcript.find((t) => t.role === 'user');
+    if (!firstUser) return;
+    this.titleGenerated = true; // guard before the call to avoid duplicate runs
+    try {
+      // Generate from the user's message alone, right when they send it (e.g. "hi" -> "Greetings").
+      const snippet = `User's message: ${(firstUser.text ?? '').slice(0, 800)}`;
+      const result = await this.deps.router.route(
+        [
+          { role: 'system', content: TITLE_SYSTEM },
+          { role: 'user', content: snippet },
+        ],
+        { temperature: 0.3, max_tokens: 32 },
+      );
+      const title = contentToString(result.response.choices[0]?.message.content)
+        .trim()
+        .replace(/^["'`]+|["'`.]+$/g, '') // strip surrounding quotes / trailing punctuation
+        .slice(0, 80);
+      if (title) {
+        this.sessionTitle = title;
+        this.persist();
+      }
+    } catch {
+      // Title generation is best-effort; fall back to the derived title silently.
+    }
+  }
+
   private persist(): void {
     const others = this.loadSessions().filter((s) => s.id !== this.sessionId);
     if (this.transcript.length) {
-      others.unshift({ id: this.sessionId, title: this.deriveTitle(), ts: Date.now(), history: this.history, transcript: this.transcript });
+      others.unshift({ id: this.sessionId, title: this.sessionTitle ?? this.deriveTitle(), ts: Date.now(), history: this.history, transcript: this.transcript });
     }
     void this.deps.workspaceState.update(SESSIONS_KEY, others.slice(0, MAX_SESSIONS));
     void this.deps.workspaceState.update(CURRENT_KEY, this.sessionId);
+    this.updateViewTitle();
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -157,6 +198,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
     view.webview.html = this.getHtml(view.webview);
     view.webview.onDidReceiveMessage((m: InMessage) => this.onMessage(m));
+    this.updateViewTitle();
   }
 
   private post(msg: OutMessage): void {
@@ -184,11 +226,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.sessionId = this.newSessionId();
     this.history = [];
     this.transcript = [];
+    this.sessionTitle = undefined;
+    this.titleGenerated = false;
     this.deps.checkpoints.clear();
     void this.deps.workspaceState.update(CURRENT_KEY, this.sessionId);
     this.deps.usage.reset();
     this.post({ type: 'clear' });
     void this.sendConfig();
+    this.updateViewTitle();
   }
 
   /** Re-push config to the webview (e.g. after an external settings change). */
@@ -224,22 +269,53 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const qp = vscode.window.createQuickPick<HistoryItem>();
     qp.title = 'Chat History';
     qp.placeholder = 'Select a chat to reopen';
+    const edit = { iconPath: new vscode.ThemeIcon('edit'), tooltip: 'Rename' };
     const trash = { iconPath: new vscode.ThemeIcon('trash'), tooltip: 'Delete' };
     const toItems = (list: ChatSession[]): HistoryItem[] => list.map((s) => ({
       label: (s.id === this.sessionId ? '$(circle-filled) ' : '') + s.title,
       description: `${timeAgo(s.ts)} · ${s.transcript.filter((t) => t.role === 'user').length} msgs`,
       sessionId: s.id,
-      buttons: [trash],
+      buttons: [edit, trash],
     }));
     qp.items = toItems(sessions);
     qp.onDidAccept(() => { const sel = qp.selectedItems[0]; if (sel) this.openSession(sel.sessionId); qp.hide(); });
-    qp.onDidTriggerItemButton((e) => {
+    qp.onDidTriggerItemButton(async (e) => {
+      if (e.button === edit) {
+        const cur = this.loadSessions().find((x) => x.id === e.item.sessionId)?.title ?? '';
+        const next = await vscode.window.showInputBox({ title: 'Rename chat', prompt: 'Rename chat', value: cur });
+        if (next && next.trim()) {
+          this.renameSession(e.item.sessionId, next.trim());
+          qp.items = toItems(this.loadSessions());
+        }
+        return;
+      }
       this.deleteSession(e.item.sessionId);
       qp.items = toItems(this.loadSessions());
       if (!qp.items.length) qp.hide();
     });
     qp.onDidHide(() => qp.dispose());
     qp.show();
+  }
+
+  /** Rename a stored session (also updates the live title if it's the current one). */
+  private renameSession(id: string, title: string): void {
+    const sessions = this.loadSessions();
+    const s = sessions.find((x) => x.id === id);
+    if (!s) return;
+    s.title = title;
+    void this.deps.workspaceState.update(SESSIONS_KEY, sessions);
+    if (id === this.sessionId) {
+      this.sessionTitle = title;
+      this.updateViewTitle();
+    }
+  }
+
+  /** Inline rename of the current session from the webview header. */
+  private handleRenameSession(title: string): void {
+    const t = title.trim();
+    if (!t || t === (this.sessionTitle ?? this.deriveTitle())) return;
+    this.sessionTitle = t;
+    this.persist(); // saves + pushes the new title to chrome and webview header
   }
 
   private openSession(id: string): void {
@@ -250,10 +326,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.sessionId = s.id;
     this.history = s.history ?? [];
     this.transcript = s.transcript ?? [];
+    this.sessionTitle = s.title;
+    this.titleGenerated = true;
     void this.deps.workspaceState.update(CURRENT_KEY, this.sessionId);
     this.deps.usage.reset();
     this.post({ type: 'restore', messages: this.transcript });
     void this.sendConfig();
+    this.updateViewTitle();
   }
 
   private deleteSession(id: string): void {
@@ -262,8 +341,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.sessionId = this.newSessionId();
       this.history = [];
       this.transcript = [];
+      this.sessionTitle = undefined;
+      this.titleGenerated = false;
       void this.deps.workspaceState.update(CURRENT_KEY, this.sessionId);
       this.post({ type: 'clear' });
+      this.updateViewTitle();
     }
   }
 
@@ -284,8 +366,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'approvePlan':
         await this.handleApprovePlan(m);
         break;
+      case 'answerClarifying':
+        await this.handleAnswerClarifying(m);
+        break;
+      case 'renameSession':
+        this.handleRenameSession(m.title);
+        break;
       case 'cancel':
         this.cancel?.cancel();
+        this.pendingClarify = undefined;
+        this.pendingPlanUser = undefined;
         break;
       case 'vote': {
         const ctx = this.voteCtx.get(m.requestId);
@@ -518,6 +608,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const userContent = this.buildUserContent(prompt, contextText, m.attachments);
     this.history.push({ role: 'user', content: userContent });
     this.transcript.push({ role: 'user', text: prompt, requestId: m.requestId, ts: Date.now() });
+    void this.maybeGenerateTitle(); // title from the user's message right away (e.g. "hi" -> "Greetings")
 
     this.cancel?.dispose();
     this.cancel = new vscode.CancellationTokenSource();
@@ -525,6 +616,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const before = this.deps.usage.get();
     let announced = false;
     this.deps.checkpoints.begin(m.requestId, prompt.slice(0, 60));
+    const sentAt = Date.now();
 
     try {
       const result = await this.deps.agent.run(this.history, m.mode as Mode, {
@@ -537,21 +629,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (!announced) { announced = true; this.post({ type: 'assistantStart', requestId: m.requestId, platform, model }); }
         },
         onTool: (e) => this.post({ type: 'toolStatus', requestId: m.requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail }),
+        onStep: (phase, label) => this.post({ type: 'agentStep', requestId: m.requestId, phase, label }),
       });
 
       if (m.mode === 'plan') {
-        this.post({ type: 'planProposed', requestId: m.requestId, steps: result.text });
-        void this.savePlan(prompt, result.text);
-        // Don't store the plan as final assistant history; wait for approval.
-        this.history.pop(); // remove the user turn; re-added on approval with the plan
+        const clar = parseClarifying(result.text);
+        // Plan mode never commits the turn yet — the user turn is re-added on approval
+        // (or after clarifying answers), so drop it now to avoid duplication later.
+        this.history.pop();
         this.pendingPlanUser = userContent;
+        if (clar.questions && clar.questions.length) {
+          // The planner needs clarification before it can produce a good plan: surface
+          // the questions as an interactive card, then re-plan with the answers.
+          this.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: clar.questions };
+          this.post({ type: 'clarifyingQuestions', requestId: m.requestId, questions: clar.questions });
+          return;
+        }
+        this.post({ type: 'planProposed', requestId: m.requestId, steps: clar.text });
+        void this.savePlan(prompt, clar.text);
         return;
       }
 
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
       this.history.push({ role: 'assistant', content: result.text });
-      this.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now() });
+      this.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now(), secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)) });
       this.rememberWindow(result.platform, result.model);
       // Remember which (task kind, model) produced this reply so 👍/👎 can teach the router.
       if (result.taskKind && result.platform && result.model) {
@@ -568,6 +670,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.persist();
       this.post({ type: 'busy', busy: false });
       await this.maybeAutoCompact();
+      void this.maybeGenerateTitle();
     }
   }
 
@@ -670,6 +773,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private pendingPlanUser?: ChatContent;
+  /** A Plan-mode run that paused to ask clarifying questions; resumed on answerClarifying. */
+  private pendingClarify?: { requestId: string; userContent: ChatContent; prompt: string; questions: ClarifyingQuestion[] };
+  /** LLM-generated title for the current session (falls back to deriveTitle until set). */
+  private sessionTitle?: string;
+  /** Guards a single title-generation attempt per session. */
+  private titleGenerated = false;
 
   private async handleApprovePlan(m: Extract<InMessage, { type: 'approvePlan' }>): Promise<void> {
     if (!m.approved) {
@@ -688,6 +797,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const before = this.deps.usage.get();
     let announced = false;
     this.deps.checkpoints.begin(m.requestId, 'Plan execution');
+    const sentAt = Date.now();
     try {
       const result = await this.deps.agent.run(this.history, 'agent', {
         token: this.cancel.token,
@@ -695,11 +805,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }, {
         onModel: (platform, model) => { if (!announced) { announced = true; this.post({ type: 'assistantStart', requestId: m.requestId, platform, model }); } },
         onTool: (e) => this.post({ type: 'toolStatus', requestId: m.requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail }),
+        onStep: (phase, label) => this.post({ type: 'agentStep', requestId: m.requestId, phase, label }),
       });
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
       this.history.push({ role: 'assistant', content: result.text });
-      this.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now() });
+      this.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now(), secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)) });
       this.rememberWindow(result.platform, result.model);
       // Remember which (task kind, model) produced this reply so 👍/👎 can teach the router.
       if (result.taskKind && result.platform && result.model) {
@@ -714,6 +825,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.persist();
       this.post({ type: 'busy', busy: false });
       await this.maybeAutoCompact();
+      void this.maybeGenerateTitle();
+    }
+  }
+
+  /** Resume a paused Plan-mode run after the user answers its clarifying questions. */
+  private async handleAnswerClarifying(m: Extract<InMessage, { type: 'answerClarifying' }>): Promise<void> {
+    const ctx = (this.pendingClarify && this.pendingClarify.requestId === m.requestId) ? this.pendingClarify : undefined;
+    this.pendingClarify = undefined;
+    if (!ctx) return; // stale submission (e.g. after a cancel) — ignore
+
+    // Fold the answers into the prompt and re-run Plan mode for a real plan.
+    const qa = ctx.questions
+      .map((q, i) => `Q: ${q.text}\nA: ${m.answers[i] ?? '(no answer)'}`)
+      .join('\n');
+    const base = this.history.length;
+    this.history.push({ role: 'user', content: ctx.userContent });
+    this.history.push({ role: 'user', content: `Clarifications from the user:\n${qa}\n\nUsing these answers, produce the step-by-step plan now.` });
+
+    this.cancel?.dispose();
+    this.cancel = new vscode.CancellationTokenSource();
+    this.post({ type: 'busy', busy: true });
+    let announced = false;
+    this.deps.checkpoints.begin(m.requestId, 'Plan (clarified)');
+    try {
+      const result = await this.deps.agent.run(this.history, 'plan', {
+        token: this.cancel.token,
+        onFailover: (i) => this.post({ type: 'failoverNotice', requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }),
+      }, {
+        onModel: (platform, model) => { if (!announced) { announced = true; this.post({ type: 'assistantStart', requestId: m.requestId, platform, model }); } },
+        onStep: (phase, label) => this.post({ type: 'agentStep', requestId: m.requestId, phase, label }),
+      });
+      // Ignore any further questions block on this pass — go straight to a proposed plan.
+      const clar = parseClarifying(result.text);
+      this.post({ type: 'planProposed', requestId: m.requestId, steps: clar.text });
+      void this.savePlan(ctx.prompt, clar.text);
+      // pendingPlanUser (set in handleSend) stays for the subsequent Approve flow.
+    } catch (e) {
+      this.post({ type: 'error', requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      // Drop the clarify turns we added; the user turn is re-added on approval via pendingPlanUser.
+      this.history.length = base;
+      await this.finishCheckpoint(m.requestId);
+      this.persist();
+      this.post({ type: 'busy', busy: false });
+      await this.maybeAutoCompact();
+      void this.maybeGenerateTitle();
     }
   }
 

@@ -9,6 +9,10 @@
   const targets = new Map(); // requestId -> { el, body, tools }
   const userTargets = new Map(); // requestId -> user message element (for the restore bar)
   const startTimes = new Map(); // requestId -> send time, for "Worked for Ns"
+  const statusTimers = new Map(); // requestId -> interval id, drives the live "Thinking… Ns" header
+  // The .turn wrapping the current user command + its reply. Bounding each turn is what
+  // lets the sticky command pin only while you scroll its own answer (see .turn in CSS).
+  let currentTurn = null;
 
   // ---------- markdown ----------
   function renderMarkdown(md) {
@@ -64,6 +68,9 @@
   // ---------- layout ----------
   const app = $('#app');
   app.innerHTML = `
+    <div class="chat-header">
+      <input id="chat-title" class="chat-title" type="text" placeholder="New chat" autocomplete="off" spellcheck="false" />
+    </div>
     <div class="thread" id="thread"></div>
     <div class="settings" id="settings"></div>
     <div class="composer" id="composer">
@@ -124,6 +131,21 @@
   const modelSearch = $('#model-search');
   const modelList = $('#model-list');
   let currentModel = 'auto';
+
+  // Chat header: brand + editable session title (rename inline, Enter to save).
+  const titleInput = $('#chat-title');
+  let lastTitle = '';
+  function commitTitle() {
+    const v = (titleInput.value || '').trim();
+    if (v && v !== lastTitle) { lastTitle = v; vscode.postMessage({ type: 'renameSession', title: v }); }
+    else { titleInput.value = lastTitle; }
+    titleInput.blur();
+  }
+  titleInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); commitTitle(); }
+    else if (e.key === 'Escape') { titleInput.value = lastTitle; titleInput.blur(); }
+  });
+  titleInput.addEventListener('blur', commitTitle);
 
   const PLATFORM_NAMES = {
     google: 'Google', groq: 'Groq', cerebras: 'Cerebras', nvidia: 'NVIDIA', mistral: 'Mistral',
@@ -212,7 +234,11 @@
     if (requestId) meta.appendChild(iconBtn(ICON.revert, 'Revert to here (restore workspace + chat to before this message)', () => vscode.postMessage({ type: 'revertTo', requestId })));
     bubble.appendChild(body); bubble.appendChild(meta);
     el.appendChild(bubble);
-    thread.appendChild(el);
+    // Start a new turn group: the command plus whatever replies/follow below it.
+    currentTurn = document.createElement('div');
+    currentTurn.className = 'turn';
+    currentTurn.appendChild(el);
+    thread.appendChild(currentTurn);
     if (requestId) userTargets.set(requestId, el);
     if (requestId) startTimes.set(requestId, ts || Date.now());
     scrollDown();
@@ -229,7 +255,7 @@
     return foot;
   }
 
-  function renderAssistantStatic(text, model, ts) {
+  function renderAssistantStatic(text, model, ts, secs) {
     clearEmpty();
     const el = document.createElement('div');
     el.className = 'msg assistant';
@@ -238,8 +264,8 @@
     bubble.className = 'bubble';
     bubble.appendChild(renderMarkdown(text));
     el.appendChild(bubble);
-    el.appendChild(assistantFooter(el, model, ts));
-    thread.appendChild(el);
+    el.appendChild(assistantFooter(el, (model || '') + (secs != null ? `  ·  ${secs}s` : ''), ts));
+    (currentTurn || thread).appendChild(el);
   }
 
   function ensureTarget(requestId, platform, model) {
@@ -250,21 +276,100 @@
     el.className = 'msg assistant';
     el._copyText = '';
     // "Worked for Ns" collapsible holding the agent's steps + reasoning.
-    const work = document.createElement('details'); work.className = 'work'; work.open = true;
+    const work = document.createElement('details'); work.className = 'work pending'; work.open = true;
     const sum = document.createElement('summary');
     sum.innerHTML = `<span class="work-chevron">${ICON.chevron}</span><span class="work-label">Working…</span>`;
     const tools = document.createElement('div'); tools.className = 'tools';
     work.appendChild(sum); work.appendChild(tools);
+    const statusEl = document.createElement('div');
+    statusEl.className = 'agent-status';
+    statusEl.innerHTML = `<span class="agent-spinner"></span><span class="agent-label">Thinking…</span><span class="agent-elapsed"></span>`;
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
+    el.appendChild(statusEl);
     el.appendChild(work);
     el.appendChild(bubble);
-    thread.appendChild(el);
+    (currentTurn || thread).appendChild(el);
     const modelStr = model ? `${platform || ''}/${model}` : '';
-    t = { el, body: bubble, tools, work, workLabel: sum.querySelector('.work-label'), model: modelStr, requestId };
+    t = { el, body: bubble, tools, work, workLabel: sum.querySelector('.work-label'), statusEl, statusLabel: statusEl.querySelector('.agent-label'), statusElapsed: statusEl.querySelector('.agent-elapsed'), model: modelStr, requestId };
     targets.set(requestId, t);
     scrollDown();
     return t;
+  }
+
+  // ---------- live "agent is working" status header ----------
+  // Keep the last two segments of a path so absolute workspace paths stay tidy.
+  function shortPath(p) {
+    const s = String(p || '').replace(/\\/g, '/').replace(/^\.?\//, '');
+    const parts = s.split('/').filter(Boolean);
+    return parts.length <= 2 ? parts.join('/') : parts.slice(-2).join('/');
+  }
+  // Present-tense "what the agent is doing right now" for the live status line.
+  function toolVerb(name, args) {
+    if (name === 'step' && args && typeof args === 'object') {
+      return args.of ? `Step ${args.step}/${args.of}` : 'Working on a step';
+    }
+    const path = shortPath(firstArg(args));
+    const obj = args && typeof args === 'object' ? args : {};
+    const query = String(obj.query || obj.pattern || obj.term || '').trim();
+    const cmd = String(obj.command || obj.cmd || '').trim();
+    switch (name) {
+      case 'readFile':        return path ? `Reading ${path}` : 'Reading a file';
+      case 'listDir':         return path ? `Listing ${path}` : 'Listing files';
+      case 'repoMap':         return 'Mapping the repository';
+      case 'searchWorkspace': return query ? `Searching for “${query}”` : 'Searching the workspace';
+      case 'codebaseSearch':  return query ? `Semantic search for “${query}”` : 'Running semantic search';
+      case 'getDiagnostics':  return 'Checking diagnostics';
+      case 'runCommand': {
+        const c = cmd.split(/\s+/).slice(0, 6).join(' ');
+        return c ? `Running: ${c}` : 'Running a command';
+      }
+      case 'writeFile':
+      case 'createFile':      return path ? `Writing ${path}` : 'Writing a file';
+      case 'editFile':        return path ? `Editing ${path}` : 'Editing a file';
+      case 'deleteFile':      return path ? `Deleting ${path}` : 'Deleting a file';
+      default:
+        if (name && name.indexOf('mcp__') === 0) {
+          const seg = name.split('__'); return `Calling ${seg[1] || 'MCP tool'}`;
+        }
+        return name ? (name.charAt(0).toUpperCase() + name.slice(1) + '…') : 'Working…';
+    }
+  }
+  function startStatusTimer(requestId) {
+    if (statusTimers.has(requestId)) return; // already ticking
+    const start = startTimes.get(requestId) || Date.now();
+    const tgt = targets.get(requestId);
+    if (tgt) tgt.startedAt = start; // remember the epoch so finalizeWork can compute "Worked for Ns"
+    const update = () => {
+      const t = targets.get(requestId);
+      if (!t || !t.statusElapsed) return;
+      t.statusElapsed.textContent = Math.max(0, Math.round((Date.now() - start) / 1000)) + 's';
+    };
+    update();
+    statusTimers.set(requestId, setInterval(update, 500));
+  }
+  function stopStatusTimer(requestId, hide) {
+    const id = statusTimers.get(requestId);
+    if (id) { clearInterval(id); statusTimers.delete(requestId); }
+    if (hide) {
+      const t = targets.get(requestId);
+      if (t && t.statusEl) t.statusEl.classList.add('hidden');
+    }
+  }
+  // Collapse the live status into the final "Worked for Ns" disclosure (or drop it
+  // when the agent did no steps). Reveals the summary the .pending class had hidden.
+  function finalizeWork(requestId) {
+    const t = targets.get(requestId);
+    if (!t || !t.work) return;
+    if (t.tools.children.length === 0) {
+      t.work.remove();
+    } else {
+      const started = t.startedAt ?? startTimes.get(requestId);
+      const secs = started ? Math.max(1, Math.round((Date.now() - started) / 1000)) : null;
+      if (t.workLabel) t.workLabel.textContent = secs != null ? `Worked for ${secs}s` : 'Worked';
+      t.work.classList.remove('pending');
+      t.work.open = false;
+    }
   }
 
   function send() {
@@ -942,7 +1047,7 @@
         thread.innerHTML = '';
         targets.clear();
         userTargets.clear();
-        (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts) : renderAssistantStatic(mm.text, mm.model, mm.ts));
+        (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts) : renderAssistantStatic(mm.text, mm.model, mm.ts, mm.secs));
         if (!(msg.messages || []).length) renderEmpty();
         scrollDown();
         break;
@@ -960,10 +1065,19 @@
         // carries no model) — set it now so the footer shows the model that
         // actually produced the answer, not a blank.
         if (msg.model) t.model = `${msg.platform || ''}/${msg.model}`;
+        startStatusTimer(msg.requestId);
+        break;
+      }
+      case 'agentStep': {
+        const t = ensureTarget(msg.requestId);
+        if (t.statusLabel) t.statusLabel.textContent = msg.label;
+        startStatusTimer(msg.requestId);
+        scrollDown();
         break;
       }
       case 'toolStatus': {
         const t = ensureTarget(msg.requestId);
+        if (msg.state === 'running' && t.statusLabel) t.statusLabel.textContent = toolVerb(msg.name, msg.args);
         upsertTool(t, msg);
         break;
       }
@@ -982,8 +1096,17 @@
         scrollDown();
         break;
       }
+      case 'sessionTitle': {
+        const v = msg.title || '';
+        lastTitle = v;
+        // Don't clobber the field while the user is actively editing it.
+        if (document.activeElement !== titleInput) titleInput.value = v;
+        break;
+      }
       case 'planProposed': {
         const t = ensureTarget(msg.requestId);
+        stopStatusTimer(msg.requestId, true);
+        finalizeWork(msg.requestId);
         t.body.innerHTML = '';
         t.body.appendChild(renderMarkdown('**Proposed plan:**\n\n' + msg.steps));
         const actions = document.createElement('div'); actions.className = 'plan-actions';
@@ -996,26 +1119,55 @@
         scrollDown();
         break;
       }
+      case 'clarifyingQuestions': {
+        const t = ensureTarget(msg.requestId);
+        stopStatusTimer(msg.requestId, true);
+        finalizeWork(msg.requestId);
+        t.body.innerHTML = '';
+        const card = document.createElement('div'); card.className = 'clarify';
+        const intro = document.createElement('div'); intro.className = 'clarify-intro';
+        intro.textContent = 'A couple of quick questions before I plan:';
+        card.appendChild(intro);
+        const selected = msg.questions.map(() => null); // chosen option index per question
+        msg.questions.forEach((q, qi) => {
+          const qel = document.createElement('div'); qel.className = 'clarify-q';
+          const qt = document.createElement('div'); qt.className = 'clarify-q-text'; qt.textContent = q.text;
+          const opts = document.createElement('div'); opts.className = 'clarify-opts';
+          q.options.forEach((opt, oi) => {
+            const b = document.createElement('button'); b.type = 'button'; b.className = 'clarify-opt'; b.textContent = opt;
+            b.addEventListener('click', () => {
+              selected[qi] = oi;
+              opts.querySelectorAll('.clarify-opt').forEach((x) => x.classList.remove('selected'));
+              b.classList.add('selected');
+              submit.disabled = selected.some((s) => s === null);
+            });
+            opts.appendChild(b);
+          });
+          qel.appendChild(qt); qel.appendChild(opts); card.appendChild(qel);
+        });
+        const submit = document.createElement('button'); submit.type = 'button';
+        submit.className = 'primary clarify-submit'; submit.textContent = 'Submit answers'; submit.disabled = true;
+        submit.addEventListener('click', () => {
+          card.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+          const answers = msg.questions.map((q, qi) => q.options[selected[qi]]);
+          vscode.postMessage({ type: 'answerClarifying', requestId: msg.requestId, answers });
+        });
+        card.appendChild(submit);
+        t.body.appendChild(card);
+        scrollDown();
+        break;
+      }
       case 'assistantMessage': {
         const t = ensureTarget(msg.requestId);
+        stopStatusTimer(msg.requestId, true);
         if (msg.reasoning) {
           const det = document.createElement('details'); det.className = 'reasoning';
           det.innerHTML = `<summary>💭 Reasoning</summary>`;
           det.appendChild(renderMarkdown(msg.reasoning));
           t.tools.insertBefore(det, t.tools.firstChild); // inside the "Worked for Ns" disclosure
         }
-        // Finalize the work summary. Only keep it when the agent actually did steps
-        // (tools/reasoning); a plain reply shows just the answer — no "Worked for Ns".
-        if (t.work) {
-          if (t.tools.children.length === 0) {
-            t.work.remove();
-          } else {
-            const started = startTimes.get(msg.requestId);
-            const secs = started ? Math.max(1, Math.round((Date.now() - started) / 1000)) : null;
-            if (t.workLabel) t.workLabel.textContent = secs != null ? `Worked for ${secs}s` : 'Worked';
-            t.work.open = false;
-          }
-        }
+        // Finalize the work summary (reveals it as "Worked for Ns", collapsed).
+        finalizeWork(msg.requestId);
         t.el._copyText = msg.text;
         typeInto(t.body, msg.text);
         // The final message carries the model that actually answered — use it as
@@ -1024,7 +1176,10 @@
         if (msg.model) t.model = `${msg.platform || ''}/${msg.model}`;
         let usageStr = '';
         if (msg.usage) usageStr = `  ·  ${msg.usage.promptTokens}+${msg.usage.completionTokens} tok`;
-        t.el.appendChild(assistantFooter(t.el, (t.model || '') + usageStr, Date.now(), msg.requestId));
+        const startedAt = t.startedAt ?? startTimes.get(msg.requestId);
+        const secs = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
+        const durStr = secs != null ? `  ·  ${secs}s` : '';
+        t.el.appendChild(assistantFooter(t.el, (t.model || '') + usageStr + durStr, Date.now(), msg.requestId));
         scrollDown();
         break;
       }
@@ -1057,15 +1212,17 @@
         const d = document.createElement('div');
         d.className = 'compact-divider';
         d.textContent = msg.text;
-        thread.appendChild(d);
+        (currentTurn || thread).appendChild(d);
         scrollDown();
         break;
       }
       case 'error': {
         const t = msg.requestId ? ensureTarget(msg.requestId) : null;
+        if (msg.requestId) stopStatusTimer(msg.requestId, true);
+        if (msg.requestId) finalizeWork(msg.requestId);
         const el = document.createElement('div'); el.className = 'bubble error';
         el.textContent = '⚠ ' + msg.message;
-        (t ? t.body : thread).appendChild(el);
+        (t ? t.body : currentTurn || thread).appendChild(el);
         scrollDown();
         break;
       }
@@ -1075,13 +1232,19 @@
         sb.innerHTML = busy ? ICON.stop : ICON.send;
         sb.title = busy ? 'Stop' : 'Send (Enter)';
         sb.classList.toggle('stopping', busy);
+        // Backstop: any run that ended without a terminal message (e.g. plan mode's
+        // early return) still flips busy off — clear any lingering live status then.
+        if (!busy) for (const id of statusTimers.keys()) stopStatusTimer(id, true);
         break;
       }
       case 'clear':
         if (settingsOpen) toggleSettings();
         thread.innerHTML = '';
+        currentTurn = null;
         targets.clear();
         userTargets.clear();
+        statusTimers.forEach((id) => clearInterval(id));
+        statusTimers.clear();
         renderEmpty();
         break;
     }

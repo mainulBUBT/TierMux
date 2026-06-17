@@ -29,22 +29,40 @@ body {
 .icon-btn:hover svg { opacity: 1; }
 .send-btn svg { display: block; }
 
+/* Chat header: brand + editable session title */
+.chat-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-bottom: 1px solid var(--vscode-panel-border);
+}
+.chat-brand { font-weight: 700; font-size: 12px; letter-spacing: .02em; opacity: .9; flex: 0 0 auto; }
+.chat-title {
+  flex: 1 1 auto; min-width: 0;
+  background: transparent; border: 1px solid transparent; border-radius: 4px;
+  color: var(--vscode-foreground); opacity: .75;
+  font-family: inherit; font-size: 12px; padding: 2px 6px; outline: none;
+}
+.chat-title:hover { background: var(--vscode-list-hoverBackground); }
+.chat-title:focus { opacity: 1; border-color: var(--vscode-focusBorder); background: var(--vscode-input-background); }
+
 /* Thread */
 .thread { flex: 1; overflow-y: auto; padding: var(--gap); display: flex; flex-direction: column; gap: 6px; }
+/* Each turn groups a user command with its reply/replies. Bounding the turn is what
+   makes the sticky .msg.user below actually work: a command pins at top only while you
+   scroll THIS turn, then scrolls away so the next command takes over — instead of every
+   command pinning at top:0 of the whole thread and piling on top of each other. */
+.turn { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.turn:first-of-type { margin-top: 0; }
 .msg { display: flex; flex-direction: column; gap: 4px; }
-/* Group each Q&A: reply hugs its command, more breathing room before the next turn. */
-/* The question/command sticks to the top while you scroll its answer, so you always
-   know which message the visible reply belongs to. The next question takes over as
-   it scrolls up. */
+/* The command sticks to the top while you scroll its answer, so you always know which
+   message the visible reply belongs to. Sticky is scoped to its .turn, so the next
+   command pushes this one off-screen as it arrives — no overlap. */
 .msg.user {
-  margin-top: 12px;
   position: sticky;
   top: 0;
   z-index: 2;
   background: var(--vscode-sideBar-background, var(--vscode-editor-background));
   padding-bottom: 4px;
 }
-.msg.user:first-child { margin-top: 0; }
 /* Keep a long question from dominating the viewport when it's pinned. */
 .msg.user .msg-text { max-height: 38vh; overflow-y: auto; }
 /* Subtle separator so the pinned question reads as a header over the scrolling answer. */
@@ -75,10 +93,26 @@ body {
 /* "Worked for Ns" disclosure over the agent's steps */
 .work { font-size: 12px; }
 .work > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px; opacity: .75; }
+/* While the live .agent-status header is shown, hide the redundant "Working…" summary;
+   tool cards still stream into .tools below it. Revealed as "Worked for Ns" on completion. */
+.work.pending > summary { display: none; }
 .work > summary::-webkit-details-marker { display: none; }
 .work-chevron { display: inline-flex; transition: transform .15s; }
 .work[open] .work-chevron { transform: rotate(90deg); }
 .work .tools { margin: 6px 0 2px; display: flex; flex-direction: column; gap: 4px; }
+/* Live "agent is working" header — spinner + current action + elapsed seconds.
+   Shown in-stream above each reply while the run is active; hidden once the
+   answer streams in (the "Worked for Ns" disclosure then takes over). */
+.agent-status { display: flex; align-items: center; gap: 7px; font-size: 12px; opacity: .85; padding: 2px 2px 4px; }
+.agent-status.hidden { display: none; }
+.agent-spinner {
+  flex: 0 0 auto; width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid var(--vscode-panel-border);
+  border-top-color: var(--vscode-progressBar-background, #0a84ff);
+  animation: idx-spin .8s linear infinite;
+}
+.agent-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-elapsed { flex: 0 0 auto; opacity: .6; font-variant-numeric: tabular-nums; font-size: 11px; }
 .bubble pre {
   background: var(--vscode-textCodeBlock-background, #1e1e1e);
   padding: 10px 12px; border-radius: 6px; overflow-x: auto;
@@ -145,6 +179,26 @@ details.reasoning summary { cursor: pointer; opacity: .8; }
 /* Plan approval */
 .plan-actions { display: flex; gap: 8px; margin-top: 6px; }
 
+/* Clarifying questions the planner asks before producing a plan (Plan mode) */
+.clarify { display: flex; flex-direction: column; gap: 10px; }
+.clarify-intro { font-size: 12px; opacity: .8; }
+.clarify-q { display: flex; flex-direction: column; gap: 4px; }
+.clarify-q-text { font-size: 12px; font-weight: 600; }
+.clarify-opts { display: flex; flex-direction: column; gap: 4px; }
+.clarify-opt {
+  text-align: left; cursor: pointer; font-size: 12px;
+  background: var(--vscode-input-background); color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 6px 10px;
+}
+.clarify-opt:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
+.clarify-opt.selected {
+  border-color: var(--vscode-focusBorder);
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+.clarify-opt:disabled { cursor: default; opacity: .7; }
+.clarify-submit { align-self: flex-start; }
+
 /* Changed-files review under a command */
 .checkpoint { margin-top: 6px; font-size: 12px; }
 .cp-d > summary {
@@ -204,8 +258,8 @@ details.reasoning summary { cursor: pointer; opacity: .8; }
   background: transparent; color: var(--vscode-input-foreground);
   border: none; outline: none; padding: 2px 4px; font-family: inherit; font-size: inherit;
 }
-.toolbar { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.tgroup { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.tgroup { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .tgroup.right { margin-left: auto; flex: 0 0 auto; }
 .pill {
   background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground);
