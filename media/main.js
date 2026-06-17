@@ -1,0 +1,1152 @@
+/* TierMux — webview controller (vanilla JS). */
+(function () {
+  const vscode = acquireVsCodeApi();
+  const $ = (sel, root) => (root || document).querySelector(sel);
+
+  let state = { catalog: [], fallback: [], platforms: [] };
+  let pendingAttachments = [];
+  let busy = false;
+  const targets = new Map(); // requestId -> { el, body, tools }
+  const userTargets = new Map(); // requestId -> user message element (for the restore bar)
+  const startTimes = new Map(); // requestId -> send time, for "Worked for Ns"
+
+  // ---------- markdown ----------
+  function renderMarkdown(md) {
+    try {
+      if (window.marked) {
+        const html = window.marked.parse(md, { breaks: true, gfm: true });
+        const div = document.createElement('div');
+        div.innerHTML = html;
+        div.querySelectorAll('script').forEach((s) => s.remove());
+        if (window.hljs) div.querySelectorAll('pre code').forEach((b) => { try { window.hljs.highlightElement(b); } catch (_) {} });
+        return div;
+      }
+    } catch (_) {}
+    const pre = document.createElement('div');
+    pre.textContent = md;
+    return pre;
+  }
+
+  function typeInto(container, fullText) {
+    container.innerHTML = '';
+    const total = fullText.length;
+    if (total < 40) { container.appendChild(renderMarkdown(fullText)); scrollDown(); return; }
+    let i = 0;
+    const step = Math.max(2, Math.floor(total / 160));
+    const timer = setInterval(() => {
+      i += step;
+      if (i >= total) { clearInterval(timer); container.innerHTML = ''; container.appendChild(renderMarkdown(fullText)); scrollDown(); return; }
+      container.innerHTML = '';
+      container.appendChild(renderMarkdown(fullText.slice(0, i)));
+      scrollDown();
+    }, 16);
+  }
+
+  // ---------- icons (inline SVG, offline) ----------
+  const ICON = {
+    attach: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a5 5 0 0 1-7.07-7.07l9.19-9.19a3.5 3.5 0 0 1 4.95 4.95l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>',
+    selection: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+    send: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>',
+    stop: '<svg viewBox="0 0 24 24" width="14" height="14"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>',
+    copy: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+    revert: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>',
+    up: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v11"/><path d="M18 21H5V10l5-7a2 2 0 0 1 2 2v4h6a2 2 0 0 1 2 2.4l-1.4 7A2 2 0 0 1 18 21z"/></svg>',
+    down: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 14V3"/><path d="M6 3h13v11l-5 7a2 2 0 0 1-2-2v-4H6a2 2 0 0 1-2-2.4l1.4-7A2 2 0 0 1 6 3z"/></svg>',
+    chevron: '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>',
+  };
+  function fmtTime(ts) {
+    const d = ts ? new Date(ts) : new Date();
+    let h = d.getHours(); const m = d.getMinutes();
+    const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+    return `${h}:${m < 10 ? '0' + m : m} ${ap}`;
+  }
+
+  // ---------- layout ----------
+  const app = $('#app');
+  app.innerHTML = `
+    <div class="thread" id="thread"></div>
+    <div class="settings" id="settings"></div>
+    <div class="composer" id="composer">
+      <div class="index-status hidden" id="index-status"></div>
+      <div class="chips" id="chips"></div>
+      <div class="input-wrap">
+        <div id="ac-pop" class="ac-pop hidden"></div>
+        <textarea id="input" placeholder="Type a message…  (Enter to send, Shift+Enter for newline)  ·  @file  /fix  /tests  /commit"></textarea>
+        <div class="toolbar">
+          <div class="tgroup">
+            <span class="select-wrap">
+              <select id="mode" title="Mode — Auto picks the right behavior + model for each message" class="pill">
+                <option value="auto">Auto</option>
+                <option value="chat">Chat</option>
+                <option value="agent">Agent</option>
+                <option value="plan">Plan</option>
+                <option value="debug">Debug</option>
+                <option value="orchestrator">Orchestrator</option>
+              </select>
+            </span>
+            <div class="model-picker">
+              <button type="button" id="model-btn" class="pill" title="Model"><span class="mb-label">Auto</span></button>
+              <div id="model-pop" class="model-pop hidden">
+                <input id="model-search" type="text" placeholder="Search models…" />
+                <div id="model-list"></div>
+              </div>
+            </div>
+            <span class="select-wrap">
+              <select id="reasoning" title="Reasoning effort" class="pill" disabled>
+                <option value="off">Off</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="xhigh">Very High</option>
+              </select>
+            </span>
+          </div>
+          <div class="tgroup right">
+            <button class="icon-btn" id="btn-selection" title="Add editor selection as context">${ICON.selection}</button>
+            <button class="icon-btn" id="btn-attach" title="Attach file or image">${ICON.attach}</button>
+            <button class="send-btn" id="btn-send" title="Send (Enter)">${ICON.send}</button>
+          </div>
+        </div>
+      </div>
+      <div class="footer" id="footer">No tokens used yet.</div>
+    </div>`;
+
+  const thread = $('#thread');
+  const settingsEl = $('#settings');
+  const composer = $('#composer');
+  const input = $('#input');
+  const modeSel = $('#mode');
+  const reasoningSel = $('#reasoning');
+  const chipsEl = $('#chips');
+  const modelBtn = $('#model-btn');
+  const modelBtnLabel = $('.mb-label', modelBtn);
+  const modelPop = $('#model-pop');
+  const modelSearch = $('#model-search');
+  const modelList = $('#model-list');
+  let currentModel = 'auto';
+
+  const PLATFORM_NAMES = {
+    google: 'Google', groq: 'Groq', cerebras: 'Cerebras', nvidia: 'NVIDIA', mistral: 'Mistral',
+    openrouter: 'OpenRouter', github: 'GitHub Models', cohere: 'Cohere', cloudflare: 'Cloudflare',
+    zhipu: 'Zhipu', ollama: 'Ollama', kilo: 'Kilo', pollinations: 'Pollinations', llm7: 'LLM7',
+    huggingface: 'HuggingFace', opencode: 'OpenCode', ovh: 'OVH', agnes: 'Agnes', custom: 'Custom',
+  };
+
+  const acPop = $('#ac-pop');
+  const SLASH_COMMANDS = [
+    { name: 'explain', detail: 'Explain the referenced code' },
+    { name: 'fix', detail: 'Find and fix problems' },
+    { name: 'tests', detail: 'Write unit tests' },
+    { name: 'doc', detail: 'Add documentation/comments' },
+    { name: 'commit', detail: 'Generate a commit message from staged changes' },
+  ];
+  // Autocomplete state.
+  let acMode = null;       // 'slash' | 'mention' | null
+  let acStart = -1;        // index of the trigger char in the textarea
+  let acItems = [];        // current suggestion list
+  let acIndex = 0;         // highlighted index
+  let acQueryId = 0;       // latest mention query id (to ignore stale results)
+  let acDebounce;
+
+  function scrollDown() { thread.scrollTop = thread.scrollHeight; }
+
+  // ---------- empty / welcome state ----------
+  function clearEmpty() { const e = thread.querySelector('.empty'); if (e) e.remove(); }
+  function renderEmpty() {
+    if (thread.querySelector('.msg')) return;
+    clearEmpty();
+    const el = document.createElement('div');
+    el.className = 'empty';
+    el.innerHTML = `
+      <div class="empty-logo">⚡</div>
+      <div class="empty-title">${window.__PRODUCT_NAME__ || 'TierMux'}</div>
+      <div class="empty-sub">Your AI coding assistant — ask it to build features, fix bugs, or explain your codebase. Routed across ~18 free providers with automatic failover.</div>
+      <div class="empty-sub muted">Open ⚙ in the title bar to add an API key.</div>`;
+    thread.appendChild(el);
+  }
+
+  // ---------- send ----------
+  function newId() { return 'r' + Date.now() + Math.random().toString(36).slice(2, 6); }
+
+  function iconBtn(icon, title, onClick) {
+    const b = document.createElement('button');
+    b.className = 'm-ic'; b.title = title; b.innerHTML = icon;
+    b.addEventListener('click', onClick);
+    return b;
+  }
+  function copyBtn(el) {
+    const b = iconBtn(ICON.copy, 'Copy message', () => {
+      vscode.postMessage({ type: 'copyText', text: el._copyText || '' });
+      b.classList.add('ok');
+      setTimeout(() => b.classList.remove('ok'), 1000);
+    });
+    return b;
+  }
+  function feedbackBtns(requestId) {
+    const frag = document.createDocumentFragment();
+    const set = (which) => {
+      const el = which === 'up' ? up : down, other = which === 'up' ? down : up;
+      const now = el.classList.contains('on') ? 'none' : which; // second click un-votes
+      el.classList.toggle('on', now === which); other.classList.remove('on');
+      if (requestId) vscode.postMessage({ type: 'vote', requestId, vote: now });
+    };
+    const up = iconBtn(ICON.up, 'Good response — prefer this model for similar tasks', () => set('up'));
+    const down = iconBtn(ICON.down, 'Bad response — avoid this model for similar tasks', () => set('down'));
+    frag.appendChild(up); frag.appendChild(down);
+    return frag;
+  }
+
+  function addUserBubble(text, requestId, ts) {
+    clearEmpty();
+    const el = document.createElement('div');
+    el.className = 'msg user';
+    el._copyText = text;
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    const body = document.createElement('div'); body.className = 'msg-text';
+    body.appendChild(renderMarkdown(text));
+    const meta = document.createElement('div'); meta.className = 'msg-meta';
+    const time = document.createElement('span'); time.className = 'ts'; time.textContent = fmtTime(ts);
+    meta.appendChild(time);
+    meta.appendChild(copyBtn(el));
+    if (requestId) meta.appendChild(iconBtn(ICON.revert, 'Revert to here (restore workspace + chat to before this message)', () => vscode.postMessage({ type: 'revertTo', requestId })));
+    bubble.appendChild(body); bubble.appendChild(meta);
+    el.appendChild(bubble);
+    thread.appendChild(el);
+    if (requestId) userTargets.set(requestId, el);
+    if (requestId) startTimes.set(requestId, ts || Date.now());
+    scrollDown();
+  }
+
+  function assistantFooter(el, model, ts, requestId) {
+    const foot = document.createElement('div'); foot.className = 'msg-foot';
+    const left = document.createElement('span'); left.className = 'foot-left';
+    left.textContent = (model ? model + '  ·  ' : '') + fmtTime(ts);
+    const acts = document.createElement('span'); acts.className = 'foot-acts';
+    acts.appendChild(copyBtn(el));
+    acts.appendChild(feedbackBtns(requestId));
+    foot.appendChild(left); foot.appendChild(acts);
+    return foot;
+  }
+
+  function renderAssistantStatic(text, model, ts) {
+    clearEmpty();
+    const el = document.createElement('div');
+    el.className = 'msg assistant';
+    el._copyText = text;
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.appendChild(renderMarkdown(text));
+    el.appendChild(bubble);
+    el.appendChild(assistantFooter(el, model, ts));
+    thread.appendChild(el);
+  }
+
+  function ensureTarget(requestId, platform, model) {
+    let t = targets.get(requestId);
+    if (t) return t;
+    clearEmpty();
+    const el = document.createElement('div');
+    el.className = 'msg assistant';
+    el._copyText = '';
+    // "Worked for Ns" collapsible holding the agent's steps + reasoning.
+    const work = document.createElement('details'); work.className = 'work'; work.open = true;
+    const sum = document.createElement('summary');
+    sum.innerHTML = `<span class="work-chevron">${ICON.chevron}</span><span class="work-label">Working…</span>`;
+    const tools = document.createElement('div'); tools.className = 'tools';
+    work.appendChild(sum); work.appendChild(tools);
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    el.appendChild(work);
+    el.appendChild(bubble);
+    thread.appendChild(el);
+    const modelStr = model ? `${platform || ''}/${model}` : '';
+    t = { el, body: bubble, tools, work, workLabel: sum.querySelector('.work-label'), model: modelStr, requestId };
+    targets.set(requestId, t);
+    scrollDown();
+    return t;
+  }
+
+  function send() {
+    if (busy) { vscode.postMessage({ type: 'cancel', requestId: 'current' }); return; }
+    const text = input.value.trim();
+    if (!text) return;
+    const requestId = newId();
+    addUserBubble(text, requestId);
+    vscode.postMessage({
+      type: 'sendMessage', requestId, text,
+      mode: modeSel.value, model: currentModel, reasoningEffort: reasoningSel.value,
+      attachments: pendingAttachments,
+    });
+    input.value = '';
+    pendingAttachments = [];
+    renderChips();
+  }
+
+  $('#btn-send').addEventListener('click', send);
+  input.addEventListener('keydown', (e) => {
+    if (!acPop.classList.contains('hidden')) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); moveAc(1); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); moveAc(-1); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); acceptAc(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); closeAc(); return; }
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  });
+  input.addEventListener('input', () => { autoGrow(); updateAutocomplete(); });
+  input.addEventListener('click', updateAutocomplete);
+  input.addEventListener('blur', () => setTimeout(closeAc, 120));
+  function autoGrow() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 220) + 'px'; }
+  $('#btn-attach').addEventListener('click', () => vscode.postMessage({ type: 'attachFromWorkspace' }));
+  $('#btn-selection').addEventListener('click', () => vscode.postMessage({ type: 'addSelection' }));
+  // Close transient popups when the view loses focus or is hidden (e.g. switching tabs).
+  window.addEventListener('blur', () => { closeModelPop(); closeAc(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { closeModelPop(); closeAc(); } });
+
+  // Custom model dropdown (scrollable + searchable).
+  modelBtn.addEventListener('click', (e) => { e.stopPropagation(); modelPop.classList.contains('hidden') ? openModelPop() : closeModelPop(); });
+  modelSearch.addEventListener('input', filterModels);
+  modelSearch.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModelPop(); });
+  document.addEventListener('click', (e) => { if (!e.target.closest('.model-picker')) closeModelPop(); });
+
+  function openModelPop() { modelPop.classList.remove('hidden'); modelSearch.value = ''; filterModels(); modelSearch.focus(); }
+  function closeModelPop() { modelPop.classList.add('hidden'); }
+  function setModel(value, label) {
+    currentModel = value;
+    modelBtnLabel.textContent = label || value;
+    modelBtn.title = label || value;
+    modelList.querySelectorAll('.model-item').forEach((it) => it.classList.toggle('selected', it.dataset.value === value));
+    closeModelPop();
+    updateReasoningAvailability();
+  }
+  function filterModels() {
+    const q = modelSearch.value.trim().toLowerCase();
+    modelList.querySelectorAll('.model-item').forEach((it) => { it.style.display = !q || it.textContent.toLowerCase().includes(q) ? '' : 'none'; });
+    modelList.querySelectorAll('.model-group').forEach((h) => { h.style.display = q ? 'none' : ''; });
+  }
+
+  // image paste support
+  input.addEventListener('paste', (e) => {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (const it of items) {
+      if (it.type.startsWith('image/')) {
+        const file = it.getAsFile();
+        if (!file) continue;
+        const reader = new FileReader();
+        reader.onload = () => { pendingAttachments.push({ kind: 'image', name: file.name || 'pasted-image', dataUrl: reader.result }); renderChips(); };
+        reader.readAsDataURL(file);
+      }
+    }
+  });
+
+  function renderChips() {
+    chipsEl.innerHTML = '';
+    pendingAttachments.forEach((a, idx) => {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.innerHTML = `${a.kind === 'image' ? '🖼' : '📄'} ${escapeHtml(a.name)} <button title="remove">✕</button>`;
+      chip.querySelector('button').addEventListener('click', () => { pendingAttachments.splice(idx, 1); renderChips(); });
+      chipsEl.appendChild(chip);
+    });
+  }
+
+  function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+  function updateReasoningAvailability() {
+    let supports = false;
+    if (currentModel !== 'auto') {
+      const [p, ...rest] = currentModel.split('::');
+      const m = state.catalog.find((x) => x.platform === p && x.modelId === rest.join('::'));
+      supports = !!(m && m.supportsReasoning);
+    } else {
+      supports = true; // auto may land on a reasoning model
+    }
+    reasoningSel.disabled = !supports;
+    reasoningSel.title = supports ? 'Reasoning effort' : 'This model has no reasoning mode';
+    if (!supports) reasoningSel.value = 'off';
+  }
+
+  // ---------- model picker ----------
+  function addModelItem(value, label, m) {
+    const item = document.createElement('div');
+    item.className = 'model-item' + (value === currentModel ? ' selected' : '');
+    item.dataset.value = value;
+    const lbl = document.createElement('span');
+    lbl.className = 'mi-label';
+    lbl.textContent = label;
+    item.appendChild(lbl);
+    const caps = [];
+    if (m) { if (m.supportsTools) caps.push('T'); if (m.supportsVision) caps.push('V'); if (m.supportsReasoning) caps.push('R'); }
+    if (caps.length) {
+      const c = document.createElement('span');
+      c.className = 'mi-caps';
+      c.innerHTML = caps.map((x) => `<span class="cap" title="${x === 'T' ? 'tools' : x === 'V' ? 'vision' : 'reasoning'}">${x}</span>`).join('');
+      item.appendChild(c);
+    }
+    item.addEventListener('click', () => setModel(value, label));
+    modelList.appendChild(item);
+  }
+  function rebuildModelPicker() {
+    modelList.innerHTML = '';
+    addModelItem('auto', 'Auto (smart routing)');
+    let lastPlatform = null;
+    let selectedLabel = null;
+    state.catalog.forEach((m) => {
+      if (m.platform !== lastPlatform) {
+        lastPlatform = m.platform;
+        const h = document.createElement('div');
+        h.className = 'model-group';
+        h.textContent = PLATFORM_NAMES[m.platform] || m.platform;
+        modelList.appendChild(h);
+      }
+      const value = `${m.platform}::${m.modelId}`;
+      addModelItem(value, m.displayName, m);
+      if (value === currentModel) selectedLabel = m.displayName;
+    });
+    // Keep the button label in sync with the current selection.
+    if (currentModel === 'auto') { modelBtnLabel.textContent = 'Auto'; modelBtn.title = 'Auto (smart routing)'; }
+    else if (selectedLabel) { modelBtnLabel.textContent = selectedLabel; modelBtn.title = selectedLabel; }
+    updateReasoningAvailability();
+  }
+
+  // ---------- @ / / autocomplete ----------
+  function updateAutocomplete() {
+    const caret = input.selectionStart;
+    const text = input.value.slice(0, caret);
+
+    // Slash command: only when '/' starts the whole input.
+    const slashMatch = /^\/(\w*)$/.exec(text);
+    if (slashMatch) {
+      acMode = 'slash'; acStart = 0;
+      const q = slashMatch[1].toLowerCase();
+      const items = SLASH_COMMANDS.filter((c) => c.name.startsWith(q))
+        .map((c) => ({ label: '/' + c.name, insert: '/' + c.name + ' ', detail: c.detail, kind: 'slash' }));
+      items.length ? renderAc(items) : closeAc();
+      return;
+    }
+
+    // Mention: last '@' at start or after whitespace, no space between it and caret.
+    const at = text.lastIndexOf('@');
+    if (at !== -1 && (at === 0 || /\s/.test(text[at - 1])) && !/\s/.test(text.slice(at + 1))) {
+      acMode = 'mention'; acStart = at;
+      const q = text.slice(at + 1);
+      const id = ++acQueryId;
+      clearTimeout(acDebounce);
+      acDebounce = setTimeout(() => vscode.postMessage({ type: 'mentionQuery', queryId: id, query: q }), 150);
+      return;
+    }
+    closeAc();
+  }
+
+  function renderAc(items) {
+    acItems = items; acIndex = 0;
+    acPop.innerHTML = '';
+    items.forEach((it, i) => {
+      const row = document.createElement('div');
+      row.className = 'ac-item' + (i === 0 ? ' active' : '');
+      const icon = it.kind === 'folder' ? '📁' : it.kind === 'symbol' ? '◈' : it.kind === 'slash' ? '/' : '📄';
+      row.innerHTML = `<span class="ac-icon">${icon}</span><span class="ac-label"></span><span class="ac-detail muted"></span>`;
+      row.querySelector('.ac-label').textContent = it.label;
+      row.querySelector('.ac-detail').textContent = it.detail || '';
+      row.addEventListener('mousedown', (e) => { e.preventDefault(); acIndex = i; acceptAc(); });
+      acPop.appendChild(row);
+    });
+    acPop.classList.remove('hidden');
+  }
+
+  function moveAc(delta) {
+    if (!acItems.length) return;
+    acIndex = (acIndex + delta + acItems.length) % acItems.length;
+    [...acPop.children].forEach((c, i) => c.classList.toggle('active', i === acIndex));
+    const active = acPop.children[acIndex];
+    if (active) active.scrollIntoView({ block: 'nearest' });
+  }
+
+  function acceptAc() {
+    const it = acItems[acIndex];
+    if (!it) { closeAc(); return; }
+    const caret = input.selectionStart;
+    const before = input.value.slice(0, acStart);
+    const after = input.value.slice(caret);
+    const insert = it.kind === 'slash' ? it.insert : '@' + it.insert + ' ';
+    input.value = before + insert + after;
+    const pos = (before + insert).length;
+    input.setSelectionRange(pos, pos);
+    closeAc();
+    input.focus();
+    autoGrow();
+  }
+
+  function closeAc() { acPop.classList.add('hidden'); acMode = null; acItems = []; }
+
+  // ---------- tool cards / notices ----------
+  // Turn raw tool calls into a human-readable "what the agent is doing" line.
+  function firstArg(a) {
+    if (!a || typeof a !== 'object') return '';
+    return a.path || a.file || a.filename || a.relativePath || a.query || a.pattern || a.dir || a.directory || a.term || '';
+  }
+  function toolLabel(name, args) {
+    if (name === 'step' && args && typeof args === 'object') {
+      return { icon: '🧭', title: `Step ${args.step}/${args.of}${args.task ? ': ' + args.task : ''}` };
+    }
+    const a = String(firstArg(args) || '');
+    const q = a ? `“${a}”` : '';
+    const M = {
+      readFile: ['📖', a ? `Read ${a}` : 'Read file'],
+      listDir: ['📂', a ? `Listed ${a}` : 'Listed folder'],
+      repoMap: ['🗺️', 'Mapped the repository'],
+      searchWorkspace: ['🔍', a ? `Searched ${q}` : 'Searched workspace'],
+      codebaseSearch: ['🔎', a ? `Semantic search ${q}` : 'Semantic search'],
+      getDiagnostics: ['🩺', 'Checked problems'],
+      runCommand: ['▶️', a ? `Ran ${a}` : 'Ran command'],
+      writeFile: ['✏️', a ? `Wrote ${a}` : 'Wrote file'],
+      createFile: ['✨', a ? `Created ${a}` : 'Created file'],
+      editFile: ['✏️', a ? `Edited ${a}` : 'Edited file'],
+      deleteFile: ['🗑️', a ? `Deleted ${a}` : 'Deleted file'],
+    };
+    if (M[name]) return { icon: M[name][0], title: M[name][1] };
+    if (name && name.indexOf('mcp__') === 0) {
+      const p = name.split('__');
+      return { icon: '🔌', title: `${p[1] || 'mcp'} · ${p.slice(2).join(' ') || 'tool'}` };
+    }
+    return { icon: '🛠️', title: name || 'Tool' };
+  }
+  const STATE_ICON = { running: '', done: '✓', error: '✕' };
+  function upsertTool(t, msg) {
+    let card = t.tools.querySelector(`[data-tc="${msg.toolCallId}"]`);
+    if (!card) {
+      card = document.createElement('div');
+      card.className = 'tool-card';
+      card.dataset.tc = msg.toolCallId;
+      card.innerHTML = `<div class="tool-head"><span class="tool-ic"></span><span class="tool-title"></span><span class="state"></span></div><details class="tool-more hidden"><summary>Details</summary><pre></pre></details>`;
+      t.tools.appendChild(card);
+    }
+    const { icon, title } = toolLabel(msg.name, msg.args);
+    card.querySelector('.tool-ic').textContent = icon;
+    card.querySelector('.tool-title').textContent = title;
+    const st = card.querySelector('.state');
+    st.className = 'state ' + msg.state;
+    st.textContent = STATE_ICON[msg.state] != null ? STATE_ICON[msg.state] : msg.state;
+    st.title = msg.state;
+    const argStr = (msg.args && typeof msg.args === 'object') ? JSON.stringify(msg.args, null, 2) : String(msg.args || '');
+    const parts = [];
+    if (argStr && argStr !== '{}') parts.push(argStr);
+    if (msg.detail) parts.push('— result —\n' + msg.detail);
+    const more = card.querySelector('.tool-more');
+    const body = parts.join('\n\n');
+    if (body.trim()) { more.querySelector('pre').textContent = body; more.classList.remove('hidden'); }
+    else more.classList.add('hidden');
+    scrollDown();
+  }
+
+  // ---------- settings panel ----------
+  let settingsOpen = false;
+  function toggleSettings() {
+    closeModelPop();
+    closeAc();
+    settingsOpen = !settingsOpen;
+    settingsEl.classList.toggle('active', settingsOpen);
+    thread.classList.toggle('hidden', settingsOpen);
+    composer.classList.toggle('hidden', settingsOpen);
+    if (settingsOpen) renderSettings();
+  }
+
+  let settingsTab = 'providers';
+  // Which provider cards are expanded — preserved across re-renders so toggling
+  // a model checkbox / setting a key (which pushes a fresh config) doesn't
+  // collapse the card the user is working in.
+  const expandedProviders = new Set();
+  let settingsContentEl = null;
+  let mcpResultsEl = null;
+  let mcpSearchId = 0;
+  let mcpSearchTimer;
+  function renderSettings() {
+    settingsEl.innerHTML = '';
+    const bar = document.createElement('div');
+    bar.className = 'settings-bar';
+    bar.innerHTML = '<b>Settings</b>';
+    const back = document.createElement('button');
+    back.className = 'secondary';
+    back.textContent = '← Back to chat';
+    back.addEventListener('click', toggleSettings);
+    bar.appendChild(back);
+    settingsEl.append(bar);
+
+    // Filter box for the current tab (providers/models or MCP servers).
+    const search = document.createElement('input');
+    search.type = 'text';
+    search.className = 'settings-search';
+    search.placeholder = settingsTab === 'mcp' ? 'Search MCP servers…' : 'Search providers & models…';
+    if (settingsTab === 'context') search.style.display = 'none';
+    search.addEventListener('input', () => {
+      const q = search.value.trim().toLowerCase();
+      settingsContentEl.querySelectorAll('.provider-card, .registry-row').forEach((el) => {
+        el.style.display = !q || el.textContent.toLowerCase().includes(q) ? '' : 'none';
+      });
+    });
+    settingsEl.append(search);
+
+    const layout = document.createElement('div');
+    layout.className = 'settings-layout';
+    const nav = document.createElement('div');
+    nav.className = 'settings-nav';
+    [['providers', 'Providers'], ['mcp', 'MCP'], ['context', 'Context']].forEach((pair) => {
+      const b = document.createElement('button');
+      b.className = 'nav-item' + (settingsTab === pair[0] ? ' active' : '');
+      b.textContent = pair[1];
+      b.addEventListener('click', () => { settingsTab = pair[0]; renderSettings(); });
+      nav.appendChild(b);
+    });
+    settingsContentEl = document.createElement('div');
+    settingsContentEl.className = 'settings-content';
+    layout.appendChild(nav);
+    layout.appendChild(settingsContentEl);
+    settingsEl.append(layout);
+
+    if (settingsTab === 'providers') renderProviders();
+    else if (settingsTab === 'mcp') renderMcpSection();
+    else renderIndexSection();
+  }
+
+  function renderProviders() {
+    const hint = document.createElement('div');
+    hint.className = 'muted';
+    hint.style.marginBottom = '8px';
+    hint.textContent = 'Click a provider to set its key, edit its endpoint, and enable models. Configured providers (green) are listed first.';
+    settingsContentEl.appendChild(hint);
+
+    const cat = {};
+    state.catalog.forEach((m) => { cat[m.platform + '::' + m.modelId] = m; });
+    const modelsByPlatform = {};
+    state.fallback.forEach((e) => { (modelsByPlatform[e.platform] = modelsByPlatform[e.platform] || []).push(e); });
+    const entries = state.fallback.slice();
+
+    // Configured (or keyless) providers first, then alphabetical.
+    const provs = state.platforms.slice().sort((a, b) =>
+      (Number(!!b.configured) - Number(!!a.configured)) || a.name.localeCompare(b.name));
+
+    provs.forEach((p) => {
+      const card = document.createElement('div');
+      card.className = 'provider-card';
+
+      const dotClass = !p.configured ? 'missing'
+        : p.status === 'invalid' ? 'invalid'
+        : p.status === 'rate_limited' ? 'rate_limited' : 'healthy';
+      const isOpen = expandedProviders.has(p.platform);
+      const head = document.createElement('div');
+      head.className = 'provider-head';
+      head.innerHTML = `
+        <span class="status-dot status-${dotClass}"></span>
+        <span class="provider-name">${escapeHtml(p.name)}</span>
+        <span class="muted prov-status">${p.keyless ? 'keyless' : (p.configured ? 'key set' : 'no key')}</span>
+        <span class="chev">${isOpen ? '▾' : '▸'}</span>`;
+
+      const body = document.createElement('div');
+      body.className = 'provider-body' + (isOpen ? '' : ' hidden');
+      head.addEventListener('click', () => {
+        const closed = body.classList.toggle('hidden');
+        head.querySelector('.chev').textContent = closed ? '▸' : '▾';
+        if (closed) expandedProviders.delete(p.platform);
+        else expandedProviders.add(p.platform);
+      });
+
+      // Key actions
+      const keyRow = document.createElement('div');
+      keyRow.className = 'row-actions';
+      if (!p.keyless) {
+        const setKey = document.createElement('button');
+        setKey.className = 'secondary';
+        setKey.textContent = p.configured ? 'Update key' : 'Set key';
+        setKey.addEventListener('click', () => vscode.postMessage({ type: 'setKey', platform: p.platform }));
+        keyRow.appendChild(setKey);
+      }
+      if (p.keyUrl) {
+        const get = document.createElement('button');
+        get.className = 'icon-btn';
+        get.textContent = 'Get key ↗';
+        get.addEventListener('click', () => { if (window.open) window.open(p.keyUrl); });
+        keyRow.appendChild(get);
+      }
+      body.appendChild(keyRow);
+
+      // Endpoint
+      const epInput = document.createElement('input');
+      epInput.type = 'text';
+      epInput.className = 'endpoint';
+      epInput.placeholder = p.defaultBaseUrl || '';
+      epInput.value = p.endpoint || '';
+      body.appendChild(epInput);
+      const epRow = document.createElement('div');
+      epRow.className = 'row-actions';
+      epRow.style.marginTop = '4px';
+      const saveEp = document.createElement('button');
+      saveEp.className = 'secondary';
+      saveEp.textContent = 'Save URL';
+      saveEp.addEventListener('click', () => {
+        const url = epInput.value.trim();
+        if (url && !/^https?:\/\/.+/i.test(url)) { card.classList.add('invalid'); return; }
+        card.classList.remove('invalid');
+        vscode.postMessage({ type: 'setEndpoint', platform: p.platform, url });
+      });
+      const resetEp = document.createElement('button');
+      resetEp.className = 'icon-btn';
+      resetEp.textContent = 'Reset';
+      resetEp.addEventListener('click', () => { epInput.value = ''; vscode.postMessage({ type: 'resetEndpoint', platform: p.platform }); });
+      epRow.appendChild(saveEp);
+      epRow.appendChild(resetEp);
+      body.appendChild(epRow);
+
+      // Models for this provider (enable toggles)
+      const models = modelsByPlatform[p.platform] || [];
+      if (models.length) {
+        const mt = document.createElement('div');
+        mt.className = 'muted prov-models-title';
+        mt.textContent = 'Models';
+        body.appendChild(mt);
+      }
+      models.forEach((e) => {
+        const idx = entries.findIndex((x) => x.platform === e.platform && x.modelId === e.modelId);
+        const m = cat[e.platform + '::' + e.modelId] || {};
+        const caps = [];
+        if (m.supportsTools) caps.push('T');
+        if (m.supportsVision) caps.push('V');
+        if (m.supportsReasoning) caps.push('R');
+        const row = document.createElement('div');
+        row.className = 'pm-row';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = !!e.enabled;
+        cb.addEventListener('change', () => { entries[idx].enabled = cb.checked; vscode.postMessage({ type: 'setFallbackConfig', entries }); });
+        const info = document.createElement('div');
+        info.className = 'pm-info';
+        info.innerHTML = `<div class="pm-name">${escapeHtml(m.displayName || e.modelId)}</div>
+          <div class="meta">ctx ${m.contextWindow ? (m.contextWindow / 1000) + 'k' : '?'} · ${escapeHtml(m.sizeLabel || '')} · ${escapeHtml(m.monthlyTokenBudget || '')}</div>`;
+        const capsEl = document.createElement('div');
+        capsEl.className = 'caps';
+        capsEl.innerHTML = caps.map((c) => `<span class="cap" title="${c === 'T' ? 'tools' : c === 'V' ? 'vision' : 'reasoning'}">${c}</span>`).join('');
+        row.appendChild(cb);
+        row.appendChild(info);
+        row.appendChild(capsEl);
+        body.appendChild(row);
+      });
+
+      card.appendChild(head);
+      card.appendChild(body);
+      settingsContentEl.appendChild(card);
+    });
+  }
+
+  function renderIndexSection() {
+    const idx = state.index || {};
+    const title = document.createElement('div');
+    title.className = 'section-title';
+    title.textContent = 'Codebase Index (semantic search)';
+    settingsContentEl.appendChild(title);
+    const hint = document.createElement('div');
+    hint.className = 'muted';
+    hint.textContent = 'Embeds your code so the agent can search by meaning and auto-inject relevant snippets each turn. Builds automatically once enabled with a provider key — progress shows above the chat box.';
+    settingsContentEl.appendChild(hint);
+
+    // Enable toggle
+    const enableRow = document.createElement('label');
+    enableRow.className = 'pm-row';
+    const enableCb = document.createElement('input');
+    enableCb.type = 'checkbox';
+    enableCb.checked = !!idx.enabled;
+    enableCb.addEventListener('change', () => vscode.postMessage({ type: 'setEmbeddingsEnabled', enabled: enableCb.checked }));
+    const enLbl = document.createElement('span');
+    enLbl.textContent = 'Enable codebase index';
+    enableRow.appendChild(enableCb);
+    enableRow.appendChild(enLbl);
+    settingsContentEl.appendChild(enableRow);
+
+    // Embedding provider + key
+    const provRow = document.createElement('div');
+    provRow.className = 'row-actions';
+    provRow.style.margin = '6px 0';
+    const provLabel = document.createElement('span');
+    provLabel.className = 'muted';
+    provLabel.textContent = 'Embeddings via';
+    const provSel = document.createElement('select');
+    provSel.className = 'pill';
+    ['google', 'cohere', 'mistral', 'openrouter', 'github', 'nvidia'].forEach((p) => {
+      const o = document.createElement('option');
+      o.value = p; o.textContent = p;
+      if (p === idx.provider) o.selected = true;
+      provSel.appendChild(o);
+    });
+    provSel.addEventListener('change', () => vscode.postMessage({ type: 'setEmbeddingsProvider', provider: provSel.value }));
+    const keyDot = document.createElement('span');
+    keyDot.className = 'status-dot status-' + (idx.providerConfigured ? 'healthy' : 'missing');
+    const keyBtn = document.createElement('button');
+    keyBtn.className = 'secondary';
+    keyBtn.textContent = idx.providerConfigured ? 'Key set' : 'Set key';
+    keyBtn.addEventListener('click', () => vscode.postMessage({ type: 'setKey', platform: idx.provider }));
+    provRow.appendChild(provLabel);
+    provRow.appendChild(provSel);
+    provRow.appendChild(keyDot);
+    provRow.appendChild(keyBtn);
+    settingsContentEl.appendChild(provRow);
+
+    const status = document.createElement('div');
+    status.className = 'muted';
+    status.style.margin = '4px 0';
+    status.textContent = idx.building ? 'Indexing…'
+      : idx.built ? `Indexed: ${idx.chunks} chunks · ${idx.files} files · ${escapeHtml(idx.model || '')}`
+      : 'Not built yet.';
+    settingsContentEl.appendChild(status);
+    if (idx.lastError) { const e = document.createElement('div'); e.className = 'error'; e.textContent = idx.lastError; settingsContentEl.appendChild(e); }
+    if (idx.enabled && !idx.providerConfigured) {
+      const warn = document.createElement('div');
+      warn.className = 'muted';
+      warn.textContent = `Set an API key for "${idx.provider}" to build the index.`;
+      settingsContentEl.appendChild(warn);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'row-actions';
+    const build = document.createElement('button');
+    build.className = 'secondary';
+    build.textContent = idx.built ? 'Rebuild index' : 'Build index';
+    build.disabled = !idx.enabled || !idx.providerConfigured || !!idx.building;
+    build.addEventListener('click', () => vscode.postMessage({ type: 'buildIndex' }));
+    const clear = document.createElement('button');
+    clear.className = 'icon-btn';
+    clear.textContent = 'Clear';
+    clear.addEventListener('click', () => vscode.postMessage({ type: 'clearIndex' }));
+    actions.appendChild(build);
+    actions.appendChild(clear);
+    settingsContentEl.appendChild(actions);
+  }
+
+  function renderMcpSection() {
+    const title = document.createElement('div');
+    title.className = 'section-title';
+    title.textContent = 'MCP Servers';
+    settingsContentEl.appendChild(title);
+    const hint = document.createElement('div');
+    hint.className = 'muted';
+    hint.textContent = 'Tools from configured MCP servers are available to the agent. Edit in settings.json (tiermux.mcpServers).';
+    settingsContentEl.appendChild(hint);
+
+    const actions = document.createElement('div');
+    actions.className = 'row-actions';
+    actions.style.margin = '6px 0';
+    const editBtn = document.createElement('button');
+    editBtn.className = 'secondary';
+    editBtn.textContent = 'Edit servers (settings.json)';
+    editBtn.addEventListener('click', () => vscode.postMessage({ type: 'editMcp' }));
+    const reBtn = document.createElement('button');
+    reBtn.className = 'icon-btn';
+    reBtn.textContent = '⟳ Reconnect';
+    reBtn.addEventListener('click', () => vscode.postMessage({ type: 'reconnectMcp' }));
+    actions.appendChild(editBtn);
+    actions.appendChild(reBtn);
+    settingsContentEl.appendChild(actions);
+
+    const servers = state.mcp || [];
+    if (!servers.length) {
+      const none = document.createElement('div');
+      none.className = 'muted';
+      none.textContent = 'No MCP servers configured yet — add one below.';
+      settingsContentEl.appendChild(none);
+    }
+    servers.forEach((s) => {
+      const card = document.createElement('div');
+      card.className = 'provider-card';
+      const dot = s.status === 'connected' ? 'healthy' : s.status === 'error' ? 'invalid' : 'missing';
+      const head = document.createElement('div');
+      head.className = 'provider-head';
+      head.innerHTML = `<span class="status-dot status-${dot}"></span><span class="provider-name">${escapeHtml(s.name)}</span><span class="muted prov-status">${s.status === 'connected' ? s.toolCount + ' tools' : escapeHtml(s.status)}</span><span class="chev">▸</span>`;
+      const body = document.createElement('div');
+      body.className = 'provider-body hidden';
+      head.addEventListener('click', () => { const closed = body.classList.toggle('hidden'); head.querySelector('.chev').textContent = closed ? '▸' : '▾'; });
+      if (s.error) { const er = document.createElement('div'); er.className = 'error'; er.textContent = s.error; body.appendChild(er); }
+      (s.tools || []).forEach((t) => {
+        const r = document.createElement('div');
+        r.className = 'pm-row';
+        r.innerHTML = `<span class="ac-icon">◈</span><div class="pm-info"><div class="pm-name">${escapeHtml(t)}</div></div>`;
+        body.appendChild(r);
+      });
+      card.appendChild(head);
+      card.appendChild(body);
+      settingsContentEl.appendChild(card);
+    });
+
+    // Marketplace: browse curated + search the remote registry.
+    const mt = document.createElement('div');
+    mt.className = 'section-title';
+    mt.textContent = 'Add a server';
+    settingsContentEl.appendChild(mt);
+
+    const rsearch = document.createElement('input');
+    rsearch.type = 'text';
+    rsearch.className = 'settings-search';
+    rsearch.placeholder = 'Search the MCP registry (remote)… — empty shows curated';
+    settingsContentEl.appendChild(rsearch);
+
+    mcpResultsEl = document.createElement('div');
+    settingsContentEl.appendChild(mcpResultsEl);
+    renderMcpItems(state.mcpRegistry || []);
+
+    rsearch.addEventListener('input', () => {
+      const q = rsearch.value.trim();
+      if (!q) { renderMcpItems(state.mcpRegistry || []); return; }
+      const id = ++mcpSearchId;
+      mcpResultsEl.innerHTML = '<div class="muted">Searching the registry…</div>';
+      clearTimeout(mcpSearchTimer);
+      mcpSearchTimer = setTimeout(() => vscode.postMessage({ type: 'searchMcpRegistry', queryId: id, query: q }), 350);
+    });
+  }
+
+  function renderMcpItems(items) {
+    if (!mcpResultsEl) return;
+    mcpResultsEl.innerHTML = '';
+    if (!items.length) { mcpResultsEl.innerHTML = '<div class="muted">No servers found.</div>'; return; }
+    const configured = new Set((state.mcp || []).map((s) => s.name));
+    items.forEach((item) => {
+      const row = document.createElement('div');
+      row.className = 'registry-row';
+      const info = document.createElement('div');
+      info.className = 'pm-info';
+      info.innerHTML = `<div class="pm-name">${escapeHtml(item.name)}</div><div class="meta">${escapeHtml(item.description || '')}</div>`;
+      const add = document.createElement('button');
+      const already = configured.has(item.id);
+      add.className = 'secondary';
+      add.textContent = already ? 'Added' : 'Add';
+      add.disabled = already;
+      add.addEventListener('click', () => vscode.postMessage({ type: 'addMcpServer', item }));
+      row.appendChild(info);
+      row.appendChild(add);
+      mcpResultsEl.appendChild(row);
+    });
+  }
+
+  // ---------- inbound messages ----------
+  window.addEventListener('message', (event) => {
+    const msg = event.data;
+    switch (msg.type) {
+      case 'config':
+        state = msg.config;
+        rebuildModelPicker();
+        updateFooter(msg.usageTotals);
+        renderIndexStatus(state.index && state.index.building ? { building: true, done: 0, total: 0, phase: 'embedding' } : { building: false });
+        if (settingsOpen) renderSettings();
+        break;
+      case 'userEcho':
+        addUserBubble(msg.text, msg.requestId);
+        break;
+      case 'restore':
+        if (settingsOpen) toggleSettings();
+        thread.innerHTML = '';
+        targets.clear();
+        userTargets.clear();
+        (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts) : renderAssistantStatic(mm.text, mm.model, mm.ts));
+        if (!(msg.messages || []).length) renderEmpty();
+        scrollDown();
+        break;
+      case 'setInput':
+        input.value = msg.text || '';
+        input.focus();
+        autoGrow();
+        break;
+      case 'toggleSettings':
+        toggleSettings();
+        break;
+      case 'assistantStart': {
+        const t = ensureTarget(msg.requestId, msg.platform, msg.model);
+        // The target may have been created earlier by a failover notice (which
+        // carries no model) — set it now so the footer shows the model that
+        // actually produced the answer, not a blank.
+        if (msg.model) t.model = `${msg.platform || ''}/${msg.model}`;
+        break;
+      }
+      case 'toolStatus': {
+        const t = ensureTarget(msg.requestId);
+        upsertTool(t, msg);
+        break;
+      }
+      case 'failoverNotice': {
+        const t = ensureTarget(msg.requestId);
+        // Collapse the cascade into one rolling line instead of a line per failure.
+        t.failoverCount = (t.failoverCount || 0) + 1;
+        if (!t.failoverEl) {
+          t.failoverEl = document.createElement('div');
+          t.failoverEl.className = 'notice';
+          t.tools.appendChild(t.failoverEl);
+        }
+        // Neutral, non-alarming wording — failover is normal routing, not an error.
+        t.failoverEl.textContent = '↻ Routing to the best available model…';
+        t.failoverEl.title = `Switched models ${t.failoverCount}× · last: ${msg.from} (${msg.reason})`;
+        scrollDown();
+        break;
+      }
+      case 'planProposed': {
+        const t = ensureTarget(msg.requestId);
+        t.body.innerHTML = '';
+        t.body.appendChild(renderMarkdown('**Proposed plan:**\n\n' + msg.steps));
+        const actions = document.createElement('div'); actions.className = 'plan-actions';
+        const approve = document.createElement('button'); approve.className = 'primary'; approve.textContent = 'Approve & Run';
+        const reject = document.createElement('button'); reject.className = 'secondary'; reject.textContent = 'Discard';
+        approve.addEventListener('click', () => { actions.remove(); vscode.postMessage({ type: 'approvePlan', requestId: newId(), approved: true, steps: msg.steps }); });
+        reject.addEventListener('click', () => { actions.remove(); vscode.postMessage({ type: 'approvePlan', requestId: newId(), approved: false, steps: msg.steps }); });
+        actions.appendChild(approve); actions.appendChild(reject);
+        t.body.appendChild(actions);
+        scrollDown();
+        break;
+      }
+      case 'assistantMessage': {
+        const t = ensureTarget(msg.requestId);
+        if (msg.reasoning) {
+          const det = document.createElement('details'); det.className = 'reasoning';
+          det.innerHTML = `<summary>💭 Reasoning</summary>`;
+          det.appendChild(renderMarkdown(msg.reasoning));
+          t.tools.insertBefore(det, t.tools.firstChild); // inside the "Worked for Ns" disclosure
+        }
+        // Finalize the work summary. Only keep it when the agent actually did steps
+        // (tools/reasoning); a plain reply shows just the answer — no "Worked for Ns".
+        if (t.work) {
+          if (t.tools.children.length === 0) {
+            t.work.remove();
+          } else {
+            const started = startTimes.get(msg.requestId);
+            const secs = started ? Math.max(1, Math.round((Date.now() - started) / 1000)) : null;
+            if (t.workLabel) t.workLabel.textContent = secs != null ? `Worked for ${secs}s` : 'Worked';
+            t.work.open = false;
+          }
+        }
+        t.el._copyText = msg.text;
+        typeInto(t.body, msg.text);
+        // The final message carries the model that actually answered — use it as
+        // the source of truth so the footer never blanks (e.g. when a forced model
+        // failed over before assistantStart could set t.model).
+        if (msg.model) t.model = `${msg.platform || ''}/${msg.model}`;
+        let usageStr = '';
+        if (msg.usage) usageStr = `  ·  ${msg.usage.promptTokens}+${msg.usage.completionTokens} tok`;
+        t.el.appendChild(assistantFooter(t.el, (t.model || '') + usageStr, Date.now(), msg.requestId));
+        scrollDown();
+        break;
+      }
+      case 'usageTotals':
+        updateFooter(msg.totals);
+        break;
+      case 'indexProgress':
+        renderIndexStatus(msg);
+        break;
+      case 'checkpoint':
+        renderCheckpoint(msg);
+        break;
+      case 'attachmentAdded':
+        pendingAttachments.push(msg.attachment);
+        renderChips();
+        break;
+      case 'mentionResults':
+        if (acMode === 'mention' && msg.queryId === acQueryId) {
+          (msg.items && msg.items.length) ? renderAc(msg.items) : closeAc();
+        }
+        break;
+      case 'mcpRegistryResults':
+        if (msg.queryId === mcpSearchId && mcpResultsEl) {
+          if (msg.error) mcpResultsEl.innerHTML = '<div class="error">Registry search failed: ' + escapeHtml(msg.error) + '</div>';
+          else renderMcpItems(msg.items || []);
+        }
+        break;
+      case 'notice': {
+        clearEmpty();
+        const d = document.createElement('div');
+        d.className = 'compact-divider';
+        d.textContent = msg.text;
+        thread.appendChild(d);
+        scrollDown();
+        break;
+      }
+      case 'error': {
+        const t = msg.requestId ? ensureTarget(msg.requestId) : null;
+        const el = document.createElement('div'); el.className = 'bubble error';
+        el.textContent = '⚠ ' + msg.message;
+        (t ? t.body : thread).appendChild(el);
+        scrollDown();
+        break;
+      }
+      case 'busy': {
+        busy = msg.busy;
+        const sb = $('#btn-send');
+        sb.innerHTML = busy ? ICON.stop : ICON.send;
+        sb.title = busy ? 'Stop' : 'Send (Enter)';
+        sb.classList.toggle('stopping', busy);
+        break;
+      }
+      case 'clear':
+        if (settingsOpen) toggleSettings();
+        thread.innerHTML = '';
+        targets.clear();
+        userTargets.clear();
+        renderEmpty();
+        break;
+    }
+  });
+
+  // Changed-files review under a command: lists what the agent edited since this
+  // message (click a file to diff). Restoring is done via the message's ⟲ revert icon.
+  const CP_STATUS = { created: 'A', modified: 'M', deleted: 'D' };
+  function renderCheckpoint(msg) {
+    const host = userTargets.get(msg.requestId) || (targets.get(msg.requestId) || {}).el;
+    if (!host) return;
+    let bar = host.querySelector(':scope > .checkpoint');
+    const files = msg.files || [];
+    if (!files.length) { if (bar) bar.remove(); return; } // nothing changed here anymore
+    if (!bar) { bar = document.createElement('div'); bar.className = 'checkpoint'; host.appendChild(bar); }
+    bar.innerHTML = '';
+    const head = document.createElement('details'); head.className = 'cp-d';
+    const sum = document.createElement('summary');
+    sum.textContent = `✎ ${files.length} file${files.length > 1 ? 's' : ''} changed`;
+    head.appendChild(sum);
+    const list = document.createElement('div'); list.className = 'cp-files';
+    files.forEach((f) => {
+      const row = document.createElement('div'); row.className = 'cp-file';
+      const badge = document.createElement('span'); badge.className = 'cp-badge cp-' + f.status;
+      badge.textContent = CP_STATUS[f.status] || '?'; badge.title = f.status;
+      const name = document.createElement('span'); name.className = 'cp-name'; name.textContent = f.rel;
+      row.appendChild(badge); row.appendChild(name);
+      row.title = 'Open diff (before this message ↔ current)';
+      row.addEventListener('click', () => vscode.postMessage({ type: 'diffCheckpointFile', id: msg.id, uri: f.uri }));
+      list.appendChild(row);
+    });
+    head.appendChild(list);
+    bar.appendChild(head);
+  }
+
+  // Transient codebase-index status: shown only while building, hidden when full.
+  function renderIndexStatus(p) {
+    const el = $('#index-status');
+    if (!el) return;
+    if (!p || !p.building) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+    const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+    const label = p.phase === 'scanning'
+      ? 'Scanning workspace…'
+      : `Indexing codebase… ${p.done}/${p.total} (${pct}%)`;
+    el.classList.remove('hidden');
+    el.innerHTML = '<span class="idx-spinner"></span><span class="idx-label"></span><span class="idx-bar"><span class="idx-fill"></span></span>';
+    el.querySelector('.idx-label').textContent = label;
+    el.querySelector('.idx-fill').style.width = pct + '%';
+  }
+
+  function updateFooter(totals) {
+    if (!totals) return;
+    const session = totals.requests
+      ? `Session: ${totals.requests} req · ${totals.totalTokens} tok`
+      : 'No tokens used yet.';
+    let ctx = '';
+    if (totals.context && totals.context.window) {
+      const t = totals.context.tokens, w = totals.context.window;
+      const pct = Math.min(100, Math.round((t / w) * 100));
+      const kw = w >= 1000 ? Math.round(w / 1000) + 'k' : w;
+      ctx = `  ·  ctx ~${t}/${kw} (${pct}%)`;
+    }
+    $('#footer').textContent = session + ctx;
+  }
+
+  renderEmpty();
+  vscode.postMessage({ type: 'ready' });
+})();

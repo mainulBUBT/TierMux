@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "note": "Curated MCP servers for one-click add. Package ids/commands drift; edit in settings.json after adding. Most need npx (Node); a few need uvx (Python).",
+  "servers": [
+    {
+      "id": "filesystem",
+      "name": "Filesystem",
+      "description": "Read/write files in allowed directories (defaults to this workspace).",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem"
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "description": "Search repos, read files, manage issues and PRs.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": [{ "key": "GITHUB_PERSONAL_ACCESS_TOKEN", "label": "GitHub personal access token", "password": true }],
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/github"
+    },
+    {
+      "id": "gitlab",
+      "name": "GitLab",
+      "description": "Browse projects, files, and merge requests.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-gitlab"],
+      "env": [{ "key": "GITLAB_PERSONAL_ACCESS_TOKEN", "label": "GitLab token", "password": true }],
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/gitlab"
+    },
+    {
+      "id": "brave-search",
+      "name": "Brave Search",
+      "description": "Web and local search via the Brave Search API.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+      "env": [{ "key": "BRAVE_API_KEY", "label": "Brave Search API key", "password": true }],
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search"
+    },
+    {
+      "id": "fetch",
+      "name": "Fetch (web)",
+      "description": "Fetch a URL and return its content as markdown.",
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch"
+    },
+    {
+      "id": "puppeteer",
+      "name": "Puppeteer (browser)",
+      "description": "Headless browser automation and screenshots.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-puppeteer"],
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/puppeteer"
+    },
+    {
+      "id": "memory",
+      "name": "Memory (knowledge graph)",
+      "description": "Persistent knowledge-graph memory across sessions.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory"
+    },
+    {
+      "id": "sequential-thinking",
+      "name": "Sequential Thinking",
+      "description": "Structured step-by-step reasoning tool.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking"
+    },
+    {
+      "id": "postgres",
+      "name": "PostgreSQL",
+      "description": "Read-only SQL access to a Postgres database. Edit the connection string in settings.json after adding.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/postgres"],
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/postgres"
+    },
+    {
+      "id": "sqlite",
+      "name": "SQLite",
+      "description": "Query a local SQLite database. Edit --db-path in settings.json after adding.",
+      "command": "uvx",
+      "args": ["mcp-server-sqlite", "--db-path", "./database.db"],
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/sqlite"
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "description": "Read and post Slack messages.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-slack"],
+      "env": [
+        { "key": "SLACK_BOT_TOKEN", "label": "Slack bot token (xoxb-…)", "password": true },
+        { "key": "SLACK_TEAM_ID", "label": "Slack team id" }
+      ],
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/slack"
+    },
+    {
+      "id": "google-maps",
+      "name": "Google Maps",
+      "description": "Geocoding, places, directions.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-google-maps"],
+      "env": [{ "key": "GOOGLE_MAPS_API_KEY", "label": "Google Maps API key", "password": true }],
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/google-maps"
+    }
+  ]
+}
