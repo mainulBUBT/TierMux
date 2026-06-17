@@ -88,9 +88,9 @@ runs, so a script syncs it:
 npm run rebrand
 ```
 
-The technical `freeLlmAgent.*` prefix (setting/command/view IDs) and the `name` field are
-**intentionally not** touched by `rebrand` — changing those would break users' saved settings and
-stored keys. Change them by hand only when you really mean to.
+`rebrand` only syncs **display** fields. The technical `tiermux.*` prefix (setting/command/view
+IDs), the `name` field, and `publisher` are **not** touched by it — renaming those breaks users'
+saved settings and stored keys, so change them by hand only when you really mean to.
 
 ## Packaging
 
@@ -103,7 +103,7 @@ Install the `.vsix` via **Extensions: Install from VSIX…** in the Command Pale
 
 ## Notes
 
-- **No backend / privacy:** TierMux talks to providers directly; keys are in SecretStorage; 👍/👎
-  stats are local. Don't add network calls that send user content anywhere without explicit,
-  off-by-default opt-in.
+- **Privacy:** TierMux talks to providers directly; keys are in SecretStorage; 👍/👎 stats are
+  local. Don't add network calls that send user content anywhere without explicit, off-by-default
+  opt-in.
 - **Deferred work & seams:** see [FUTURE_PLAN.md](FUTURE_PLAN.md).

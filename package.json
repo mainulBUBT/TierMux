@@ -1,9 +1,9 @@
 {
   "name": "tiermux",
   "displayName": "TierMux",
-  "description": "Agentic AI coding assistant powered by the free tiers of ~18 LLM providers, with automatic failover and smart per-task model routing. No backend — you just add your keys.",
+  "description": "Agentic AI coding assistant powered by the free tiers of 18+ LLM providers (and growing), with automatic failover and smart per-task model routing. Bring your own keys.",
   "version": "0.1.0",
-  "publisher": "freellmapi",
+  "publisher": "mainul-islam",
   "license": "MIT",
   "engines": {
     "vscode": "^1.90.0"
@@ -12,6 +12,20 @@
     "Machine Learning",
     "Programming Languages",
     "Other"
+  ],
+  "keywords": [
+    "ai",
+    "llm",
+    "agent",
+    "copilot",
+    "coding assistant",
+    "chat",
+    "free",
+    "openrouter",
+    "groq",
+    "gemini",
+    "mcp",
+    "autocomplete"
   ],
   "main": "./dist/extension.js",
   "activationEvents": [],

@@ -4,8 +4,9 @@ Deferred features, with the **seams already in the code** so each is a small, we
 Nothing here is built yet — this is the "keep in mind" list.
 
 Guiding principles (do not break):
-- **No backend by default** — the extension runs entirely in the VS Code extension host.
-- **Privacy-first** — nothing leaves the machine without explicit, off-by-default opt-in.
+- **Local-first** — the extension works standalone (no required server) and talks to providers
+  directly. A backend is on the roadmap (see §1); anything it adds must stay **optional**.
+- **Privacy-first** — user content/keys never leave the machine without explicit, off-by-default opt-in.
 - **Free-tier aware** — bound the number of network calls; never hammer a provider.
 
 ---
@@ -14,7 +15,7 @@ Guiding principles (do not break):
 
 **Goal:** aggregate the local 👍/👎 model feedback across users to learn, e.g., "which free model is best at debugging."
 
-**Status:** deferred — **needs a deliberate decision** because it introduces a backend (which the project currently avoids).
+**Status:** deferred — needs the planned backend (to receive/aggregate) plus opt-in consent.
 
 **Already in place (local):**
 - `src/config/modelStats.ts` `ModelStatsStore` records per-`taskKind::platform::modelId` up/down counts in `globalState`.

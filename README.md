@@ -1,11 +1,11 @@
 # TierMux
 
-**One agent. ~18 free LLM providers. Zero backend.**
+**One agent. 18+ free LLM providers, and growing. Smart per-task routing.**
 
-TierMux is an agentic AI coding assistant for VS Code that multiplexes the **free tiers of ~18 LLM
-providers** and routes each request to the best available model — automatically failing over when
-one is rate-limited or down. It runs **entirely inside the extension**: no server, no telemetry,
-no account. You add your own keys (some providers are keyless) and start coding.
+TierMux is an agentic AI coding assistant for VS Code that multiplexes the **free tiers of 18+ LLM
+providers** (with more added over time) and routes each request to the best available model —
+automatically failing over when one is rate-limited or down. You add your own keys (some providers
+are keyless) and start coding.
 
 > The name: **Tier** (free provider tiers) + **Mux** (a multiplexer that routes across them).
 
@@ -18,12 +18,13 @@ no account. You add your own keys (some providers are keyless) and start coding.
 
 - **Free first.** Stacks the free tiers of Gemini, Groq, Cerebras, OpenRouter, Mistral, NVIDIA,
   GitHub Models, Cohere, Cloudflare, Zhipu, Ollama, Kilo, Pollinations, LLM7, HuggingFace,
-  OpenCode Zen, OVH, Agnes — plus any custom OpenAI-compatible endpoint.
+  OpenCode Zen, OVH, Agnes — plus any custom OpenAI-compatible endpoint, with **more providers
+  and models added over time**.
 - **Smart routing.** It picks the right *kind* of model per task and remembers what worked, so a
   quick "hi" stays cheap and a refactor gets a capable tool model.
 - **Resilient.** Automatic failover with rate-limit cooldowns and tool-compatibility quarantine —
   one provider hiccup doesn't stop you.
-- **Private by design.** No backend; keys live in VS Code SecretStorage; nothing leaves your machine.
+- **Yours.** Keys live in VS Code SecretStorage; you choose which providers to enable.
 
 ---
 
@@ -66,28 +67,28 @@ no account. You add your own keys (some providers are keyless) and start coding.
 
 ## Configuration
 
-Settings live under **TierMux** in VS Code settings (IDs keep the `freeLlmAgent.*` prefix):
+Settings live under **TierMux** in VS Code settings (keys use the `tiermux.*` prefix):
 
 | Setting | Default | What it does |
 |---|---|---|
-| `freeLlmAgent.agent.maxIterations` | `25` | Max agent tool steps before pausing to check in. |
-| `freeLlmAgent.agent.requireWriteConfirmation` | `true` | Show a diff and confirm before file writes. |
-| `freeLlmAgent.agent.commandApproval` | `always` | `always` / `allowlist` / `never` for `runCommand`. |
-| `freeLlmAgent.agent.commandTimeoutMs` | `120000` | Max time a single command may run. |
-| `freeLlmAgent.requestTimeoutMs` | `60000` | Per-provider request timeout before failover. |
-| `freeLlmAgent.rateLimitCooldownMs` | `60000` | How long to skip a rate-limited provider. |
-| `freeLlmAgent.completions.enabled` | `false` | Ghost-text inline completions. |
+| `tiermux.agent.maxIterations` | `25` | Max agent tool steps before pausing to check in. |
+| `tiermux.agent.requireWriteConfirmation` | `true` | Show a diff and confirm before file writes. |
+| `tiermux.agent.commandApproval` | `always` | `always` / `allowlist` / `never` for `runCommand`. |
+| `tiermux.agent.commandTimeoutMs` | `120000` | Max time a single command may run. |
+| `tiermux.requestTimeoutMs` | `60000` | Per-provider request timeout before failover. |
+| `tiermux.rateLimitCooldownMs` | `60000` | How long to skip a rate-limited provider. |
+| `tiermux.completions.enabled` | `false` | Ghost-text inline completions. |
 
 Model enable/priority and per-provider endpoint overrides are managed in **⚙ Manage Models & Keys**.
 
 ---
 
-## Privacy
+## Your keys & data
 
-TierMux has **no backend**. It runs in the VS Code extension host and talks directly to each
-provider you configure. API keys are stored in VS Code SecretStorage. The 👍/👎 model-quality
-stats stay in local extension storage — nothing is sent anywhere. See [FUTURE_PLAN.md](FUTURE_PLAN.md)
-for how an *optional, opt-in* telemetry feature could work later without changing this default.
+TierMux talks directly to each provider you configure; your **API keys are stored in VS Code
+SecretStorage**. The 👍/👎 model-quality stats are kept in local extension storage. Any future
+data sharing (e.g. aggregate model-preference stats) will be **opt-in and off by default** — see
+[FUTURE_PLAN.md](FUTURE_PLAN.md).
 
 ---
 
