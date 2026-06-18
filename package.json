@@ -2,9 +2,10 @@
   "name": "tiermux",
   "displayName": "TierMux",
   "description": "Agentic AI coding assistant powered by the free tiers of 18+ LLM providers (and growing), with automatic failover and smart per-task model routing. Bring your own keys.",
-  "version": "0.1.0",
+  "version": "0.1.0-beta.2",
   "publisher": "mainul-islam",
   "license": "MIT",
+  "preview": true,
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -66,7 +67,8 @@
       { "command": "tiermux.reconnectMcp", "title": "Reconnect MCP Servers", "category": "TierMux" },
       { "command": "tiermux.buildIndex", "title": "Build Codebase Index", "category": "TierMux" },
       { "command": "tiermux.clearIndex", "title": "Clear Codebase Index", "category": "TierMux" },
-      { "command": "tiermux.generateCommitMessage", "title": "Generate Commit Message", "category": "TierMux", "icon": "$(sparkle)" },
+      { "command": "tiermux.refreshModels", "title": "Refresh Model Catalog", "category": "TierMux", "icon": "$(sync)" },
+      { "command": "tiermux.generateCommitMessage", "title": "Generate Commit Message", "category": "TierMux", "icon": { "light": "media/icon-commit-light.svg", "dark": "media/icon-commit-dark.svg" } },
       { "command": "tiermux.toggleCompletions", "title": "Toggle Inline Completions", "category": "TierMux" }
     ],
     "menus": {
@@ -145,10 +147,15 @@
           "default": true,
           "description": "Automatically include the active file (a slice around the cursor) and open tab names as context each turn."
         },
+        "tiermux.utilityModel": {
+          "type": "string",
+          "default": "auto",
+          "description": "Model used for short utility tasks (chat titles, commit messages). 'auto' prefers a strong keyless model so it works without an API key; or pick a specific model in Settings → Others."
+        },
         "tiermux.plan.saveToFile": {
           "type": "boolean",
-          "default": true,
-          "description": "Save plans proposed in Plan mode as markdown checklist files in the workspace."
+          "default": false,
+          "description": "Save plans proposed in Plan mode as markdown checklist files in the workspace. Off by default — the plan and its live task checklist are shown in chat."
         },
         "tiermux.plan.folder": {
           "type": "string",
@@ -210,6 +217,23 @@
           "type": "boolean",
           "default": true,
           "description": "When the index is built, automatically inject the top matching code chunks for your message into each turn (so the agent gets relevant context without calling codebaseSearch)."
+        },
+        "tiermux.embeddings.batchSize": {
+          "type": "number",
+          "default": 16,
+          "minimum": 1,
+          "description": "How many chunks to embed per request while indexing. Larger = fewer requests (helps with per-minute rate limits) but bigger payloads; lower it if the provider rejects large batches."
+        },
+        "tiermux.embeddings.requestDelayMs": {
+          "type": "number",
+          "default": 150,
+          "minimum": 0,
+          "description": "Pause between embedding requests while indexing. Raise this (e.g. 500–1000) if your embedding provider keeps rate-limiting the index build."
+        },
+        "tiermux.catalog.url": {
+          "type": "string",
+          "default": "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ0gOSMeX5RCp4zJIZxZRSr74Ro8jYFFlsPqMSm3Uw4hLa4-telxqDwvxxdO6JaXAWL3UM9BaQCTUF5/pub?output=csv",
+          "description": "URL to a published CSV (e.g. Google Sheets → File → Share → Publish to web → CSV) that supplies the model catalog. Fetched in the background on startup; the last fetch is cached and used offline, falling back to the built-in catalog. Leave blank to use only the built-in catalog."
         },
         "tiermux.mcpRegistryUrl": {
           "type": "string",

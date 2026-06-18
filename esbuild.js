@@ -54,6 +54,16 @@ function copyVendor() {
   }
 }
 
+// Emits begin/end markers so VS Code's background problemMatcher (in tasks.json)
+// knows when a watch rebuild starts/finishes — this is what lets F5 launch the dev host.
+const watchLogPlugin = {
+  name: 'watch-log',
+  setup(build) {
+    build.onStart(() => console.log('[watch] build started'));
+    build.onEnd((result) => console.log(`[watch] build finished with ${result.errors.length} error(s)`));
+  },
+};
+
 async function main() {
   copyVendor();
 
@@ -68,6 +78,7 @@ async function main() {
     sourcemap: !production,
     minify: production,
     logLevel: 'info',
+    plugins: watch ? [watchLogPlugin] : [],
   });
 
   if (watch) {

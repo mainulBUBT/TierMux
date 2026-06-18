@@ -1,5 +1,5 @@
 // Wire protocol between the extension host and the chat webview.
-import type { CatalogModel, FallbackEntry, KeyStatus, Platform, ReasoningEffort } from './shared/types';
+import type { CatalogModel, FallbackEntry, KeyStatus, Platform, ReasoningEffort, TodoItem } from './shared/types';
 import type { ClarifyingQuestion } from './agent/clarify';
 
 export interface Attachment {
@@ -81,6 +81,10 @@ export interface ConfigPayload {
   mcp: McpServerInfo[];
   mcpRegistry: McpRegistryItem[];
   index: IndexInfo;
+  /** `platform::modelId` keys a provider has 404'd this session — flagged as deprecated in the picker. */
+  deprecated: string[];
+  /** Selected model for utility tasks (titles, commit messages); 'auto' = keyless-preferred. */
+  utilityModel: string;
 }
 
 export interface MentionItem {
@@ -99,6 +103,8 @@ export type InMessage =
   | { type: 'renameSession'; title: string }
   | { type: 'vote'; requestId: string; vote: 'up' | 'down' | 'none' }
   | { type: 'cancel'; requestId: string }
+  | { type: 'commandApprovalResponse'; id: string; approved: boolean }
+  | { type: 'editApprovalResponse'; id: string; approved: boolean }
   | { type: 'requestConfig' }
   | { type: 'setFallbackConfig'; entries: FallbackEntry[] }
   | { type: 'setEndpoint'; platform: Platform; url: string }
@@ -120,6 +126,7 @@ export type InMessage =
   | { type: 'copyText'; text: string }
   | { type: 'setEmbeddingsEnabled'; enabled: boolean }
   | { type: 'setEmbeddingsProvider'; provider: string }
+  | { type: 'setUtilityModel'; model: string }
   | { type: 'newChat' };
 
 export interface TranscriptMessage {
@@ -140,6 +147,8 @@ export type OutMessage =
   | { type: 'userEcho'; requestId: string; text: string }
   | { type: 'assistantStart'; requestId: string; platform: string; model: string }
   | { type: 'planProposed'; requestId: string; steps: string }
+  | { type: 'commandApproval'; requestId: string; id: string; command: string; cwd?: string }
+  | { type: 'editApproval'; requestId: string; id: string; path: string; title: string; kind: 'write' | 'delete' }
   | { type: 'clarifyingQuestions'; requestId: string; questions: ClarifyingQuestion[] }
   | { type: 'sessionTitle'; title: string }
   | { type: 'assistantMessage'; requestId: string; text: string; reasoning?: string; usage?: UsagePayload; platform?: string; model?: string }
@@ -147,7 +156,9 @@ export type OutMessage =
   | { type: 'indexProgress'; building: boolean; done: number; total: number; phase: 'scanning' | 'embedding' | 'done' | 'error' }
   | { type: 'checkpoint'; requestId: string; id: string; files: CheckpointFile[] }
   | { type: 'toolStatus'; requestId: string; toolCallId: string; name: string; args: unknown; state: 'running' | 'done' | 'error'; detail?: string }
+  | { type: 'changedFiles'; id: string; files: CheckpointFile[] }
   | { type: 'agentStep'; requestId: string; phase: 'thinking' | 'synthesizing' | 'done'; label: string }
+  | { type: 'todos'; requestId: string; todos: TodoItem[] }
   | { type: 'failoverNotice'; requestId: string; from: string; reason: string }
   | { type: 'attachmentAdded'; attachment: Attachment }
   | { type: 'mentionResults'; queryId: number; items: MentionItem[] }

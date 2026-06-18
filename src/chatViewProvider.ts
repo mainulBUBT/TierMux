@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
-import type { ChatContent, ChatMessage, Platform } from './shared/types';
+import type { ChatContent, ChatMessage, Platform, TodoItem } from './shared/types';
 import type { SecretStore } from './config/secrets';
 import type { SettingsStore } from './config/settingsStore';
 import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
-import { Agent, type Mode } from './agent/agent';
+import { Agent, splitReasoning, type Mode } from './agent/agent';
+import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
 import type { Router } from './router/router';
 import type { McpManager } from './mcp/mcpManager';
@@ -70,6 +71,42 @@ function timeAgo(ts: number): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/**
+ * Reduce a model's reply to a clean short title, or '' if it doesn't look like one.
+ * Reasoning models often leak chain-of-thought (sometimes truncated mid-thought with
+ * no <think> tags) — reject anything that reads like an explanation rather than a title.
+ */
+function sanitizeTitle(raw: string): string {
+  let s = (splitReasoning(raw || '').content || '')
+    .split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '';
+  s = s.replace(/^["'`]+|["'`.]+$/g, '').trim();
+  if (!s) return '';
+  const words = s.split(/\s+/).filter(Boolean);
+  // Tell-tale signs the model explained instead of titling (or got cut off mid-reasoning).
+  const cot = /\b(the user|user'?s message|this is|let me|we need|i'?ll|i will|i should|first,?|okay,?|because|according|greeting|not a|the message|so the title|title for)\b/i;
+  if (words.length > 8 || s.length > 64 || cot.test(s)) return '';
+  return s;
+}
+
+/** A plain readable title from a message when the LLM title is unusable (first ~6 words). */
+function deriveTitleFrom(text: string): string {
+  const s = (text || '').trim().replace(/\s+/g, ' ').replace(/[?.!,;:]+$/, '');
+  if (!s) return 'New chat';
+  const words = s.split(' ').slice(0, 6).join(' ').slice(0, 60);
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** Turn an approved plan's text into an initial all-pending todo list (list lines only). */
+function planStepsToTodos(steps: string): TodoItem[] {
+  return (steps || '')
+    .split('\n')
+    .map((line) => line.match(/^\s*(?:[-*]|\d+[.)])\s+(.*)$/)) // numbered or bulleted list items
+    .filter((mm): mm is RegExpMatchArray => !!mm)
+    .map((mm) => ({ content: mm[1].replace(/\*\*/g, '').trim(), status: 'pending' as const }))
+    .filter((t) => t.content.length > 0)
+    .slice(0, 20);
+}
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'tiermux.chat';
   private view?: vscode.WebviewView;
@@ -83,6 +120,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private mcpRegistry?: McpRegistryItem[];
   /** Per-reply context for attributing 👍/👎 feedback to (taskKind, model). */
   private voteCtx = new Map<string, { taskKind: string; platform: string; model: string; last: Vote }>();
+  /** The request currently being processed — used to attach in-chat command approvals to the right turn. */
+  private activeRequestId?: string;
+  private approvalSeq = 0;
+  /** Pending command/edit approvals awaiting a click in the webview, keyed by approval id. */
+  private pendingApprovals = new Map<string, (approved: boolean) => void>();
 
   constructor(private readonly extensionUri: vscode.Uri, private readonly deps: ChatDeps) {
     const sessions = this.loadSessions();
@@ -153,29 +195,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Best-effort: ask a free LLM for a short title from the user's first message. */
   private async maybeGenerateTitle(): Promise<void> {
     if (this.titleGenerated) return;
-    const firstUser = this.transcript.find((t) => t.role === 'user');
-    if (!firstUser) return;
+    const users = this.transcript.filter((t) => t.role === 'user');
+    if (!users.length) return;
+    // Title from the first ACTUAL request. A greeting only gets a provisional title and
+    // we retry on later turns — so "Hi" followed by a real question updates the title
+    // instead of staying stuck on "Starting Conversation".
+    const firstReal = users.find((u) => classifyTask(u.text ?? '') !== 'trivial');
+    if (!firstReal) {
+      if (this.sessionTitle !== 'Starting Conversation') {
+        this.sessionTitle = 'Starting Conversation'; this.persist(); this.updateViewTitle();
+      }
+      return; // leave titleGenerated false → re-evaluate when a real message arrives
+    }
     this.titleGenerated = true; // guard before the call to avoid duplicate runs
     try {
-      // Generate from the user's message alone, right when they send it (e.g. "hi" -> "Greetings").
-      const snippet = `User's message: ${(firstUser.text ?? '').slice(0, 800)}`;
+      const snippet = `User's message: ${(firstReal.text ?? '').slice(0, 800)}`;
+      // Prefer a strong free model so titles are good; fall back to Auto if none is keyed.
+      const model = await this.deps.router.pickUtilityModel();
       const result = await this.deps.router.route(
         [
           { role: 'system', content: TITLE_SYSTEM },
           { role: 'user', content: snippet },
         ],
-        { temperature: 0.3, max_tokens: 32 },
+        // Thinking off + a little headroom so the reply is the title itself, not a thought.
+        { temperature: 0.3, max_tokens: 48, model, taskKind: 'trivial', reasoningEffort: 'off' },
       );
-      const title = contentToString(result.response.choices[0]?.message.content)
-        .trim()
-        .replace(/^["'`]+|["'`.]+$/g, '') // strip surrounding quotes / trailing punctuation
-        .slice(0, 80);
-      if (title) {
-        this.sessionTitle = title;
-        this.persist();
-      }
+      // Reject leaked reasoning AND a misapplied greeting title — we only reach here for
+      // a real (non-trivial) message, so "Starting Conversation"/"New chat" from the model
+      // is wrong; derive a title from the message instead of leaving it stuck.
+      let title = sanitizeTitle(contentToString(result.response.choices[0]?.message.content));
+      if (/^(starting conversation|new chat|untitled|chat)$/i.test(title)) title = '';
+      this.sessionTitle = title || deriveTitleFrom(firstReal.text ?? '');
+      this.persist();
+      this.updateViewTitle();
     } catch {
-      // Title generation is best-effort; fall back to the derived title silently.
+      // LLM unavailable — still move off the provisional title using the real message.
+      this.sessionTitle = deriveTitleFrom(firstReal.text ?? '');
+      this.persist();
+      this.updateViewTitle();
     }
   }
 
@@ -204,6 +261,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private post(msg: OutMessage): void {
     if (!this.view || !this.ready) { this.outQueue.push(msg); return; }
     void this.view.webview.postMessage(msg);
+  }
+
+  /**
+   * Ask the user to approve a `runCommand` call inline in the chat view. Posts a
+   * Run/Skip card and resolves when they click (or false if the run is cancelled
+   * or there's no live view to ask). Wired into CommandGate from extension.ts.
+   */
+  requestCommandApproval(command: string, cwd?: string): Promise<boolean> {
+    if (!this.view) return Promise.resolve(false); // nowhere to ask → deny rather than hang
+    try { this.view.show?.(true); } catch { /* reveal is best-effort */ } // surface the card if the panel is hidden
+    const id = `cmd-${++this.approvalSeq}`;
+    return new Promise<boolean>((resolve) => {
+      this.pendingApprovals.set(id, resolve);
+      this.post({ type: 'commandApproval', requestId: this.activeRequestId ?? '', id, command, cwd });
+    });
+  }
+
+  /**
+   * Ask the user to approve a file edit/deletion inline in the chat view (the diff
+   * editor still opens for review). Mirrors requestCommandApproval. Wired into
+   * EditGate from extension.ts.
+   */
+  requestEditApproval(req: { path: string; title: string; kind: 'write' | 'delete' }): Promise<boolean | undefined> {
+    // No live view or no active chat turn (e.g. inline editor chat) → defer to the
+    // native modal; there's no thread turn to attach the card to.
+    if (!this.view || !this.activeRequestId) return Promise.resolve(undefined);
+    try { this.view.show?.(true); } catch { /* reveal is best-effort */ }
+    const id = `edit-${++this.approvalSeq}`;
+    return new Promise<boolean | undefined>((resolve) => {
+      this.pendingApprovals.set(id, resolve);
+      this.post({ type: 'editApproval', requestId: this.activeRequestId ?? '', id, path: req.path, title: req.title, kind: req.kind });
+    });
+  }
+
+  /** Resolve every outstanding approval (e.g. on cancel / new chat) so the agent never hangs. */
+  private settlePendingApprovals(approved: boolean): void {
+    for (const resolve of this.pendingApprovals.values()) resolve(approved);
+    this.pendingApprovals.clear();
   }
 
   private flushQueue(): void {
@@ -374,9 +469,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'cancel':
         this.cancel?.cancel();
+        this.settlePendingApprovals(false); // unblock any command waiting on approval
         this.pendingClarify = undefined;
         this.pendingPlanUser = undefined;
         break;
+      case 'commandApprovalResponse':
+      case 'editApprovalResponse': {
+        const resolve = this.pendingApprovals.get(m.id);
+        if (resolve) { this.pendingApprovals.delete(m.id); resolve(m.approved); }
+        break;
+      }
       case 'vote': {
         const ctx = this.voteCtx.get(m.requestId);
         if (ctx) {
@@ -453,6 +555,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'setEmbeddingsProvider':
         await vscode.workspace.getConfiguration('tiermux.embeddings').update('provider', m.provider, vscode.ConfigurationTarget.Global);
+        await this.sendConfig();
+        break;
+      case 'setUtilityModel':
+        await vscode.workspace.getConfiguration('tiermux').update('utilityModel', m.model, vscode.ConfigurationTarget.Global);
         await this.sendConfig();
         break;
       case 'newChat':
@@ -612,6 +718,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.cancel?.dispose();
     this.cancel = new vscode.CancellationTokenSource();
+    this.activeRequestId = m.requestId;
     this.post({ type: 'busy', busy: true });
     const before = this.deps.usage.get();
     let announced = false;
@@ -630,6 +737,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         },
         onTool: (e) => this.post({ type: 'toolStatus', requestId: m.requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail }),
         onStep: (phase, label) => this.post({ type: 'agentStep', requestId: m.requestId, phase, label }),
+        onTodos: (todos) => this.post({ type: 'todos', requestId: m.requestId, todos }),
       });
 
       if (m.mode === 'plan') {
@@ -666,6 +774,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Drop the user turn that produced no answer to keep history clean.
       if (this.history[this.history.length - 1]?.role === 'user') this.history.pop();
     } finally {
+      this.activeRequestId = undefined;
+      this.settlePendingApprovals(false); // safety net: never leave a command waiting after the run ends
       await this.finishCheckpoint(m.requestId);
       this.persist();
       this.post({ type: 'busy', busy: false });
@@ -690,6 +800,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const files = await this.deps.checkpoints.changedFiles(cp.id);
       this.post({ type: 'checkpoint', requestId: cp.requestId, id: cp.id, files });
     }
+    await this.postChangedFilesBar();
+  }
+
+  /**
+   * Feed the pinned "changed files" bar above the composer. The earliest checkpoint
+   * aggregates every edit made this session (cumulative semantics), so its file set is
+   * the full review list and its id is what "Undo all" restores. Empty set hides the bar.
+   */
+  private async postChangedFilesBar(): Promise<void> {
+    const cps = this.deps.checkpoints.list();
+    if (!cps.length) { this.post({ type: 'changedFiles', id: '', files: [] }); return; }
+    const id = cps[0].id;
+    const files = await this.deps.checkpoints.changedFiles(id);
+    this.post({ type: 'changedFiles', id, files });
   }
 
   /**
@@ -793,7 +917,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.cancel?.dispose();
     this.cancel = new vscode.CancellationTokenSource();
+    this.activeRequestId = m.requestId;
     this.post({ type: 'busy', busy: true });
+    // Seed the live checklist from the approved plan so the user sees it immediately;
+    // the agent then advances each item via updateTodos as it executes.
+    const seeded = planStepsToTodos(m.steps);
+    if (seeded.length) this.post({ type: 'todos', requestId: m.requestId, todos: seeded });
     const before = this.deps.usage.get();
     let announced = false;
     this.deps.checkpoints.begin(m.requestId, 'Plan execution');
@@ -806,6 +935,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         onModel: (platform, model) => { if (!announced) { announced = true; this.post({ type: 'assistantStart', requestId: m.requestId, platform, model }); } },
         onTool: (e) => this.post({ type: 'toolStatus', requestId: m.requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail }),
         onStep: (phase, label) => this.post({ type: 'agentStep', requestId: m.requestId, phase, label }),
+        onTodos: (todos) => this.post({ type: 'todos', requestId: m.requestId, todos }),
       });
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
@@ -821,6 +951,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } catch (e) {
       this.post({ type: 'error', requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
     } finally {
+      this.activeRequestId = undefined;
+      this.settlePendingApprovals(false); // safety net: never leave a command waiting after the run ends
       await this.finishCheckpoint(m.requestId);
       this.persist();
       this.post({ type: 'busy', busy: false });
@@ -855,6 +987,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }, {
         onModel: (platform, model) => { if (!announced) { announced = true; this.post({ type: 'assistantStart', requestId: m.requestId, platform, model }); } },
         onStep: (phase, label) => this.post({ type: 'agentStep', requestId: m.requestId, phase, label }),
+        onTodos: (todos) => this.post({ type: 'todos', requestId: m.requestId, todos }),
       });
       // Ignore any further questions block on this pass — go straight to a proposed plan.
       const clar = parseClarifying(result.text);
@@ -908,6 +1041,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       mcp: this.deps.mcp.servers(),
       mcpRegistry: await this.registry(),
       index: { enabled: this.deps.index.isEnabled(), built: s.built, files: s.files, chunks: s.chunks, model: s.model, building: s.building, lastError: s.lastError, provider: embProvider, providerConfigured: embConfigured },
+      deprecated: this.deps.secrets.deprecatedKeys(),
+      utilityModel: vscode.workspace.getConfiguration('tiermux').get<string>('utilityModel', 'auto'),
     };
     this.post({ type: 'config', config, usageTotals: { ...this.deps.usage.get(), context: this.computeContext() } });
   }

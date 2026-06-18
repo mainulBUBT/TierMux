@@ -20,6 +20,31 @@ export const TOOL_SPECS: ChatToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'updateTodos',
+      description: 'Maintain a visible task checklist for multi-step work. Call it with the FULL list each time: set a task to "in_progress" before you start it and "completed" when done, keeping exactly one task in_progress. Skip it for trivial one-step tasks. This only updates the UI checklist — it changes no files.',
+      parameters: {
+        type: 'object',
+        properties: {
+          todos: {
+            type: 'array',
+            description: 'The complete ordered task list.',
+            items: {
+              type: 'object',
+              properties: {
+                content: { type: 'string', description: 'Short imperative task description.' },
+                status: { type: 'string', enum: ['pending', 'in_progress', 'completed'], description: 'Current status.' },
+              },
+              required: ['content', 'status'],
+            },
+          },
+        },
+        required: ['todos'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'readFile',
       description: 'Read a UTF-8 text file from the workspace. Returns its contents (truncated if very large).',
       parameters: {

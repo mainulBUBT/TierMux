@@ -5,7 +5,7 @@
 import type { CatalogModel, FallbackEntry } from '../shared/types';
 import type { Catalog } from '../catalog/catalog';
 
-export type TaskKind = 'trivial' | 'chat' | 'agent' | 'debug' | 'longContext';
+export type TaskKind = 'trivial' | 'chat' | 'agent' | 'debug' | 'longContext' | 'plan';
 
 // Greeting / acknowledgement that is the WHOLE message (anchored) — safe to treat as trivial.
 const GREETING = /^(hi+|hey+|hello+|yo|sup|howdy|gm|gn|good (morning|afternoon|evening|night)|thanks?|thank you|thx|ty|ok(ay)?|k|cool|nice|great|awesome|bye|goodbye|cheers|np|no problem|got it|sounds good)\b[\s!.?]*$/i;
@@ -46,7 +46,7 @@ export function modeToKind(mode: string): TaskKind {
     case 'agent': return 'agent';
     case 'debug': return 'debug';
     case 'orchestrator': return 'agent';
-    case 'plan': return 'chat';
+    case 'plan': return 'plan';
     default: return 'chat';
   }
 }
@@ -72,13 +72,18 @@ export function orderForTask(
   const ctx = (a: CatalogModel, b: CatalogModel): number => (b.contextWindow ?? 0) - (a.contextWindow ?? 0);
   const tools = (a: CatalogModel, b: CatalogModel): number => Number(b.supportsTools) - Number(a.supportsTools);
   const reason = (a: CatalogModel, b: CatalogModel): number => Number(b.supportsReasoning) - Number(a.supportsReasoning);
+  // Newer first. Only ever a tiebreaker — so when two models rate equally on what
+  // the task needs, the more recent one wins instead of the older equal always
+  // taking the slot. Missing `released` sorts as oldest.
+  const recency = (a: CatalogModel, b: CatalogModel): number => (b.released ?? '').localeCompare(a.released ?? '');
 
   const cmp: Record<TaskKind, (a: CatalogModel, b: CatalogModel) => number> = {
-    trivial: (a, b) => speed(a, b) || intel(a, b),                 // cheapest/fastest; smarts irrelevant
-    chat: (a, b) => speed(a, b) || intel(a, b),                    // snappy but capable
-    agent: (a, b) => tools(a, b) || intel(a, b) || speed(a, b),    // must do tools well, then smart
-    debug: (a, b) => reason(a, b) || tools(a, b) || intel(a, b),   // reasoning + tools + smart
-    longContext: (a, b) => ctx(a, b) || intel(a, b),               // biggest window first
+    trivial: (a, b) => speed(a, b) || recency(a, b) || intel(a, b),                 // cheapest/fastest; smarts irrelevant
+    chat: (a, b) => speed(a, b) || recency(a, b) || intel(a, b),                    // snappy but capable, newest among equals
+    agent: (a, b) => tools(a, b) || intel(a, b) || recency(a, b) || speed(a, b),    // tools, then smart, then newest
+    debug: (a, b) => reason(a, b) || tools(a, b) || intel(a, b) || recency(a, b),   // reasoning + tools + smart + newest
+    plan: (a, b) => intel(a, b) || reason(a, b) || tools(a, b) || recency(a, b),    // smartest reasoner; it reads code, speed irrelevant
+    longContext: (a, b) => ctx(a, b) || intel(a, b) || recency(a, b),               // biggest window, then newest
   };
 
   const sc = score ?? ((): number => 0);

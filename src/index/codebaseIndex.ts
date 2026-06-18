@@ -115,20 +115,41 @@ export class CodebaseIndex {
               }
             } catch { /* skip */ }
           }
+          const embCfg = vscode.workspace.getConfiguration('tiermux.embeddings');
+          const batchSize = Math.max(1, embCfg.get<number>('batchSize', BATCH));
+          const baseDelay = Math.max(0, embCfg.get<number>('requestDelayMs', 150));
           const built: Chunk[] = [];
-          for (let i = 0; i < pending.length; i += BATCH) {
+          let rateLimitReason: string | undefined;
+          for (let i = 0; i < pending.length; i += batchSize) {
             if (token.isCancellationRequested) break;
-            const batch = pending.slice(i, i + BATCH);
-            const vecs = await embedder.embed(batch.map((b) => b.text));
+            const batch = pending.slice(i, i + batchSize);
+            let vecs: number[][];
+            try {
+              vecs = await embedder.embed(batch.map((b) => b.text));
+            } catch (e) {
+              // embed() already retried with backoff — reaching here means the limit
+              // is sticky (e.g. a daily quota). Keep what we embedded rather than
+              // throwing away the whole run; the user can resume later.
+              rateLimitReason = e instanceof Error ? e.message : String(e);
+              break;
+            }
             batch.forEach((b, j) => built.push({ ...b, vector: vecs[j] ?? [] }));
-            const done = Math.min(i + BATCH, pending.length);
-            progress.report({ message: `${done}/${pending.length} chunks`, increment: (BATCH / Math.max(1, pending.length)) * 100 });
+            const done = Math.min(i + batchSize, pending.length);
+            progress.report({ message: `${done}/${pending.length} chunks`, increment: (batchSize / Math.max(1, pending.length)) * 100 });
             this.emit({ building: true, done, total: pending.length, phase: 'embedding' });
-            await delay(150); // gentle on free-tier rate limits
+            await delay(baseDelay); // gentle on free-tier rate limits
           }
+          // A sticky limit with nothing embedded is a real failure; with partial
+          // results, save them and let search use the partial index.
+          if (rateLimitReason && built.length === 0) throw new Error(rateLimitReason);
           this.chunks = built;
           this.model = `${cfg.platform}/${cfg.model}`;
           await this.save();
+          if (rateLimitReason) {
+            void vscode.window.showWarningMessage(
+              `Indexed ${built.length}/${pending.length} chunks before the embedding provider rate-limited. Search uses this partial index — run “Build Index” again later to finish, or raise tiermux.embeddings.requestDelayMs.`,
+            );
+          }
         },
       );
     } catch (e) {

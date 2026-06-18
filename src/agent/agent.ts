@@ -1,6 +1,6 @@
 // Agent loop: drives Chat / Plan / Agent modes over the router + tools.
 import * as vscode from 'vscode';
-import type { ChatMessage, ReasoningEffort } from '../shared/types';
+import type { ChatMessage, ReasoningEffort, TodoItem } from '../shared/types';
 import type { Router } from '../router/router';
 import type { WorkspaceTools, ToolEvent } from './tools';
 import type { McpManager } from '../mcp/mcpManager';
@@ -20,11 +20,23 @@ export type Mode = 'auto' | 'chat' | 'plan' | 'agent' | 'debug' | 'orchestrator'
 /** Max subtasks an Orchestrator run will decompose into (bounds free-tier cost). */
 const MAX_SUBTASKS = 6;
 
+/**
+ * Tools Plan mode is allowed to use — strictly read-only, so it can research the
+ * codebase without ever mutating it. Filtering the full tool list by this set also
+ * drops mutating built-ins (write/create/edit/delete/runCommand) and all MCP tools,
+ * whose side-effects are unknown.
+ */
+const READONLY_TOOLS = new Set([
+  'readFile', 'listDir', 'repoMap', 'searchWorkspace', 'getDiagnostics', 'codebaseSearch',
+]);
+
 export interface AgentCallbacks {
   onModel?: (platform: string, model: string) => void;
   onTool?: (event: ToolEvent) => void;
   /** Coarse phase signal for the live "agent is working" status line. */
   onStep?: (phase: 'thinking' | 'synthesizing' | 'done', label: string) => void;
+  /** Live task checklist updates (the agent's updateTodos calls). */
+  onTodos?: (todos: TodoItem[]) => void;
 }
 
 /** Per-run options threaded from the chat provider down to the router. */
@@ -65,6 +77,20 @@ export class Agent {
 
   private maxIterations(): number {
     return vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxIterations', 25);
+  }
+
+  /** Handle an `updateTodos` tool call: push the list to the UI, return a short ack. */
+  private applyTodos(args: unknown, cb: AgentCallbacks): string {
+    const raw = (args as { todos?: unknown })?.todos;
+    const valid = new Set(['pending', 'in_progress', 'completed']);
+    const todos: TodoItem[] = Array.isArray(raw)
+      ? raw
+          .map((t) => ({ content: String((t as TodoItem)?.content ?? '').trim(), status: (t as TodoItem)?.status }))
+          .filter((t): t is TodoItem => !!t.content && valid.has(t.status as string))
+      : [];
+    if (todos.length) cb.onTodos?.(todos);
+    const done = todos.filter((t) => t.status === 'completed').length;
+    return JSON.stringify({ ok: true, total: todos.length, completed: done });
   }
 
   /** Project grounding for the system prompt, memoized per workspace root. */
@@ -114,7 +140,7 @@ export class Agent {
     const augmented = await this.prepareContext(history);
     let result: AgentResult;
     if (resolved === 'chat') result = await this.runSingle(augmented, augment(CHAT_SYSTEM), ropts, cb);
-    else if (resolved === 'plan') result = await this.runSingle(augmented, augment(PLAN_SYSTEM), ropts, cb);
+    else if (resolved === 'plan') result = await this.runAgent(augmented, augment(PLAN_SYSTEM), ropts, cb, { readOnly: true });
     else if (resolved === 'debug') result = await this.runAgent(augmented, augment(DEBUG_SYSTEM), ropts, cb);
     else if (resolved === 'orchestrator') result = await this.runOrchestrator(augmented, augment(AGENT_SYSTEM), augment(ORCHESTRATOR_SYSTEM), ropts, cb);
     else result = await this.runAgent(augmented, augment(AGENT_SYSTEM), ropts, cb);
@@ -193,24 +219,29 @@ export class Agent {
     return { text: content, reasoning, platform: result.platform, model: result.model };
   }
 
-  /** Tool-calling loop for Agent mode (and Plan execution). */
+  /**
+   * Tool-calling loop for Agent/Debug modes — and, in read-only form, Plan mode's
+   * research pass. With `readOnly`, only the look-don't-touch tools are offered, so
+   * Plan can investigate the real code before proposing a plan but can never mutate it.
+   */
   private async runAgent(
     history: ChatMessage[],
     system: string,
     opts: RunOpts,
     cb: AgentCallbacks,
+    runOpts?: { readOnly?: boolean },
   ): Promise<AgentResult> {
     const messages: ChatMessage[] = [{ role: 'system', content: system }, ...history];
     let lastPlatform: string | undefined;
     let lastModel: string | undefined;
 
-    if (this.mcp) { try { await this.mcp.ensureStarted(); } catch { /* MCP optional */ } }
+    if (this.mcp && !runOpts?.readOnly) { try { await this.mcp.ensureStarted(); } catch { /* MCP optional */ } }
     const indexOn = !!this.index && this.index.isEnabled() && this.index.hasIndex();
     const tools = [
       ...TOOL_SPECS,
       ...(indexOn ? [CODEBASE_SEARCH_SPEC] : []),
-      ...(this.mcp?.listToolSpecs() ?? []),
-    ];
+      ...(runOpts?.readOnly ? [] : this.mcp?.listToolSpecs() ?? []),
+    ].filter((t) => !runOpts?.readOnly || READONLY_TOOLS.has(t.function.name));
 
     for (let i = 0; i < this.maxIterations(); i++) {
       if (opts.token?.isCancellationRequested) return { text: '_Cancelled._', platform: lastPlatform, model: lastModel };
@@ -249,11 +280,13 @@ export class Agent {
         let args: unknown;
         try { args = JSON.parse(call.function.arguments); } catch { args = call.function.arguments; }
         cb.onTool?.({ toolCallId: call.id, name: call.function.name, args, state: 'running' });
-        const observation = call.function.name === 'codebaseSearch' && this.index
-          ? JSON.stringify({ results: await this.index.search(String((args as { query?: unknown })?.query ?? '')) })
-          : this.mcp?.isMcpTool(call.function.name)
-            ? await this.mcp.callTool(call.function.name, call.function.arguments)
-            : await this.tools.execute(call.function.name, call.function.arguments);
+        const observation = call.function.name === 'updateTodos'
+          ? this.applyTodos(args, cb)
+          : call.function.name === 'codebaseSearch' && this.index
+            ? JSON.stringify({ results: await this.index.search(String((args as { query?: unknown })?.query ?? '')) })
+            : this.mcp?.isMcpTool(call.function.name)
+              ? await this.mcp.callTool(call.function.name, call.function.arguments)
+              : await this.tools.execute(call.function.name, call.function.arguments);
         const isError = observation.includes('"error"');
         cb.onTool?.({ toolCallId: call.id, name: call.function.name, args, state: isError ? 'error' : 'done', detail: observation.slice(0, 300) });
         messages.push({ role: 'tool', tool_call_id: call.id, name: call.function.name, content: observation });

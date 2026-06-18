@@ -176,8 +176,56 @@ details.reasoning summary { cursor: pointer; opacity: .8; }
 
 .error { color: var(--vscode-errorForeground); }
 
+/* Transient toasts for quick actions (copy / like / unlike) — anchored at the click */
+.toast {
+  position: fixed; z-index: 60; pointer-events: none; white-space: nowrap;
+  font-size: 12px; padding: 4px 10px; border-radius: 12px;
+  background: var(--vscode-notifications-background, var(--vscode-editorWidget-background));
+  color: var(--vscode-notifications-foreground, var(--vscode-foreground));
+  border: 1px solid var(--vscode-notifications-border, var(--vscode-panel-border));
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .35);
+  opacity: 0; transition: opacity .15s ease;
+}
+.toast.show { opacity: 1; }
+
 /* Plan approval */
 .plan-actions { display: flex; gap: 8px; margin-top: 6px; }
+
+/* Live task checklist (TodoWrite-style) */
+.todo-list {
+  margin: 6px 0; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.12));
+}
+.todo-head { font-size: 11px; font-weight: 600; opacity: .75; margin-bottom: 6px; }
+.todo-item { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; padding: 2px 0; line-height: 1.5; }
+.todo-item .todo-ic { flex: 0 0 auto; width: 14px; text-align: center; opacity: .8; }
+.todo-item .todo-tx { flex: 1 1 auto; }
+.todo-item.pending .todo-tx { opacity: .75; }
+.todo-item.in_progress .todo-tx { font-weight: 600; }
+.todo-item.completed .todo-ic { color: var(--vscode-testing-iconPassed, #2e7d32); opacity: 1; }
+.todo-item.completed .todo-tx { opacity: .55; text-decoration: line-through; }
+.todo-spin {
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  border: 2px solid var(--vscode-panel-border); border-top-color: var(--vscode-progressBar-background, #0a84ff);
+  animation: idx-spin .8s linear infinite; vertical-align: middle;
+}
+
+/* Inline runCommand approval card (shown in chat instead of a native modal) */
+.cmd-approval {
+  margin: 6px 0; padding: 8px 10px;
+  border: 1px solid var(--vscode-panel-border); border-radius: 8px;
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.12));
+}
+.cmd-approval-head { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+.cmd-approval-cmd {
+  margin: 0; padding: 6px 8px; border-radius: 6px; overflow-x: auto;
+  background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.18));
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; white-space: pre-wrap; word-break: break-all;
+}
+.cmd-approval-cwd { font-size: 11px; opacity: .7; margin-top: 4px; }
+.cmd-approval-actions { display: flex; gap: 8px; margin-top: 8px; }
+.cmd-approval-note { font-size: 11px; opacity: .7; margin-top: 6px; }
 
 /* Clarifying questions the planner asks before producing a plan (Plan mode) */
 .clarify { display: flex; flex-direction: column; gap: 10px; }
@@ -198,6 +246,21 @@ details.reasoning summary { cursor: pointer; opacity: .8; }
 }
 .clarify-opt:disabled { cursor: default; opacity: .7; }
 .clarify-submit { align-self: flex-start; }
+/* One-question-at-a-time stepper */
+.clarify-tabs { display: flex; gap: 6px; }
+.clarify-tab {
+  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
+  font-size: 11px; font-weight: 700; line-height: 1;
+  background: var(--vscode-input-background); color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-panel-border);
+}
+.clarify-tab:hover { border-color: var(--vscode-focusBorder); }
+.clarify-tab.active { border-color: var(--vscode-focusBorder); background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.clarify-tab.done { background: var(--vscode-testing-iconPassed, #2e7d32); color: #fff; border-color: transparent; }
+.clarify-tab.done.active { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.clarify-step { display: flex; flex-direction: column; gap: 6px; }
+.clarify-counter { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .55; }
+.clarify-nav { display: flex; gap: 8px; justify-content: flex-end; }
 
 /* Changed-files review under a command */
 .checkpoint { margin-top: 6px; font-size: 12px; }
@@ -237,6 +300,68 @@ details.reasoning summary { cursor: pointer; opacity: .8; }
   animation: idx-spin .8s linear infinite;
 }
 @keyframes idx-spin { to { transform: rotate(360deg); } }
+/* Pinned changed-files review bar above the input (Cursor/Kilo-style) */
+.changed-bar {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 6px 8px; border-radius: 6px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.12));
+}
+.changed-bar.hidden { display: none; }
+.changed-bar.collapsed .cb-files { display: none; }
+.changed-bar.collapsed { gap: 0; }
+.changed-bar .cb-head { display: flex; align-items: center; gap: 6px; }
+.changed-bar .cb-chevron {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: none; cursor: pointer; color: var(--vscode-foreground);
+  opacity: .7; padding: 0; width: 14px; height: 14px; transform: rotate(90deg); transition: transform .12s ease;
+}
+.changed-bar .cb-chevron:hover { opacity: 1; }
+.changed-bar.collapsed .cb-chevron { transform: rotate(0deg); }
+.changed-bar .cb-chevron svg { width: 12px; height: 12px; }
+.changed-bar .cb-title { font-size: 11px; font-weight: 600; flex: 1 1 auto; }
+.changed-bar .cb-action {
+  font-size: 11px; cursor: pointer; padding: 2px 8px; border-radius: 10px;
+  background: transparent; color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-panel-border);
+}
+.changed-bar .cb-action:hover { background: var(--vscode-toolbar-hoverBackground); }
+.changed-bar .cb-close {
+  font-size: 13px; line-height: 1; cursor: pointer; padding: 0 4px;
+  background: transparent; color: var(--vscode-foreground); border: none; opacity: .6;
+}
+.changed-bar .cb-close:hover { opacity: 1; }
+.changed-bar .cb-files { display: flex; flex-wrap: wrap; gap: 4px; max-height: 84px; overflow-y: auto; }
+.changed-bar .cb-file {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+  font-size: 11px; cursor: pointer; padding: 2px 8px; border-radius: 10px;
+  background: var(--vscode-input-background); color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-panel-border);
+}
+.changed-bar .cb-file:hover { background: var(--vscode-list-hoverBackground); border-color: var(--vscode-focusBorder); }
+.changed-bar .cb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.changed-bar .cb-badge {
+  flex: 0 0 auto; font-size: 9px; font-weight: 700; width: 13px; text-align: center;
+  border-radius: 3px; color: #fff;
+}
+.changed-bar .cb-badge.cp-created { background: var(--vscode-testing-iconPassed, #2e7d32); }
+.changed-bar .cb-badge.cp-modified { background: var(--vscode-charts-blue, #3794ff); }
+.changed-bar .cb-badge.cp-deleted { background: var(--vscode-errorForeground, #c33); }
+
+/* Settings → Others tab */
+.others-section { display: flex; flex-direction: column; gap: 6px; padding: 4px 2px; }
+.others-title { font-size: 12px; font-weight: 600; }
+.others-desc { font-size: 11px; opacity: .7; line-height: 1.4; }
+.others-search {
+  width: 100%; box-sizing: border-box; margin-top: 4px; padding: 4px 8px; font-size: 12px;
+  background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 4px;
+}
+.others-list {
+  margin-top: 4px; max-height: 320px; overflow-y: auto;
+  border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 4px;
+}
+
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip {
   font-size: 11px; padding: 2px 6px; border-radius: 10px;
@@ -276,15 +401,28 @@ button#model-btn .mb-label { overflow: hidden; text-overflow: ellipsis; white-sp
 /* One shared down-chevron for the mode / model / effort controls so they match.
    Native <select> arrows are removed; the glyph uses currentColor for theme parity. */
 .select-wrap { position: relative; display: inline-flex; min-width: 0; }
-.select-wrap > select.pill { appearance: none; -webkit-appearance: none; padding-right: 20px; }
-.select-wrap::after,
-button#model-btn::after {
-  content: '▾'; position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
-  font-size: 11px; line-height: 1; opacity: .7; pointer-events: none;
-}
-.select-wrap:has(> select:disabled)::after { opacity: .35; }
+/* No dropdown caret — matches the caret-less mode/model pills for a clean, consistent toolbar. */
+.select-wrap > select.pill { appearance: none; -webkit-appearance: none; }
 
 /* Custom scrollable, searchable model dropdown */
+/* Mode picker (custom dropdown: short name on the button, name + description in the list) */
+.mode-picker { position: relative; min-width: 0; }
+.mode-pop {
+  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 50;
+  width: 250px; max-height: 50vh; overflow-y: auto;
+  background: var(--vscode-dropdown-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
+  border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, .45); padding: 4px;
+}
+.mode-pop.hidden { display: none; }
+.mode-item { padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.mode-item:hover { background: var(--vscode-list-hoverBackground); }
+.mode-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.mode-item-label { font-size: 12px; font-weight: 600; }
+.mode-item-desc { font-size: 11px; opacity: .7; margin-top: 2px; line-height: 1.35; }
+.mode-item.selected .mode-item-desc { opacity: .9; }
+button#mode-btn .mode-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .model-picker { position: relative; min-width: 0; }
 .model-pop {
   position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 50;
@@ -309,6 +447,11 @@ button#model-btn::after {
 .model-item .mi-caps { display: flex; gap: 3px; flex: 0 0 auto; }
 .model-item:hover { background: var(--vscode-list-hoverBackground); }
 .model-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.model-item.deprecated .mi-label { opacity: .5; text-decoration: line-through; }
+.model-item .mi-deprecated {
+  flex: 0 0 auto; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+  padding: 1px 5px; border-radius: 3px; color: #fff; background: var(--vscode-errorForeground, #c33);
+}
 
 /* Disabled pill (e.g. reasoning control on a non-reasoning model) */
 .pill:disabled { opacity: .45; cursor: not-allowed; }

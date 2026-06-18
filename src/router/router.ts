@@ -55,6 +55,7 @@ export class AllModelsFailedError extends Error {
       switch (f.reason) {
         case 'no_api_key': return `${who} needs an API key. Add one in "Manage Models & Keys", or set the model to Auto.`;
         case 'no_provider': return `${who} has no provider available. Pick another model, or set it to Auto.`;
+        case 'not_found': return `${who} looks deprecated or removed by the provider. Pick another model, or set it to Auto.`;
         case 'rate_limited': return `${who} is rate-limited right now. Try again shortly, or set the model to Auto for automatic failover.`;
         case 'auth': return `${who} rejected the API key. Update it in "Manage Models & Keys".`;
         default: return `${who} failed (${f.reason}). Try again, or set the model to Auto.`;
@@ -93,6 +94,55 @@ export class Router {
     private readonly stats?: ModelStatsStore,
   ) {}
 
+  /**
+   * Pick a model for utility tasks (commit messages, titles) — short outputs where a
+   * weak model embarrasses itself. Order: an explicit choice from settings →
+   * strong KEYLESS models (the default, work with no API key) → curated strong keyed
+   * models → the smartest model the user has → undefined (caller falls back to Auto).
+   */
+  async pickUtilityModel(): Promise<string | undefined> {
+    const entries = this.settings.enabledByPriority();
+    const enabled = new Set(entries.map((e) => `${e.platform}::${e.modelId}`));
+    const ready = async (platform: Platform): Promise<boolean> =>
+      this.secrets.cooldownRemaining(platform) === 0 && (await this.secrets.resolveKey(platform)) !== undefined;
+    const pick = async (keys: string[]): Promise<string | undefined> => {
+      for (const key of keys) {
+        if (enabled.has(key) && (await ready(key.split('::')[0] as Platform))) return key;
+      }
+      return undefined;
+    };
+
+    // 0. Explicit user choice (Settings → Others) wins when it's usable.
+    const chosen = vscodeConfigString('tiermux.utilityModel', 'auto');
+    if (chosen && chosen !== 'auto' && (await ready(chosen.split('::')[0] as Platform))) return chosen;
+
+    // 1. Strong KEYLESS models — the default, so titles/commits work with no API key.
+    const keyless = await pick(['ovh::gpt-oss-120b', 'ovh::Meta-Llama-3_3-70B-Instruct', 'pollinations::openai-fast']);
+    if (keyless) return keyless;
+
+    // 2. Curated strong keyed models, if the user added a key.
+    const keyed = await pick([
+      'google::gemini-2.5-flash',
+      'google::gemini-2.0-flash',
+      'groq::openai/gpt-oss-120b',
+      'cerebras::gpt-oss-120b',
+      'openrouter::deepseek/deepseek-chat-v3.1:free',
+      'github::openai/gpt-4.1',
+    ]);
+    if (keyed) return keyed;
+
+    // 3. The smartest model the user actually has.
+    const ranked = entries
+      .map((e) => ({ e, m: this.catalog.find(e.platform, e.modelId) }))
+      .filter((x): x is { e: FallbackEntry; m: CatalogModel } => !!x.m)
+      .sort((a, b) => a.m.intelligenceRank - b.m.intelligenceRank || a.m.speedRank - b.m.speedRank);
+    for (const { e } of ranked) {
+      if (await ready(e.platform)) return `${e.platform}::${e.modelId}`;
+    }
+
+    return undefined; // nothing keyed → caller falls back to Auto
+  }
+
   /** Build the ordered candidate list for a request. */
   private candidates(opts: RouteOptions): FallbackEntry[] {
     let list = this.settings.enabledByPriority();
@@ -116,6 +166,11 @@ export class Router {
           !this.secrets.isToolIncompatible(e.platform, e.modelId),
       );
     }
+    // Drop models a provider has 404'd (deprecated/removed) so Auto never re-tries a
+    // dead model — unless that would leave nothing, in which case keep them and let
+    // the attempt surface a real error rather than silently doing nothing.
+    const live = list.filter((e) => !this.secrets.isDeprecated(e.platform, e.modelId));
+    if (live.length > 0) list = live;
     // Reorder by what the task needs (fast for chat, tool-capable+smart for
     // agent, etc.). Only Auto reaches here — a forced model returned above.
     if (opts.taskKind) {
@@ -234,6 +289,12 @@ export class Router {
             this.secrets.markToolIncompatible(entry.platform, entry.modelId);
           }
 
+          // A 404 means the model is gone/deprecated (catalog entries go stale).
+          // Quarantine it so Auto stops trying it and the picker can flag it.
+          if (reason === 'not_found') {
+            this.secrets.markDeprecated(entry.platform, entry.modelId);
+          }
+
           failures.push({ platform: entry.platform, model: entry.modelId, reason });
           opts.onFailover?.({ from: entry, reason });
           if (!failoverable) break candidates;
@@ -252,6 +313,17 @@ function vscodeConfigNumber(key: string, fallback: number): number {
     const vscode = require('vscode') as typeof import('vscode');
     const dot = key.lastIndexOf('.');
     return vscode.workspace.getConfiguration(key.slice(0, dot)).get<number>(key.slice(dot + 1), fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+function vscodeConfigString(key: string, fallback: string): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const vscode = require('vscode') as typeof import('vscode');
+    const dot = key.lastIndexOf('.');
+    return vscode.workspace.getConfiguration(key.slice(0, dot)).get<string>(key.slice(dot + 1), fallback);
   } catch {
     return fallback;
   }

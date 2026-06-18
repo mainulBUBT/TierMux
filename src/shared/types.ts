@@ -115,6 +115,13 @@ export interface CatalogModel {
   intelligenceRank: number;
   /** Lower is "faster" (1 = fastest). Used to pick a completion model. */
   speedRank: number;
+  /**
+   * Release / catalog-add month as "YYYY-MM". Used only as a routing tiebreaker:
+   * among models the task rates equally, the newer one is preferred so freshly
+   * added models surface instead of older equals winning every time. Optional —
+   * models without it sort as oldest.
+   */
+  released?: string;
   sizeLabel: string;
   contextWindow: number | null;
   rpmLimit: number | null;
@@ -123,6 +130,16 @@ export interface CatalogModel {
   supportsTools: boolean;
   supportsVision: boolean;
   supportsReasoning: boolean;
+  /** Optional free-form labels from the remote catalog (e.g. ["frontier","coding"]). */
+  tags?: string[];
+  /** Optional short editorial note shown beside the model (e.g. "Crowd favorite"). */
+  insight?: string;
+}
+
+/** One entry in the agent's live task list (TodoWrite-style progress tracking). */
+export interface TodoItem {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
 }
 
 export type KeyStatus = 'healthy' | 'rate_limited' | 'invalid' | 'error' | 'unknown' | 'missing';

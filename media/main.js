@@ -75,22 +75,17 @@
     <div class="settings" id="settings"></div>
     <div class="composer" id="composer">
       <div class="index-status hidden" id="index-status"></div>
+      <div class="changed-bar hidden" id="changed-bar"></div>
       <div class="chips" id="chips"></div>
       <div class="input-wrap">
         <div id="ac-pop" class="ac-pop hidden"></div>
-        <textarea id="input" placeholder="Type a message…  (Enter to send, Shift+Enter for newline)  ·  @file  /fix  /tests  /commit"></textarea>
+        <textarea id="input" placeholder="Type a message…  (@ for files, / for commands)" title="Enter to send · Shift+Enter for newline · @file · /fix /tests /commit"></textarea>
         <div class="toolbar">
           <div class="tgroup">
-            <span class="select-wrap">
-              <select id="mode" title="Mode — Auto picks the right behavior + model for each message" class="pill">
-                <option value="auto">Auto</option>
-                <option value="chat">Chat</option>
-                <option value="agent">Agent</option>
-                <option value="plan">Plan</option>
-                <option value="debug">Debug</option>
-                <option value="orchestrator">Orchestrator</option>
-              </select>
-            </span>
+            <div class="mode-picker">
+              <button type="button" id="mode-btn" class="pill" title="Mode — how the assistant handles your message"><span class="mode-label">Auto</span></button>
+              <div id="mode-pop" class="mode-pop hidden"></div>
+            </div>
             <div class="model-picker">
               <button type="button" id="model-btn" class="pill" title="Model"><span class="mb-label">Auto</span></button>
               <div id="model-pop" class="model-pop hidden">
@@ -122,7 +117,6 @@
   const settingsEl = $('#settings');
   const composer = $('#composer');
   const input = $('#input');
-  const modeSel = $('#mode');
   const reasoningSel = $('#reasoning');
   const chipsEl = $('#chips');
   const modelBtn = $('#model-btn');
@@ -131,6 +125,40 @@
   const modelSearch = $('#model-search');
   const modelList = $('#model-list');
   let currentModel = 'auto';
+
+  // Mode picker (custom dropdown: button shows the short name, list shows name + description).
+  const MODES = [
+    { value: 'auto', label: 'Auto', desc: 'Smart agent — decides on its own how to understand and solve each message (incl. debugging).' },
+    { value: 'chat', label: 'Ask', desc: 'Read-only. Answers questions and explains code — never edits files.' },
+    { value: 'plan', label: 'Plan', desc: 'Researches the code, shows a todo plan, asks if needed, then edits after you approve.' },
+    { value: 'agent', label: 'Agent', desc: 'Full agent — reads, edits files, runs commands, and tracks a live task list.' },
+  ];
+  let currentMode = 'auto';
+  const modeBtn = $('#mode-btn');
+  const modeBtnLabel = $('.mode-label', modeBtn);
+  const modePop = $('#mode-pop');
+  function buildModePicker() {
+    modePop.innerHTML = '';
+    MODES.forEach((m) => {
+      const item = document.createElement('div');
+      item.className = 'mode-item' + (m.value === currentMode ? ' selected' : '');
+      const lbl = document.createElement('div'); lbl.className = 'mode-item-label'; lbl.textContent = m.label;
+      const desc = document.createElement('div'); desc.className = 'mode-item-desc'; desc.textContent = m.desc;
+      item.appendChild(lbl); item.appendChild(desc);
+      item.addEventListener('click', () => setMode(m.value));
+      modePop.appendChild(item);
+    });
+  }
+  function setMode(value) {
+    const m = MODES.find((x) => x.value === value) || MODES[0];
+    currentMode = m.value;
+    modeBtnLabel.textContent = m.label;
+    modeBtn.title = m.desc;
+    closeModePop();
+  }
+  function openModePop() { buildModePicker(); modePop.classList.remove('hidden'); }
+  function closeModePop() { modePop.classList.add('hidden'); }
+  modeBtn.addEventListener('click', (e) => { e.stopPropagation(); modePop.classList.contains('hidden') ? openModePop() : closeModePop(); });
 
   // Chat header: brand + editable session title (rename inline, Enter to save).
   const titleInput = $('#chat-title');
@@ -172,6 +200,25 @@
 
   function scrollDown() { thread.scrollTop = thread.scrollHeight; }
 
+  // Transient toast (e.g. "Copied", "Liked") shown right at the clicked element so the
+  // feedback appears where the user acted, not at the bottom of the panel.
+  function showToast(text, anchor) {
+    const t = document.createElement('div'); t.className = 'toast'; t.textContent = text;
+    document.body.appendChild(t);
+    const r = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
+    if (r) {
+      const tw = t.offsetWidth, th = t.offsetHeight;
+      let left = Math.max(6, Math.min(r.left + r.width / 2 - tw / 2, window.innerWidth - tw - 6));
+      let top = r.top - th - 6;            // prefer just above the button
+      if (top < 6) top = r.bottom + 6;     // flip below if there's no room above
+      t.style.left = left + 'px'; t.style.top = top + 'px';
+    } else {
+      t.style.left = '50%'; t.style.bottom = '64px'; t.style.transform = 'translateX(-50%)';
+    }
+    requestAnimationFrame(() => t.classList.add('show'));
+    setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 200); }, 1400);
+  }
+
   // ---------- empty / welcome state ----------
   function clearEmpty() { const e = thread.querySelector('.empty'); if (e) e.remove(); }
   function renderEmpty() {
@@ -201,6 +248,7 @@
       vscode.postMessage({ type: 'copyText', text: el._copyText || '' });
       b.classList.add('ok');
       setTimeout(() => b.classList.remove('ok'), 1000);
+      showToast('Copied', b);
     });
     return b;
   }
@@ -211,6 +259,7 @@
       const now = el.classList.contains('on') ? 'none' : which; // second click un-votes
       el.classList.toggle('on', now === which); other.classList.remove('on');
       if (requestId) vscode.postMessage({ type: 'vote', requestId, vote: now });
+      showToast(now === 'up' ? '👍 Liked — prefer this model' : now === 'down' ? '👎 Disliked — avoid this model' : 'Feedback removed', el);
     };
     const up = iconBtn(ICON.up, 'Good response — prefer this model for similar tasks', () => set('up'));
     const down = iconBtn(ICON.down, 'Bad response — avoid this model for similar tasks', () => set('down'));
@@ -380,7 +429,7 @@
     addUserBubble(text, requestId);
     vscode.postMessage({
       type: 'sendMessage', requestId, text,
-      mode: modeSel.value, model: currentModel, reasoningEffort: reasoningSel.value,
+      mode: currentMode, model: currentModel, reasoningEffort: reasoningSel.value,
       attachments: pendingAttachments,
     });
     input.value = '';
@@ -405,14 +454,14 @@
   $('#btn-attach').addEventListener('click', () => vscode.postMessage({ type: 'attachFromWorkspace' }));
   $('#btn-selection').addEventListener('click', () => vscode.postMessage({ type: 'addSelection' }));
   // Close transient popups when the view loses focus or is hidden (e.g. switching tabs).
-  window.addEventListener('blur', () => { closeModelPop(); closeAc(); });
-  document.addEventListener('visibilitychange', () => { if (document.hidden) { closeModelPop(); closeAc(); } });
+  window.addEventListener('blur', () => { closeModelPop(); closeModePop(); closeAc(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { closeModelPop(); closeModePop(); closeAc(); } });
 
   // Custom model dropdown (scrollable + searchable).
   modelBtn.addEventListener('click', (e) => { e.stopPropagation(); modelPop.classList.contains('hidden') ? openModelPop() : closeModelPop(); });
   modelSearch.addEventListener('input', filterModels);
   modelSearch.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModelPop(); });
-  document.addEventListener('click', (e) => { if (!e.target.closest('.model-picker')) closeModelPop(); });
+  document.addEventListener('click', (e) => { if (!e.target.closest('.model-picker')) closeModelPop(); if (!e.target.closest('.mode-picker')) closeModePop(); });
 
   function openModelPop() { modelPop.classList.remove('hidden'); modelSearch.value = ''; filterModels(); modelSearch.focus(); }
   function closeModelPop() { modelPop.classList.add('hidden'); }
@@ -475,12 +524,20 @@
   // ---------- model picker ----------
   function addModelItem(value, label, m) {
     const item = document.createElement('div');
-    item.className = 'model-item' + (value === currentModel ? ' selected' : '');
+    const deprecated = (state.deprecated || []).includes(value);
+    item.className = 'model-item' + (value === currentModel ? ' selected' : '') + (deprecated ? ' deprecated' : '');
     item.dataset.value = value;
     const lbl = document.createElement('span');
     lbl.className = 'mi-label';
     lbl.textContent = label;
     item.appendChild(lbl);
+    if (deprecated) {
+      const tag = document.createElement('span');
+      tag.className = 'mi-deprecated';
+      tag.textContent = 'unavailable';
+      tag.title = 'The provider returned “not found” for this model — it looks deprecated or removed. Auto skips it.';
+      item.appendChild(tag);
+    }
     const caps = [];
     if (m) { if (m.supportsTools) caps.push('T'); if (m.supportsVision) caps.push('V'); if (m.supportsReasoning) caps.push('R'); }
     if (caps.length) {
@@ -497,7 +554,11 @@
     addModelItem('auto', 'Auto (smart routing)');
     let lastPlatform = null;
     let selectedLabel = null;
+    // Only enabled (checked) models appear in the picker — the same set Auto routes over.
+    const enabled = new Set(state.fallback.filter((e) => e.enabled).map((e) => `${e.platform}::${e.modelId}`));
     state.catalog.forEach((m) => {
+      const value = `${m.platform}::${m.modelId}`;
+      if (!enabled.has(value)) return;
       if (m.platform !== lastPlatform) {
         lastPlatform = m.platform;
         const h = document.createElement('div');
@@ -505,10 +566,11 @@
         h.textContent = PLATFORM_NAMES[m.platform] || m.platform;
         modelList.appendChild(h);
       }
-      const value = `${m.platform}::${m.modelId}`;
       addModelItem(value, m.displayName, m);
       if (value === currentModel) selectedLabel = m.displayName;
     });
+    // If the selected model was unchecked/removed, fall back to Auto.
+    if (currentModel !== 'auto' && !enabled.has(currentModel)) currentModel = 'auto';
     // Keep the button label in sync with the current selection.
     if (currentModel === 'auto') { modelBtnLabel.textContent = 'Auto'; modelBtn.title = 'Auto (smart routing)'; }
     else if (selectedLabel) { modelBtnLabel.textContent = selectedLabel; modelBtn.title = selectedLabel; }
@@ -683,7 +745,7 @@
     search.type = 'text';
     search.className = 'settings-search';
     search.placeholder = settingsTab === 'mcp' ? 'Search MCP servers…' : 'Search providers & models…';
-    if (settingsTab === 'context') search.style.display = 'none';
+    if (settingsTab === 'context' || settingsTab === 'others') search.style.display = 'none';
     search.addEventListener('input', () => {
       const q = search.value.trim().toLowerCase();
       settingsContentEl.querySelectorAll('.provider-card, .registry-row').forEach((el) => {
@@ -696,7 +758,7 @@
     layout.className = 'settings-layout';
     const nav = document.createElement('div');
     nav.className = 'settings-nav';
-    [['providers', 'Providers'], ['mcp', 'MCP'], ['context', 'Context']].forEach((pair) => {
+    [['providers', 'Providers'], ['mcp', 'MCP'], ['context', 'Context'], ['others', 'Others']].forEach((pair) => {
       const b = document.createElement('button');
       b.className = 'nav-item' + (settingsTab === pair[0] ? ' active' : '');
       b.textContent = pair[1];
@@ -711,7 +773,53 @@
 
     if (settingsTab === 'providers') renderProviders();
     else if (settingsTab === 'mcp') renderMcpSection();
+    else if (settingsTab === 'others') renderOthersSection();
     else renderIndexSection();
+  }
+
+  // "Others" tab: pick the model used for chat titles + commit messages — an inline
+  // searchable model list, same look/behavior as the chat-view model picker.
+  function renderOthersSection() {
+    const wrap = document.createElement('div');
+    wrap.className = 'others-section';
+    const h = document.createElement('div'); h.className = 'others-title'; h.textContent = 'Titles & commit messages';
+    const desc = document.createElement('div'); desc.className = 'others-desc';
+    desc.textContent = 'Model used for short utility tasks (chat titles, commit messages). “Auto” prefers a strong keyless model, so it works with no API key.';
+    const search = document.createElement('input');
+    search.type = 'text'; search.className = 'others-search'; search.placeholder = 'Search models…';
+    const list = document.createElement('div'); list.className = 'others-list';
+    wrap.appendChild(h); wrap.appendChild(desc); wrap.appendChild(search); wrap.appendChild(list);
+    settingsContentEl.appendChild(wrap);
+
+    const current = state.utilityModel || 'auto';
+    const KEYLESS = ['ovh', 'pollinations', 'kilo'];
+    const addItem = (value, label, searchText) => {
+      const item = document.createElement('div');
+      item.className = 'model-item' + (value === current ? ' selected' : '');
+      item.dataset.search = searchText.toLowerCase();
+      const lbl = document.createElement('span'); lbl.className = 'mi-label'; lbl.textContent = label;
+      item.appendChild(lbl);
+      item.addEventListener('click', () => vscode.postMessage({ type: 'setUtilityModel', model: value }));
+      list.appendChild(item);
+    };
+    addItem('auto', 'Auto (prefers keyless)', 'auto keyless default');
+    let lastPlatform = null;
+    (state.catalog || []).forEach((m) => {
+      if (m.platform !== lastPlatform) {
+        lastPlatform = m.platform;
+        const g = document.createElement('div'); g.className = 'model-group';
+        g.textContent = PLATFORM_NAMES[m.platform] || m.platform;
+        list.appendChild(g);
+      }
+      const keyless = KEYLESS.includes(m.platform);
+      const name = m.displayName + (keyless ? ' (keyless)' : '');
+      addItem(`${m.platform}::${m.modelId}`, name, `${name} ${PLATFORM_NAMES[m.platform] || m.platform}`);
+    });
+    search.addEventListener('input', () => {
+      const q = search.value.trim().toLowerCase();
+      list.querySelectorAll('.model-item').forEach((it) => { it.style.display = !q || it.dataset.search.includes(q) ? '' : 'none'; });
+      list.querySelectorAll('.model-group').forEach((g) => { g.style.display = q ? 'none' : ''; });
+    });
   }
 
   function renderProviders() {
@@ -1075,6 +1183,11 @@
         scrollDown();
         break;
       }
+      case 'todos': {
+        const t = ensureTarget(msg.requestId);
+        renderTodos(t, msg.todos || []);
+        break;
+      }
       case 'toolStatus': {
         const t = ensureTarget(msg.requestId);
         if (msg.state === 'running' && t.statusLabel) t.statusLabel.textContent = toolVerb(msg.name, msg.args);
@@ -1103,6 +1216,66 @@
         if (document.activeElement !== titleInput) titleInput.value = v;
         break;
       }
+      case 'commandApproval': {
+        const t = ensureTarget(msg.requestId);
+        const card = document.createElement('div'); card.className = 'cmd-approval';
+        const head = document.createElement('div'); head.className = 'cmd-approval-head';
+        head.textContent = 'Run this command?';
+        const pre = document.createElement('pre'); pre.className = 'cmd-approval-cmd';
+        const code = document.createElement('code'); code.textContent = msg.command; pre.appendChild(code);
+        card.appendChild(head); card.appendChild(pre);
+        if (msg.cwd) { const cwd = document.createElement('div'); cwd.className = 'cmd-approval-cwd'; cwd.textContent = 'in ' + msg.cwd; card.appendChild(cwd); }
+        const actions = document.createElement('div'); actions.className = 'cmd-approval-actions';
+        const run = document.createElement('button'); run.className = 'primary'; run.textContent = 'Run';
+        const skip = document.createElement('button'); skip.className = 'secondary'; skip.textContent = 'Skip';
+        const decide = (approved) => {
+          run.disabled = skip.disabled = true;
+          actions.remove();
+          const note = document.createElement('div');
+          note.className = 'cmd-approval-note';
+          note.textContent = approved ? '✓ Approved' : '✗ Skipped';
+          card.appendChild(note);
+          vscode.postMessage({ type: 'commandApprovalResponse', id: msg.id, approved });
+        };
+        run.addEventListener('click', () => decide(true));
+        skip.addEventListener('click', () => decide(false));
+        actions.appendChild(run); actions.appendChild(skip);
+        card.appendChild(actions);
+        t.tools.appendChild(card);
+        scrollDown();
+        break;
+      }
+      case 'editApproval': {
+        const t = ensureTarget(msg.requestId);
+        const del = msg.kind === 'delete';
+        const card = document.createElement('div'); card.className = 'cmd-approval';
+        const head = document.createElement('div'); head.className = 'cmd-approval-head';
+        head.textContent = msg.title || (del ? 'Delete this file?' : 'Apply these changes?');
+        const pre = document.createElement('pre'); pre.className = 'cmd-approval-cmd';
+        const code = document.createElement('code'); code.textContent = msg.path; pre.appendChild(code);
+        const hint = document.createElement('div'); hint.className = 'cmd-approval-cwd';
+        hint.textContent = del ? 'Deletes the file from the workspace.' : 'Review the diff in the editor, then apply or reject.';
+        card.appendChild(head); card.appendChild(pre); card.appendChild(hint);
+        const actions = document.createElement('div'); actions.className = 'cmd-approval-actions';
+        const ok = document.createElement('button'); ok.className = 'primary'; ok.textContent = del ? 'Delete' : 'Apply';
+        const no = document.createElement('button'); no.className = 'secondary'; no.textContent = del ? 'Keep' : 'Reject';
+        const decide = (approved) => {
+          ok.disabled = no.disabled = true;
+          actions.remove();
+          const note = document.createElement('div');
+          note.className = 'cmd-approval-note';
+          note.textContent = approved ? (del ? '✓ Deleted' : '✓ Applied') : (del ? '✗ Kept' : '✗ Rejected');
+          card.appendChild(note);
+          vscode.postMessage({ type: 'editApprovalResponse', id: msg.id, approved });
+        };
+        ok.addEventListener('click', () => decide(true));
+        no.addEventListener('click', () => decide(false));
+        actions.appendChild(ok); actions.appendChild(no);
+        card.appendChild(actions);
+        t.tools.appendChild(card);
+        scrollDown();
+        break;
+      }
       case 'planProposed': {
         const t = ensureTarget(msg.requestId);
         stopStatusTimer(msg.requestId, true);
@@ -1124,35 +1297,74 @@
         stopStatusTimer(msg.requestId, true);
         finalizeWork(msg.requestId);
         t.body.innerHTML = '';
+        const qs = msg.questions;
+        const selected = qs.map(() => null); // chosen option index per question
+        let cur = 0;
+
         const card = document.createElement('div'); card.className = 'clarify';
         const intro = document.createElement('div'); intro.className = 'clarify-intro';
         intro.textContent = 'A couple of quick questions before I plan:';
-        card.appendChild(intro);
-        const selected = msg.questions.map(() => null); // chosen option index per question
-        msg.questions.forEach((q, qi) => {
-          const qel = document.createElement('div'); qel.className = 'clarify-q';
+        const tabsEl = document.createElement('div'); tabsEl.className = 'clarify-tabs';
+        const qbox = document.createElement('div'); qbox.className = 'clarify-step';
+        const nav = document.createElement('div'); nav.className = 'clarify-nav';
+        const back = document.createElement('button'); back.type = 'button'; back.className = 'secondary'; back.textContent = 'Back';
+        const next = document.createElement('button'); next.type = 'button'; next.className = 'primary'; next.textContent = 'Next';
+        nav.appendChild(back); nav.appendChild(next);
+        card.appendChild(intro); card.appendChild(tabsEl); card.appendChild(qbox); card.appendChild(nav);
+
+        const isLast = () => cur === qs.length - 1;
+        const allAnswered = () => selected.every((s) => s !== null);
+        function updateNav() {
+          back.disabled = cur === 0;
+          if (isLast()) { next.textContent = 'Submit answers'; next.disabled = !allAnswered(); }
+          else { next.textContent = 'Next'; next.disabled = selected[cur] === null; }
+        }
+        function renderTabs() {
+          tabsEl.innerHTML = '';
+          qs.forEach((q, i) => {
+            const tb = document.createElement('button'); tb.type = 'button';
+            tb.className = 'clarify-tab' + (i === cur ? ' active' : '') + (selected[i] !== null ? ' done' : '');
+            tb.textContent = selected[i] !== null ? '✓' : String(i + 1);
+            tb.title = q.text;
+            tb.addEventListener('click', () => { cur = i; renderStep(); });
+            tabsEl.appendChild(tb);
+          });
+        }
+        function renderStep() {
+          renderTabs();
+          qbox.innerHTML = '';
+          const q = qs[cur];
+          const counter = document.createElement('div'); counter.className = 'clarify-counter';
+          counter.textContent = `Question ${cur + 1} of ${qs.length}`;
           const qt = document.createElement('div'); qt.className = 'clarify-q-text'; qt.textContent = q.text;
           const opts = document.createElement('div'); opts.className = 'clarify-opts';
           q.options.forEach((opt, oi) => {
-            const b = document.createElement('button'); b.type = 'button'; b.className = 'clarify-opt'; b.textContent = opt;
+            const b = document.createElement('button'); b.type = 'button';
+            b.className = 'clarify-opt' + (selected[cur] === oi ? ' selected' : ''); b.textContent = opt;
             b.addEventListener('click', () => {
-              selected[qi] = oi;
+              selected[cur] = oi;
               opts.querySelectorAll('.clarify-opt').forEach((x) => x.classList.remove('selected'));
               b.classList.add('selected');
-              submit.disabled = selected.some((s) => s === null);
+              renderTabs();
+              if (!isLast()) setTimeout(() => { cur++; renderStep(); }, 200); // flow to next
+              else updateNav();
             });
             opts.appendChild(b);
           });
-          qel.appendChild(qt); qel.appendChild(opts); card.appendChild(qel);
-        });
-        const submit = document.createElement('button'); submit.type = 'button';
-        submit.className = 'primary clarify-submit'; submit.textContent = 'Submit answers'; submit.disabled = true;
-        submit.addEventListener('click', () => {
+          qbox.appendChild(counter); qbox.appendChild(qt); qbox.appendChild(opts);
+          updateNav();
+          scrollDown();
+        }
+        back.addEventListener('click', () => { if (cur > 0) { cur--; renderStep(); } });
+        next.addEventListener('click', () => {
+          if (!isLast()) { if (selected[cur] !== null) { cur++; renderStep(); } return; }
+          if (!allAnswered()) return;
           card.querySelectorAll('button').forEach((b) => { b.disabled = true; });
-          const answers = msg.questions.map((q, qi) => q.options[selected[qi]]);
+          const answers = qs.map((q, qi) => q.options[selected[qi]]);
           vscode.postMessage({ type: 'answerClarifying', requestId: msg.requestId, answers });
         });
-        card.appendChild(submit);
+
+        renderStep();
         t.body.appendChild(card);
         scrollDown();
         break;
@@ -1191,6 +1403,9 @@
         break;
       case 'checkpoint':
         renderCheckpoint(msg);
+        break;
+      case 'changedFiles':
+        renderChangedBar(msg);
         break;
       case 'attachmentAdded':
         pendingAttachments.push(msg.attachment);
@@ -1245,6 +1460,7 @@
         userTargets.clear();
         statusTimers.forEach((id) => clearInterval(id));
         statusTimers.clear();
+        renderChangedBar({ files: [] }); // drop the review bar with the cleared session
         renderEmpty();
         break;
     }
@@ -1278,6 +1494,74 @@
     });
     head.appendChild(list);
     bar.appendChild(head);
+  }
+
+  // Live task checklist for a turn (TodoWrite-style). Rendered above the answer
+  // bubble and updated in place as the agent advances each item.
+  function renderTodos(t, todos) {
+    if (!todos.length) { if (t.todoEl) { t.todoEl.remove(); t.todoEl = null; } return; }
+    if (!t.todoEl) { t.todoEl = document.createElement('div'); t.todoEl.className = 'todo-list'; t.el.insertBefore(t.todoEl, t.body); }
+    t.todoEl.innerHTML = '';
+    const done = todos.filter((x) => x.status === 'completed').length;
+    const head = document.createElement('div'); head.className = 'todo-head';
+    head.textContent = `Tasks · ${done}/${todos.length}`;
+    t.todoEl.appendChild(head);
+    todos.forEach((td) => {
+      const row = document.createElement('div'); row.className = 'todo-item ' + td.status;
+      const ic = document.createElement('span'); ic.className = 'todo-ic';
+      if (td.status === 'in_progress') ic.innerHTML = '<span class="todo-spin"></span>';
+      else ic.textContent = td.status === 'completed' ? '✓' : '○';
+      const tx = document.createElement('span'); tx.className = 'todo-tx'; tx.textContent = td.content;
+      row.appendChild(ic); row.appendChild(tx);
+      t.todoEl.appendChild(row);
+    });
+    scrollDown();
+  }
+
+  // Pinned "changed files" review bar above the composer (Cursor/Kilo-style). Shows
+  // every file edited this session; collapse the list, click a file to diff it, or
+  // undo all the edits. Collapsed state persists across re-renders.
+  let changedBarCollapsed = false;
+  function renderChangedBar(msg) {
+    const bar = $('#changed-bar');
+    if (!bar) return;
+    const files = (msg && msg.files) || [];
+    if (!files.length) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
+    bar.innerHTML = '';
+    bar.classList.toggle('collapsed', changedBarCollapsed);
+    const head = document.createElement('div'); head.className = 'cb-head';
+    const chevron = document.createElement('button'); chevron.className = 'cb-chevron';
+    chevron.innerHTML = ICON.chevron; chevron.title = changedBarCollapsed ? 'Expand' : 'Collapse';
+    const title = document.createElement('span'); title.className = 'cb-title';
+    title.textContent = `✎ ${files.length} changed`;
+    const toggle = () => {
+      changedBarCollapsed = !changedBarCollapsed;
+      bar.classList.toggle('collapsed', changedBarCollapsed);
+      chevron.title = changedBarCollapsed ? 'Expand' : 'Collapse';
+    };
+    chevron.addEventListener('click', toggle);
+    title.addEventListener('click', toggle); title.style.cursor = 'pointer';
+    const undo = document.createElement('button'); undo.className = 'cb-action';
+    undo.textContent = 'Undo all'; undo.title = 'Restore all changed files to before this session’s edits';
+    undo.addEventListener('click', () => vscode.postMessage({ type: 'restoreCheckpoint', id: msg.id }));
+    const close = document.createElement('button'); close.className = 'cb-close'; close.textContent = '×';
+    close.title = 'Hide (reappears on the next change)';
+    close.addEventListener('click', () => { bar.classList.add('hidden'); });
+    head.appendChild(chevron); head.appendChild(title); head.appendChild(undo); head.appendChild(close);
+    const list = document.createElement('div'); list.className = 'cb-files';
+    files.forEach((f) => {
+      const chip = document.createElement('button'); chip.className = 'cb-file';
+      const badge = document.createElement('span'); badge.className = 'cb-badge cp-' + f.status;
+      badge.textContent = CP_STATUS[f.status] || '?';
+      const name = document.createElement('span'); name.className = 'cb-name';
+      name.textContent = f.rel.split('/').pop();
+      chip.title = `${f.rel} — open diff`;
+      chip.appendChild(badge); chip.appendChild(name);
+      chip.addEventListener('click', () => vscode.postMessage({ type: 'diffCheckpointFile', id: msg.id, uri: f.uri }));
+      list.appendChild(chip);
+    });
+    bar.appendChild(head); bar.appendChild(list);
+    bar.classList.remove('hidden');
   }
 
   // Transient codebase-index status: shown only while building, hidden when full.

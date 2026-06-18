@@ -30,8 +30,19 @@ export class EditGate {
   private readonly provider = new ProposedContentProvider();
   private tokenCounter = 0;
   private recorder?: (uri: vscode.Uri, before: string | null) => void;
+  /**
+   * When set, edit approval is requested in the chat view. The handler resolves
+   * true/false, or `undefined` to defer to the native modal (e.g. the edit didn't
+   * originate from a chat turn, so there's nowhere in the thread to show a card).
+   */
+  private confirmViaUi?: (req: { path: string; title: string; kind: 'write' | 'delete' }) => Promise<boolean | undefined>;
 
   constructor(private readonly requireConfirm: () => boolean) {}
+
+  /** Route edit approval through the webview (an inline Apply/Reject card). Pass undefined to revert to the native modal. */
+  setConfirmHandler(fn?: (req: { path: string; title: string; kind: 'write' | 'delete' }) => Promise<boolean | undefined>): void {
+    this.confirmViaUi = fn;
+  }
 
   register(): vscode.Disposable {
     return vscode.workspace.registerTextDocumentContentProvider(SCHEME, this.provider);
@@ -62,6 +73,11 @@ export class EditGate {
     const leftUri = this.provider.set(this.token(`current/${name}`), current);
     const rightUri = this.provider.set(this.token(`proposed/${name}`), proposed);
     await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, title, { preview: true });
+    // Prefer an inline Apply/Reject card in the chat view; fall back to a native modal.
+    if (this.confirmViaUi) {
+      const inline = await this.confirmViaUi({ path: name, title: `Apply changes to ${name}?`, kind: 'write' });
+      if (inline !== undefined) return inline;
+    }
     const choice = await vscode.window.showInformationMessage(
       `Apply changes to ${name}?`,
       { modal: true },
@@ -103,8 +119,11 @@ export class EditGate {
     if (current === undefined) return { applied: false, error: 'File not found.' };
     if (this.requireConfirm()) {
       const name = vscode.workspace.asRelativePath(uri);
-      const choice = await vscode.window.showWarningMessage(`Delete ${name}?`, { modal: true }, 'Delete');
-      if (choice !== 'Delete') return { applied: false, error: 'User rejected the deletion.' };
+      const inline = this.confirmViaUi ? await this.confirmViaUi({ path: name, title: `Delete ${name}?`, kind: 'delete' }) : undefined;
+      const ok = inline !== undefined
+        ? inline
+        : (await vscode.window.showWarningMessage(`Delete ${name}?`, { modal: true }, 'Delete')) === 'Delete';
+      if (!ok) return { applied: false, error: 'User rejected the deletion.' };
     }
     this.recorder?.(uri, current); // snapshot pre-delete content so it can be restored
     const edit = new vscode.WorkspaceEdit();

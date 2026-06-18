@@ -6,14 +6,29 @@
       "script": "build",
       "problemMatcher": [],
       "label": "npm: build",
-      "detail": "Bundle the extension with esbuild"
+      "detail": "Bundle the extension with esbuild (one-shot)"
     },
     {
       "type": "npm",
       "script": "watch",
-      "problemMatcher": [],
       "label": "npm: watch",
-      "isBackground": true
+      "detail": "Rebuild the extension on every save (for F5 dev)",
+      "isBackground": true,
+      "presentation": { "reveal": "never", "group": "watch" },
+      "problemMatcher": {
+        "owner": "esbuild",
+        "source": "esbuild",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": [
+          { "regexp": "^✘ \\[ERROR\\] (.+)$", "message": 1 },
+          { "regexp": "^\\s+(.+?):(\\d+):(\\d+):", "file": 1, "line": 2, "column": 3 }
+        ],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^\\[watch\\] build started$",
+          "endsPattern": "^\\[watch\\] build finished"
+        }
+      }
     }
   ]
 }

@@ -85,13 +85,39 @@ export function sanitizeToolName(name: string): string {
   return n.trim();
 }
 
-/** Remove leaked Harmony control tokens (channel headers, message markers) from visible content. */
+/**
+ * Clean gpt-oss / Harmony output for display. These models emit channels —
+ * `<|channel|>analysis<|message|>…<|end|>` (chain-of-thought) and
+ * `<|channel|>final<|message|>…` (the answer). Naively deleting the tokens would
+ * merge the reasoning INTO the answer, so we instead keep only the final channel
+ * as the visible text and fold any analysis/commentary into a <think> block, which
+ * the reasoning splitter then shows separately (never as the message itself).
+ */
 export function stripHarmonyTokens(text: string): string {
   if (!text || text.indexOf('<|') === -1) return text;
+  if (/<\|channel\|>/.test(text)) {
+    const finals: string[] = [];
+    const thoughts: string[] = [];
+    const re = /<\|channel\|>\s*(analysis|commentary|final)\s*<\|message\|>([\s\S]*?)(?=<\|(?:end|return|start|channel)\|>|$)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const body = m[2].trim();
+      if (!body) continue;
+      (m[1] === 'final' ? finals : thoughts).push(body);
+    }
+    if (finals.length || thoughts.length) {
+      const answer = finals.join('\n').trim();
+      const reasoning = thoughts.join('\n').trim();
+      // Answer present → show it (with reasoning tucked into <think>). Analysis only
+      // (model produced no final channel) → return just the <think> so the visible
+      // answer is empty and the caller's fallback message is used, never raw CoT.
+      if (answer) return reasoning ? `<think>${reasoning}</think>${answer}` : answer;
+      if (reasoning) return `<think>${reasoning}</think>`;
+    }
+  }
+  // No channels (or unparseable): strip any lone control tokens.
   return text
-    // Full channel header: <|channel|>final<|message|>
     .replace(/<\|channel\|>\s*(?:analysis|commentary|final)?\s*<\|message\|>/g, '')
-    // Any remaining lone control tokens.
     .replace(/<\|(?:start|end|message|channel|constrain|call|return)\|>/g, '')
     .trim();
 }

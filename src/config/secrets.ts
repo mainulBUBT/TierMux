@@ -11,6 +11,8 @@ export class SecretStore {
   private cooldownUntil = new Map<Platform, number>();
   /** Epoch-ms until which a `platform::modelId` is treated as tool-incompatible. */
   private toolIncompatUntil = new Map<string, number>();
+  /** Epoch-ms until which a `platform::modelId` is treated as deprecated/removed (404). */
+  private deprecatedUntil = new Map<string, number>();
   private readonly _onChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onChange.event;
 
@@ -65,6 +67,27 @@ export class SecretStore {
   isToolIncompatible(platform: Platform, modelId: string): boolean {
     const until = this.toolIncompatUntil.get(`${platform}::${modelId}`);
     return until !== undefined && until > Date.now();
+  }
+
+  /**
+   * Mark a model as deprecated/removed (a 404 from the provider) so routing stops
+   * trying it and the picker can flag it — the catalog ships stale entries over
+   * time. Time-boxed (default 24h) so it self-heals if the provider re-adds it.
+   */
+  markDeprecated(platform: Platform, modelId: string, ms = 86_400_000): void {
+    this.deprecatedUntil.set(`${platform}::${modelId}`, Date.now() + Math.max(0, ms));
+    this._onChange.fire(); // refresh the config so the model picker flags it
+  }
+
+  isDeprecated(platform: Platform, modelId: string): boolean {
+    const until = this.deprecatedUntil.get(`${platform}::${modelId}`);
+    return until !== undefined && until > Date.now();
+  }
+
+  /** Currently-quarantined `platform::modelId` keys, for flagging in the UI. */
+  deprecatedKeys(): string[] {
+    const now = Date.now();
+    return [...this.deprecatedUntil.entries()].filter(([, until]) => until > now).map(([k]) => k);
   }
 
   /** A snapshot of which platforms are configured (key present or keyless) + status. */

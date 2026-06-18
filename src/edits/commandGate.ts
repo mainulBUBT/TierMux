@@ -29,11 +29,19 @@ function truncate(s: string): string {
 }
 
 export class CommandGate {
+  /** When set, approval is requested in the chat view instead of a native modal. */
+  private confirmViaUi?: (command: string, cwd?: string) => Promise<boolean>;
+
   constructor(
     private readonly policy: () => CommandApproval,
     private readonly timeoutMs: () => number,
     private readonly extraAllowlist: () => string[],
   ) {}
+
+  /** Route command approval through the webview (an inline Run/Skip card). Pass undefined to revert to the native modal. */
+  setConfirmHandler(fn?: (command: string, cwd?: string) => Promise<boolean>): void {
+    this.confirmViaUi = fn;
+  }
 
   private root(): vscode.Uri {
     const folders = vscode.workspace.workspaceFolders;
@@ -59,10 +67,12 @@ export class CommandGate {
   }
 
   /** Decide whether to run, prompting the user when the policy requires it. */
-  private async approve(command: string): Promise<boolean> {
+  private async approve(command: string, cwd?: string): Promise<boolean> {
     const policy = this.policy();
     if (policy === 'never') return false;
     if (policy === 'allowlist' && this.isAllowlisted(command)) return true;
+    // Prefer an inline approval card in the chat view; fall back to a native modal.
+    if (this.confirmViaUi) return this.confirmViaUi(command, cwd);
     const choice = await vscode.window.showWarningMessage(
       `The agent wants to run a command:\n\n${command}`,
       { modal: true },
@@ -77,7 +87,7 @@ export class CommandGate {
     if (this.policy() === 'never') {
       return { exitCode: null, stdout: '', stderr: '', error: 'Command execution is disabled (tiermux.agent.commandApproval = "never").' };
     }
-    if (!(await this.approve(cmd))) {
+    if (!(await this.approve(cmd, cwd))) {
       return { exitCode: null, stdout: '', stderr: '', error: 'User declined to run the command.' };
     }
 

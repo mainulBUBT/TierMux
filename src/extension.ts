@@ -23,6 +23,7 @@ import { registerCommitMessage, generateCommitMessage } from './scm/commitMessag
 
 export function activate(context: vscode.ExtensionContext): void {
   const catalog = new Catalog(context.extensionPath);
+  catalog.loadCached(context.globalState); // instant: last fetched model list (offline-safe)
   const secrets = new SecretStore(context.secrets);
   const settings = new SettingsStore(context.globalState, catalog);
   const usage = new UsageTracker();
@@ -64,6 +65,12 @@ export function activate(context: vscode.ExtensionContext): void {
     generateCommitMessage: () => generateCommitMessage(router),
   });
 
+  // Route runCommand approval through the chat view (inline Run/Skip card) instead
+  // of a native modal, so the request appears where the work is shown.
+  commandGate.setConfirmHandler((command, cwd) => chat.requestCommandApproval(command, cwd));
+  // Same for file edits/deletions — the diff still opens, but Apply/Reject is inline.
+  editGate.setConfirmHandler((req) => chat.requestEditApproval(req));
+
   // Stream index-build progress into the chat webview (transient "Indexing…" strip).
   index.onProgress((p) => chat.onIndexProgress(p));
 
@@ -82,6 +89,12 @@ export function activate(context: vscode.ExtensionContext): void {
         chat.refresh();
         void index.maybeAutoBuild();
       }
+      if (e.affectsConfiguration('tiermux.catalog')) {
+        void catalog.refresh(
+          vscode.workspace.getConfiguration('tiermux').get<string>('catalog.url', ''),
+          context.globalState,
+        );
+      }
     }),
   );
 
@@ -90,6 +103,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Kick off an automatic build on startup when already enabled + configured.
   void index.maybeAutoBuild();
+
+  // Model catalog: fetch the published list in the background on every startup;
+  // when it changes, refresh the chat view. Cached + bundled lists keep it
+  // working offline (see Catalog).
+  context.subscriptions.push(catalog.onDidChange(() => chat.refresh()));
+  void catalog.refresh(
+    vscode.workspace.getConfiguration('tiermux').get<string>('catalog.url', ''),
+    context.globalState,
+  );
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chat, {
@@ -109,6 +131,14 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('tiermux.reconnectMcp', async () => { await mcp.reconnect(); void vscode.window.showInformationMessage('Reconnected MCP servers.'); }),
     vscode.commands.registerCommand('tiermux.buildIndex', () => index.build()),
     vscode.commands.registerCommand('tiermux.clearIndex', async () => { await index.clear(); void vscode.window.showInformationMessage('Cleared codebase index.'); }),
+    vscode.commands.registerCommand('tiermux.refreshModels', async () => {
+      await catalog.refresh(
+        vscode.workspace.getConfiguration('tiermux').get<string>('catalog.url', ''),
+        context.globalState,
+      );
+      chat.refresh();
+      void vscode.window.showInformationMessage('TierMux: model catalog refreshed.');
+    }),
   );
 
   // Advanced features -------------------------------------------------------
