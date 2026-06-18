@@ -104,9 +104,10 @@ export type InMessage =
   | { type: 'answerClarifying'; requestId: string; answers: string[] }
   | { type: 'renameSession'; title: string }
   | { type: 'vote'; requestId: string; vote: 'up' | 'down' | 'none' }
-  | { type: 'cancel'; requestId: string }
-  | { type: 'commandApprovalResponse'; id: string; approved: boolean }
-  | { type: 'editApprovalResponse'; id: string; approved: boolean }
+  | { type: 'cancel'; requestId: string; sessionId?: string }
+  | { type: 'commandApprovalResponse'; id: string; approved: boolean; sessionId?: string }
+  | { type: 'editApprovalResponse'; id: string; approved: boolean; sessionId?: string }
+  | { type: 'switchSession'; sessionId: string }
   | { type: 'requestConfig' }
   | { type: 'setFallbackConfig'; entries: FallbackEntry[] }
   | { type: 'setEndpoint'; platform: Platform; url: string }
@@ -146,32 +147,35 @@ export interface TranscriptMessage {
   secs?: number;
 }
 
+/** Live status of a session, shown as a dot on its tab. */
+export type SessionStatus = 'idle' | 'queued' | 'running' | 'needsApproval' | 'finished';
+
 // Extension -> Webview
 export type OutMessage =
   | { type: 'config'; config: ConfigPayload; usageTotals: UsageTotals }
-  | { type: 'userEcho'; requestId: string; text: string }
-  | { type: 'assistantStart'; requestId: string; platform: string; model: string }
-  | { type: 'planProposed'; requestId: string; steps: string }
-  | { type: 'commandApproval'; requestId: string; id: string; command: string; cwd?: string }
-  | { type: 'editApproval'; requestId: string; id: string; path: string; title: string; kind: 'write' | 'delete' }
-  | { type: 'clarifyingQuestions'; requestId: string; questions: ClarifyingQuestion[] }
-  | { type: 'sessionTitle'; title: string }
-  | { type: 'assistantMessage'; requestId: string; text: string; reasoning?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean }
+  | { type: 'sessionList'; sessions: Array<{ id: string; title: string; status: SessionStatus }> }
+  | { type: 'switchSession'; sessionId: string; messages: TranscriptMessage[] }
+  | { type: 'userEcho'; sessionId: string; requestId: string; text: string }
+  | { type: 'assistantStart'; sessionId: string; requestId: string; platform: string; model: string }
+  | { type: 'planProposed'; sessionId: string; requestId: string; steps: string }
+  | { type: 'commandApproval'; sessionId: string; requestId: string; id: string; command: string; cwd?: string }
+  | { type: 'editApproval'; sessionId: string; requestId: string; id: string; path: string; title: string; kind: 'write' | 'delete' }
+  | { type: 'clarifyingQuestions'; sessionId: string; requestId: string; questions: ClarifyingQuestion[] }
+  | { type: 'sessionTitle'; sessionId: string; title: string }
+  | { type: 'assistantMessage'; sessionId: string; requestId: string; text: string; reasoning?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean }
   | { type: 'usageTotals'; totals: UsageTotals }
   | { type: 'indexProgress'; building: boolean; done: number; total: number; phase: 'scanning' | 'embedding' | 'done' | 'error' }
-  | { type: 'checkpoint'; requestId: string; id: string; files: CheckpointFile[] }
-  | { type: 'toolStatus'; requestId: string; toolCallId: string; name: string; args: unknown; state: 'running' | 'done' | 'error'; detail?: string }
-  | { type: 'changedFiles'; id: string; files: CheckpointFile[] }
-  | { type: 'agentStep'; requestId: string; phase: 'thinking' | 'synthesizing' | 'done'; label: string }
-  | { type: 'todos'; requestId: string; todos: TodoItem[] }
-  | { type: 'failoverNotice'; requestId: string; from: string; reason: string }
+  | { type: 'checkpoint'; sessionId: string; requestId: string; id: string; files: CheckpointFile[] }
+  | { type: 'toolStatus'; sessionId: string; requestId: string; toolCallId: string; name: string; args: unknown; state: 'running' | 'done' | 'error'; detail?: string }
+  | { type: 'changedFiles'; sessionId: string; id: string; files: CheckpointFile[] }
+  | { type: 'agentStep'; sessionId: string; requestId: string; phase: 'thinking' | 'synthesizing' | 'done'; label: string }
+  | { type: 'todos'; sessionId: string; requestId: string; todos: TodoItem[] }
+  | { type: 'failoverNotice'; sessionId: string; requestId: string; from: string; reason: string }
   | { type: 'attachmentAdded'; attachment: Attachment }
   | { type: 'mentionResults'; queryId: number; items: MentionItem[] }
   | { type: 'mcpRegistryResults'; queryId: number; items: McpRegistryItem[]; error?: string }
-  | { type: 'restore'; messages: TranscriptMessage[] }
   | { type: 'setInput'; text: string }
   | { type: 'toggleSettings' }
-  | { type: 'notice'; text: string }
-  | { type: 'error'; requestId?: string; message: string }
-  | { type: 'busy'; busy: boolean }
-  | { type: 'clear' };
+  | { type: 'notice'; sessionId: string; text: string }
+  | { type: 'error'; sessionId?: string; requestId?: string; message: string }
+  | { type: 'busy'; sessionId: string; busy: boolean };

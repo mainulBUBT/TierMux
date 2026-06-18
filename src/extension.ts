@@ -8,7 +8,7 @@ import { ModelStatsStore } from './config/modelStats';
 import { Router } from './router/router';
 import { EditGate } from './edits/applyEdit';
 import { CommandGate, type CommandApproval } from './edits/commandGate';
-import { CheckpointManager } from './edits/checkpoints';
+import { registerCheckpointContentProvider } from './edits/checkpoints';
 import { WorkspaceTools } from './agent/tools';
 import { Agent } from './agent/agent';
 import { McpManager } from './mcp/mcpManager';
@@ -20,6 +20,7 @@ import { registerCodeActions } from './editor/codeActions';
 import { registerInlineChat } from './editor/inlineChat';
 import { registerInlineCompletions } from './completions/inlineCompletion';
 import { registerCommitMessage, generateCommitMessage } from './scm/commitMessage';
+import { openMemoryForEdit } from './context/userMemory';
 
 export function activate(context: vscode.ExtensionContext): void {
   const catalog = new Catalog(context.extensionPath);
@@ -35,9 +36,9 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   context.subscriptions.push(editGate.register());
 
-  const checkpoints = new CheckpointManager();
-  context.subscriptions.push(checkpoints.register());
-  editGate.setRecorder((uri, before) => checkpoints.record(uri, before));
+  // One shared checkpoint content provider for every session (VS Code allows one per scheme);
+  // each ChatViewProvider session owns its own CheckpointManager data on top of it.
+  context.subscriptions.push(registerCheckpointContentProvider());
 
   const commandGate = new CommandGate(
     () => vscode.workspace.getConfiguration('tiermux.agent').get<CommandApproval>('commandApproval', 'always'),
@@ -59,16 +60,15 @@ export function activate(context: vscode.ExtensionContext): void {
     router,
     mcp,
     index,
-    checkpoints,
     modelStats,
     workspaceState: context.workspaceState,
     generateCommitMessage: () => generateCommitMessage(router),
   });
 
-  // Route runCommand approval through the chat view (inline Run/Skip card) instead
-  // of a native modal, so the request appears where the work is shown.
-  commandGate.setConfirmHandler((command, cwd) => chat.requestCommandApproval(command, cwd));
-  // Same for file edits/deletions — the diff still opens, but Apply/Reject is inline.
+  // File edits that don't come from a chat run (e.g. inline editor chat, which has no
+  // session) fall back to a native Apply/Reject modal — the 1-arg overload returns
+  // undefined so the EditGate opens the modal. Chat-run edits go through the per-run
+  // RunContext instead (see ChatViewProvider.runContext).
   editGate.setConfirmHandler((req) => chat.requestEditApproval(req));
   // Session Auto-approve toggle (composer): both gates read it live to skip prompts.
   commandGate.setAutoApprove(() => chat.autoApprove);
@@ -142,6 +142,7 @@ export function activate(context: vscode.ExtensionContext): void {
       chat.refresh();
       void vscode.window.showInformationMessage('TierMux: model catalog refreshed.');
     }),
+    vscode.commands.registerCommand('tiermux.editMemory', () => openMemoryForEdit()),
   );
 
   // Advanced features -------------------------------------------------------

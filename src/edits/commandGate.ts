@@ -3,6 +3,7 @@
 // captured (truncated) and returned to the model so it can verify and self-heal.
 import * as vscode from 'vscode';
 import { spawn } from 'child_process';
+import type { RunContext } from '../agent/runContext';
 
 export type CommandApproval = 'always' | 'allowlist' | 'never';
 
@@ -95,15 +96,17 @@ export class CommandGate {
   }
 
   /** Decide whether to run, prompting the user when the policy requires it. */
-  private async approve(command: string, cwd?: string): Promise<boolean> {
+  private async approve(command: string, cwd?: string, ctx?: RunContext): Promise<boolean> {
     const policy = this.policy();
     if (policy === 'never') return false;
     if (policy === 'allowlist' && this.isAllowlisted(command)) return true;
     // Auto-approve runs non-dangerous commands without a prompt for a smooth agent flow;
     // anything destructive still falls through to the confirmation below.
-    if (this.autoApprove?.() && !isDangerous(command)) return true;
+    const autoApprove = ctx ? ctx.autoApprove() : this.autoApprove?.();
+    if (autoApprove && !isDangerous(command)) return true;
     // Prefer an inline approval card in the chat view; fall back to a native modal.
-    if (this.confirmViaUi) return this.confirmViaUi(command, cwd);
+    const confirmViaUi = ctx ? ctx.approveCommand : this.confirmViaUi;
+    if (confirmViaUi) return confirmViaUi(command, cwd);
     const choice = await vscode.window.showWarningMessage(
       `The agent wants to run a command:\n\n${command}`,
       { modal: true },
@@ -112,13 +115,13 @@ export class CommandGate {
     return choice === 'Run';
   }
 
-  async run(command: string, cwd?: string): Promise<CommandResult> {
+  async run(command: string, cwd?: string, ctx?: RunContext): Promise<CommandResult> {
     const cmd = command.trim();
     if (!cmd) return { exitCode: null, stdout: '', stderr: '', error: 'Empty command.' };
     if (this.policy() === 'never') {
       return { exitCode: null, stdout: '', stderr: '', error: 'Command execution is disabled (tiermux.agent.commandApproval = "never").' };
     }
-    if (!(await this.approve(cmd, cwd))) {
+    if (!(await this.approve(cmd, cwd, ctx))) {
       return { exitCode: null, stdout: '', stderr: '', error: 'User declined to run the command.' };
     }
 

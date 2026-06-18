@@ -576,3 +576,29 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .section-title { font-weight: 600; margin: 12px 0 6px; }
 .muted { opacity: .65; font-size: 11px; }
 .row-actions { margin-left: auto; display: flex; gap: 4px; }
+
+/* Session tabs — one per concurrent chat (parallel background agents). */
+.session-rail {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border);
+  overflow-x: auto; scrollbar-width: thin; flex: 0 0 auto;
+}
+.session-rail::-webkit-scrollbar { height: 4px; }
+.tab {
+  flex: 0 0 auto; max-width: 150px;
+  display: flex; align-items: center; gap: 5px;
+  background: transparent; border: 1px solid transparent; border-radius: 4px;
+  color: var(--vscode-foreground); opacity: .65;
+  font-family: inherit; font-size: 11px; padding: 2px 8px; cursor: pointer; white-space: nowrap;
+}
+.tab:hover { background: var(--vscode-list-hoverBackground); opacity: .95; }
+.tab.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); opacity: 1; }
+.tab-label { overflow: hidden; text-overflow: ellipsis; max-width: 110px; }
+.tab-dot { flex: 0 0 auto; font-size: 10px; line-height: 1; opacity: .9; }
+.tab.add { font-size: 14px; padding: 1px 9px; opacity: .6; }
+.tab.status-running .tab-dot { color: var(--vscode-charts-blue, #3794ff); animation: tabspin 1s linear infinite; }
+.tab.status-queued .tab-dot { color: var(--vscode-charts-yellow, #e2c08d); }
+.tab.status-needsApproval .tab-dot { color: var(--vscode-charts-orange, #d18616); font-weight: 700; }
+.tab.status-finished .tab-dot { color: var(--vscode-charts-green, #89d185); }
+@keyframes tabspin { to { transform: rotate(360deg); } }
+

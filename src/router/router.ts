@@ -29,6 +29,10 @@ export interface RouteOptions extends CompletionOptions {
   taskKind?: TaskKind;
   /** Notified each time the router fails over to the next model. */
   onFailover?: (info: { from: FallbackEntry; reason: string }) => void;
+  /** Quality-based escalation: skip these `platform::modelId` keys (ones that underperformed). */
+  exclude?: string[];
+  /** Quality-based escalation: only consider models at least this smart (intelligenceRank <= this). */
+  maxIntelligenceRank?: number;
 }
 
 export interface RouteResult {
@@ -143,6 +147,11 @@ export class Router {
     return undefined; // nothing keyed → caller falls back to Auto
   }
 
+  /** A model's intelligence rank (lower = smarter); used by quality-based escalation. */
+  intelligenceRankOf(platform: Platform, modelId: string): number | undefined {
+    return this.catalog.find(platform, modelId)?.intelligenceRank;
+  }
+
   /** Build the ordered candidate list for a request. */
   private candidates(opts: RouteOptions): FallbackEntry[] {
     let list = this.settings.enabledByPriority();
@@ -171,6 +180,20 @@ export class Router {
     // the attempt surface a real error rather than silently doing nothing.
     const live = list.filter((e) => !this.secrets.isDeprecated(e.platform, e.modelId));
     if (live.length > 0) list = live;
+    // Quality-based escalation (Auto only): drop models that already underperformed, and any
+    // weaker than the floor, so a flaky weak model is replaced by a stronger one. If nothing
+    // is left, route() surfaces AllModelsFailedError — the caller then recommends a free model.
+    if (opts.exclude?.length) {
+      const ex = new Set(opts.exclude);
+      list = list.filter((e) => !ex.has(`${e.platform}::${e.modelId}`));
+    }
+    if (opts.maxIntelligenceRank != null) {
+      const floor = opts.maxIntelligenceRank;
+      list = list.filter((e) => {
+        const m = this.catalog.find(e.platform, e.modelId);
+        return !m || m.intelligenceRank <= floor;
+      });
+    }
     // Reorder by what the task needs (fast for chat, tool-capable+smart for
     // agent, etc.). Only Auto reaches here — a forced model returned above.
     if (opts.taskKind) {

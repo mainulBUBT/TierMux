@@ -1,19 +1,23 @@
 // Agent loop: drives Chat / Plan / Agent modes over the router + tools.
 import * as vscode from 'vscode';
-import type { ChatMessage, ReasoningEffort, TodoItem } from '../shared/types';
+import type { ChatMessage, Platform, ReasoningEffort, TodoItem } from '../shared/types';
 import type { Router } from '../router/router';
 import type { WorkspaceTools, ToolEvent } from './tools';
 import type { McpManager } from '../mcp/mcpManager';
 import type { CodebaseIndex } from '../index/codebaseIndex';
 import { contentToString } from './content';
 import { sanitizeToolName } from './toolArgs';
-import { TOOL_SPECS, CODEBASE_SEARCH_SPEC } from './toolSpecs';
-import { AGENT_SYSTEM, CHAT_SYSTEM, PLAN_SYSTEM, DEBUG_SYSTEM, ORCHESTRATOR_SYSTEM } from './prompts';
+import { TOOL_SPECS, CODEBASE_SEARCH_SPEC, GLOB_SPEC, GREP_SPEC, ASK_USER_SPEC, SKILL_SPEC, WEB_TOOL_SPECS } from './toolSpecs';
+import { AGENT_SYSTEM, CHAT_SYSTEM, PLAN_SYSTEM, DEBUG_SYSTEM, ORCHESTRATOR_SYSTEM, RESPONSIBILITY_RULES } from './prompts';
 import { loadProjectRules } from '../context/projectRules';
+import { loadUserMemory, inferStyleFromEdits, upsertLearnedSection } from '../context/userMemory';
 import { loadProjectGrounding } from '../context/projectGrounding';
 import { buildAmbientContext } from '../context/ambient';
 import { classifyTask, modeToKind, type TaskKind } from './routing';
+import { ESCALATION_CAP, isRefusalOrEmpty, toolSignature, allUnparseable } from './escalation';
 import { PRODUCT_NAME } from '../shared/branding';
+import type { RunContext } from './runContext';
+import type { RouteOptions } from '../router/router';
 
 export type Mode = 'auto' | 'chat' | 'plan' | 'agent' | 'debug' | 'orchestrator';
 
@@ -28,6 +32,7 @@ const MAX_SUBTASKS = 6;
  */
 const READONLY_TOOLS = new Set([
   'readFile', 'listDir', 'repoMap', 'searchWorkspace', 'getDiagnostics', 'codebaseSearch',
+  'glob', 'grep', 'webFetch', 'webSearch', 'askUser', 'skill',
 ]);
 
 export interface AgentCallbacks {
@@ -37,6 +42,8 @@ export interface AgentCallbacks {
   onStep?: (phase: 'thinking' | 'synthesizing' | 'done', label: string) => void;
   /** Live task checklist updates (the agent's updateTodos calls). */
   onTodos?: (todos: TodoItem[]) => void;
+  /** Backing for the `askUser` tool: present a question (optionally multiple-choice) and await the answer. */
+  onAskUser?: (question: string, options?: string[]) => Promise<string>;
 }
 
 /** Per-run options threaded from the chat provider down to the router. */
@@ -46,6 +53,12 @@ export interface RunOpts {
   token?: vscode.CancellationToken;
   taskKind?: TaskKind;
   onFailover?: (i: { from: { platform: string; modelId: string }; reason: string }) => void;
+  /**
+   * Session-scoped context for the shared gates: which session's checkpoints to record
+   * into, which session's thread to route approvals to, and the live auto-approve read.
+   * Omitted for non-chat callers (inline editor chat) → gates use their default behavior.
+   */
+  runContext?: RunContext;
 }
 
 export interface AgentResult {
@@ -110,6 +123,91 @@ export class Agent {
     return text;
   }
 
+  /**
+   * Free, model-free style inference from this run's file edits, persisted to
+   * .tiermux/memory.md's auto-learned section. Fire-and-forget — memory is non-critical and
+   * this must never block or break a run. Gated by `tiermux.memory.autoLearn` (default on).
+   */
+  private maybeLearnStyle(workMsgs: ChatMessage[]): void {
+    try {
+      if (!vscode.workspace.getConfiguration('tiermux.memory').get<boolean>('autoLearn', true)) return;
+      const rules = inferStyleFromEdits(workMsgs);
+      if (rules) void upsertLearnedSection(rules).catch(() => { /* best-effort */ });
+    } catch { /* never break a run for memory */ }
+  }
+
+  /**
+   * Quality-based escalation: run one route attempt, and if the response looks unhandled
+   * (refusal/empty, a verbatim tool-call loop, or all-unparseable tool calls), retry on a
+   * strictly-not-weaker model up to ESCALATION_CAP times. A first-hop failure is a real
+   * error (rethrown so the caller can pause/surface it); a later-hop "no stronger model"
+   * failure returns the last result so we never make things worse. `prevSig` (tool-call
+   * signature of the previous iteration) enables cross-iteration loop detection.
+   */
+  private async routeEscalated(
+    messages: ChatMessage[],
+    baseOpts: RouteOptions,
+    cb: AgentCallbacks,
+    prevSig?: string,
+  ): Promise<{ result: Awaited<ReturnType<Router['route']>>; unhandled?: string }> {
+    const exclude: string[] = [];
+    let maxRank: number | undefined;
+    let last: Awaited<ReturnType<Router['route']>> | undefined;
+    for (let hop = 0; hop <= ESCALATION_CAP; hop++) {
+      const opts: RouteOptions = {
+        ...baseOpts,
+        exclude: exclude.length ? exclude : undefined,
+        maxIntelligenceRank: maxRank,
+      };
+      let result: Awaited<ReturnType<Router['route']>>;
+      try {
+        result = await this.router.route(messages, opts);
+      } catch (e) {
+        // First hop failing is a genuine "all models errored" — let the caller handle it.
+        if (hop === 0) throw e;
+        // A later hop found no model meeting the floor (no stronger model available) → use the last result.
+        if (last) return { result: last, unhandled: 'no stronger model' };
+        throw e;
+      }
+      last = result;
+
+      const msg = result.response.choices[0]?.message;
+      const toolCalls = msg?.tool_calls ?? [];
+      for (const call of toolCalls) {
+        if (call.function?.name) call.function.name = sanitizeToolName(call.function.name);
+      }
+
+      let unhandled: string | undefined;
+      if (toolCalls.length === 0) {
+        if (isRefusalOrEmpty(contentToString(msg?.content))) unhandled = 'refusal';
+      } else if (prevSig && toolSignature(toolCalls) === prevSig) {
+        unhandled = 'loop';
+      } else if (allUnparseable(toolCalls)) {
+        unhandled = 'unparseable';
+      }
+
+      if (!unhandled || hop === ESCALATION_CAP) return { result, unhandled };
+
+      // Escalate: drop this model and require one at least as smart; orderForTask then tries
+      // the smarter candidates first. Surface the retry so the user sees why it slowed.
+      exclude.push(`${result.platform}::${result.model}`);
+      const rank = this.router.intelligenceRankOf(result.platform as Platform, result.model);
+      if (rank != null) maxRank = rank;
+      cb.onStep?.('thinking', 'Model struggled — retrying with a stronger model…');
+    }
+    throw new Error('escalation loop exited unexpectedly'); // unreachable — loop returns above
+  }
+
+  /** Backing for the `askUser` tool: ask the user (free-text or multiple-choice) and return the answer. */
+  private async askUser(args: unknown, cb: AgentCallbacks): Promise<string> {
+    const question = String((args as { question?: unknown })?.question ?? '').trim() || 'The agent needs a clarification:';
+    const rawOptions = (args as { options?: unknown })?.options;
+    const options = Array.isArray(rawOptions) ? rawOptions.map((o) => String(o)).filter(Boolean) : undefined;
+    if (!cb.onAskUser) return JSON.stringify({ answer: '(no way to reach the user right now)' });
+    const answer = await cb.onAskUser(question, options);
+    return JSON.stringify({ answer: answer && answer.trim() ? answer.trim() : '(user skipped this question)' });
+  }
+
   async run(
     history: ChatMessage[],
     mode: Mode,
@@ -138,10 +236,14 @@ export class Agent {
     const routeKind: TaskKind = mode === 'auto' ? kind : modeToKind(mode);
     const ropts: RunOpts = { ...opts, taskKind: routeKind };
 
-    const [rules, grounding] = await Promise.all([loadProjectRules(), this.grounding()]);
+    const [rules, grounding, memory] = await Promise.all([loadProjectRules(), this.grounding(), loadUserMemory()]);
     const augment = (base: string): string => {
-      let s = base;
+      // Responsibility rules lead (after the role prompt) so weak models get the contract
+      // up front; then grounding, then the user's own style/tone memory (above project rules
+      // so personal preferences win), then repo rules.
+      let s = `${base}\n\n${RESPONSIBILITY_RULES}`;
       if (grounding) s += `\n\n# Project context (orient yourself here first)\n${grounding}`;
+      if (memory) s += `\n\n# User style, tone & standing instructions (follow exactly)\n${memory}`;
       if (rules) s += `\n\n# Project rules (follow these)\n${rules}`;
       return s;
     };
@@ -215,12 +317,12 @@ export class Agent {
   ): Promise<AgentResult> {
     const messages: ChatMessage[] = [{ role: 'system', content: system }, ...history];
     cb.onStep?.('thinking', 'Thinking…');
-    const result = await this.router.route(messages, {
+    const { result } = await this.routeEscalated(messages, {
       model: opts.model,
       reasoningEffort: opts.reasoningEffort,
       taskKind: opts.taskKind,
       onFailover: opts.onFailover,
-    });
+    }, cb);
     cb.onModel?.(result.platform, result.model);
     const raw = contentToString(result.response.choices[0]?.message.content);
     const { reasoning, content } = splitReasoning(raw);
@@ -249,11 +351,18 @@ export class Agent {
 
     if (this.mcp && !runOpts?.readOnly) { try { await this.mcp.ensureStarted(); } catch { /* MCP optional */ } }
     const indexOn = !!this.index && this.index.isEnabled() && this.index.hasIndex();
+    // Conditional tool inclusion (token discipline): glob/grep/skill/askUser whenever tools are
+    // offered; webFetch/webSearch only when the user opts in. None of these reach chat/trivial
+    // (runSingle/runTrivial pass no tools). Plan mode keeps only the read-only subset below.
+    const webOn = vscode.workspace.getConfiguration('tiermux.tools').get<boolean>('web', false);
     const tools = [
       ...TOOL_SPECS,
+      GLOB_SPEC, GREP_SPEC, ASK_USER_SPEC, SKILL_SPEC,
+      ...(webOn ? WEB_TOOL_SPECS : []),
       ...(indexOn ? [CODEBASE_SEARCH_SPEC] : []),
       ...(runOpts?.readOnly ? [] : this.mcp?.listToolSpecs() ?? []),
     ].filter((t) => !runOpts?.readOnly || READONLY_TOOLS.has(t.function.name));
+    let prevSig = '';
 
     for (let i = 0; i < this.maxIterations(); i++) {
       // Cancel = stop, not pause: don't persist a partial transcript (it could end on an
@@ -262,8 +371,9 @@ export class Agent {
 
       cb.onStep?.('thinking', 'Thinking…');
       let result: Awaited<ReturnType<Router['route']>>;
+      let unhandled: string | undefined;
       try {
-        result = await this.router.route(messages, {
+        const routed = await this.routeEscalated(messages, {
           model: opts.model,
           reasoningEffort: opts.reasoningEffort,
           taskKind: opts.taskKind,
@@ -271,7 +381,9 @@ export class Agent {
           tool_choice: 'auto',
           requireTools: true,
           onFailover: opts.onFailover,
-        });
+        }, cb, prevSig);
+        result = routed.result;
+        unhandled = routed.unhandled;
       } catch (e) {
         // Free models frequently drop out mid-task. If we've already made progress, pause
         // and hand back the work so far so the user can resume; if it failed on the very
@@ -300,8 +412,21 @@ export class Agent {
         const { reasoning, content } = splitReasoning(contentToString(msg?.content));
         // Record the final answer so it's part of the persisted transcript too.
         messages.push({ role: 'assistant', content: content || '_Done._' });
+        this.maybeLearnStyle(work());
         return { text: content || '_Done._', reasoning, platform: lastPlatform, model: lastModel, workMessages: work(), paused: false };
       }
+
+      // Escalation exhausted but the model still can't form usable tool calls (stuck loop or
+      // garbage args even from a stronger model) — stop gracefully instead of executing junk.
+      if (unhandled) {
+        messages.push({ role: 'assistant', content: contentToString(msg?.content) || '_The model could not make progress._', tool_calls: toolCalls });
+        this.maybeLearnStyle(work());
+        return {
+          text: "⚠️ I'm stuck — the model kept repeating itself or couldn't form valid tool calls, even after retrying with a stronger model. Choose **Continue** to try again, or rephrase the task.",
+          platform: lastPlatform, model: lastModel, workMessages: work(), paused: true,
+        };
+      }
+      prevSig = toolSignature(toolCalls);
 
       // Record the assistant turn (with its tool calls) then run each tool.
       messages.push({ role: 'assistant', content: contentToString(msg?.content), tool_calls: toolCalls });
@@ -312,16 +437,19 @@ export class Agent {
         cb.onTool?.({ toolCallId: call.id, name: call.function.name, args, state: 'running' });
         const observation = call.function.name === 'updateTodos'
           ? this.applyTodos(args, cb)
-          : call.function.name === 'codebaseSearch' && this.index
-            ? JSON.stringify({ results: await this.index.search(String((args as { query?: unknown })?.query ?? '')) })
-            : this.mcp?.isMcpTool(call.function.name)
-              ? await this.mcp.callTool(call.function.name, call.function.arguments)
-              : await this.tools.execute(call.function.name, call.function.arguments);
+          : call.function.name === 'askUser'
+            ? await this.askUser(args, cb)
+            : call.function.name === 'codebaseSearch' && this.index
+              ? JSON.stringify({ results: await this.index.search(String((args as { query?: unknown })?.query ?? '')) })
+              : this.mcp?.isMcpTool(call.function.name)
+                ? await this.mcp.callTool(call.function.name, call.function.arguments)
+                : await this.tools.execute(call.function.name, call.function.arguments, opts.runContext);
         const isError = observation.includes('"error"');
         cb.onTool?.({ toolCallId: call.id, name: call.function.name, args, state: isError ? 'error' : 'done', detail: observation.slice(0, 300) });
         messages.push({ role: 'tool', tool_call_id: call.id, name: call.function.name, content: observation });
       }
     }
+    this.maybeLearnStyle(work());
     return {
       text: "I've paused after a number of steps to check in. I can keep going from here — choose **Continue** and I'll resume where I left off.",
       platform: lastPlatform,

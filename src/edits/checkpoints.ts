@@ -22,19 +22,34 @@ class BaselineContentProvider implements vscode.TextDocumentContentProvider {
   }
 }
 
+/**
+ * Shared singleton backing every checkpoint diff. Registered exactly ONCE for the
+ * `fla-checkpoint` scheme (see registerCheckpointContentProvider); each session's
+ * CheckpointManager writes only its own globally-unique tokens into this store, so
+ * concurrent sessions never collide. (Per-session checkpoint *data* still lives on
+ * each CheckpointManager instance — only the content-provider plumbing is shared,
+ * because VS Code allows one provider per scheme.)
+ */
+export const baselineProvider = new BaselineContentProvider();
+
+/** Register the checkpoint diff content provider. Call exactly once in activate(). */
+export function registerCheckpointContentProvider(): vscode.Disposable {
+  return vscode.workspace.registerTextDocumentContentProvider(SCHEME, baselineProvider);
+}
+
+/** Module-wide counter for diff tokens — concurrent sessions must never reuse a token
+ *  in the shared provider's store. (Checkpoint *ids* stay per-instance: they're only
+ *  ever resolved through their owning session's CheckpointManager.) */
+let diffTokenSeq = 0;
+
 interface Snapshot { uri: vscode.Uri; rel: string; before: string | null }
 interface Checkpoint { id: string; requestId: string; label: string; ts: number; snaps: Map<string, Snapshot> }
 
 export class CheckpointManager {
-  private readonly provider = new BaselineContentProvider();
+  private readonly provider = baselineProvider;
   private checkpoints: Checkpoint[] = [];
   private current?: Checkpoint;
   private counter = 0;
-  private diffToken = 0;
-
-  register(): vscode.Disposable {
-    return vscode.workspace.registerTextDocumentContentProvider(SCHEME, this.provider);
-  }
 
   /** Open a checkpoint for a new agent turn. */
   begin(requestId: string, label: string): void {
@@ -115,7 +130,7 @@ export class CheckpointManager {
     const snap = this.aggregateSince(id).get(uriStr);
     if (!snap) return;
     const fileUri = vscode.Uri.parse(uriStr);
-    const tk = ++this.diffToken;
+    const tk = ++diffTokenSeq;
     const left = this.provider.set(`base-${tk}/${snap.rel}`, snap.before ?? '');
     const title = `${snap.rel} (checkpoint ↔ current)`;
     if (await this.exists(fileUri)) {

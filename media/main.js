@@ -6,6 +6,12 @@
   let state = { catalog: [], fallback: [], platforms: [] };
   let pendingAttachments = [];
   let busy = false;
+  // The session currently shown. Messages for other (background) sessions are ignored —
+  // their state lives on the host, which re-sends a session's transcript + live status when
+  // we switch to it. This is what keeps several agents running at once without their threads
+  // bleeding together in this single webview.
+  let viewedSessionId = null;
+  let sessionList = [];
   const targets = new Map(); // requestId -> { el, body, tools }
   const userTargets = new Map(); // requestId -> user message element (for the restore bar)
   const startTimes = new Map(); // requestId -> send time, for "Worked for Ns"
@@ -72,6 +78,7 @@
     <div class="chat-header">
       <input id="chat-title" class="chat-title" type="text" placeholder="New chat" autocomplete="off" spellcheck="false" />
     </div>
+    <div class="session-rail" id="session-rail"></div>
     <div class="thread" id="thread"></div>
     <div class="settings" id="settings"></div>
     <div class="composer" id="composer">
@@ -116,6 +123,7 @@
     </div>`;
 
   const thread = $('#thread');
+  const railEl = $('#session-rail');
   const settingsEl = $('#settings');
   const composer = $('#composer');
   const input = $('#input');
@@ -234,6 +242,42 @@
     }
     requestAnimationFrame(() => t.classList.add('show'));
     setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 200); }, 1400);
+  }
+
+  // ---------- session tabs (one per concurrent chat; click to switch, + for new) ----------
+  const STATUS_DOT = { idle: '●', queued: '⏳', running: '⟳', needsApproval: '!', finished: '✓' };
+  const STATUS_TITLE = {
+    idle: 'Idle', queued: 'Queued', running: 'Running',
+    needsApproval: 'Needs your approval', finished: 'Finished',
+  };
+  function renderTabs() {
+    railEl.innerHTML = '';
+    sessionList.forEach((s) => {
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'tab' + (s.id === viewedSessionId ? ' active' : '') + (' status-' + (s.status || 'idle'));
+      tab.title = s.title || 'New chat';
+      const dot = document.createElement('span');
+      dot.className = 'tab-dot';
+      dot.textContent = STATUS_DOT[s.status || 'idle'] || '●';
+      dot.title = STATUS_TITLE[s.status || 'idle'] || '';
+      const lbl = document.createElement('span');
+      lbl.className = 'tab-label';
+      lbl.textContent = s.title || 'New chat';
+      tab.appendChild(dot);
+      tab.appendChild(lbl);
+      tab.addEventListener('click', () => {
+        if (s.id !== viewedSessionId) vscode.postMessage({ type: 'switchSession', sessionId: s.id });
+      });
+      railEl.appendChild(tab);
+    });
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'tab add';
+    add.title = 'New chat';
+    add.textContent = '+';
+    add.addEventListener('click', () => vscode.postMessage({ type: 'newChat' }));
+    railEl.appendChild(add);
   }
 
   // ---------- empty / welcome state ----------
@@ -458,7 +502,7 @@
   }
 
   function send() {
-    if (busy) { vscode.postMessage({ type: 'cancel', requestId: 'current' }); return; }
+    if (busy) { vscode.postMessage({ type: 'cancel', requestId: 'current', sessionId: viewedSessionId }); return; }
     const text = input.value.trim();
     if (!text) return;
     const requestId = newId();
@@ -1188,6 +1232,12 @@
   // ---------- inbound messages ----------
   window.addEventListener('message', (event) => {
     const msg = event.data;
+    // This webview renders one session at a time. Render messages for a different
+    // (background) session are ignored here — the host caches their state and replays it
+    // when we switch to them (see switchSession). switchSession/sessionList carry their own
+    // sessionId semantics and are handled below, so they're excluded from this filter.
+    const PER_SESSION = new Set(['userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'assistantMessage', 'planProposed', 'commandApproval', 'editApproval', 'clarifyingQuestions', 'checkpoint', 'changedFiles', 'busy', 'notice', 'error']);
+    if (PER_SESSION.has(msg.type) && msg.sessionId && viewedSessionId && msg.sessionId !== viewedSessionId) return;
     switch (msg.type) {
       case 'config':
         state = msg.config;
@@ -1201,14 +1251,26 @@
       case 'userEcho':
         addUserBubble(msg.text, msg.requestId);
         break;
-      case 'restore':
+      case 'switchSession':
+        // Rebuild this single-session view for the session we're now viewing. Its full
+        // transcript is replayed, then the host re-emits any cached live/cards state.
+        viewedSessionId = msg.sessionId;
         if (settingsOpen) toggleSettings();
         thread.innerHTML = '';
         targets.clear();
         userTargets.clear();
+        startTimes.clear();
+        statusTimers.forEach((id) => clearInterval(id));
+        statusTimers.clear();
+        currentTurn = null;
+        renderChangedBar({ files: [] });
         (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts) : renderAssistantStatic(mm.text, mm.model, mm.ts, mm.secs));
         if (!(msg.messages || []).length) renderEmpty();
         scrollDown();
+        break;
+      case 'sessionList':
+        sessionList = msg.sessions || [];
+        renderTabs();
         break;
       case 'setInput':
         input.value = msg.text || '';
@@ -1261,6 +1323,7 @@
         break;
       }
       case 'sessionTitle': {
+        if (msg.sessionId && viewedSessionId && msg.sessionId !== viewedSessionId) break;
         const v = msg.title || '';
         lastTitle = v;
         // Don't clobber the field while the user is actively editing it.
@@ -1286,7 +1349,7 @@
           note.className = 'cmd-approval-note';
           note.textContent = approved ? '✓ Approved' : '✗ Skipped';
           card.appendChild(note);
-          vscode.postMessage({ type: 'commandApprovalResponse', id: msg.id, approved });
+          vscode.postMessage({ type: 'commandApprovalResponse', id: msg.id, approved, sessionId: msg.sessionId });
         };
         run.addEventListener('click', () => decide(true));
         skip.addEventListener('click', () => decide(false));
@@ -1317,7 +1380,7 @@
           note.className = 'cmd-approval-note';
           note.textContent = approved ? (del ? '✓ Deleted' : '✓ Applied') : (del ? '✗ Kept' : '✗ Rejected');
           card.appendChild(note);
-          vscode.postMessage({ type: 'editApprovalResponse', id: msg.id, approved });
+          vscode.postMessage({ type: 'editApprovalResponse', id: msg.id, approved, sessionId: msg.sessionId });
         };
         ok.addEventListener('click', () => decide(true));
         no.addEventListener('click', () => decide(false));

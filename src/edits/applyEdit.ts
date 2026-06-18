@@ -1,6 +1,7 @@
 // Diff preview + apply for agent file edits. Shows a native diff editor, asks
 // for confirmation (when enabled), and applies via WorkspaceEdit.
 import * as vscode from 'vscode';
+import type { RunContext } from '../agent/runContext';
 
 const SCHEME = 'fla-proposed';
 
@@ -74,18 +75,20 @@ export class EditGate {
   }
 
   /** Show a diff between current and proposed content and (optionally) confirm. */
-  private async previewAndConfirm(uri: vscode.Uri, current: string, proposed: string, title: string): Promise<boolean> {
+  private async previewAndConfirm(uri: vscode.Uri, current: string, proposed: string, title: string, ctx?: RunContext): Promise<boolean> {
     if (!this.requireConfirm()) return true;
     // Auto-approve applies edits without opening a diff or asking; the pre-edit content is
     // still recorded by write()/remove(), so the change stays revertible via checkpoints.
-    if (this.autoApprove?.()) return true;
+    const autoApprove = ctx ? ctx.autoApprove() : this.autoApprove?.();
+    if (autoApprove) return true;
     const name = vscode.workspace.asRelativePath(uri);
     const leftUri = this.provider.set(this.token(`current/${name}`), current);
     const rightUri = this.provider.set(this.token(`proposed/${name}`), proposed);
     await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, title, { preview: true });
     // Prefer an inline Apply/Reject card in the chat view; fall back to a native modal.
-    if (this.confirmViaUi) {
-      const inline = await this.confirmViaUi({ path: name, title: `Apply changes to ${name}?`, kind: 'write' });
+    const confirmViaUi = ctx ? ctx.approveEdit : this.confirmViaUi;
+    if (confirmViaUi) {
+      const inline = await confirmViaUi({ path: name, title: `Apply changes to ${name}?`, kind: 'write' });
       if (inline !== undefined) return inline;
     }
     const choice = await vscode.window.showInformationMessage(
@@ -96,11 +99,12 @@ export class EditGate {
     return choice === 'Apply';
   }
 
-  async write(uri: vscode.Uri, content: string): Promise<EditResult> {
+  async write(uri: vscode.Uri, content: string, ctx?: RunContext): Promise<EditResult> {
     const beforeRaw = await this.readIfExists(uri);
-    const ok = await this.previewAndConfirm(uri, beforeRaw ?? '', content, `Write ${vscode.workspace.asRelativePath(uri)}`);
+    const ok = await this.previewAndConfirm(uri, beforeRaw ?? '', content, `Write ${vscode.workspace.asRelativePath(uri)}`, ctx);
     if (!ok) return { applied: false, error: 'User rejected the change.' };
-    this.recorder?.(uri, beforeRaw ?? null); // snapshot pre-edit state for the checkpoint
+    const recorder = ctx ? (u: vscode.Uri, b: string | null) => ctx.checkpoints.record(u, b) : this.recorder;
+    recorder?.(uri, beforeRaw ?? null); // snapshot pre-edit state for the checkpoint
     const edit = new vscode.WorkspaceEdit();
     const exists = beforeRaw !== undefined;
     if (!exists) edit.createFile(uri, { ignoreIfExists: true });
@@ -110,32 +114,35 @@ export class EditGate {
     return { applied };
   }
 
-  async create(uri: vscode.Uri, content: string): Promise<EditResult> {
+  async create(uri: vscode.Uri, content: string, ctx?: RunContext): Promise<EditResult> {
     if ((await this.readIfExists(uri)) !== undefined) return { applied: false, error: 'File already exists.' };
-    return this.write(uri, content);
+    return this.write(uri, content, ctx);
   }
 
-  async edit(uri: vscode.Uri, search: string, replace: string): Promise<EditResult> {
+  async edit(uri: vscode.Uri, search: string, replace: string, ctx?: RunContext): Promise<EditResult> {
     const current = await this.readIfExists(uri);
     if (current === undefined) return { applied: false, error: 'File not found.' };
     const idx = current.indexOf(search);
     if (idx === -1) return { applied: false, error: 'Search text not found in file.' };
     const proposed = current.slice(0, idx) + replace + current.slice(idx + search.length);
-    return this.write(uri, proposed);
+    return this.write(uri, proposed, ctx);
   }
 
-  async remove(uri: vscode.Uri): Promise<EditResult> {
+  async remove(uri: vscode.Uri, ctx?: RunContext): Promise<EditResult> {
     const current = await this.readIfExists(uri);
     if (current === undefined) return { applied: false, error: 'File not found.' };
-    if (this.requireConfirm() && !this.autoApprove?.()) {
+    const autoApprove = ctx ? ctx.autoApprove() : this.autoApprove?.();
+    if (this.requireConfirm() && !autoApprove) {
       const name = vscode.workspace.asRelativePath(uri);
-      const inline = this.confirmViaUi ? await this.confirmViaUi({ path: name, title: `Delete ${name}?`, kind: 'delete' }) : undefined;
+      const confirmViaUi = ctx ? ctx.approveEdit : this.confirmViaUi;
+      const inline = confirmViaUi ? await confirmViaUi({ path: name, title: `Delete ${name}?`, kind: 'delete' }) : undefined;
       const ok = inline !== undefined
         ? inline
         : (await vscode.window.showWarningMessage(`Delete ${name}?`, { modal: true }, 'Delete')) === 'Delete';
       if (!ok) return { applied: false, error: 'User rejected the deletion.' };
     }
-    this.recorder?.(uri, current); // snapshot pre-delete content so it can be restored
+    const recorder = ctx ? (u: vscode.Uri, b: string | null) => ctx.checkpoints.record(u, b) : this.recorder;
+    recorder?.(uri, current); // snapshot pre-delete content so it can be restored
     const edit = new vscode.WorkspaceEdit();
     edit.deleteFile(uri, { ignoreIfNotExists: true });
     const applied = await vscode.workspace.applyEdit(edit);

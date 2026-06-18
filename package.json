@@ -69,7 +69,8 @@
       { "command": "tiermux.clearIndex", "title": "Clear Codebase Index", "category": "TierMux" },
       { "command": "tiermux.refreshModels", "title": "Refresh Model Catalog", "category": "TierMux", "icon": "$(sync)" },
       { "command": "tiermux.generateCommitMessage", "title": "Generate Commit Message", "category": "TierMux", "icon": { "light": "media/icon-commit-light.svg", "dark": "media/icon-commit-dark.svg" } },
-      { "command": "tiermux.toggleCompletions", "title": "Toggle Inline Completions", "category": "TierMux" }
+      { "command": "tiermux.toggleCompletions", "title": "Toggle Inline Completions", "category": "TierMux" },
+      { "command": "tiermux.editMemory", "title": "Edit Style & Tone Memory", "category": "TierMux", "icon": "$(notebook)" }
     ],
     "menus": {
       "view/title": [
@@ -110,6 +111,12 @@
           "default": 25,
           "description": "Maximum tool-call iterations per agent task before pausing to check in. Higher values let the agent complete multi-step tasks without stopping."
         },
+        "tiermux.agent.maxConcurrentRuns": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "description": "Maximum number of chat sessions that run their agent at the same time. Extra sends queue and start as a slot frees, to respect free-tier rate limits."
+        },
         "tiermux.agent.requireWriteConfirmation": {
           "type": "boolean",
           "default": true,
@@ -141,6 +148,21 @@
           "type": "number",
           "default": 0.8,
           "description": "Automatically summarize (compact) the conversation when it exceeds this fraction of the model's context window. 0 disables auto-compact."
+        },
+        "tiermux.memory.autoLearn": {
+          "type": "boolean",
+          "default": true,
+          "description": "After edits, infer basic code-style signals (indent, quotes, semicolons) for free and record them in .tiermux/memory.md so future turns stay consistent. No model call — pure heuristics."
+        },
+        "tiermux.tools.web": {
+          "type": "boolean",
+          "default": false,
+          "description": "Give the agent webSearch and webFetch tools so it can look things up instead of guessing. Off by default — adds the tool specs (and tokens) to every agent request."
+        },
+        "tiermux.tools.searchEndpoint": {
+          "type": "string",
+          "default": "",
+          "description": "Optional web-search endpoint URL for the webSearch tool. Blank = a best-effort free endpoint (fragile). Set to a reliable search API/SearchXNG URL for stable results; requires \"tiermux.tools.web\" to be on."
         },
         "tiermux.context.includeOpenEditors": {
           "type": "boolean",

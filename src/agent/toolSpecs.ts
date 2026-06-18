@@ -171,3 +171,106 @@ export const TOOL_SPECS: ChatToolDefinition[] = [
     },
   },
 ];
+
+// ---- Responsible-tool additions (verify/look up instead of guess; ask instead of assume) ----
+// These are conditionally included by the agent (see agent.ts runAgent): glob/grep/skill/askUser
+// whenever tools are offered; web tools only when `tiermux.tools.web` is on. None are sent in
+// chat/trivial (no tools there), keeping the base request lean.
+
+/** Find files by glob pattern (names/paths), distinct from content search. */
+export const GLOB_SPEC: ChatToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'glob',
+    description: 'Find workspace files by glob pattern (e.g. "src/**/*.ts", "**/*.css"). Returns matching paths. Use this to locate files by name; use grep for content.',
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Glob pattern, e.g. "src/**/agent.ts" or "**/*.{js,ts}".' },
+        path: { type: 'string', description: 'Optional workspace-relative folder to search within (defaults to the whole workspace).' },
+      },
+      required: ['pattern'],
+    },
+  },
+};
+
+/** Search file contents by pattern/regex — find where symbols/strings live before editing. */
+export const GREP_SPEC: ChatToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'grep',
+    description: 'Search workspace file contents for a pattern (substring or regex). Returns matching files with line numbers and snippets. Use this to find where code lives before editing it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Text or JavaScript regex to search for.' },
+        path: { type: 'string', description: 'Optional workspace-relative folder/glob to limit the search.' },
+        regex: { type: 'boolean', description: 'Treat `pattern` as a regex (default: plain text).' },
+      },
+      required: ['pattern'],
+    },
+  },
+};
+
+/** Ask the user a clarifying question instead of guessing. Use sparingly — only when the goal is genuinely ambiguous. */
+export const ASK_USER_SPEC: ChatToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'askUser',
+    description: 'Ask the user one short clarifying question and wait for their answer. Use ONLY when you cannot reasonably infer how to proceed — not for things you can verify yourself with a search.',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'One concise question.' },
+        options: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional 2-4 short answer choices. Omit for a free-text answer.',
+        },
+      },
+      required: ['question'],
+    },
+  },
+};
+
+/** Load a named skill (a reusable workflow/instruction set) by name. */
+export const SKILL_SPEC: ChatToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'skill',
+    description: 'Load a named skill — a reusable set of instructions/workflow stored in .tiermux/skills/<name>.md. Returns the skill\'s instructions to follow. Use a skill when one applies to the current task.',
+    parameters: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'Skill name (matches a .tiermux/skills/<name>.md file).' } },
+      required: ['name'],
+    },
+  },
+};
+
+/** Web tools (only included when the user enables `tiermux.tools.web`) — look things up instead of fabricating. */
+export const WEB_TOOL_SPECS: ChatToolDefinition[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'webFetch',
+      description: 'Fetch a URL and return its text (HTML stripped, truncated). Use this to read a doc page, changelog, or API reference instead of guessing its contents.',
+      parameters: {
+        type: 'object',
+        properties: { url: { type: 'string', description: 'The absolute URL to fetch.' } },
+        required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'webSearch',
+      description: 'Search the web and return a few results (title, URL, snippet). Use this when you need information outside the workspace rather than guessing.',
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'The search query.' } },
+        required: ['query'],
+      },
+    },
+  },
+];

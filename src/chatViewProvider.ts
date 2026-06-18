@@ -8,19 +8,23 @@ import { Agent, splitReasoning, type Mode, type AgentResult, type AgentCallbacks
 import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
 import type { Router } from './router/router';
+import { AllModelsFailedError } from './router/router';
 import type { McpManager } from './mcp/mcpManager';
 import type { CodebaseIndex } from './index/codebaseIndex';
-import type { CheckpointManager } from './edits/checkpoints';
+import { CheckpointManager } from './edits/checkpoints';
 import type { ModelStatsStore, Vote } from './config/modelStats';
+import type { RunContext } from './agent/runContext';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem } from './messages';
-import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, TranscriptMessage } from './messages';
+import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, SessionStatus, TranscriptMessage } from './messages';
 import { getNonce } from './util/nonce';
 import { allPlatformInfo, getPlatformInfo } from './providers';
 import { parseSlash, resolveMentions, searchMentions } from './context/mentions';
 import { contentToString } from './agent/content';
 import { estimateMessagesTokens } from './agent/budget';
-import { SUMMARY_SYSTEM, TITLE_SYSTEM } from './agent/prompts';
+import { TITLE_SYSTEM } from './agent/prompts';
+import { condenseHistory, shouldCondense } from './agent/condense';
+import { recommendFreeStrong } from './catalog/recommend';
 import { parseClarifying, type ClarifyingQuestion } from './agent/clarify';
 
 const SLASH_PROMPTS: Record<string, string> = {
@@ -39,7 +43,6 @@ export interface ChatDeps {
   router: Router;
   mcp: McpManager;
   index: CodebaseIndex;
-  checkpoints: CheckpointManager;
   modelStats: ModelStatsStore;
   workspaceState: vscode.Memento;
   generateCommitMessage: () => Promise<void>;
@@ -50,7 +53,40 @@ const CURRENT_KEY = 'tiermux.currentSession';
 const AUTO_APPROVE_KEY = 'tiermux.autoApprove';
 const MAX_SESSIONS = 50;
 
-interface ChatSession {
+/**
+ * One chat session's full state — both the persisted conversation (history/transcript/title)
+ * and the never-persisted runtime (the in-flight run, approvals, checkpoints, votes). Promoting
+ * all of this off the provider onto a per-session object is what lets multiple agents run at
+ * once: each session owns its own run, and the provider just tracks which one is viewed.
+ */
+interface Session {
+  id: string;
+  history: ChatMessage[];
+  transcript: TranscriptMessage[];
+  title?: string;
+  titleGenerated: boolean;
+  // runtime — NEVER persisted (a dead agent process can't resume mid-run):
+  activeRequestId?: string;
+  cancel?: vscode.CancellationTokenSource;
+  pendingApprovals: Map<string, (approved: boolean) => void>;
+  approvalSeq: number;
+  /** Ephemeral interactive cards (approvals / plan / clarifying) awaiting a click, cached so
+   *  they re-render when the user switches back to a session whose run is blocked on them. */
+  cards: OutMessage[];
+  voteCtx: Map<string, { taskKind: string; platform: string; model: string; last: Vote }>;
+  pendingPlanUser?: ChatContent;
+  pendingClarify?: { requestId: string; userContent: ChatContent; prompt: string; questions: ClarifyingQuestion[] };
+  checkpoints: CheckpointManager;
+  lastWindow: number;
+  // Cached live status for re-emitting when the user switches back to a running session
+  // (the webview shows one session at a time and rebuilds on switch — see openSession).
+  livePlatform?: string;
+  liveModel?: string;
+  lastStepLabel?: string;
+  lastTodos?: TodoItem[];
+}
+
+interface StoredSession {
   id: string;
   title: string;
   ts: number;
@@ -111,146 +147,137 @@ function planStepsToTodos(steps: string): TodoItem[] {
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'tiermux.chat';
   private view?: vscode.WebviewView;
-  private history: ChatMessage[] = [];
-  private transcript: TranscriptMessage[] = [];
-  private sessionId: string;
-  private cancel?: vscode.CancellationTokenSource;
+  private sessions = new Map<string, Session>();
+  /** The session currently displayed in the webview (runs in OTHER sessions keep going). */
+  private viewedSessionId: string;
+  /** Per-session tab status (idle/queued/running/needsApproval/finished). */
+  private statusOf = new Map<string, SessionStatus>();
   private ready = false;
   private outQueue: OutMessage[] = [];
-  private lastWindow = 0;
   private mcpRegistry?: McpRegistryItem[];
-  /** Per-reply context for attributing 👍/👎 feedback to (taskKind, model). */
-  private voteCtx = new Map<string, { taskKind: string; platform: string; model: string; last: Vote }>();
-  /** The request currently being processed — used to attach in-chat command approvals to the right turn. */
-  private activeRequestId?: string;
-  private approvalSeq = 0;
-  /** Pending command/edit approvals awaiting a click in the webview, keyed by approval id. */
-  private pendingApprovals = new Map<string, (approved: boolean) => void>();
+  /** Concurrency cap state: sessions with a live agent run + the FIFO of waiting starts. */
+  private runningSessions = new Set<string>();
+  private runQueue: Array<{ sessionId: string; resolve: () => void }> = [];
+  /** One background-approval notification per (sessionId, requestId). */
+  private approvalNotified = new Set<string>();
+  private approvalSeqGlobal = 0;
   /**
    * Session Auto-approve: when true, the command/edit gates skip the inline prompt and run
    * unattended (dangerous commands still confirm). Read live by both gates; persisted per workspace.
+   * Shared across all sessions — a workspace-level preference.
    */
   autoApprove = false;
 
   constructor(private readonly extensionUri: vscode.Uri, private readonly deps: ChatDeps) {
     this.autoApprove = deps.workspaceState.get<boolean>(AUTO_APPROVE_KEY, false);
-    const sessions = this.loadSessions();
+    const stored = this.loadSessions();
     const currentId = deps.workspaceState.get<string>(CURRENT_KEY);
-    const current = sessions.find((s) => s.id === currentId) ?? sessions[0];
-    if (current) {
-      this.sessionId = current.id;
-      this.history = current.history ?? [];
-      this.transcript = current.transcript ?? [];
-      this.sessionTitle = current.title;
-      this.titleGenerated = !!current.title;
-    } else {
-      this.sessionId = this.newSessionId();
-    }
+    // Rehydrate every persisted chat as a Session with EMPTY runtime — a dead agent process
+    // can't resume, so nothing starts "running" after a reload (transcripts come back intact).
+    for (const s of stored) this.sessions.set(s.id, this.hydrateSession(s));
+    const viewed = currentId && this.sessions.has(currentId) ? currentId : stored[0]?.id;
+    this.viewedSessionId = viewed ?? this.createSession().id;
     deps.secrets.onDidChange(() => void this.sendConfig());
     deps.settings.onDidChange(() => void this.sendConfig());
   }
+
+  // ---------- session model ----------
 
   private newSessionId(): string {
     return 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   }
 
-  private loadSessions(): ChatSession[] {
-    return this.deps.workspaceState.get<ChatSession[]>(SESSIONS_KEY, []);
+  /** Build a fresh, empty session (for New chat). */
+  private createSession(): Session {
+    const s: Session = {
+      id: this.newSessionId(),
+      history: [],
+      transcript: [],
+      title: undefined,
+      titleGenerated: false,
+      pendingApprovals: new Map(),
+      approvalSeq: 0,
+      voteCtx: new Map(),
+      cards: [],
+      checkpoints: new CheckpointManager(),
+      lastWindow: 0,
+    };
+    this.sessions.set(s.id, s);
+    return s;
   }
 
-  private deriveTitle(): string {
-    const firstUser = this.transcript.find((t) => t.role === 'user');
+  /** Rehydrate a persisted session with empty runtime state. */
+  private hydrateSession(s: StoredSession): Session {
+    return {
+      id: s.id,
+      history: s.history ?? [],
+      transcript: s.transcript ?? [],
+      title: s.title,
+      titleGenerated: !!s.title || (s.transcript?.some((t) => t.role === 'user') ?? false),
+      pendingApprovals: new Map(),
+      approvalSeq: 0,
+      voteCtx: new Map(),
+      cards: [],
+      checkpoints: new CheckpointManager(),
+      lastWindow: 0,
+    };
+  }
+
+  /** The session currently displayed in the webview. User-action entry points operate on it. */
+  private current(): Session {
+    const s = this.sessions.get(this.viewedSessionId);
+    if (s) return s;
+    // Shouldn't happen, but never return undefined.
+    return this.createSession();
+  }
+
+  private loadSessions(): StoredSession[] {
+    return this.deps.workspaceState.get<StoredSession[]>(SESSIONS_KEY, []);
+  }
+
+  private deriveTitle(s: Session): string {
+    const firstUser = s.transcript.find((t) => t.role === 'user');
     const base = (firstUser?.text ?? '').trim().replace(/\s+/g, ' ');
     return base ? base.slice(0, 60) : 'New chat';
   }
 
-  /** Push the current session title into the webview header; the chrome shows just the brand. */
+  /** Push the current session's title into the webview header; the chrome shows just the brand. */
   private updateViewTitle(): void {
-    // Chrome shows only the product name; the live, editable title lives in the webview header.
     if (this.view) this.view.title = PRODUCT_NAME;
-    this.post({ type: 'sessionTitle', title: this.sessionTitle?.trim() || this.deriveTitle() || PRODUCT_NAME });
+    // Only update the title field for the VIEWED session — a background session's title
+    // generation must not clobber the field the user is looking at.
+    const s = this.sessions.get(this.viewedSessionId);
+    if (s) this.post({ type: 'sessionTitle', sessionId: s.id, title: s.title?.trim() || this.deriveTitle(s) || PRODUCT_NAME });
   }
 
-  /** Save the current conversation into the session list (most-recent first). */
-  /** Estimated current conversation size vs the active model's context window. */
-  private computeContext(): { tokens: number; window: number } {
-    const tokens = estimateMessagesTokens(this.history);
-    let window = this.lastWindow;
-    if (!window) {
-      const top = this.deps.settings.enabledByPriority()[0];
-      const m = top ? this.deps.catalog.find(top.platform, top.modelId) : undefined;
-      window = m?.contextWindow ?? 32768;
-    }
-    return { tokens, window };
-  }
-
-  private rememberWindow(platform?: string, model?: string): void {
-    if (!platform || !model) return;
-    const w = this.deps.catalog.find(platform, model)?.contextWindow;
-    if (w && w > 0) this.lastWindow = w;
-  }
-
-  /** Auto-summarize when the conversation passes the configured fraction of the window. */
-  private async maybeAutoCompact(): Promise<void> {
-    const threshold = vscode.workspace.getConfiguration('tiermux.agent').get<number>('autoCompactThreshold', 0.8);
-    if (!threshold || threshold <= 0 || this.history.length < 6) return;
-    const { tokens, window } = this.computeContext();
-    if (window && tokens > window * threshold) await this.handleCompact();
-  }
-
-  /** Best-effort: ask a free LLM for a short title once we have a first exchange. */
-  /** Best-effort: ask a free LLM for a short title from the user's first message. */
-  private async maybeGenerateTitle(): Promise<void> {
-    if (this.titleGenerated) return;
-    const users = this.transcript.filter((t) => t.role === 'user');
-    if (!users.length) return;
-    // Title from the first ACTUAL request. A greeting only gets a provisional title and
-    // we retry on later turns — so "Hi" followed by a real question updates the title
-    // instead of staying stuck on "Starting Conversation".
-    const firstReal = users.find((u) => classifyTask(u.text ?? '') !== 'trivial');
-    if (!firstReal) {
-      if (this.sessionTitle !== 'Starting Conversation') {
-        this.sessionTitle = 'Starting Conversation'; this.persist(); this.updateViewTitle();
-      }
-      return; // leave titleGenerated false → re-evaluate when a real message arrives
-    }
-    this.titleGenerated = true; // guard before the call to avoid duplicate runs
-    try {
-      const snippet = `User's message: ${(firstReal.text ?? '').slice(0, 800)}`;
-      // Prefer a strong free model so titles are good; fall back to Auto if none is keyed.
-      const model = await this.deps.router.pickUtilityModel();
-      const result = await this.deps.router.route(
-        [
-          { role: 'system', content: TITLE_SYSTEM },
-          { role: 'user', content: snippet },
-        ],
-        // Thinking off + a little headroom so the reply is the title itself, not a thought.
-        { temperature: 0.3, max_tokens: 48, model, taskKind: 'trivial', reasoningEffort: 'off' },
-      );
-      // Reject leaked reasoning AND a misapplied greeting title — we only reach here for
-      // a real (non-trivial) message, so "Starting Conversation"/"New chat" from the model
-      // is wrong; derive a title from the message instead of leaving it stuck.
-      let title = sanitizeTitle(contentToString(result.response.choices[0]?.message.content));
-      if (/^(starting conversation|new chat|untitled|chat)$/i.test(title)) title = '';
-      this.sessionTitle = title || deriveTitleFrom(firstReal.text ?? '');
-      this.persist();
-      this.updateViewTitle();
-    } catch {
-      // LLM unavailable — still move off the provisional title using the real message.
-      this.sessionTitle = deriveTitleFrom(firstReal.text ?? '');
-      this.persist();
-      this.updateViewTitle();
-    }
-  }
-
-  private persist(): void {
-    const others = this.loadSessions().filter((s) => s.id !== this.sessionId);
-    if (this.transcript.length) {
-      others.unshift({ id: this.sessionId, title: this.sessionTitle ?? this.deriveTitle(), ts: Date.now(), history: this.history, transcript: this.transcript });
+  /** Save one session's conversation into the session list (most-recent first). */
+  private persist(sessionId: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    const others = this.loadSessions().filter((x) => x.id !== sessionId);
+    if (s.transcript.length) {
+      others.unshift({ id: s.id, title: s.title ?? this.deriveTitle(s), ts: Date.now(), history: s.history, transcript: s.transcript });
     }
     void this.deps.workspaceState.update(SESSIONS_KEY, others.slice(0, MAX_SESSIONS));
-    void this.deps.workspaceState.update(CURRENT_KEY, this.sessionId);
+    if (sessionId === this.viewedSessionId) void this.deps.workspaceState.update(CURRENT_KEY, sessionId);
     this.updateViewTitle();
+    this.postSessionList();
+  }
+
+  // ---------- tab status + session list ----------
+
+  private setStatus(sessionId: string, status: SessionStatus): void {
+    this.statusOf.set(sessionId, status);
+    this.postSessionList();
+  }
+
+  private postSessionList(): void {
+    const sessions = Array.from(this.sessions.values()).map((s) => ({
+      id: s.id,
+      title: s.title?.trim() || this.deriveTitle(s) || 'New chat',
+      status: this.statusOf.get(s.id) ?? 'idle',
+    }));
+    this.post({ type: 'sessionList', sessions });
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -270,47 +297,106 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     void this.view.webview.postMessage(msg);
   }
 
-  /**
-   * Ask the user to approve a `runCommand` call inline in the chat view. Posts a
-   * Run/Skip card and resolves when they click (or false if the run is cancelled
-   * or there's no live view to ask). Wired into CommandGate from extension.ts.
-   */
-  requestCommandApproval(command: string, cwd?: string): Promise<boolean> {
-    if (!this.view) return Promise.resolve(false); // nowhere to ask → deny rather than hang
-    try { this.view.show?.(true); } catch { /* reveal is best-effort */ } // surface the card if the panel is hidden
-    const id = `cmd-${++this.approvalSeq}`;
-    return new Promise<boolean>((resolve) => {
-      this.pendingApprovals.set(id, resolve);
-      this.post({ type: 'commandApproval', requestId: this.activeRequestId ?? '', id, command, cwd });
-    });
+  /** Post an ephemeral interactive card (approval/plan/clarify) AND cache it on the session,
+   *  so it re-renders if the user switches away and back while it's still pending. */
+  private postCard(s: Session, msg: OutMessage): void {
+    s.cards.push(msg);
+    if (this.viewedSessionId === s.id) this.post(msg);
+  }
+
+  /** Drop cached cards matching a predicate (e.g. once an approval is resolved). */
+  private removeCards(s: Session, pred: (m: OutMessage) => boolean): void {
+    s.cards = s.cards.filter((m) => !pred(m));
   }
 
   /**
-   * Ask the user to approve a file edit/deletion inline in the chat view (the diff
-   * editor still opens for review). Mirrors requestCommandApproval. Wired into
-   * EditGate from extension.ts.
+   * Ask the user to approve a `runCommand` call inline in the chat view, in the run's OWN
+   * session. If that session isn't viewed, the card still renders in its (hidden) container
+   * and we fire a one-time notification + flip its tab to "needs approval". Wired into the
+   * CommandGate via the per-run RunContext (see runContext).
    */
-  requestEditApproval(req: { path: string; title: string; kind: 'write' | 'delete' }): Promise<boolean | undefined> {
-    // No live view or no active chat turn (e.g. inline editor chat) → defer to the
-    // native modal; there's no thread turn to attach the card to.
-    if (!this.view || !this.activeRequestId) return Promise.resolve(undefined);
+  requestCommandApproval(sessionId: string, requestId: string, command: string, cwd?: string): Promise<boolean> {
+    const s = this.sessions.get(sessionId);
+    if (!this.view || !s) return Promise.resolve(false); // nowhere to ask → deny rather than hang
     try { this.view.show?.(true); } catch { /* reveal is best-effort */ }
-    const id = `edit-${++this.approvalSeq}`;
-    return new Promise<boolean | undefined>((resolve) => {
-      this.pendingApprovals.set(id, resolve);
-      this.post({ type: 'editApproval', requestId: this.activeRequestId ?? '', id, path: req.path, title: req.title, kind: req.kind });
+    const id = `cmd-${++this.approvalSeqGlobal}`;
+    return new Promise<boolean>((resolve) => {
+      s.pendingApprovals.set(id, resolve);
+      this.postCard(s, { type: 'commandApproval', sessionId, requestId, id, command, cwd });
+      this.maybeNotifyApproval(sessionId, requestId, s);
     });
   }
 
-  /** Resolve every outstanding approval (e.g. on cancel / new chat) so the agent never hangs. */
-  private settlePendingApprovals(approved: boolean): void {
-    for (const resolve of this.pendingApprovals.values()) resolve(approved);
-    this.pendingApprovals.clear();
+  /**
+   * Ask the user to approve a file edit/deletion inline in the chat view (the diff editor
+   * still opens for review), in the run's OWN session. `undefined` (no-session overload) defers
+   * to the native modal — used by the inline editor chat which has no chat thread.
+   */
+  requestEditApproval(req: { path: string; title: string; kind: 'write' | 'delete' }): Promise<boolean | undefined>;
+  requestEditApproval(sessionId: string, requestId: string, req: { path: string; title: string; kind: 'write' | 'delete' }): Promise<boolean | undefined>;
+  requestEditApproval(sessionIdOrReq: string | { path: string; title: string; kind: 'write' | 'delete' }, requestId?: string, req?: { path: string; title: string; kind: 'write' | 'delete' }): Promise<boolean | undefined> {
+    // No-session overload (inline editor chat) → native modal.
+    if (typeof sessionIdOrReq !== 'string') return Promise.resolve(undefined);
+    const sessionId = sessionIdOrReq;
+    const s = this.sessions.get(sessionId);
+    if (!this.view || !s || !requestId || !req) return Promise.resolve(undefined);
+    try { this.view.show?.(true); } catch { /* reveal is best-effort */ }
+    const id = `edit-${++this.approvalSeqGlobal}`;
+    return new Promise<boolean | undefined>((resolve) => {
+      s.pendingApprovals.set(id, resolve);
+      this.postCard(s, { type: 'editApproval', sessionId, requestId, id, path: req.path, title: req.title, kind: req.kind });
+      this.maybeNotifyApproval(sessionId, requestId, s);
+    });
+  }
+
+  /** One background-approval notification per run, plus flipping the tab to "needs approval". */
+  private maybeNotifyApproval(sessionId: string, requestId: string, s: Session): void {
+    if (sessionId === this.viewedSessionId) return;
+    const key = `${sessionId}:${requestId}`;
+    if (this.approvalNotified.has(key)) return;
+    this.approvalNotified.add(key);
+    this.setStatus(sessionId, 'needsApproval');
+    const name = s.title?.trim() || 'A session';
+    void vscode.window.showInformationMessage(`${name} needs your approval to continue.`, 'Switch to it')
+      .then((choice) => { if (choice === 'Switch to it') this.openSession(sessionId); });
+  }
+
+  /** Resolve every outstanding approval in a session (e.g. on cancel / stop) so the agent never hangs. */
+  private settlePendingApprovals(s: Session, approved: boolean): void {
+    for (const resolve of s.pendingApprovals.values()) resolve(approved);
+    s.pendingApprovals.clear();
   }
 
   private flushQueue(): void {
     const queued = this.outQueue.splice(0);
     for (const m of queued) void this.view?.webview.postMessage(m);
+  }
+
+  // ---------- concurrency cap ----------
+
+  private maxConcurrent(): number {
+    return Math.max(1, vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxConcurrentRuns', 3));
+  }
+
+  /**
+   * Acquire one of the limited concurrent-run slots, queueing (and marking the tab "queued")
+   * if the cap is reached. The returned function releases the slot and starts the next queued
+   * run, skipping any whose session was deleted while waiting.
+   */
+  private async acquireRunSlot(sessionId: string): Promise<() => void> {
+    if (!this.runningSessions.has(sessionId) && this.runningSessions.size >= this.maxConcurrent()) {
+      this.setStatus(sessionId, 'queued');
+      await new Promise<void>((resolve) => this.runQueue.push({ sessionId, resolve }));
+    }
+    this.runningSessions.add(sessionId);
+    this.setStatus(sessionId, 'running');
+    return () => {
+      this.runningSessions.delete(sessionId);
+      while (this.runQueue.length) {
+        const next = this.runQueue.shift()!;
+        if (this.sessions.has(next.sessionId)) { next.resolve(); break; }
+      }
+    };
   }
 
   /** Reveal the chat and submit a prompt programmatically (editor commands). */
@@ -319,23 +405,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Give the webview a moment to mount if it was just revealed.
     await new Promise((r) => setTimeout(r, 150));
     const requestId = `ext-${Date.now()}`;
-    this.post({ type: 'userEcho', requestId, text });
+    const s = this.current();
+    this.post({ type: 'userEcho', sessionId: s.id, requestId, text });
     await this.handleSend({ type: 'sendMessage', requestId, text, mode, model: 'auto', reasoningEffort: 'off' });
   }
 
   newChat(): void {
-    this.stopActiveRun(); // a run still going in this session must not bleed into the new one
-    this.persist(); // save the current conversation into history first
-    this.sessionId = this.newSessionId();
-    this.history = [];
-    this.transcript = [];
-    this.sessionTitle = undefined;
-    this.titleGenerated = false;
-    this.deps.checkpoints.clear();
-    void this.deps.workspaceState.update(CURRENT_KEY, this.sessionId);
-    this.deps.usage.reset();
-    this.post({ type: 'clear' });
-    this.post({ type: 'busy', busy: false }); // reset the composer if a run was in flight
+    // Create + view a fresh session. Other sessions' runs are NOT touched.
+    const s = this.createSession();
+    this.viewedSessionId = s.id;
+    void this.deps.workspaceState.update(CURRENT_KEY, s.id);
+    this.postSessionList();
+    this.post({ type: 'switchSession', sessionId: s.id, messages: [] });
+    this.post({ type: 'busy', sessionId: s.id, busy: false }); // reset the composer if a run was in flight
     void this.sendConfig();
     this.updateViewTitle();
   }
@@ -360,13 +442,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Compact the conversation (from the native title bar). */
   async compact(): Promise<void> {
     await vscode.commands.executeCommand('tiermux.chat.focus');
-    await this.handleCompact();
+    await this.handleCompact(this.current());
   }
 
   /** Browse past chats and reopen one (native QuickPick). */
   async showHistory(): Promise<void> {
     await vscode.commands.executeCommand('tiermux.chat.focus');
-    this.persist(); // make sure the current chat is in the list
+    this.persist(this.viewedSessionId); // make sure the current chat is in the list
     const sessions = this.loadSessions();
     if (!sessions.length) { void vscode.window.showInformationMessage('No chat history yet.'); return; }
 
@@ -375,8 +457,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     qp.placeholder = 'Select a chat to reopen';
     const edit = { iconPath: new vscode.ThemeIcon('edit'), tooltip: 'Rename' };
     const trash = { iconPath: new vscode.ThemeIcon('trash'), tooltip: 'Delete' };
-    const toItems = (list: ChatSession[]): HistoryItem[] => list.map((s) => ({
-      label: (s.id === this.sessionId ? '$(circle-filled) ' : '') + s.title,
+    const toItems = (list: StoredSession[]): HistoryItem[] => list.map((s) => ({
+      label: (s.id === this.viewedSessionId ? '$(circle-filled) ' : '') + s.title,
       description: `${timeAgo(s.ts)} · ${s.transcript.filter((t) => t.role === 'user').length} msgs`,
       sessionId: s.id,
       buttons: [edit, trash],
@@ -401,62 +483,66 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     qp.show();
   }
 
-  /** Rename a stored session (also updates the live title if it's the current one). */
+  /** Rename a stored session (also updates the live title if it's a live session). */
   private renameSession(id: string, title: string): void {
-    const sessions = this.loadSessions();
-    const s = sessions.find((x) => x.id === id);
-    if (!s) return;
-    s.title = title;
-    void this.deps.workspaceState.update(SESSIONS_KEY, sessions);
-    if (id === this.sessionId) {
-      this.sessionTitle = title;
-      this.updateViewTitle();
+    const s = this.sessions.get(id);
+    if (s) {
+      s.title = title;
+      this.persist(id);
+      return;
     }
+    // Not in memory (e.g. evicted beyond MAX_SESSIONS but still listed) — update storage only.
+    const stored = this.loadSessions();
+    const x = stored.find((u) => u.id === id);
+    if (x) { x.title = title; void this.deps.workspaceState.update(SESSIONS_KEY, stored); }
   }
 
   /** Inline rename of the current session from the webview header. */
   private handleRenameSession(title: string): void {
     const t = title.trim();
-    if (!t || t === (this.sessionTitle ?? this.deriveTitle())) return;
-    this.sessionTitle = t;
-    this.persist(); // saves + pushes the new title to chrome and webview header
+    const s = this.current();
+    if (!t || t === (s.title ?? this.deriveTitle(s))) return;
+    s.title = t;
+    this.persist(s.id); // saves + pushes the new title to chrome and webview header
   }
 
-  private openSession(id: string): void {
-    if (id === this.sessionId) return;
-    this.stopActiveRun(); // detach any run in the current session before switching away
-    this.persist();
-    const s = this.loadSessions().find((x) => x.id === id);
+  /** Switch the viewed session. Does NOT cancel the session we're leaving — its run keeps going. */
+  openSession(id: string): void {
+    if (id === this.viewedSessionId) return;
+    const s = this.sessions.get(id);
     if (!s) return;
-    this.sessionId = s.id;
-    this.history = s.history ?? [];
-    this.transcript = s.transcript ?? [];
-    this.sessionTitle = s.title;
-    this.titleGenerated = true;
-    this.deps.checkpoints.clear(); // the restore bar belongs to the session we just left
-    void this.deps.workspaceState.update(CURRENT_KEY, this.sessionId);
-    this.deps.usage.reset();
-    this.post({ type: 'restore', messages: this.transcript });
-    this.post({ type: 'busy', busy: false }); // reset the composer if a run was in flight
+    this.viewedSessionId = id;
+    void this.deps.workspaceState.update(CURRENT_KEY, id);
+    this.postSessionList();
+    this.post({ type: 'switchSession', sessionId: id, messages: s.transcript });
+    this.post({ type: 'busy', sessionId: id, busy: !!s.activeRequestId });
+    // Re-emit a running session's cached live status so switching back mid-run shows its
+    // current step/todos immediately, then any interactive cards it's blocked on.
+    if (s.activeRequestId) {
+      const rid = s.activeRequestId;
+      this.post({ type: 'assistantStart', sessionId: s.id, requestId: rid, platform: s.livePlatform ?? '', model: s.liveModel ?? '' });
+      if (s.lastStepLabel) this.post({ type: 'agentStep', sessionId: s.id, requestId: rid, phase: 'thinking', label: s.lastStepLabel });
+      if (s.lastTodos && s.lastTodos.length) this.post({ type: 'todos', sessionId: s.id, requestId: rid, todos: s.lastTodos });
+    }
+    for (const card of s.cards) this.post(card);
+    this.postCheckpoints(s);
     void this.sendConfig();
     this.updateViewTitle();
   }
 
   private deleteSession(id: string): void {
+    const wasViewed = id === this.viewedSessionId;
+    this.stopRun(id, false); // cancel only this session's run (no rebuild — we switch away next)
+    this.sessions.delete(id);
+    this.statusOf.delete(id);
     void this.deps.workspaceState.update(SESSIONS_KEY, this.loadSessions().filter((s) => s.id !== id));
-    if (id === this.sessionId) {
-      this.stopActiveRun(); // a run in the deleted session must not bleed into the fresh one
-      this.sessionId = this.newSessionId();
-      this.history = [];
-      this.transcript = [];
-      this.sessionTitle = undefined;
-      this.titleGenerated = false;
-      this.deps.checkpoints.clear();
-      void this.deps.workspaceState.update(CURRENT_KEY, this.sessionId);
-      this.post({ type: 'clear' });
-      this.post({ type: 'busy', busy: false });
-      this.updateViewTitle();
+    if (wasViewed) {
+      // Switch to the most recent remaining session, or start a fresh one.
+      const next = this.loadSessions()[0]?.id;
+      if (next && this.sessions.has(next)) this.openSession(next);
+      else this.newChat();
     }
+    this.postSessionList();
   }
 
   private async onMessage(m: InMessage): Promise<void> {
@@ -465,7 +551,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.ready = true;
         this.flushQueue();
         await this.sendConfig();
-        if (this.transcript.length) this.post({ type: 'restore', messages: this.transcript });
+        this.postSessionList();
+        { const s = this.current(); this.post({ type: 'switchSession', sessionId: s.id, messages: s.transcript }); this.post({ type: 'busy', sessionId: s.id, busy: !!s.activeRequestId }); this.postCheckpoints(s); }
+        break;
+      case 'switchSession':
+        this.openSession(m.sessionId);
         break;
       case 'requestConfig':
         await this.sendConfig();
@@ -486,19 +576,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.handleRenameSession(m.title);
         break;
       case 'cancel':
-        this.cancel?.cancel();
-        this.settlePendingApprovals(false); // unblock any command waiting on approval
-        this.pendingClarify = undefined;
-        this.pendingPlanUser = undefined;
+        this.stopRun(m.sessionId ?? this.viewedSessionId);
         break;
       case 'commandApprovalResponse':
       case 'editApprovalResponse': {
-        const resolve = this.pendingApprovals.get(m.id);
-        if (resolve) { this.pendingApprovals.delete(m.id); resolve(m.approved); }
+        const s = this.sessions.get(m.sessionId ?? this.viewedSessionId);
+        const resolve = s?.pendingApprovals.get(m.id);
+        if (s && resolve) {
+          s.pendingApprovals.delete(m.id);
+          this.removeCards(s, (c) => (c.type === 'commandApproval' || c.type === 'editApproval') && c.id === m.id);
+          resolve(m.approved);
+          this.approvalNotified.delete(`${s.id}:${s.activeRequestId ?? ''}`);
+          if (s.activeRequestId) this.setStatus(s.id, 'running');
+        }
         break;
       }
       case 'vote': {
-        const ctx = this.voteCtx.get(m.requestId);
+        const s = this.current();
+        const ctx = s.voteCtx.get(m.requestId);
         if (ctx) {
           this.deps.modelStats.recordVote(ctx.taskKind, ctx.platform, ctx.model, m.vote, ctx.last);
           ctx.last = m.vote;
@@ -527,7 +622,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.handleMentionQuery(m);
         break;
       case 'compact':
-        await this.handleCompact();
+        await this.handleCompact(this.current());
         break;
       case 'editMcp':
         await vscode.commands.executeCommand('workbench.action.openSettingsJson');
@@ -559,13 +654,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.sendConfig();
         break;
       case 'restoreCheckpoint':
-        await this.handleRestoreCheckpoint(m.id);
+        await this.handleRestoreCheckpoint(this.current(), m.id);
         break;
       case 'diffCheckpointFile':
-        await this.deps.checkpoints.openDiff(m.id, m.uri);
+        this.current().checkpoints.openDiff(m.id, m.uri);
         break;
       case 'revertTo':
-        await this.handleRevertTo(m.requestId);
+        await this.handleRevertTo(this.current(), m.requestId);
         break;
       case 'copyText':
         await vscode.env.clipboard.writeText(m.text);
@@ -602,7 +697,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const attachment: Attachment = { kind: 'file', name: vscode.workspace.asRelativePath(uri), text };
         this.post({ type: 'attachmentAdded', attachment });
       } catch (e) {
-        this.post({ type: 'error', message: `Could not read ${uri.fsPath}: ${e instanceof Error ? e.message : e}` });
+        this.post({ type: 'error', sessionId: this.viewedSessionId, message: `Could not read ${uri.fsPath}: ${e instanceof Error ? e.message : e}` });
       }
     }
   }
@@ -704,34 +799,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async handleCompact(): Promise<void> {
-    if (this.history.length < 4) {
-      this.post({ type: 'notice', text: 'Not enough conversation to compact yet.' });
+  private async handleCompact(s: Session): Promise<void> {
+    if (!shouldCondense(s.history)) {
+      this.post({ type: 'notice', sessionId: s.id, text: 'Not enough conversation to compact yet.' });
       return;
     }
-    this.post({ type: 'busy', busy: true });
-    const before = this.deps.usage.get();
+    this.post({ type: 'busy', sessionId: s.id, busy: true });
     try {
-      const result = await this.deps.router.route(
-        [
-          { role: 'system', content: SUMMARY_SYSTEM },
-          ...this.history,
-          { role: 'user', content: 'Summarize the conversation so far so it can continue with minimal context.' },
-        ],
-        { temperature: 0.2, max_tokens: 1024 },
-      );
-      const summary = contentToString(result.response.choices[0]?.message.content).trim();
-      if (!summary) { this.post({ type: 'notice', text: 'Compaction produced no summary; context unchanged.' }); return; }
-      const priorTokens = this.history.length;
-      this.history = [{ role: 'user', content: `Summary of the conversation so far:\n${summary}` }];
-      this.persist();
-      const after = this.deps.usage.get();
-      this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext() } });
-      this.post({ type: 'notice', text: `🗜 Context compacted — ${priorTokens} earlier messages summarized (+${after.totalTokens - before.totalTokens} tokens).` });
+      const r = await condenseHistory(s.history, this.deps.router);
+      if (!r) { this.post({ type: 'notice', sessionId: s.id, text: 'Compaction produced no summary; context unchanged.' }); return; }
+      const prior = s.history.length;
+      s.history = r.messages;
+      this.persist(s.id);
+      this.post({ type: 'usageTotals', totals: { ...this.deps.usage.get(), context: this.computeContext(s) } });
+      this.post({ type: 'notice', sessionId: s.id, text: `🗜 Context compacted — ${prior} → ${r.messages.length} messages. Earlier turns summarized; the last few kept verbatim.` });
     } catch (e) {
-      this.post({ type: 'error', message: `Compact failed: ${e instanceof Error ? e.message : String(e)}` });
+      this.post({ type: 'error', sessionId: s.id, message: `Compact failed: ${e instanceof Error ? e.message : String(e)}` });
     } finally {
-      this.post({ type: 'busy', busy: false });
+      this.post({ type: 'busy', sessionId: s.id, busy: false });
     }
   }
 
@@ -754,90 +839,101 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async handleSend(m: Extract<InMessage, { type: 'sendMessage' }>): Promise<void> {
     const slash = parseSlash(m.text);
     if (slash?.name === 'commit') {
+      const s = this.current();
       await this.deps.generateCommitMessage();
-      this.post({ type: 'assistantMessage', requestId: m.requestId, text: 'Generated a commit message in the Source Control input.' });
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: 'Generated a commit message in the Source Control input.' });
       return;
     }
     let prompt = m.text;
     if (slash && SLASH_PROMPTS[slash.name]) prompt = `${SLASH_PROMPTS[slash.name]}\n\n${slash.rest}`;
 
+    const s = this.current();
     const contextText = await resolveMentions(prompt).catch(() => '');
     const userContent = this.buildUserContent(prompt, contextText, m.attachments);
-    this.history.push({ role: 'user', content: userContent });
-    this.transcript.push({ role: 'user', text: prompt, requestId: m.requestId, ts: Date.now() });
-    void this.maybeGenerateTitle(); // title from the user's message right away (e.g. "hi" -> "Greetings")
+    s.history.push({ role: 'user', content: userContent });
+    s.transcript.push({ role: 'user', text: prompt, requestId: m.requestId, ts: Date.now() });
+    void this.maybeGenerateTitle(s); // title from the user's message right away (e.g. "hi" -> "Greetings")
 
-    this.cancel?.dispose();
-    this.cancel = new vscode.CancellationTokenSource();
-    this.activeRequestId = m.requestId;
-    this.post({ type: 'busy', busy: true });
+    s.cancel?.dispose();
+    s.cancel = new vscode.CancellationTokenSource();
+    s.activeRequestId = m.requestId;
+
+    const release = await this.acquireRunSlot(s.id);
+    // Cancelled (Stop) while queued → release the slot and bail before running.
+    if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
+
+    this.post({ type: 'busy', sessionId: s.id, busy: true });
     const before = this.deps.usage.get();
-    this.deps.checkpoints.begin(m.requestId, prompt.slice(0, 60));
+    s.checkpoints.begin(m.requestId, prompt.slice(0, 60));
     const sentAt = Date.now();
 
     try {
-      const result = await this.deps.agent.run(this.history, m.mode as Mode, {
+      const result = await this.deps.agent.run(s.history, m.mode as Mode, {
         model: m.model,
         reasoningEffort: m.reasoningEffort,
-        token: this.cancel.token,
-        onFailover: (i) => { if (this.isActiveRun(m.requestId)) this.post({ type: 'failoverNotice', requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
-      }, this.agentCallbacks(m.requestId));
-      // Abandoned mid-run by a new chat / session switch → drop the output entirely.
-      if (!this.isActiveRun(m.requestId)) return;
+        token: s.cancel.token,
+        runContext: this.runContext(s, m.requestId),
+        onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
+      }, this.agentCallbacks(s, m.requestId));
+      // Abandoned mid-run by a cancel → drop the output entirely.
+      if (!this.isActiveRun(s, m.requestId)) return;
 
       if (m.mode === 'plan') {
         const clar = parseClarifying(result.text);
         // Plan mode never commits the turn yet — the user turn is re-added on approval
         // (or after clarifying answers), so drop it now to avoid duplication later.
-        this.history.pop();
-        this.pendingPlanUser = userContent;
+        s.history.pop();
+        s.pendingPlanUser = userContent;
         if (clar.questions && clar.questions.length) {
           // The planner needs clarification before it can produce a good plan: surface
           // the questions as an interactive card, then re-plan with the answers.
-          this.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: clar.questions };
-          this.post({ type: 'clarifyingQuestions', requestId: m.requestId, questions: clar.questions });
+          s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: clar.questions };
+          this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: clar.questions });
           return;
         }
-        this.post({ type: 'planProposed', requestId: m.requestId, steps: clar.text });
+        this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
         void this.savePlan(prompt, clar.text);
         return;
       }
 
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
-      this.persistAgentTurn(result);
-      this.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now(), secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)) });
-      this.rememberWindow(result.platform, result.model);
+      this.persistAgentTurn(s, result);
+      s.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now(), secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)) });
+      this.rememberWindow(s, result.platform, result.model);
       // Remember which (task kind, model) produced this reply so 👍/👎 can teach the router.
       if (result.taskKind && result.platform && result.model) {
-        this.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
+        s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      this.post({ type: 'assistantMessage', requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.platform, model: result.model, paused: result.paused });
-      this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext() } });
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.platform, model: result.model, paused: result.paused });
+      this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext(s) } });
     } catch (e) {
-      if (!this.isActiveRun(m.requestId)) return; // abandoned run — don't surface its error in the new session
-      this.post({ type: 'error', requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
+      if (!this.isActiveRun(s, m.requestId)) return; // abandoned run — don't surface its error
+      this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
+      void this.maybeRecommendModels(e);
       // Drop the user turn that produced no answer to keep history clean.
-      if (this.history[this.history.length - 1]?.role === 'user') this.history.pop();
+      if (s.history[s.history.length - 1]?.role === 'user') s.history.pop();
     } finally {
-      // Only finalize if this run still owns the session; an abandoned run leaves cleanup
-      // to whoever superseded it (stopActiveRun already settled approvals + reset busy).
-      if (this.isActiveRun(m.requestId)) {
-        this.activeRequestId = undefined;
-        this.settlePendingApprovals(false); // safety net: never leave a command waiting after the run ends
-        await this.finishCheckpoint(m.requestId);
-        this.persist();
-        this.post({ type: 'busy', busy: false });
-        await this.maybeAutoCompact();
-        void this.maybeGenerateTitle();
+      // Only finalize if this run still owns the session; a cancelled run leaves cleanup to
+      // stopRun (which already settled approvals + reset status).
+      release();
+      if (this.isActiveRun(s, m.requestId)) {
+        s.activeRequestId = undefined;
+        this.settlePendingApprovals(s, false); // safety net: never leave a command waiting after the run ends
+        await this.finishCheckpoint(s, m.requestId);
+        this.persist(s.id);
+        this.post({ type: 'busy', sessionId: s.id, busy: false });
+        this.setStatus(s.id, 'finished');
+        await this.maybeAutoCompact(s);
+        void this.maybeGenerateTitle(s);
       }
     }
   }
 
   /** Commit the turn's checkpoint, then refresh the restore bar on every command. */
-  private async finishCheckpoint(_requestId: string): Promise<void> {
-    this.deps.checkpoints.commit();
-    await this.postCheckpoints();
+  private async finishCheckpoint(s: Session, _requestId: string): Promise<void> {
+    s.checkpoints.commit();
+    await this.postCheckpoints(s);
   }
 
   /**
@@ -845,12 +941,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * cumulative set of files that restoring "to before this message" would revert, so
    * earlier commands show a larger set than later ones (Cursor/Windsurf semantics).
    */
-  private async postCheckpoints(): Promise<void> {
-    for (const cp of this.deps.checkpoints.list()) {
-      const files = await this.deps.checkpoints.changedFiles(cp.id);
-      this.post({ type: 'checkpoint', requestId: cp.requestId, id: cp.id, files });
+  private async postCheckpoints(s: Session): Promise<void> {
+    for (const cp of s.checkpoints.list()) {
+      const files = await s.checkpoints.changedFiles(cp.id);
+      this.post({ type: 'checkpoint', sessionId: s.id, requestId: cp.requestId, id: cp.id, files });
     }
-    await this.postChangedFilesBar();
+    await this.postChangedFilesBar(s);
   }
 
   /**
@@ -858,52 +954,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * aggregates every edit made this session (cumulative semantics), so its file set is
    * the full review list and its id is what "Undo all" restores. Empty set hides the bar.
    */
-  private async postChangedFilesBar(): Promise<void> {
-    const cps = this.deps.checkpoints.list();
-    if (!cps.length) { this.post({ type: 'changedFiles', id: '', files: [] }); return; }
+  private async postChangedFilesBar(s: Session): Promise<void> {
+    const cps = s.checkpoints.list();
+    if (!cps.length) { this.post({ type: 'changedFiles', sessionId: s.id, id: '', files: [] }); return; }
     const id = cps[0].id;
-    const files = await this.deps.checkpoints.changedFiles(id);
-    this.post({ type: 'changedFiles', id, files });
+    const files = await s.checkpoints.changedFiles(id);
+    this.post({ type: 'changedFiles', sessionId: s.id, id, files });
   }
 
   /**
    * "Revert to here": roll the workspace back to before a command, drop that command
    * and every later turn, and put its text back in the composer (Cursor/Windsurf style).
    */
-  private async handleRevertTo(requestId: string): Promise<void> {
-    const idx = this.transcript.findIndex((t) => t.role === 'user' && t.requestId === requestId);
+  private async handleRevertTo(s: Session, requestId: string): Promise<void> {
+    const idx = s.transcript.findIndex((t) => t.role === 'user' && t.requestId === requestId);
     if (idx < 0) return;
-    const removedText = this.transcript[idx].text;
-    const removedIds = this.transcript.slice(idx).filter((t) => t.role === 'user' && t.requestId).map((t) => t.requestId!);
+    const removedText = s.transcript[idx].text;
+    const removedIds = s.transcript.slice(idx).filter((t) => t.role === 'user' && t.requestId).map((t) => t.requestId!);
     // The earliest checkpoint among removed turns reverts everything from here onward.
     let firstCpId: string | undefined;
-    for (const rid of removedIds) { const cid = this.deps.checkpoints.idForRequest(rid); if (cid) { firstCpId = cid; break; } }
-    const fileCount = firstCpId ? (await this.deps.checkpoints.changedFiles(firstCpId)).length : 0;
+    for (const rid of removedIds) { const cid = s.checkpoints.idForRequest(rid); if (cid) { firstCpId = cid; break; } }
+    const fileCount = firstCpId ? (await s.checkpoints.changedFiles(firstCpId)).length : 0;
 
-    const laterTurns = this.transcript.slice(idx).filter((t) => t.role === 'user').length;
+    const laterTurns = s.transcript.slice(idx).filter((t) => t.role === 'user').length;
     const detail = fileCount
       ? `${fileCount} changed file${fileCount > 1 ? 's' : ''} will be restored and ${laterTurns} message${laterTurns > 1 ? 's' : ''} removed.`
       : `${laterTurns} message${laterTurns > 1 ? 's' : ''} will be removed.`;
     const choice = await vscode.window.showWarningMessage(`Revert to this point? ${detail}`, { modal: true }, 'Revert');
     if (choice !== 'Revert') return;
 
-    if (firstCpId) await this.deps.checkpoints.restore(firstCpId);
-    this.deps.checkpoints.dropByRequestIds(removedIds);
+    if (firstCpId) await s.checkpoints.restore(firstCpId);
+    s.checkpoints.dropByRequestIds(removedIds);
 
-    this.transcript = this.transcript.slice(0, idx);
-    this.history = this.transcript.map((t) => ({ role: t.role, content: t.text }));
+    s.transcript = s.transcript.slice(0, idx);
+    s.history = s.transcript.map((t) => ({ role: t.role, content: t.text }));
 
-    this.post({ type: 'restore', messages: this.transcript });
-    await this.postCheckpoints();
+    this.post({ type: 'switchSession', sessionId: s.id, messages: s.transcript });
+    await this.postCheckpoints(s);
     this.post({ type: 'setInput', text: removedText });
-    if (fileCount) this.post({ type: 'notice', text: `⟲ Reverted ${fileCount} file${fileCount !== 1 ? 's' : ''} to this point.` });
-    this.persist();
+    if (fileCount) this.post({ type: 'notice', sessionId: s.id, text: `⟲ Reverted ${fileCount} file${fileCount !== 1 ? 's' : ''} to this point.` });
+    this.persist(s.id);
   }
 
-  private async handleRestoreCheckpoint(id: string): Promise<void> {
-    const files = await this.deps.checkpoints.changedFiles(id);
+  private async handleRestoreCheckpoint(s: Session, id: string): Promise<void> {
+    const files = await s.checkpoints.changedFiles(id);
     if (!files.length) {
-      this.post({ type: 'notice', text: 'Nothing to restore — the workspace already matches this point.' });
+      this.post({ type: 'notice', sessionId: s.id, text: 'Nothing to restore — the workspace already matches this point.' });
       return;
     }
     const plural = files.length > 1;
@@ -913,9 +1009,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       'Restore',
     );
     if (choice !== 'Restore') return;
-    const n = await this.deps.checkpoints.restore(id);
-    this.post({ type: 'notice', text: `⟲ Restored ${n} file${n !== 1 ? 's' : ''} to before this message.` });
-    await this.postCheckpoints();
+    const n = await s.checkpoints.restore(id);
+    this.post({ type: 'notice', sessionId: s.id, text: `⟲ Restored ${n} file${n !== 1 ? 's' : ''} to before this message.` });
+    await this.postCheckpoints(s);
   }
 
   /** Persist a proposed plan as a visible markdown checklist file in the workspace. */
@@ -940,71 +1036,71 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       await vscode.workspace.fs.createDirectory(dir);
       await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(body));
-      this.post({ type: 'notice', text: `📄 Plan saved to ${vscode.workspace.asRelativePath(fileUri)}` });
+      this.post({ type: 'notice', sessionId: this.viewedSessionId, text: `📄 Plan saved to ${vscode.workspace.asRelativePath(fileUri)}` });
     } catch (e) {
-      this.post({ type: 'notice', text: `Could not save plan file: ${e instanceof Error ? e.message : String(e)}` });
+      this.post({ type: 'notice', sessionId: this.viewedSessionId, text: `Could not save plan file: ${e instanceof Error ? e.message : String(e)}` });
     }
   }
 
-  private pendingPlanUser?: ChatContent;
-  /** A Plan-mode run that paused to ask clarifying questions; resumed on answerClarifying. */
-  private pendingClarify?: { requestId: string; userContent: ChatContent; prompt: string; questions: ClarifyingQuestion[] };
-  /** LLM-generated title for the current session (falls back to deriveTitle until set). */
-  private sessionTitle?: string;
-  /** Guards a single title-generation attempt per session. */
-  private titleGenerated = false;
-
   private async handleApprovePlan(m: Extract<InMessage, { type: 'approvePlan' }>): Promise<void> {
+    const s = this.current();
+    this.removeCards(s, (c) => c.type === 'planProposed' || c.type === 'clarifyingQuestions');
     if (!m.approved) {
-      this.pendingPlanUser = undefined;
-      this.post({ type: 'assistantMessage', requestId: m.requestId, text: '_Plan discarded._' });
+      s.pendingPlanUser = undefined;
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: '_Plan discarded._' });
       return;
     }
-    const original = this.pendingPlanUser;
-    this.pendingPlanUser = undefined;
-    if (original) this.history.push({ role: 'user', content: original });
-    this.history.push({ role: 'user', content: `Execute this plan step by step:\n\n${m.steps}` });
+    const original = s.pendingPlanUser;
+    s.pendingPlanUser = undefined;
+    if (original) s.history.push({ role: 'user', content: original });
+    s.history.push({ role: 'user', content: `Execute this plan step by step:\n\n${m.steps}` });
 
-    this.cancel?.dispose();
-    this.cancel = new vscode.CancellationTokenSource();
-    this.activeRequestId = m.requestId;
-    this.post({ type: 'busy', busy: true });
+    s.cancel?.dispose();
+    s.cancel = new vscode.CancellationTokenSource();
+    s.activeRequestId = m.requestId;
+    const release = await this.acquireRunSlot(s.id);
+    if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
+    this.post({ type: 'busy', sessionId: s.id, busy: true });
     // Seed the live checklist from the approved plan so the user sees it immediately;
     // the agent then advances each item via updateTodos as it executes.
     const seeded = planStepsToTodos(m.steps);
-    if (seeded.length) this.post({ type: 'todos', requestId: m.requestId, todos: seeded });
+    if (seeded.length) this.post({ type: 'todos', sessionId: s.id, requestId: m.requestId, todos: seeded });
     const before = this.deps.usage.get();
-    this.deps.checkpoints.begin(m.requestId, 'Plan execution');
+    s.checkpoints.begin(m.requestId, 'Plan execution');
     const sentAt = Date.now();
     try {
-      const result = await this.deps.agent.run(this.history, 'agent', {
-        token: this.cancel.token,
-        onFailover: (i) => { if (this.isActiveRun(m.requestId)) this.post({ type: 'failoverNotice', requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
-      }, this.agentCallbacks(m.requestId));
-      if (!this.isActiveRun(m.requestId)) return; // abandoned mid-run by a new chat / session switch
+      const result = await this.deps.agent.run(s.history, 'agent', {
+        token: s.cancel.token,
+        runContext: this.runContext(s, m.requestId),
+        onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
+      }, this.agentCallbacks(s, m.requestId));
+      if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
-      this.persistAgentTurn(result);
-      this.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now(), secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)) });
-      this.rememberWindow(result.platform, result.model);
+      this.persistAgentTurn(s, result);
+      s.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now(), secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)) });
+      this.rememberWindow(s, result.platform, result.model);
       // Remember which (task kind, model) produced this reply so 👍/👎 can teach the router.
       if (result.taskKind && result.platform && result.model) {
-        this.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
+        s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      this.post({ type: 'assistantMessage', requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.platform, model: result.model, paused: result.paused });
-      this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext() } });
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.platform, model: result.model, paused: result.paused });
+      this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext(s) } });
     } catch (e) {
-      if (!this.isActiveRun(m.requestId)) return;
-      this.post({ type: 'error', requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
+      if (!this.isActiveRun(s, m.requestId)) return;
+      this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
+      void this.maybeRecommendModels(e);
     } finally {
-      if (this.isActiveRun(m.requestId)) {
-        this.activeRequestId = undefined;
-        this.settlePendingApprovals(false); // safety net: never leave a command waiting after the run ends
-        await this.finishCheckpoint(m.requestId);
-        this.persist();
-        this.post({ type: 'busy', busy: false });
-        await this.maybeAutoCompact();
-        void this.maybeGenerateTitle();
+      release();
+      if (this.isActiveRun(s, m.requestId)) {
+        s.activeRequestId = undefined;
+        this.settlePendingApprovals(s, false); // safety net: never leave a command waiting after the run ends
+        await this.finishCheckpoint(s, m.requestId);
+        this.persist(s.id);
+        this.post({ type: 'busy', sessionId: s.id, busy: false });
+        this.setStatus(s.id, 'finished');
+        await this.maybeAutoCompact(s);
+        void this.maybeGenerateTitle(s);
       }
     }
   }
@@ -1015,44 +1111,114 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * persisting that is what lets a paused/failed run resume with memory instead of redoing
    * work. Tool-less runs (chat/trivial) have no workMessages, so fall back to the final text.
    */
-  private persistAgentTurn(result: AgentResult): void {
-    if (result.workMessages && result.workMessages.length) this.history.push(...result.workMessages);
-    else this.history.push({ role: 'assistant', content: result.text });
+  private persistAgentTurn(s: Session, result: AgentResult): void {
+    if (result.workMessages && result.workMessages.length) s.history.push(...result.workMessages);
+    else s.history.push({ role: 'assistant', content: result.text });
   }
 
   /**
-   * True while `requestId` is still the run the UI/history belong to. Starting a new chat
-   * or switching sessions clears `activeRequestId`, so a run that was abandoned mid-flight
-   * fails this check — its streaming and result are then dropped instead of leaking into
-   * whatever session is now open.
+   * True while `requestId` is still the active run in `session`. Cancelling (Stop) or
+   * superseding a run within its session clears `activeRequestId`, so a run abandoned
+   * mid-flight fails this check — its streaming and result are then dropped. NOTE: this is
+   * about liveness WITHIN a session, not about whether the session is viewed — background
+   * runs must keep streaming into their hidden container.
    */
-  private isActiveRun(requestId: string): boolean {
-    return this.activeRequestId === requestId;
+  private isActiveRun(s: Session, requestId: string): boolean {
+    return s.activeRequestId === requestId;
   }
 
-  /** Cancel any in-flight agent run and detach it so its output can't land in another session. */
-  private stopActiveRun(): void {
-    this.cancel?.cancel();
-    this.activeRequestId = undefined; // invalidates the run's liveness guard (isActiveRun)
-    this.settlePendingApprovals(false); // unblock any command/edit awaiting a click
-    this.pendingClarify = undefined;
-    this.pendingPlanUser = undefined;
+  /** Cancel a session's in-flight run and detach it so its output can't land anywhere.
+   *  `rebuild=false` skips the thread rebuild (used by deleteSession, which switches away right after). */
+  private stopRun(sessionId: string, rebuild = true): void {
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    // If it was still queued (not running yet), unblock its acquireRunSlot so the slot frees;
+    // the handler's post-acquire liveness guard then bails out.
+    const qi = this.runQueue.findIndex((q) => q.sessionId === sessionId);
+    if (qi >= 0) { this.runQueue.splice(qi, 1)[0].resolve(); }
+    s.cancel?.cancel();
+    s.activeRequestId = undefined; // invalidates the run's liveness guard (isActiveRun)
+    this.settlePendingApprovals(s, false); // unblock any command/edit awaiting a click
+    s.pendingClarify = undefined;
+    s.pendingPlanUser = undefined;
+    s.cards = [];
+    this.setStatus(sessionId, 'idle');
+    // If the user is watching this session, rebuild its thread clean (drops the abandoned
+    // turn's live cards) and reset the composer.
+    if (rebuild && this.viewedSessionId === sessionId) {
+      this.post({ type: 'switchSession', sessionId, messages: s.transcript });
+    }
+    this.post({ type: 'busy', sessionId, busy: false });
   }
 
-  /**
-   * Build the streaming callbacks for a run, each gated on the run still being active.
-   * Centralizing the guard means a run abandoned by a new chat / session switch goes quiet
-   * immediately instead of rendering into the freshly opened conversation.
-   */
-  private agentCallbacks(requestId: string): AgentCallbacks {
-    let announced = false;
-    const live = (): boolean => this.isActiveRun(requestId);
+  /** Build the per-run context that threads this session's checkpoints + approvals through the shared gates. */
+  private runContext(s: Session, requestId: string): RunContext {
     return {
-      onModel: (platform, model) => { if (live() && !announced) { announced = true; this.post({ type: 'assistantStart', requestId, platform, model }); } },
-      onTool: (e) => { if (live()) this.post({ type: 'toolStatus', requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail }); },
-      onStep: (phase, label) => { if (live()) this.post({ type: 'agentStep', requestId, phase, label }); },
-      onTodos: (todos) => { if (live()) this.post({ type: 'todos', requestId, todos }); },
+      sessionId: s.id,
+      requestId,
+      checkpoints: s.checkpoints,
+      approveCommand: (cmd, cwd) => this.requestCommandApproval(s.id, requestId, cmd, cwd),
+      approveEdit: (req) => this.requestEditApproval(s.id, requestId, req),
+      autoApprove: () => this.autoApprove,
     };
+  }
+
+  /**
+   * Build the streaming callbacks for a run, each gated on the run still being active IN ITS
+   * SESSION. Centralizing the guard means a cancelled run goes quiet immediately instead of
+   * rendering into another session. Not gated on viewed — background runs keep streaming.
+   */
+  private agentCallbacks(s: Session, requestId: string): AgentCallbacks {
+    const live = (): boolean => this.isActiveRun(s, requestId);
+    // The webview shows one session at a time and rebuilds on switch, so we CACHE the live
+    // status on the session (always, while the run is live) and only PUSH to the webview when
+    // this session is the viewed one. openSession re-emits the cache so switching back to a
+    // running agent shows its current step/todos immediately.
+    const viewed = (): boolean => this.viewedSessionId === s.id;
+    return {
+      onModel: (platform, model) => { if (!live()) return; s.livePlatform = platform; s.liveModel = model; if (viewed()) this.post({ type: 'assistantStart', sessionId: s.id, requestId, platform, model }); },
+      onTool: (e) => { if (live() && viewed()) this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail }); },
+      onStep: (phase, label) => { if (!live()) return; s.lastStepLabel = label; if (viewed()) this.post({ type: 'agentStep', sessionId: s.id, requestId, phase, label }); },
+      onTodos: (todos) => { if (!live()) return; s.lastTodos = todos; if (viewed()) this.post({ type: 'todos', sessionId: s.id, requestId, todos }); },
+      onAskUser: async (question, options) => { if (!live()) return ''; return this.requestUserInput(question, options); },
+    };
+  }
+
+  /**
+   * Backing for the agent's `askUser` tool: a native input box (free text) or quick pick
+   * (multiple choice). Blocks the run until answered; '' on cancel so the model can move on.
+   * Uses native prompts to avoid webview surgery — consistent with how the extension already
+   * asks for input elsewhere.
+   */
+  private async requestUserInput(question: string, options?: string[]): Promise<string> {
+    try { this.view?.show?.(true); } catch { /* reveal is best-effort */ }
+    if (options && options.length >= 2) {
+      const picked = await vscode.window.showQuickPick(
+        options.map((label) => ({ label })),
+        { placeHolder: question, ignoreFocusOut: true },
+      );
+      return picked ? picked.label : '';
+    }
+    const answer = await vscode.window.showInputBox({ prompt: question, ignoreFocusOut: true });
+    return answer ?? '';
+  }
+
+  /**
+   * When a run fails because every configured model was exhausted (escalation couldn't find a
+   * stronger one either), point the user at specific powerful FREE models they could enable —
+   * a concrete fix instead of a cryptic error. No-op for any other error kind.
+   */
+  private async maybeRecommendModels(e: unknown): Promise<void> {
+    if (!(e instanceof AllModelsFailedError)) return;
+    const enabled = new Set(this.deps.settings.enabledByPriority().map((en) => `${en.platform}::${en.modelId}`));
+    const recs = recommendFreeStrong(this.deps.catalog, enabled, 3);
+    if (!recs.length) return;
+    const list = recs.map((r) => `• ${r.display}`).join('\n');
+    const choice = await vscode.window.showInformationMessage(
+      `No enabled model could handle this. These powerful FREE models aren't enabled yet:\n${list}`,
+      'Manage Models',
+    );
+    if (choice === 'Manage Models') void vscode.commands.executeCommand('tiermux.openModelSettings');
   }
 
   /**
@@ -1062,93 +1228,107 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * follow-up never triggers a fresh Plan pass.
    */
   private async handleResume(m: Extract<InMessage, { type: 'resume' }>): Promise<void> {
-    this.history.push({
+    const s = this.current();
+    s.history.push({
       role: 'user',
       content: 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.',
     });
-    this.cancel?.dispose();
-    this.cancel = new vscode.CancellationTokenSource();
-    this.activeRequestId = m.requestId;
-    this.post({ type: 'busy', busy: true });
+    s.cancel?.dispose();
+    s.cancel = new vscode.CancellationTokenSource();
+    s.activeRequestId = m.requestId;
+    const release = await this.acquireRunSlot(s.id);
+    if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
+    this.post({ type: 'busy', sessionId: s.id, busy: true });
     const before = this.deps.usage.get();
-    this.deps.checkpoints.begin(m.requestId, 'Continue');
+    s.checkpoints.begin(m.requestId, 'Continue');
     const sentAt = Date.now();
     try {
-      const result = await this.deps.agent.run(this.history, 'agent', {
-        token: this.cancel.token,
-        onFailover: (i) => { if (this.isActiveRun(m.requestId)) this.post({ type: 'failoverNotice', requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
-      }, this.agentCallbacks(m.requestId));
-      if (!this.isActiveRun(m.requestId)) return; // abandoned mid-run by a new chat / session switch
+      const result = await this.deps.agent.run(s.history, 'agent', {
+        token: s.cancel.token,
+        runContext: this.runContext(s, m.requestId),
+        onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
+      }, this.agentCallbacks(s, m.requestId));
+      if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
-      this.persistAgentTurn(result);
-      this.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now(), secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)) });
-      this.rememberWindow(result.platform, result.model);
+      this.persistAgentTurn(s, result);
+      s.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now(), secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)) });
+      this.rememberWindow(s, result.platform, result.model);
       if (result.taskKind && result.platform && result.model) {
-        this.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
+        s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      this.post({ type: 'assistantMessage', requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.platform, model: result.model, paused: result.paused });
-      this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext() } });
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.platform, model: result.model, paused: result.paused });
+      this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext(s) } });
     } catch (e) {
-      if (!this.isActiveRun(m.requestId)) return;
-      this.post({ type: 'error', requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
+      if (!this.isActiveRun(s, m.requestId)) return;
+      this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
+      void this.maybeRecommendModels(e);
       // The resume nudge produced nothing — drop it so history stays clean and resumable.
-      if (this.history[this.history.length - 1]?.role === 'user') this.history.pop();
+      if (s.history[s.history.length - 1]?.role === 'user') s.history.pop();
     } finally {
-      if (this.isActiveRun(m.requestId)) {
-        this.activeRequestId = undefined;
-        this.settlePendingApprovals(false);
-        await this.finishCheckpoint(m.requestId);
-        this.persist();
-        this.post({ type: 'busy', busy: false });
-        await this.maybeAutoCompact();
+      release();
+      if (this.isActiveRun(s, m.requestId)) {
+        s.activeRequestId = undefined;
+        this.settlePendingApprovals(s, false);
+        await this.finishCheckpoint(s, m.requestId);
+        this.persist(s.id);
+        this.post({ type: 'busy', sessionId: s.id, busy: false });
+        this.setStatus(s.id, 'finished');
+        await this.maybeAutoCompact(s);
       }
     }
   }
 
   /** Resume a paused Plan-mode run after the user answers its clarifying questions. */
   private async handleAnswerClarifying(m: Extract<InMessage, { type: 'answerClarifying' }>): Promise<void> {
-    const ctx = (this.pendingClarify && this.pendingClarify.requestId === m.requestId) ? this.pendingClarify : undefined;
-    this.pendingClarify = undefined;
+    const s = this.current();
+    const ctx = (s.pendingClarify && s.pendingClarify.requestId === m.requestId) ? s.pendingClarify : undefined;
+    s.pendingClarify = undefined;
     if (!ctx) return; // stale submission (e.g. after a cancel) — ignore
 
     // Fold the answers into the prompt and re-run Plan mode for a real plan.
     const qa = ctx.questions
       .map((q, i) => `Q: ${q.text}\nA: ${m.answers[i] ?? '(no answer)'}`)
       .join('\n');
-    const base = this.history.length;
-    this.history.push({ role: 'user', content: ctx.userContent });
-    this.history.push({ role: 'user', content: `Clarifications from the user:\n${qa}\n\nUsing these answers, produce the step-by-step plan now.` });
+    const base = s.history.length;
+    s.history.push({ role: 'user', content: ctx.userContent });
+    s.history.push({ role: 'user', content: `Clarifications from the user:\n${qa}\n\nUsing these answers, produce the step-by-step plan now.` });
 
-    this.cancel?.dispose();
-    this.cancel = new vscode.CancellationTokenSource();
-    this.activeRequestId = m.requestId;
-    this.post({ type: 'busy', busy: true });
-    this.deps.checkpoints.begin(m.requestId, 'Plan (clarified)');
+    s.cancel?.dispose();
+    s.cancel = new vscode.CancellationTokenSource();
+    s.activeRequestId = m.requestId;
+    const release = await this.acquireRunSlot(s.id);
+    if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
+    this.post({ type: 'busy', sessionId: s.id, busy: true });
+    s.checkpoints.begin(m.requestId, 'Plan (clarified)');
     try {
-      const result = await this.deps.agent.run(this.history, 'plan', {
-        token: this.cancel.token,
-        onFailover: (i) => { if (this.isActiveRun(m.requestId)) this.post({ type: 'failoverNotice', requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
-      }, this.agentCallbacks(m.requestId));
-      if (!this.isActiveRun(m.requestId)) return; // abandoned mid-run by a new chat / session switch
+      const result = await this.deps.agent.run(s.history, 'plan', {
+        token: s.cancel.token,
+        runContext: this.runContext(s, m.requestId),
+        onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
+      }, this.agentCallbacks(s, m.requestId));
+      if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       // Ignore any further questions block on this pass — go straight to a proposed plan.
       const clar = parseClarifying(result.text);
-      this.post({ type: 'planProposed', requestId: m.requestId, steps: clar.text });
+      this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
       void this.savePlan(ctx.prompt, clar.text);
       // pendingPlanUser (set in handleSend) stays for the subsequent Approve flow.
     } catch (e) {
-      if (!this.isActiveRun(m.requestId)) return;
-      this.post({ type: 'error', requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
+      if (!this.isActiveRun(s, m.requestId)) return;
+      this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
+      void this.maybeRecommendModels(e);
     } finally {
-      if (this.isActiveRun(m.requestId)) {
+      release();
+      if (this.isActiveRun(s, m.requestId)) {
         // Drop the clarify turns we added; the user turn is re-added on approval via pendingPlanUser.
-        this.history.length = base;
-        this.activeRequestId = undefined;
-        await this.finishCheckpoint(m.requestId);
-        this.persist();
-        this.post({ type: 'busy', busy: false });
-        await this.maybeAutoCompact();
-        void this.maybeGenerateTitle();
+        s.history.length = base;
+        s.activeRequestId = undefined;
+        await this.finishCheckpoint(s, m.requestId);
+        this.persist(s.id);
+        this.post({ type: 'busy', sessionId: s.id, busy: false });
+        this.setStatus(s.id, 'finished');
+        await this.maybeAutoCompact(s);
+        void this.maybeGenerateTitle(s);
       }
     }
   }
@@ -1191,7 +1371,75 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       utilityModel: vscode.workspace.getConfiguration('tiermux').get<string>('utilityModel', 'auto'),
       autoApprove: this.autoApprove,
     };
-    this.post({ type: 'config', config, usageTotals: { ...this.deps.usage.get(), context: this.computeContext() } });
+    this.post({ type: 'config', config, usageTotals: { ...this.deps.usage.get(), context: this.computeContext(this.current()) } });
+  }
+
+  /** Estimated current conversation size vs the active model's context window. */
+  private computeContext(s: Session): { tokens: number; window: number } {
+    const tokens = estimateMessagesTokens(s.history);
+    let window = s.lastWindow;
+    if (!window) {
+      const top = this.deps.settings.enabledByPriority()[0];
+      const m = top ? this.deps.catalog.find(top.platform, top.modelId) : undefined;
+      window = m?.contextWindow ?? 32768;
+    }
+    return { tokens, window };
+  }
+
+  private rememberWindow(s: Session, platform?: string, model?: string): void {
+    if (!platform || !model) return;
+    const w = this.deps.catalog.find(platform, model)?.contextWindow;
+    if (w && w > 0) s.lastWindow = w;
+  }
+
+  /** Auto-summarize when the conversation passes the configured fraction of the window. */
+  private async maybeAutoCompact(s: Session): Promise<void> {
+    const threshold = vscode.workspace.getConfiguration('tiermux.agent').get<number>('autoCompactThreshold', 0.8);
+    if (!threshold || threshold <= 0 || s.history.length < 6) return;
+    const { tokens, window } = this.computeContext(s);
+    if (window && tokens > window * threshold) await this.handleCompact(s);
+  }
+
+  /** Best-effort: ask a free LLM for a short title from the user's first message. */
+  private async maybeGenerateTitle(s: Session): Promise<void> {
+    if (s.titleGenerated) return;
+    const users = s.transcript.filter((t) => t.role === 'user');
+    if (!users.length) return;
+    // Title from the first ACTUAL request. A greeting only gets a provisional title and
+    // we retry on later turns — so "Hi" followed by a real question updates the title
+    // instead of staying stuck on "Starting Conversation".
+    const firstReal = users.find((u) => classifyTask(u.text ?? '') !== 'trivial');
+    if (!firstReal) {
+      if (s.title !== 'Starting Conversation') { s.title = 'Starting Conversation'; this.persist(s.id); this.updateViewTitle(); }
+      return; // leave titleGenerated false → re-evaluate when a real message arrives
+    }
+    s.titleGenerated = true; // guard before the call to avoid duplicate runs
+    try {
+      const snippet = `User's message: ${(firstReal.text ?? '').slice(0, 800)}`;
+      // Prefer a strong free model so titles are good; fall back to Auto if none is keyed.
+      const model = await this.deps.router.pickUtilityModel();
+      const result = await this.deps.router.route(
+        [
+          { role: 'system', content: TITLE_SYSTEM },
+          { role: 'user', content: snippet },
+        ],
+        // Thinking off + a little headroom so the reply is the title itself, not a thought.
+        { temperature: 0.3, max_tokens: 48, model, taskKind: 'trivial', reasoningEffort: 'off' },
+      );
+      // Reject leaked reasoning AND a misapplied greeting title — we only reach here for
+      // a real (non-trivial) message, so "Starting Conversation"/"New chat" from the model
+      // is wrong; derive a title from the message instead of leaving it stuck.
+      let title = sanitizeTitle(contentToString(result.response.choices[0]?.message.content));
+      if (/^(starting conversation|new chat|untitled|chat)$/i.test(title)) title = '';
+      s.title = title || deriveTitleFrom(firstReal.text ?? '');
+      this.persist(s.id);
+      this.updateViewTitle();
+    } catch {
+      // LLM unavailable — still move off the provisional title using the real message.
+      s.title = deriveTitleFrom(firstReal.text ?? '');
+      this.persist(s.id);
+      this.updateViewTitle();
+    }
   }
 
   private getHtml(webview: vscode.Webview): string {
