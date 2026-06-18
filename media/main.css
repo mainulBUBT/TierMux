@@ -63,8 +63,21 @@ body {
   background: var(--vscode-sideBar-background, var(--vscode-editor-background));
   padding-bottom: 4px;
 }
-/* Keep a long question from dominating the viewport when it's pinned. */
-.msg.user .msg-text { max-height: 38vh; overflow-y: auto; }
+/* Keep a long question from dominating the viewport when it's pinned: collapse it to a
+   few lines and let the user expand it with the See more / See less toggle (added in JS). */
+.msg.user .msg-text-body { position: relative; }
+.msg.user .msg-text-body.clamped { max-height: 126px; overflow: hidden; }
+.msg.user .msg-text-body.clamped::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2.4em;
+  background: linear-gradient(to bottom, transparent, var(--vscode-input-background));
+  pointer-events: none;
+}
+.see-toggle {
+  display: inline-block; background: none; border: none; cursor: pointer;
+  padding: 0; margin-top: 6px; font: inherit; font-size: 11px; font-weight: 500;
+  color: var(--vscode-textLink-foreground); opacity: .9;
+}
+.see-toggle:hover { opacity: 1; color: var(--vscode-textLink-activeForeground); text-decoration: underline; }
 /* Subtle separator so the pinned question reads as a header over the scrolling answer. */
 .msg.user .bubble { box-shadow: 0 1px 0 var(--vscode-panel-border); }
 .bubble {
@@ -190,6 +203,7 @@ details.reasoning summary { cursor: pointer; opacity: .8; }
 
 /* Plan approval */
 .plan-actions { display: flex; gap: 8px; margin-top: 6px; }
+.resume-actions { display: flex; gap: 8px; margin-top: 8px; }
 
 /* Live task checklist (TodoWrite-style) */
 .todo-list {
@@ -396,6 +410,16 @@ button#model-btn {
   position: relative; max-width: 160px; text-align: left; padding-right: 20px;
   display: inline-flex; align-items: center;
 }
+/* Auto-approve toggle pill: dim when off, accent-filled when on. */
+.toggle-pill {
+  display: inline-flex; align-items: center; gap: 4px; max-width: none; flex: 0 0 auto;
+}
+.toggle-pill svg { display: block; opacity: .8; }
+.toggle-pill.on {
+  background: var(--vscode-button-background); color: var(--vscode-button-foreground);
+  border-color: var(--vscode-button-background);
+}
+.toggle-pill.on svg { opacity: 1; }
 button#model-btn .mb-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
 
 /* One shared down-chevron for the mode / model / effort controls so they match.

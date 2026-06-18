@@ -36,12 +36,19 @@ export class EditGate {
    * originate from a chat turn, so there's nowhere in the thread to show a card).
    */
   private confirmViaUi?: (req: { path: string; title: string; kind: 'write' | 'delete' }) => Promise<boolean | undefined>;
+  /** Session toggle (from the composer): when true, apply edits without a diff prompt. */
+  private autoApprove?: () => boolean;
 
   constructor(private readonly requireConfirm: () => boolean) {}
 
   /** Route edit approval through the webview (an inline Apply/Reject card). Pass undefined to revert to the native modal. */
   setConfirmHandler(fn?: (req: { path: string; title: string; kind: 'write' | 'delete' }) => Promise<boolean | undefined>): void {
     this.confirmViaUi = fn;
+  }
+
+  /** Provide a live read of the session Auto-approve toggle. */
+  setAutoApprove(fn: () => boolean): void {
+    this.autoApprove = fn;
   }
 
   register(): vscode.Disposable {
@@ -69,6 +76,9 @@ export class EditGate {
   /** Show a diff between current and proposed content and (optionally) confirm. */
   private async previewAndConfirm(uri: vscode.Uri, current: string, proposed: string, title: string): Promise<boolean> {
     if (!this.requireConfirm()) return true;
+    // Auto-approve applies edits without opening a diff or asking; the pre-edit content is
+    // still recorded by write()/remove(), so the change stays revertible via checkpoints.
+    if (this.autoApprove?.()) return true;
     const name = vscode.workspace.asRelativePath(uri);
     const leftUri = this.provider.set(this.token(`current/${name}`), current);
     const rightUri = this.provider.set(this.token(`proposed/${name}`), proposed);
@@ -117,7 +127,7 @@ export class EditGate {
   async remove(uri: vscode.Uri): Promise<EditResult> {
     const current = await this.readIfExists(uri);
     if (current === undefined) return { applied: false, error: 'File not found.' };
-    if (this.requireConfirm()) {
+    if (this.requireConfirm() && !this.autoApprove?.()) {
       const name = vscode.workspace.asRelativePath(uri);
       const inline = this.confirmViaUi ? await this.confirmViaUi({ path: name, title: `Delete ${name}?`, kind: 'delete' }) : undefined;
       const ok = inline !== undefined

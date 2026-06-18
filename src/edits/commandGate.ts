@@ -24,6 +24,27 @@ const DEFAULT_ALLOWLIST = [
   'php artisan test', 'composer test', 'make',
 ];
 
+/**
+ * Destructive patterns that always prompt for confirmation, even when Auto-approve
+ * is on — a safety net so unattended runs can't silently wipe data or rewrite history.
+ */
+const DANGEROUS = [
+  /\brm\s+(-[a-z]*\s+)*-[a-z]*[rf]/i, // rm -rf / rm -fr / rm -r -f …
+  /\bgit\s+push\b.*(--force|-f\b)/i,
+  /\bgit\s+reset\s+--hard/i,
+  /\bgit\s+clean\b.*-[a-z]*f/i,
+  /\b(sudo|chmod|chown)\b/i,
+  /\b(mkfs|dd|shutdown|reboot|kill(all)?)\b/i,
+  /\bnpm\s+publish\b/i,
+  /[>]\s*\/dev\//i, // writing to device files
+  /:\s*\(\s*\)\s*\{/, // fork-bomb shape :(){ :|:& };:
+];
+
+/** True for commands too destructive to run unattended; these always ask, even in Auto-approve. */
+function isDangerous(command: string): boolean {
+  return DANGEROUS.some((re) => re.test(command));
+}
+
 function truncate(s: string): string {
   return s.length > MAX_OUTPUT ? s.slice(0, MAX_OUTPUT) + '\n…[output truncated]' : s;
 }
@@ -31,6 +52,8 @@ function truncate(s: string): string {
 export class CommandGate {
   /** When set, approval is requested in the chat view instead of a native modal. */
   private confirmViaUi?: (command: string, cwd?: string) => Promise<boolean>;
+  /** Session toggle (from the composer): when true, skip the prompt for non-dangerous commands. */
+  private autoApprove?: () => boolean;
 
   constructor(
     private readonly policy: () => CommandApproval,
@@ -41,6 +64,11 @@ export class CommandGate {
   /** Route command approval through the webview (an inline Run/Skip card). Pass undefined to revert to the native modal. */
   setConfirmHandler(fn?: (command: string, cwd?: string) => Promise<boolean>): void {
     this.confirmViaUi = fn;
+  }
+
+  /** Provide a live read of the session Auto-approve toggle. */
+  setAutoApprove(fn: () => boolean): void {
+    this.autoApprove = fn;
   }
 
   private root(): vscode.Uri {
@@ -71,6 +99,9 @@ export class CommandGate {
     const policy = this.policy();
     if (policy === 'never') return false;
     if (policy === 'allowlist' && this.isAllowlisted(command)) return true;
+    // Auto-approve runs non-dangerous commands without a prompt for a smooth agent flow;
+    // anything destructive still falls through to the confirmation below.
+    if (this.autoApprove?.() && !isDangerous(command)) return true;
     // Prefer an inline approval card in the chat view; fall back to a native modal.
     if (this.confirmViaUi) return this.confirmViaUi(command, cwd);
     const choice = await vscode.window.showWarningMessage(

@@ -55,6 +55,14 @@ export interface AgentResult {
   model?: string;
   /** Which task kind produced this result — used to attribute 👍/👎 feedback. */
   taskKind?: TaskKind;
+  /**
+   * The agent's working transcript for this run (assistant tool calls + tool results +
+   * final answer), i.e. everything added past the system+history prefix. The caller
+   * persists it so a paused/failed run resumes with full memory instead of starting over.
+   */
+  workMessages?: ChatMessage[];
+  /** True when the run stopped before finishing (iteration cap or a model dropping out) and can be resumed. */
+  paused?: boolean;
 }
 
 /** Split a model's <think>…</think> trace from its visible answer. */
@@ -232,6 +240,10 @@ export class Agent {
     runOpts?: { readOnly?: boolean },
   ): Promise<AgentResult> {
     const messages: ChatMessage[] = [{ role: 'system', content: system }, ...history];
+    // Everything appended past this prefix is the agent's working transcript; it's
+    // returned as workMessages so a paused/failed run can resume with full memory.
+    const baseLen = messages.length;
+    const work = (): ChatMessage[] => messages.slice(baseLen);
     let lastPlatform: string | undefined;
     let lastModel: string | undefined;
 
@@ -244,18 +256,34 @@ export class Agent {
     ].filter((t) => !runOpts?.readOnly || READONLY_TOOLS.has(t.function.name));
 
     for (let i = 0; i < this.maxIterations(); i++) {
+      // Cancel = stop, not pause: don't persist a partial transcript (it could end on an
+      // assistant tool_calls turn with no tool results, which would break the next request).
       if (opts.token?.isCancellationRequested) return { text: '_Cancelled._', platform: lastPlatform, model: lastModel };
 
       cb.onStep?.('thinking', 'Thinking…');
-      const result = await this.router.route(messages, {
-        model: opts.model,
-        reasoningEffort: opts.reasoningEffort,
-        taskKind: opts.taskKind,
-        tools,
-        tool_choice: 'auto',
-        requireTools: true,
-        onFailover: opts.onFailover,
-      });
+      let result: Awaited<ReturnType<Router['route']>>;
+      try {
+        result = await this.router.route(messages, {
+          model: opts.model,
+          reasoningEffort: opts.reasoningEffort,
+          taskKind: opts.taskKind,
+          tools,
+          tool_choice: 'auto',
+          requireTools: true,
+          onFailover: opts.onFailover,
+        });
+      } catch (e) {
+        // Free models frequently drop out mid-task. If we've already made progress, pause
+        // and hand back the work so far so the user can resume; if it failed on the very
+        // first call (no progress yet), surface the error through the normal path.
+        if (messages.length > baseLen) {
+          return {
+            text: '⚠️ The model stopped responding partway through. Your progress is saved — choose **Continue** and I’ll pick up where I left off.',
+            platform: lastPlatform, model: lastModel, workMessages: work(), paused: true,
+          };
+        }
+        throw e;
+      }
       lastPlatform = result.platform;
       lastModel = result.model;
       cb.onModel?.(result.platform, result.model);
@@ -270,7 +298,9 @@ export class Agent {
 
       if (toolCalls.length === 0) {
         const { reasoning, content } = splitReasoning(contentToString(msg?.content));
-        return { text: content || '_Done._', reasoning, platform: lastPlatform, model: lastModel };
+        // Record the final answer so it's part of the persisted transcript too.
+        messages.push({ role: 'assistant', content: content || '_Done._' });
+        return { text: content || '_Done._', reasoning, platform: lastPlatform, model: lastModel, workMessages: work(), paused: false };
       }
 
       // Record the assistant turn (with its tool calls) then run each tool.
@@ -293,9 +323,11 @@ export class Agent {
       }
     }
     return {
-      text: "I've paused after a number of steps to check in. I can keep going from here — tell me to continue, or let me know if you'd like to adjust the approach.",
+      text: "I've paused after a number of steps to check in. I can keep going from here — choose **Continue** and I'll resume where I left off.",
       platform: lastPlatform,
       model: lastModel,
+      workMessages: work(),
+      paused: true,
     };
   }
 

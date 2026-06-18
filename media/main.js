@@ -57,6 +57,7 @@
     up: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v11"/><path d="M18 21H5V10l5-7a2 2 0 0 1 2 2v4h6a2 2 0 0 1 2 2.4l-1.4 7A2 2 0 0 1 18 21z"/></svg>',
     down: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 14V3"/><path d="M6 3h13v11l-5 7a2 2 0 0 1-2-2v-4H6a2 2 0 0 1-2-2.4l1.4-7A2 2 0 0 1 6 3z"/></svg>',
     chevron: '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>',
+    zap: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
   };
   function fmtTime(ts) {
     const d = ts ? new Date(ts) : new Date();
@@ -102,6 +103,7 @@
                 <option value="xhigh">Very High</option>
               </select>
             </span>
+            <button type="button" id="auto-btn" class="pill toggle-pill" aria-pressed="false" title="Auto-approve — run commands and apply edits without asking, for an uninterrupted flow. Dangerous commands (rm -rf, force push, sudo…) still ask. Off = review each step.">${ICON.zap}<span class="aa-label">Auto-approve</span></button>
           </div>
           <div class="tgroup right">
             <button class="icon-btn" id="btn-selection" title="Add editor selection as context">${ICON.selection}</button>
@@ -159,6 +161,21 @@
   function openModePop() { buildModePicker(); modePop.classList.remove('hidden'); }
   function closeModePop() { modePop.classList.add('hidden'); }
   modeBtn.addEventListener('click', (e) => { e.stopPropagation(); modePop.classList.contains('hidden') ? openModePop() : closeModePop(); });
+
+  // Auto-approve toggle: when on, the agent runs commands and applies edits without a
+  // prompt (dangerous commands still confirm). State is owned by the extension and
+  // restored from the config message; this just reflects and flips it.
+  const autoBtn = $('#auto-btn');
+  let autoApprove = false;
+  function renderAutoApprove() {
+    autoBtn.classList.toggle('on', autoApprove);
+    autoBtn.setAttribute('aria-pressed', String(autoApprove));
+  }
+  autoBtn.addEventListener('click', () => {
+    autoApprove = !autoApprove;
+    renderAutoApprove();
+    vscode.postMessage({ type: 'setAutoApprove', enabled: autoApprove });
+  });
 
   // Chat header: brand + editable session title (rename inline, Enter to save).
   const titleInput = $('#chat-title');
@@ -275,7 +292,9 @@
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     const body = document.createElement('div'); body.className = 'msg-text';
-    body.appendChild(renderMarkdown(text));
+    const textBody = document.createElement('div'); textBody.className = 'msg-text-body';
+    textBody.appendChild(renderMarkdown(text));
+    body.appendChild(textBody);
     const meta = document.createElement('div'); meta.className = 'msg-meta';
     const time = document.createElement('span'); time.className = 'ts'; time.textContent = fmtTime(ts);
     meta.appendChild(time);
@@ -288,9 +307,26 @@
     currentTurn.className = 'turn';
     currentTurn.appendChild(el);
     thread.appendChild(currentTurn);
+    clampUserText(body, textBody); // collapse long questions with a See more / See less toggle
     if (requestId) userTargets.set(requestId, el);
     if (requestId) startTimes.set(requestId, ts || Date.now());
     scrollDown();
+  }
+
+  // Collapse a long user question to a few lines, with a See more / See less toggle so
+  // it doesn't dominate the viewport while pinned. Must run after the element is in the DOM.
+  function clampUserText(body, textBody) {
+    textBody.classList.add('clamped');
+    if (textBody.scrollHeight <= textBody.clientHeight + 4) { textBody.classList.remove('clamped'); return; }
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'see-toggle';
+    toggle.textContent = 'See more';
+    toggle.addEventListener('click', () => {
+      const clamped = textBody.classList.toggle('clamped');
+      toggle.textContent = clamped ? 'See more' : 'See less';
+    });
+    body.appendChild(toggle); // sits directly under the text, inside the left column
   }
 
   function assistantFooter(el, model, ts, requestId) {
@@ -433,6 +469,7 @@
       attachments: pendingAttachments,
     });
     input.value = '';
+    autoGrow(); // reset the textarea back to one line after sending (don't leave it stuck tall)
     pendingAttachments = [];
     renderChips();
   }
@@ -1071,10 +1108,22 @@
       const dot = s.status === 'connected' ? 'healthy' : s.status === 'error' ? 'invalid' : 'missing';
       const head = document.createElement('div');
       head.className = 'provider-head';
-      head.innerHTML = `<span class="status-dot status-${dot}"></span><span class="provider-name">${escapeHtml(s.name)}</span><span class="muted prov-status">${s.status === 'connected' ? s.toolCount + ' tools' : escapeHtml(s.status)}</span><span class="chev">▸</span>`;
+      head.innerHTML = `<span class="status-dot status-${dot}"></span><span class="provider-name">${escapeHtml(s.name)}</span><span class="muted prov-status">${s.status === 'connected' ? s.toolCount + ' tools' : escapeHtml(s.status)}</span>`;
+      const rm = document.createElement('button');
+      rm.className = 'icon-btn';
+      rm.textContent = '✕';
+      rm.title = 'Remove server';
+      rm.style.marginLeft = 'auto'; // group the controls at the right edge
+      rm.addEventListener('click', (ev) => { ev.stopPropagation(); vscode.postMessage({ type: 'removeMcpServer', name: s.name }); });
+      head.appendChild(rm);
+      const chev = document.createElement('span');
+      chev.className = 'chev';
+      chev.style.marginLeft = '0'; // the remove button already claims the gap
+      chev.textContent = '▸';
+      head.appendChild(chev);
       const body = document.createElement('div');
       body.className = 'provider-body hidden';
-      head.addEventListener('click', () => { const closed = body.classList.toggle('hidden'); head.querySelector('.chev').textContent = closed ? '▸' : '▾'; });
+      head.addEventListener('click', () => { const closed = body.classList.toggle('hidden'); chev.textContent = closed ? '▸' : '▾'; });
       if (s.error) { const er = document.createElement('div'); er.className = 'error'; er.textContent = s.error; body.appendChild(er); }
       (s.tools || []).forEach((t) => {
         const r = document.createElement('div');
@@ -1142,6 +1191,8 @@
     switch (msg.type) {
       case 'config':
         state = msg.config;
+        autoApprove = !!state.autoApprove;
+        renderAutoApprove();
         rebuildModelPicker();
         updateFooter(msg.usageTotals);
         renderIndexStatus(state.index && state.index.building ? { building: true, done: 0, total: 0, phase: 'embedding' } : { building: false });
@@ -1392,6 +1443,16 @@
         const secs = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
         const durStr = secs != null ? `  ·  ${secs}s` : '';
         t.el.appendChild(assistantFooter(t.el, (t.model || '') + usageStr + durStr, Date.now(), msg.requestId));
+        // The run stopped before finishing (step cap or a model dropping out). Offer a
+        // one-click resume — it picks up with full memory, so no work is repeated.
+        if (msg.paused) {
+          const resume = document.createElement('div'); resume.className = 'resume-actions';
+          const btn = document.createElement('button'); btn.className = 'primary'; btn.textContent = 'Continue';
+          btn.title = 'Resume from where the agent stopped — keeps everything it has done so far';
+          btn.addEventListener('click', () => { resume.remove(); vscode.postMessage({ type: 'resume', requestId: newId() }); });
+          resume.appendChild(btn);
+          t.el.appendChild(resume);
+        }
         scrollDown();
         break;
       }

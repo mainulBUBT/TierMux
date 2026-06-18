@@ -4,7 +4,7 @@ import type { SecretStore } from './config/secrets';
 import type { SettingsStore } from './config/settingsStore';
 import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
-import { Agent, splitReasoning, type Mode } from './agent/agent';
+import { Agent, splitReasoning, type Mode, type AgentResult, type AgentCallbacks } from './agent/agent';
 import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
 import type { Router } from './router/router';
@@ -47,6 +47,7 @@ export interface ChatDeps {
 
 const SESSIONS_KEY = 'tiermux.sessions';
 const CURRENT_KEY = 'tiermux.currentSession';
+const AUTO_APPROVE_KEY = 'tiermux.autoApprove';
 const MAX_SESSIONS = 50;
 
 interface ChatSession {
@@ -125,8 +126,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private approvalSeq = 0;
   /** Pending command/edit approvals awaiting a click in the webview, keyed by approval id. */
   private pendingApprovals = new Map<string, (approved: boolean) => void>();
+  /**
+   * Session Auto-approve: when true, the command/edit gates skip the inline prompt and run
+   * unattended (dangerous commands still confirm). Read live by both gates; persisted per workspace.
+   */
+  autoApprove = false;
 
   constructor(private readonly extensionUri: vscode.Uri, private readonly deps: ChatDeps) {
+    this.autoApprove = deps.workspaceState.get<boolean>(AUTO_APPROVE_KEY, false);
     const sessions = this.loadSessions();
     const currentId = deps.workspaceState.get<string>(CURRENT_KEY);
     const current = sessions.find((s) => s.id === currentId) ?? sessions[0];
@@ -317,6 +324,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   newChat(): void {
+    this.stopActiveRun(); // a run still going in this session must not bleed into the new one
     this.persist(); // save the current conversation into history first
     this.sessionId = this.newSessionId();
     this.history = [];
@@ -327,6 +335,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     void this.deps.workspaceState.update(CURRENT_KEY, this.sessionId);
     this.deps.usage.reset();
     this.post({ type: 'clear' });
+    this.post({ type: 'busy', busy: false }); // reset the composer if a run was in flight
     void this.sendConfig();
     this.updateViewTitle();
   }
@@ -415,6 +424,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private openSession(id: string): void {
     if (id === this.sessionId) return;
+    this.stopActiveRun(); // detach any run in the current session before switching away
     this.persist();
     const s = this.loadSessions().find((x) => x.id === id);
     if (!s) return;
@@ -423,9 +433,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.transcript = s.transcript ?? [];
     this.sessionTitle = s.title;
     this.titleGenerated = true;
+    this.deps.checkpoints.clear(); // the restore bar belongs to the session we just left
     void this.deps.workspaceState.update(CURRENT_KEY, this.sessionId);
     this.deps.usage.reset();
     this.post({ type: 'restore', messages: this.transcript });
+    this.post({ type: 'busy', busy: false }); // reset the composer if a run was in flight
     void this.sendConfig();
     this.updateViewTitle();
   }
@@ -433,13 +445,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private deleteSession(id: string): void {
     void this.deps.workspaceState.update(SESSIONS_KEY, this.loadSessions().filter((s) => s.id !== id));
     if (id === this.sessionId) {
+      this.stopActiveRun(); // a run in the deleted session must not bleed into the fresh one
       this.sessionId = this.newSessionId();
       this.history = [];
       this.transcript = [];
       this.sessionTitle = undefined;
       this.titleGenerated = false;
+      this.deps.checkpoints.clear();
       void this.deps.workspaceState.update(CURRENT_KEY, this.sessionId);
       this.post({ type: 'clear' });
+      this.post({ type: 'busy', busy: false });
       this.updateViewTitle();
     }
   }
@@ -460,6 +475,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'approvePlan':
         await this.handleApprovePlan(m);
+        break;
+      case 'resume':
+        await this.handleResume(m);
         break;
       case 'answerClarifying':
         await this.handleAnswerClarifying(m);
@@ -521,6 +539,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'addMcpServer':
         await this.addMcpServer(m.item);
         break;
+      case 'removeMcpServer':
+        await this.removeMcpServer(m.name);
+        break;
       case 'searchMcpRegistry':
         try {
           const items = await searchRemoteMcp(m.query);
@@ -560,6 +581,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'setUtilityModel':
         await vscode.workspace.getConfiguration('tiermux').update('utilityModel', m.model, vscode.ConfigurationTarget.Global);
         await this.sendConfig();
+        break;
+      case 'setAutoApprove':
+        this.autoApprove = m.enabled;
+        await this.deps.workspaceState.update(AUTO_APPROVE_KEY, m.enabled);
         break;
       case 'newChat':
         this.newChat();
@@ -623,8 +648,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } else {
       const env: Record<string, string> = {};
       for (const e of item.env ?? []) {
-        const val = await vscode.window.showInputBox({ prompt: `${item.name}: ${e.label ?? e.key}`, password: !!e.password, ignoreFocusOut: true });
-        if (val === undefined) return; // cancelled
+        // Only secret vars are masked and treated as required; everything else
+        // is optional and can be skipped with a blank entry. This is why a
+        // keyless server (no `env` at all) adds with zero prompts.
+        const optional = !e.password;
+        const val = await vscode.window.showInputBox({
+          title: `Add ${item.name}`,
+          prompt: `${e.label ?? e.key}${optional ? ' — optional, leave blank to skip' : ''}`,
+          password: !!e.password,
+          ignoreFocusOut: true,
+        });
+        if (val === undefined) return; // cancelled (Esc)
         if (val) env[e.key] = val;
       }
       entry = { command: item.command, args: item.args, ...(Object.keys(env).length ? { env } : {}) };
@@ -637,6 +671,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.deps.mcp.reconnect();
     await this.sendConfig();
     void vscode.window.showInformationMessage(`Added MCP server "${item.name}". Edit details in settings.json if needed.`);
+  }
+
+  /** Remove a configured server (by its settings.json key) after confirmation. */
+  private async removeMcpServer(name: string): Promise<void> {
+    if (!name) return;
+    const cfg = vscode.workspace.getConfiguration('tiermux');
+    const servers: Record<string, unknown> = { ...(cfg.get<Record<string, unknown>>('mcpServers') ?? {}) };
+    if (!(name in servers)) return;
+    const pick = await vscode.window.showWarningMessage(`Remove MCP server "${name}"?`, { modal: true }, 'Remove');
+    if (pick !== 'Remove') return;
+    delete servers[name];
+    await cfg.update('mcpServers', servers, vscode.ConfigurationTarget.Global);
+    // Drop just this server now so the panel updates instantly; the rest keep
+    // running. (The config-change watcher reconnects + refreshes in the back.)
+    this.deps.mcp.disconnect(name);
+    await this.sendConfig();
+    void vscode.window.showInformationMessage(`Removed MCP server "${name}".`);
   }
 
   private async registry(): Promise<McpRegistryItem[]> {
@@ -721,7 +772,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.activeRequestId = m.requestId;
     this.post({ type: 'busy', busy: true });
     const before = this.deps.usage.get();
-    let announced = false;
     this.deps.checkpoints.begin(m.requestId, prompt.slice(0, 60));
     const sentAt = Date.now();
 
@@ -730,15 +780,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         model: m.model,
         reasoningEffort: m.reasoningEffort,
         token: this.cancel.token,
-        onFailover: (i) => this.post({ type: 'failoverNotice', requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }),
-      }, {
-        onModel: (platform, model) => {
-          if (!announced) { announced = true; this.post({ type: 'assistantStart', requestId: m.requestId, platform, model }); }
-        },
-        onTool: (e) => this.post({ type: 'toolStatus', requestId: m.requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail }),
-        onStep: (phase, label) => this.post({ type: 'agentStep', requestId: m.requestId, phase, label }),
-        onTodos: (todos) => this.post({ type: 'todos', requestId: m.requestId, todos }),
-      });
+        onFailover: (i) => { if (this.isActiveRun(m.requestId)) this.post({ type: 'failoverNotice', requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
+      }, this.agentCallbacks(m.requestId));
+      // Abandoned mid-run by a new chat / session switch → drop the output entirely.
+      if (!this.isActiveRun(m.requestId)) return;
 
       if (m.mode === 'plan') {
         const clar = parseClarifying(result.text);
@@ -760,27 +805,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
-      this.history.push({ role: 'assistant', content: result.text });
+      this.persistAgentTurn(result);
       this.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now(), secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)) });
       this.rememberWindow(result.platform, result.model);
       // Remember which (task kind, model) produced this reply so 👍/👎 can teach the router.
       if (result.taskKind && result.platform && result.model) {
         this.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      this.post({ type: 'assistantMessage', requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.platform, model: result.model });
+      this.post({ type: 'assistantMessage', requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.platform, model: result.model, paused: result.paused });
       this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext() } });
     } catch (e) {
+      if (!this.isActiveRun(m.requestId)) return; // abandoned run — don't surface its error in the new session
       this.post({ type: 'error', requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
       // Drop the user turn that produced no answer to keep history clean.
       if (this.history[this.history.length - 1]?.role === 'user') this.history.pop();
     } finally {
-      this.activeRequestId = undefined;
-      this.settlePendingApprovals(false); // safety net: never leave a command waiting after the run ends
-      await this.finishCheckpoint(m.requestId);
-      this.persist();
-      this.post({ type: 'busy', busy: false });
-      await this.maybeAutoCompact();
-      void this.maybeGenerateTitle();
+      // Only finalize if this run still owns the session; an abandoned run leaves cleanup
+      // to whoever superseded it (stopActiveRun already settled approvals + reset busy).
+      if (this.isActiveRun(m.requestId)) {
+        this.activeRequestId = undefined;
+        this.settlePendingApprovals(false); // safety net: never leave a command waiting after the run ends
+        await this.finishCheckpoint(m.requestId);
+        this.persist();
+        this.post({ type: 'busy', busy: false });
+        await this.maybeAutoCompact();
+        void this.maybeGenerateTitle();
+      }
     }
   }
 
@@ -924,40 +974,135 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const seeded = planStepsToTodos(m.steps);
     if (seeded.length) this.post({ type: 'todos', requestId: m.requestId, todos: seeded });
     const before = this.deps.usage.get();
-    let announced = false;
     this.deps.checkpoints.begin(m.requestId, 'Plan execution');
     const sentAt = Date.now();
     try {
       const result = await this.deps.agent.run(this.history, 'agent', {
         token: this.cancel.token,
-        onFailover: (i) => this.post({ type: 'failoverNotice', requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }),
-      }, {
-        onModel: (platform, model) => { if (!announced) { announced = true; this.post({ type: 'assistantStart', requestId: m.requestId, platform, model }); } },
-        onTool: (e) => this.post({ type: 'toolStatus', requestId: m.requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail }),
-        onStep: (phase, label) => this.post({ type: 'agentStep', requestId: m.requestId, phase, label }),
-        onTodos: (todos) => this.post({ type: 'todos', requestId: m.requestId, todos }),
-      });
+        onFailover: (i) => { if (this.isActiveRun(m.requestId)) this.post({ type: 'failoverNotice', requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
+      }, this.agentCallbacks(m.requestId));
+      if (!this.isActiveRun(m.requestId)) return; // abandoned mid-run by a new chat / session switch
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
-      this.history.push({ role: 'assistant', content: result.text });
+      this.persistAgentTurn(result);
       this.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now(), secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)) });
       this.rememberWindow(result.platform, result.model);
       // Remember which (task kind, model) produced this reply so 👍/👎 can teach the router.
       if (result.taskKind && result.platform && result.model) {
         this.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      this.post({ type: 'assistantMessage', requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.platform, model: result.model });
+      this.post({ type: 'assistantMessage', requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.platform, model: result.model, paused: result.paused });
       this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext() } });
     } catch (e) {
+      if (!this.isActiveRun(m.requestId)) return;
       this.post({ type: 'error', requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
     } finally {
-      this.activeRequestId = undefined;
-      this.settlePendingApprovals(false); // safety net: never leave a command waiting after the run ends
-      await this.finishCheckpoint(m.requestId);
-      this.persist();
-      this.post({ type: 'busy', busy: false });
-      await this.maybeAutoCompact();
-      void this.maybeGenerateTitle();
+      if (this.isActiveRun(m.requestId)) {
+        this.activeRequestId = undefined;
+        this.settlePendingApprovals(false); // safety net: never leave a command waiting after the run ends
+        await this.finishCheckpoint(m.requestId);
+        this.persist();
+        this.post({ type: 'busy', busy: false });
+        await this.maybeAutoCompact();
+        void this.maybeGenerateTitle();
+      }
+    }
+  }
+
+  /**
+   * Append an agent run's outcome to the conversation history. Agent/Debug runs return
+   * their full working transcript (tool calls + results + final answer) as workMessages —
+   * persisting that is what lets a paused/failed run resume with memory instead of redoing
+   * work. Tool-less runs (chat/trivial) have no workMessages, so fall back to the final text.
+   */
+  private persistAgentTurn(result: AgentResult): void {
+    if (result.workMessages && result.workMessages.length) this.history.push(...result.workMessages);
+    else this.history.push({ role: 'assistant', content: result.text });
+  }
+
+  /**
+   * True while `requestId` is still the run the UI/history belong to. Starting a new chat
+   * or switching sessions clears `activeRequestId`, so a run that was abandoned mid-flight
+   * fails this check — its streaming and result are then dropped instead of leaking into
+   * whatever session is now open.
+   */
+  private isActiveRun(requestId: string): boolean {
+    return this.activeRequestId === requestId;
+  }
+
+  /** Cancel any in-flight agent run and detach it so its output can't land in another session. */
+  private stopActiveRun(): void {
+    this.cancel?.cancel();
+    this.activeRequestId = undefined; // invalidates the run's liveness guard (isActiveRun)
+    this.settlePendingApprovals(false); // unblock any command/edit awaiting a click
+    this.pendingClarify = undefined;
+    this.pendingPlanUser = undefined;
+  }
+
+  /**
+   * Build the streaming callbacks for a run, each gated on the run still being active.
+   * Centralizing the guard means a run abandoned by a new chat / session switch goes quiet
+   * immediately instead of rendering into the freshly opened conversation.
+   */
+  private agentCallbacks(requestId: string): AgentCallbacks {
+    let announced = false;
+    const live = (): boolean => this.isActiveRun(requestId);
+    return {
+      onModel: (platform, model) => { if (live() && !announced) { announced = true; this.post({ type: 'assistantStart', requestId, platform, model }); } },
+      onTool: (e) => { if (live()) this.post({ type: 'toolStatus', requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail }); },
+      onStep: (phase, label) => { if (live()) this.post({ type: 'agentStep', requestId, phase, label }); },
+      onTodos: (todos) => { if (live()) this.post({ type: 'todos', requestId, todos }); },
+    };
+  }
+
+  /**
+   * Resume an agent run that paused — whether it hit the step cap or a free model dropped
+   * out. The prior working transcript is already in history (see persistAgentTurn), so the
+   * agent picks up where it left off rather than re-planning. Always runs in Agent mode so a
+   * follow-up never triggers a fresh Plan pass.
+   */
+  private async handleResume(m: Extract<InMessage, { type: 'resume' }>): Promise<void> {
+    this.history.push({
+      role: 'user',
+      content: 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.',
+    });
+    this.cancel?.dispose();
+    this.cancel = new vscode.CancellationTokenSource();
+    this.activeRequestId = m.requestId;
+    this.post({ type: 'busy', busy: true });
+    const before = this.deps.usage.get();
+    this.deps.checkpoints.begin(m.requestId, 'Continue');
+    const sentAt = Date.now();
+    try {
+      const result = await this.deps.agent.run(this.history, 'agent', {
+        token: this.cancel.token,
+        onFailover: (i) => { if (this.isActiveRun(m.requestId)) this.post({ type: 'failoverNotice', requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
+      }, this.agentCallbacks(m.requestId));
+      if (!this.isActiveRun(m.requestId)) return; // abandoned mid-run by a new chat / session switch
+      const after = this.deps.usage.get();
+      const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
+      this.persistAgentTurn(result);
+      this.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now(), secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)) });
+      this.rememberWindow(result.platform, result.model);
+      if (result.taskKind && result.platform && result.model) {
+        this.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
+      }
+      this.post({ type: 'assistantMessage', requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.platform, model: result.model, paused: result.paused });
+      this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext() } });
+    } catch (e) {
+      if (!this.isActiveRun(m.requestId)) return;
+      this.post({ type: 'error', requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
+      // The resume nudge produced nothing — drop it so history stays clean and resumable.
+      if (this.history[this.history.length - 1]?.role === 'user') this.history.pop();
+    } finally {
+      if (this.isActiveRun(m.requestId)) {
+        this.activeRequestId = undefined;
+        this.settlePendingApprovals(false);
+        await this.finishCheckpoint(m.requestId);
+        this.persist();
+        this.post({ type: 'busy', busy: false });
+        await this.maybeAutoCompact();
+      }
     }
   }
 
@@ -977,33 +1122,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.cancel?.dispose();
     this.cancel = new vscode.CancellationTokenSource();
+    this.activeRequestId = m.requestId;
     this.post({ type: 'busy', busy: true });
-    let announced = false;
     this.deps.checkpoints.begin(m.requestId, 'Plan (clarified)');
     try {
       const result = await this.deps.agent.run(this.history, 'plan', {
         token: this.cancel.token,
-        onFailover: (i) => this.post({ type: 'failoverNotice', requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }),
-      }, {
-        onModel: (platform, model) => { if (!announced) { announced = true; this.post({ type: 'assistantStart', requestId: m.requestId, platform, model }); } },
-        onStep: (phase, label) => this.post({ type: 'agentStep', requestId: m.requestId, phase, label }),
-        onTodos: (todos) => this.post({ type: 'todos', requestId: m.requestId, todos }),
-      });
+        onFailover: (i) => { if (this.isActiveRun(m.requestId)) this.post({ type: 'failoverNotice', requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
+      }, this.agentCallbacks(m.requestId));
+      if (!this.isActiveRun(m.requestId)) return; // abandoned mid-run by a new chat / session switch
       // Ignore any further questions block on this pass — go straight to a proposed plan.
       const clar = parseClarifying(result.text);
       this.post({ type: 'planProposed', requestId: m.requestId, steps: clar.text });
       void this.savePlan(ctx.prompt, clar.text);
       // pendingPlanUser (set in handleSend) stays for the subsequent Approve flow.
     } catch (e) {
+      if (!this.isActiveRun(m.requestId)) return;
       this.post({ type: 'error', requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
     } finally {
-      // Drop the clarify turns we added; the user turn is re-added on approval via pendingPlanUser.
-      this.history.length = base;
-      await this.finishCheckpoint(m.requestId);
-      this.persist();
-      this.post({ type: 'busy', busy: false });
-      await this.maybeAutoCompact();
-      void this.maybeGenerateTitle();
+      if (this.isActiveRun(m.requestId)) {
+        // Drop the clarify turns we added; the user turn is re-added on approval via pendingPlanUser.
+        this.history.length = base;
+        this.activeRequestId = undefined;
+        await this.finishCheckpoint(m.requestId);
+        this.persist();
+        this.post({ type: 'busy', busy: false });
+        await this.maybeAutoCompact();
+        void this.maybeGenerateTitle();
+      }
     }
   }
 
@@ -1043,6 +1189,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       index: { enabled: this.deps.index.isEnabled(), built: s.built, files: s.files, chunks: s.chunks, model: s.model, building: s.building, lastError: s.lastError, provider: embProvider, providerConfigured: embConfigured },
       deprecated: this.deps.secrets.deprecatedKeys(),
       utilityModel: vscode.workspace.getConfiguration('tiermux').get<string>('utilityModel', 'auto'),
+      autoApprove: this.autoApprove,
     };
     this.post({ type: 'config', config, usageTotals: { ...this.deps.usage.get(), context: this.computeContext() } });
   }

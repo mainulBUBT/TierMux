@@ -85,6 +85,8 @@ export interface ConfigPayload {
   deprecated: string[];
   /** Selected model for utility tasks (titles, commit messages); 'auto' = keyless-preferred. */
   utilityModel: string;
+  /** Session toggle: when true, the agent runs commands and applies edits without asking (dangerous commands still confirm). */
+  autoApprove: boolean;
 }
 
 export interface MentionItem {
@@ -117,6 +119,7 @@ export type InMessage =
   | { type: 'editMcp' }
   | { type: 'reconnectMcp' }
   | { type: 'addMcpServer'; item: McpRegistryItem }
+  | { type: 'removeMcpServer'; name: string }
   | { type: 'searchMcpRegistry'; queryId: number; query: string }
   | { type: 'buildIndex' }
   | { type: 'clearIndex' }
@@ -127,6 +130,8 @@ export type InMessage =
   | { type: 'setEmbeddingsEnabled'; enabled: boolean }
   | { type: 'setEmbeddingsProvider'; provider: string }
   | { type: 'setUtilityModel'; model: string }
+  | { type: 'setAutoApprove'; enabled: boolean }
+  | { type: 'resume'; requestId: string }
   | { type: 'newChat' };
 
 export interface TranscriptMessage {
@@ -151,7 +156,7 @@ export type OutMessage =
   | { type: 'editApproval'; requestId: string; id: string; path: string; title: string; kind: 'write' | 'delete' }
   | { type: 'clarifyingQuestions'; requestId: string; questions: ClarifyingQuestion[] }
   | { type: 'sessionTitle'; title: string }
-  | { type: 'assistantMessage'; requestId: string; text: string; reasoning?: string; usage?: UsagePayload; platform?: string; model?: string }
+  | { type: 'assistantMessage'; requestId: string; text: string; reasoning?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean }
   | { type: 'usageTotals'; totals: UsageTotals }
   | { type: 'indexProgress'; building: boolean; done: number; total: number; phase: 'scanning' | 'embedding' | 'done' | 'error' }
   | { type: 'checkpoint'; requestId: string; id: string; files: CheckpointFile[] }

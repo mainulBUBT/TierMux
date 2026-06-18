@@ -28,36 +28,61 @@ export class McpManager {
     await this.starting;
   }
 
+  /** Tear down and rebuild every connection. Serialized: each call chains after
+   *  any in-flight (re)connect instead of racing it — the config-change watcher
+   *  and an explicit caller used to run concurrently and append to the shared
+   *  `infos`, which double-listed every server. */
   async reconnect(): Promise<void> {
-    this.dispose();
-    this.starting = undefined;
-    await this.ensureStarted();
+    const run = (this.starting ?? Promise.resolve())
+      .catch(() => { /* ignore a prior failure; we rebuild from scratch anyway */ })
+      .then(() => this.connectAll());
+    this.starting = run;
+    await run;
+  }
+
+  /** Drop one server's connection and tools, leaving the rest running. Removing
+   *  a server doesn't require restarting the others, and this lets the panel
+   *  reflect the removal immediately instead of after a full reconnect. */
+  disconnect(name: string): void {
+    const client = this.clients.get(name);
+    if (client) { client.dispose(); this.clients.delete(name); }
+    for (const [fq, ref] of this.toolMap) if (ref.server === name) this.toolMap.delete(fq);
+    this.infos = this.infos.filter((i) => i.name !== name);
   }
 
   private async connectAll(): Promise<void> {
     const cfg = this.readConfig();
-    this.toolMap.clear();
-    this.infos = [];
     const wsCwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    // Build into locals and swap in atomically at the end — never append to the
+    // shared maps mid-flight, so an overlapping run can't double-list servers.
+    const clients = new Map<string, McpClient>();
+    const toolMap = new Map<string, { server: string; tool: string }>();
+    const infos: McpServerInfo[] = [];
     await Promise.all(Object.entries(cfg).map(async ([name, sc]) => {
-      if (sc.disabled) { this.infos.push({ name, status: 'disabled', toolCount: 0, tools: [] }); return; }
+      if (sc.disabled) { infos.push({ name, status: 'disabled', toolCount: 0, tools: [] }); return; }
       const client: McpClient = sc.url
         ? new McpHttpClient(name, { url: sc.url, headers: sc.headers })
         : new McpStdioClient(name, { command: sc.command ?? '', args: sc.args, env: sc.env, cwd: sc.cwd ?? wsCwd });
       try {
         await client.start();
-        this.clients.set(name, client);
+        clients.set(name, client);
         const toolNames: string[] = [];
         for (const t of client.tools) {
-          this.toolMap.set(`${PREFIX}${sanitize(name)}__${sanitize(t.name)}`, { server: name, tool: t.name });
+          toolMap.set(`${PREFIX}${sanitize(name)}__${sanitize(t.name)}`, { server: name, tool: t.name });
           toolNames.push(t.name);
         }
-        this.infos.push({ name, status: 'connected', toolCount: client.tools.length, tools: toolNames });
+        infos.push({ name, status: 'connected', toolCount: client.tools.length, tools: toolNames });
       } catch (e) {
         client.dispose();
-        this.infos.push({ name, status: 'error', toolCount: 0, tools: [], error: e instanceof Error ? e.message : String(e) });
+        infos.push({ name, status: 'error', toolCount: 0, tools: [], error: e instanceof Error ? e.message : String(e) });
       }
     }));
+    // Swap in the freshly built state, then dispose the connections it replaces.
+    const old = this.clients;
+    this.clients = clients;
+    this.toolMap = toolMap;
+    this.infos = infos;
+    for (const c of old.values()) c.dispose();
   }
 
   /** OpenAI-style tool specs for every connected MCP tool. */

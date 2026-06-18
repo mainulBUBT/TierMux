@@ -70,6 +70,9 @@ export function activate(context: vscode.ExtensionContext): void {
   commandGate.setConfirmHandler((command, cwd) => chat.requestCommandApproval(command, cwd));
   // Same for file edits/deletions — the diff still opens, but Apply/Reject is inline.
   editGate.setConfirmHandler((req) => chat.requestEditApproval(req));
+  // Session Auto-approve toggle (composer): both gates read it live to skip prompts.
+  commandGate.setAutoApprove(() => chat.autoApprove);
+  editGate.setAutoApprove(() => chat.autoApprove);
 
   // Stream index-build progress into the chat webview (transient "Indexing…" strip).
   index.onProgress((p) => chat.onIndexProgress(p));
@@ -84,7 +87,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // turned on (Cursor-style: no manual click needed once a provider key is set).
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('tiermux.mcpServers')) void mcp.reconnect();
+      if (e.affectsConfiguration('tiermux.mcpServers')) void mcp.reconnect().then(() => chat.refresh());
       if (e.affectsConfiguration('tiermux.embeddings') || e.affectsConfiguration('tiermux.context')) {
         chat.refresh();
         void index.maybeAutoBuild();
