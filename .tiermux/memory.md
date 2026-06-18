@@ -4,6 +4,7 @@ The agent reads this file every turn and follows it exactly. Edit freely — wha
 here always takes priority over its defaults. Keep it short: it's injected into every request.
 
 <!-- auto-learned by TierMux (safe to edit or delete) -->
-- Indentation: 4 spaces
-- String quotes: double
+- Indentation: 2 spaces
+- String quotes: single
+- Semicolons: yes
 <!-- end auto-learned -->

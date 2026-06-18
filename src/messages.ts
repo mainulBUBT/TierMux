@@ -83,6 +83,8 @@ export interface ConfigPayload {
   index: IndexInfo;
   /** `platform::modelId` keys a provider has 404'd this session — flagged as deprecated in the picker. */
   deprecated: string[];
+  /** `platform::modelId` keys currently set as a per-model override of the platform key. */
+  modelKeys: string[];
   /** Selected model for utility tasks (titles, commit messages); 'auto' = keyless-preferred. */
   utilityModel: string;
   /** Session toggle: when true, the agent runs commands and applies edits without asking (dangerous commands still confirm). */
@@ -113,6 +115,8 @@ export type InMessage =
   | { type: 'setEndpoint'; platform: Platform; url: string }
   | { type: 'resetEndpoint'; platform: Platform }
   | { type: 'setKey'; platform: Platform }
+  | { type: 'setModelKey'; platform: Platform; modelId: string; key: string }
+  | { type: 'clearModelKey'; platform: Platform; modelId: string }
   | { type: 'attachFromWorkspace' }
   | { type: 'addSelection' }
   | { type: 'mentionQuery'; queryId: number; query: string }
@@ -133,7 +137,8 @@ export type InMessage =
   | { type: 'setUtilityModel'; model: string }
   | { type: 'setAutoApprove'; enabled: boolean }
   | { type: 'resume'; requestId: string }
-  | { type: 'newChat' };
+  | { type: 'newChat' }
+  | { type: 'askUserResponse'; requestId: string; callId: string; answer: string; cancelled?: boolean; sessionId?: string };
 
 export interface TranscriptMessage {
   role: 'user' | 'assistant';
@@ -157,7 +162,8 @@ export type OutMessage =
   | { type: 'switchSession'; sessionId: string; messages: TranscriptMessage[] }
   | { type: 'userEcho'; sessionId: string; requestId: string; text: string }
   | { type: 'assistantStart'; sessionId: string; requestId: string; platform: string; model: string }
-  | { type: 'planProposed'; sessionId: string; requestId: string; steps: string }
+  | { type: 'planProposed'; sessionId: string; requestId: string; steps: string; discarded?: boolean }
+  | { type: 'planDiscarded'; sessionId: string; requestId: string }
   | { type: 'commandApproval'; sessionId: string; requestId: string; id: string; command: string; cwd?: string }
   | { type: 'editApproval'; sessionId: string; requestId: string; id: string; path: string; title: string; kind: 'write' | 'delete' }
   | { type: 'clarifyingQuestions'; sessionId: string; requestId: string; questions: ClarifyingQuestion[] }
@@ -169,7 +175,9 @@ export type OutMessage =
   | { type: 'toolStatus'; sessionId: string; requestId: string; toolCallId: string; name: string; args: unknown; state: 'running' | 'done' | 'error'; detail?: string }
   | { type: 'changedFiles'; sessionId: string; id: string; files: CheckpointFile[] }
   | { type: 'agentStep'; sessionId: string; requestId: string; phase: 'thinking' | 'synthesizing' | 'done'; label: string }
-  | { type: 'todos'; sessionId: string; requestId: string; todos: TodoItem[] }
+  | { type: 'askUserPrompt'; sessionId: string; requestId: string; callId: string; question: string; options?: string[] }
+  | { type: 'askUserDismissed'; sessionId: string; requestId: string; callId: string }
+  | { type: 'todos'; sessionId: string; requestId: string; todos: TodoItem[]; followingPlan?: boolean }
   | { type: 'failoverNotice'; sessionId: string; requestId: string; from: string; reason: string }
   | { type: 'attachmentAdded'; attachment: Attachment }
   | { type: 'mentionResults'; queryId: number; items: MentionItem[] }

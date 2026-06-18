@@ -89,6 +89,15 @@ function classify(err: unknown): { reason: string; failoverable: boolean; retryA
 export class Router {
   /** Last model (platform::modelId) that succeeded for each task kind — tried first next time. */
   private lastGood = new Map<TaskKind, string>();
+  /**
+   * Per-model health cache. `ok` = ping succeeded recently, `bad` = ping
+   * failed recently (skip without trying). Entries self-expire after
+   * `HEALTH_TTL_MS` so a transient blip doesn't permanently sideline a model,
+   * and a transient success doesn't lock a model in after it goes down.
+   */
+  private health = new Map<string, { state: 'ok' | 'bad'; at: number; reason?: string }>();
+  private static readonly HEALTH_TTL_MS = 60_000;
+  private static readonly PING_TIMEOUT_MS = 5000;
 
   constructor(
     private readonly secrets: SecretStore,
@@ -107,18 +116,29 @@ export class Router {
   async pickUtilityModel(): Promise<string | undefined> {
     const entries = this.settings.enabledByPriority();
     const enabled = new Set(entries.map((e) => `${e.platform}::${e.modelId}`));
-    const ready = async (platform: Platform): Promise<boolean> =>
-      this.secrets.cooldownRemaining(platform) === 0 && (await this.secrets.resolveKey(platform)) !== undefined;
+    // Check if a model (platform::modelId) is ready considering model-specific keys
+    const readyForModel = async (fullKey: string): Promise<boolean> => {
+      const [platform, ...rest] = fullKey.split('::');
+      const modelId = rest.join('::');
+      const entry = entries.find((e) => e.platform === platform && e.modelId === modelId);
+      if (!entry) return false;
+      if (this.secrets.cooldownRemaining(platform as Platform) > 0) return false;
+      // Check model-specific key first, then platform key
+      let key = await this.secrets.getModelKey(platform as Platform, modelId);
+      if (!key) key = await this.secrets.resolveKey(platform as Platform);
+      if (entry.key) key = entry.key;
+      return key !== undefined;
+    };
     const pick = async (keys: string[]): Promise<string | undefined> => {
       for (const key of keys) {
-        if (enabled.has(key) && (await ready(key.split('::')[0] as Platform))) return key;
+        if (enabled.has(key) && (await readyForModel(key))) return key;
       }
       return undefined;
     };
 
     // 0. Explicit user choice (Settings → Others) wins when it's usable.
     const chosen = vscodeConfigString('tiermux.utilityModel', 'auto');
-    if (chosen && chosen !== 'auto' && (await ready(chosen.split('::')[0] as Platform))) return chosen;
+    if (chosen && chosen !== 'auto' && (await readyForModel(chosen))) return chosen;
 
     // 1. Strong KEYLESS models — the default, so titles/commits work with no API key.
     const keyless = await pick(['ovh::gpt-oss-120b', 'ovh::Meta-Llama-3_3-70B-Instruct', 'pollinations::openai-fast']);
@@ -127,7 +147,7 @@ export class Router {
     // 2. Curated strong keyed models, if the user added a key.
     const keyed = await pick([
       'google::gemini-2.5-flash',
-      'google::gemini-2.0-flash',
+      'google::gemini-3.1-flash-lite',
       'groq::openai/gpt-oss-120b',
       'cerebras::gpt-oss-120b',
       'openrouter::deepseek/deepseek-chat-v3.1:free',
@@ -139,9 +159,9 @@ export class Router {
     const ranked = entries
       .map((e) => ({ e, m: this.catalog.find(e.platform, e.modelId) }))
       .filter((x): x is { e: FallbackEntry; m: CatalogModel } => !!x.m)
-      .sort((a, b) => a.m.intelligenceRank - b.m.intelligenceRank || a.m.speedRank - b.m.speedRank);
+      .sort((a, b) => (a.m.intelligenceRank + a.m.speedRank) - (b.m.intelligenceRank + b.m.speedRank));
     for (const { e } of ranked) {
-      if (await ready(e.platform)) return `${e.platform}::${e.modelId}`;
+      if (await readyForModel(`${e.platform}::${e.modelId}`)) return `${e.platform}::${e.modelId}`;
     }
 
     return undefined; // nothing keyed → caller falls back to Auto
@@ -227,128 +247,53 @@ export class Router {
     return vscodeConfigNumber('tiermux.requestTimeoutMs', 60000);
   }
 
+  /** Per-model pre-flight health cache, used to skip a model we already know is down. */
+  private healthOf(platform: Platform, modelId: string): 'ok' | 'bad' | undefined {
+    const e = this.health.get(`${platform}::${modelId}`);
+    if (!e) return undefined;
+    if (Date.now() - e.at > Router.HEALTH_TTL_MS) {
+      this.health.delete(`${platform}::${modelId}`);
+      return undefined;
+    }
+    return e.state;
+  }
+
+  private markHealth(platform: Platform, modelId: string, state: 'ok' | 'bad', reason?: string): void {
+    this.health.set(`${platform}::${modelId}`, { state, at: Date.now(), reason });
+  }
+
+  /**
+   * Tiny pre-flight: a 1-token `chat/completions` with a 5s timeout, used to
+   * confirm the API key works and the model exists before sending the real
+   * (potentially long) request. Succeeds fast on a healthy model, fails
+   * fast on a dead one so failover feels instant. Result is cached for
+   * `HEALTH_TTL_MS`. Only runs the first time we try a model in this window.
+   */
+  private async preflightPing(provider: ReturnType<typeof resolveProvider>, apiKey: string, platform: Platform, modelId: string): Promise<{ ok: boolean; reason?: string }> {
+    if (!provider) return { ok: false, reason: 'no_provider' };
+    if (this.healthOf(platform, modelId) === 'ok') return { ok: true };
+    try {
+      await provider.ping(apiKey, modelId, Router.PING_TIMEOUT_MS);
+      this.markHealth(platform, modelId, 'ok');
+      return { ok: true };
+    } catch (err) {
+      const { reason } = classify(err);
+      this.markHealth(platform, modelId, 'bad', reason);
+      return { ok: false, reason };
+    }
+  }
+
   async route(messages: ChatMessage[], opts: RouteOptions = {}): Promise<RouteResult> {
-  const failures: Array<{ platform: Platform; model: string; reason: string }> = [];
-  const maxOut = opts.max_tokens ?? 4096;
-  // The tool manifest is appended to every request but isn't part of the
-  // trimmed message list — reserve budget for it so we don't 413.
-  const sentTools = !!(opts.tools && opts.tools.length);
-  const toolsTokens = sentTools ? estimateTokens(JSON.stringify(opts.tools)) : 0;
-
-  // Track which models we've tried and how many times
-  const triedModels = new Map<string, number>();
-  const MAX_RETRIES = 3;
-
-  // Don't switch to a model that can't hold the conversation: prefer fallbacks
-  // whose context window fits the current history (so a rate-limit hop doesn't
-  // force trimming older turns). Only when the model is "Auto"; never starves.
-  let cands = this.candidates(opts);
-  const forced = !!(opts.model && opts.model !== 'auto');
-  if (!forced && cands.length > 1) {
-    const convoTokens = estimateMessagesTokens(messages);
-    const fits = (e: FallbackEntry): boolean =>
-      inputBudget(this.catalog.find(e.platform, e.modelId)?.contextWindow ?? 32768, maxOut, toolsTokens) >= convoTokens;
-    const fitting = cands.filter(fits);
-    if (fitting.length > 0 && fitting.length < cands.length) {
-      cands = [...fitting, ...cands.filter((e) => !fits(e))];
-    }
-  }
-
-  candidates: for (const entry of cands) {
-    const modelKey = `${entry.platform}::${entry.modelId}`;
-    const retryCount = triedModels.get(modelKey) || 0;
-
-    // Skip if we've already tried this model MAX_RETRIES times
-    if (retryCount >= MAX_RETRIES) {
-      failures.push({ platform: entry.platform, model: entry.modelId, reason: `tried ${MAX_RETRIES} times` });
-      continue;
-    }
-
-    const provider = resolveProvider(entry.platform, this.settings.getEndpoint(entry.platform));
-    if (!provider) {
-      failures.push({ platform: entry.platform, model: entry.modelId, reason: 'no_provider' });
-      continue;
-    }
-    const key = await this.secrets.resolveKey(entry.platform);
-    if (key === undefined) {
-      failures.push({ platform: entry.platform, model: entry.modelId, reason: 'no_api_key' });
-      continue;
-    }
-
-    const model: CatalogModel | undefined = this.catalog.find(entry.platform, entry.modelId);
-    const completionOpts: CompletionOptions = {
-      temperature: opts.temperature,
-      max_tokens: opts.max_tokens,
-      top_p: opts.top_p,
-      tools: opts.tools,
-      tool_choice: opts.tool_choice,
-      parallel_tool_calls: opts.parallel_tool_calls,
-      reasoningEffort: model?.supportsReasoning ? opts.reasoningEffort : undefined,
-      baseUrlOverride: this.settings.getEndpoint(entry.platform),
-      timeoutMs: opts.timeoutMs ?? this.timeoutMs(),
-    };
-
-    let reserved = toolsTokens;
-    let triedTrim = false;
-    for (;;) {
-      // Trim the conversation to fit this model's context window.
-      const fitted = fitMessages(messages, inputBudget(model?.contextWindow, maxOut, reserved)).messages;
-      try {
-        const response = await provider.chatCompletion(key, fitted, entry.modelId, completionOpts);
-        this.usage.add(response.usage);
-        this.secrets.setStatus(entry.platform, 'healthy');
-        // Remember the winner so the next same-kind task starts here, not at the top of the cascade.
-        if (opts.taskKind) this.lastGood.set(opts.taskKind, `${entry.platform}::${entry.modelId}`);
-        return { response, platform: entry.platform, model: entry.modelId };
-      } catch (err) {
-        const { reason, failoverable, retryAfterMs } = classify(err);
-
-        // Payload too large with tools: retry this same model once with a
-        // tighter budget before failing over.
-        if (reason === 'http_413' && sentTools && !triedTrim) {
-          triedTrim = true;
-          reserved = toolsTokens * 2 + 1024;
-          continue;
-        }
-
-        if (reason === 'rate_limited') {
-          this.secrets.setCooldown(entry.platform, retryAfterMs ?? this.rateLimitCooldownMs());
-        } else if (reason === 'auth') {
-          this.secrets.setStatus(entry.platform, 'invalid');
-        } else {
-          this.secrets.setStatus(entry.platform, 'error');
-        }
-
-        // A model that advertises tools but rejects the tools payload gets
-        // quarantined so requireTools routing skips it next time.
-        if (sentTools && (reason === 'bad_request' || reason === 'http_413')) {
-          this.secrets.markToolIncompatible(entry.platform, entry.modelId);
-        }
-
-        // A 404 means the model is gone/deprecated (catalog entries go stale).
-        // Quarantine it so Auto stops trying it and the picker can flag it.
-        if (reason === 'not_found') {
-          this.secrets.markDeprecated(entry.platform, entry.modelId);
-        }
-
-        // Increment the retry count for this model
-        triedModels.set(modelKey, retryCount + 1);
-
-        failures.push({ platform: entry.platform, model: entry.modelId, reason });
-        opts.onFailover?.({ from: entry, reason });
-        if (!failoverable) break candidates;
-        continue candidates;
-      }
-    }
-  }
-  throw new AllModelsFailedError(failures);
-}
     const failures: Array<{ platform: Platform; model: string; reason: string }> = [];
     const maxOut = opts.max_tokens ?? 4096;
     // The tool manifest is appended to every request but isn't part of the
     // trimmed message list — reserve budget for it so we don't 413.
     const sentTools = !!(opts.tools && opts.tools.length);
     const toolsTokens = sentTools ? estimateTokens(JSON.stringify(opts.tools)) : 0;
+
+    // Track which models we've tried and how many times
+    const triedModels = new Map<string, number>();
+    const MAX_RETRIES = 3;
 
     // Don't switch to a model that can't hold the conversation: prefer fallbacks
     // whose context window fits the current history (so a rate-limit hop doesn't
@@ -366,15 +311,48 @@ export class Router {
     }
 
     candidates: for (const entry of cands) {
+      const modelKey = `${entry.platform}::${entry.modelId}`;
+      const retryCount = triedModels.get(modelKey) || 0;
+
+      // Skip if we've already tried this model MAX_RETRIES times
+      if (retryCount >= MAX_RETRIES) {
+        failures.push({ platform: entry.platform, model: entry.modelId, reason: `tried ${MAX_RETRIES} times` });
+        continue;
+      }
+
       const provider = resolveProvider(entry.platform, this.settings.getEndpoint(entry.platform));
       if (!provider) {
         failures.push({ platform: entry.platform, model: entry.modelId, reason: 'no_provider' });
         continue;
       }
-      const key = await this.secrets.resolveKey(entry.platform);
-      if (key === undefined) {
+      // Resolve the API key (check model-specific key first, then platform key)
+      let apiKey = entry.key
+        ?? await this.secrets.getModelKey(entry.platform, entry.modelId)
+        ?? await this.secrets.resolveKey(entry.platform);
+      if (apiKey === undefined) {
         failures.push({ platform: entry.platform, model: entry.modelId, reason: 'no_api_key' });
         continue;
+      }
+
+      // Pre-flight: skip models we recently learned are down (ping failed in
+      // the last minute) so the user doesn't sit through a full request that
+      // we already know will fail. Cached "ok" lets a known-healthy model
+      // skip the probe entirely.
+      if (retryCount === 0) {
+        const cached = this.healthOf(entry.platform, entry.modelId);
+        if (cached === 'bad') {
+          failures.push({ platform: entry.platform, model: entry.modelId, reason: 'preflight_failed' });
+          opts.onFailover?.({ from: entry, reason: 'preflight_failed' });
+          continue;
+        }
+        if (cached === undefined) {
+          const probe = await this.preflightPing(provider, apiKey, entry.platform, entry.modelId);
+          if (!probe.ok) {
+            failures.push({ platform: entry.platform, model: entry.modelId, reason: probe.reason ?? 'preflight_failed' });
+            opts.onFailover?.({ from: entry, reason: probe.reason ?? 'preflight_failed' });
+            continue;
+          }
+        }
       }
 
       const model: CatalogModel | undefined = this.catalog.find(entry.platform, entry.modelId);
@@ -396,9 +374,10 @@ export class Router {
         // Trim the conversation to fit this model's context window.
         const fitted = fitMessages(messages, inputBudget(model?.contextWindow, maxOut, reserved)).messages;
         try {
-          const response = await provider.chatCompletion(key, fitted, entry.modelId, completionOpts);
+          const response = await provider.chatCompletion(apiKey, fitted, entry.modelId, completionOpts);
           this.usage.add(response.usage);
           this.secrets.setStatus(entry.platform, 'healthy');
+          this.markHealth(entry.platform, entry.modelId, 'ok');
           // Remember the winner so the next same-kind task starts here, not at the top of the cascade.
           if (opts.taskKind) this.lastGood.set(opts.taskKind, `${entry.platform}::${entry.modelId}`);
           return { response, platform: entry.platform, model: entry.modelId };
@@ -432,6 +411,13 @@ export class Router {
           if (reason === 'not_found') {
             this.secrets.markDeprecated(entry.platform, entry.modelId);
           }
+
+          // Cache the failure so the next call within TTL skips straight to
+          // the next model (no preflight ping, no full request).
+          this.markHealth(entry.platform, entry.modelId, 'bad', reason);
+
+          // Increment the retry count for this model
+          triedModels.set(modelKey, retryCount + 1);
 
           failures.push({ platform: entry.platform, model: entry.modelId, reason });
           opts.onFailover?.({ from: entry, reason });

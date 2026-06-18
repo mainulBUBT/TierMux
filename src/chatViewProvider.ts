@@ -76,6 +76,10 @@ interface Session {
   voteCtx: Map<string, { taskKind: string; platform: string; model: string; last: Vote }>;
   pendingPlanUser?: ChatContent;
   pendingClarify?: { requestId: string; userContent: ChatContent; prompt: string; questions: ClarifyingQuestion[] };
+  /** In-flight `askUser` tool calls, keyed by OpenAI tool_call_id, awaiting a webview answer. */
+  pendingAskUser: Map<string, (answer: string) => void>;
+  /** True while an approved plan is being executed in Agent mode — drives the "Following the approved plan" header. */
+  executingPlan?: boolean;
   checkpoints: CheckpointManager;
   lastWindow: number;
   // Cached live status for re-emitting when the user switches back to a running session
@@ -199,6 +203,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       approvalSeq: 0,
       voteCtx: new Map(),
       cards: [],
+      pendingAskUser: new Map(),
       checkpoints: new CheckpointManager(),
       lastWindow: 0,
     };
@@ -218,6 +223,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       approvalSeq: 0,
       voteCtx: new Map(),
       cards: [],
+      pendingAskUser: new Map(),
       checkpoints: new CheckpointManager(),
       lastWindow: 0,
     };
@@ -365,6 +371,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private settlePendingApprovals(s: Session, approved: boolean): void {
     for (const resolve of s.pendingApprovals.values()) resolve(approved);
     s.pendingApprovals.clear();
+  }
+
+  /** Resolve every in-flight in-chat `askUser` prompt with '' so the agent loop never hangs.
+   *  Also posts a dismissed message per entry so the webview can disable the card (otherwise
+   *  the card stays interactive even though the agent loop has already moved on). */
+  private settlePendingAskUser(s: Session): void {
+    if (s.pendingAskUser.size === 0) return;
+    // Snapshot the entries to avoid mutating during iteration.
+    const callIds = Array.from(s.pendingAskUser.keys());
+    const requestId = s.activeRequestId ?? '';
+    for (const callId of callIds) {
+      this.removeCards(s, (c) => c.type === 'askUserPrompt' && c.callId === callId);
+      this.post({ type: 'askUserDismissed', sessionId: s.id, requestId, callId });
+    }
+    for (const resolve of s.pendingAskUser.values()) resolve('');
+    s.pendingAskUser.clear();
+  }
+
+  /**
+   * In-chat backing for the agent's `askUser` tool (Plan + Agent modes only). Posts an
+   * `askUserPrompt` card to the webview and resolves with the user's answer (or '' on cancel).
+   * The callId is the OpenAI tool_call_id, so the resolved string lands as the observation
+   * for the right tool call when the agent loop resumes.
+   */
+  private requestAskUser(s: Session, requestId: string, callId: string, question: string, options?: string[]): Promise<string> {
+    if (!this.view) return Promise.resolve('');
+    try { this.view.show?.(true); } catch { /* reveal is best-effort */ }
+    return new Promise<string>((resolve) => {
+      s.pendingAskUser.set(callId, resolve);
+      this.postCard(s, { type: 'askUserPrompt', sessionId: s.id, requestId, callId, question, options });
+    });
   }
 
   private flushQueue(): void {
@@ -522,7 +559,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const rid = s.activeRequestId;
       this.post({ type: 'assistantStart', sessionId: s.id, requestId: rid, platform: s.livePlatform ?? '', model: s.liveModel ?? '' });
       if (s.lastStepLabel) this.post({ type: 'agentStep', sessionId: s.id, requestId: rid, phase: 'thinking', label: s.lastStepLabel });
-      if (s.lastTodos && s.lastTodos.length) this.post({ type: 'todos', sessionId: s.id, requestId: rid, todos: s.lastTodos });
+      if (s.lastTodos && s.lastTodos.length) this.post({ type: 'todos', sessionId: s.id, requestId: rid, todos: s.lastTodos, followingPlan: !!s.executingPlan });
     }
     for (const card of s.cards) this.post(card);
     this.postCheckpoints(s);
@@ -572,6 +609,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'answerClarifying':
         await this.handleAnswerClarifying(m);
         break;
+      case 'askUserResponse': {
+        const s = this.sessions.get(m.sessionId ?? this.viewedSessionId);
+        const resolve = s?.pendingAskUser.get(m.callId);
+        if (s && resolve) {
+          s.pendingAskUser.delete(m.callId);
+          this.removeCards(s, (c) => c.type === 'askUserPrompt' && c.callId === m.callId);
+          resolve(m.cancelled ? '' : (m.answer ?? ''));
+        }
+        break;
+      }
       case 'renameSession':
         this.handleRenameSession(m.title);
         break;
@@ -612,6 +659,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'setKey':
         await vscode.commands.executeCommand('tiermux.setApiKey', m.platform);
         break;
+      case 'setModelKey': {
+        await this.deps.secrets.setModelKey(m.platform, m.modelId, m.key);
+        void this.sendConfig();
+        break;
+      }
+      case 'clearModelKey': {
+        await this.deps.secrets.clearModelKey(m.platform, m.modelId);
+        void this.sendConfig();
+        break;
+      }
       case 'attachFromWorkspace':
         await this.attachFromWorkspace();
         break;
@@ -857,6 +914,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.cancel?.dispose();
     s.cancel = new vscode.CancellationTokenSource();
     s.activeRequestId = m.requestId;
+    // Starting a new turn drops any in-flight askUser card (the old run is being cancelled);
+    // settle before the new run takes over so its first askUser doesn't collide.
+    this.settlePendingAskUser(s);
+    s.executingPlan = false;
 
     const release = await this.acquireRunSlot(s.id);
     // Cancelled (Stop) while queued → release the slot and bail before running.
@@ -874,7 +935,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         token: s.cancel.token,
         runContext: this.runContext(s, m.requestId),
         onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
-      }, this.agentCallbacks(s, m.requestId));
+      }, this.agentCallbacks(s, m.requestId, m.mode as Mode));
       // Abandoned mid-run by a cancel → drop the output entirely.
       if (!this.isActiveRun(s, m.requestId)) return;
 
@@ -920,6 +981,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (this.isActiveRun(s, m.requestId)) {
         s.activeRequestId = undefined;
         this.settlePendingApprovals(s, false); // safety net: never leave a command waiting after the run ends
+        this.settlePendingAskUser(s);
         await this.finishCheckpoint(s, m.requestId);
         this.persist(s.id);
         this.post({ type: 'busy', sessionId: s.id, busy: false });
@@ -1044,12 +1106,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async handleApprovePlan(m: Extract<InMessage, { type: 'approvePlan' }>): Promise<void> {
     const s = this.current();
-    this.removeCards(s, (c) => c.type === 'planProposed' || c.type === 'clarifyingQuestions');
+    this.removeCards(s, (c) => c.type === 'clarifyingQuestions');
     if (!m.approved) {
       s.pendingPlanUser = undefined;
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: '_Plan discarded._' });
+      // Mark the cached planProposed card as discarded so it persists in the transcript
+      // (the webview will re-render it with a "✗ Discarded" label via the `planDiscarded` flag).
+      for (const c of s.cards) {
+        if (c.type === 'planProposed' && c.requestId === m.requestId) (c as { discarded?: boolean }).discarded = true;
+      }
+      this.post({ type: 'planDiscarded', sessionId: s.id, requestId: m.requestId });
       return;
     }
+    this.removeCards(s, (c) => c.type === 'planProposed');
     const original = s.pendingPlanUser;
     s.pendingPlanUser = undefined;
     if (original) s.history.push({ role: 'user', content: original });
@@ -1058,13 +1126,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.cancel?.dispose();
     s.cancel = new vscode.CancellationTokenSource();
     s.activeRequestId = m.requestId;
+    s.executingPlan = true;
     const release = await this.acquireRunSlot(s.id);
     if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
     this.post({ type: 'busy', sessionId: s.id, busy: true });
+    const stepCount = planStepsToTodos(m.steps).length;
+    this.post({ type: 'agentStep', sessionId: s.id, requestId: m.requestId, phase: 'thinking', label: stepCount > 0 ? `▶ Executing approved plan (${stepCount} steps)` : '▶ Executing approved plan' });
     // Seed the live checklist from the approved plan so the user sees it immediately;
     // the agent then advances each item via updateTodos as it executes.
     const seeded = planStepsToTodos(m.steps);
-    if (seeded.length) this.post({ type: 'todos', sessionId: s.id, requestId: m.requestId, todos: seeded });
+    if (seeded.length) this.post({ type: 'todos', sessionId: s.id, requestId: m.requestId, todos: seeded, followingPlan: true });
     const before = this.deps.usage.get();
     s.checkpoints.begin(m.requestId, 'Plan execution');
     const sentAt = Date.now();
@@ -1073,7 +1144,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         token: s.cancel.token,
         runContext: this.runContext(s, m.requestId),
         onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
-      }, this.agentCallbacks(s, m.requestId));
+      }, this.agentCallbacks(s, m.requestId, 'agent'));
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
@@ -1094,7 +1165,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       release();
       if (this.isActiveRun(s, m.requestId)) {
         s.activeRequestId = undefined;
+        s.executingPlan = false;
         this.settlePendingApprovals(s, false); // safety net: never leave a command waiting after the run ends
+        this.settlePendingAskUser(s);
         await this.finishCheckpoint(s, m.requestId);
         this.persist(s.id);
         this.post({ type: 'busy', sessionId: s.id, busy: false });
@@ -1139,8 +1212,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.cancel?.cancel();
     s.activeRequestId = undefined; // invalidates the run's liveness guard (isActiveRun)
     this.settlePendingApprovals(s, false); // unblock any command/edit awaiting a click
+    this.settlePendingAskUser(s); // unblock any in-chat askUser card
     s.pendingClarify = undefined;
     s.pendingPlanUser = undefined;
+    s.executingPlan = false;
     s.cards = [];
     this.setStatus(sessionId, 'idle');
     // If the user is watching this session, rebuild its thread clean (drops the abandoned
@@ -1167,20 +1242,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Build the streaming callbacks for a run, each gated on the run still being active IN ITS
    * SESSION. Centralizing the guard means a cancelled run goes quiet immediately instead of
    * rendering into another session. Not gated on viewed — background runs keep streaming.
+   * `mode` controls whether the agent's `askUser` tool surfaces in-chat (Plan + Agent) or via
+   * the native prompt (Debug + Orchestrator + Chat).
    */
-  private agentCallbacks(s: Session, requestId: string): AgentCallbacks {
+  private agentCallbacks(s: Session, requestId: string, mode: Mode): AgentCallbacks {
     const live = (): boolean => this.isActiveRun(s, requestId);
     // The webview shows one session at a time and rebuilds on switch, so we CACHE the live
     // status on the session (always, while the run is live) and only PUSH to the webview when
     // this session is the viewed one. openSession re-emits the cache so switching back to a
     // running agent shows its current step/todos immediately.
     const viewed = (): boolean => this.viewedSessionId === s.id;
+    const useInChatAsk = mode === 'plan' || mode === 'agent';
     return {
       onModel: (platform, model) => { if (!live()) return; s.livePlatform = platform; s.liveModel = model; if (viewed()) this.post({ type: 'assistantStart', sessionId: s.id, requestId, platform, model }); },
       onTool: (e) => { if (live() && viewed()) this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail }); },
       onStep: (phase, label) => { if (!live()) return; s.lastStepLabel = label; if (viewed()) this.post({ type: 'agentStep', sessionId: s.id, requestId, phase, label }); },
-      onTodos: (todos) => { if (!live()) return; s.lastTodos = todos; if (viewed()) this.post({ type: 'todos', sessionId: s.id, requestId, todos }); },
-      onAskUser: async (question, options) => { if (!live()) return ''; return this.requestUserInput(question, options); },
+      onTodos: (todos) => { if (!live()) return; s.lastTodos = todos; if (viewed()) this.post({ type: 'todos', sessionId: s.id, requestId, todos, followingPlan: !!s.executingPlan }); },
+      onAskUser: async (question, options) => {
+        if (!live()) return '';
+        if (!useInChatAsk) return this.requestUserInput(question, options);
+        // Mint a unique callId per prompt so the webview's response correlates back to the
+        // exact pending promise. The agent loop is sequential so only one askUser can be
+        // in-flight at a time per session — the callId is purely for response routing.
+        const callId = `ask-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        return this.requestAskUser(s, requestId, callId, question, options);
+      },
     };
   }
 
@@ -1247,7 +1333,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         token: s.cancel.token,
         runContext: this.runContext(s, m.requestId),
         onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
-      }, this.agentCallbacks(s, m.requestId));
+      }, this.agentCallbacks(s, m.requestId, 'agent'));
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
@@ -1270,6 +1356,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (this.isActiveRun(s, m.requestId)) {
         s.activeRequestId = undefined;
         this.settlePendingApprovals(s, false);
+        this.settlePendingAskUser(s);
         await this.finishCheckpoint(s, m.requestId);
         this.persist(s.id);
         this.post({ type: 'busy', sessionId: s.id, busy: false });
@@ -1306,7 +1393,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         token: s.cancel.token,
         runContext: this.runContext(s, m.requestId),
         onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
-      }, this.agentCallbacks(s, m.requestId));
+      }, this.agentCallbacks(s, m.requestId, 'plan'));
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       // Ignore any further questions block on this pass — go straight to a proposed plan.
       const clar = parseClarifying(result.text);
@@ -1323,6 +1410,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // Drop the clarify turns we added; the user turn is re-added on approval via pendingPlanUser.
         s.history.length = base;
         s.activeRequestId = undefined;
+        this.settlePendingAskUser(s);
         await this.finishCheckpoint(s, m.requestId);
         this.persist(s.id);
         this.post({ type: 'busy', sessionId: s.id, busy: false });
@@ -1368,6 +1456,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       mcpRegistry: await this.registry(),
       index: { enabled: this.deps.index.isEnabled(), built: s.built, files: s.files, chunks: s.chunks, model: s.model, building: s.building, lastError: s.lastError, provider: embProvider, providerConfigured: embConfigured },
       deprecated: this.deps.secrets.deprecatedKeys(),
+      modelKeys: await this.deps.secrets.modelKeySnapshot(this.deps.catalog.all()),
       utilityModel: vscode.workspace.getConfiguration('tiermux').get<string>('utilityModel', 'auto'),
       autoApprove: this.autoApprove,
     };

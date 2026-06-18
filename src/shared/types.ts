@@ -22,6 +22,8 @@ export type Platform =
   | 'opencode'
   | 'ovh'
   | 'agnes'
+  | 'sambanova'
+  | 'siliconflow'
   | 'custom';
 
 // 'xhigh' ("Very High") is our own extra tier; the OpenAI-wire reasoning_effort
@@ -150,6 +152,7 @@ export interface FallbackEntry {
   modelId: string;
   enabled: boolean;
   priority: number; // lower = tried first
+  key?: string; // API key for this model (overrides global platform key)
 }
 
 export interface PlatformInfo {

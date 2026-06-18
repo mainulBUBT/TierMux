@@ -72,6 +72,12 @@ export function orderForTask(
   const ctx = (a: CatalogModel, b: CatalogModel): number => (b.contextWindow ?? 0) - (a.contextWindow ?? 0);
   const tools = (a: CatalogModel, b: CatalogModel): number => Number(b.supportsTools) - Number(a.supportsTools);
   const reason = (a: CatalogModel, b: CatalogModel): number => Number(b.supportsReasoning) - Number(a.supportsReasoning);
+  // Balanced "fast AND capable" score: lower = better. Summing intelligence +
+  // speed means a fast smart model (intel 2, speed 1 → 3) leads a slow frontier
+  // one (intel 1, speed 5 → 6), so the first response is quick. Escalation still
+  // reaches the smartest models — the maxIntelligenceRank floor includes rank 1.
+  const balanced = (a: CatalogModel, b: CatalogModel): number =>
+    (a.intelligenceRank + a.speedRank) - (b.intelligenceRank + b.speedRank);
   // Newer first. Only ever a tiebreaker — so when two models rate equally on what
   // the task needs, the more recent one wins instead of the older equal always
   // taking the slot. Missing `released` sorts as oldest.
@@ -80,10 +86,10 @@ export function orderForTask(
   const cmp: Record<TaskKind, (a: CatalogModel, b: CatalogModel) => number> = {
     trivial: (a, b) => speed(a, b) || recency(a, b) || intel(a, b),                 // cheapest/fastest; smarts irrelevant
     chat: (a, b) => speed(a, b) || recency(a, b) || intel(a, b),                    // snappy but capable, newest among equals
-    agent: (a, b) => tools(a, b) || intel(a, b) || recency(a, b) || speed(a, b),    // tools, then smart, then newest
-    debug: (a, b) => reason(a, b) || tools(a, b) || intel(a, b) || recency(a, b),   // reasoning + tools + smart + newest
-    plan: (a, b) => intel(a, b) || reason(a, b) || tools(a, b) || recency(a, b),    // smartest reasoner; it reads code, speed irrelevant
-    longContext: (a, b) => ctx(a, b) || intel(a, b) || recency(a, b),               // biggest window, then newest
+    agent: (a, b) => tools(a, b) || balanced(a, b) || recency(a, b),                // tools, then fast+capable, then newest
+    debug: (a, b) => tools(a, b) || balanced(a, b) || reason(a, b) || recency(a, b),// tools, then fast+capable reasoner
+    plan: (a, b) => balanced(a, b) || reason(a, b) || tools(a, b) || recency(a, b), // fast+capable first, reasoning breaks ties
+    longContext: (a, b) => ctx(a, b) || balanced(a, b) || recency(a, b),            // biggest window, then fast+capable, then newest
   };
 
   const sc = score ?? ((): number => 0);

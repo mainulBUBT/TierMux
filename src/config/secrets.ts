@@ -4,6 +4,11 @@ import type { KeyStatus, Platform } from '../shared/types';
 import { allPlatformInfo, getPlatformInfo } from '../providers';
 
 const PREFIX = 'tiermux.key.';
+const MODEL_KEY_PREFIX = 'tiermux.modelKey.';
+
+function modelKeyId(platform: Platform, modelId: string): string {
+  return `${platform}::${modelId}`;
+}
 
 export class SecretStore {
   private statuses = new Map<Platform, KeyStatus>();
@@ -34,6 +39,32 @@ export class SecretStore {
   async clear(platform: Platform): Promise<void> {
     await this.secrets.delete(PREFIX + platform);
     this.statuses.delete(platform);
+  }
+
+  // ---- per-model API keys (override the platform key) ----
+
+  async getModelKey(platform: Platform, modelId: string): Promise<string | undefined> {
+    return this.secrets.get(MODEL_KEY_PREFIX + modelKeyId(platform, modelId));
+  }
+
+  async setModelKey(platform: Platform, modelId: string, key: string): Promise<void> {
+    await this.secrets.store(MODEL_KEY_PREFIX + modelKeyId(platform, modelId), key);
+  }
+
+  async clearModelKey(platform: Platform, modelId: string): Promise<void> {
+    await this.secrets.delete(MODEL_KEY_PREFIX + modelKeyId(platform, modelId));
+  }
+
+  /** Snapshot of `platform::modelId` keys that are currently set, restricted to
+   *  the supplied catalog. Pass the catalog so we don't scan the secret store
+   *  for unknown / removed models. */
+  async modelKeySnapshot(catalog: ReadonlyArray<{ platform: Platform; modelId: string }>): Promise<string[]> {
+    const out: string[] = [];
+    for (const m of catalog) {
+      const k = await this.getModelKey(m.platform, m.modelId);
+      if (k) out.push(modelKeyId(m.platform, m.modelId));
+    }
+    return out;
   }
 
   setStatus(platform: Platform, status: KeyStatus): void {

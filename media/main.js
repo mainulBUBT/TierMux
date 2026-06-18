@@ -635,8 +635,14 @@
     addModelItem('auto', 'Auto (smart routing)');
     let lastPlatform = null;
     let selectedLabel = null;
-    // Only enabled (checked) models appear in the picker — the same set Auto routes over.
-    const enabled = new Set(state.fallback.filter((e) => e.enabled).map((e) => `${e.platform}::${e.modelId}`));
+    // Only ACTIVE providers appear in the picker — i.e. the user has set a key for the
+    // platform (or it's keyless) AND has checked the model. Same set Auto routes over.
+    const activePlatforms = new Set((state.platforms || []).filter((p) => p.configured).map((p) => p.platform));
+    const enabled = new Set(
+      (state.fallback || [])
+        .filter((e) => e.enabled && activePlatforms.has(e.platform))
+        .map((e) => `${e.platform}::${e.modelId}`),
+    );
     state.catalog.forEach((m) => {
       const value = `${m.platform}::${m.modelId}`;
       if (!enabled.has(value)) return;
@@ -885,7 +891,16 @@
     };
     addItem('auto', 'Auto (prefers keyless)', 'auto keyless default');
     let lastPlatform = null;
+    // Only show models from ACTIVE (key-set / keyless) AND checked providers —
+    // same set the chat-view picker shows, and same set Auto routes over.
+    const activePlatforms = new Set((state.platforms || []).filter((p) => p.configured).map((p) => p.platform));
+    const enabled = new Set(
+      (state.fallback || [])
+        .filter((e) => e.enabled && activePlatforms.has(e.platform))
+        .map((e) => `${e.platform}::${e.modelId}`),
+    );
     (state.catalog || []).forEach((m) => {
+      if (!enabled.has(`${m.platform}::${m.modelId}`)) return;
       if (m.platform !== lastPlatform) {
         lastPlatform = m.platform;
         const g = document.createElement('div'); g.className = 'model-group';
@@ -907,7 +922,7 @@
     const hint = document.createElement('div');
     hint.className = 'muted';
     hint.style.marginBottom = '8px';
-    hint.textContent = 'Click a provider to set its key, edit its endpoint, and enable models. Configured providers (green) are listed first.';
+    hint.textContent = 'Click a provider to edit its endpoint and enable models. Set a per-model API key on each model row. Configured providers (green) are listed first.';
     settingsContentEl.appendChild(hint);
 
     const cat = {};
@@ -945,25 +960,6 @@
         else expandedProviders.add(p.platform);
       });
 
-      // Key actions
-      const keyRow = document.createElement('div');
-      keyRow.className = 'row-actions';
-      if (!p.keyless) {
-        const setKey = document.createElement('button');
-        setKey.className = 'secondary';
-        setKey.textContent = p.configured ? 'Update key' : 'Set key';
-        setKey.addEventListener('click', () => vscode.postMessage({ type: 'setKey', platform: p.platform }));
-        keyRow.appendChild(setKey);
-      }
-      if (p.keyUrl) {
-        const get = document.createElement('button');
-        get.className = 'icon-btn';
-        get.textContent = 'Get key ↗';
-        get.addEventListener('click', () => { if (window.open) window.open(p.keyUrl); });
-        keyRow.appendChild(get);
-      }
-      body.appendChild(keyRow);
-
       // Endpoint
       const epInput = document.createElement('input');
       epInput.type = 'text';
@@ -999,6 +995,7 @@
         mt.textContent = 'Models';
         body.appendChild(mt);
       }
+      const modelKeySet = new Set(state.modelKeys || []);
       models.forEach((e) => {
         const idx = entries.findIndex((x) => x.platform === e.platform && x.modelId === e.modelId);
         const m = cat[e.platform + '::' + e.modelId] || {};
@@ -1022,6 +1019,29 @@
         row.appendChild(cb);
         row.appendChild(info);
         row.appendChild(capsEl);
+        // Per-model key button (skipped for keyless platforms; optional override otherwise).
+        if (!p.keyless) {
+          const hasKey = modelKeySet.has(`${e.platform}::${e.modelId}`);
+          const keyBtn = document.createElement('button');
+          keyBtn.className = 'icon-btn';
+          keyBtn.textContent = hasKey ? 'Key ✓' : 'Key';
+          keyBtn.title = hasKey
+            ? 'This model has a custom API key (overrides the provider key). Click to manage.'
+            : 'Set a custom API key for this model (overrides the provider key).';
+          keyBtn.addEventListener('click', () => {
+            const action = hasKey ? 'Update' : 'Set';
+            const next = window.prompt(
+              `${action} API key for ${m.displayName || e.modelId} (leave empty to clear):`,
+              '');
+            if (next === null) return; // cancelled
+            if (next === '') {
+              vscode.postMessage({ type: 'clearModelKey', platform: e.platform, modelId: e.modelId });
+            } else {
+              vscode.postMessage({ type: 'setModelKey', platform: e.platform, modelId: e.modelId, key: next });
+            }
+          });
+          row.appendChild(keyBtn);
+        }
         body.appendChild(row);
       });
 
@@ -1236,7 +1256,7 @@
     // (background) session are ignored here — the host caches their state and replays it
     // when we switch to them (see switchSession). switchSession/sessionList carry their own
     // sessionId semantics and are handled below, so they're excluded from this filter.
-    const PER_SESSION = new Set(['userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'assistantMessage', 'planProposed', 'commandApproval', 'editApproval', 'clarifyingQuestions', 'checkpoint', 'changedFiles', 'busy', 'notice', 'error']);
+    const PER_SESSION = new Set(['userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'assistantMessage', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'checkpoint', 'changedFiles', 'busy', 'notice', 'error']);
     if (PER_SESSION.has(msg.type) && msg.sessionId && viewedSessionId && msg.sessionId !== viewedSessionId) return;
     switch (msg.type) {
       case 'config':
@@ -1298,7 +1318,7 @@
       }
       case 'todos': {
         const t = ensureTarget(msg.requestId);
-        renderTodos(t, msg.todos || []);
+        renderTodos(t, msg.todos || [], !!msg.followingPlan);
         break;
       }
       case 'toolStatus': {
@@ -1396,6 +1416,12 @@
         finalizeWork(msg.requestId);
         t.body.innerHTML = '';
         t.body.appendChild(renderMarkdown('**Proposed plan:**\n\n' + msg.steps));
+        if (msg.discarded) {
+          // Replayed as part of session switch or as a "kept" card after a Discard click —
+          // just leave the body in place and skip the action row.
+          scrollDown();
+          break;
+        }
         const actions = document.createElement('div'); actions.className = 'plan-actions';
         const approve = document.createElement('button'); approve.className = 'primary'; approve.textContent = 'Approve & Run';
         const reject = document.createElement('button'); reject.className = 'secondary'; reject.textContent = 'Discard';
@@ -1404,6 +1430,79 @@
         actions.appendChild(approve); actions.appendChild(reject);
         t.body.appendChild(actions);
         scrollDown();
+        break;
+      }
+      case 'planDiscarded': {
+        // The host rejected this plan — append a "✗ Discarded" note under the matching
+        // plan body so the rejected plan stays in the transcript.
+        for (const t of targets.values()) {
+          if (t.requestId === msg.requestId) {
+            const note = document.createElement('div'); note.className = 'plan-discarded';
+            note.textContent = '✗ Discarded';
+            t.body.appendChild(note);
+            scrollDown();
+            break;
+          }
+        }
+        break;
+      }
+      case 'askUserPrompt': {
+        const t = ensureTarget(msg.requestId);
+        stopStatusTimer(msg.requestId, true);
+        finalizeWork(msg.requestId);
+        t.body.innerHTML = '';
+        const card = document.createElement('div'); card.className = 'ask-card';
+        card.dataset.callId = msg.callId;
+        const intro = document.createElement('div'); intro.className = 'ask-intro';
+        intro.textContent = 'The agent has a quick question:';
+        const q = document.createElement('div'); q.className = 'ask-q-text'; q.textContent = msg.question;
+        card.appendChild(intro); card.appendChild(q);
+        const hasOptions = Array.isArray(msg.options) && msg.options.length >= 2;
+        let answer = '';
+        if (hasOptions) {
+          const opts = document.createElement('div'); opts.className = 'ask-opts';
+          msg.options.forEach((opt) => {
+            const b = document.createElement('button'); b.type = 'button';
+            b.className = 'ask-opt'; b.textContent = opt;
+            b.addEventListener('click', () => { submit(opt); });
+            opts.appendChild(b);
+          });
+          card.appendChild(opts);
+        } else {
+          const input = document.createElement('textarea'); input.className = 'ask-input';
+          input.rows = 3; input.placeholder = 'Type your answer…';
+          input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(input.value); }
+          });
+          const submitBtn = document.createElement('button'); submitBtn.type = 'button';
+          submitBtn.className = 'primary'; submitBtn.textContent = 'Submit';
+          submitBtn.addEventListener('click', () => submit(input.value));
+          card.appendChild(input); card.appendChild(submitBtn);
+          setTimeout(() => input.focus(), 0);
+        }
+        const submit = (text) => {
+          answer = (text || '').trim() || '(no answer)';
+          card.querySelectorAll('button, textarea').forEach((el) => { el.disabled = true; });
+          const note = document.createElement('div'); note.className = 'ask-answer';
+          note.textContent = '✓ ' + answer;
+          card.appendChild(note);
+          vscode.postMessage({ type: 'askUserResponse', requestId: msg.requestId, callId: msg.callId, answer });
+        };
+        t.body.appendChild(card);
+        scrollDown();
+        break;
+      }
+      case 'askUserDismissed': {
+        // The host drained this in-flight askUser (e.g. user cancelled or started a new turn).
+        // Find the matching card in the DOM and disable it so it can't be submitted.
+        thread.querySelectorAll('.ask-card').forEach((card) => {
+          if (card.dataset.callId === msg.callId) {
+            card.querySelectorAll('button, textarea').forEach((el) => { el.disabled = true; });
+            const note = document.createElement('div'); note.className = 'ask-answer';
+            note.textContent = '— skipped —';
+            card.appendChild(note);
+          }
+        });
         break;
       }
       case 'clarifyingQuestions': {
@@ -1621,11 +1720,18 @@
   }
 
   // Live task checklist for a turn (TodoWrite-style). Rendered above the answer
-  // bubble and updated in place as the agent advances each item.
-  function renderTodos(t, todos) {
+  // bubble and updated in place as the agent advances each item. When `followingPlan`
+  // is true (Plan → Agent handoff), prepend a small header so the user sees these
+  // todos ARE the approved plan steps.
+  function renderTodos(t, todos, followingPlan) {
     if (!todos.length) { if (t.todoEl) { t.todoEl.remove(); t.todoEl = null; } return; }
     if (!t.todoEl) { t.todoEl = document.createElement('div'); t.todoEl.className = 'todo-list'; t.el.insertBefore(t.todoEl, t.body); }
     t.todoEl.innerHTML = '';
+    if (followingPlan) {
+      const planHead = document.createElement('div'); planHead.className = 'todo-plan-head';
+      planHead.textContent = 'Following the approved plan';
+      t.todoEl.appendChild(planHead);
+    }
     const done = todos.filter((x) => x.status === 'completed').length;
     const head = document.createElement('div'); head.className = 'todo-head';
     head.textContent = `Tasks · ${done}/${todos.length}`;

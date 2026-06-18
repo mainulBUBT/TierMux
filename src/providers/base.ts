@@ -50,6 +50,24 @@ export abstract class BaseProvider {
     options?: CompletionOptions,
   ): AsyncGenerator<ChatCompletionChunk>;
 
+  /**
+   * Tiny pre-flight probe — a single-token request used by the router to
+   * confirm the key works and the model exists before committing the real
+   * (potentially long, token-heavy) request. Providers should implement this
+   * with a SHORT timeout (default 5s) so a dead model fails over in seconds,
+   * not after a full request timeout. The base implementation calls
+   * `chatCompletion` with a stub user message and `max_tokens: 1`; providers
+   * with a cheaper endpoint (e.g. /models) can override for less traffic.
+   */
+  async ping(apiKey: string, modelId: string, timeoutMs = 5000): Promise<void> {
+    await this.chatCompletion(
+      apiKey,
+      [{ role: 'user', content: 'ping' }],
+      modelId,
+      { max_tokens: 1, temperature: 0, timeoutMs },
+    );
+  }
+
   protected async fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 60000): Promise<Response> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
