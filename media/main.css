@@ -167,7 +167,7 @@ details.reasoning, .tool-card {
   padding: 6px 8px; font-size: 12px; background: var(--vscode-editor-background);
 }
 details.reasoning summary { cursor: pointer; opacity: .8; }
-.tool-card { display: flex; flex-direction: column; gap: 3px; }
+.tool-card { display: flex; flex-direction: column; gap: 3px; cursor: pointer; }
 .tool-head { display: flex; gap: 7px; align-items: center; }
 .tool-ic { flex: 0 0 auto; }
 .tool-title { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -412,7 +412,8 @@ button#model-btn {
 }
 /* Auto-approve toggle pill: dim when off, accent-filled when on. */
 .toggle-pill {
-  display: inline-flex; align-items: center; gap: 4px; max-width: none; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0; max-width: none; flex: 0 0 auto;
+  padding: 3px 6px;
 }
 .toggle-pill svg { display: block; opacity: .8; }
 .toggle-pill.on {
@@ -420,6 +421,35 @@ button#model-btn {
   border-color: var(--vscode-button-background);
 }
 .toggle-pill.on svg { opacity: 1; }
+
+/* Instant custom tooltip — appears instantly on hover, no native title delay.
+   Elements in the toolbar that need zero-delay descriptions add data-tooltip="…". */
+[data-tooltip] {
+  position: relative;
+}
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 400;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background, #2d2d2d);
+  color: var(--vscode-editorWidget-foreground, #ccc);
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+  box-shadow: 0 4px 12px rgba(0,0,0,.4);
+  pointer-events: none;
+  opacity: 0;
+  transition: none;
+  z-index: 70;
+}
+[data-tooltip]:hover::after {
+  opacity: 1;
+}
 button#model-btn .mb-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
 
 /* One shared down-chevron for the mode / model / effort controls so they match.

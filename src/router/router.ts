@@ -228,6 +228,121 @@ export class Router {
   }
 
   async route(messages: ChatMessage[], opts: RouteOptions = {}): Promise<RouteResult> {
+  const failures: Array<{ platform: Platform; model: string; reason: string }> = [];
+  const maxOut = opts.max_tokens ?? 4096;
+  // The tool manifest is appended to every request but isn't part of the
+  // trimmed message list — reserve budget for it so we don't 413.
+  const sentTools = !!(opts.tools && opts.tools.length);
+  const toolsTokens = sentTools ? estimateTokens(JSON.stringify(opts.tools)) : 0;
+
+  // Track which models we've tried and how many times
+  const triedModels = new Map<string, number>();
+  const MAX_RETRIES = 3;
+
+  // Don't switch to a model that can't hold the conversation: prefer fallbacks
+  // whose context window fits the current history (so a rate-limit hop doesn't
+  // force trimming older turns). Only when the model is "Auto"; never starves.
+  let cands = this.candidates(opts);
+  const forced = !!(opts.model && opts.model !== 'auto');
+  if (!forced && cands.length > 1) {
+    const convoTokens = estimateMessagesTokens(messages);
+    const fits = (e: FallbackEntry): boolean =>
+      inputBudget(this.catalog.find(e.platform, e.modelId)?.contextWindow ?? 32768, maxOut, toolsTokens) >= convoTokens;
+    const fitting = cands.filter(fits);
+    if (fitting.length > 0 && fitting.length < cands.length) {
+      cands = [...fitting, ...cands.filter((e) => !fits(e))];
+    }
+  }
+
+  candidates: for (const entry of cands) {
+    const modelKey = `${entry.platform}::${entry.modelId}`;
+    const retryCount = triedModels.get(modelKey) || 0;
+
+    // Skip if we've already tried this model MAX_RETRIES times
+    if (retryCount >= MAX_RETRIES) {
+      failures.push({ platform: entry.platform, model: entry.modelId, reason: `tried ${MAX_RETRIES} times` });
+      continue;
+    }
+
+    const provider = resolveProvider(entry.platform, this.settings.getEndpoint(entry.platform));
+    if (!provider) {
+      failures.push({ platform: entry.platform, model: entry.modelId, reason: 'no_provider' });
+      continue;
+    }
+    const key = await this.secrets.resolveKey(entry.platform);
+    if (key === undefined) {
+      failures.push({ platform: entry.platform, model: entry.modelId, reason: 'no_api_key' });
+      continue;
+    }
+
+    const model: CatalogModel | undefined = this.catalog.find(entry.platform, entry.modelId);
+    const completionOpts: CompletionOptions = {
+      temperature: opts.temperature,
+      max_tokens: opts.max_tokens,
+      top_p: opts.top_p,
+      tools: opts.tools,
+      tool_choice: opts.tool_choice,
+      parallel_tool_calls: opts.parallel_tool_calls,
+      reasoningEffort: model?.supportsReasoning ? opts.reasoningEffort : undefined,
+      baseUrlOverride: this.settings.getEndpoint(entry.platform),
+      timeoutMs: opts.timeoutMs ?? this.timeoutMs(),
+    };
+
+    let reserved = toolsTokens;
+    let triedTrim = false;
+    for (;;) {
+      // Trim the conversation to fit this model's context window.
+      const fitted = fitMessages(messages, inputBudget(model?.contextWindow, maxOut, reserved)).messages;
+      try {
+        const response = await provider.chatCompletion(key, fitted, entry.modelId, completionOpts);
+        this.usage.add(response.usage);
+        this.secrets.setStatus(entry.platform, 'healthy');
+        // Remember the winner so the next same-kind task starts here, not at the top of the cascade.
+        if (opts.taskKind) this.lastGood.set(opts.taskKind, `${entry.platform}::${entry.modelId}`);
+        return { response, platform: entry.platform, model: entry.modelId };
+      } catch (err) {
+        const { reason, failoverable, retryAfterMs } = classify(err);
+
+        // Payload too large with tools: retry this same model once with a
+        // tighter budget before failing over.
+        if (reason === 'http_413' && sentTools && !triedTrim) {
+          triedTrim = true;
+          reserved = toolsTokens * 2 + 1024;
+          continue;
+        }
+
+        if (reason === 'rate_limited') {
+          this.secrets.setCooldown(entry.platform, retryAfterMs ?? this.rateLimitCooldownMs());
+        } else if (reason === 'auth') {
+          this.secrets.setStatus(entry.platform, 'invalid');
+        } else {
+          this.secrets.setStatus(entry.platform, 'error');
+        }
+
+        // A model that advertises tools but rejects the tools payload gets
+        // quarantined so requireTools routing skips it next time.
+        if (sentTools && (reason === 'bad_request' || reason === 'http_413')) {
+          this.secrets.markToolIncompatible(entry.platform, entry.modelId);
+        }
+
+        // A 404 means the model is gone/deprecated (catalog entries go stale).
+        // Quarantine it so Auto stops trying it and the picker can flag it.
+        if (reason === 'not_found') {
+          this.secrets.markDeprecated(entry.platform, entry.modelId);
+        }
+
+        // Increment the retry count for this model
+        triedModels.set(modelKey, retryCount + 1);
+
+        failures.push({ platform: entry.platform, model: entry.modelId, reason });
+        opts.onFailover?.({ from: entry, reason });
+        if (!failoverable) break candidates;
+        continue candidates;
+      }
+    }
+  }
+  throw new AllModelsFailedError(failures);
+}
     const failures: Array<{ platform: Platform; model: string; reason: string }> = [];
     const maxOut = opts.max_tokens ?? 4096;
     // The tool manifest is appended to every request but isn't part of the
