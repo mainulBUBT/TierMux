@@ -5,6 +5,10 @@
   "version": "0.1.0-beta.2",
   "publisher": "mainul-islam",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mainulBUBT/TierMux.git"
+  },
   "preview": true,
   "engines": {
     "vscode": "^1.90.0"

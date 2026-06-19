@@ -1252,7 +1252,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // this session is the viewed one. openSession re-emits the cache so switching back to a
     // running agent shows its current step/todos immediately.
     const viewed = (): boolean => this.viewedSessionId === s.id;
-    const useInChatAsk = mode === 'plan' || mode === 'agent';
+    // askUser only ever fires from tool-calling runs (agent/debug/plan/orchestrator, and Auto
+    // which resolves to one of those) — never from chat (no tools there). So render it in-chat
+    // for every mode that can actually ask. The raw `mode` here is the composer selection, so
+    // 'auto' must map to in-chat too (it resolves to agent internally in the Agent class).
+    const useInChatAsk = mode !== 'chat';
     return {
       onModel: (platform, model) => { if (!live()) return; s.livePlatform = platform; s.liveModel = model; if (viewed()) this.post({ type: 'assistantStart', sessionId: s.id, requestId, platform, model }); },
       onTool: (e) => { if (live() && viewed()) this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail }); },

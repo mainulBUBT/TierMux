@@ -148,8 +148,10 @@ export interface RescuedCall {
 export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { detected: boolean; calls: RescuedCall[] } {
   const calls: RescuedCall[] = [];
 
-  // Pattern A: <function=NAME>{json}</function> or <function=NAME>{json}
-  const fnTag = /<function=([a-zA-Z0-9_\-]+)\s*>\s*(\{[\s\S]*?\})\s*(?:<\/function>)?/g;
+  // Pattern A: <function=NAME>{json}</function> or <function=NAME>{json} — the closing tag
+  // and the `>` after the name are both optional: weak models often emit malformed forms like
+  // `<function=listDir{"path":"."}` (no `>`, no closing tag).
+  const fnTag = /<function=([a-zA-Z0-9_\-]+)\s*>?\s*(\{[\s\S]*?\})\s*(?:<\/function>)?/g;
   let m: RegExpExecArray | null;
   while ((m = fnTag.exec(text)) !== null) {
     const name = m[1];

@@ -532,6 +532,37 @@
   input.addEventListener('click', updateAutocomplete);
   input.addEventListener('blur', () => setTimeout(closeAc, 120));
   function autoGrow() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 220) + 'px'; }
+
+  // ---------- per-session composer state (draft / model / mode / reasoning / attachments) ----------
+  // The thread is already session-isolated; this stashes the composer for the session we're
+  // leaving and restores it for the one we're entering, so each tab keeps its own in-progress
+  // message and settings — like separate chat tabs.
+  const composerState = new Map(); // sessionId -> { draft, model, mode, reasoning, attachments }
+  function saveComposer(id) {
+    if (!id) return;
+    composerState.set(id, {
+      draft: input.value,
+      model: currentModel,
+      mode: currentMode,
+      reasoning: reasoningSel.value,
+      attachments: pendingAttachments.slice(),
+    });
+  }
+  function loadComposer(id) {
+    const c = composerState.get(id);
+    input.value = c ? c.draft : '';
+    setMode(c ? c.mode : 'auto');
+    currentModel = c ? c.model : 'auto';
+    rebuildModelPicker(); // syncs the model button label + reasoning availability to currentModel
+    reasoningSel.value = c ? c.reasoning : 'off';
+    updateReasoningAvailability();
+    pendingAttachments = c && c.attachments ? c.attachments.slice() : [];
+    renderChips();
+    autoGrow();
+  }
+  // Persist the draft as the user types, so a background switch never loses it.
+  input.addEventListener('input', () => { if (viewedSessionId) saveComposer(viewedSessionId); });
+
   $('#btn-attach').addEventListener('click', () => vscode.postMessage({ type: 'attachFromWorkspace' }));
   $('#btn-selection').addEventListener('click', () => vscode.postMessage({ type: 'addSelection' }));
   // Close transient popups when the view loses focus or is hidden (e.g. switching tabs).
@@ -1274,6 +1305,7 @@
       case 'switchSession':
         // Rebuild this single-session view for the session we're now viewing. Its full
         // transcript is replayed, then the host re-emits any cached live/cards state.
+        saveComposer(viewedSessionId); // stash the leaving session's draft/settings
         viewedSessionId = msg.sessionId;
         if (settingsOpen) toggleSettings();
         thread.innerHTML = '';
@@ -1286,6 +1318,7 @@
         renderChangedBar({ files: [] });
         (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts) : renderAssistantStatic(mm.text, mm.model, mm.ts, mm.secs));
         if (!(msg.messages || []).length) renderEmpty();
+        loadComposer(viewedSessionId); // restore the entering session's draft/settings
         scrollDown();
         break;
       case 'sessionList':
