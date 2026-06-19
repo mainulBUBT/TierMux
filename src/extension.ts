@@ -21,6 +21,8 @@ import { registerInlineChat } from './editor/inlineChat';
 import { registerInlineCompletions } from './completions/inlineCompletion';
 import { registerCommitMessage, generateCommitMessage } from './scm/commitMessage';
 import { openMemoryForEdit } from './context/userMemory';
+import { buildStructuralGraph, updateFileInGraph } from './context/structuralGraph';
+import { buildTour, tourMarkdown } from './context/onboardingTour';
 
 export function activate(context: vscode.ExtensionContext): void {
   const catalog = new Catalog(context.extensionPath);
@@ -79,7 +81,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Incrementally re-embed an indexed file when it's saved.
   context.subscriptions.push(
-    vscode.workspace.onDidSaveTextDocument((doc) => { void index.updateFile(doc.uri); }),
+    vscode.workspace.onDidSaveTextDocument((doc) => {
+      void index.updateFile(doc.uri);
+      void updateFileInGraph(doc.uri);
+    }),
   );
 
   // Reconnect MCP servers when their configuration changes; refresh the panel
@@ -143,6 +148,30 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showInformationMessage('TierMux: model catalog refreshed.');
     }),
     vscode.commands.registerCommand('tiermux.editMemory', () => openMemoryForEdit()),
+    vscode.commands.registerCommand('tiermux.buildGraph', async () => {
+      await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Building code graph…' }, async () => {
+        const graph = await buildStructuralGraph(true);
+        void vscode.window.showInformationMessage(`TierMux: graph built — ${graph.files.length} files, ${graph.imports.length} imports, ${graph.calls.length} call edges.`);
+      });
+    }),
+    vscode.commands.registerCommand('tiermux.generateOnboardingTour', async () => {
+      await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Generating onboarding tour…' }, async () => {
+        const graph = await buildStructuralGraph(true);
+        if (graph.files.length === 0) {
+          void vscode.window.showWarningMessage('TierMux: no files found to build a tour from.');
+          return;
+        }
+        const tour = buildTour(graph);
+        const md = tourMarkdown(tour);
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (folder) {
+          const uri = vscode.Uri.joinPath(folder.uri, '.tiermux', 'tour.md');
+          try { await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(folder.uri, '.tiermux')); } catch { /* exists */ }
+          await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(md));
+          await vscode.commands.executeCommand('vscode.open', uri);
+        }
+      });
+    }),
   );
 
   // Advanced features -------------------------------------------------------

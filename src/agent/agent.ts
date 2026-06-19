@@ -7,7 +7,7 @@ import type { McpManager } from '../mcp/mcpManager';
 import type { CodebaseIndex } from '../index/codebaseIndex';
 import { contentToString } from './content';
 import { sanitizeToolName } from './toolArgs';
-import { TOOL_SPECS, CODEBASE_SEARCH_SPEC, GLOB_SPEC, GREP_SPEC, ASK_USER_SPEC, SKILL_SPEC, WEB_TOOL_SPECS } from './toolSpecs';
+import { TOOL_SPECS, CODEBASE_SEARCH_SPEC, GLOB_SPEC, GREP_SPEC, ASK_USER_SPEC, SKILL_SPEC, WEB_TOOL_SPECS, GRAPH_TOOLS_SPEC } from './toolSpecs';
 import { AGENT_SYSTEM, CHAT_SYSTEM, PLAN_SYSTEM, DEBUG_SYSTEM, ORCHESTRATOR_SYSTEM, RESPONSIBILITY_RULES } from './prompts';
 import { loadProjectRules } from '../context/projectRules';
 import { loadUserMemory, inferStyleFromEdits, upsertLearnedSection } from '../context/userMemory';
@@ -18,6 +18,7 @@ import { ESCALATION_CAP, isRefusalOrEmpty, toolSignature, allUnparseable } from 
 import { PRODUCT_NAME } from '../shared/branding';
 import type { RunContext } from './runContext';
 import type { RouteOptions } from '../router/router';
+import { buildStructuralGraph, loadStructuralGraph, graphSummary } from '../context/structuralGraph';
 
 export type Mode = 'auto' | 'chat' | 'plan' | 'agent' | 'debug' | 'orchestrator';
 
@@ -33,6 +34,7 @@ const MAX_SUBTASKS = 6;
 const READONLY_TOOLS = new Set([
   'readFile', 'listDir', 'repoMap', 'searchWorkspace', 'getDiagnostics', 'codebaseSearch',
   'glob', 'grep', 'webFetch', 'webSearch', 'askUser', 'skill',
+  'buildGraph', 'getSymbolGraph', 'impactAnalysis',
 ]);
 
 export interface AgentCallbacks {
@@ -121,6 +123,19 @@ export class Agent {
     const text = await loadProjectGrounding();
     this.groundingCache = { root, text };
     return text;
+  }
+
+  /** Lazy graph context: load existing graph, or build file-level graph if absent. */
+  private async graphContext(): Promise<string> {
+    try {
+      if (!vscode.workspace.getConfiguration('tiermux.graph').get<boolean>('enabled', true)) return '';
+      let graph = await loadStructuralGraph();
+      if (!graph) {
+        graph = await buildStructuralGraph(false);
+      }
+      if (!graph || graph.files.length === 0) return '';
+      return graphSummary(graph);
+    } catch { return ''; }
   }
 
   /**
@@ -237,12 +252,11 @@ export class Agent {
     const ropts: RunOpts = { ...opts, taskKind: routeKind };
 
     const [rules, grounding, memory] = await Promise.all([loadProjectRules(), this.grounding(), loadUserMemory()]);
+    const graphContext = await this.graphContext();
     const augment = (base: string): string => {
-      // Responsibility rules lead (after the role prompt) so weak models get the contract
-      // up front; then grounding, then the user's own style/tone memory (above project rules
-      // so personal preferences win), then repo rules.
       let s = `${base}\n\n${RESPONSIBILITY_RULES}`;
       if (grounding) s += `\n\n# Project context (orient yourself here first)\n${grounding}`;
+      if (graphContext) s += `\n\n# Code graph (structural relationships)\n${graphContext}`;
       if (memory) s += `\n\n# User style, tone & standing instructions (follow exactly)\n${memory}`;
       if (rules) s += `\n\n# Project rules (follow these)\n${rules}`;
       return s;
@@ -355,10 +369,12 @@ export class Agent {
     // offered; webFetch/webSearch only when the user opts in. None of these reach chat/trivial
     // (runSingle/runTrivial pass no tools). Plan mode keeps only the read-only subset below.
     const webOn = vscode.workspace.getConfiguration('tiermux.tools').get<boolean>('web', false);
+    const graphOn = vscode.workspace.getConfiguration('tiermux.graph').get<boolean>('enabled', true);
     const tools = [
       ...TOOL_SPECS,
       GLOB_SPEC, GREP_SPEC, ASK_USER_SPEC, SKILL_SPEC,
       ...(webOn ? WEB_TOOL_SPECS : []),
+      ...(graphOn ? GRAPH_TOOLS_SPEC : []),
       ...(indexOn ? [CODEBASE_SEARCH_SPEC] : []),
       ...(runOpts?.readOnly ? [] : this.mcp?.listToolSpecs() ?? []),
     ].filter((t) => !runOpts?.readOnly || READONLY_TOOLS.has(t.function.name));

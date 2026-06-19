@@ -1,12 +1,14 @@
 .vscode/**
 src/**
 node_modules/**
+.kilo/**
+.tiermux/**
+.claude/**
+scripts/**
 **/*.ts
 **/*.map
 tsconfig.json
 esbuild.js
 .gitignore
 .git/**
-.claude/**
-scripts/**
 *.vsix

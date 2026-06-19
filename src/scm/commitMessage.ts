@@ -1,14 +1,35 @@
 // Generate a commit message from the staged diff via the built-in Git API.
+// Hardening: better post-processing of model output, garbage detection, a
+// multi-stage model fallback chain, and a deterministic template fallback so
+// the SCM input box never shows garbage text from a noisy free-tier model.
 import * as vscode from 'vscode';
 import type { Router } from '../router/router';
 import { contentToString } from '../agent/content';
+import { cleanCommitMessage, looksLikeGarbage, buildTemplateFallback } from './commitMessageClean';
 
-const SYSTEM = `You write concise commit messages. Reply with ONLY the commit message: a short
-imperative subject line (<= 72 chars), then an optional blank line and a brief body for non-trivial
-changes. If recent commit messages from the repo are provided, MATCH their style and format exactly
-(type/scope prefix, casing, tense, emoji or none). Otherwise use Conventional Commits ("feat: …",
-"fix: …"). No markdown fences, no quotes. Do NOT restate the task, echo the diff, or include any
-reasoning, preamble, or explanation — output the commit message text and nothing else.`;
+const SYSTEM = `You write concise commit messages. Output ONLY the commit message text.
+
+GOOD output:
+feat: add OAuth login flow
+
+Adds OAuth2 authentication with refresh token rotation.
+
+GOOD output (single-line):
+fix: handle null user in profile fetch
+
+BAD output (never produce):
+- "Here is the commit message: feat: add..."
+- "\`\`\`\nfeat: add...\n\`\`\`"
+- "I cannot generate a commit message without more context"
+- "{\"subject\": \"feat: add...\"}"
+- "Sure, here's a commit message for your changes..."
+
+Rules:
+- First line: <72 char imperative subject (e.g. "feat: add X", "fix: handle Y")
+- Optional blank line + 1-3 sentence body for non-trivial changes
+- If recent commits are listed, match their style/prefix/casing exactly
+- No markdown, no fences, no JSON, no preamble, no explanation
+- Output the commit message text and nothing else`;
 
 interface GitRepo {
   rootUri: vscode.Uri;
@@ -37,25 +58,6 @@ function filterDiff(diff: string): string {
   });
   const out = kept.join('');
   return out.trim() ? out : diff;
-}
-
-/**
- * Reduce a raw model reply to ONLY the commit message. Reasoning models emit
- * <think>…</think> traces and some models add a "Here is the commit message:"
- * preamble or wrap the text in a code fence — none of which belong in the SCM box.
- */
-function cleanCommitMessage(raw: string): string {
-  let s = raw.trim();
-  // Drop complete <think>…</think> reasoning blocks, then any dangling open/close tag
-  // (truncated traces) and everything up to a stray </think>.
-  s = s.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-  s = s.replace(/^[\s\S]*?<\/think>/i, '').trim();
-  s = s.replace(/<think>[\s\S]*$/i, '').trim();
-  // Unwrap a surrounding code fence.
-  s = s.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, '').trim();
-  // Strip a leading "Here is/Here's …:" style preamble (only the first line).
-  s = s.replace(/^(?:sure[,!]?\s*)?here(?:'s| is)[^\n:]*:\s*/i, '').trim();
-  return s;
 }
 
 function getGitApi(): GitApi | undefined {
@@ -107,21 +109,51 @@ export async function generateCommitMessage(router: Router): Promise<void> {
 
     const messages = [
       { role: 'system' as const, content: SYSTEM },
-      { role: 'user' as const, content: `${styleBlock}${hintBlock}Generate a commit message for this diff:\n\n\`\`\`diff\n${clipped}\n\`\`\`` },
+      { role: 'user' as const, content: `${styleBlock}${hintBlock}Generate a commit message for this diff:\n\n<diff>\n${clipped}\n</diff>` },
     ];
-    // Prefer a strong free model for a good message; fall back to Auto if it's unavailable.
-    const model = await router.pickUtilityModel();
+
     try {
-      let result;
-      try {
-        result = await router.route(messages, { temperature: 0.2, max_tokens: 256, model });
-      } catch (err) {
-        if (!model) throw err; // already Auto — nothing to fall back to
-        result = await router.route(messages, { temperature: 0.2, max_tokens: 256 });
+      // Multi-stage fallback: try the user's utility-model pick first, then a
+      // ladder of stronger models. Each attempt is validated; the first clean
+      // output wins. If every model produces garbage, use the deterministic
+      // template so the user never sees garbage in the input box.
+      const primary = await router.pickUtilityModel();
+      const fallbacks = [
+        'google::gemini-2.5-flash',
+        'groq::llama-3.3-70b-versatile',
+        'openrouter::deepseek/deepseek-chat-v3.1:free',
+      ];
+      const candidates = [primary, ...fallbacks].filter((m): m is string => !!m);
+      const seen = new Set<string>();
+      const attempts: string[] = [];
+      for (const m of candidates) {
+        if (seen.has(m)) continue;
+        seen.add(m);
+        if (!(await router.isReady(m))) continue;
+        attempts.push(m);
+        if (attempts.length >= 3) break;
       }
-      const msg = cleanCommitMessage(contentToString(result.response.choices[0]?.message.content));
+
+      let msg = '';
+      for (const model of attempts) {
+        try {
+          const result = await router.route(messages, { temperature: 0.2, max_tokens: 256, model });
+          const cleaned = cleanCommitMessage(contentToString(result.response.choices[0]?.message.content));
+          if (!looksLikeGarbage(cleaned)) {
+            msg = cleaned;
+            break;
+          }
+        } catch { /* try the next model */ }
+      }
+
+      if (!msg || looksLikeGarbage(msg)) {
+        msg = buildTemplateFallback(diff);
+      }
       if (msg) repo.inputBox.value = msg;
     } catch (e) {
+      // Catastrophic failure (no router, etc.) — at minimum, show a clean template.
+      const fallback = buildTemplateFallback(diff);
+      if (fallback) repo.inputBox.value = fallback;
       void vscode.window.showErrorMessage(`Commit message generation failed: ${e instanceof Error ? e.message : e}`);
     }
   });

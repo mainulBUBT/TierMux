@@ -5,6 +5,8 @@ import { CommandGate } from '../edits/commandGate';
 import { buildRepoMapSummary } from './repoMap';
 import { loadSkill, listSkills } from './skills';
 import type { RunContext } from './runContext';
+import { buildStructuralGraph, loadStructuralGraph, graphSummary, symbolGraph } from '../context/structuralGraph';
+import { analyzeImpact, impactMarkdown } from '../context/impactAnalysis';
 
 const MAX_READ_BYTES = 100 * 1024;
 const MAX_SEARCH_RESULTS = 40;
@@ -64,6 +66,9 @@ export class WorkspaceTools {
         case 'webFetch': return await this.webFetch(String(args.url ?? ''));
         case 'webSearch': return await this.webSearch(String(args.query ?? ''));
         case 'skill': return await this.skill(String(args.name ?? ''));
+        case 'buildGraph': return await this.buildGraph();
+        case 'getSymbolGraph': return await this.getSymbolGraph(String(args.file ?? ''));
+        case 'impactAnalysis': return await this.impactAnalysis(args.files as string[] | undefined);
         default: return JSON.stringify({ error: `Unknown tool: ${name}` });
       }
     } catch (e) {
@@ -243,6 +248,31 @@ export class WorkspaceTools {
       ? `No skill named "${name}". Available: ${available.join(', ')}.`
       : `No skill named "${name}" (.tiermux/skills is empty).`;
     return JSON.stringify({ found: false, note });
+  }
+
+  private async buildGraph(): Promise<string> {
+    try {
+      const graph = await buildStructuralGraph(true);
+      return JSON.stringify({ ok: true, files: graph.files.length, imports: graph.imports.length, calls: graph.calls.length, entrypoints: graph.entrypoints.length, summary: graphSummary(graph) });
+    } catch (e) {
+      return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  private async getSymbolGraph(file: string): Promise<string> {
+    if (!file) return JSON.stringify({ error: 'Missing required parameter: file.' });
+    const graph = await loadStructuralGraph();
+    if (!graph) return JSON.stringify({ error: 'No structural graph built yet. Call buildGraph first.' });
+    const result = symbolGraph(graph, file);
+    return JSON.stringify(result);
+  }
+
+  private async impactAnalysis(files: string[] | undefined): Promise<string> {
+    if (!files || !Array.isArray(files) || files.length === 0) return JSON.stringify({ error: 'Missing required parameter: files (array of workspace-relative paths).' });
+    const graph = await loadStructuralGraph();
+    if (!graph) return JSON.stringify({ error: 'No structural graph built yet. Call buildGraph first.' });
+    const analysis = analyzeImpact(graph, files);
+    return JSON.stringify({ changedFiles: analysis.changedFiles, impactedCount: analysis.impacted.length, impacted: analysis.impacted.slice(0, 30), byLayer: Object.fromEntries(Object.entries(analysis.byLayer).map(([k, v]) => [k, v.length])), markdown: impactMarkdown(analysis) });
   }
 }
 

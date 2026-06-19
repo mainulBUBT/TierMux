@@ -2,7 +2,7 @@
   "name": "tiermux",
   "displayName": "TierMux",
   "description": "Agentic AI coding assistant powered by the free tiers of 18+ LLM providers (and growing), with automatic failover and smart per-task model routing. Bring your own keys.",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "publisher": "mainul-islam",
   "license": "MIT",
   "repository": {
@@ -74,7 +74,9 @@
       { "command": "tiermux.refreshModels", "title": "Refresh Model Catalog", "category": "TierMux", "icon": "$(sync)" },
       { "command": "tiermux.generateCommitMessage", "title": "Generate Commit Message", "category": "TierMux", "icon": { "light": "media/icon-commit-light.svg", "dark": "media/icon-commit-dark.svg" } },
       { "command": "tiermux.toggleCompletions", "title": "Toggle Inline Completions", "category": "TierMux" },
-      { "command": "tiermux.editMemory", "title": "Edit Style & Tone Memory", "category": "TierMux", "icon": "$(notebook)" }
+      { "command": "tiermux.editMemory", "title": "Edit Style & Tone Memory", "category": "TierMux", "icon": "$(notebook)" },
+      { "command": "tiermux.buildGraph", "title": "Build Code Graph", "category": "TierMux", "icon": "$(graph)" },
+      { "command": "tiermux.generateOnboardingTour", "title": "Generate Onboarding Tour", "category": "TierMux", "icon": "$(compass)" }
     ],
     "menus": {
       "view/title": [
@@ -157,6 +159,11 @@
           "type": "boolean",
           "default": true,
           "description": "After edits, infer basic code-style signals (indent, quotes, semicolons) for free and record them in .tiermux/memory.md so future turns stay consistent. No model call — pure heuristics."
+        },
+        "tiermux.graph.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the structural code graph (imports, exports, call edges, entrypoints). Provides cross-file context to the agent and enables getSymbolGraph, impactAnalysis, and onboarding tour tools."
         },
         "tiermux.tools.web": {
           "type": "boolean",

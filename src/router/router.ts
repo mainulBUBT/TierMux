@@ -116,29 +116,16 @@ export class Router {
   async pickUtilityModel(): Promise<string | undefined> {
     const entries = this.settings.enabledByPriority();
     const enabled = new Set(entries.map((e) => `${e.platform}::${e.modelId}`));
-    // Check if a model (platform::modelId) is ready considering model-specific keys
-    const readyForModel = async (fullKey: string): Promise<boolean> => {
-      const [platform, ...rest] = fullKey.split('::');
-      const modelId = rest.join('::');
-      const entry = entries.find((e) => e.platform === platform && e.modelId === modelId);
-      if (!entry) return false;
-      if (this.secrets.cooldownRemaining(platform as Platform) > 0) return false;
-      // Check model-specific key first, then platform key
-      let key = await this.secrets.getModelKey(platform as Platform, modelId);
-      if (!key) key = await this.secrets.resolveKey(platform as Platform);
-      if (entry.key) key = entry.key;
-      return key !== undefined;
-    };
     const pick = async (keys: string[]): Promise<string | undefined> => {
       for (const key of keys) {
-        if (enabled.has(key) && (await readyForModel(key))) return key;
+        if (enabled.has(key) && (await this.isReady(key))) return key;
       }
       return undefined;
     };
 
     // 0. Explicit user choice (Settings → Others) wins when it's usable.
     const chosen = vscodeConfigString('tiermux.utilityModel', 'auto');
-    if (chosen && chosen !== 'auto' && (await readyForModel(chosen))) return chosen;
+    if (chosen && chosen !== 'auto' && (await this.isReady(chosen))) return chosen;
 
     // 1. Strong KEYLESS models — the default, so titles/commits work with no API key.
     const keyless = await pick(['ovh::gpt-oss-120b', 'ovh::Meta-Llama-3_3-70B-Instruct', 'pollinations::openai-fast']);
@@ -161,10 +148,29 @@ export class Router {
       .filter((x): x is { e: FallbackEntry; m: CatalogModel } => !!x.m)
       .sort((a, b) => (a.m.intelligenceRank + a.m.speedRank) - (b.m.intelligenceRank + b.m.speedRank));
     for (const { e } of ranked) {
-      if (await readyForModel(`${e.platform}::${e.modelId}`)) return `${e.platform}::${e.modelId}`;
+      if (await this.isReady(`${e.platform}::${e.modelId}`)) return `${e.platform}::${e.modelId}`;
     }
 
     return undefined; // nothing keyed → caller falls back to Auto
+  }
+
+  /**
+   * Check if a specific `platform::modelId` is ready to route to: enabled in
+   * the fallback chain, not in rate-limit cooldown, and has an API key (or is
+   * keyless). Used by short-task callers (commit messages, titles) to skip
+   * models that would fail before trying them.
+   */
+  async isReady(fullKey: string): Promise<boolean> {
+    const entries = this.settings.enabledByPriority();
+    const [platform, ...rest] = fullKey.split('::');
+    const modelId = rest.join('::');
+    const entry = entries.find((e) => e.platform === platform && e.modelId === modelId);
+    if (!entry || !entry.enabled) return false;
+    if (this.secrets.cooldownRemaining(platform as Platform) > 0) return false;
+    let key = await this.secrets.getModelKey(platform as Platform, modelId);
+    if (!key) key = await this.secrets.resolveKey(platform as Platform);
+    if (entry.key) key = entry.key;
+    return key !== undefined;
   }
 
   /** A model's intelligence rank (lower = smarter); used by quality-based escalation. */

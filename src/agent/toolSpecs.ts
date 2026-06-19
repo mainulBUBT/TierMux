@@ -247,6 +247,47 @@ export const SKILL_SPEC: ChatToolDefinition = {
   },
 };
 
+export const GRAPH_TOOLS_SPEC: ChatToolDefinition[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'buildGraph',
+      description: 'Build or refresh the structural code graph (imports, exports, call edges, entrypoints). Use before getSymbolGraph or impactAnalysis if the graph is stale or absent.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'getSymbolGraph',
+      description: 'Show who imports/exports and who calls/is called by a file. Returns the dependency neighborhood of one file.',
+      parameters: {
+        type: 'object',
+        properties: { file: { type: 'string', description: 'Workspace-relative file path, e.g. "src/agent/agent.ts".' } },
+        required: ['file'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'impactAnalysis',
+      description: 'Show which files are transitively affected by changes to the given files (import/call graph traversal).',
+      parameters: {
+        type: 'object',
+        properties: {
+          files: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Workspace-relative paths of changed files.',
+          },
+        },
+        required: ['files'],
+      },
+    },
+  },
+];
+
 /** Web tools (only included when the user enables `tiermux.tools.web`) — look things up instead of fabricating. */
 export const WEB_TOOL_SPECS: ChatToolDefinition[] = [
   {
