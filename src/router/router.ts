@@ -62,6 +62,7 @@ export class AllModelsFailedError extends Error {
         case 'not_found': return `${who} looks deprecated or removed by the provider. Pick another model, or set it to Auto.`;
         case 'rate_limited': return `${who} is rate-limited right now. Try again shortly, or set the model to Auto for automatic failover.`;
         case 'auth': return `${who} rejected the API key. Update it in "Manage Models & Keys".`;
+        case 'paid_only': return `${who} is paid-only or out of free quota on this provider (HTTP 402). Pick a different model, or set the model to Auto.`;
         default: return `${who} failed (${f.reason}). Try again, or set the model to Auto.`;
       }
     }
@@ -79,6 +80,10 @@ function classify(err: unknown): { reason: string; failoverable: boolean; retryA
     if (s === 413) return { reason: 'http_413', failoverable: true };
     if (s === 404) return { reason: 'not_found', failoverable: true };
     if (s === 400) return { reason: 'bad_request', failoverable: true };
+    // 402 Payment Required = the model is paid-only / out of free quota under
+    // this key. Failing over to another model on the same provider will hit
+    // the same 402, so don't burn through the chain — surface the error.
+    if (s === 402) return { reason: 'paid_only', failoverable: false };
     if (s && s >= 500) return { reason: 'server_error', failoverable: true };
     return { reason: `http_${s ?? '?'}`, failoverable: true };
   }
@@ -178,6 +183,16 @@ export class Router {
     return this.catalog.find(platform, modelId)?.intelligenceRank;
   }
 
+  /** Capability of the top-priority enabled model — used to decide weak-model scaffolding
+   *  (core toolset, compact prompt, single-model path). Undefined if nothing is enabled. */
+  topModelProfile(): { intelligenceRank: number; supportsReasoning: boolean } | undefined {
+    const top = this.settings.enabledByPriority()[0];
+    if (!top) return undefined;
+    const m = this.catalog.find(top.platform, top.modelId);
+    if (!m) return undefined;
+    return { intelligenceRank: m.intelligenceRank, supportsReasoning: m.supportsReasoning };
+  }
+
   /** Build the ordered candidate list for a request. */
   private candidates(opts: RouteOptions): FallbackEntry[] {
     let list = this.settings.enabledByPriority();
@@ -251,6 +266,14 @@ export class Router {
 
   private timeoutMs(): number {
     return vscodeConfigNumber('tiermux.requestTimeoutMs', 60000);
+  }
+
+  /** Per-provider floor: ZenMux and other queued free routers need more than the 60s default
+   *  to survive cold starts; honor the provider's declared minimum so a user-tuned 60s setting
+   *  doesn't accidentally cap a slow provider below what it needs. */
+  private timeoutMsFor(provider: { timeoutMs?: number }): number {
+    const floor = provider.timeoutMs ?? 0;
+    return Math.max(this.timeoutMs(), floor);
   }
 
   /** Per-model pre-flight health cache, used to skip a model we already know is down. */
@@ -371,7 +394,7 @@ export class Router {
         parallel_tool_calls: opts.parallel_tool_calls,
         reasoningEffort: model?.supportsReasoning ? opts.reasoningEffort : undefined,
         baseUrlOverride: this.settings.getEndpoint(entry.platform),
-        timeoutMs: opts.timeoutMs ?? this.timeoutMs(),
+        timeoutMs: opts.timeoutMs ?? this.timeoutMsFor(provider as { timeoutMs?: number }),
       };
 
       let reserved = toolsTokens;

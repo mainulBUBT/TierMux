@@ -392,6 +392,37 @@ details.reasoning summary { cursor: pointer; opacity: .8; }
   border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 4px;
 }
 
+/* Settings → Search tab */
+.search-priority-row { display: flex; align-items: center; gap: 8px; margin: 6px 0 2px; }
+.search-priority-label { font-size: 12px; opacity: .8; }
+.search-priority-select {
+  font-size: 12px; padding: 3px 6px; flex: 1 1 auto;
+  background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 4px;
+}
+.search-list { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.search-prov-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 10px; border: 1px solid var(--vscode-panel-border); border-radius: 6px;
+}
+.search-prov-row.configured { border-color: var(--vscode-charts-green, #3fb950); }
+.sp-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sp-name { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
+.sp-badge {
+  font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 8px;
+  background: var(--vscode-charts-green, #3fb950); color: #fff;
+}
+.sp-meta { font-size: 11px; opacity: .65; line-height: 1.3; }
+.sp-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
+.sp-input {
+  width: 200px; font-size: 11px; padding: 3px 6px;
+  background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 4px;
+}
+.sp-note { font-size: 11px; opacity: .6; }
+.sp-signup { font-size: 11px; cursor: pointer; text-decoration: underline; opacity: .8; }
+.sp-signup:hover { opacity: 1; }
+
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip {
   font-size: 11px; padding: 2px 6px; border-radius: 10px;
@@ -399,7 +430,15 @@ details.reasoning summary { cursor: pointer; opacity: .8; }
   display: inline-flex; gap: 4px; align-items: center; max-width: 100%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.chip .chip-thumb { width: 18px; height: 18px; object-fit: cover; border-radius: 4px; flex: 0 0 auto; }
+.chip .chip-icon { flex: 0 0 auto; }
 .chip button { background: none; border: none; color: inherit; cursor: pointer; padding: 0; flex: 0 0 auto; }
+
+.composer.drag { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -2px; background: var(--vscode-editorHoverBackground); }
+
+.msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.msg-att-img { max-width: 200px; max-height: 200px; border-radius: 6px; object-fit: cover; }
+.msg-att-chip { font-size: 11px; padding: 2px 6px; border-radius: 10px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
 
 .input-wrap {
   position: relative;
@@ -585,6 +624,8 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .provider-head .provider-name { font-weight: 600; }
 .provider-head .prov-status { font-size: 11px; }
 .provider-head .chev { margin-left: auto; opacity: .7; }
+.provider-head .prov-key-btn { margin-left: auto; padding: 2px 8px; font-size: 11px; }
+.provider-head .prov-key-btn + .chev { margin-left: 0; }
 .provider-body { padding: 4px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
 .provider-body.hidden { display: none; }
 .provider-body .endpoint {

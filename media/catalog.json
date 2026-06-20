@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Updated catalog — 96 free-tier models from 21 providers. Stale models removed; new frontier/coding/reasoning models added. Source: awesome-free-llm-apis (June 2026).",
+  "note": "Updated catalog — 99 free-tier models from 22 providers. Stale models removed; new frontier/coding/reasoning models added. Source: awesome-free-llm-apis (June 2026).",
   "models": [
     { "platform": "sambanova", "modelId": "DeepSeek-V3.2", "displayName": "DeepSeek V3.2 Preview (SambaNova)", "intelligenceRank": 1, "speedRank": 3, "sizeLabel": "Frontier", "contextWindow": 128000, "rpmLimit": 20, "rpdLimit": 20, "monthlyTokenBudget": "200K TPD", "supportsTools": true, "supportsVision": false, "supportsReasoning": false, "released": "2026-04", "insight": "Free tier; no credit card" },
     { "platform": "sambanova", "modelId": "DeepSeek-V3.1", "displayName": "DeepSeek V3.1 (SambaNova)", "intelligenceRank": 2, "speedRank": 3, "sizeLabel": "Frontier", "contextWindow": 128000, "rpmLimit": 20, "rpdLimit": 20, "monthlyTokenBudget": "200K TPD", "supportsTools": true, "supportsVision": false, "supportsReasoning": false, "released": "2025-08", "insight": "Free tier; no credit card" },
@@ -126,6 +126,10 @@
     { "platform": "siliconflow", "modelId": "Qwen/Qwen3-8B", "displayName": "Qwen3 8B (SiliconFlow)", "intelligenceRank": 4, "speedRank": 2, "sizeLabel": "Small", "contextWindow": 131000, "rpmLimit": 30, "monthlyTokenBudget": "60K TPM", "supportsTools": true, "supportsVision": false, "supportsReasoning": true, "released": "2025-04", "insight": "Free; no credit card" },
     { "platform": "siliconflow", "modelId": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B", "displayName": "DeepSeek R1 Distill 7B (SiliconFlow)", "intelligenceRank": 4, "speedRank": 3, "sizeLabel": "Small", "contextWindow": 131000, "rpmLimit": 30, "monthlyTokenBudget": "60K TPM", "supportsTools": true, "supportsVision": false, "supportsReasoning": true, "released": "2025-01", "insight": "Free; no credit card" },
 
-    { "platform": "pollinations", "modelId": "openai-fast", "displayName": "OpenAI Fast (Pollinations, keyless)", "intelligenceRank": 6, "speedRank": 2, "sizeLabel": "Small", "contextWindow": 128000, "rpmLimit": 1, "monthlyTokenBudget": "anonymous", "supportsTools": true, "supportsVision": false, "supportsReasoning": false, "released": "2025-01" }
+    { "platform": "pollinations", "modelId": "openai-fast", "displayName": "OpenAI Fast (Pollinations, keyless)", "intelligenceRank": 6, "speedRank": 2, "sizeLabel": "Small", "contextWindow": 128000, "rpmLimit": 1, "monthlyTokenBudget": "anonymous", "supportsTools": true, "supportsVision": false, "supportsReasoning": false, "released": "2025-01" },
+
+    { "platform": "zenmux", "modelId": "z-ai/glm-5.2", "displayName": "GLM 5.2", "intelligenceRank": 1, "speedRank": 4, "sizeLabel": "Frontier", "contextWindow": 200000, "monthlyTokenBudget": "~free", "supportsTools": true, "supportsVision": false, "supportsReasoning": true, "released": "2026-05" },
+    { "platform": "zenmux", "modelId": "stepfun/step-3.7-flash-free", "displayName": "Step 3.7 Flash", "intelligenceRank": 3, "speedRank": 2, "sizeLabel": "Large", "contextWindow": 128000, "monthlyTokenBudget": "~free", "supportsTools": true, "supportsVision": false, "supportsReasoning": true, "released": "2026-04" },
+    { "platform": "zenmux", "modelId": "z-ai/glm-4.7-flash-free", "displayName": "GLM 4.7 Flash", "intelligenceRank": 3, "speedRank": 2, "sizeLabel": "Large", "contextWindow": 128000, "monthlyTokenBudget": "~free", "supportsTools": true, "supportsVision": false, "supportsReasoning": true, "released": "2025-07" }
   ]
 }

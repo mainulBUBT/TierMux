@@ -13,7 +13,7 @@ import type {
 import { BaseProvider, providerHttpError } from './base';
 import type { CompletionOptions } from './options';
 import { repairToolArguments, rescueInlineToolCalls, toolSchemaMap, sanitizeToolName, stripHarmonyTokens } from '../agent/toolArgs';
-import { flattenMessageContent } from '../agent/content';
+import { flattenMessageContent, stripFileBlocks } from '../agent/content';
 
 /** How a provider expects the reasoning-effort knob to be expressed. */
 export type ReasoningStyle = 'none' | 'effort' | 'openrouter';
@@ -79,9 +79,19 @@ export class OpenAICompatProvider extends BaseProvider {
   }
 
   private buildBody(messages: ChatMessage[], modelId: string, options: CompletionOptions | undefined, stream: boolean): string {
+    // Two content transforms:
+    //  - flattenContent (Cohere/Cloudflare-style): collapse every block array to a string.
+    //  - stripFileBlocks: drop our custom `file` (PDF) envelope on the wire, since most
+    //    OpenAI-compat providers don't recognize it. The PDF's extracted text is already
+    //    part of the user message (buildUserContent inlines it), so nothing is lost.
+    const wireMessages = this.flattenContent
+      ? flattenMessageContent(messages)
+      : messages.map((m) => m.content === null || m.content === undefined || typeof m.content === 'string'
+          ? m
+          : { ...m, content: stripFileBlocks(m.content) });
     return JSON.stringify({
       model: modelId,
-      messages: this.flattenContent ? flattenMessageContent(messages) : messages,
+      messages: wireMessages,
       temperature: options?.temperature,
       max_tokens: options?.max_tokens,
       top_p: options?.top_p,

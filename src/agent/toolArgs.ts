@@ -12,6 +12,34 @@ interface JsonSchemaish {
  * schema. Returns the original string untouched whenever anything doesn't parse
  * or match — must never corrupt a valid call.
  */
+/**
+ * Best-effort repair of JSON a weak model emitted with common breakage: markdown fences,
+ * surrounding prose, trailing commas, single-quoted strings, and unquoted keys. These are the
+ * most frequent reasons a free model's tool call fails to parse, and they'd otherwise trigger a
+ * costly escalation to a stronger model. Returns a string JSON.parse can handle, or the original
+ * if nothing could be salvaged — must never turn a valid argument string into an invalid one.
+ */
+export function repairBrokenJson(raw: string): string {
+  if (raw == null) return raw;
+  // Fast path: already valid JSON → return untouched (never corrupt a good call).
+  try { JSON.parse(raw); return raw; } catch { /* fall through to repairs */ }
+  let s = raw.trim();
+  // 1. Strip markdown code fences (```json … ```).
+  s = s.replace(/^```(?:json|JSON)?\s*/i, '').replace(/\s*```\s*$/, '');
+  // 2. Trim surrounding prose — keep from the first { or [ to the matching last } or ].
+  const open = s.search(/[{[]/);
+  if (open > 0) s = s.slice(open);
+  const lastClose = Math.max(s.lastIndexOf('}'), s.lastIndexOf(']'));
+  if (lastClose >= 0 && lastClose < s.length - 1) s = s.slice(0, lastClose + 1);
+  // 3. Drop trailing commas before a closing brace/bracket ({"a":1,} → {"a":1}).
+  s = s.replace(/,\s*([}\]])/g, '$1');
+  // 4. Quote unquoted object keys ({path: "."} → {"path": "."}).
+  s = s.replace(/([{,]\s*)([A-Za-z_$][\w$]*)(\s*:)/g, '$1"$2"$3');
+  // 5. Convert single-quoted strings to double-quoted (best-effort).
+  s = s.replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_m, inner) => `"${String(inner).replace(/"/g, '\\"')}"`);
+  try { JSON.parse(s); return s; } catch { return raw; }
+}
+
 export function repairToolArguments(args: string, paramSchema?: JsonSchemaish): string {
   let parsed: unknown;
   try {

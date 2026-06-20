@@ -135,6 +135,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('tiermux.openModelSettings', () => chat.toggleSettingsPanel()),
     vscode.commands.registerCommand('tiermux.setApiKey', (platformArg?: Platform) => setApiKey(secrets, platformArg)),
     vscode.commands.registerCommand('tiermux.clearApiKey', () => clearApiKey(secrets)),
+    vscode.commands.registerCommand('tiermux.manageSearchProviders', () => manageSearchProviders()),
     vscode.commands.registerCommand('tiermux.addSelectionToChat', () => chat.addSelectionToChat()),
     vscode.commands.registerCommand('tiermux.reconnectMcp', async () => { await mcp.reconnect(); void vscode.window.showInformationMessage('Reconnected MCP servers.'); }),
     vscode.commands.registerCommand('tiermux.buildIndex', () => index.build()),
@@ -198,9 +199,19 @@ async function setApiKey(secrets: SecretStore, platformArg?: Platform): Promise<
   }
   const info = getPlatformInfo(platform);
   if (info?.keyless) { void vscode.window.showInformationMessage(`${info.name} is keyless — no API key needed.`); return; }
-  const prompt = platform === 'cloudflare' ? 'Cloudflare key as "account_id:api_token"' : `API key for ${info?.name ?? platform}`;
+  const existing = await secrets.get(platform);
+  const prompt = platform === 'cloudflare'
+    ? 'Cloudflare key as "account_id:api_token" (leave blank to clear)'
+    : `${existing ? 'Update' : 'Set'} API key for ${info?.name ?? platform} (leave blank to clear)`;
   const key = await vscode.window.showInputBox({ prompt, password: true, ignoreFocusOut: true });
-  if (!key) return;
+  if (key === undefined) return; // cancelled
+  if (key.trim() === '') {
+    if (existing) {
+      await secrets.clear(platform);
+      void vscode.window.showInformationMessage(`Cleared API key for ${info?.name ?? platform}.`);
+    }
+    return;
+  }
   await secrets.set(platform, key.trim());
   void vscode.window.showInformationMessage(`Saved API key for ${info?.name ?? platform}.`);
 }
@@ -213,4 +224,122 @@ async function clearApiKey(secrets: SecretStore): Promise<void> {
   if (!picked) return;
   await secrets.clear(picked.platform);
   void vscode.window.showInformationMessage(`Cleared API key for ${picked.label}.`);
+}
+
+// ---- Web search provider management (Exa, Brave, custom endpoint) ----
+
+interface SearchProviderInfo {
+  id: 'exa' | 'brave' | 'custom' | 'duckduckgo';
+  name: string;
+  keySetting: string;
+  keyless?: boolean;
+  freeTier?: string;
+  signupUrl?: string;
+}
+
+const SEARCH_PROVIDERS: SearchProviderInfo[] = [
+  {
+    id: 'exa',
+    name: 'Exa AI',
+    keySetting: 'tiermux.tools.exaApiKey',
+    freeTier: '1,000 searches/month',
+    signupUrl: 'https://exa.ai',
+  },
+  {
+    id: 'brave',
+    name: 'Brave Search',
+    keySetting: 'tiermux.tools.braveApiKey',
+    freeTier: '2,000 queries/month',
+    signupUrl: 'https://brave.com/search/api/',
+  },
+  {
+    id: 'custom',
+    name: 'Custom endpoint',
+    keySetting: 'tiermux.tools.searchEndpoint',
+    freeTier: 'Bring your own (SearXNG, etc.)',
+  },
+  {
+    id: 'duckduckgo',
+    name: 'DuckDuckGo (free)',
+    keySetting: '',
+    keyless: true,
+    freeTier: 'Unlimited (but often rate-limited)',
+  },
+];
+
+/** Show a quick-pick of web search providers with their current key status. */
+async function manageSearchProviders(): Promise<void> {
+  const cfg = vscode.workspace.getConfiguration('tiermux.tools');
+  const priority = cfg.get<string>('searchProviderPriority', 'auto');
+
+  const items = SEARCH_PROVIDERS.map((p) => {
+    const hasKey = p.keyless || !!cfg.get<string>(p.keySetting.split('.').pop() ?? '', '').trim();
+    const status = p.keyless ? '✓ Always available' : hasKey ? '✓ Key configured' : '✗ No key';
+    const detail = p.keyless
+      ? p.freeTier
+      : `${p.freeTier} — ${hasKey ? 'key set' : 'click to set key'}`;
+    return {
+      label: `${status}  $(search)  ${p.name}`,
+      description: priority === 'auto' ? '' : `[priority: ${p.id}]`,
+      detail,
+      provider: p,
+      action: hasKey ? 'clear' : 'set',
+    };
+  });
+
+  // Priority selector as the first item.
+  const priorityOptions: Array<{ label: string; description: string; id: string }> = [
+    { label: '$(rocket) Auto', description: 'Try Exa → Brave → custom → DuckDuckGo in order', id: 'auto' },
+    { label: '$(search) Exa only', description: 'Requires tiermux.tools.exaApiKey', id: 'exa' },
+    { label: '$(search) Brave only', description: 'Requires tiermux.tools.braveApiKey', id: 'brave' },
+    { label: '$(search) Custom only', description: 'Requires tiermux.tools.searchEndpoint', id: 'custom' },
+    { label: '$(search) DuckDuckGo only', description: 'Free, no key, often rate-limited', id: 'duckduckgo' },
+  ];
+  const priorityItem = {
+    label: `$(settings) Priority: ${priority}`,
+    description: 'Click to change which provider(s) are tried',
+    providers: priorityOptions,
+  };
+
+  const picked = await vscode.window.showQuickPick(
+    [{ label: '--- Providers ---', kind: -1 } as any, priorityItem as any, ...items as any],
+    { placeHolder: 'Manage web search providers', title: 'TierMux — Web Search' },
+  );
+  if (!picked) return;
+
+  // Priority selector
+  if ((picked as any).providers) {
+    const newPriority = await vscode.window.showQuickPick<{ label: string; description: string; id: string }>(
+      (picked as any).providers,
+      { placeHolder: 'Select search provider priority' },
+    );
+    if (newPriority) {
+      await cfg.update('searchProviderPriority', newPriority.id, vscode.ConfigurationTarget.Global);
+      void vscode.window.showInformationMessage(`TierMux: search priority set to "${newPriority.id}".`);
+    }
+    return;
+  }
+
+  // Set or clear a key
+  const provider = (picked as any).provider as SearchProviderInfo;
+  if (provider.keyless) {
+    void vscode.window.showInformationMessage(`${provider.name} is keyless — no setup needed.`);
+    return;
+  }
+
+  if ((picked as any).action === 'clear') {
+    await cfg.update(provider.keySetting.split('.').pop() ?? '', '', vscode.ConfigurationTarget.Global);
+    void vscode.window.showInformationMessage(`Cleared ${provider.name} key.`);
+  } else {
+    const key = await vscode.window.showInputBox({
+      prompt: `Enter API key for ${provider.name} (${provider.freeTier})`,
+      placeHolder: provider.signupUrl ? `Get one at ${provider.signupUrl}` : 'paste your key',
+      password: true,
+      ignoreFocusOut: true,
+    });
+    if (key && key.trim()) {
+      await cfg.update(provider.keySetting.split('.').pop() ?? '', key.trim(), vscode.ConfigurationTarget.Global);
+      void vscode.window.showInformationMessage(`Saved ${provider.name} key.`);
+    }
+  }
 }

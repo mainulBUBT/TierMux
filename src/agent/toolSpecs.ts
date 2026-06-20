@@ -233,6 +233,27 @@ export const ASK_USER_SPEC: ChatToolDefinition = {
   },
 };
 
+/**
+ * A visible reasoning step. The model writes its plan/rationale BEFORE acting — what it needs,
+ * which tool it'll call next, and what it'll do if that fails. This gives even non-reasoning free
+ * models a Kilo/Claude-Code-style "think first" step (shown to the user) instead of jumping to a
+ * half-formed action or giving up. The tool does nothing but record the thought.
+ */
+export const THINK_SPEC: ChatToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'think',
+    description: 'Reason out loud about the CURRENT step BEFORE acting. State: what you need to find out, which tool you will call next, and your fallback if it returns nothing. Call this first on any multi-step task, and again whenever you hit a dead end. It changes no files — it just makes your plan visible so you act deliberately instead of guessing.',
+    parameters: {
+      type: 'object',
+      properties: {
+        thought: { type: 'string', description: 'Your step-by-step reasoning and plan for this turn.' },
+      },
+      required: ['thought'],
+    },
+  },
+};
+
 /** Load a named skill (a reusable workflow/instruction set) by name. */
 export const SKILL_SPEC: ChatToolDefinition = {
   type: 'function',
@@ -243,6 +264,41 @@ export const SKILL_SPEC: ChatToolDefinition = {
       type: 'object',
       properties: { name: { type: 'string', description: 'Skill name (matches a .tiermux/skills/<name>.md file).' } },
       required: ['name'],
+    },
+  },
+};
+
+/** Read a UTF-8 / binary image file from the workspace. Returns the image as
+ *  multimodal content so a vision-capable model can actually see it. */
+export const READ_IMAGE_SPEC: ChatToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'readImage',
+    description: 'Read an image file (PNG, JPG, GIF, WebP, SVG) from the workspace and return it as multimodal content. Use this to look at screenshots, diagrams, mockups, or photos referenced in the task. The model that processes this tool call must be vision-capable (Gemini Flash, Groq Llama Vision, Pixtral, Qwen2-VL, etc.).',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Workspace-relative path to an image file, e.g. "docs/screenshot.png".' },
+      },
+      required: ['path'],
+    },
+  },
+};
+
+/** Read a PDF, DOCX, MD, TXT, or JSON file. Returns the extracted text
+ *  content (capped) so any model — vision or not — can answer from it. */
+export const READ_DOCUMENT_SPEC: ChatToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'readDocument',
+    description: 'Read a document from the workspace and return its extracted text. Supports PDF, DOCX, MD, TXT, and JSON. Large documents are truncated with a notice. Use this when the user references a file you do not already have in context.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Workspace-relative path to the document.' },
+        maxChars: { type: 'number', description: 'Soft cap on returned text (default 60000).' },
+      },
+      required: ['path'],
     },
   },
 };
@@ -288,7 +344,7 @@ export const GRAPH_TOOLS_SPEC: ChatToolDefinition[] = [
   },
 ];
 
-/** Web tools (only included when the user enables `tiermux.tools.web`) — look things up instead of fabricating. */
+/** Web tools (on by default; toggle via `tiermux.tools.web`) — look things up instead of fabricating. */
 export const WEB_TOOL_SPECS: ChatToolDefinition[] = [
   {
     type: 'function',
@@ -314,4 +370,23 @@ export const WEB_TOOL_SPECS: ChatToolDefinition[] = [
       },
     },
   },
+];
+
+/** Only the `webSearch` spec (not webFetch) — the single most useful web tool for questions. */
+const WEB_SEARCH_SPEC: ChatToolDefinition | undefined = WEB_TOOL_SPECS.find((t) => t.function.name === 'webSearch');
+
+/**
+ * The essentials every agent gets — think → search → read → edit → verify. Weak free models
+ * struggle to choose correctly from 17 tools; offering only this tight set is what lets them
+ * succeed. `think` gives them a visible reasoning step (Kilo/Claude-Code style); `webSearch`
+ * lets them look up time-sensitive facts. Strong models get the full set on top.
+ */
+const CORE_BASE_NAMES = new Set([
+  'readFile', 'listDir', 'runCommand', 'editFile', 'createFile', 'writeFile', 'deleteFile', 'updateTodos',
+]);
+export const CORE_TOOL_SPECS: ChatToolDefinition[] = [
+  THINK_SPEC,
+  ...TOOL_SPECS.filter((t) => CORE_BASE_NAMES.has(t.function.name)),
+  GLOB_SPEC, GREP_SPEC, ASK_USER_SPEC,
+  ...(WEB_SEARCH_SPEC ? [WEB_SEARCH_SPEC] : []),
 ];

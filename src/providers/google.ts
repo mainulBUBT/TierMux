@@ -91,20 +91,25 @@ function toGeminiToolConfig(toolChoice?: ChatToolChoice): { functionCallingConfi
   return { functionCallingConfig: { mode: 'ANY', allowedFunctionNames: [toolChoice.function.name] } };
 }
 
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-function extractImageUrl(block: unknown): string | undefined {
+const MAX_INLINE_BYTES = 20 * 1024 * 1024; // Gemini's per-part cap is ~20MB inline; PDFs up to this are sent natively, larger fall back to text only.
+function extractInlineDataUrl(block: unknown): string | undefined {
+  // Standard OpenAI-style image block.
   const iu = (block as { image_url?: unknown })?.image_url;
   if (typeof iu === 'string') return iu;
   if (iu && typeof (iu as { url?: unknown }).url === 'string') return (iu as { url: string }).url;
+  // Generic file block (we emit one for PDF attachments).
+  const f = (block as { file?: unknown })?.file;
+  if (f && typeof (f as { file_data?: unknown }).file_data === 'string') return (f as { file_data: string }).file_data;
   return undefined;
 }
-async function imageUrlToInlineData(url: string): Promise<{ mimeType: string; data: string } | null> {
+async function dataUrlToInlineData(url: string): Promise<{ mimeType: string; data: string } | null> {
   const dataMatch = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(url);
   if (dataMatch) {
     const mimeType = dataMatch[1] || 'application/octet-stream';
     const isBase64 = Boolean(dataMatch[2]);
     const payload = dataMatch[3] ?? '';
     const data = isBase64 ? payload : Buffer.from(decodeURIComponent(payload)).toString('base64');
+    if (data.length === 0) return null;
     return { mimeType, data };
   }
   if (/^https?:\/\//i.test(url)) {
@@ -112,8 +117,8 @@ async function imageUrlToInlineData(url: string): Promise<{ mimeType: string; da
       const res = await fetch(url);
       if (!res.ok) return null;
       const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length === 0 || buf.length > MAX_IMAGE_BYTES) return null;
-      const mimeType = res.headers.get('content-type')?.split(';')[0]?.trim() || 'image/jpeg';
+      if (buf.length === 0 || buf.length > MAX_INLINE_BYTES) return null;
+      const mimeType = res.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
       return { mimeType, data: buf.toString('base64') };
     } catch {
       return null;
@@ -128,10 +133,11 @@ async function userContentToParts(content: ChatMessage['content']): Promise<Gemi
   if (Array.isArray(content)) {
     for (const block of content) {
       const type = (block as { type?: string })?.type;
-      if (type !== 'image_url' && type !== 'image') continue;
-      const url = extractImageUrl(block);
+      // Accept image_url / image (OpenAI vision) AND our own 'file' (PDFs).
+      if (type !== 'image_url' && type !== 'image' && type !== 'file') continue;
+      const url = extractInlineDataUrl(block);
       if (!url) continue;
-      const inlineData = await imageUrlToInlineData(url);
+      const inlineData = await dataUrlToInlineData(url);
       if (inlineData) parts.push({ inlineData });
     }
   }

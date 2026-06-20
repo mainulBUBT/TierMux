@@ -24,6 +24,7 @@ export type Platform =
   | 'agnes'
   | 'sambanova'
   | 'siliconflow'
+  | 'zenmux'
   | 'custom';
 
 // 'xhigh' ("Very High") is our own extra tier; the OpenAI-wire reasoning_effort

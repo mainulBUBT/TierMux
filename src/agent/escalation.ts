@@ -4,6 +4,7 @@
 // model repeating the exact same call), or a batch of tool calls whose args are all
 // unparseable garbage (even after the toolArgs rescue).
 import type { ChatToolCall } from '../shared/types';
+import { repairBrokenJson } from './toolArgs';
 
 /** Max stronger-model retries on an unhandled response before giving up. */
 export const ESCALATION_CAP = 2;
@@ -27,12 +28,15 @@ export function toolSignature(calls: ChatToolCall[] | undefined): string {
     .join('|');
 }
 
-/** True when NONE of the tool calls have parseable JSON arguments (post-rescue garbage). */
+/** True when NONE of the tool calls have parseable JSON arguments — even after the lenient
+ *  repair pass. A call whose args can be salvaged (markdown fences, trailing commas, …) counts
+ *  as parseable, so a fixable weak-model call doesn't needlessly escalate to a stronger model. */
 export function allUnparseable(calls: ChatToolCall[] | undefined): boolean {
   if (!calls || !calls.length) return false;
   return calls.every((c) => {
     const a = (c.function?.arguments ?? '').trim();
     if (!a) return true;
-    try { JSON.parse(a); return false; } catch { return true; }
+    try { JSON.parse(a); return false; } catch { /* try repair */ }
+    try { JSON.parse(repairBrokenJson(a)); return false; } catch { return true; }
   });
 }

@@ -5,7 +5,7 @@
 import type { CatalogModel, FallbackEntry } from '../shared/types';
 import type { Catalog } from '../catalog/catalog';
 
-export type TaskKind = 'trivial' | 'chat' | 'agent' | 'debug' | 'longContext' | 'plan';
+export type TaskKind = 'trivial' | 'chat' | 'agent' | 'coding' | 'debug' | 'longContext' | 'plan' | 'vision';
 
 // Greeting / acknowledgement that is the WHOLE message (anchored) — safe to treat as trivial.
 const GREETING = /^(hi+|hey+|hello+|yo|sup|howdy|gm|gn|good (morning|afternoon|evening|night)|thanks?|thank you|thx|ty|ok(ay)?|k|cool|nice|great|awesome|bye|goodbye|cheers|np|no problem|got it|sounds good)\b[\s!.?]*$/i;
@@ -15,14 +15,54 @@ const TASK_VERB = /\b(add|create|implement|build|write|fix|refactor|rename|move|
 const DEBUG_HINT = /\b(debug|bug|error|exception|stack ?trace|traceback|failing|fails?|failed|broken|crash(?:es|ed)?|throws?|not working|isn'?t working|won'?t (?:work|run|build|compile)|doesn'?t (?:work|run)|null pointer|segfault)\b/i;
 // Explanation-seeking phrasing — answer, don't act (read-only chat).
 const EXPLAIN_Q = /^\s*(how (?:do|to|can|could|would|does|is|are)|what(?:'?s| is| are| does| do)|why (?:do|does|is|are|would)|when (?:should|do|does|is)|which |who |whose |where (?:is|are|do|does|can)|should i|is it|are there|can i|could i|do i|does it|explain|describe|tell me|walk me|difference between)\b/i;
+// Code-editing intent: a referenced file path, a fenced code block, or a code-edit verb paired
+// with a code noun. Narrow so a generic "add a button" still routes as `agent` — only genuine
+// code work pulls into `coding` (which then prefers coder-tagged models).
+const FILE_REF = /(?:^|\s|[(["'`])(\.\/)?(\w[\w-./]*\.[a-zA-Z]{1,5})\b|```/;
+const CODE_VERB = /\b(refactor|implement|write|generate|port|migrate|optimi[sz]e|debug|fix|extend|extract|scaffold|wire)\b/i;
+const CODE_NOUN = /\b(function|method|class|component|hook|endpoint|api|route|handler|test|spec|schema|query|type|interface|module|util|service|model|directive|middleware)\b/i;
+const CODE_HINT = (t: string): boolean => FILE_REF.test(t) || (CODE_VERB.test(t) && CODE_NOUN.test(t));
+// Words indicating the user means THEIR codebase (not general knowledge).
+const REPO_WORD = /\b(repo|repository|codebase|code base|this file|these files|this project|the project|our code|the code|this code|in here|this codebase)\b/i;
+// A question shape that asks about code/location/behavior (broader than EXPLAIN_Q — covers
+// "where is X defined", "how does X work", "what does X do", "show me / find X").
+const CODE_Q = /\b(where (is|are|can i find|defined)|how (does|do|is|are) .* (work|implemented|defined|used)|what (does|is) .* do|show me|find me|point me to|which file)\b/i;
+
+/**
+ * True when a question is really about the user's codebase — so Auto should investigate with
+ * read-only tools (read/grep/graph) instead of answering blind. Requires BOTH a question shape
+ * and a codebase signal (a repo word, a code noun, or a file path) so general "how does a car
+ * engine work" questions stay on the cheap chat path.
+ */
+export function isCodebaseQuestion(t: string): boolean {
+  if (!EXPLAIN_Q.test(t) && !CODE_Q.test(t)) return false;
+  return REPO_WORD.test(t) || CODE_NOUN.test(t) || FILE_REF.test(t);
+}
+
+/**
+ * Signals threaded through the webview → extension → router. The same shape
+ * classifyTask accepts (kept for backward compat) plus vision hints.
+ */
+export interface ClassifySignals {
+  attachments?: number;
+  mentions?: number;
+  /** Per-attachment kind, in send order. `image`/`pdf` force a vision route. */
+  attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'>;
+  /** True when the user forced Auto mode (lets the router pick vision naturally). */
+  auto?: boolean;
+}
 
 /**
  * Classify the latest user message into a task kind from cheap heuristics.
  * Bias: anything that isn't clearly a greeting or a question defaults to `agent`,
  * so an edit request phrased without a textbook verb ("the navbar should be dark")
  * still gets the tool loop instead of a read-only answer.
+ *
+ * Vision override: any image or PDF attachment upgrades the request to `vision`
+ * (or `agent` if tools are likely) so the router prefers a model with
+ * `supportsVision: true`. If no vision model is enabled, falls back to text only.
  */
-export function classifyTask(text: string, signals?: { attachments?: number; mentions?: number }): TaskKind {
+export function classifyTask(text: string, signals?: ClassifySignals): TaskKind {
   const t = (text || '').trim();
   if (!t) return 'chat';
   const words = t.split(/\s+/).filter(Boolean);
@@ -30,11 +70,28 @@ export function classifyTask(text: string, signals?: { attachments?: number; men
   // Trivial: a short greeting/acknowledgement and nothing else.
   if (words.length <= 6 && GREETING.test(t) && !TASK_VERB.test(t)) return 'trivial';
 
+  // Vision: a visual attachment changes the kind so the router prioritizes a
+  // vision-capable model. We still let "explain this image" land on chat/agent
+  // (the image block is in the user message); the kind just steers the model
+  // pick so a vision model wins over a tiny text-only default.
+  const hasVisual = (signals?.attachmentKinds ?? []).some((k) => k === 'image' || k === 'pdf');
+
   // Large inputs need a big context window regardless of intent.
-  if (t.length > 6000 || (signals?.attachments ?? 0) > 0 || (signals?.mentions ?? 0) >= 3) return 'longContext';
+  if (t.length > 6000 || (signals?.attachments ?? 0) > 0 || (signals?.mentions ?? 0) >= 3) {
+    return hasVisual ? 'vision' : 'longContext';
+  }
+
+  if (hasVisual) {
+    if (DEBUG_HINT.test(t)) return 'vision';            // debug a screenshot/log → vision tool-capable
+    if (EXPLAIN_Q.test(t)) return 'vision';             // "what's in this image" → read-only vision
+    if (TASK_VERB.test(t)) return 'vision';             // "translate this screenshot" → vision tools ok
+    if (t.endsWith('?')) return 'vision';
+    return 'vision';
+  }
 
   if (DEBUG_HINT.test(t)) return 'debug';            // a bug to chase (debug can investigate AND fix)
   if (EXPLAIN_Q.test(t)) return 'chat';              // explanation-seeking → read-only answer
+  if (CODE_HINT(t)) return 'coding';                 // genuine code-edit intent → coder-preferred tool loop
   if (TASK_VERB.test(t)) return 'agent';             // explicit action → tool loop (can edit)
   if (t.endsWith('?')) return 'chat';                // a bare question → read-only
   return 'agent';                                    // ambiguous: assume an action so edits aren't dropped
@@ -82,14 +139,26 @@ export function orderForTask(
   // the task needs, the more recent one wins instead of the older equal always
   // taking the slot. Missing `released` sorts as oldest.
   const recency = (a: CatalogModel, b: CatalogModel): number => (b.released ?? '').localeCompare(a.released ?? '');
+  // Prefer models tagged for the task (e.g. ["coding"]) — the tag is the clearest signal
+  // that a model was built for this kind of work, so it leads before generic fitness.
+  const hasTag = (m: CatalogModel, tag: string): number => Number((m.tags ?? []).includes(tag));
+  const codingTag = (a: CatalogModel, b: CatalogModel): number => hasTag(b, 'coding') - hasTag(a, 'coding');
+
+  // Vision-capable comparator: prefer a model that can actually see the image
+  // (supportsVision=true), then prefer tools+balanced+recency like agent mode.
+  // A non-vision model still ranks, just below every vision-capable one — so
+  // when nothing vision-capable is enabled, the user gets a sensible text fallback.
+  const vision = (a: CatalogModel, b: CatalogModel): number => Number(!!b.supportsVision) - Number(!!a.supportsVision);
 
   const cmp: Record<TaskKind, (a: CatalogModel, b: CatalogModel) => number> = {
     trivial: (a, b) => speed(a, b) || recency(a, b) || intel(a, b),                 // cheapest/fastest; smarts irrelevant
     chat: (a, b) => speed(a, b) || recency(a, b) || intel(a, b),                    // snappy but capable, newest among equals
-    agent: (a, b) => tools(a, b) || balanced(a, b) || recency(a, b),                // tools, then fast+capable, then newest
-    debug: (a, b) => tools(a, b) || balanced(a, b) || reason(a, b) || recency(a, b),// tools, then fast+capable reasoner
+    coding: (a, b) => codingTag(a, b) || tools(a, b) || balanced(a, b) || recency(a, b), // coder-tagged, then tools, fast+capable
+    agent: (a, b) => tools(a, b) || codingTag(a, b) || balanced(a, b) || recency(a, b),  // tools, then coder-tagged, fast+capable
+    debug: (a, b) => tools(a, b) || codingTag(a, b) || balanced(a, b) || reason(a, b) || recency(a, b),
     plan: (a, b) => balanced(a, b) || reason(a, b) || tools(a, b) || recency(a, b), // fast+capable first, reasoning breaks ties
     longContext: (a, b) => ctx(a, b) || balanced(a, b) || recency(a, b),            // biggest window, then fast+capable, then newest
+    vision: (a, b) => vision(a, b) || tools(a, b) || balanced(a, b) || recency(a, b), // must-see models first, then like agent
   };
 
   const sc = score ?? ((): number => 0);
@@ -99,4 +168,38 @@ export function orderForTask(
       cmp[kind](a.m, b.m),                                              // then task fitness
   );
   return [...sorted.map((x) => x.e), ...unknown];
+}
+
+/**
+ * A cheap pre-task sizing of the work, derived from code-graph impact breadth and
+ * embeddings-index novelty. Drives the intelligence floor (rankFloor) and the step
+ * budget Auto grants a run. `null` signals mean "unknown" → fall back to moderate.
+ */
+export interface TaskProfile {
+  complexity: 'light' | 'moderate' | 'heavy';
+  /** Max intelligence rank allowed (lower = smarter). Heavy work gets a stricter floor. */
+  rankFloor: number;
+  impactFiles: number | null;
+  topSimilarity: number | null;
+}
+
+export function deriveTaskProfile(impactFiles: number | null, topSimilarity: number | null): TaskProfile {
+  const heavy = (impactFiles != null && impactFiles > 8) || (topSimilarity != null && topSimilarity < 0.3);
+  const light = (impactFiles == null || impactFiles <= 2) && (topSimilarity == null || topSimilarity > 0.5);
+  const complexity: TaskProfile['complexity'] = heavy ? 'heavy' : light ? 'light' : 'moderate';
+  const rankFloor = complexity === 'heavy' ? 2 : complexity === 'moderate' ? 3 : 5;
+  return { complexity, rankFloor, impactFiles, topSimilarity };
+}
+
+/**
+ * The task kind to route at a given iteration of the agent loop. Auto runs move through
+ * phases: the first hop reasons/plans (a reasoning model decomposes the task), then the
+ * classified execute kind takes over (coder for code, agent/debug otherwise). Non-agent
+ * bases (e.g. plan) are returned unchanged so read-only research routing stays stable.
+ */
+export function phaseRouteKind(base: TaskKind, iteration: number): TaskKind {
+  // Vision/plan/chat/trivial/longContext have their own model ordering that shouldn't be
+  // phase-rewritten — only agent/coding/debug tasks move through a plan→execute progression.
+  if (base !== 'agent' && base !== 'coding' && base !== 'debug') return base;
+  return iteration === 0 ? 'plan' : base;
 }

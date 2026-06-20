@@ -2,13 +2,29 @@
 import type { CatalogModel, FallbackEntry, KeyStatus, Platform, ReasoningEffort, TodoItem } from './shared/types';
 import type { ClarifyingQuestion } from './agent/clarify';
 
+/**
+ * Anything a user attaches to a message. Three sending modes:
+ *  - 'file' / 'doc' / 'pdf' carry extracted `text` so any text model can answer.
+ *  - 'image' / 'pdf' additionally carry a `dataUrl` so a vision-capable model
+ *    (Gemini, Groq Vision, Pixtral, …) can also see the original. For PDFs on
+ *    Gemini the dataUrl is the canonical "send the PDF as-is" path; everywhere
+ *    else the text is the source of truth and the dataUrl is ignored.
+ */
+export type AttachmentKind = 'file' | 'image' | 'pdf' | 'doc';
+
 export interface Attachment {
-  kind: 'file' | 'image';
+  kind: AttachmentKind;
   name: string;
-  /** For file attachments: the text content. */
+  /** For text-bearing kinds: the extracted text (capped). */
   text?: string;
-  /** For image attachments: a data: URL. */
+  /** For image / PDF: a data: URL. */
   dataUrl?: string;
+  /** MIME type, used by the provider to decide between file and text parts. */
+  mime?: string;
+  /** Bytes — used by the agent's read_image / read_document tools to re-open the file. */
+  fsPath?: string;
+  /** How the user got this attachment into the chip — used only for UI hints. */
+  source?: 'paste' | 'drop' | 'pick' | 'tool';
 }
 
 export interface UsagePayload {
@@ -89,6 +105,17 @@ export interface ConfigPayload {
   utilityModel: string;
   /** Session toggle: when true, the agent runs commands and applies edits without asking (dangerous commands still confirm). */
   autoApprove: boolean;
+  /** Web search provider status — which keys are set and which provider is tried first. */
+  searchProviders: SearchProviderStatus[];
+  searchPriority: string;
+}
+
+export interface SearchProviderStatus {
+  id: 'exa' | 'brave' | 'custom' | 'duckduckgo';
+  name: string;
+  hasKey: boolean;
+  freeTier: string;
+  signupUrl?: string;
 }
 
 export interface MentionItem {
@@ -101,7 +128,7 @@ export interface MentionItem {
 // Webview -> Extension
 export type InMessage =
   | { type: 'ready' }
-  | { type: 'sendMessage'; requestId: string; text: string; mode: 'auto' | 'chat' | 'plan' | 'agent' | 'debug' | 'orchestrator'; model: string; reasoningEffort: ReasoningEffort; attachments?: Attachment[] }
+  | { type: 'sendMessage'; requestId: string; text: string; mode: 'auto' | 'chat' | 'plan' | 'agent' | 'debug' | 'orchestrator'; model: string; reasoningEffort: ReasoningEffort; attachments?: Attachment[]; attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'> }
   | { type: 'approvePlan'; requestId: string; approved: boolean; steps: string }
   | { type: 'answerClarifying'; requestId: string; answers: string[] }
   | { type: 'renameSession'; title: string }
@@ -118,6 +145,7 @@ export type InMessage =
   | { type: 'setModelKey'; platform: Platform; modelId: string; key: string }
   | { type: 'clearModelKey'; platform: Platform; modelId: string }
   | { type: 'attachFromWorkspace' }
+  | { type: 'attachFromDataUrl'; name: string; mime: string; dataUrl: string; source?: 'paste' | 'drop' }
   | { type: 'addSelection' }
   | { type: 'mentionQuery'; queryId: number; query: string }
   | { type: 'compact' }
@@ -135,10 +163,22 @@ export type InMessage =
   | { type: 'setEmbeddingsEnabled'; enabled: boolean }
   | { type: 'setEmbeddingsProvider'; provider: string }
   | { type: 'setUtilityModel'; model: string }
+  | { type: 'setSearchKey'; provider: string; key?: string }
+  | { type: 'setSearchPriority'; priority: string }
   | { type: 'setAutoApprove'; enabled: boolean }
   | { type: 'resume'; requestId: string }
   | { type: 'newChat' }
   | { type: 'askUserResponse'; requestId: string; callId: string; answer: string; cancelled?: boolean; sessionId?: string };
+
+/** A single tool step shown inside a turn's "Worked for Ns" disclosure. Mirrors the live
+ *  `toolStatus` event so a re-rendered (e.g. post-revert) message can rebuild its step list. */
+export interface TranscriptStep {
+  toolCallId: string;
+  name: string;
+  args?: unknown;
+  state?: 'running' | 'done' | 'error';
+  detail?: string;
+}
 
 export interface TranscriptMessage {
   role: 'user' | 'assistant';
@@ -150,6 +190,15 @@ export interface TranscriptMessage {
   ts?: number;
   /** How long the assistant turn took (seconds) — shown in the footer after restore. */
   secs?: number;
+  /** `s.history.length` captured just before this user turn was pushed, so "Revert to here"
+   *  can truncate history back to this point without dropping earlier tool calls/results. */
+  historyLen?: number;
+  /** Assistant reasoning text — replayed as the "Reasoning" disclosure on re-render. */
+  reasoning?: string;
+  /** Assistant turn token usage — replayed in the footer on re-render. */
+  usage?: { promptTokens: number; completionTokens: number };
+  /** Tool steps for the "Worked for Ns" disclosure — replayed on re-render. */
+  steps?: TranscriptStep[];
 }
 
 /** Live status of a session, shown as a dot on its tab. */

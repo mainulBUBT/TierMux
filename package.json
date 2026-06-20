@@ -54,60 +54,223 @@
       ]
     },
     "commands": [
-      { "command": "tiermux.newChat", "title": "New Chat", "category": "TierMux", "icon": "$(add)" },
-      { "command": "tiermux.showHistory", "title": "Chat History", "category": "TierMux", "icon": "$(history)" },
-      { "command": "tiermux.compactChat", "title": "Compact Conversation", "category": "TierMux", "icon": "$(fold)" },
-      { "command": "tiermux.openModelSettings", "title": "Manage Models & Keys", "category": "TierMux", "icon": "$(gear)" },
-      { "command": "tiermux.setApiKey", "title": "Set API Key", "category": "TierMux" },
-      { "command": "tiermux.clearApiKey", "title": "Clear API Key", "category": "TierMux" },
-      { "command": "tiermux.explainSelection", "title": "Explain Selection", "category": "TierMux" },
-      { "command": "tiermux.fixSelection", "title": "Fix Selection", "category": "TierMux" },
-      { "command": "tiermux.refactorSelection", "title": "Refactor Selection", "category": "TierMux" },
-      { "command": "tiermux.generateTests", "title": "Generate Tests", "category": "TierMux" },
-      { "command": "tiermux.generateDocs", "title": "Generate Docs", "category": "TierMux" },
-      { "command": "tiermux.fixWithAI", "title": "Fix with AI", "category": "TierMux" },
-      { "command": "tiermux.inlineChat", "title": "Inline Chat (Edit at Cursor)", "category": "TierMux" },
-      { "command": "tiermux.addSelectionToChat", "title": "Add Selection to Chat", "category": "TierMux" },
-      { "command": "tiermux.reconnectMcp", "title": "Reconnect MCP Servers", "category": "TierMux" },
-      { "command": "tiermux.buildIndex", "title": "Build Codebase Index", "category": "TierMux" },
-      { "command": "tiermux.clearIndex", "title": "Clear Codebase Index", "category": "TierMux" },
-      { "command": "tiermux.refreshModels", "title": "Refresh Model Catalog", "category": "TierMux", "icon": "$(sync)" },
-      { "command": "tiermux.generateCommitMessage", "title": "Generate Commit Message", "category": "TierMux", "icon": { "light": "media/icon-commit-light.svg", "dark": "media/icon-commit-dark.svg" } },
-      { "command": "tiermux.toggleCompletions", "title": "Toggle Inline Completions", "category": "TierMux" },
-      { "command": "tiermux.editMemory", "title": "Edit Style & Tone Memory", "category": "TierMux", "icon": "$(notebook)" },
-      { "command": "tiermux.buildGraph", "title": "Build Code Graph", "category": "TierMux", "icon": "$(graph)" },
-      { "command": "tiermux.generateOnboardingTour", "title": "Generate Onboarding Tour", "category": "TierMux", "icon": "$(compass)" }
+      {
+        "command": "tiermux.newChat",
+        "title": "New Chat",
+        "category": "TierMux",
+        "icon": "$(add)"
+      },
+      {
+        "command": "tiermux.showHistory",
+        "title": "Chat History",
+        "category": "TierMux",
+        "icon": "$(history)"
+      },
+      {
+        "command": "tiermux.compactChat",
+        "title": "Compact Conversation",
+        "category": "TierMux",
+        "icon": "$(fold)"
+      },
+      {
+        "command": "tiermux.openModelSettings",
+        "title": "Manage Models & Keys",
+        "category": "TierMux",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "tiermux.manageSearchProviders",
+        "title": "Manage Web Search Providers",
+        "category": "TierMux",
+        "icon": "$(search)"
+      },
+      {
+        "command": "tiermux.setApiKey",
+        "title": "Set API Key",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.clearApiKey",
+        "title": "Clear API Key",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.explainSelection",
+        "title": "Explain Selection",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.fixSelection",
+        "title": "Fix Selection",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.refactorSelection",
+        "title": "Refactor Selection",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.generateTests",
+        "title": "Generate Tests",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.generateDocs",
+        "title": "Generate Docs",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.fixWithAI",
+        "title": "Fix with AI",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.inlineChat",
+        "title": "Inline Chat (Edit at Cursor)",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.addSelectionToChat",
+        "title": "Add Selection to Chat",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.reconnectMcp",
+        "title": "Reconnect MCP Servers",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.buildIndex",
+        "title": "Build Codebase Index",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.clearIndex",
+        "title": "Clear Codebase Index",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.refreshModels",
+        "title": "Refresh Model Catalog",
+        "category": "TierMux",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "tiermux.generateCommitMessage",
+        "title": "Generate Commit Message",
+        "category": "TierMux",
+        "icon": {
+          "light": "media/icon-commit-light.svg",
+          "dark": "media/icon-commit-dark.svg"
+        }
+      },
+      {
+        "command": "tiermux.toggleCompletions",
+        "title": "Toggle Inline Completions",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.editMemory",
+        "title": "Edit Style & Tone Memory",
+        "category": "TierMux",
+        "icon": "$(notebook)"
+      },
+      {
+        "command": "tiermux.buildGraph",
+        "title": "Build Code Graph",
+        "category": "TierMux",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "tiermux.generateOnboardingTour",
+        "title": "Generate Onboarding Tour",
+        "category": "TierMux",
+        "icon": "$(compass)"
+      }
     ],
     "menus": {
-      "view/title": [
-        { "command": "tiermux.newChat", "when": "view == tiermux.chat", "group": "navigation@1" },
-        { "command": "tiermux.showHistory", "when": "view == tiermux.chat", "group": "navigation@2" },
-        { "command": "tiermux.compactChat", "when": "view == tiermux.chat", "group": "navigation@3" },
-        { "command": "tiermux.openModelSettings", "when": "view == tiermux.chat", "group": "navigation@4" }
-      ],
+    "view/title": [
+      {
+        "command": "tiermux.newChat",
+        "when": "view == tiermux.chat",
+        "group": "navigation@1"
+      },
+      {
+        "command": "tiermux.showHistory",
+        "when": "view == tiermux.chat",
+        "group": "navigation@2"
+      },
+      {
+        "command": "tiermux.compactChat",
+        "when": "view == tiermux.chat",
+        "group": "navigation@3"
+      },
+      {
+        "command": "tiermux.openModelSettings",
+        "when": "view == tiermux.chat",
+        "group": "navigation@4"
+      }
+    ],
       "editor/context": [
-        { "submenu": "tiermux.editorSubmenu", "when": "editorHasSelection", "group": "1_freellmagent" }
+        {
+          "submenu": "tiermux.editorSubmenu",
+          "when": "editorHasSelection",
+          "group": "1_freellmagent"
+        }
       ],
       "tiermux.editorSubmenu": [
-        { "command": "tiermux.addSelectionToChat", "group": "1@1" },
-        { "command": "tiermux.explainSelection", "group": "1@2" },
-        { "command": "tiermux.fixSelection", "group": "1@3" },
-        { "command": "tiermux.refactorSelection", "group": "1@4" },
-        { "command": "tiermux.generateTests", "group": "1@5" },
-        { "command": "tiermux.generateDocs", "group": "1@6" }
+        {
+          "command": "tiermux.addSelectionToChat",
+          "group": "1@1"
+        },
+        {
+          "command": "tiermux.explainSelection",
+          "group": "1@2"
+        },
+        {
+          "command": "tiermux.fixSelection",
+          "group": "1@3"
+        },
+        {
+          "command": "tiermux.refactorSelection",
+          "group": "1@4"
+        },
+        {
+          "command": "tiermux.generateTests",
+          "group": "1@5"
+        },
+        {
+          "command": "tiermux.generateDocs",
+          "group": "1@6"
+        }
       ],
       "scm/title": [
-        { "command": "tiermux.generateCommitMessage", "when": "scmProvider == git", "group": "navigation" }
+        {
+          "command": "tiermux.generateCommitMessage",
+          "when": "scmProvider == git",
+          "group": "navigation"
+        }
       ],
       "commandPalette": [
-        { "command": "tiermux.generateCommitMessage", "when": "scmProvider == git" }
+        {
+          "command": "tiermux.generateCommitMessage",
+          "when": "scmProvider == git"
+        }
       ]
     },
     "submenus": [
-      { "id": "tiermux.editorSubmenu", "label": "TierMux" }
+      {
+        "id": "tiermux.editorSubmenu",
+        "label": "TierMux"
+      }
     ],
     "keybindings": [
-      { "command": "tiermux.inlineChat", "key": "ctrl+i", "mac": "cmd+i", "when": "editorTextFocus" }
+      {
+        "command": "tiermux.inlineChat",
+        "key": "ctrl+i",
+        "mac": "cmd+i",
+        "when": "editorTextFocus"
+      }
     ],
     "configuration": {
       "title": "TierMux",
@@ -130,7 +293,11 @@
         },
         "tiermux.agent.commandApproval": {
           "type": "string",
-          "enum": ["always", "allowlist", "never"],
+          "enum": [
+            "always",
+            "allowlist",
+            "never"
+          ],
           "enumDescriptions": [
             "Ask for approval before every command (safest).",
             "Auto-run a small set of safe inspection/test/build commands; ask for anything else.",
@@ -146,7 +313,9 @@
         },
         "tiermux.agent.commandAllowlist": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Extra command prefixes auto-runnable in 'allowlist' mode (e.g. \"php artisan migrate\"), in addition to the built-in safe defaults."
         },
@@ -162,23 +331,67 @@
         },
         "tiermux.graph.enabled": {
           "type": "boolean",
-          "default": true,
-          "description": "Enable the structural code graph (imports, exports, call edges, entrypoints). Provides cross-file context to the agent and enables getSymbolGraph, impactAnalysis, and onboarding tour tools."
+          "default": false,
+          "description": "Enable the structural code graph (imports, exports, call edges, entrypoints). Provides cross-file context to the agent and enables getSymbolGraph, impactAnalysis, and onboarding tour tools. Off by default — opt in for refactor-heavy work (the regex-based graph can be imprecise on large codebases)."
         },
         "tiermux.tools.web": {
           "type": "boolean",
-          "default": false,
-          "description": "Give the agent webSearch and webFetch tools so it can look things up instead of guessing. Off by default — adds the tool specs (and tokens) to every agent request."
+          "default": true,
+          "description": "Give the agent webSearch and webFetch tools so it can look things up instead of guessing. On by default — adds the tool specs (and tokens) to every agent request."
         },
         "tiermux.tools.searchEndpoint": {
           "type": "string",
           "default": "",
           "description": "Optional web-search endpoint URL for the webSearch tool. Blank = a best-effort free endpoint (fragile). Set to a reliable search API/SearchXNG URL for stable results; requires \"tiermux.tools.web\" to be on."
         },
+        "tiermux.tools.exaApiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Exa AI API key for semantic web search (free tier: 1,000 searches/month). Get one at [exa.ai](https://exa.ai). Exa returns clean, structured content optimized for AI agents. Requires `tiermux.tools.web` to be on."
+        },
+        "tiermux.tools.braveApiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Brave Search API key (free tier: 2,000 queries/month). Get one at [brave.com/search/api](https://brave.com/search/api/). Provides reliable web search with no rate-limit issues. Requires `tiermux.tools.web` to be on."
+        },
+        "tiermux.tools.searchProviderPriority": {
+          "type": "string",
+          "enum": ["auto", "exa", "brave", "custom", "duckduckgo"],
+          "enumDescriptions": [
+            "Auto = use the first provider that has a key configured (Exa → Brave → custom endpoint → free DuckDuckGo). Recommended.",
+            "Exa AI only (requires tiermux.tools.exaApiKey).",
+            "Brave Search only (requires tiermux.tools.braveApiKey).",
+            "Custom endpoint only (requires tiermux.tools.searchEndpoint).",
+            "Free DuckDuckGo via duck-duck-scrape (no key needed, but often rate-limited)."
+          ],
+          "default": "auto",
+          "description": "Which web search provider to use. 'auto' tries Exa → Brave → custom endpoint → free DuckDuckGo in order, picking the first with a key configured."
+        },
         "tiermux.context.includeOpenEditors": {
           "type": "boolean",
           "default": true,
           "description": "Automatically include the active file (a slice around the cursor) and open tab names as context each turn."
+        },
+        "tiermux.context.ambientSliceRadius": {
+          "type": "number",
+          "default": 15,
+          "minimum": 0,
+          "maximum": 200,
+          "description": "Lines of context on each side of the cursor to include with the active file. Lower = fewer tokens per turn (helps free-tier quotas)."
+        },
+        "tiermux.context.ambientMaxChars": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 200,
+          "maximum": 20000,
+          "description": "Hard cap (chars) on the active-file slice injected per turn. Lower = fewer tokens per turn."
+        },
+        "tiermux.context.ambientMaxTabs": {
+          "type": "number",
+          "default": 12,
+          "minimum": 0,
+          "maximum": 50,
+          "description": "Maximum number of open tab names to include in ambient context."
         },
         "tiermux.utilityModel": {
           "type": "string",
@@ -237,7 +450,14 @@
         },
         "tiermux.embeddings.provider": {
           "type": "string",
-          "enum": ["google", "cohere", "mistral", "openrouter", "github", "nvidia"],
+          "enum": [
+            "google",
+            "cohere",
+            "mistral",
+            "openrouter",
+            "github",
+            "nvidia"
+          ],
           "default": "google",
           "description": "Provider used to embed code chunks (uses that provider's API key). Google text-embedding-004 and Cohere embed have generous free tiers."
         },
@@ -285,13 +505,43 @@
           "additionalProperties": {
             "type": "object",
             "properties": {
-              "command": { "type": "string", "description": "stdio: executable to launch (e.g. npx, uvx, node)." },
-              "args": { "type": "array", "items": { "type": "string" }, "description": "stdio: arguments." },
-              "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "stdio: extra environment variables." },
-              "cwd": { "type": "string", "description": "stdio: working directory (defaults to the workspace root)." },
-              "url": { "type": "string", "description": "Remote (streamable-HTTP) server endpoint URL." },
-              "headers": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Remote: HTTP headers (e.g. Authorization)." },
-              "disabled": { "type": "boolean", "description": "Skip this server." }
+              "command": {
+                "type": "string",
+                "description": "stdio: executable to launch (e.g. npx, uvx, node)."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "stdio: arguments."
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "stdio: extra environment variables."
+              },
+              "cwd": {
+                "type": "string",
+                "description": "stdio: working directory (defaults to the workspace root)."
+              },
+              "url": {
+                "type": "string",
+                "description": "Remote (streamable-HTTP) server endpoint URL."
+              },
+              "headers": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Remote: HTTP headers (e.g. Authorization)."
+              },
+              "disabled": {
+                "type": "boolean",
+                "description": "Skip this server."
+              }
             }
           }
         }
@@ -307,6 +557,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "@types/pdf-parse": "^1.1.5",
     "@types/vscode": "^1.90.0",
     "@vscode/vsce": "^2.32.0",
     "esbuild": "^0.23.0",
@@ -314,5 +565,9 @@
     "marked": "^12.0.2",
     "typescript": "^5.5.4"
   },
-  "dependencies": {}
+  "dependencies": {
+    "duck-duck-scrape": "^2.2.7",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5"
+  }
 }

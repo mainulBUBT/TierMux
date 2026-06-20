@@ -47,8 +47,11 @@ export class SecretStore {
     return this.secrets.get(MODEL_KEY_PREFIX + modelKeyId(platform, modelId));
   }
 
-  async setModelKey(platform: Platform, modelId: string, key: string): Promise<void> {
-    await this.secrets.store(MODEL_KEY_PREFIX + modelKeyId(platform, modelId), key);
+  async setModelKey(platform: Platform, modelId: string, key: string): Promise<boolean> {
+    const trimmed = key.trim();
+    if (!trimmed) return false;
+    await this.secrets.store(MODEL_KEY_PREFIX + modelKeyId(platform, modelId), trimmed);
+    return true;
   }
 
   async clearModelKey(platform: Platform, modelId: string): Promise<void> {

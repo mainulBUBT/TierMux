@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { ChatContent, ChatMessage, Platform, TodoItem } from './shared/types';
+import type { ChatContent, ChatContentBlock, ChatMessage, Platform, TodoItem } from './shared/types';
 import type { SecretStore } from './config/secrets';
 import type { SettingsStore } from './config/settingsStore';
 import type { Catalog } from './catalog/catalog';
@@ -16,11 +16,12 @@ import type { ModelStatsStore, Vote } from './config/modelStats';
 import type { RunContext } from './agent/runContext';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem } from './messages';
-import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, SessionStatus, TranscriptMessage } from './messages';
+import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
 import { getNonce } from './util/nonce';
 import { allPlatformInfo, getPlatformInfo } from './providers';
 import { parseSlash, resolveMentions, searchMentions } from './context/mentions';
 import { contentToString } from './agent/content';
+import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSupportedAttachmentPath, kindForPath as kindFromName, mimeForPath as mimeForName } from './util/extractAttachments';
 import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense } from './agent/condense';
@@ -88,6 +89,9 @@ interface Session {
   liveModel?: string;
   lastStepLabel?: string;
   lastTodos?: TodoItem[];
+  /** Tool steps accumulated per active requestId, attached to the assistant transcript entry at
+   *  turn completion so a re-rendered message (e.g. after "Revert to here") keeps its step list. */
+  liveSteps: Map<string, TranscriptStep[]>;
 }
 
 interface StoredSession {
@@ -206,6 +210,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       pendingAskUser: new Map(),
       checkpoints: new CheckpointManager(),
       lastWindow: 0,
+      liveSteps: new Map(),
     };
     this.sessions.set(s.id, s);
     return s;
@@ -226,6 +231,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       pendingAskUser: new Map(),
       checkpoints: new CheckpointManager(),
       lastWindow: 0,
+      liveSteps: new Map(),
     };
   }
 
@@ -660,7 +666,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await vscode.commands.executeCommand('tiermux.setApiKey', m.platform);
         break;
       case 'setModelKey': {
-        await this.deps.secrets.setModelKey(m.platform, m.modelId, m.key);
+        const ok = await this.deps.secrets.setModelKey(m.platform, m.modelId, m.key);
+        if (!ok) void vscode.window.showWarningMessage('TierMux: API key was empty — nothing saved.');
         void this.sendConfig();
         break;
       }
@@ -671,6 +678,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'attachFromWorkspace':
         await this.attachFromWorkspace();
+        break;
+      case 'attachFromDataUrl':
+        await this.attachFromDataUrl(m);
         break;
       case 'addSelection':
         await this.addSelectionToChat();
@@ -734,6 +744,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await vscode.workspace.getConfiguration('tiermux').update('utilityModel', m.model, vscode.ConfigurationTarget.Global);
         await this.sendConfig();
         break;
+      case 'setSearchKey': {
+        const keyTarget = m.provider === 'exa' ? 'exaApiKey' : m.provider === 'brave' ? 'braveApiKey' : null;
+        let key = m.key;
+        if (key === undefined) {
+          const info = this.searchProviderStatuses().find((s) => s.id === m.provider);
+          key = await vscode.window.showInputBox({
+            prompt: `${info?.hasKey ? 'Update' : 'Set'} API key for ${info?.name ?? m.provider} (leave empty to clear)`,
+            password: true,
+            ignoreFocusOut: true,
+          });
+          if (key === undefined) break;
+        }
+        if (keyTarget) {
+          await vscode.workspace.getConfiguration('tiermux.tools').update(keyTarget, key || undefined, vscode.ConfigurationTarget.Global);
+        } else if (m.provider === 'custom') {
+          await vscode.workspace.getConfiguration('tiermux.tools').update('searchEndpoint', key || undefined, vscode.ConfigurationTarget.Global);
+        }
+        await this.sendConfig();
+        break;
+      }
+      case 'setSearchPriority':
+        await vscode.workspace.getConfiguration('tiermux.tools').update('searchProviderPriority', m.priority, vscode.ConfigurationTarget.Global);
+        await this.sendConfig();
+        break;
       case 'setAutoApprove':
         this.autoApprove = m.enabled;
         await this.deps.workspaceState.update(AUTO_APPROVE_KEY, m.enabled);
@@ -745,13 +779,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async attachFromWorkspace(): Promise<void> {
-    const picked = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: 'Attach' });
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      openLabel: 'Attach',
+      filters: ATTACHMENT_FILE_FILTERS,
+    });
     if (!picked) return;
     for (const uri of picked) {
       try {
-        const bytes = await vscode.workspace.fs.readFile(uri);
-        const text = new TextDecoder().decode(bytes.slice(0, 60 * 1024));
-        const attachment: Attachment = { kind: 'file', name: vscode.workspace.asRelativePath(uri), text };
+        if (!isSupportedAttachmentPath(uri.fsPath)) {
+          this.post({ type: 'notice', sessionId: this.viewedSessionId, text: `Skipped ${vscode.workspace.asRelativePath(uri)} — unsupported file type. Attach images, PDFs, or documents.` });
+          continue;
+        }
+        const attachment = await buildAttachmentFromUri(uri, 'pick');
         this.post({ type: 'attachmentAdded', attachment });
       } catch (e) {
         this.post({ type: 'error', sessionId: this.viewedSessionId, message: `Could not read ${uri.fsPath}: ${e instanceof Error ? e.message : e}` });
@@ -771,6 +811,53 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const name = useWhole ? path : `${path}:${sel.start.line + 1}-${sel.end.line + 1}`;
     await vscode.commands.executeCommand('tiermux.chat.focus');
     this.post({ type: 'attachmentAdded', attachment: { kind: 'file', name, text: code } });
+  }
+
+  /**
+   * Handle a file the webview captured from paste/drop (it has bytes but no
+   * path). For images we accept the data URL directly; for PDF/DOCX we save
+   * the bytes to a temp file in the workspace's .tiermux/attach/ folder and
+   * run the same extractor the workspace picker would. The temp file is
+   * kept on disk so a follow-up `readImage` / `readDocument` tool call later
+   * in the conversation can re-open it.
+   */
+  private async attachFromDataUrl(m: Extract<InMessage, { type: 'attachFromDataUrl' }>): Promise<void> {
+    if (!m || !m.dataUrl || !m.name) return;
+    const dataMatch = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(m.dataUrl);
+    if (!dataMatch) { this.post({ type: 'error', sessionId: this.viewedSessionId, message: 'Invalid file data.' }); return; }
+    const isBase64 = Boolean(dataMatch[2]);
+    const payload = dataMatch[3] ?? '';
+    const bytes = isBase64 ? Buffer.from(payload, 'base64') : Buffer.from(decodeURIComponent(payload), 'utf-8');
+    const kind = (m.mime || '').toLowerCase().startsWith('image/') ? 'image' : kindFromName(m.name);
+
+    try {
+      if (kind === 'image') {
+        if (bytes.byteLength > IMAGE_BYTE_LIMIT) {
+          this.post({ type: 'error', sessionId: this.viewedSessionId, message: `Image is too large (${(bytes.byteLength / 1024 / 1024).toFixed(1)} MB; max ${IMAGE_BYTE_LIMIT / 1024 / 1024} MB).` });
+          return;
+        }
+        const attachment: Attachment = {
+          kind: 'image',
+          name: m.name,
+          mime: m.mime || mimeForName(m.name),
+          dataUrl: `data:${m.mime || mimeForName(m.name)};base64,${bytes.toString('base64')}`,
+          source: m.source,
+        };
+        this.post({ type: 'attachmentAdded', attachment });
+        return;
+      }
+      // Non-image: drop the bytes into .tiermux/attach/ and run the workspace extractor.
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) { this.post({ type: 'error', sessionId: this.viewedSessionId, message: 'Open a folder first — non-image attachments need a workspace to land in.' }); return; }
+      const dir = vscode.Uri.joinPath(folder.uri, '.tiermux', 'attach');
+      await vscode.workspace.fs.createDirectory(dir);
+      const fileUri = vscode.Uri.joinPath(dir, m.name);
+      await vscode.workspace.fs.writeFile(fileUri, bytes);
+      const attachment = await buildAttachmentFromUri(fileUri, m.source ?? 'drop');
+      this.post({ type: 'attachmentAdded', attachment });
+    } catch (e) {
+      this.post({ type: 'error', sessionId: this.viewedSessionId, message: `Could not attach ${m.name}: ${e instanceof Error ? e.message : e}` });
+    }
   }
 
   /** Add a server (bundled / remote-registry, stdio or HTTP): prompt for inputs, write config, reconnect. */
@@ -863,7 +950,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     this.post({ type: 'busy', sessionId: s.id, busy: true });
     try {
-      const r = await condenseHistory(s.history, this.deps.router);
+      const r = await condenseHistory(
+        s.history,
+        this.deps.router,
+        s.livePlatform && s.liveModel ? `${s.livePlatform}/${s.liveModel}` : undefined,
+      );
       if (!r) { this.post({ type: 'notice', sessionId: s.id, text: 'Compaction produced no summary; context unchanged.' }); return; }
       const prior = s.history.length;
       s.history = r.messages;
@@ -878,18 +969,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private buildUserContent(text: string, contextText: string, attachments: Attachment[] | undefined): ChatContent {
-    const fileBlocks = (attachments ?? [])
-      .filter((a) => a.kind === 'file' && a.text)
-      .map((a) => `Attached file \`${a.name}\`:\n\`\`\`\n${a.text}\n\`\`\``)
+    const list = attachments ?? [];
+    const fileBlocks = list
+      .filter((a) => (a.kind === 'file' || a.kind === 'doc' || a.kind === 'pdf') && a.text)
+      .map((a) => `Attached ${a.kind} \`${a.name}\`:\n\`\`\`\n${a.text}\n\`\`\``)
       .join('\n\n');
     const textParts = [text, contextText, fileBlocks].filter((s) => s && s.trim().length > 0).join('\n\n');
 
-    const images = (attachments ?? []).filter((a) => a.kind === 'image' && a.dataUrl);
-    if (images.length === 0) return textParts;
+    // Visual blocks: images always, and PDFs (for Gemini / any provider that accepts
+    // file parts). The OpenAI-compat path passes the same block through unchanged;
+    // the Google provider rewrites it to native inlineData including PDFs.
+    const visualBlocks: ChatContentBlock[] = [];
+    for (const a of list) {
+      if (a.kind === 'image' && a.dataUrl) {
+        visualBlocks.push({ type: 'image_url', image_url: { url: a.dataUrl } });
+      } else if (a.kind === 'pdf' && a.dataUrl) {
+        visualBlocks.push({ type: 'file', file: { filename: a.name, file_data: a.dataUrl } });
+      }
+    }
+    if (visualBlocks.length === 0) return textParts;
     // Multimodal envelope for vision models.
     return [
       { type: 'text', text: textParts },
-      ...images.map((a) => ({ type: 'image_url', image_url: { url: a.dataUrl! } })),
+      ...visualBlocks,
     ];
   }
 
@@ -908,7 +1010,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const contextText = await resolveMentions(prompt).catch(() => '');
     const userContent = this.buildUserContent(prompt, contextText, m.attachments);
     s.history.push({ role: 'user', content: userContent });
-    s.transcript.push({ role: 'user', text: prompt, requestId: m.requestId, ts: Date.now() });
+    s.transcript.push({ role: 'user', text: prompt, requestId: m.requestId, ts: Date.now(), historyLen: s.history.length - 1 });
     void this.maybeGenerateTitle(s); // title from the user's message right away (e.g. "hi" -> "Greetings")
 
     s.cancel?.dispose();
@@ -918,6 +1020,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // settle before the new run takes over so its first askUser doesn't collide.
     this.settlePendingAskUser(s);
     s.executingPlan = false;
+
+    // Surface vision/PDF signals to the router so Auto picks a vision-capable model
+    // when the user attached an image or PDF (not just "Auto with a long text").
+    const attachmentKinds = (m.attachmentKinds && m.attachmentKinds.length > 0)
+      ? m.attachmentKinds
+      : (m.attachments ?? []).map((a) => a.kind);
 
     const release = await this.acquireRunSlot(s.id);
     // Cancelled (Stop) while queued → release the slot and bail before running.
@@ -933,6 +1041,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         model: m.model,
         reasoningEffort: m.reasoningEffort,
         token: s.cancel.token,
+        attachmentKinds,
         runContext: this.runContext(s, m.requestId),
         onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
       }, this.agentCallbacks(s, m.requestId, m.mode as Mode));
@@ -960,7 +1069,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
       this.persistAgentTurn(s, result);
-      s.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now(), secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)) });
+      this.pushAssistantTurn(s, m.requestId, result, sentAt, usage);
       this.rememberWindow(s, result.platform, result.model);
       // Remember which (task kind, model) produced this reply so 👍/👎 can teach the router.
       if (result.taskKind && result.platform && result.model) {
@@ -1048,8 +1157,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (firstCpId) await s.checkpoints.restore(firstCpId);
     s.checkpoints.dropByRequestIds(removedIds);
 
+    // Restore history to just before the reverted turn. We snapshot historyLen on each user
+    // turn (see handleSend), so truncating to it preserves every earlier tool call/result —
+    // rebuilding from transcript text alone would silently drop all of that context.
+    const cut = s.transcript[idx]?.historyLen;
     s.transcript = s.transcript.slice(0, idx);
-    s.history = s.transcript.map((t) => ({ role: t.role, content: t.text }));
+    s.history = (typeof cut === 'number' && cut <= s.history.length)
+      ? s.history.slice(0, cut)
+      : s.transcript.map((t) => ({ role: t.role, content: t.text }));
 
     this.post({ type: 'switchSession', sessionId: s.id, messages: s.transcript });
     await this.postCheckpoints(s);
@@ -1149,7 +1264,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
       this.persistAgentTurn(s, result);
-      s.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now(), secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)) });
+      this.pushAssistantTurn(s, m.requestId, result, sentAt, usage);
       this.rememberWindow(s, result.platform, result.model);
       // Remember which (task kind, model) produced this reply so 👍/👎 can teach the router.
       if (result.taskKind && result.platform && result.model) {
@@ -1187,6 +1302,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private persistAgentTurn(s: Session, result: AgentResult): void {
     if (result.workMessages && result.workMessages.length) s.history.push(...result.workMessages);
     else s.history.push({ role: 'assistant', content: result.text });
+  }
+
+  /**
+   * Record a finished assistant turn in the transcript WITH the details the live view showed
+   * (reasoning, tool steps, usage, duration) so a re-render — e.g. after "Revert to here" or a
+   * session switch — can rebuild the "Reasoning" and "Worked for Ns" disclosures instead of
+   * dropping them. Drains the per-requestId step accumulator.
+   */
+  private pushAssistantTurn(s: Session, requestId: string, result: AgentResult, sentAt: number, usage?: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
+    const steps = s.liveSteps.get(requestId);
+    s.liveSteps.delete(requestId);
+    s.transcript.push({
+      role: 'assistant',
+      text: result.text,
+      model: result.model ? `${result.platform}/${result.model}` : undefined,
+      ts: Date.now(),
+      secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)),
+      reasoning: result.reasoning || undefined,
+      usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,
+      steps: steps && steps.length ? steps : undefined,
+    });
   }
 
   /**
@@ -1259,7 +1395,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const useInChatAsk = mode !== 'chat';
     return {
       onModel: (platform, model) => { if (!live()) return; s.livePlatform = platform; s.liveModel = model; if (viewed()) this.post({ type: 'assistantStart', sessionId: s.id, requestId, platform, model }); },
-      onTool: (e) => { if (live() && viewed()) this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail }); },
+      onTool: (e) => {
+        if (!live()) return;
+        // Accumulate every step (regardless of view) so the turn's transcript entry can be
+        // rebuilt with its full step list after a re-render (e.g. "Revert to here").
+        const steps = s.liveSteps.get(requestId) ?? [];
+        const i = steps.findIndex((st) => st.toolCallId === e.toolCallId);
+        const entry: TranscriptStep = { toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail };
+        if (i >= 0) steps[i] = entry; else steps.push(entry);
+        s.liveSteps.set(requestId, steps);
+        if (viewed()) this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail });
+      },
       onStep: (phase, label) => { if (!live()) return; s.lastStepLabel = label; if (viewed()) this.post({ type: 'agentStep', sessionId: s.id, requestId, phase, label }); },
       onTodos: (todos) => { if (!live()) return; s.lastTodos = todos; if (viewed()) this.post({ type: 'todos', sessionId: s.id, requestId, todos, followingPlan: !!s.executingPlan }); },
       onAskUser: async (question, options) => {
@@ -1342,7 +1488,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
       this.persistAgentTurn(s, result);
-      s.transcript.push({ role: 'assistant', text: result.text, model: result.model ? `${result.platform}/${result.model}` : undefined, ts: Date.now(), secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)) });
+      this.pushAssistantTurn(s, m.requestId, result, sentAt, usage);
       this.rememberWindow(s, result.platform, result.model);
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
@@ -1425,16 +1571,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** Build the web search provider status list for the settings panel. */
+  private searchProviderStatuses(): import('./messages').SearchProviderStatus[] {
+    const cfg = vscode.workspace.getConfiguration('tiermux.tools');
+    const exaKey = cfg.get<string>('exaApiKey', '').trim();
+    const braveKey = cfg.get<string>('braveApiKey', '').trim();
+    const endpoint = cfg.get<string>('searchEndpoint', '').trim();
+    return [
+      { id: 'exa', name: 'Exa AI', hasKey: !!exaKey, freeTier: '1,000 searches/month', signupUrl: 'https://exa.ai' },
+      { id: 'brave', name: 'Brave Search', hasKey: !!braveKey, freeTier: '2,000 queries/month', signupUrl: 'https://brave.com/search/api/' },
+      { id: 'custom', name: 'Custom endpoint', hasKey: !!endpoint, freeTier: 'Bring your own (SearXNG, etc.)' },
+      { id: 'duckduckgo', name: 'DuckDuckGo (free)', hasKey: true, freeTier: 'Unlimited (often rate-limited)' },
+    ];
+  }
+
   private async sendConfig(): Promise<void> {
     if (!this.view) return;
     const snap = await this.deps.secrets.snapshot();
     const endpoints = this.deps.settings.getEndpoints();
+    const catalog = this.deps.catalog.all();
+    const modelKeys = new Set(await this.deps.secrets.modelKeySnapshot(catalog));
     const platforms: KeyStatusInfo[] = snap.map((s) => {
       const info = getPlatformInfo(s.platform);
+      const hasModelKey = catalog.some((m) => m.platform === s.platform && modelKeys.has(`${m.platform}::${m.modelId}`));
       return {
         platform: s.platform,
         name: info?.name ?? s.platform,
-        configured: s.configured,
+        configured: s.configured || hasModelKey,
         keyless: s.keyless,
         status: s.status,
         keyUrl: info?.keyUrl,
@@ -1463,6 +1626,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       modelKeys: await this.deps.secrets.modelKeySnapshot(this.deps.catalog.all()),
       utilityModel: vscode.workspace.getConfiguration('tiermux').get<string>('utilityModel', 'auto'),
       autoApprove: this.autoApprove,
+      searchProviders: this.searchProviderStatuses(),
+      searchPriority: vscode.workspace.getConfiguration('tiermux.tools').get<string>('searchProviderPriority', 'auto'),
     };
     this.post({ type: 'config', config, usageTotals: { ...this.deps.usage.get(), context: this.computeContext(this.current()) } });
   }

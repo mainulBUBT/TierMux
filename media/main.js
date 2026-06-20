@@ -71,6 +71,18 @@
     const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
     return `${h}:${m < 10 ? '0' + m : m} ${ap}`;
   }
+  // Compact token count: 4325 -> "4.3k", 67 -> "67", 1200000 -> "1.2M".
+  function fmtTokens(n) {
+    n = Math.max(0, Math.round(n || 0));
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+    return String(n);
+  }
+  // Friendly per-message usage, e.g. "4.3k in · 67 out".
+  function fmtUsage(u) {
+    if (!u) return '';
+    return `${fmtTokens(u.promptTokens)} in · ${fmtTokens(u.completionTokens)} out`;
+  }
 
   // ---------- layout ----------
   const app = $('#app');
@@ -328,7 +340,7 @@
     return frag;
   }
 
-  function addUserBubble(text, requestId, ts) {
+  function addUserBubble(text, requestId, ts, attachments) {
     clearEmpty();
     const el = document.createElement('div');
     el.className = 'msg user';
@@ -337,8 +349,27 @@
     bubble.className = 'bubble';
     const body = document.createElement('div'); body.className = 'msg-text';
     const textBody = document.createElement('div'); textBody.className = 'msg-text-body';
-    textBody.appendChild(renderMarkdown(text));
+    textBody.appendChild(renderMarkdown(text || ''));
     body.appendChild(textBody);
+    if (attachments && attachments.length) {
+      const atts = document.createElement('div'); atts.className = 'msg-attachments';
+      for (const a of attachments) {
+        if (a.kind === 'image' && a.dataUrl) {
+          const img = document.createElement('img');
+          img.className = 'msg-att-img';
+          img.src = a.dataUrl;
+          img.alt = a.name || '';
+          img.title = a.name || '';
+          atts.appendChild(img);
+        } else {
+          const span = document.createElement('span');
+          span.className = 'msg-att-chip';
+          span.textContent = `${iconForKind(a.kind)} ${a.name || ''}`;
+          atts.appendChild(span);
+        }
+      }
+      body.appendChild(atts);
+    }
     const meta = document.createElement('div'); meta.className = 'msg-meta';
     const time = document.createElement('span'); time.className = 'ts'; time.textContent = fmtTime(ts);
     meta.appendChild(time);
@@ -384,16 +415,66 @@
     return foot;
   }
 
-  function renderAssistantStatic(text, model, ts, secs) {
+  // Build a single tool-step card from a persisted step (mirrors upsertTool, but static).
+  function buildToolCard(step) {
+    const card = document.createElement('div');
+    card.className = 'tool-card';
+    card.innerHTML = `<div class="tool-head"><span class="tool-ic"></span><span class="tool-title"></span><span class="state"></span></div><details class="tool-more hidden"><summary>Details</summary><pre></pre></details>`;
+    const { icon, title } = toolLabel(step.name, step.args);
+    card.querySelector('.tool-ic').textContent = icon;
+    card.querySelector('.tool-title').textContent = title;
+    const st = card.querySelector('.state');
+    const state = step.state || 'done';
+    st.className = 'state ' + state;
+    st.textContent = STATE_ICON[state] != null ? STATE_ICON[state] : state;
+    st.title = state;
+    const argStr = (step.args && typeof step.args === 'object') ? JSON.stringify(step.args, null, 2) : String(step.args || '');
+    const parts = [];
+    if (argStr && argStr !== '{}') parts.push(argStr);
+    if (step.detail) parts.push('— result —\n' + step.detail);
+    const body = parts.join('\n\n');
+    const more = card.querySelector('.tool-more');
+    if (body.trim()) { more.querySelector('pre').textContent = body; more.classList.remove('hidden'); }
+    return card;
+  }
+
+  // Rebuild a finished assistant message from the transcript. Mirrors the live render so a
+  // re-render (e.g. after "Revert to here" or a session switch) keeps the "Reasoning" and
+  // "Worked for Ns" disclosures plus the model/usage/secs footer — instead of dropping them.
+  function renderAssistantStatic(text, model, ts, secs, details) {
     clearEmpty();
     const el = document.createElement('div');
     el.className = 'msg assistant';
     el._copyText = text;
+    details = details || {};
+    const hasReasoning = !!details.reasoning;
+    const steps = (details.steps || []).filter(Boolean);
+    // Live runs nest reasoning inside the "Worked for Ns" disclosure (it lives in t.tools),
+    // and that disclosure is dropped only when it holds neither reasoning nor any step.
+    if (hasReasoning || steps.length) {
+      const work = document.createElement('details'); work.className = 'work';
+      const sum = document.createElement('summary');
+      sum.innerHTML = `<span class="work-chevron">${ICON.chevron}</span><span class="work-label">Worked${secs != null ? ` for ${secs}s` : ''}</span>`;
+      work.appendChild(sum);
+      const tools = document.createElement('div'); tools.className = 'tools';
+      if (hasReasoning) {
+        const det = document.createElement('details'); det.className = 'reasoning';
+        det.innerHTML = `<summary>💭 Reasoning</summary>`;
+        det.appendChild(renderMarkdown(details.reasoning));
+        tools.appendChild(det);
+      }
+      steps.forEach((step) => tools.appendChild(buildToolCard(step)));
+      work.appendChild(tools);
+      el.appendChild(work);
+    }
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     bubble.appendChild(renderMarkdown(text));
     el.appendChild(bubble);
-    el.appendChild(assistantFooter(el, (model || '') + (secs != null ? `  ·  ${secs}s` : ''), ts));
+    let footStr = (model || '');
+    if (details.usage) footStr += `  ·  ${fmtUsage(details.usage)}`;
+    if (secs != null) footStr += `  ·  ${secs}s`;
+    el.appendChild(assistantFooter(el, footStr, ts));
     (currentTurn || thread).appendChild(el);
   }
 
@@ -504,13 +585,19 @@
   function send() {
     if (busy) { vscode.postMessage({ type: 'cancel', requestId: 'current', sessionId: viewedSessionId }); return; }
     const text = input.value.trim();
-    if (!text) return;
+    if (!text && pendingAttachments.length === 0) return;
     const requestId = newId();
-    addUserBubble(text, requestId);
+    // Send a preview of pending visual attachments in the user bubble so the user
+    // sees what they attached (data URLs only — the host keeps the canonical copy).
+    const previews = pendingAttachments
+      .filter((a) => a.kind === 'image' && a.dataUrl)
+      .map((a) => ({ kind: 'image', name: a.name, dataUrl: a.dataUrl }));
+    addUserBubble(text, requestId, Date.now(), pendingAttachments.map((a) => ({ kind: a.kind, name: a.name, dataUrl: a.dataUrl })));
     vscode.postMessage({
       type: 'sendMessage', requestId, text,
       mode: currentMode, model: currentModel, reasoningEffort: reasoningSel.value,
       attachments: pendingAttachments,
+      attachmentKinds: pendingAttachments.map((a) => a.kind),
     });
     input.value = '';
     autoGrow(); // reset the textarea back to one line after sending (don't leave it stuck tall)
@@ -591,27 +678,113 @@
     modelList.querySelectorAll('.model-group').forEach((h) => { h.style.display = q ? 'none' : ''; });
   }
 
-  // image paste support
+  // Image + PDF paste: clipboard data carries images, but not PDFs. We still keep
+  // the handler wide so any `image/*` paste (screenshots, snips) just works.
   input.addEventListener('paste', (e) => {
     const items = e.clipboardData && e.clipboardData.items;
     if (!items) return;
     for (const it of items) {
-      if (it.type.startsWith('image/')) {
+      if (it.type && it.type.startsWith('image/')) {
         const file = it.getAsFile();
         if (!file) continue;
-        const reader = new FileReader();
-        reader.onload = () => { pendingAttachments.push({ kind: 'image', name: file.name || 'pasted-image', dataUrl: reader.result }); renderChips(); };
-        reader.readAsDataURL(file);
+        e.preventDefault();
+        addImageAttachmentFromFile(file, 'paste');
       }
     }
   });
+
+  // Drag-and-drop onto the composer: any file (image, PDF, doc) goes to the
+  // workspace picker path? No — the file is already in the user's hand, just
+  // read it and attach it directly. We only need the host for PDF/DOCX text
+  // extraction (which the workspace picker triggers); for images we can use
+  // the data URL straight from the dropped file.
+  ['dragenter', 'dragover'].forEach((ev) =>
+    composer.addEventListener(ev, (e) => { if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) { e.preventDefault(); composer.classList.add('drag'); } })
+  );
+  ['dragleave', 'drop'].forEach((ev) =>
+    composer.addEventListener(ev, (e) => { e.preventDefault(); composer.classList.remove('drag'); })
+  );
+  composer.addEventListener('drop', (e) => {
+    const files = e.dataTransfer ? Array.from(e.dataTransfer.files) : [];
+    if (files.length === 0) return;
+    e.preventDefault();
+    for (const f of files) addAttachmentFromFile(f, 'drop');
+  });
+
+  /** Add a dropped or pasted file as an attachment. Images are added in-process
+   *  (data URL is self-contained). PDFs and DOCX are forwarded to the host,
+   *  which extracts text + base64 and posts back an attachmentAdded message. */
+  function addAttachmentFromFile(file, source) {
+    const mime = (file.type || '').toLowerCase();
+    if (mime.startsWith('image/')) {
+      addImageAttachmentFromFile(file, source);
+      return;
+    }
+    // Non-image files (PDF, DOCX, etc.): the webview is sandboxed and can't
+    // read paths or extract text. We can read the data URL for the host, but
+    // for PDFs the canonical path is: save to a temp workspace file → workspace
+    // picker path. Simpler: forward the bytes to the host and let it do the
+    // extract + attach. The host replies with `attachmentAdded` over the same
+    // channel as the workspace picker.
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      vscode.postMessage({ type: 'attachFromDataUrl', name: file.name, mime: file.type || mime, dataUrl, source });
+      showComposerStatus(`Extracting ${file.name}…`);
+    };
+    reader.onerror = () => showComposerStatus(`Could not read ${file.name}`);
+    reader.readAsDataURL(file);
+  }
+
+  function addImageAttachmentFromFile(file, source) {
+    // Downscale very large images client-side to keep the data URL small and
+    // the prompt cheap. The host also enforces an 8 MB cap; this avoids hitting it.
+    if (file.size > 800_000 && typeof createImageBitmap === 'function') {
+      createImageBitmap(file).then((bmp) => {
+        const maxSide = 1568;
+        const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+        const w = Math.max(1, Math.round(bmp.width * scale));
+        const h = Math.max(1, Math.round(bmp.height * scale));
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(bmp, 0, 0, w, h);
+        c.toBlob((blob) => {
+          if (!blob) { addImageAttachmentFromFileRaw(file, source); return; }
+          addImageAttachmentFromFileRaw(new File([blob], file.name || 'image', { type: 'image/jpeg' }), source);
+        }, 'image/jpeg', 0.85);
+      }).catch(() => addImageAttachmentFromFileRaw(file, source));
+      return;
+    }
+    addImageAttachmentFromFileRaw(file, source);
+  }
+  function addImageAttachmentFromFileRaw(file, source) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      pendingAttachments.push({ kind: 'image', name: file.name || 'image', mime: file.type, dataUrl: reader.result, source });
+      renderChips();
+    };
+    reader.readAsDataURL(file);
+  }
+  function showComposerStatus(text) {
+    const s = document.getElementById('footer');
+    if (s) { const prev = s.textContent; s.textContent = text; setTimeout(() => { if (s.textContent === text) s.textContent = prev; }, 4000); }
+  }
+
+  function iconForKind(k) {
+    if (k === 'image') return '🖼';
+    if (k === 'pdf') return '📕';
+    if (k === 'doc') return '📝';
+    return '📄';
+  }
 
   function renderChips() {
     chipsEl.innerHTML = '';
     pendingAttachments.forEach((a, idx) => {
       const chip = document.createElement('span');
       chip.className = 'chip';
-      chip.innerHTML = `${a.kind === 'image' ? '🖼' : '📄'} ${escapeHtml(a.name)} <button title="remove">✕</button>`;
+      let preview = '';
+      if (a.kind === 'image' && a.dataUrl) preview = `<img class="chip-thumb" src="${a.dataUrl}" alt=""/>`;
+      chip.innerHTML = `${preview}<span class="chip-icon">${iconForKind(a.kind)}</span> ${escapeHtml(a.name)} <button title="remove">✕</button>`;
       chip.querySelector('button').addEventListener('click', () => { pendingAttachments.splice(idx, 1); renderChips(); });
       chipsEl.appendChild(chip);
     });
@@ -775,6 +948,10 @@
     if (name === 'step' && args && typeof args === 'object') {
       return { icon: '🧭', title: `Step ${args.step}/${args.of}${args.task ? ': ' + args.task : ''}` };
     }
+    if (name === 'think') {
+      const th = String((args && typeof args === 'object' && args.thought) || '');
+      return { icon: '🧠', title: 'Thinking' + (th ? ': ' + th.replace(/\s+/g, ' ').trim().slice(0, 100) : '') };
+    }
     const a = String(firstArg(args) || '');
     const q = a ? `“${a}”` : '';
     const M = {
@@ -783,6 +960,8 @@
       repoMap: ['🗺️', 'Mapped the repository'],
       searchWorkspace: ['🔍', a ? `Searched ${q}` : 'Searched workspace'],
       codebaseSearch: ['🔎', a ? `Semantic search ${q}` : 'Semantic search'],
+      webSearch: ['🌐', a ? `Web search ${q}` : 'Web search'],
+      webFetch: ['🌐', a ? `Fetched ${a}` : 'Fetched URL'],
       getDiagnostics: ['🩺', 'Checked problems'],
       runCommand: ['▶️', a ? `Ran ${a}` : 'Ran command'],
       writeFile: ['✏️', a ? `Wrote ${a}` : 'Wrote file'],
@@ -863,7 +1042,7 @@
     search.type = 'text';
     search.className = 'settings-search';
     search.placeholder = settingsTab === 'mcp' ? 'Search MCP servers…' : 'Search providers & models…';
-    if (settingsTab === 'context' || settingsTab === 'others') search.style.display = 'none';
+    if (settingsTab === 'context' || settingsTab === 'others' || settingsTab === 'search') search.style.display = 'none';
     search.addEventListener('input', () => {
       const q = search.value.trim().toLowerCase();
       settingsContentEl.querySelectorAll('.provider-card, .registry-row').forEach((el) => {
@@ -876,7 +1055,7 @@
     layout.className = 'settings-layout';
     const nav = document.createElement('div');
     nav.className = 'settings-nav';
-    [['providers', 'Providers'], ['mcp', 'MCP'], ['context', 'Context'], ['others', 'Others']].forEach((pair) => {
+    [['providers', 'Providers'], ['search', 'webSearch'], ['mcp', 'MCP'], ['context', 'Context'], ['others', 'Others']].forEach((pair) => {
       const b = document.createElement('button');
       b.className = 'nav-item' + (settingsTab === pair[0] ? ' active' : '');
       b.textContent = pair[1];
@@ -890,9 +1069,87 @@
     settingsEl.append(layout);
 
     if (settingsTab === 'providers') renderProviders();
+    else if (settingsTab === 'search') renderSearchSection();
     else if (settingsTab === 'mcp') renderMcpSection();
     else if (settingsTab === 'others') renderOthersSection();
     else renderIndexSection();
+  }
+
+  // "Search" tab: pick a web search provider, set API keys, choose priority order.
+  function renderSearchSection() {
+    const wrap = document.createElement('div');
+    wrap.className = 'others-section';
+    const h = document.createElement('div'); h.className = 'others-title'; h.textContent = 'Web search';
+    const desc = document.createElement('div'); desc.className = 'others-desc';
+    desc.textContent = 'The agent uses webSearch to answer time-sensitive questions. Set a provider API key below — free tiers cover plenty. “Auto” tries Exa → Brave → custom → DuckDuckGo in order.';
+    wrap.appendChild(h); wrap.appendChild(desc);
+
+    // Priority picker
+    const priorityRow = document.createElement('div'); priorityRow.className = 'search-priority-row';
+    const pl = document.createElement('span'); pl.className = 'search-priority-label'; pl.textContent = 'Priority';
+    const sel = document.createElement('select'); sel.className = 'search-priority-select';
+    const opts = [
+      ['auto', 'Auto (try all in order)'],
+      ['exa', 'Exa first'],
+      ['brave', 'Brave first'],
+      ['custom', 'Custom endpoint first'],
+      ['duckduckgo', 'DuckDuckGo only'],
+    ];
+    const currentPriority = state.searchPriority || 'auto';
+    opts.forEach(([v, lbl]) => {
+      const o = document.createElement('option'); o.value = v; o.textContent = lbl;
+      if (v === currentPriority) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.addEventListener('change', () => vscode.postMessage({ type: 'setSearchPriority', priority: sel.value }));
+    priorityRow.appendChild(pl); priorityRow.appendChild(sel);
+    wrap.appendChild(priorityRow);
+
+    const list = document.createElement('div'); list.className = 'search-list';
+    wrap.appendChild(list);
+
+    const providers = state.searchProviders || [];
+    providers.forEach((p) => {
+      const row = document.createElement('div');
+      row.className = 'search-prov-row' + (p.hasKey ? ' configured' : '');
+      const left = document.createElement('div'); left.className = 'sp-left';
+      const name = document.createElement('div'); name.className = 'sp-name';
+      name.innerHTML = `<span>${escapeHtml(p.name)}</span>${p.hasKey ? '<span class="sp-badge">ready</span>' : ''}`;
+      const meta = document.createElement('div'); meta.className = 'sp-meta';
+      meta.textContent = p.freeTier + (p.signupUrl ? ` · ${p.signupUrl}` : '');
+      left.appendChild(name); left.appendChild(meta);
+      const actions = document.createElement('div'); actions.className = 'sp-actions';
+      if (p.id === 'custom') {
+        const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'sp-input'; inp.placeholder = 'https://your-searxng.example/search?q='; inp.value = '';
+        const save = document.createElement('button'); save.className = 'secondary'; save.textContent = 'Save URL';
+        save.addEventListener('click', () => vscode.postMessage({ type: 'setSearchKey', provider: 'custom', key: inp.value.trim() }));
+        actions.appendChild(inp); actions.appendChild(save);
+      } else if (p.id === 'duckduckgo') {
+        const note = document.createElement('span'); note.className = 'sp-note'; note.textContent = 'No key needed';
+        actions.appendChild(note);
+      } else {
+        const btn = document.createElement('button'); btn.className = 'secondary';
+        btn.textContent = p.hasKey ? 'Update key' : 'Set key';
+        btn.addEventListener('click', () => {
+          vscode.postMessage({ type: 'setSearchKey', provider: p.id });
+        });
+        actions.appendChild(btn);
+        if (p.hasKey) {
+          const clear = document.createElement('button'); clear.className = 'icon-btn'; clear.textContent = 'Clear';
+          clear.addEventListener('click', () => vscode.postMessage({ type: 'setSearchKey', provider: p.id, key: '' }));
+          actions.appendChild(clear);
+        }
+        if (p.signupUrl) {
+          const link = document.createElement('a'); link.className = 'sp-signup'; link.textContent = 'Get key'; link.href = '#';
+          link.addEventListener('click', (ev) => { ev.preventDefault(); vscode.postMessage({ type: 'copyText', text: p.signupUrl }); });
+          actions.appendChild(link);
+        }
+      }
+      row.appendChild(left); row.appendChild(actions);
+      list.appendChild(row);
+    });
+
+    settingsContentEl.appendChild(wrap);
   }
 
   // "Others" tab: pick the model used for chat titles + commit messages — an inline
@@ -980,6 +1237,7 @@
         <span class="status-dot status-${dotClass}"></span>
         <span class="provider-name">${escapeHtml(p.name)}</span>
         <span class="muted prov-status">${p.keyless ? 'keyless' : (p.configured ? 'key set' : 'no key')}</span>
+        <button class="icon-btn prov-key-btn" data-platform="${p.platform}" title="${p.keyless ? 'Keyless provider' : (p.configured ? 'Update / clear API key' : 'Set API key')}">${p.keyless ? 'Keyless' : (p.configured ? 'Update key' : 'Set key')}</button>
         <span class="chev">${isOpen ? '▾' : '▸'}</span>`;
 
       const body = document.createElement('div');
@@ -990,6 +1248,16 @@
         if (closed) expandedProviders.delete(p.platform);
         else expandedProviders.add(p.platform);
       });
+
+      // Provider-level key button in the header
+      const provKeyBtn = head.querySelector('.prov-key-btn');
+      if (provKeyBtn) {
+        provKeyBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          if (p.keyless) return;
+          vscode.postMessage({ type: 'setKey', platform: p.platform });
+        });
+      }
 
       // Endpoint
       const epInput = document.createElement('input');
@@ -1316,7 +1584,7 @@
         statusTimers.clear();
         currentTurn = null;
         renderChangedBar({ files: [] });
-        (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts) : renderAssistantStatic(mm.text, mm.model, mm.ts, mm.secs));
+        (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts) : renderAssistantStatic(mm.text, mm.model, mm.ts, mm.secs, { reasoning: mm.reasoning, steps: mm.steps, usage: mm.usage }));
         if (!(msg.messages || []).length) renderEmpty();
         loadComposer(viewedSessionId); // restore the entering session's draft/settings
         scrollDown();
@@ -1633,7 +1901,7 @@
         // failed over before assistantStart could set t.model).
         if (msg.model) t.model = `${msg.platform || ''}/${msg.model}`;
         let usageStr = '';
-        if (msg.usage) usageStr = `  ·  ${msg.usage.promptTokens}+${msg.usage.completionTokens} tok`;
+        if (msg.usage) usageStr = `  ·  ${fmtUsage(msg.usage)}`;
         const startedAt = t.startedAt ?? startTimes.get(msg.requestId);
         const secs = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
         const durStr = secs != null ? `  ·  ${secs}s` : '';
@@ -1845,7 +2113,7 @@
   function updateFooter(totals) {
     if (!totals) return;
     const session = totals.requests
-      ? `Session: ${totals.requests} req · ${totals.totalTokens} tok`
+      ? `Session: ${totals.requests} req · ${fmtTokens(totals.totalTokens)} tokens`
       : 'No tokens used yet.';
     let ctx = '';
     if (totals.context && totals.context.window) {

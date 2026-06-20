@@ -7,9 +7,14 @@ import { loadSkill, listSkills } from './skills';
 import type { RunContext } from './runContext';
 import { buildStructuralGraph, loadStructuralGraph, graphSummary, symbolGraph } from '../context/structuralGraph';
 import { analyzeImpact, impactMarkdown } from '../context/impactAnalysis';
+import { editConflicts, markEditing } from './editLock';
+import { extractDocxText, extractPdfText, IMAGE_BYTE_LIMIT, isSupportedAttachmentPath, kindForPath, mimeForPath } from '../util/extractAttachments';
+import type { ChatMessage } from '../shared/types';
+import { search as ddgSearch, searchNews as ddgSearchNews, SafeSearchType } from 'duck-duck-scrape';
 
 const MAX_READ_BYTES = 100 * 1024;
 const MAX_SEARCH_RESULTS = 40;
+const MAX_DOC_CHARS_DEFAULT = 60_000;
 const EXCLUDE = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/build/**,**/.next/**,**/.venv/**}';
 
 export interface ToolEvent {
@@ -41,8 +46,9 @@ export class WorkspaceTools {
     return uri;
   }
 
-  /** Execute a tool by name. Returns a string observation; never throws. */
-  async execute(name: string, rawArgs: string, ctx?: RunContext): Promise<string> {
+  /** Execute a tool by name. Returns either a string observation (most tools) or a
+   *  multimodal content array (readImage). Never throws. */
+  async execute(name: string, rawArgs: string, ctx?: RunContext): Promise<string | ChatMessage['content']> {
     let args: Record<string, unknown> = {};
     try {
       args = rawArgs ? (JSON.parse(rawArgs) as Record<string, unknown>) : {};
@@ -65,10 +71,13 @@ export class WorkspaceTools {
         case 'grep': return await this.grep(String(args.pattern ?? ''), args.path ? String(args.path) : undefined, args.regex === true);
         case 'webFetch': return await this.webFetch(String(args.url ?? ''));
         case 'webSearch': return await this.webSearch(String(args.query ?? ''));
+        case 'think': return JSON.stringify({ ok: true }); // visible reasoning step — no side effects
         case 'skill': return await this.skill(String(args.name ?? ''));
         case 'buildGraph': return await this.buildGraph();
         case 'getSymbolGraph': return await this.getSymbolGraph(String(args.file ?? ''));
         case 'impactAnalysis': return await this.impactAnalysis(args.files as string[] | undefined);
+        case 'readImage': return await this.readImage(String(args.path ?? ''));
+        case 'readDocument': return await this.readDocument(String(args.path ?? ''), typeof args.maxChars === 'number' ? args.maxChars : undefined);
         default: return JSON.stringify({ error: `Unknown tool: ${name}` });
       }
     } catch (e) {
@@ -153,19 +162,42 @@ export class WorkspaceTools {
     return JSON.stringify(await this.commandGate.run(command, cwd, ctx));
   }
 
+  /**
+   * Concurrency guard: if another in-flight run is already mutating this file, defer with an
+   * advisory error so the agent retries/picks another file instead of clobbering it. Otherwise
+   * claim the file for this run. No-op when there's no requestId (non-session callers).
+   * Returns an error observation string when blocked, or null when the write may proceed.
+   */
+  private claimEdit(p: string, ctx?: RunContext): string | null {
+    const blocked = editConflicts(ctx?.requestId, [p]);
+    if (blocked.length) {
+      return JSON.stringify({ error: `${p} is being edited by another agent run right now — wait a moment and retry, or choose a different file to avoid overwriting each other.` });
+    }
+    markEditing(ctx?.requestId, [p]);
+    return null;
+  }
+
   private async writeFile(p: string, content: string, ctx?: RunContext): Promise<string> {
+    const blocked = this.claimEdit(p, ctx);
+    if (blocked) return blocked;
     const r = await this.editGate.write(this.resolve(p), content, ctx);
     return JSON.stringify(r.applied ? { ok: true, path: p } : { error: r.error ?? 'not applied' });
   }
   private async createFile(p: string, content: string, ctx?: RunContext): Promise<string> {
+    const blocked = this.claimEdit(p, ctx);
+    if (blocked) return blocked;
     const r = await this.editGate.create(this.resolve(p), content, ctx);
     return JSON.stringify(r.applied ? { ok: true, path: p } : { error: r.error ?? 'not applied' });
   }
   private async editFile(p: string, search: string, replace: string, ctx?: RunContext): Promise<string> {
+    const blocked = this.claimEdit(p, ctx);
+    if (blocked) return blocked;
     const r = await this.editGate.edit(this.resolve(p), search, replace, ctx);
     return JSON.stringify(r.applied ? { ok: true, path: p } : { error: r.error ?? 'not applied' });
   }
   private async deleteFile(p: string, ctx?: RunContext): Promise<string> {
+    const blocked = this.claimEdit(p, ctx);
+    if (blocked) return blocked;
     const r = await this.editGate.remove(this.resolve(p), ctx);
     return JSON.stringify(r.applied ? { ok: true, path: p } : { error: r.error ?? 'not applied' });
   }
@@ -226,17 +258,74 @@ export class WorkspaceTools {
     }
   }
 
-  /** Web search → {title, url, snippet}[]. Uses the configured endpoint, else best-effort free DDG. */
+  /** Web search → {title, url, snippet}[]. Multi-provider chain based on settings:
+   *  Auto mode tries Exa → Brave → custom endpoint → free DuckDuckGo in priority order,
+   *  picking the first with a key configured. When every source comes back empty we return a
+   *  clear error (not silent []) so the model tells the user the backend is blocked. */
   private async webSearch(query: string): Promise<string> {
     const q = (query || '').trim();
     if (!q) return JSON.stringify({ error: 'Empty query.' });
-    const endpoint = vscode.workspace.getConfiguration('tiermux.tools').get<string>('searchEndpoint', '').trim();
-    try {
-      const results = endpoint ? await searchViaEndpoint(endpoint, q) : await searchDuckDuckGo(q);
-      return JSON.stringify({ query: q, results: results.slice(0, 5) });
-    } catch (e) {
-      return JSON.stringify({ error: `Search failed: ${e instanceof Error ? e.message : e}` });
+
+    const cfg = vscode.workspace.getConfiguration('tiermux.tools');
+    const priority = cfg.get<string>('searchProviderPriority', 'auto');
+    const exaKey = cfg.get<string>('exaApiKey', '').trim();
+    const braveKey = cfg.get<string>('braveApiKey', '').trim();
+    const customEndpoint = cfg.get<string>('searchEndpoint', '').trim();
+
+    // Build the ordered list of providers to try based on the priority setting.
+    const providers: Array<{ name: string; run: () => Promise<WebResult[]> }> = [];
+
+    if (priority === 'auto') {
+      if (exaKey) providers.push({ name: 'exa', run: () => searchExa(q, exaKey) });
+      if (braveKey) providers.push({ name: 'brave', run: () => searchBrave(q, braveKey) });
+      if (customEndpoint) providers.push({ name: 'custom', run: () => searchViaEndpoint(customEndpoint, q) });
+      providers.push({ name: 'duckduckgo', run: () => searchDuckDuckGo(q) });
+    } else if (priority === 'exa') {
+      if (!exaKey) {
+        return JSON.stringify({
+          error: 'Search provider set to "exa" but no Exa API key configured. Set "tiermux.tools.exaApiKey" or switch searchProviderPriority to "auto" / "duckduckgo".',
+          query: q,
+        });
+      }
+      providers.push({ name: 'exa', run: () => searchExa(q, exaKey) });
+    } else if (priority === 'brave') {
+      if (!braveKey) {
+        return JSON.stringify({
+          error: 'Search provider set to "brave" but no Brave API key configured. Set "tiermux.tools.braveApiKey" or switch searchProviderPriority to "auto" / "duckduckgo".',
+          query: q,
+        });
+      }
+      providers.push({ name: 'brave', run: () => searchBrave(q, braveKey) });
+    } else if (priority === 'custom') {
+      if (!customEndpoint) {
+        return JSON.stringify({
+          error: 'Search provider set to "custom" but no endpoint configured. Set "tiermux.tools.searchEndpoint" or switch searchProviderPriority.',
+          query: q,
+        });
+      }
+      providers.push({ name: 'custom', run: () => searchViaEndpoint(customEndpoint, q) });
+    } else {
+      providers.push({ name: 'duckduckgo', run: () => searchDuckDuckGo(q) });
     }
+
+    // Try each provider in order; return the first one that returns results.
+    for (const p of providers) {
+      try {
+        const results = await p.run();
+        if (results.length) {
+          return JSON.stringify({ query: q, provider: p.name, results: results.slice(0, 5) });
+        }
+      } catch { /* try next provider */ }
+    }
+
+    // No provider returned results.
+    const hasAnyKey = !!(exaKey || braveKey || customEndpoint);
+    return JSON.stringify({
+      error: hasAnyKey
+        ? 'All configured search providers returned no results. Try rephrasing the query, or use webFetch on a known relevant URL (e.g. en.wikipedia.org/wiki/<topic>).'
+        : 'Web search unavailable: no API keys configured and the free DuckDuckGo backend is rate-limited. Configure "tiermux.tools.exaApiKey" (free 1k/mo) or "tiermux.tools.braveApiKey" (free 2k/mo) for reliable search, or use webFetch on known relevant URLs (en.wikipedia.org, bbc.com/sport, wttr.in).',
+      query: q,
+    });
   }
 
   /** Load a named skill (.tiermux/skills/<name>.md) and return its instructions. */
@@ -248,6 +337,69 @@ export class WorkspaceTools {
       ? `No skill named "${name}". Available: ${available.join(', ')}.`
       : `No skill named "${name}" (.tiermux/skills is empty).`;
     return JSON.stringify({ found: false, note });
+  }
+
+  /**
+   * Read an image from the workspace and return it as multimodal content so a
+   * vision-capable model can actually see it. The result is a block array — the
+   * Google provider translates it to native inlineData; OpenAI-compat providers
+   * see it as an `image_url` block.
+   */
+  private async readImage(p: string): Promise<ChatMessage['content']> {
+    if (!p) return JSON.stringify({ error: 'Missing required parameter: path.' });
+    const uri = this.resolve(p);
+    if (!isSupportedAttachmentPath(uri.fsPath)) return JSON.stringify({ error: `Not an image: ${p}` });
+    if (kindForPath(uri.fsPath) !== 'image') return JSON.stringify({ error: `Not an image: ${p}. Use readDocument for non-image files.` });
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    if (bytes.byteLength === 0) return JSON.stringify({ error: `Image is empty: ${p}` });
+    if (bytes.byteLength > IMAGE_BYTE_LIMIT) return JSON.stringify({ error: `Image is too large (${(bytes.byteLength / 1024 / 1024).toFixed(1)} MB; max ${IMAGE_BYTE_LIMIT / 1024 / 1024} MB). Resize or compress it and try again.` });
+    const mime = mimeForPath(uri.fsPath);
+    const dataUrl = `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`;
+    return [
+      { type: 'text', text: `Image attached: ${p} (${(bytes.byteLength / 1024).toFixed(1)} KB, ${mime}).` },
+      { type: 'image_url', image_url: { url: dataUrl } },
+    ];
+  }
+
+  /**
+   * Read a document from the workspace and return its extracted text. Supports
+   * PDF, DOCX, MD, TXT, JSON. Returns plain text so any model — vision or not —
+   * can answer from it.
+   */
+  private async readDocument(p: string, maxChars: number | undefined): Promise<string> {
+    if (!p) return JSON.stringify({ error: 'Missing required parameter: path.' });
+    const uri = this.resolve(p);
+    if (!isSupportedAttachmentPath(uri.fsPath)) return JSON.stringify({ error: `Unsupported file type: ${p}. Supported: PDF, DOCX, MD, TXT, JSON, images.` });
+    const kind = kindForPath(uri.fsPath);
+    const cap = Math.max(1000, Math.min(maxChars ?? MAX_DOC_CHARS_DEFAULT, 200_000));
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    if (bytes.byteLength === 0) return JSON.stringify({ error: `File is empty: ${p}` });
+
+    let text = '';
+    try {
+      if (kind === 'pdf') {
+        text = await extractPdfText(Buffer.from(bytes));
+      } else if (uri.fsPath.toLowerCase().endsWith('.docx')) {
+        text = await extractDocxText(Buffer.from(bytes));
+      } else {
+        // Plain text / markdown / json / .doc (best-effort).
+        text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+      }
+    } catch (e) {
+      return JSON.stringify({ error: `Could not extract text from ${p}: ${e instanceof Error ? e.message : e}` });
+    }
+
+    const truncated = text.length > cap;
+    const body = truncated ? text.slice(0, cap) : text;
+    return JSON.stringify({
+      path: p,
+      kind,
+      bytes: bytes.byteLength,
+      chars: text.length,
+      truncated,
+      content: body,
+      ...(truncated ? { notice: `Truncated to first ${cap} of ${text.length} characters. Use maxChars to control, or readFile for the raw bytes (text files only).` } : {}),
+    });
   }
 
   private async buildGraph(): Promise<string> {
@@ -276,7 +428,7 @@ export class WorkspaceTools {
   }
 }
 
-// ---- web helpers (best-effort; web tools are opt-in via `tiermux.tools.web`) ----
+// ---- web helpers (best-effort; web tools are on by default via `tiermux.tools.web`) ----
 
 /** Strip tags/scripts/style, decode common entities, collapse whitespace. Good enough for reading. */
 function htmlToText(html: string): string {
@@ -297,17 +449,80 @@ function htmlToText(html: string): string {
 
 interface WebResult { title: string; url: string; snippet: string }
 
-/** Best-effort free search via DuckDuckGo's HTML endpoint (fragile — set searchEndpoint for reliability). */
+/** Browser-like headers so DuckDuckGo doesn't return an "anomaly" block page to a bare request. */
+const DDG_HEADERS: Record<string, string> = {
+  'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'accept-language': 'en-US,en;q=0.9',
+  'sec-fetch-dest': 'document',
+  'sec-fetch-mode': 'navigate',
+  'sec-fetch-site': 'none',
+  'referer': 'https://duckduckgo.com/',
+};
+
+/** Decode a DuckDuckGo redirect-wrapped URL (//duckduckgo.com/l/?uddg=ENCODED&...). */
+function decodeDdgUrl(raw: string): string {
+  const uddg = raw.match(/uddg=([^&]+)/i);
+  if (uddg) { try { return decodeURIComponent(uddg[1]); } catch { /* fall through */ } }
+  return raw;
+}
+
+/** Free search via DuckDuckGo using the duck-duck-scrape library (handles anti-bot properly).
+ *  Falls back to the Instant-Answer JSON API for encyclopedic queries, then the old HTML/lite
+ *  scrapers as last resort. */
 async function searchDuckDuckGo(query: string): Promise<WebResult[]> {
+  // 1. duck-duck-scrape — TypeScript library that uses DDG's internal JSON API
+  const lib = await searchDdgLib(query);
+  if (lib.length) return lib;
+
+  // 2. Instant-Answer API — no anti-bot, but limited to factual/encyclopedic queries
+  const instant = await ddgInstant(query);
+  if (instant.length) return instant;
+
+  // 3. Old HTML/lite scrapers — often blocked, kept as absolute last resort
+  const html = await ddgHtml(query);
+  if (html.length) return html;
+  return ddgLite(query);
+}
+
+/** Primary search via duck-duck-scrape library. Tries text search first, then news. */
+async function searchDdgLib(query: string): Promise<WebResult[]> {
+  try {
+    const results = await ddgSearch(query, { safeSearch: SafeSearchType.OFF });
+    if (results.results?.length) {
+      return results.results.slice(0, 8).map((r) => ({
+        title: (r.title ?? '').replace(/&#x27;/g, "'").replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').trim(),
+        url: r.url ?? '',
+        snippet: (r.description ?? '').replace(/<[^>]+>/g, '').trim(),
+      })).filter((r) => r.title && r.url);
+    }
+  } catch { /* fall through to news */ }
+
+  // News search as fallback for time-sensitive queries
+  try {
+    const news = await ddgSearchNews(query);
+    if (news.results?.length) {
+      return news.results.slice(0, 8).map((r) => ({
+        title: r.title ?? '',
+        url: r.url ?? '',
+        snippet: (r.excerpt ?? '').trim(),
+      })).filter((r) => r.title && r.url);
+    }
+  } catch { /* fall through */ }
+  return [];
+}
+
+async function ddgHtml(query: string): Promise<WebResult[]> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 12000);
   try {
     const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
-      signal: ctrl.signal,
-      headers: { 'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) tiermux' },
-      redirect: 'follow',
+      signal: ctrl.signal, headers: DDG_HEADERS, redirect: 'follow',
     });
-    if (!res.ok) return [];
+    // 202 = DDG's "unusual activity" challenge page (big HTML, zero results). Treat anything but
+    // a clean 200 as blocked so we fall through to the lite/instant fallbacks instead of parsing
+    // a challenge page and returning [].
+    if (res.status !== 200) return [];
     const html = await res.text();
     const out: WebResult[] = [];
     const blocks = html.split(/class="result[^"]*"/).slice(1);
@@ -317,15 +532,74 @@ async function searchDuckDuckGo(query: string): Promise<WebResult[]> {
       const hrefM = b.match(/<a[^>]*class="result__a"[^>]*href="([^"]+)"/i);
       const snipM = b.match(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i);
       const title = titleM ? htmlToText(titleM[1]) : '';
-      let url = '';
-      if (hrefM) {
-        const uddg = hrefM[1].match(/uddg=([^&]+)/i);
-        try { url = uddg ? decodeURIComponent(uddg[1]) : hrefM[1]; } catch { url = hrefM[1]; }
-      }
+      const url = hrefM ? decodeDdgUrl(hrefM[1]) : '';
       const snippet = snipM ? htmlToText(snipM[1]) : '';
       if (title) out.push({ title, url, snippet });
     }
     return out;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** DuckDuckGo Instant-Answer API — a JSON endpoint that's far less aggressively blocked than the
+ *  HTML scraper. Returns an abstract + related topics for encyclopedic queries (great for "what
+ *  is X"); returns nothing for fresh/live data like today's scores, but it's a useful no-key fallback. */
+async function ddgInstant(query: string): Promise<WebResult[]> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  try {
+    const res = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`, {
+      signal: ctrl.signal, headers: { 'user-agent': DDG_HEADERS['user-agent'] }, redirect: 'follow',
+    });
+    if (res.status !== 200) return [];
+    const data = await res.json() as Record<string, unknown>;
+    const out: WebResult[] = [];
+    const abstract = String(data.AbstractText ?? '').trim();
+    if (abstract) out.push({ title: String(data.Heading ?? query), url: String(data.AbstractURL ?? ''), snippet: abstract });
+    const topics = Array.isArray(data.RelatedTopics) ? data.RelatedTopics : [];
+    for (const t of topics) {
+      if (out.length >= 8) break;
+      const o = t as Record<string, unknown>;
+      const text = String(o.Text ?? '').trim();
+      const url = String(o.FirstURL ?? '').trim();
+      if (text && url) out.push({ title: text.slice(0, 80), url, snippet: text });
+    }
+    return out;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** DuckDuckGo's `lite` endpoint — simpler HTML, less aggressively blocked; a fallback when the
+ *  main HTML endpoint returns nothing. Links are `result-link`, snippets `result-snippet`. */
+async function ddgLite(query: string): Promise<WebResult[]> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 12000);
+  try {
+    const res = await fetch(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}&kl=us-en`, {
+      signal: ctrl.signal, headers: DDG_HEADERS, redirect: 'follow',
+    });
+    if (!res.ok) return [];
+    const html = await res.text();
+    const out: WebResult[] = [];
+    const rows = html.split(/<a[^>]*class="result-link"[^>]*>/).slice(1);
+    for (const r of rows) {
+      if (out.length >= 8) break;
+      const hrefM = r.match(/href="([^"]+)"/i);
+      const titleM = r.match(/^([\s\S]*?)<\/a>/i);
+      const title = titleM ? htmlToText(titleM[1]) : '';
+      const url = hrefM ? decodeDdgUrl(hrefM[1]) : '';
+      if (!title) continue;
+      out.push({ title, url, snippet: '' });
+    }
+    return out;
+  } catch {
+    return [];
   } finally {
     clearTimeout(timer);
   }
@@ -351,6 +625,92 @@ async function searchViaEndpoint(endpoint: string, query: string): Promise<WebRe
       : Array.isArray((data as Record<string, unknown>)?.data) ? (data as Record<string, unknown[]>).data
       : [];
     return arr.map((x) => pick(x as Record<string, unknown>)).filter((x): x is WebResult => !!x);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---- Exa AI search (free tier: 1,000 searches/month, semantic search optimized for AI) ----
+
+interface ExaResult {
+  title?: string;
+  url?: string;
+  publishedDate?: string;
+  author?: string;
+  summary?: string;
+  text?: string;
+}
+
+async function searchExa(query: string, apiKey: string): Promise<WebResult[]> {
+  if (!apiKey) return [];
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
+  try {
+    const res = await fetch('https://api.exa.ai/search', {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+      },
+      body: JSON.stringify({
+        query,
+        numResults: 8,
+        contents: {
+          summary: { query },
+        },
+      }),
+    });
+    if (!res.ok) return [];
+    const data = await res.json() as { results?: ExaResult[] };
+    if (!Array.isArray(data.results)) return [];
+    return data.results.slice(0, 8).map((r) => ({
+      title: r.title ?? '',
+      url: r.url ?? '',
+      snippet: r.summary ?? r.text?.slice(0, 300) ?? '',
+    })).filter((r) => r.title && r.url);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---- Brave Search API (free tier: 2,000 queries/month) ----
+
+interface BraveResult {
+  title?: string;
+  url?: string;
+  description?: string;
+}
+
+async function searchBrave(query: string, apiKey: string): Promise<WebResult[]> {
+  if (!apiKey) return [];
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 12000);
+  try {
+    const res = await fetch(
+      `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=8`,
+      {
+        signal: ctrl.signal,
+        headers: {
+          'Accept': 'application/json',
+          'Accept-Encoding': 'gzip',
+          'X-Subscription-Token': apiKey,
+        },
+      }
+    );
+    if (!res.ok) return [];
+    const data = await res.json() as { web?: { results?: BraveResult[] } };
+    const results = data.web?.results;
+    if (!Array.isArray(results)) return [];
+    return results.slice(0, 8).map((r) => ({
+      title: r.title ?? '',
+      url: r.url ?? '',
+      snippet: (r.description ?? '').replace(/<[^>]+>/g, '').trim(),
+    })).filter((r) => r.title && r.url);
+  } catch {
+    return [];
   } finally {
     clearTimeout(timer);
   }
