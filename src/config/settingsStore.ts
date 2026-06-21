@@ -6,6 +6,7 @@ import type { Catalog } from '../catalog/catalog';
 
 const FALLBACK_KEY = 'tiermux.fallback';
 const ENDPOINTS_KEY = 'tiermux.endpoints';
+const DISABLED_PROVIDERS_KEY = 'tiermux.disabledProviders';
 
 export class SettingsStore {
   private readonly _onChange = new vscode.EventEmitter<void>();
@@ -46,9 +47,31 @@ export class SettingsStore {
     this._onChange.fire();
   }
 
-  /** Enabled entries ordered by priority. */
+  /** Enabled entries ordered by priority, excluding provider-level disabled platforms. */
   enabledByPriority(): FallbackEntry[] {
-    return this.getFallback().filter((e) => e.enabled).sort((a, b) => a.priority - b.priority);
+    const disabled = new Set(this.getDisabledProviders());
+    return this.getFallback()
+      .filter((e) => e.enabled && !disabled.has(e.platform))
+      .sort((a, b) => a.priority - b.priority);
+  }
+
+  // ---- provider-level on/off (preserves individual model enabled flags) ----
+
+  getDisabledProviders(): Platform[] {
+    return this.state.get<Platform[]>(DISABLED_PROVIDERS_KEY) ?? [];
+  }
+
+  isProviderDisabled(platform: Platform): boolean {
+    return this.getDisabledProviders().includes(platform);
+  }
+
+  async setProviderEnabled(platform: Platform, enabled: boolean): Promise<void> {
+    const current = this.getDisabledProviders();
+    const next = enabled
+      ? current.filter((p) => p !== platform)
+      : current.includes(platform) ? current : [...current, platform];
+    await this.state.update(DISABLED_PROVIDERS_KEY, next);
+    this._onChange.fire();
   }
 
   // ---- endpoint overrides ----

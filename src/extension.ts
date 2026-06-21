@@ -199,21 +199,26 @@ async function setApiKey(secrets: SecretStore, platformArg?: Platform): Promise<
   }
   const info = getPlatformInfo(platform);
   if (info?.keyless) { void vscode.window.showInformationMessage(`${info.name} is keyless — no API key needed.`); return; }
-  const existing = await secrets.get(platform);
-  const prompt = platform === 'cloudflare'
-    ? 'Cloudflare key as "account_id:api_token" (leave blank to clear)'
-    : `${existing ? 'Update' : 'Set'} API key for ${info?.name ?? platform} (leave blank to clear)`;
+  const existing = await secrets.getKeys(platform);
+  const basePrompt = platform === 'cloudflare'
+    ? 'Cloudflare key as "account_id:api_token"'
+    : `API key for ${info?.name ?? platform}`;
+  const multiHint = 'Separate multiple keys with a comma or newline for automatic rotation on rate-limit.';
+  const prompt = `${existing.length ? 'Replace' : 'Set'} ${basePrompt} (blank = clear). ${multiHint}`;
   const key = await vscode.window.showInputBox({ prompt, password: true, ignoreFocusOut: true });
   if (key === undefined) return; // cancelled
   if (key.trim() === '') {
-    if (existing) {
+    if (existing.length) {
       await secrets.clear(platform);
-      void vscode.window.showInformationMessage(`Cleared API key for ${info?.name ?? platform}.`);
+      void vscode.window.showInformationMessage(`Cleared API key(s) for ${info?.name ?? platform}.`);
     }
     return;
   }
-  await secrets.set(platform, key.trim());
-  void vscode.window.showInformationMessage(`Saved API key for ${info?.name ?? platform}.`);
+  // Parse comma- or newline-separated key list.
+  const keys = key.split(/[\n,]+/).map((k) => k.trim()).filter(Boolean);
+  await secrets.setKeys(platform, keys);
+  const label = keys.length > 1 ? `${keys.length} keys` : 'API key';
+  void vscode.window.showInformationMessage(`Saved ${label} for ${info?.name ?? platform}.`);
 }
 
 async function clearApiKey(secrets: SecretStore): Promise<void> {

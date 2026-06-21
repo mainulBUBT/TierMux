@@ -24,19 +24,88 @@ const CODE_NOUN = /\b(function|method|class|component|hook|endpoint|api|route|ha
 const CODE_HINT = (t: string): boolean => FILE_REF.test(t) || (CODE_VERB.test(t) && CODE_NOUN.test(t));
 // Words indicating the user means THEIR codebase (not general knowledge).
 const REPO_WORD = /\b(repo|repository|codebase|code base|this file|these files|this project|the project|our code|the code|this code|in here|this codebase)\b/i;
+// UNAMBIGUOUS reference to the user's own project — scope is explicit, so always investigate
+// locally and never web-search, regardless of how the request is phrased.
+const STRONG_REPO = /\b(this (?:project|codebase|repo(?:sitory)?|code|file|app|application|system|feature|module)|these files|in this (?:repo(?:sitory)?|code)|in here|our (?:code\s?base|repo)|the codebase)\b/i;
 // A question shape that asks about code/location/behavior (broader than EXPLAIN_Q — covers
 // "where is X defined", "how does X work", "what does X do", "show me / find X").
 const CODE_Q = /\b(where (is|are|can i find|defined)|how (does|do|is|are) .* (work|implemented|defined|used)|what (does|is) .* do|show me|find me|point me to|which file)\b/i;
+// Investigative INTENT phrased as an imperative rather than a question — "search the code",
+// "find/locate X", "look into", "check if", "give me an idea", "see if", "investigate". Users
+// ask about their own codebase this way constantly, with no textbook question verb.
+const RESEARCH_INTENT = /\b(search|find|locate|look (?:up|into|for|at)|check|investigat\w*|give me (?:an? )?idea|show me|tell me about|see (?:if|how|where|whether)|trace|grep|explore|understand|figure out|analyz\w*|review)\b/i;
 
 /**
  * True when a question is really about the user's codebase — so Auto should investigate with
- * read-only tools (read/grep/graph) instead of answering blind. Requires BOTH a question shape
- * and a codebase signal (a repo word, a code noun, or a file path) so general "how does a car
- * engine work" questions stay on the cheap chat path.
+ * read-only tools (read/grep/graph) instead of answering blind.
+ *
+ * Two ways to qualify:
+ *  1. An explicit project reference ("in this project", "this codebase", "this feature") — the user
+ *     scoped it themselves, so investigate locally no matter the phrasing.
+ *  2. An investigative shape (a question OR a research imperative like "search"/"find"/"give me an
+ *     idea") paired with a codebase signal (repo word, code noun, or file path).
+ * General "how does a car engine work" stays on the cheap chat path (no code signal, no project ref).
  */
 export function isCodebaseQuestion(t: string): boolean {
-  if (!EXPLAIN_Q.test(t) && !CODE_Q.test(t)) return false;
+  if (STRONG_REPO.test(t)) return true;
+  const investigative = EXPLAIN_Q.test(t) || CODE_Q.test(t) || RESEARCH_INTENT.test(t);
+  if (!investigative) return false;
   return REPO_WORD.test(t) || CODE_NOUN.test(t) || FILE_REF.test(t);
+}
+
+/** What information sources a request needs — biases tool choice (workspace vs web). */
+export interface InformationNeed {
+  /** 0–1: how likely the answer lives in the user's workspace/code. */
+  workspace: number;
+  /** 0–1: how likely the answer needs current/external (web) information. */
+  web: number;
+}
+
+// Current/external-information triggers → lean web.
+const WEB_TRIGGERS = /\b(latest|today'?s?|current(?:ly)?|news|releases?d?|changelog|deprecat\w*|price|cost|weather|scores?|ranking|standings?|stock|20(?:2[4-9]|3\d)|this (?:week|month|year)|right now|recent(?:ly)?)\b/i;
+// Project/code triggers → lean workspace.
+const CODE_TRIGGERS = /\b(this (?:project|repo\w*|code\w*|file|app|feature|module|system)|where (?:is|are|does)|implement\w*|refactor\w*|\bfix\b|\bbug\b|controller|service|function|method|\bclass\b|component|endpoint|route|\bmodel\b|migration|schema|helper|middleware|column|table|\bconfig\b)\b/i;
+// Upgrade/compat triggers → need BOTH (inspect code + check external versions/notes).
+const HYBRID_TRIGGERS = /\b(upgrade|migrat\w*|compare|compatib\w*|integrat\w*|support\w*|bump|update\b[^.?!]*\bto\b)\b/i;
+
+/**
+ * Score how much a request needs the WORKSPACE vs the WEB, from cheap keyword signals (no LLM call).
+ * Independent 0–1 scores — NOT a split — so a hybrid ("upgrade Laravel to the latest version") can
+ * score HIGH on both. Feeds informationSourceHint(), which biases the unified tool loop rather than
+ * locking the model into a code-only or web-only path.
+ */
+export function classifyInformationNeed(text: string): InformationNeed {
+  const t = text || '';
+  let workspace = 0;
+  let web = 0;
+  if (CODE_TRIGGERS.test(t) || isCodebaseQuestion(t)) workspace += 0.7;
+  if (FILE_REF.test(t)) workspace += 0.3;
+  if (WEB_TRIGGERS.test(t)) web += 0.7;
+  if (HYBRID_TRIGGERS.test(t)) { workspace += 0.5; web += 0.5; }
+  // A bare question with no strong signal: in a coding tool, default to checking the workspace.
+  if (workspace === 0 && web === 0) workspace = 0.4;
+  return { workspace: Math.min(1, workspace), web: Math.min(1, web) };
+}
+
+const relevanceLevel = (n: number): 'HIGH' | 'MODERATE' | 'LOW' => (n >= 0.6 ? 'HIGH' : n >= 0.3 ? 'MODERATE' : 'LOW');
+
+/**
+ * Render an InformationNeed as a prompt block telling the model which source to reach for first.
+ * The model still picks the actual tools (and can change its mind on feedback) — this just steers
+ * the default, the way Claude Code / Cursor bias "local repo first" without a hard pre-route.
+ */
+export function informationSourceHint(need: InformationNeed): string {
+  const ws = relevanceLevel(need.workspace);
+  const web = relevanceLevel(need.web);
+  let guidance: string;
+  if (need.web >= 0.6 && need.workspace >= 0.6) {
+    guidance = 'This needs BOTH: search the workspace (grep/codebaseSearch/readFile) for the project specifics AND webSearch for the current/external facts, then combine them.';
+  } else if (need.web > need.workspace && need.workspace < 0.3) {
+    guidance = 'Use webSearch first for the current/external information, then answer.';
+  } else {
+    guidance = 'Search the workspace first (grep/codebaseSearch/readFile); use web tools only for genuinely external or current facts this repo cannot answer.';
+  }
+  return `\n\n# Information sources\nWorkspace relevance: ${ws}\nWeb relevance: ${web}\n${guidance}`;
 }
 
 /**
@@ -101,8 +170,6 @@ export function classifyTask(text: string, signals?: ClassifySignals): TaskKind 
 export function modeToKind(mode: string): TaskKind {
   switch (mode) {
     case 'agent': return 'agent';
-    case 'debug': return 'debug';
-    case 'orchestrator': return 'agent';
     case 'plan': return 'plan';
     default: return 'chat';
   }

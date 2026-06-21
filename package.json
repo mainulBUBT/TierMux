@@ -400,12 +400,12 @@
         },
         "tiermux.plan.saveToFile": {
           "type": "boolean",
-          "default": false,
-          "description": "Save plans proposed in Plan mode as markdown checklist files in the workspace. Off by default — the plan and its live task checklist are shown in chat."
+          "default": true,
+          "description": "Save actionable plans proposed in Plan mode as markdown checklist files you can read and edit. The plan and its live task checklist are also shown in chat."
         },
         "tiermux.plan.folder": {
           "type": "string",
-          "default": "tiermux/plans",
+          "default": ".tiermux/plans",
           "description": "Workspace-relative folder where plan files are written (one markdown file per plan)."
         },
         "tiermux.embeddings.rerank": {

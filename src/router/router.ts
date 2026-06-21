@@ -29,6 +29,8 @@ export interface RouteOptions extends CompletionOptions {
   taskKind?: TaskKind;
   /** Notified each time the router fails over to the next model. */
   onFailover?: (info: { from: FallbackEntry; reason: string }) => void;
+  /** Notified when a 429 triggers a key rotation (same model, next key in pool). */
+  onKeyRotated?: (info: { platform: Platform; keyIndex: number; keyTotal: number }) => void;
   /** Quality-based escalation: skip these `platform::modelId` keys (ones that underperformed). */
   exclude?: string[];
   /** Quality-based escalation: only consider models at least this smart (intelligenceRank <= this). */
@@ -422,6 +424,18 @@ export class Router {
           }
 
           if (reason === 'rate_limited') {
+            // Cool just this key, then check if another key is available for
+            // the same platform before failing over to the next model.
+            this.secrets.setCooldownForKey(apiKey, retryAfterMs ?? this.rateLimitCooldownMs());
+            const allKeys = await this.secrets.getKeys(entry.platform);
+            const nextKey = allKeys.find((k) => this.secrets.keyCooldownRemaining(k) === 0);
+            if (nextKey !== undefined && nextKey !== apiKey) {
+              opts.onKeyRotated?.({ platform: entry.platform, keyIndex: allKeys.indexOf(nextKey) + 1, keyTotal: allKeys.length });
+              apiKey = nextKey;
+              triedTrim = false;
+              continue;
+            }
+            // All keys for this platform are cooled — cool the platform itself.
             this.secrets.setCooldown(entry.platform, retryAfterMs ?? this.rateLimitCooldownMs());
           } else if (reason === 'auth') {
             this.secrets.setStatus(entry.platform, 'invalid');

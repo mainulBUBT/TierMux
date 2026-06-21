@@ -48,6 +48,10 @@ export interface KeyStatusInfo {
   keyUrl?: string;
   defaultBaseUrl: string;
   endpoint?: string;
+  /** Number of API keys stored for this platform (0 = none, >1 = rotation pool). */
+  keyCount: number;
+  /** Masked key hints for display, e.g. `["sk-ab••••7890", "sk-xy••••1234"]`. */
+  keyHints: string[];
 }
 
 export interface McpServerInfo {
@@ -108,6 +112,8 @@ export interface ConfigPayload {
   /** Web search provider status — which keys are set and which provider is tried first. */
   searchProviders: SearchProviderStatus[];
   searchPriority: string;
+  /** Providers toggled off at the platform level — models excluded from routing and pickers without losing their enabled flags. */
+  disabledProviders: Platform[];
 }
 
 export interface SearchProviderStatus {
@@ -128,8 +134,9 @@ export interface MentionItem {
 // Webview -> Extension
 export type InMessage =
   | { type: 'ready' }
-  | { type: 'sendMessage'; requestId: string; text: string; mode: 'auto' | 'chat' | 'plan' | 'agent' | 'debug' | 'orchestrator'; model: string; reasoningEffort: ReasoningEffort; attachments?: Attachment[]; attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'> }
+  | { type: 'sendMessage'; requestId: string; text: string; mode: 'chat' | 'plan' | 'agent'; model: string; reasoningEffort: ReasoningEffort; attachments?: Attachment[]; attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'> }
   | { type: 'approvePlan'; requestId: string; approved: boolean; steps: string }
+  | { type: 'deferPlan'; requestId: string; steps: string }
   | { type: 'answerClarifying'; requestId: string; answers: string[] }
   | { type: 'renameSession'; title: string }
   | { type: 'vote'; requestId: string; vote: 'up' | 'down' | 'none' }
@@ -142,6 +149,9 @@ export type InMessage =
   | { type: 'setEndpoint'; platform: Platform; url: string }
   | { type: 'resetEndpoint'; platform: Platform }
   | { type: 'setKey'; platform: Platform }
+  | { type: 'addKey'; platform: Platform }
+  | { type: 'removeKeyAt'; platform: Platform; index: number }
+  | { type: 'setProviderEnabled'; platform: Platform; enabled: boolean }
   | { type: 'setModelKey'; platform: Platform; modelId: string; key: string }
   | { type: 'clearModelKey'; platform: Platform; modelId: string }
   | { type: 'attachFromWorkspace' }
@@ -211,7 +221,7 @@ export type OutMessage =
   | { type: 'switchSession'; sessionId: string; messages: TranscriptMessage[] }
   | { type: 'userEcho'; sessionId: string; requestId: string; text: string }
   | { type: 'assistantStart'; sessionId: string; requestId: string; platform: string; model: string }
-  | { type: 'planProposed'; sessionId: string; requestId: string; steps: string; discarded?: boolean }
+  | { type: 'planProposed'; sessionId: string; requestId: string; steps: string; discarded?: boolean; deferred?: boolean }
   | { type: 'planDiscarded'; sessionId: string; requestId: string }
   | { type: 'commandApproval'; sessionId: string; requestId: string; id: string; command: string; cwd?: string }
   | { type: 'editApproval'; sessionId: string; requestId: string; id: string; path: string; title: string; kind: 'write' | 'delete' }
@@ -228,6 +238,7 @@ export type OutMessage =
   | { type: 'askUserDismissed'; sessionId: string; requestId: string; callId: string }
   | { type: 'todos'; sessionId: string; requestId: string; todos: TodoItem[]; followingPlan?: boolean }
   | { type: 'failoverNotice'; sessionId: string; requestId: string; from: string; reason: string }
+  | { type: 'keyRotated'; sessionId: string; requestId: string; platform: string; platformName: string; keyIndex: number; keyTotal: number }
   | { type: 'attachmentAdded'; attachment: Attachment }
   | { type: 'mentionResults'; queryId: number; items: MentionItem[] }
   | { type: 'mcpRegistryResults'; queryId: number; items: McpRegistryItem[]; error?: string }

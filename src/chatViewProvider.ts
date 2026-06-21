@@ -4,7 +4,7 @@ import type { SecretStore } from './config/secrets';
 import type { SettingsStore } from './config/settingsStore';
 import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
-import { Agent, splitReasoning, type Mode, type AgentResult, type AgentCallbacks } from './agent/agent';
+import { Agent, type Mode, type AgentResult, type AgentCallbacks } from './agent/agent';
 import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
 import type { Router } from './router/router';
@@ -27,6 +27,7 @@ import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense } from './agent/condense';
 import { recommendFreeStrong } from './catalog/recommend';
 import { parseClarifying, type ClarifyingQuestion } from './agent/clarify';
+import { deriveTitleFrom, looksLikeActionablePlan, planStepsToTodos, sanitizeTitle, timeAgo } from './session/titles';
 
 const SLASH_PROMPTS: Record<string, string> = {
   explain: 'Explain the following / the referenced code clearly:',
@@ -104,52 +105,6 @@ interface StoredSession {
 
 interface HistoryItem extends vscode.QuickPickItem {
   sessionId: string;
-}
-
-function timeAgo(ts: number): string {
-  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (s < 60) return 'just now';
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-}
-
-/**
- * Reduce a model's reply to a clean short title, or '' if it doesn't look like one.
- * Reasoning models often leak chain-of-thought (sometimes truncated mid-thought with
- * no <think> tags) — reject anything that reads like an explanation rather than a title.
- */
-function sanitizeTitle(raw: string): string {
-  let s = (splitReasoning(raw || '').content || '')
-    .split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '';
-  s = s.replace(/^["'`]+|["'`.]+$/g, '').trim();
-  if (!s) return '';
-  const words = s.split(/\s+/).filter(Boolean);
-  // Tell-tale signs the model explained instead of titling (or got cut off mid-reasoning).
-  const cot = /\b(the user|user'?s message|this is|let me|we need|i'?ll|i will|i should|first,?|okay,?|because|according|greeting|not a|the message|so the title|title for)\b/i;
-  if (words.length > 8 || s.length > 64 || cot.test(s)) return '';
-  return s;
-}
-
-/** A plain readable title from a message when the LLM title is unusable (first ~6 words). */
-function deriveTitleFrom(text: string): string {
-  const s = (text || '').trim().replace(/\s+/g, ' ').replace(/[?.!,;:]+$/, '');
-  if (!s) return 'New chat';
-  const words = s.split(' ').slice(0, 6).join(' ').slice(0, 60);
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
-/** Turn an approved plan's text into an initial all-pending todo list (list lines only). */
-function planStepsToTodos(steps: string): TodoItem[] {
-  return (steps || '')
-    .split('\n')
-    .map((line) => line.match(/^\s*(?:[-*]|\d+[.)])\s+(.*)$/)) // numbered or bulleted list items
-    .filter((mm): mm is RegExpMatchArray => !!mm)
-    .map((mm) => ({ content: mm[1].replace(/\*\*/g, '').trim(), status: 'pending' as const }))
-    .filter((t) => t.content.length > 0)
-    .slice(0, 20);
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -609,6 +564,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'approvePlan':
         await this.handleApprovePlan(m);
         break;
+      case 'deferPlan':
+        this.handleDeferPlan(m);
+        break;
       case 'resume':
         await this.handleResume(m);
         break;
@@ -665,6 +623,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'setKey':
         await vscode.commands.executeCommand('tiermux.setApiKey', m.platform);
         break;
+      case 'setProviderEnabled':
+        await this.deps.settings.setProviderEnabled(m.platform, m.enabled);
+        break;
+      case 'addKey': {
+        const info = getPlatformInfo(m.platform);
+        const key = await vscode.window.showInputBox({
+          prompt: `Add another API key for ${info?.name ?? m.platform} (it will be added to the rotation pool)`,
+          password: true,
+          ignoreFocusOut: true,
+          placeHolder: 'Paste key here',
+        });
+        if (key?.trim()) {
+          await this.deps.secrets.addKey(m.platform, key.trim());
+          void this.sendConfig();
+        }
+        break;
+      }
+      case 'removeKeyAt': {
+        const keys = await this.deps.secrets.getKeys(m.platform);
+        const target = keys[m.index];
+        if (target) {
+          await this.deps.secrets.removeKey(m.platform, target);
+          void this.sendConfig();
+        }
+        break;
+      }
       case 'setModelKey': {
         const ok = await this.deps.secrets.setModelKey(m.platform, m.modelId, m.key);
         if (!ok) void vscode.window.showWarningMessage('TierMux: API key was empty — nothing saved.');
@@ -1044,26 +1028,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         attachmentKinds,
         runContext: this.runContext(s, m.requestId),
         onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
+        onKeyRotated: (i) => { if (this.isActiveRun(s, m.requestId)) { const name = getPlatformInfo(i.platform as Platform)?.name ?? i.platform; this.post({ type: 'keyRotated', sessionId: s.id, requestId: m.requestId, platform: i.platform, platformName: name, keyIndex: i.keyIndex, keyTotal: i.keyTotal }); } },
       }, this.agentCallbacks(s, m.requestId, m.mode as Mode));
       // Abandoned mid-run by a cancel → drop the output entirely.
       if (!this.isActiveRun(s, m.requestId)) return;
 
       if (m.mode === 'plan') {
         const clar = parseClarifying(result.text);
-        // Plan mode never commits the turn yet — the user turn is re-added on approval
-        // (or after clarifying answers), so drop it now to avoid duplication later.
-        s.history.pop();
-        s.pendingPlanUser = userContent;
         if (clar.questions && clar.questions.length) {
-          // The planner needs clarification before it can produce a good plan: surface
-          // the questions as an interactive card, then re-plan with the answers.
+          // The planner needs clarification before it can produce a good plan: drop the user
+          // turn (re-added after answers), surface the questions as an interactive card, re-plan.
+          s.history.pop();
+          s.pendingPlanUser = userContent;
           s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: clar.questions };
           this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: clar.questions });
           return;
         }
-        this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
-        void this.savePlan(prompt, clar.text);
-        return;
+        // Only gate an ACTUAL actionable plan with "Approve & Run". A discussion answer — e.g.
+        // "give me 6 changes", "how does this work?" — stays a normal chat turn (no run button,
+        // no saved file), so Plan mode supports the discuss phase instead of slapping a run gate
+        // on every reply. The turn is kept in history so the conversation continues naturally.
+        if (looksLikeActionablePlan(clar.text)) {
+          s.history.pop(); // not committed yet — re-added on approval
+          s.pendingPlanUser = userContent;
+          this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
+          void this.savePlan(prompt, clar.text);
+          return;
+        }
+        // else: fall through and render as a normal assistant answer (discuss phase).
       }
 
       const after = this.deps.usage.get();
@@ -1197,7 +1189,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!cfg.get<boolean>('saveToFile', true)) return;
     const ws = vscode.workspace.workspaceFolders?.[0];
     if (!ws) return;
-    const folder = (cfg.get<string>('folder', 'tiermux/plans') || 'tiermux/plans').replace(/^[\\/]+|[\\/]+$/g, '');
+    const folder = (cfg.get<string>('folder', '.tiermux/plans') || '.tiermux/plans').replace(/^[\\/]+|[\\/]+$/g, '');
     const clean = (title || 'plan').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'plan';
     const d = new Date();
     const p2 = (n: number) => String(n).padStart(2, '0');
@@ -1216,6 +1208,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: 'notice', sessionId: this.viewedSessionId, text: `📄 Plan saved to ${vscode.workspace.asRelativePath(fileUri)}` });
     } catch (e) {
       this.post({ type: 'notice', sessionId: this.viewedSessionId, text: `Could not save plan file: ${e instanceof Error ? e.message : String(e)}` });
+    }
+  }
+
+  /**
+   * "Keep discussing": release the plan gate without executing or discarding. The user wants to
+   * refine first — so drop the pending-plan state (the next message is a clean discussion turn),
+   * keep any edits they made to the steps, and mark the card so it replays without re-gating. The
+   * saved .md plan and the still-available "Approve & Run" let them build it when ready.
+   */
+  private handleDeferPlan(m: Extract<InMessage, { type: 'deferPlan' }>): void {
+    const s = this.current();
+    s.pendingPlanUser = undefined;
+    for (const c of s.cards) {
+      if (c.type === 'planProposed' && c.requestId === m.requestId) {
+        if (m.steps) (c as { steps?: string }).steps = m.steps;
+        (c as { deferred?: boolean }).deferred = true;
+      }
     }
   }
 
@@ -1259,6 +1268,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         token: s.cancel.token,
         runContext: this.runContext(s, m.requestId),
         onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
+        onKeyRotated: (i) => { if (this.isActiveRun(s, m.requestId)) { const name = getPlatformInfo(i.platform as Platform)?.name ?? i.platform; this.post({ type: 'keyRotated', sessionId: s.id, requestId: m.requestId, platform: i.platform, platformName: name, keyIndex: i.keyIndex, keyTotal: i.keyTotal }); } },
       }, this.agentCallbacks(s, m.requestId, 'agent'));
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       const after = this.deps.usage.get();
@@ -1406,6 +1416,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.liveSteps.set(requestId, steps);
         if (viewed()) this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail });
       },
+      onReasoning: (text) => {
+        if (!live()) return;
+        const t = (text || '').trim();
+        if (!t) return;
+        // A thinking block rides the same step pipeline as tool cards (a step named 'reasoning'),
+        // so it persists in liveSteps and replays on re-render with zero extra plumbing.
+        const steps = s.liveSteps.get(requestId) ?? [];
+        const id = `reason-${steps.length}`;
+        steps.push({ toolCallId: id, name: 'reasoning', state: 'done', detail: t });
+        s.liveSteps.set(requestId, steps);
+        if (viewed()) this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: id, name: 'reasoning', args: undefined, state: 'done', detail: t });
+      },
       onStep: (phase, label) => { if (!live()) return; s.lastStepLabel = label; if (viewed()) this.post({ type: 'agentStep', sessionId: s.id, requestId, phase, label }); },
       onTodos: (todos) => { if (!live()) return; s.lastTodos = todos; if (viewed()) this.post({ type: 'todos', sessionId: s.id, requestId, todos, followingPlan: !!s.executingPlan }); },
       onAskUser: async (question, options) => {
@@ -1483,6 +1505,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         token: s.cancel.token,
         runContext: this.runContext(s, m.requestId),
         onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
+        onKeyRotated: (i) => { if (this.isActiveRun(s, m.requestId)) { const name = getPlatformInfo(i.platform as Platform)?.name ?? i.platform; this.post({ type: 'keyRotated', sessionId: s.id, requestId: m.requestId, platform: i.platform, platformName: name, keyIndex: i.keyIndex, keyTotal: i.keyTotal }); } },
       }, this.agentCallbacks(s, m.requestId, 'agent'));
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       const after = this.deps.usage.get();
@@ -1543,6 +1566,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         token: s.cancel.token,
         runContext: this.runContext(s, m.requestId),
         onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
+        onKeyRotated: (i) => { if (this.isActiveRun(s, m.requestId)) { const name = getPlatformInfo(i.platform as Platform)?.name ?? i.platform; this.post({ type: 'keyRotated', sessionId: s.id, requestId: m.requestId, platform: i.platform, platformName: name, keyIndex: i.keyIndex, keyTotal: i.keyTotal }); } },
       }, this.agentCallbacks(s, m.requestId, 'plan'));
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       // Ignore any further questions block on this pass — go straight to a proposed plan.
@@ -1603,12 +1627,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         keyUrl: info?.keyUrl,
         defaultBaseUrl: info?.defaultBaseUrl ?? '',
         endpoint: endpoints[s.platform],
+        keyCount: s.keyCount,
+        keyHints: s.keyHints,
       };
     });
     // include the 'custom' platform row for advanced users
     const custom = allPlatformInfo().find((p) => p.platform === 'custom');
     if (custom) {
-      platforms.push({ platform: 'custom', name: custom.name, configured: !!endpoints['custom'], keyless: false, status: 'unknown', defaultBaseUrl: custom.defaultBaseUrl, endpoint: endpoints['custom'] });
+      platforms.push({ platform: 'custom', name: custom.name, configured: !!endpoints['custom'], keyless: false, status: 'unknown', defaultBaseUrl: custom.defaultBaseUrl, endpoint: endpoints['custom'], keyCount: 0, keyHints: [] });
     }
     if (this.deps.mcp.hasServers()) { try { await this.deps.mcp.ensureStarted(); } catch { /* MCP optional */ } }
     await this.deps.index.load();
@@ -1628,6 +1654,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       autoApprove: this.autoApprove,
       searchProviders: this.searchProviderStatuses(),
       searchPriority: vscode.workspace.getConfiguration('tiermux.tools').get<string>('searchProviderPriority', 'auto'),
+      disabledProviders: this.deps.settings.getDisabledProviders(),
     };
     this.post({ type: 'config', config, usageTotals: { ...this.deps.usage.get(), context: this.computeContext(this.current()) } });
   }

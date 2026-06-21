@@ -8,26 +8,21 @@ import type { CodebaseIndex } from '../index/codebaseIndex';
 import { contentToString } from './content';
 import { sanitizeToolName, repairBrokenJson } from './toolArgs';
 import { TOOL_SPECS, CODEBASE_SEARCH_SPEC, GLOB_SPEC, GREP_SPEC, ASK_USER_SPEC, SKILL_SPEC, WEB_TOOL_SPECS, GRAPH_TOOLS_SPEC, READ_IMAGE_SPEC, READ_DOCUMENT_SPEC, CORE_TOOL_SPECS, THINK_SPEC } from './toolSpecs';
-import { AGENT_SYSTEM, AGENT_SYSTEM_LITE, CHAT_SYSTEM, PLAN_SYSTEM, DEBUG_SYSTEM, ORCHESTRATOR_SYSTEM, RESPONSIBILITY_RULES } from './prompts';
+import { AGENT_SYSTEM, CHAT_SYSTEM, PLAN_SYSTEM, RESPONSIBILITY_RULES } from './prompts';
 import { loadProjectRules } from '../context/projectRules';
 import { loadUserMemory, inferStyleFromEdits, upsertLearnedSection } from '../context/userMemory';
 import { loadProjectGrounding } from '../context/projectGrounding';
 import { buildAmbientContext } from '../context/ambient';
-import { classifyTask, modeToKind, phaseRouteKind, deriveTaskProfile, isCodebaseQuestion, type TaskKind, type TaskProfile } from './routing';
+import { modeToKind, phaseRouteKind, classifyTask, classifyInformationNeed, informationSourceHint, type TaskKind, type TaskProfile } from './routing';
 import { ESCALATION_CAP, isRefusalOrEmpty, toolSignature, allUnparseable } from './escalation';
-import { PRODUCT_NAME } from '../shared/branding';
+import { parseTextToolCalls, textToolProtocolPrompt } from './textToolProtocol';
 import type { RunContext } from './runContext';
 import { unmarkEditing } from './editLock';
 import type { RouteOptions } from '../router/router';
 import { buildStructuralGraph, loadStructuralGraph, graphSummary } from '../context/structuralGraph';
-import { analyzeImpact } from '../context/impactAnalysis';
 
-export type Mode = 'auto' | 'chat' | 'plan' | 'agent' | 'debug' | 'orchestrator';
+export type Mode = 'chat' | 'plan' | 'agent';
 
-/** Max subtasks an Orchestrator run will decompose into (bounds free-tier cost). */
-const MAX_SUBTASKS = 6;
-/** Prepended for read-only codebase Q&A: investigate with search/read/graph tools, then explain. */
-const RESEARCH_DIRECTIVE = '\n\n# Mode: read-only research\nThe user is asking about this codebase. Use the read/search/graph tools to investigate the actual code, then give a clear, accurate explanation with file references. Do NOT edit, create, or delete any files.';
 
 /**
  * Tools Plan mode is allowed to use — strictly read-only, so it can research the
@@ -47,6 +42,12 @@ export interface AgentCallbacks {
   onTool?: (event: ToolEvent) => void;
   /** Coarse phase signal for the live "agent is working" status line. */
   onStep?: (phase: 'thinking' | 'synthesizing' | 'done', label: string) => void;
+  /**
+   * The model's per-step reasoning — the "thinking" it emits alongside a tool-call turn.
+   * Fired once per step BEFORE the step's tools run, so the UI can show "think → act"
+   * the way Claude Code / Kilo Code do (not just the final answer's reasoning).
+   */
+  onReasoning?: (text: string) => void;
   /** Live task checklist updates (the agent's updateTodos calls). */
   onTodos?: (todos: TodoItem[]) => void;
   /** Backing for the `askUser` tool: present a question (optionally multiple-choice) and await the answer. */
@@ -66,6 +67,7 @@ export interface RunOpts {
   /** True when the user left the model on Auto — enables phase routing + auto-escalation. */
   auto?: boolean;
   onFailover?: (i: { from: { platform: string; modelId: string }; reason: string }) => void;
+  onKeyRotated?: (i: { platform: string; keyIndex: number; keyTotal: number }) => void;
   /**
    * Session-scoped context for the shared gates: which session's checkpoints to record
    * into, which session's thread to route approvals to, and the live auto-approve read.
@@ -96,6 +98,87 @@ export function splitReasoning(text: string): { reasoning?: string; content: str
   const m = /^\s*<think>([\s\S]*?)<\/think>\s*/i.exec(text);
   if (m) return { reasoning: m[1].trim(), content: text.slice(m[0].length).trim() };
   return { content: text };
+}
+
+/**
+ * The "thinking" a model emits on a tool-call turn. Strong models put it in a separate
+ * `reasoning_content` / `reasoning` channel (kept out of `content` so it isn't folded —
+ * see normalizeChoices); weaker ones inline a <think>…</think> block or narrate in plain
+ * content. We surface whichever is present so each step can show its reasoning before acting.
+ */
+function turnReasoning(msg: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown } | undefined): string {
+  if (!msg) return '';
+  const channel = typeof msg.reasoning_content === 'string' && msg.reasoning_content.trim()
+    ? msg.reasoning_content
+    : typeof msg.reasoning === 'string' && msg.reasoning.trim()
+      ? msg.reasoning
+      : '';
+  if (channel.trim()) return channel.trim();
+  const text = contentToString(msg.content as ChatContent);
+  const split = splitReasoning(text);
+  // A <think> block is the model's reasoning; otherwise plain narration ("I'll do X next")
+  // that came alongside the tool calls also reads as a thinking step worth showing.
+  return (split.reasoning ?? split.content ?? '').trim();
+}
+
+/**
+ * Detect the canned "I only handle code / this workspace" deflection a weak model sometimes
+ * emits even after a successful web search. Short + scope-limiting ("only/just … code …
+ * can't/here to") — a real answer (longer, or without all three signals) won't match.
+ */
+const ELIDED_MARK = '[context-trimmed]';
+
+/**
+ * Within-run context control. An agent loop re-sends the WHOLE message array on every
+ * iteration, so a single 100 KB `readFile` result (or a full-file `createFile`/`writeFile`
+ * arg) gets re-billed on each of up to ~25 iterations — the dominant cause of huge input-token
+ * counts on trivial tasks. This stales out the BODY of old, large tool results (and old
+ * write-call content) in place, while keeping the system prompt, the task, every tool-call
+ * structure, and the most recent `keepRounds` tool-call rounds fully intact — so the round the
+ * model is about to act on is never touched. The model can re-run a tool if it needs the content
+ * again, far cheaper than re-sending it every step. Mutates `messages`; idempotent.
+ */
+function trimRunTranscript(messages: ChatMessage[], protectBefore: number, keepRounds = 2, maxChars = 2000): void {
+  // Round boundaries = assistant turns that carry tool calls. Keep the most recent `keepRounds`
+  // rounds whole; anything before `cutoff` (older rounds + their results) is eligible to stale.
+  const roundStarts: number[] = [];
+  for (let i = protectBefore; i < messages.length; i++) if (messages[i].tool_calls?.length) roundStarts.push(i);
+  if (roundStarts.length <= keepRounds) return;
+  const cutoff = roundStarts[roundStarts.length - keepRounds];
+  for (let i = protectBefore; i < cutoff; i++) {
+    const m = messages[i];
+    if (m.role === 'tool') {
+      // Old, large tool RESULT → short stub.
+      const text = contentToString(m.content);
+      if (text.length > maxChars && !text.startsWith(ELIDED_MARK)) {
+        messages[i] = { ...m, content: `${ELIDED_MARK} ${m.name ?? 'tool'} result (${text.length} chars) omitted to save context — re-run the tool if you need it.` };
+      }
+    } else if (m.tool_calls?.length) {
+      // Old write-call ARGS (createFile/writeFile carry the whole file body) → drop the body,
+      // keep the path. Safe: the file is already on disk and rarely needs re-reading from args.
+      let changed = false;
+      const next = m.tool_calls.map((c) => {
+        const name = c.function?.name;
+        const argStr = c.function?.arguments ?? '';
+        if ((name !== 'createFile' && name !== 'writeFile') || argStr.length <= maxChars || argStr.includes(ELIDED_MARK)) return c;
+        let path = '';
+        try { path = String((JSON.parse(argStr) as { path?: unknown })?.path ?? ''); } catch { /* keep stub generic */ }
+        changed = true;
+        return { ...c, function: { ...c.function, arguments: JSON.stringify({ path, _note: `${ELIDED_MARK} file content omitted to save context` }) } };
+      });
+      if (changed) messages[i] = { ...m, tool_calls: next };
+    }
+  }
+}
+
+function looksLikeCodeRefusal(text: string): boolean {
+  // Normalize curly apostrophes so "can't" / "can’t" both match.
+  const t = (text || '').toLowerCase().replace(/[’‘]/g, "'").trim();
+  if (!t || t.length > 600) return false;
+  const scoped = /\b(only|just|set up to|designed to|here to|meant to)\b/.test(t);
+  const codey = /\b(code|coding|workspace|software|programming|development|this project)\b/.test(t);
+  const declines = /\b(can't|cannot|unable|not able|don't|do not|won't|isn't something)\b/.test(t);
+  return scoped && codey && declines;
 }
 
 export class Agent {
@@ -242,15 +325,26 @@ export class Agent {
     opts: RunOpts,
     cb: AgentCallbacks = {},
   ): Promise<AgentResult> {
-    // Show the "Thinking…" indicator immediately — before grounding/context prep and
-    // the (slow, free-tier) model call — so the UI never looks frozen while waiting.
-    cb.onStep?.('thinking', 'Thinking…');
+    // Show the "Working…" indicator immediately — before grounding/context prep and
+    // the (slow, free-tier) model call — so the UI never looks frozen while waiting. This is
+    // the generic busy status, NOT reasoning: the word "Thinking" is reserved for the 🧠 block
+    // that renders actual model reasoning, so a greeting like "hi" never mislabels itself.
+    cb.onStep?.('thinking', 'Working…');
 
-    // Classify the latest user message once; drives both mode (in Auto) and model routing.
     const latestText = contentToString([...history].reverse().find((m) => m.role === 'user')?.content ?? '');
-    const kind = classifyTask(latestText, opts.attachmentKinds && opts.attachmentKinds.length > 0
-      ? { attachments: opts.attachmentKinds.length, attachmentKinds: opts.attachmentKinds }
-      : undefined);
+
+    // Trivial greetings ("hi", "hello", "thanks"…): skip tools, context load, and web search
+    // entirely — just give a warm one-shot reply. Applies in all modes so Ask mode doesn't
+    // accidentally web-search "hi".
+    if (classifyTask(latestText) === 'trivial') {
+      const system = `You are TierMux, a friendly AI coding assistant in VS Code. Reply to the user's greeting or small talk warmly in one short sentence, then invite them to ask a question or describe what they'd like to build or fix.`;
+      const latest = [...history].reverse().find((m) => m.role === 'user');
+      const messages: ChatMessage[] = [{ role: 'system', content: system }, ...(latest ? [latest] : [])];
+      const r = await this.router.route(messages, { model: opts.model, taskKind: 'trivial', max_tokens: 120, onFailover: opts.onFailover, onKeyRotated: opts.onKeyRotated });
+      cb.onModel?.(r.platform, r.model);
+      const { reasoning, content } = splitReasoning(contentToString(r.response.choices[0]?.message.content));
+      return { text: content || 'Hi! What would you like to build or fix today?', reasoning, platform: r.platform, model: r.model, taskKind: 'trivial' };
+    }
 
     // A bare "yes / ok / go ahead" replying to the model's OWN offer: weaker models often stall
     // here and even hallucinate "I don't have the tools" instead of acting. Detect it and nudge
@@ -267,36 +361,10 @@ export class Agent {
       }
     }
 
-    // Auto: a trivial greeting gets a cheap, context-light reply — no tools, no
-    // grounding dump, no prior-task history. This is what stops "hello" burning tokens.
-    if (mode === 'auto' && kind === 'trivial') {
-      const r = await this.runTrivial(history, opts, cb);
-      r.taskKind = 'trivial';
-      return r;
-    }
-
-    // Capability of the likely model decides scaffolding. Weak free models (low intelligence
-    // rank or no reasoning) get a CONSTRAINED path — core tools + compact prompt + single model —
-    // so they succeed instead of flailing on 17 tools and long prompts. Strong models keep the
-    // full toolset + orchestration.
-    const isAuto = mode === 'auto';
-    const cap = this.router.topModelProfile();
-    const weak = isAuto && !!cap && (cap.intelligenceRank >= 4 || !cap.supportsReasoning);
-
-    // Cline-style unify: every non-trivial Auto message goes through the tool loop. The model
-    // decides whether to investigate (it can also just answer). Read-only unless there's real
-    // edit intent — so questions/research investigate with safe tools, never editing by accident.
-    const writableKind = kind === 'agent' || kind === 'coding' || kind === 'debug';
-    const routeKind: TaskKind = isAuto ? kind : modeToKind(mode);
-    // Adaptive context: a question that isn't about the codebase (general/web/factual — e.g.
-    // "today's FIFA match?") doesn't need the repo map, open-editor dump, or auto-retrieved code
-    // chunks. Skipping them for those cuts a ~48k prompt down to a few k. Code tasks and repo
-    // questions keep full context.
-    const wantsCodeContext = kind !== 'chat' || isCodebaseQuestion(latestText);
-    // Scoping/phase-routing only helps strong writable tasks; skip it (and its overhead) otherwise.
-    const needsProfile = isAuto && !weak && writableKind;
-    const profile = needsProfile ? await this.scopeRun(latestText) : undefined;
-    const ropts: RunOpts = { ...opts, taskKind: routeKind, auto: isAuto, profile };
+    // Ask: web-only (no repo context needed). Plan/Agent: always investigate the codebase.
+    const wantsCodeContext = mode !== 'chat';
+    const routeKind: TaskKind = modeToKind(mode);
+    const ropts: RunOpts = { ...opts, taskKind: routeKind };
 
     const [rules, grounding, memory] = await Promise.all([loadProjectRules(), this.grounding(), loadUserMemory()]);
     const graphContext = wantsCodeContext ? await this.graphContext() : '';
@@ -313,27 +381,25 @@ export class Agent {
       return s;
     };
     const augmented = await this.prepareContext(history, wantsCodeContext);
+    // Score workspace-vs-web relevance and steer the tool loop with a "search X first" hint, rather
+    // than hard-locking the model into a single toolset. Only injected into paths that actually hold
+    // BOTH code + web tools (the runAgent loop) — the web-only runChat path can't search the workspace.
+    const infoHint = informationSourceHint(classifyInformationNeed(latestText));
     let result: AgentResult;
     try {
-      if (isAuto) {
-        // Auto = unified tool loop (Cline-style). Read-only for questions, writable for edits.
-        // Weak models get the compact prompt; strong models get the full one (+ research nudge
-        // when read-only). The model may answer directly without tools for pure knowledge questions.
-        const readOnly = !writableKind;
-        const base = weak ? AGENT_SYSTEM_LITE : AGENT_SYSTEM;
-        const system = augment(base) + (!weak && readOnly ? RESEARCH_DIRECTIVE : '');
-        result = await this.runAgent(augmented, system, ropts, cb, { readOnly, weak });
-      } else if (mode === 'chat') {
-        // Explicit Ask mode: bounded read-only web loop when web tools are on, else cheap one-shot.
+      if (mode === 'chat') {
+        // Ask: read-only, web tools only — never edits or runs commands.
         const webOn = vscode.workspace.getConfiguration('tiermux.tools').get<boolean>('web', true);
         result = webOn
           ? await this.runChat(augmented, augment(CHAT_SYSTEM), ropts, cb)
           : await this.runSingle(augmented, augment(CHAT_SYSTEM), ropts, cb);
+      } else if (mode === 'plan') {
+        // Plan: research the codebase read-only, then propose a plan for approval.
+        result = await this.runAgent(augmented, augment(PLAN_SYSTEM), ropts, cb, { readOnly: true });
+      } else {
+        // Agent: full tool access — reads, edits, runs commands.
+        result = await this.runAgent(augmented, augment(AGENT_SYSTEM) + infoHint, ropts, cb);
       }
-      else if (mode === 'plan') result = await this.runAgent(augmented, augment(PLAN_SYSTEM), ropts, cb, { readOnly: true });
-      else if (mode === 'debug') result = await this.runAgent(augmented, augment(DEBUG_SYSTEM), ropts, cb);
-      else if (mode === 'orchestrator') result = await this.runOrchestrator(augmented, augment(AGENT_SYSTEM), augment(ORCHESTRATOR_SYSTEM), ropts, cb);
-      else result = await this.runAgent(augmented, augment(AGENT_SYSTEM), ropts, cb);
     } finally {
       // Release this run's edit-advisory claims whether it finished, failed, or was cancelled,
       // so a subsequent run isn't falsely told the files are still being edited.
@@ -343,22 +409,7 @@ export class Agent {
     return result;
   }
 
-  /** Cheap path for greetings / small talk: tiny prompt, fast model, latest turn only, capped output. */
-  private async runTrivial(history: ChatMessage[], opts: RunOpts, cb: AgentCallbacks): Promise<AgentResult> {
-    const system = `You are ${PRODUCT_NAME}, a friendly AI coding assistant in VS Code. Reply to the user's greeting or small talk warmly and in one short sentence, then invite them to tell you what they'd like to build or fix. Do not analyze the project, run steps, or write long explanations.`;
-    const latest = [...history].reverse().find((m) => m.role === 'user');
-    const messages: ChatMessage[] = [{ role: 'system', content: system }, ...(latest ? [latest] : [])];
-    cb.onStep?.('thinking', 'Thinking…');
-    const result = await this.router.route(messages, {
-      model: opts.model,
-      taskKind: 'trivial',
-      max_tokens: 200,
-      onFailover: opts.onFailover,
-    });
-    cb.onModel?.(result.platform, result.model);
-    const { reasoning, content } = splitReasoning(contentToString(result.response.choices[0]?.message.content));
-    return { text: content || 'Hi! What would you like to build or fix today?', reasoning, platform: result.platform, model: result.model };
-  }
+
 
   /** Insert a context turn (ambient editor context + auto-retrieved code) before the latest user
    *  message. Skipped for non-codebase questions (`includeCode=false`) — a web/factual question
@@ -398,35 +449,6 @@ export class Agent {
     return `Relevant code from the workspace (auto-retrieved — use if helpful):\n\n${block}`;
   }
 
-  /**
-   * One-shot task sizing for Auto: estimate impact breadth from the code graph (how many
-   * files a change to the mentioned paths would touch) and novelty from the embeddings index
-   * (top similarity — low means the task is uncharted/harder). Both are best-effort and null
-   * when their source is off/unavailable; deriveTaskProfile falls back to `moderate`.
-   */
-  private async scopeRun(text: string): Promise<TaskProfile> {
-    const mentions = Array.from(new Set(
-      (text.match(/\b[\w-]+(?:\/[\w-]+)*\.[a-zA-Z]{1,5}\b/g) ?? [])
-        .map((s) => s.trim()).filter((s) => s.length > 2),
-    )).slice(0, 5);
-    let impactFiles: number | null = null;
-    let topSimilarity: number | null = null;
-    const graphOn = vscode.workspace.getConfiguration('tiermux.graph').get<boolean>('enabled', false);
-    if (graphOn && mentions.length) {
-      try {
-        const graph = await loadStructuralGraph();
-        if (graph) impactFiles = analyzeImpact(graph, mentions).impacted.length;
-      } catch { /* best-effort */ }
-    }
-    if (this.index && this.index.isEnabled() && this.index.hasIndex()) {
-      try {
-        const results = await this.index.search(text.slice(0, 2000), 1);
-        topSimilarity = results.length ? results[0].score : 0;
-      } catch { /* best-effort */ }
-    }
-    return deriveTaskProfile(impactFiles, topSimilarity);
-  }
-
   /** One-shot completion (chat or plan): no tools. */
   private async runSingle(
     history: ChatMessage[],
@@ -435,12 +457,13 @@ export class Agent {
     cb: AgentCallbacks,
   ): Promise<AgentResult> {
     const messages: ChatMessage[] = [{ role: 'system', content: system }, ...history];
-    cb.onStep?.('thinking', 'Thinking…');
+    cb.onStep?.('thinking', 'Working…');
     const { result } = await this.routeEscalated(messages, {
       model: opts.model,
       reasoningEffort: opts.reasoningEffort,
       taskKind: opts.taskKind,
       onFailover: opts.onFailover,
+      onKeyRotated: opts.onKeyRotated,
     }, cb);
     cb.onModel?.(result.platform, result.model);
     const raw = contentToString(result.response.choices[0]?.message.content);
@@ -488,6 +511,10 @@ export class Agent {
         ...(runOpts?.readOnly ? [] : this.mcp?.listToolSpecs() ?? []),
       ];
     const toolsFiltered = tools.filter((t) => !runOpts?.readOnly || READONLY_TOOLS.has(t.function.name));
+    // Teach weak models the XML text tool-protocol so they can ACT even when the provider
+    // ignores native function-calling — the dominant "replies with prose, never edits" failure.
+    // Strong models keep native calling untouched; the parser below is a harmless safety net.
+    if (weak) messages[0] = { role: 'system', content: `${system}\n\n${textToolProtocolPrompt(toolsFiltered)}` };
     let prevSig = '';
     // Auto orchestration (strong models only): phase routing (reason → execute) and a bounded
     // auto-escalation past the step cap. Weak free models get a SIMPLE single-model path instead
@@ -511,7 +538,10 @@ export class Agent {
       // assistant tool_calls turn with no tool results, which would break the next request).
       if (opts.token?.isCancellationRequested) return { text: '_Cancelled._', platform: lastPlatform, model: lastModel };
 
-      cb.onStep?.('thinking', 'Thinking…');
+      cb.onStep?.('thinking', 'Working…');
+      // Keep the per-request payload from ballooning: stale out old, large tool results/write
+      // bodies before re-sending the transcript (a 100 KB read shouldn't be re-billed 25×).
+      trimRunTranscript(messages, baseLen);
       // Phase routing (Auto, strong only): the first hop reasons/plans, then the classified
       // execute kind takes over. Weak models keep one stable kind for the whole run.
       const phaseKind = auto ? phaseRouteKind(baseKind, totalIter) : baseKind;
@@ -527,6 +557,7 @@ export class Agent {
           requireTools: true,
           maxIntelligenceRank: floor,
           onFailover: opts.onFailover,
+      onKeyRotated: opts.onKeyRotated,
         }, cb, prevSig);
         result = routed.result;
         unhandled = routed.unhandled;
@@ -547,11 +578,20 @@ export class Agent {
       cb.onModel?.(result.platform, result.model);
 
       const msg = result.response.choices[0]?.message;
-      const toolCalls = msg?.tool_calls ?? [];
+      let toolCalls = msg?.tool_calls ?? [];
       // Clean any leaked Harmony/control tokens from tool names (e.g. gpt-oss emits
       // `searchWorkspace<|channel|>commentary`) so calls resolve and history stays consistent.
       for (const call of toolCalls) {
         if (call.function?.name) call.function.name = sanitizeToolName(call.function.name);
+      }
+
+      // Fallback for models that ignore native function-calling: parse the XML text protocol
+      // out of the reply. This is what makes weak free models ACT instead of just describing
+      // the change in prose (the #1 "feels like a chatbot, never edits" failure).
+      let textMode = false;
+      if (toolCalls.length === 0) {
+        const parsed = parseTextToolCalls(contentToString(msg?.content), toolsFiltered);
+        if (parsed.length) { toolCalls = parsed; textMode = true; }
       }
 
       if (toolCalls.length === 0) {
@@ -562,9 +602,10 @@ export class Agent {
         return { text: content || '_Done._', reasoning, platform: lastPlatform, model: lastModel, workMessages: work(), paused: false };
       }
 
-      // Escalation exhausted but the model still can't form usable tool calls (stuck loop or
-      // garbage args even from a stronger model) — stop gracefully instead of executing junk.
-      if (unhandled) {
+      // `unhandled` is the NATIVE escalation verdict (stuck loop / garbage args from a stronger
+      // model). A successful text-protocol parse means the model actually acted, so it doesn't
+      // apply — only bail here when we're NOT in text mode.
+      if (unhandled && !textMode) {
         messages.push({ role: 'assistant', content: contentToString(msg?.content) || '_The model could not make progress._', tool_calls: toolCalls });
         this.maybeLearnStyle(work());
         return {
@@ -572,14 +613,47 @@ export class Agent {
           platform: lastPlatform, model: lastModel, workMessages: work(), paused: true,
         };
       }
-      prevSig = toolSignature(toolCalls);
 
-      // Record the assistant turn (with its tool calls) then run each tool.
-      messages.push({ role: 'assistant', content: contentToString(msg?.content), tool_calls: toolCalls });
-      for (const call of toolCalls) {
-        if (opts.token?.isCancellationRequested) return { text: '_Cancelled._', platform: lastPlatform, model: lastModel };
-        const { observation } = await this.executeToolCall(call, opts, cb);
-        messages.push({ role: 'tool', tool_call_id: call.id, name: call.function.name, content: observation });
+      // Text-mode loop guard: routeEscalated only compares NATIVE calls, so a weak model
+      // repeating the same XML block verbatim would otherwise burn iterations to the cap.
+      const curSig = toolSignature(toolCalls);
+      if (textMode && prevSig && curSig === prevSig) {
+        messages.push({ role: 'assistant', content: contentToString(msg?.content) });
+        this.maybeLearnStyle(work());
+        return {
+          text: "⚠️ I'm stuck — the model kept repeating the same step. Choose **Continue** to try again, or rephrase the task.",
+          platform: lastPlatform, model: lastModel, workMessages: work(), paused: true,
+        };
+      }
+      prevSig = curSig;
+
+      // Show the model's thinking for this step BEFORE its tools run, so the UI reads
+      // "think → act" each step (like Claude Code / Kilo Code) — not only at the end.
+      const stepThought = turnReasoning(msg);
+      if (stepThought) cb.onReasoning?.(stepThought);
+
+      if (textMode) {
+        // Mirror the turn as plain TEXT (assistant reply + user-role results) so providers
+        // without native tool-calling keep a consistent, replayable transcript.
+        messages.push({ role: 'assistant', content: contentToString(msg?.content) });
+        const results: string[] = [];
+        for (const call of toolCalls) {
+          if (opts.token?.isCancellationRequested) return { text: '_Cancelled._', platform: lastPlatform, model: lastModel };
+          const { obsText } = await this.executeToolCall(call, opts, cb);
+          results.push(`<tool_result name="${call.function.name}">\n${obsText}\n</tool_result>`);
+        }
+        messages.push({
+          role: 'user',
+          content: `[Tool results]\n${results.join('\n\n')}\n\nContinue with the next step using these results. When the task is fully complete, reply with your final answer and DO NOT include any tool tags.`,
+        });
+      } else {
+        // Record the assistant turn (with its native tool calls) then run each tool.
+        messages.push({ role: 'assistant', content: contentToString(msg?.content), tool_calls: toolCalls });
+        for (const call of toolCalls) {
+          if (opts.token?.isCancellationRequested) return { text: '_Cancelled._', platform: lastPlatform, model: lastModel };
+          const { observation } = await this.executeToolCall(call, opts, cb);
+          messages.push({ role: 'tool', tool_call_id: call.id, name: call.function.name, content: observation });
+        }
       }
     }
     // Budget exhausted without finishing. Auto escalates to a stronger model and continues;
@@ -659,12 +733,19 @@ export class Agent {
     let lastModel: string | undefined;
     // Just the web tools + askUser. Two tiny specs — negligible token cost per chat turn.
     const tools = [...WEB_TOOL_SPECS, ASK_USER_SPEC];
-    const BUDGET = 4; // search → optional fetch → answer
+    const BUDGET = 5; // search → optional fetch → answer (+1 for a refusal correction)
     let prevSig = '';
+    // A weak model sometimes searches, gets results, then still gives a canned "I only
+    // handle code" refusal. Track whether we searched so we can catch that and retry once
+    // on a stronger model instead of handing the user an unhelpful non-answer.
+    let searched = false;
+    let corrected = false;
 
     for (let i = 0; i < BUDGET; i++) {
       if (opts.token?.isCancellationRequested) return { text: '_Cancelled._', platform: lastPlatform, model: lastModel };
-      cb.onStep?.('thinking', 'Thinking…');
+      cb.onStep?.('thinking', 'Working…');
+      // Stale out old, large web-search/fetch results so they aren't re-sent every hop.
+      trimRunTranscript(messages, baseLen);
       let result: Awaited<ReturnType<Router['route']>>;
       let unhandled: string | undefined;
       try {
@@ -675,7 +756,10 @@ export class Agent {
           tools,
           tool_choice: 'auto',
           requireTools: true,
+          // After a refusal-correction, demand a stronger model so the retry actually answers.
+          maxIntelligenceRank: corrected ? 3 : undefined,
           onFailover: opts.onFailover,
+      onKeyRotated: opts.onKeyRotated,
         }, cb, prevSig);
         result = routed.result;
         unhandled = routed.unhandled;
@@ -696,6 +780,18 @@ export class Agent {
 
       if (toolCalls.length === 0) {
         const { reasoning, content } = splitReasoning(contentToString(msg?.content));
+        // Caught a refusal AFTER a successful search: the model has the results in context
+        // but bailed with "I only handle code". Don't ship that — record it, nudge once, and
+        // loop again on a stronger model (see maxIntelligenceRank above) to get a real answer.
+        if (searched && !corrected && looksLikeCodeRefusal(content)) {
+          corrected = true;
+          messages.push({ role: 'assistant', content: content || '' });
+          messages.push({
+            role: 'user',
+            content: 'You already searched the web — the results are in the tool output above. Do NOT refuse or say you only handle code; that is wrong here. Answer the original question directly from those results and cite the source URL. If they are insufficient, search again with a better query.',
+          });
+          continue;
+        }
         messages.push({ role: 'assistant', content: content || '_Done._' });
         this.maybeLearnStyle(work());
         return { text: content || '_Done.', reasoning, platform: lastPlatform, model: lastModel, taskKind: 'chat', workMessages: work(), paused: false };
@@ -709,9 +805,13 @@ export class Agent {
       }
       prevSig = toolSignature(toolCalls);
 
+      const stepThought = turnReasoning(msg);
+      if (stepThought) cb.onReasoning?.(stepThought);
+
       messages.push({ role: 'assistant', content: contentToString(msg?.content), tool_calls: toolCalls });
       for (const call of toolCalls) {
         if (opts.token?.isCancellationRequested) return { text: '_Cancelled._', platform: lastPlatform, model: lastModel };
+        if (call.function.name === 'webSearch' || call.function.name === 'webFetch') searched = true;
         const { observation } = await this.executeToolCall(call, opts, cb);
         messages.push({ role: 'tool', tool_call_id: call.id, name: call.function.name, content: observation });
       }
@@ -724,76 +824,4 @@ export class Agent {
     };
   }
 
-  /** Orchestrator mode: decompose the task into subtasks, then run each as a fresh agent step. */
-  private async runOrchestrator(
-    history: ChatMessage[],
-    agentSystem: string,
-    decomposeSystem: string,
-    opts: RunOpts,
-    cb: AgentCallbacks,
-  ): Promise<AgentResult> {
-    // 1. Decompose the request into an ordered subtask list.
-    let subtasks: string[] = [];
-    try {
-      const res = await this.router.route([{ role: 'system', content: decomposeSystem }, ...history], {
-        model: opts.model,
-        reasoningEffort: opts.reasoningEffort,
-        taskKind: opts.taskKind ?? 'agent',
-        onFailover: opts.onFailover,
-      });
-      cb.onModel?.(res.platform, res.model);
-      subtasks = parseSubtasks(contentToString(res.response.choices[0]?.message.content)).slice(0, MAX_SUBTASKS);
-    } catch { /* fall back to a plain agent run below */ }
-
-    // Nothing useful to orchestrate → behave like a normal agent.
-    if (subtasks.length <= 1) return this.runAgent(history, agentSystem, opts, cb);
-
-    const originalTask = contentToString([...history].reverse().find((m) => m.role === 'user')?.content ?? '');
-    const summaries: string[] = [];
-    let lastPlatform: string | undefined;
-    let lastModel: string | undefined;
-
-    // 2. Execute each subtask as a fresh, focused agent run, threading progress forward.
-    for (let i = 0; i < subtasks.length; i++) {
-      if (opts.token?.isCancellationRequested) break;
-      const stepArgs = { step: i + 1, of: subtasks.length, task: subtasks[i] };
-      cb.onTool?.({ toolCallId: `step-${i}`, name: 'step', args: stepArgs, state: 'running' });
-      const progress = summaries.length
-        ? `Progress so far:\n${summaries.map((s, j) => `- Step ${j + 1} (${subtasks[j]}): ${s}`).join('\n')}\n\n`
-        : '';
-      const subPrompt = `${progress}You are completing ONE step of a larger task.\nOverall task: ${originalTask}\n\nYour step now — step ${i + 1} of ${subtasks.length}: ${subtasks[i]}\n\nComplete just this step, then stop.`;
-      const sub = await this.runAgent([{ role: 'user', content: subPrompt }], agentSystem, opts, cb);
-      lastPlatform = sub.platform ?? lastPlatform;
-      lastModel = sub.model ?? lastModel;
-      const summary = sub.text.replace(/\s+/g, ' ').slice(0, 400);
-      summaries.push(summary);
-      cb.onTool?.({ toolCallId: `step-${i}`, name: 'step', args: stepArgs, state: 'done', detail: summary });
-    }
-
-    // 3. Consolidated report.
-    const body = subtasks
-      .map((st, i) => `**Step ${i + 1}: ${st}**\n\n${summaries[i] ?? '_(not run)_'}`)
-      .join('\n\n');
-    return {
-      text: `Completed ${summaries.length} of ${subtasks.length} orchestrated steps.\n\n${body}`,
-      platform: lastPlatform,
-      model: lastModel,
-    };
-  }
-}
-
-/** Parse an Orchestrator decomposition: a JSON array of strings, with a numbered/bulleted fallback. */
-function parseSubtasks(text: string): string[] {
-  const t = (text || '').trim();
-  const arrMatch = t.match(/\[[\s\S]*\]/);
-  if (arrMatch) {
-    try {
-      const arr = JSON.parse(arrMatch[0]);
-      if (Array.isArray(arr)) return arr.map((s) => String(s).trim()).filter(Boolean);
-    } catch { /* fall through to line parsing */ }
-  }
-  return t
-    .split('\n')
-    .map((l) => l.replace(/^\s*(?:\d+[.)]|[-*])\s*/, '').trim())
-    .filter((l) => l.length > 0 && !/^```/.test(l));
 }

@@ -6,9 +6,17 @@
 // simple and the parser lenient so weaker models that ignore it just produce a normal
 // plan with no regression.
 
+/** One selectable answer: a short title plus an optional one-line description. */
+export interface ClarifyOption {
+  title: string;
+  description?: string;
+}
+
 export interface ClarifyingQuestion {
   text: string;
-  options: string[];
+  /** Short 1–3 word tab label (e.g. "Interview Type"); falls back to the question number. */
+  label?: string;
+  options: ClarifyOption[];
 }
 
 export interface ParsedClarifying {
@@ -51,14 +59,20 @@ export function parseClarifying(input: string): ParsedClarifying {
   for (const raw of block.split('\n')) {
     const line = raw.trim();
     if (!line) continue;
-    const q = line.match(/^Q[:.)]?\s+(.+)$/i);
+    // `Q[Short Label]: question` — the optional [Label] becomes the tab label.
+    const q = line.match(/^Q(?:\s*\[([^\]]+)\])?\s*[:.)]?\s+(.+)$/i);
     if (q) {
       if (current && current.options.length >= 2) questions.push(current); // drop 1-option duds
-      current = { text: q[1].trim(), options: [] };
+      current = { text: q[2].trim(), label: q[1]?.trim() || undefined, options: [] };
       continue;
     }
+    // `- Title :: one-line description` — the ` :: ` and description are optional.
     const opt = line.match(/^[-*]\s+(.+)$/);
-    if (opt && current) current.options.push(opt[1].trim());
+    if (opt && current) {
+      const [title, ...rest] = opt[1].split(/\s+::\s+/);
+      const description = rest.join(' :: ').trim();
+      if (title.trim()) current.options.push({ title: title.trim(), description: description || undefined });
+    }
   }
   if (current && current.options.length >= 2) questions.push(current);
 

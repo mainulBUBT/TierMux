@@ -21,13 +21,37 @@
   let currentTurn = null;
 
   // ---------- markdown ----------
+  // Configure marked ONCE: render embedded raw HTML as escaped TEXT instead of live DOM, so a
+  // chat message containing an HTML form/snippet shows as readable, searchable source — and
+  // can't inject widgets or handlers into the webview. Only raw `html` tokens are escaped;
+  // markdown-generated elements (incl. GFM task-list checkboxes) render normally.
+  let markedReady = false;
+  function configureMarked() {
+    if (markedReady || !window.marked) return;
+    markedReady = true;
+    try {
+      window.marked.use({
+        renderer: {
+          html(token) {
+            const raw = typeof token === 'string' ? token : (token && token.raw != null ? token.raw : (token && token.text) || '');
+            return escapeHtml(raw);
+          },
+        },
+      });
+    } catch (_) {}
+  }
+
   function renderMarkdown(md) {
     try {
       if (window.marked) {
+        configureMarked();
         const html = window.marked.parse(md, { breaks: true, gfm: true });
         const div = document.createElement('div');
         div.innerHTML = html;
         div.querySelectorAll('script').forEach((s) => s.remove());
+        // Neutralize script-y URLs that markdown links/images can still carry (marked v12
+        // does not sanitize URLs) — same render sink, cheap defense-in-depth.
+        div.querySelectorAll('a[href]').forEach((a) => { if (/^\s*(javascript|data|vbscript):/i.test(a.getAttribute('href') || '')) a.removeAttribute('href'); });
         if (window.hljs) div.querySelectorAll('pre code').forEach((b) => { try { window.hljs.highlightElement(b); } catch (_) {} });
         return div;
       }
@@ -150,12 +174,11 @@
 
   // Mode picker (custom dropdown: button shows the short name, list shows name + description).
   const MODES = [
-    { value: 'auto', label: 'Auto', desc: 'Smart agent — decides on its own how to understand and solve each message (incl. debugging).' },
-    { value: 'chat', label: 'Ask', desc: 'Read-only. Answers questions and explains code — never edits files.' },
-    { value: 'plan', label: 'Plan', desc: 'Researches the code, shows a todo plan, asks if needed, then edits after you approve.' },
+    { value: 'chat', label: 'Ask', desc: 'Read-only. Answers questions and explains code — never edits files or runs commands.' },
+    { value: 'plan', label: 'Plan', desc: 'Researches the code, proposes a plan (professional or team discussion), then edits only after you approve.' },
     { value: 'agent', label: 'Agent', desc: 'Full agent — reads, edits files, runs commands, and tracks a live task list.' },
   ];
-  let currentMode = 'auto';
+  let currentMode = 'chat';
   const modeBtn = $('#mode-btn');
   const modeBtnLabel = $('.mode-label', modeBtn);
   const modePop = $('#mode-pop');
@@ -416,22 +439,53 @@
   }
 
   // Build a single tool-step card from a persisted step (mirrors upsertTool, but static).
+  // A visible "thinking" block — the model's per-step reasoning, shown before that step's
+  // tool runs (think → act, like Claude Code / Kilo Code). Rides the same step list as tool
+  // cards (step.name === 'reasoning', text in step.detail) so it persists across re-renders.
+  function buildReasoningBlock(text, tc) {
+    const block = document.createElement('div');
+    block.className = 'think-block';
+    block.dataset.live = '1';
+    if (tc) block.dataset.tc = tc;
+    const det = document.createElement('details');
+    const sum = document.createElement('summary');
+    sum.innerHTML = `<span class="think-ic">◌</span><span class="think-cap">Thinking</span>`;
+    const body = document.createElement('div');
+    body.className = 'think-body';
+    body.appendChild(renderMarkdown(text || ''));
+    det.appendChild(sum);
+    det.appendChild(body);
+    block.appendChild(det);
+    return block;
+  }
+
   function buildToolCard(step) {
+    if (step.name === 'reasoning') {
+      const block = buildReasoningBlock(step.detail || '', step.toolCallId);
+      // Static re-render: reasoning is done, show as collapsed "Thought"
+      block.dataset.live = '0';
+      const cap = block.querySelector('.think-cap'); if (cap) cap.textContent = 'Thought';
+      const ic  = block.querySelector('.think-ic');  if (ic)  ic.textContent  = '◉';
+      return block;
+    }
+    const state = step.state || 'done';
     const card = document.createElement('div');
-    card.className = 'tool-card';
-    card.innerHTML = `<div class="tool-head"><span class="tool-ic"></span><span class="tool-title"></span><span class="state"></span></div><details class="tool-more hidden"><summary>Details</summary><pre></pre></details>`;
-    const { icon, title } = toolLabel(step.name, step.args);
+    card.className = 'tool-card state-' + state;
+    if (step.toolCallId) card.dataset.tc = step.toolCallId;
+    card.innerHTML = `<div class="tool-head"><span class="tool-ic"></span><span class="tool-title"></span><span class="tool-hint"></span><span class="state"></span></div><details class="tool-more hidden"><summary>output</summary><pre></pre></details>`;
+    const { icon, title, hint } = toolLabel(step.name, step.args, step.detail);
     card.querySelector('.tool-ic').textContent = icon;
     card.querySelector('.tool-title').textContent = title;
+    const hintEl = card.querySelector('.tool-hint');
+    if (hintEl) hintEl.textContent = hint || '';
     const st = card.querySelector('.state');
-    const state = step.state || 'done';
     st.className = 'state ' + state;
-    st.textContent = STATE_ICON[state] != null ? STATE_ICON[state] : state;
-    st.title = state;
+    const icon2 = STATE_ICON[state];
+    st.textContent = (icon2 === null || icon2 === undefined) ? '' : icon2;
     const argStr = (step.args && typeof step.args === 'object') ? JSON.stringify(step.args, null, 2) : String(step.args || '');
     const parts = [];
     if (argStr && argStr !== '{}') parts.push(argStr);
-    if (step.detail) parts.push('— result —\n' + step.detail);
+    if (step.detail) parts.push(step.detail);
     const body = parts.join('\n\n');
     const more = card.querySelector('.tool-more');
     if (body.trim()) { more.querySelector('pre').textContent = body; more.classList.remove('hidden'); }
@@ -447,8 +501,10 @@
     el.className = 'msg assistant';
     el._copyText = text;
     details = details || {};
-    const hasReasoning = !!details.reasoning;
     const steps = (details.steps || []).filter(Boolean);
+    // Inline 🧠 Thinking blocks (reasoning steps) already render the reasoning, so only fall
+    // back to a 💭 Reasoning disclosure when the steps don't carry it — never show it twice.
+    const hasReasoning = !!details.reasoning && !steps.some((s) => s.name === 'reasoning');
     // Live runs nest reasoning inside the "Worked for Ns" disclosure (it lives in t.tools),
     // and that disclosure is dropped only when it holds neither reasoning nor any step.
     if (hasReasoning || steps.length) {
@@ -459,7 +515,7 @@
       const tools = document.createElement('div'); tools.className = 'tools';
       if (hasReasoning) {
         const det = document.createElement('details'); det.className = 'reasoning';
-        det.innerHTML = `<summary>💭 Reasoning</summary>`;
+        det.innerHTML = `<summary>Reasoning</summary>`;
         det.appendChild(renderMarkdown(details.reasoning));
         tools.appendChild(det);
       }
@@ -493,7 +549,7 @@
     work.appendChild(sum); work.appendChild(tools);
     const statusEl = document.createElement('div');
     statusEl.className = 'agent-status';
-    statusEl.innerHTML = `<span class="agent-spinner"></span><span class="agent-label">Thinking…</span><span class="agent-elapsed"></span>`;
+    statusEl.innerHTML = `<span class="agent-spinner"></span><span class="agent-label">Working…</span><span class="agent-elapsed"></span>`;
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     el.appendChild(statusEl);
@@ -638,10 +694,10 @@
   function loadComposer(id) {
     const c = composerState.get(id);
     input.value = c ? c.draft : '';
-    setMode(c ? c.mode : 'auto');
+    setMode(c ? c.mode : 'chat');
     currentModel = c ? c.model : 'auto';
     rebuildModelPicker(); // syncs the model button label + reasoning availability to currentModel
-    reasoningSel.value = c ? c.reasoning : 'off';
+    reasoningSel.value = c ? c.reasoning : 'medium';
     updateReasoningAvailability();
     pendingAttachments = c && c.attachments ? c.attachments.slice() : [];
     renderChips();
@@ -841,7 +897,8 @@
     let selectedLabel = null;
     // Only ACTIVE providers appear in the picker — i.e. the user has set a key for the
     // platform (or it's keyless) AND has checked the model. Same set Auto routes over.
-    const activePlatforms = new Set((state.platforms || []).filter((p) => p.configured).map((p) => p.platform));
+    const _disabledProviders = new Set(state.disabledProviders || []);
+    const activePlatforms = new Set((state.platforms || []).filter((p) => p.configured && !_disabledProviders.has(p.platform)).map((p) => p.platform));
     const enabled = new Set(
       (state.fallback || [])
         .filter((e) => e.enabled && activePlatforms.has(e.platform))
@@ -944,59 +1001,90 @@
     if (!a || typeof a !== 'object') return '';
     return a.path || a.file || a.filename || a.relativePath || a.query || a.pattern || a.dir || a.directory || a.term || '';
   }
-  function toolLabel(name, args) {
+  function toolLabel(name, args, detail) {
     if (name === 'step' && args && typeof args === 'object') {
-      return { icon: '🧭', title: `Step ${args.step}/${args.of}${args.task ? ': ' + args.task : ''}` };
+      return { icon: '↳', title: `Step ${args.step}/${args.of}${args.task ? ': ' + args.task : ''}` };
     }
     if (name === 'think') {
       const th = String((args && typeof args === 'object' && args.thought) || '');
-      return { icon: '🧠', title: 'Thinking' + (th ? ': ' + th.replace(/\s+/g, ' ').trim().slice(0, 100) : '') };
+      return { icon: '◌', title: 'Thinking' + (th ? ': ' + th.replace(/\s+/g, ' ').trim().slice(0, 80) : '') };
     }
     const a = String(firstArg(args) || '');
-    const q = a ? `“${a}”` : '';
+    // Count lines in result to show an inline hint (e.g. “4 results”)
+    const resultLines = detail ? detail.split('\n').filter(Boolean).length : 0;
+    const hint = resultLines > 0 ? `${resultLines} line${resultLines === 1 ? '' : 's'}` : '';
     const M = {
-      readFile: ['📖', a ? `Read ${a}` : 'Read file'],
-      listDir: ['📂', a ? `Listed ${a}` : 'Listed folder'],
-      repoMap: ['🗺️', 'Mapped the repository'],
-      searchWorkspace: ['🔍', a ? `Searched ${q}` : 'Searched workspace'],
-      codebaseSearch: ['🔎', a ? `Semantic search ${q}` : 'Semantic search'],
-      webSearch: ['🌐', a ? `Web search ${q}` : 'Web search'],
-      webFetch: ['🌐', a ? `Fetched ${a}` : 'Fetched URL'],
-      getDiagnostics: ['🩺', 'Checked problems'],
-      runCommand: ['▶️', a ? `Ran ${a}` : 'Ran command'],
-      writeFile: ['✏️', a ? `Wrote ${a}` : 'Wrote file'],
-      createFile: ['✨', a ? `Created ${a}` : 'Created file'],
-      editFile: ['✏️', a ? `Edited ${a}` : 'Edited file'],
-      deleteFile: ['🗑️', a ? `Deleted ${a}` : 'Deleted file'],
+      readFile:        ['⊞', a ? `read  ${a}` : 'read file'],
+      listDir:         ['⊟', a ? `ls  ${a}` : 'list dir'],
+      repoMap:         ['⊕', 'repo map'],
+      searchWorkspace: ['⌕', a ? `grep  “${a}”` : 'grep workspace'],
+      codebaseSearch:  ['⌕', a ? `search  “${a}”` : 'semantic search'],
+      glob:            ['⊞', a ? `glob  ${a}` : 'glob'],
+      grep:            ['⌕', a ? `grep  “${a}”` : 'grep'],
+      webSearch:       ['⊙', a ? `web  “${a}”` : 'web search'],
+      webFetch:        ['⊙', a ? `fetch  ${a}` : 'fetch URL'],
+      getDiagnostics:  ['⊘', 'diagnostics'],
+      runCommand:      ['▸', a ? `run  ${a}` : 'run command'],
+      writeFile:       ['◈', a ? `write  ${a}` : 'write file'],
+      createFile:      ['◈', a ? `create  ${a}` : 'create file'],
+      editFile:        ['◈', a ? `edit  ${a}` : 'edit file'],
+      deleteFile:      ['◉', a ? `delete  ${a}` : 'delete file'],
+      impactAnalysis:  ['⊕', 'impact analysis'],
+      buildGraph:      ['⊕', 'build graph'],
+      getSymbolGraph:  ['⊕', 'symbol graph'],
+      askUser:         ['◎', 'asking…'],
+      skill:           ['◎', a ? `skill  ${a}` : 'skill'],
     };
-    if (M[name]) return { icon: M[name][0], title: M[name][1] };
+    if (M[name]) return { icon: M[name][0], title: M[name][1], hint };
     if (name && name.indexOf('mcp__') === 0) {
       const p = name.split('__');
-      return { icon: '🔌', title: `${p[1] || 'mcp'} · ${p.slice(2).join(' ') || 'tool'}` };
+      return { icon: '⊛', title: `${p[1] || 'mcp'}  ${p.slice(2).join(' ') || 'tool'}`, hint };
     }
-    return { icon: '🛠️', title: name || 'Tool' };
+    return { icon: '◎', title: name || 'tool', hint };
   }
-  const STATE_ICON = { running: '', done: '✓', error: '✕' };
+  const STATE_ICON = { running: null, done: '✓', error: '✗' };
   function upsertTool(t, msg) {
+    if (msg.name === 'reasoning') {
+      let block = t.tools.querySelector(`[data-tc="${msg.toolCallId}"]`);
+      if (!block) { block = buildReasoningBlock(msg.detail || '', msg.toolCallId); t.tools.appendChild(block); }
+      else {
+        const b = block.querySelector('.think-body');
+        if (b) { b.textContent = ''; b.appendChild(renderMarkdown(msg.detail || '')); }
+        // Mark done: remove live highlight, update label
+        if (msg.state === 'done') {
+          block.dataset.live = '0';
+          const cap = block.querySelector('.think-cap'); if (cap) cap.textContent = 'Thought';
+          const ic = block.querySelector('.think-ic'); if (ic) ic.textContent = '◉';
+        }
+      }
+      scrollDown();
+      return;
+    }
     let card = t.tools.querySelector(`[data-tc="${msg.toolCallId}"]`);
     if (!card) {
       card = document.createElement('div');
       card.className = 'tool-card';
       card.dataset.tc = msg.toolCallId;
-      card.innerHTML = `<div class="tool-head"><span class="tool-ic"></span><span class="tool-title"></span><span class="state"></span></div><details class="tool-more hidden"><summary>Details</summary><pre></pre></details>`;
+      card.innerHTML = `<div class="tool-head"><span class="tool-ic"></span><span class="tool-title"></span><span class="tool-hint"></span><span class="state"></span></div><details class="tool-more hidden"><summary>output</summary><pre></pre></details>`;
       t.tools.appendChild(card);
     }
-    const { icon, title } = toolLabel(msg.name, msg.args);
+    const { icon, title, hint } = toolLabel(msg.name, msg.args, msg.detail);
     card.querySelector('.tool-ic').textContent = icon;
     card.querySelector('.tool-title').textContent = title;
+    const hintEl = card.querySelector('.tool-hint');
+    if (hintEl) hintEl.textContent = hint || '';
     const st = card.querySelector('.state');
     st.className = 'state ' + msg.state;
-    st.textContent = STATE_ICON[msg.state] != null ? STATE_ICON[msg.state] : msg.state;
-    st.title = msg.state;
+    const icon2 = STATE_ICON[msg.state];
+    if (icon2 === null) { st.textContent = ''; } // CSS handles running dot
+    else st.textContent = icon2 != null ? icon2 : msg.state;
+    // State class on card for left-border colour
+    card.className = 'tool-card state-' + msg.state;
+    card.dataset.tc = msg.toolCallId;
     const argStr = (msg.args && typeof msg.args === 'object') ? JSON.stringify(msg.args, null, 2) : String(msg.args || '');
     const parts = [];
     if (argStr && argStr !== '{}') parts.push(argStr);
-    if (msg.detail) parts.push('— result —\n' + msg.detail);
+    if (msg.detail) parts.push(msg.detail);
     const more = card.querySelector('.tool-more');
     const body = parts.join('\n\n');
     if (body.trim()) { more.querySelector('pre').textContent = body; more.classList.remove('hidden'); }
@@ -1181,7 +1269,8 @@
     let lastPlatform = null;
     // Only show models from ACTIVE (key-set / keyless) AND checked providers —
     // same set the chat-view picker shows, and same set Auto routes over.
-    const activePlatforms = new Set((state.platforms || []).filter((p) => p.configured).map((p) => p.platform));
+    const _disabledProviders = new Set(state.disabledProviders || []);
+    const activePlatforms = new Set((state.platforms || []).filter((p) => p.configured && !_disabledProviders.has(p.platform)).map((p) => p.platform));
     const enabled = new Set(
       (state.fallback || [])
         .filter((e) => e.enabled && activePlatforms.has(e.platform))
@@ -1231,14 +1320,48 @@
         : p.status === 'invalid' ? 'invalid'
         : p.status === 'rate_limited' ? 'rate_limited' : 'healthy';
       const isOpen = expandedProviders.has(p.platform);
+      const keyCount = p.keyCount || 0;
+      const keyStatusText = p.keyless ? 'keyless'
+        : keyCount > 1 ? `${keyCount} keys · rotating`
+        : keyCount === 1 ? 'key set'
+        : 'no key';
+      const keyBtnText = p.keyless ? 'Keyless'
+        : keyCount > 0 ? 'Add key'
+        : 'Set key';
+      const keyBtnTitle = p.keyless ? 'Keyless provider'
+        : keyCount > 0 ? 'Add another API key to the rotation pool'
+        : 'Set API key';
+      const provModels = modelsByPlatform[p.platform] || [];
+      const isProviderDisabled = (state.disabledProviders || []).includes(p.platform);
       const head = document.createElement('div');
       head.className = 'provider-head';
       head.innerHTML = `
         <span class="status-dot status-${dotClass}"></span>
         <span class="provider-name">${escapeHtml(p.name)}</span>
-        <span class="muted prov-status">${p.keyless ? 'keyless' : (p.configured ? 'key set' : 'no key')}</span>
-        <button class="icon-btn prov-key-btn" data-platform="${p.platform}" title="${p.keyless ? 'Keyless provider' : (p.configured ? 'Update / clear API key' : 'Set API key')}">${p.keyless ? 'Keyless' : (p.configured ? 'Update key' : 'Set key')}</button>
+        <span class="muted prov-status">${keyStatusText}</span>
+        <button class="icon-btn prov-key-btn" data-platform="${p.platform}" title="${keyBtnTitle}">${keyBtnText}</button>
         <span class="chev">${isOpen ? '▾' : '▸'}</span>`;
+
+      // Provider on/off toggle switch — inserted before the status dot.
+      const sw = document.createElement('label');
+      sw.className = 'prov-switch';
+      sw.title = `Enable / disable all models for ${p.name}`;
+      const swCb = document.createElement('input');
+      swCb.type = 'checkbox';
+      swCb.checked = !isProviderDisabled;
+      const swTrack = document.createElement('span');
+      swTrack.className = 'sw-track';
+      const swThumb = document.createElement('span');
+      swThumb.className = 'sw-thumb';
+      swTrack.appendChild(swThumb);
+      sw.appendChild(swCb);
+      sw.appendChild(swTrack);
+      head.insertBefore(sw, head.firstChild);
+      sw.addEventListener('click', (ev) => ev.stopPropagation());
+      swCb.addEventListener('change', () => {
+        // Sends a provider-level enable/disable — does NOT touch individual model enabled flags.
+        vscode.postMessage({ type: 'setProviderEnabled', platform: p.platform, enabled: swCb.checked });
+      });
 
       const body = document.createElement('div');
       body.className = 'provider-body' + (isOpen ? '' : ' hidden');
@@ -1255,7 +1378,9 @@
         provKeyBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
           if (p.keyless) return;
-          vscode.postMessage({ type: 'setKey', platform: p.platform });
+          // If keys already exist: add another one to the pool.
+          // If no keys yet: use the standard setKey flow (supports paste of multiple).
+          vscode.postMessage(keyCount > 0 ? { type: 'addKey', platform: p.platform } : { type: 'setKey', platform: p.platform });
         });
       }
 
@@ -1286,12 +1411,74 @@
       epRow.appendChild(resetEp);
       body.appendChild(epRow);
 
+      // Key pool management (only for keyed, non-custom providers)
+      if (!p.keyless && p.platform !== 'custom') {
+        const keyHints = p.keyHints || [];
+        if (keyHints.length > 0) {
+          const keySecTitle = document.createElement('div');
+          keySecTitle.className = 'muted prov-models-title';
+          keySecTitle.textContent = keyHints.length > 1 ? `API Keys (${keyHints.length} · rotating on rate-limit)` : 'API Key';
+          body.appendChild(keySecTitle);
+
+          const chips = document.createElement('div');
+          chips.className = 'key-chips';
+          keyHints.forEach((hint, idx) => {
+            const chip = document.createElement('div');
+            chip.className = 'key-chip';
+            const span = document.createElement('span');
+            span.className = 'key-hint';
+            span.textContent = hint;
+            const del = document.createElement('button');
+            del.className = 'key-del icon-btn';
+            del.title = 'Remove this key';
+            del.textContent = '✕';
+            let confirming = false;
+            let cancelBtn = null;
+            del.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              if (!confirming) {
+                // First click — show inline confirmation.
+                confirming = true;
+                chip.classList.add('confirming');
+                span.textContent = 'Remove this key?';
+                del.textContent = 'Yes';
+                del.style.color = 'var(--vscode-errorForeground)';
+                del.style.opacity = '1';
+                cancelBtn = document.createElement('button');
+                cancelBtn.className = 'icon-btn';
+                cancelBtn.textContent = 'No';
+                cancelBtn.style.opacity = '1';
+                cancelBtn.addEventListener('click', (e) => {
+                  e.stopPropagation();
+                  confirming = false;
+                  chip.classList.remove('confirming');
+                  span.textContent = hint;
+                  del.textContent = '✕';
+                  del.style.color = '';
+                  del.style.opacity = '';
+                  cancelBtn.remove();
+                  cancelBtn = null;
+                });
+                chip.appendChild(cancelBtn);
+              } else {
+                // Second click (confirmed) — remove.
+                vscode.postMessage({ type: 'removeKeyAt', platform: p.platform, index: idx });
+              }
+            });
+            chip.appendChild(span);
+            chip.appendChild(del);
+            chips.appendChild(chip);
+          });
+          body.appendChild(chips);
+        }
+      }
+
       // Models for this provider (enable toggles)
       const models = modelsByPlatform[p.platform] || [];
       if (models.length) {
         const mt = document.createElement('div');
         mt.className = 'muted prov-models-title';
-        mt.textContent = 'Models';
+        mt.textContent = isProviderDisabled ? 'Models (provider off — not routing)' : 'Models';
         body.appendChild(mt);
       }
       const modelKeySet = new Set(state.modelKeys || []);
@@ -1304,6 +1491,7 @@
         if (m.supportsReasoning) caps.push('R');
         const row = document.createElement('div');
         row.className = 'pm-row';
+        if (isProviderDisabled) row.style.opacity = '.4';
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.checked = !!e.enabled;
@@ -1555,7 +1743,7 @@
     // (background) session are ignored here — the host caches their state and replays it
     // when we switch to them (see switchSession). switchSession/sessionList carry their own
     // sessionId semantics and are handled below, so they're excluded from this filter.
-    const PER_SESSION = new Set(['userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'assistantMessage', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'checkpoint', 'changedFiles', 'busy', 'notice', 'error']);
+    const PER_SESSION = new Set(['userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'keyRotated', 'assistantMessage', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'checkpoint', 'changedFiles', 'busy', 'notice', 'error']);
     if (PER_SESSION.has(msg.type) && msg.sessionId && viewedSessionId && msg.sessionId !== viewedSessionId) return;
     switch (msg.type) {
       case 'config':
@@ -1643,6 +1831,18 @@
         scrollDown();
         break;
       }
+      case 'keyRotated': {
+        const t = ensureTarget(msg.requestId);
+        if (!t.keyRotEl) {
+          t.keyRotEl = document.createElement('div');
+          t.keyRotEl.className = 'notice notice-key';
+          t.tools.appendChild(t.keyRotEl);
+        }
+        t.keyRotEl.textContent = `⟳ Key ${msg.keyIndex}/${msg.keyTotal} · ${msg.platformName}`;
+        t.keyRotEl.title = `Rate-limited on key ${msg.keyIndex - 1}; rotated to key ${msg.keyIndex} of ${msg.keyTotal} for ${msg.platformName}`;
+        scrollDown();
+        break;
+      }
       case 'sessionTitle': {
         if (msg.sessionId && viewedSessionId && msg.sessionId !== viewedSessionId) break;
         const v = msg.title || '';
@@ -1716,19 +1916,30 @@
         stopStatusTimer(msg.requestId, true);
         finalizeWork(msg.requestId);
         t.body.innerHTML = '';
-        t.body.appendChild(renderMarkdown('**Proposed plan:**\n\n' + msg.steps));
-        if (msg.discarded) {
-          // Replayed as part of session switch or as a "kept" card after a Discard click —
-          // just leave the body in place and skip the action row.
-          scrollDown();
-          break;
-        }
+        const head = document.createElement('div'); head.className = 'plan-head'; head.textContent = 'Proposed plan';
+        t.body.appendChild(head);
+        // A replayed or already-decided card (session switch, kept after Discard/Keep-discussing) —
+        // show a read-only checklist, no edit controls, no action row.
+        const settled = !!(msg.discarded || msg.deferred);
+        const listEl = renderPlanChecklist(parsePlanSteps(msg.steps), !settled);
+        t.body.appendChild(listEl);
+        if (settled) { scrollDown(); break; }
+        const collect = () => collectPlanSteps(listEl);
         const actions = document.createElement('div'); actions.className = 'plan-actions';
         const approve = document.createElement('button'); approve.className = 'primary'; approve.textContent = 'Approve & Run';
+        const discuss = document.createElement('button'); discuss.className = 'secondary'; discuss.textContent = 'Keep discussing';
         const reject = document.createElement('button'); reject.className = 'secondary'; reject.textContent = 'Discard';
-        approve.addEventListener('click', () => { actions.remove(); vscode.postMessage({ type: 'approvePlan', requestId: newId(), approved: true, steps: msg.steps }); });
-        reject.addEventListener('click', () => { actions.remove(); vscode.postMessage({ type: 'approvePlan', requestId: newId(), approved: false, steps: msg.steps }); });
-        actions.appendChild(approve); actions.appendChild(reject);
+        approve.addEventListener('click', () => { actions.remove(); vscode.postMessage({ type: 'approvePlan', requestId: newId(), approved: true, steps: collect() }); });
+        reject.addEventListener('click', () => { actions.remove(); vscode.postMessage({ type: 'approvePlan', requestId: newId(), approved: false, steps: collect() }); });
+        discuss.addEventListener('click', () => {
+          // Release the gate but keep the plan (and "Approve & Run") around to build later.
+          discuss.remove(); reject.remove();
+          const note = document.createElement('div'); note.className = 'plan-note';
+          note.textContent = '💬 Kept for discussion — refine the steps above or the saved plan file, then Approve & Run when ready.';
+          t.body.appendChild(note);
+          vscode.postMessage({ type: 'deferPlan', requestId: msg.requestId, steps: collect() });
+        });
+        actions.appendChild(approve); actions.appendChild(discuss); actions.appendChild(reject);
         t.body.appendChild(actions);
         scrollDown();
         break;
@@ -1812,7 +2023,8 @@
         finalizeWork(msg.requestId);
         t.body.innerHTML = '';
         const qs = msg.questions;
-        const selected = qs.map(() => null); // chosen option index per question
+        const selected = qs.map(() => null); // chosen option index per question; q.options.length === "type your own"
+        const custom = qs.map(() => '');      // free-text answer per question, used when "type your own" is chosen
         let cur = 0;
 
         const card = document.createElement('div'); card.className = 'clarify';
@@ -1822,59 +2034,92 @@
         const qbox = document.createElement('div'); qbox.className = 'clarify-step';
         const nav = document.createElement('div'); nav.className = 'clarify-nav';
         const back = document.createElement('button'); back.type = 'button'; back.className = 'secondary'; back.textContent = 'Back';
-        const next = document.createElement('button'); next.type = 'button'; next.className = 'primary'; next.textContent = 'Next';
+        const next = document.createElement('button'); next.type = 'button'; next.className = 'primary'; next.textContent = 'Next →';
         nav.appendChild(back); nav.appendChild(next);
-        card.appendChild(intro); card.appendChild(tabsEl); card.appendChild(qbox); card.appendChild(nav);
+        const meta = document.createElement('div'); meta.className = 'clarify-meta';
+        const metaCount = document.createElement('span'); metaCount.className = 'clarify-meta-count';
+        const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'clarify-dismiss'; dismiss.textContent = 'Dismiss';
+        meta.appendChild(metaCount); meta.appendChild(document.createTextNode(' · ')); meta.appendChild(dismiss);
+        const footer = document.createElement('div'); footer.className = 'clarify-footer';
+        footer.appendChild(nav); footer.appendChild(meta);
+        card.appendChild(intro); card.appendChild(tabsEl); card.appendChild(qbox); card.appendChild(footer);
 
+        const CUSTOM = (qi) => qs[qi].options.length; // pseudo-index for the "type your own" row
+        const answered = (qi) => selected[qi] !== null && (selected[qi] !== CUSTOM(qi) || custom[qi].trim().length > 0);
         const isLast = () => cur === qs.length - 1;
-        const allAnswered = () => selected.every((s) => s !== null);
+        const allAnswered = () => qs.every((q, qi) => answered(qi));
         function updateNav() {
           back.disabled = cur === 0;
+          metaCount.textContent = `${cur + 1}/${qs.length}`;
           if (isLast()) { next.textContent = 'Submit answers'; next.disabled = !allAnswered(); }
-          else { next.textContent = 'Next'; next.disabled = selected[cur] === null; }
+          else { next.textContent = 'Next →'; next.disabled = !answered(cur); }
         }
         function renderTabs() {
           tabsEl.innerHTML = '';
           qs.forEach((q, i) => {
             const tb = document.createElement('button'); tb.type = 'button';
-            tb.className = 'clarify-tab' + (i === cur ? ' active' : '') + (selected[i] !== null ? ' done' : '');
-            tb.textContent = selected[i] !== null ? '✓' : String(i + 1);
+            tb.className = 'clarify-tab' + (i === cur ? ' active' : '') + (answered(i) ? ' done' : '');
+            tb.textContent = q.label || `Q${i + 1}`;
             tb.title = q.text;
             tb.addEventListener('click', () => { cur = i; renderStep(); });
             tabsEl.appendChild(tb);
           });
+        }
+        function choose(oi) {
+          selected[cur] = oi;
+          renderStep();
+          // Auto-advance only for a concrete option — the free-text row needs the user to type first.
+          if (oi !== CUSTOM(cur) && !isLast()) setTimeout(() => { cur++; renderStep(); }, 180);
         }
         function renderStep() {
           renderTabs();
           qbox.innerHTML = '';
           const q = qs[cur];
           const counter = document.createElement('div'); counter.className = 'clarify-counter';
-          counter.textContent = `Question ${cur + 1} of ${qs.length}`;
+          counter.textContent = q.label ? `${q.label} · Question ${cur + 1} of ${qs.length}` : `Question ${cur + 1} of ${qs.length}`;
           const qt = document.createElement('div'); qt.className = 'clarify-q-text'; qt.textContent = q.text;
           const opts = document.createElement('div'); opts.className = 'clarify-opts';
-          q.options.forEach((opt, oi) => {
-            const b = document.createElement('button'); b.type = 'button';
-            b.className = 'clarify-opt' + (selected[cur] === oi ? ' selected' : ''); b.textContent = opt;
-            b.addEventListener('click', () => {
-              selected[cur] = oi;
-              opts.querySelectorAll('.clarify-opt').forEach((x) => x.classList.remove('selected'));
-              b.classList.add('selected');
-              renderTabs();
-              if (!isLast()) setTimeout(() => { cur++; renderStep(); }, 200); // flow to next
-              else updateNav();
-            });
-            opts.appendChild(b);
-          });
+          const mkRow = (oi, title, desc) => {
+            const row = document.createElement('button'); row.type = 'button';
+            row.className = 'clarify-opt' + (selected[cur] === oi ? ' selected' : '');
+            const num = document.createElement('span'); num.className = 'clarify-opt-num'; num.textContent = `${oi + 1}.`;
+            const radio = document.createElement('span'); radio.className = 'clarify-radio';
+            const body = document.createElement('span'); body.className = 'clarify-opt-body';
+            const tEl = document.createElement('span'); tEl.className = 'clarify-opt-title'; tEl.textContent = title; body.appendChild(tEl);
+            if (desc) { const dEl = document.createElement('span'); dEl.className = 'clarify-opt-desc'; dEl.textContent = desc; body.appendChild(dEl); }
+            row.appendChild(num); row.appendChild(radio); row.appendChild(body);
+            row.addEventListener('click', () => choose(oi));
+            opts.appendChild(row);
+          };
+          q.options.forEach((opt, oi) => mkRow(oi, opt.title, opt.description));
+          mkRow(CUSTOM(cur), 'Type your own answer', '');
+          // Reveal a free-text input when the "type your own" row is the current selection.
+          if (selected[cur] === CUSTOM(cur)) {
+            const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'clarify-custom';
+            inp.placeholder = 'Type your answer…'; inp.value = custom[cur];
+            inp.addEventListener('input', () => { custom[cur] = inp.value; updateNav(); renderTabs(); });
+            inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); next.click(); } });
+            opts.appendChild(inp);
+            setTimeout(() => inp.focus(), 0);
+          }
           qbox.appendChild(counter); qbox.appendChild(qt); qbox.appendChild(opts);
           updateNav();
           scrollDown();
         }
         back.addEventListener('click', () => { if (cur > 0) { cur--; renderStep(); } });
         next.addEventListener('click', () => {
-          if (!isLast()) { if (selected[cur] !== null) { cur++; renderStep(); } return; }
+          if (!isLast()) { if (answered(cur)) { cur++; renderStep(); } return; }
           if (!allAnswered()) return;
-          card.querySelectorAll('button').forEach((b) => { b.disabled = true; });
-          const answers = qs.map((q, qi) => q.options[selected[qi]]);
+          card.querySelectorAll('button, input').forEach((b) => { b.disabled = true; });
+          const answers = qs.map((q, qi) => selected[qi] === CUSTOM(qi) ? custom[qi].trim() : q.options[selected[qi]].title);
+          vscode.postMessage({ type: 'answerClarifying', requestId: msg.requestId, answers });
+        });
+        dismiss.addEventListener('click', () => {
+          card.querySelectorAll('button, input').forEach((b) => { b.disabled = true; });
+          const note = document.createElement('div'); note.className = 'clarify-counter'; note.textContent = '✗ Dismissed — planning with sensible defaults.';
+          card.appendChild(note);
+          // Let the planner proceed on its own best judgment for every question.
+          const answers = qs.map(() => '(no preference — use your best judgment)');
           vscode.postMessage({ type: 'answerClarifying', requestId: msg.requestId, answers });
         });
 
@@ -1886,9 +2131,11 @@
       case 'assistantMessage': {
         const t = ensureTarget(msg.requestId);
         stopStatusTimer(msg.requestId, true);
-        if (msg.reasoning) {
+        // Add a fold-up 💭 Reasoning disclosure only when no live 🧠 Thinking block already
+        // captured this reasoning inline — otherwise the same reasoning would show twice.
+        if (msg.reasoning && !t.tools.querySelector('.think-block')) {
           const det = document.createElement('details'); det.className = 'reasoning';
-          det.innerHTML = `<summary>💭 Reasoning</summary>`;
+          det.innerHTML = `<summary>Reasoning</summary>`;
           det.appendChild(renderMarkdown(msg.reasoning));
           t.tools.insertBefore(det, t.tools.firstChild); // inside the "Worked for Ns" disclosure
         }
@@ -2047,6 +2294,65 @@
       t.todoEl.appendChild(row);
     });
     scrollDown();
+  }
+
+  // ── Structured, editable plan checklist (pre-approval) ───────────────────────────────
+  // Parse plan text into discrete step strings (numbered/bulleted list lines); falls back to
+  // the whole trimmed text as one step if the model didn't use a list.
+  function parsePlanSteps(steps) {
+    const items = [];
+    for (const line of String(steps || '').split('\n')) {
+      const mm = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.*)$/);
+      if (mm) { const tx = mm[1].replace(/\*\*/g, '').trim(); if (tx) items.push(tx); }
+    }
+    if (!items.length) { const t = String(steps || '').trim(); if (t) items.push(t); }
+    return items;
+  }
+
+  function addPlanRow(listEl, text, focus) {
+    const row = document.createElement('div'); row.className = 'plan-row';
+    const ic = document.createElement('span'); ic.className = 'plan-ic'; ic.textContent = '○';
+    const tx = document.createElement('span'); tx.className = 'plan-tx'; tx.contentEditable = 'plaintext-only'; tx.textContent = text || '';
+    tx.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); addPlanRow(listEl, '', true); }
+      else if (e.key === 'Backspace' && !tx.textContent && listEl.querySelectorAll('.plan-row').length > 1) {
+        e.preventDefault();
+        const prev = row.previousElementSibling; row.remove();
+        const p = prev && prev.querySelector ? prev.querySelector('.plan-tx') : null; if (p) p.focus();
+      }
+    });
+    const del = document.createElement('span'); del.className = 'plan-del'; del.textContent = '✕'; del.title = 'Remove step';
+    del.addEventListener('click', () => { if (listEl.querySelectorAll('.plan-row').length > 1) row.remove(); });
+    row.appendChild(ic); row.appendChild(tx); row.appendChild(del);
+    const addBtn = listEl.querySelector('.plan-add');
+    if (addBtn) listEl.insertBefore(row, addBtn); else listEl.appendChild(row);
+    if (focus) tx.focus();
+    return row;
+  }
+
+  function renderPlanChecklist(items, editable) {
+    const listEl = document.createElement('div'); listEl.className = 'plan-list';
+    if (editable) {
+      const add = document.createElement('div'); add.className = 'plan-add'; add.textContent = '+ Add step';
+      add.addEventListener('click', () => addPlanRow(listEl, '', true));
+      listEl.appendChild(add);
+      (items.length ? items : ['']).forEach((it) => addPlanRow(listEl, it, false));
+    } else {
+      items.forEach((it) => {
+        const row = document.createElement('div'); row.className = 'plan-row';
+        const ic = document.createElement('span'); ic.className = 'plan-ic'; ic.textContent = '○';
+        const tx = document.createElement('span'); tx.className = 'plan-tx'; tx.textContent = it;
+        row.appendChild(ic); row.appendChild(tx); listEl.appendChild(row);
+      });
+    }
+    return listEl;
+  }
+
+  // Re-serialize the (possibly edited) rows back into a numbered list the host can parse.
+  function collectPlanSteps(listEl) {
+    const out = [];
+    listEl.querySelectorAll('.plan-row .plan-tx').forEach((el) => { const t = (el.textContent || '').trim(); if (t) out.push(t); });
+    return out.map((s, i) => `${i + 1}. ${s}`).join('\n');
   }
 
   // Pinned "changed files" review bar above the composer (Cursor/Kilo-style). Shows
