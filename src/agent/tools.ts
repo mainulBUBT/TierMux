@@ -16,6 +16,15 @@ const MAX_READ_BYTES = 100 * 1024;
 const MAX_SEARCH_RESULTS = 40;
 const MAX_DOC_CHARS_DEFAULT = 60_000;
 const EXCLUDE = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/build/**,**/.next/**,**/.venv/**}';
+const SEARCH_CACHE_TTL_MS = 30_000; // 30 seconds
+
+interface FileCacheEntry { mtime: number; content: string }
+interface SearchCacheEntry { result: string; ts: number }
+
+export interface CacheStats {
+  fileCache: { entries: number; sizeKb: number; enabled: boolean };
+  searchCache: { entries: number; enabled: boolean };
+}
 
 export interface ToolEvent {
   toolCallId: string;
@@ -26,10 +35,34 @@ export interface ToolEvent {
 }
 
 export class WorkspaceTools {
+  private fileCache = new Map<string, FileCacheEntry>();
+  private searchCache = new Map<string, SearchCacheEntry>();
+  private fileCacheEnabled: boolean;
+  private searchCacheEnabled: boolean;
+
   constructor(
     private readonly editGate: EditGate,
     private readonly commandGate: CommandGate,
-  ) {}
+  ) {
+    const cfg = vscode.workspace.getConfiguration('tiermux.cache');
+    this.fileCacheEnabled = cfg.get<boolean>('fileEnabled', true);
+    this.searchCacheEnabled = cfg.get<boolean>('searchEnabled', true);
+  }
+
+  setFileCacheEnabled(enabled: boolean): void { this.fileCacheEnabled = enabled; if (!enabled) this.fileCache.clear(); }
+  setSearchCacheEnabled(enabled: boolean): void { this.searchCacheEnabled = enabled; if (!enabled) this.searchCache.clear(); }
+
+  clearFileCache(): void { this.fileCache.clear(); }
+  clearSearchCache(): void { this.searchCache.clear(); }
+
+  getCacheStats(): CacheStats {
+    let sizeBytes = 0;
+    for (const v of this.fileCache.values()) sizeBytes += v.content.length * 2;
+    return {
+      fileCache: { entries: this.fileCache.size, sizeKb: Math.round(sizeBytes / 1024), enabled: this.fileCacheEnabled },
+      searchCache: { entries: this.searchCache.size, enabled: this.searchCacheEnabled },
+    };
+  }
 
   private root(): vscode.Uri {
     const folders = vscode.workspace.workspaceFolders;
@@ -87,6 +120,18 @@ export class WorkspaceTools {
 
   private async readFile(p: string): Promise<string> {
     const uri = this.resolve(p);
+    const key = uri.fsPath;
+    if (this.fileCacheEnabled) {
+      const stat = await vscode.workspace.fs.stat(uri);
+      const cached = this.fileCache.get(key);
+      if (cached && cached.mtime === stat.mtime) return cached.content;
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      const truncated = bytes.byteLength > MAX_READ_BYTES;
+      const text = new TextDecoder().decode(truncated ? bytes.slice(0, MAX_READ_BYTES) : bytes);
+      const result = JSON.stringify({ path: p, truncated, content: text });
+      this.fileCache.set(key, { mtime: stat.mtime, content: result });
+      return result;
+    }
     const bytes = await vscode.workspace.fs.readFile(uri);
     const truncated = bytes.byteLength > MAX_READ_BYTES;
     const text = new TextDecoder().decode(truncated ? bytes.slice(0, MAX_READ_BYTES) : bytes);
@@ -110,6 +155,11 @@ export class WorkspaceTools {
   private async searchWorkspace(query: string): Promise<string> {
     const q = query.trim();
     if (!q) return JSON.stringify({ error: 'Empty query.' });
+    if (this.searchCacheEnabled) {
+      const key = `search:${q}`;
+      const cached = this.searchCache.get(key);
+      if (cached && Date.now() - cached.ts < SEARCH_CACHE_TTL_MS) return cached.result;
+    }
     const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
 
     // File-name / glob matches.
@@ -137,7 +187,9 @@ export class WorkspaceTools {
       } catch { /* skip unreadable */ }
     }
     perFile.sort((a, b) => b.score - a.score);
-    return JSON.stringify({ files, matches: perFile.slice(0, MAX_SEARCH_RESULTS) });
+    const result = JSON.stringify({ files, matches: perFile.slice(0, MAX_SEARCH_RESULTS) });
+    if (this.searchCacheEnabled) this.searchCache.set(`search:${q}`, { result, ts: Date.now() });
+    return result;
   }
 
   private async getDiagnostics(p?: string): Promise<string> {
@@ -177,28 +229,39 @@ export class WorkspaceTools {
     return null;
   }
 
+  private invalidateWriteCaches(p: string): void {
+    // Invalidate file cache entry for the written path; clear search cache entirely
+    // since content may have changed (too expensive to do partial invalidation).
+    try { this.fileCache.delete(this.resolve(p).fsPath); } catch { /* best-effort */ }
+    this.searchCache.clear();
+  }
+
   private async writeFile(p: string, content: string, ctx?: RunContext): Promise<string> {
     const blocked = this.claimEdit(p, ctx);
     if (blocked) return blocked;
     const r = await this.editGate.write(this.resolve(p), content, ctx);
+    if (r.applied) this.invalidateWriteCaches(p);
     return JSON.stringify(r.applied ? { ok: true, path: p } : { error: r.error ?? 'not applied' });
   }
   private async createFile(p: string, content: string, ctx?: RunContext): Promise<string> {
     const blocked = this.claimEdit(p, ctx);
     if (blocked) return blocked;
     const r = await this.editGate.create(this.resolve(p), content, ctx);
+    if (r.applied) this.invalidateWriteCaches(p);
     return JSON.stringify(r.applied ? { ok: true, path: p } : { error: r.error ?? 'not applied' });
   }
   private async editFile(p: string, search: string, replace: string, ctx?: RunContext): Promise<string> {
     const blocked = this.claimEdit(p, ctx);
     if (blocked) return blocked;
     const r = await this.editGate.edit(this.resolve(p), search, replace, ctx);
+    if (r.applied) this.invalidateWriteCaches(p);
     return JSON.stringify(r.applied ? { ok: true, path: p } : { error: r.error ?? 'not applied' });
   }
   private async deleteFile(p: string, ctx?: RunContext): Promise<string> {
     const blocked = this.claimEdit(p, ctx);
     if (blocked) return blocked;
     const r = await this.editGate.remove(this.resolve(p), ctx);
+    if (r.applied) this.invalidateWriteCaches(p);
     return JSON.stringify(r.applied ? { ok: true, path: p } : { error: r.error ?? 'not applied' });
   }
 
@@ -215,6 +278,11 @@ export class WorkspaceTools {
   private async grep(pattern: string, path: string | undefined, regex: boolean): Promise<string> {
     const p = pattern || '';
     if (!p) return JSON.stringify({ error: 'Empty pattern.' });
+    if (this.searchCacheEnabled) {
+      const key = `grep:${p}:${path ?? ''}:${regex}`;
+      const cached = this.searchCache.get(key);
+      if (cached && Date.now() - cached.ts < SEARCH_CACHE_TTL_MS) return cached.result;
+    }
     let re: RegExp;
     try {
       re = regex ? new RegExp(p, 'i') : new RegExp(p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
@@ -236,7 +304,12 @@ export class WorkspaceTools {
         if (matches.length >= 40) break;
       } catch { /* skip unreadable */ }
     }
-    return JSON.stringify({ pattern: p, path: path ?? null, matches });
+    const result = JSON.stringify({ pattern: p, path: path ?? null, matches });
+    if (this.searchCacheEnabled) {
+      const key = `grep:${p}:${path ?? ''}:${regex}`;
+      this.searchCache.set(key, { result, ts: Date.now() });
+    }
+    return result;
   }
 
   /** Fetch a URL and return cleaned text (HTML stripped, truncated to ~8 KB). */

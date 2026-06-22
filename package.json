@@ -483,6 +483,27 @@
           "minimum": 0,
           "description": "Pause between embedding requests while indexing. Raise this (e.g. 500–1000) if your embedding provider keeps rate-limiting the index build."
         },
+        "tiermux.cache.fileEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Cache file reads by mtime so the agent doesn't re-read the same file multiple times in one run. Saves input tokens and rate-limit quota on free LLMs."
+        },
+        "tiermux.cache.searchEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Cache grep and workspace-search results for 30 seconds so duplicate searches within a run return instantly."
+        },
+        "tiermux.cache.searchTtlMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 5000,
+          "description": "How long (ms) grep/search results are cached. After this window, or when a file is written, the cache is cleared."
+        },
+        "tiermux.cache.researchEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run a lightweight pre-research step (grep, semantic search, diagnostics) before the first model call. Typically saves 2–3 agent iterations on code tasks."
+        },
         "tiermux.catalog.url": {
           "type": "string",
           "default": "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ0gOSMeX5RCp4zJIZxZRSr74Ro8jYFFlsPqMSm3Uw4hLa4-telxqDwvxxdO6JaXAWL3UM9BaQCTUF5/pub?output=csv",

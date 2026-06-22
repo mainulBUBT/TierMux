@@ -3,7 +3,8 @@ import { contentHash, loadVersion, saveVersion, computeWorkspaceHash, detectChan
 import { detectEntrypoints, type EntrypointInfo } from './entrypointDetection';
 
 const EXCLUDE = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/build/**,**/.next/**,**/.venv/**}';
-const SUPPORTED_EXTS = '**/*.{ts,tsx,js,jsx,mjs,cjs}';
+const SUPPORTED_EXTS = '**/*.{ts,tsx,js,jsx,mjs,cjs,php,py}';
+const SUPPORTED_EXT_RE = /\.(ts|tsx|js|jsx|mjs|cjs|php|py)$/;
 const MAX_FILES = 800;
 
 const GRAPH_DIR = '.tiermux/graph';
@@ -90,7 +91,38 @@ export function inferLayer(filePath: string): LayerTag {
   return 'unknown';
 }
 
-function extractExports(text: string): ExportInfo[] {
+function extractExports(text: string, filePath = ''): ExportInfo[] {
+  const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+
+  // ---- PHP: extract class, interface, trait, enum, and public/protected functions ----
+  if (ext === 'php') {
+    const exports: ExportInfo[] = [];
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]; const ln = i + 1;
+      const cls = /^\s*(?:abstract\s+|final\s+|readonly\s+)*(?:class|interface|trait|enum)\s+(\w+)/.exec(line);
+      if (cls) { exports.push({ name: cls[1], kind: 'class', line: ln }); continue; }
+      const fn = /^\s*(?:public|protected|private|static|\s)*function\s+(\w+)\s*\(/.exec(line);
+      if (fn && fn[1] !== '__construct') exports.push({ name: fn[1], kind: 'function', line: ln });
+    }
+    return exports;
+  }
+
+  // ---- Python: extract class and top-level def ----
+  if (ext === 'py') {
+    const exports: ExportInfo[] = [];
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]; const ln = i + 1;
+      const cls = /^class\s+(\w+)/.exec(line);
+      if (cls) { exports.push({ name: cls[1], kind: 'class', line: ln }); continue; }
+      const fn = /^def\s+(\w+)/.exec(line);
+      if (fn) exports.push({ name: fn[1], kind: 'function', line: ln });
+    }
+    return exports;
+  }
+
+  // ---- TypeScript / JavaScript (original logic) ----
   const exports: ExportInfo[] = [];
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
@@ -260,7 +292,7 @@ export async function buildStructuralGraph(full = false): Promise<StructuralGrap
   for (const filePath of needsReparse) {
     const text = fileTexts[filePath];
     if (!text) continue;
-    const exports = extractExports(text);
+    const exports = extractExports(text, filePath);
     const imports = extractImports(text, filePath);
     const layer = inferLayer(filePath);
     parsedNodes.push({
@@ -348,7 +380,7 @@ export async function updateFileInGraph(uri: vscode.Uri): Promise<void> {
   if (!root) return;
 
   const rel = vscode.workspace.asRelativePath(uri);
-  if (!/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(rel)) return;
+  if (!SUPPORTED_EXT_RE.test(rel)) return;
 
   const text = await readText(uri);
   if (text == null) return;
@@ -358,7 +390,7 @@ export async function updateFileInGraph(uri: vscode.Uri): Promise<void> {
   const existing = existingIdx >= 0 ? graph.files[existingIdx] : undefined;
   if (existing && existing.hash === hash) return;
 
-  const exports = extractExports(text);
+  const exports = extractExports(text, rel);
   const layer = inferLayer(rel);
   const node: FileNode = { path: rel, hash, exports, layer, isEntrypoint: existing?.isEntrypoint ?? false, entrypointReason: existing?.entrypointReason };
 

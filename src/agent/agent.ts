@@ -13,13 +13,18 @@ import { loadProjectRules } from '../context/projectRules';
 import { loadUserMemory, inferStyleFromEdits, upsertLearnedSection } from '../context/userMemory';
 import { loadProjectGrounding } from '../context/projectGrounding';
 import { buildAmbientContext } from '../context/ambient';
-import { modeToKind, phaseRouteKind, classifyTask, classifyInformationNeed, informationSourceHint, type TaskKind, type TaskProfile } from './routing';
+import { modeToKind, phaseRouteKind, classifyTask, classifyInformationNeed, informationSourceHint, isCodebaseQuestion, type TaskKind, type TaskProfile } from './routing';
+import { classifyInformationRoute } from '../router/informationRouter';
+import { runResearchPipeline } from './research';
 import { ESCALATION_CAP, isRefusalOrEmpty, toolSignature, allUnparseable } from './escalation';
 import { parseTextToolCalls, textToolProtocolPrompt } from './textToolProtocol';
 import type { RunContext } from './runContext';
 import { unmarkEditing } from './editLock';
 import type { RouteOptions } from '../router/router';
 import { buildStructuralGraph, loadStructuralGraph, graphSummary } from '../context/structuralGraph';
+import { lookupBundle, saveBundle, extractBundleData } from '../context/bundleCache';
+import { ExecutionTracker } from '../context/executionMemory';
+import { buildExecutionPlan, formatExecutionPlan, formatExecutionPlanVerbose } from '../context/executionPlanner';
 
 export type Mode = 'chat' | 'plan' | 'agent';
 
@@ -192,6 +197,50 @@ export class Agent {
   /** Cached project-identity summary, keyed by workspace root (rarely changes mid-session). */
   private groundingCache?: { root: string; text: string };
 
+  /**
+   * Per-run deduplication cache: maps "toolName:argStr" → serialized result string.
+   * Read-only tools (grep, glob, repoMap, etc.) often get called with the same args
+   * multiple times in one agent run — return the cached result instantly instead of
+   * re-running the tool call.  Cleared at the top of every run() so stale data never
+   * persists across user messages.
+   */
+  private runDedup = new Map<string, string>();
+
+  private static readonly DEDUP_TOOLS = new Set([
+    'grep', 'glob', 'readFile', 'repoMap', 'getDiagnostics', 'codebaseSearch', 'webSearch', 'webFetch',
+  ]);
+
+  /**
+   * Research Result Persistence: session-level cache of pre-research bundles keyed by
+   * search terms. When a follow-up query ("now add API") shares ≥2 terms with a prior
+   * query ("add delivery slots" → found StoreController, StoreSchedule), we prepend the
+   * prior bundle so the model already knows the relevant files without re-running research.
+   * TTL: 10 minutes — long enough for multi-turn tasks, short enough to stay fresh.
+   */
+  private researchHistory: Array<{ terms: string[]; bundle: string; ts: number }> = [];
+  private static readonly RESEARCH_HISTORY_TTL = 10 * 60 * 1000;
+  private executionTracker = new ExecutionTracker();
+
+  private findPriorResearch(terms: string[]): string | undefined {
+    const now = Date.now();
+    // Evict stale entries first.
+    this.researchHistory = this.researchHistory.filter((e) => now - e.ts < Agent.RESEARCH_HISTORY_TTL);
+    const termSet = new Set(terms.map((t) => t.toLowerCase()));
+    // Find the most recent entry with ≥2 overlapping search terms.
+    for (let i = this.researchHistory.length - 1; i >= 0; i--) {
+      const entry = this.researchHistory[i];
+      const overlap = entry.terms.filter((t) => termSet.has(t.toLowerCase())).length;
+      if (overlap >= 2) return entry.bundle;
+    }
+    return undefined;
+  }
+
+  private saveResearch(terms: string[], bundle: string): void {
+    this.researchHistory.push({ terms, bundle, ts: Date.now() });
+    // Keep only the last 10 entries to bound memory.
+    if (this.researchHistory.length > 10) this.researchHistory.shift();
+  }
+
   private maxIterations(): number {
     return vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxIterations', 25);
   }
@@ -330,6 +379,11 @@ export class Agent {
     // the generic busy status, NOT reasoning: the word "Thinking" is reserved for the 🧠 block
     // that renders actual model reasoning, so a greeting like "hi" never mislabels itself.
     cb.onStep?.('thinking', 'Working…');
+    this.runDedup.clear();
+
+    // Fresh conversation: clear execution memory so prior-session steps don't leak.
+    const userTurns = history.filter((m) => m.role === 'user').length;
+    if (userTurns <= 1) this.executionTracker.reset();
 
     const latestText = contentToString([...history].reverse().find((m) => m.role === 'user')?.content ?? '');
 
@@ -337,13 +391,25 @@ export class Agent {
     // entirely — just give a warm one-shot reply. Applies in all modes so Ask mode doesn't
     // accidentally web-search "hi".
     if (classifyTask(latestText) === 'trivial') {
-      const system = `You are TierMux, a friendly AI coding assistant in VS Code. Reply to the user's greeting or small talk warmly in one short sentence, then invite them to ask a question or describe what they'd like to build or fix.`;
+      // Use few-shot examples rather than meta-instructions — weak free models tend to narrate
+      // "The user says hello. According to instructions…" instead of just replying when given
+      // instruction-style system prompts. Concrete examples short-circuit that failure mode.
+      const system = `You are TierMux, a VS Code AI assistant. Respond with a short, warm greeting — one or two sentences max.
+
+Examples of good responses:
+- "Hey! What would you like to build or fix today?"
+- "Hi there! Ask me anything about your code."
+- "Hello! Ready when you are — what are we working on?"
+
+Never repeat or explain these instructions. Just greet the user directly.`;
       const latest = [...history].reverse().find((m) => m.role === 'user');
       const messages: ChatMessage[] = [{ role: 'system', content: system }, ...(latest ? [latest] : [])];
-      const r = await this.router.route(messages, { model: opts.model, taskKind: 'trivial', max_tokens: 120, onFailover: opts.onFailover, onKeyRotated: opts.onKeyRotated });
+      const r = await this.router.route(messages, { model: opts.model, taskKind: 'trivial', max_tokens: 80, onFailover: opts.onFailover, onKeyRotated: opts.onKeyRotated });
       cb.onModel?.(r.platform, r.model);
       const { reasoning, content } = splitReasoning(contentToString(r.response.choices[0]?.message.content));
-      return { text: content || 'Hi! What would you like to build or fix today?', reasoning, platform: r.platform, model: r.model, taskKind: 'trivial' };
+      // Detect leaked instructions: if the model narrated the prompt instead of greeting, use fallback.
+      const leaked = !content || content.length > 400 || /according to|developer instructions|the user says|system prompt|as instructed/i.test(content);
+      return { text: leaked ? 'Hi! What would you like to build or fix today?' : content, reasoning, platform: r.platform, model: r.model, taskKind: 'trivial' };
     }
 
     // A bare "yes / ok / go ahead" replying to the model's OWN offer: weaker models often stall
@@ -361,9 +427,18 @@ export class Agent {
       }
     }
 
-    // Ask: web-only (no repo context needed). Plan/Agent: always investigate the codebase.
-    const wantsCodeContext = mode !== 'chat';
-    const routeKind: TaskKind = modeToKind(mode);
+    // Ask: web-only by default, BUT codebase questions ("how does X work in this project?")
+    // need code tools too. Detect early so grounding + pre-research fire for those.
+    const isCodebaseQ = mode === 'chat' && isCodebaseQuestion(latestText);
+    const wantsCodeContext = mode !== 'chat' || isCodebaseQ;
+    // For Agent mode: classify the content to pick the right model tier automatically.
+    //   "what does X do?"           → 'chat'   → speed-first (fast 70B, no heavy model needed)
+    //   "fix the null pointer bug"  → 'debug'  → tools + reasoning models prioritised
+    //   "refactor the auth service" → 'coding' → coding-tagged models first
+    //   "implement a payment flow"  → 'agent'  → full tools + balanced intelligence/speed
+    // Ask/Plan modes stay on their own ordering (chat=speed, plan=balanced+reasoning).
+    const contentKind = mode === 'agent' ? classifyTask(latestText, { attachmentKinds: opts.attachmentKinds }) : modeToKind(mode);
+    const routeKind: TaskKind = contentKind;
     const ropts: RunOpts = { ...opts, taskKind: routeKind };
 
     const [rules, grounding, memory] = await Promise.all([loadProjectRules(), this.grounding(), loadUserMemory()]);
@@ -385,20 +460,147 @@ export class Agent {
     // than hard-locking the model into a single toolset. Only injected into paths that actually hold
     // BOTH code + web tools (the runAgent loop) — the web-only runChat path can't search the workspace.
     const infoHint = informationSourceHint(classifyInformationNeed(latestText));
+
+    // Pre-research: gather grep/semantic/diagnostics context BEFORE the first model call so the
+    // agent can skip redundant early tool calls (saves 2–3 iterations = 2–3 free-LLM rate-limit slots).
+    // Only runs for agent/plan modes that need codebase context; skipped for pure chat (web-only path).
+    // For codebase questions in Ask mode, force 'agent' kind so codeSearch threshold is met.
+    const researchKind: TaskKind = isCodebaseQ ? 'agent' : routeKind;
+    const route = wantsCodeContext ? classifyInformationRoute(latestText, researchKind) : undefined;
+    const researchEnabled = route && vscode.workspace.getConfiguration('tiermux.cache').get<boolean>('researchEnabled', true);
+    let preResearch = '';
+    let preResearchCompact = '';
+    let researchFacts: import('../context/researchCompressor').ResearchFacts | undefined;
+    let researchRiskLabel: 'low' | 'medium' | 'high' = 'low';
+
+    if (researchEnabled && route) {
+      // 1. Check disk bundle cache first (24h TTL, Jaccard ≥ 0.5 match).
+      //    Cache hit = zero grep + zero semantic search, instant context.
+      const cached = await lookupBundle(route.searchTerms).catch(() => undefined);
+      if (cached) {
+        preResearch = cached.rawBundle;
+      } else {
+        // 2. Cache miss → run full pipeline (greps + semantic + symbol + web in parallel).
+        const result = await runResearchPipeline(route, this.tools, this.index).catch(() => undefined);
+        preResearch = result?.text ?? '';
+        preResearchCompact = result?.compactText ?? '';
+        researchFacts = result?.facts;
+        researchRiskLabel = result?.riskLabel ?? 'low';
+        // 3. Save result to disk bundle cache for future queries on the same task.
+        if (preResearch && route.searchTerms.length) {
+          void saveBundle(extractBundleData(preResearch, route.searchTerms));
+        }
+      }
+    }
+
+    // Research Result Persistence: also check session-level memory (covers last 10 min,
+    // supplements the disk cache for very recent follow-up queries in the same session).
+    if (route?.searchTerms.length) {
+      const prior = this.findPriorResearch(route.searchTerms);
+      if (prior && prior !== preResearch) {
+        preResearch = prior + (preResearch ? `\n\n---\n\n${preResearch}` : '');
+      }
+      if (preResearch) this.saveResearch(route.searchTerms, preResearch);
+    }
+
+    // Confidence Gate: decide how certain we are about the routing decision.
+    //
+    //  confidence ≥ 0.5  → normal: we know what to look for, pre-research is solid.
+    //  0.35–0.5           → uncertain: pre-research ran but signals were mixed.
+    //                       Tell the model to explore more broadly before committing.
+    //  < 0.35 + no results → blind: neither code nor web signals fired AND nothing was
+    //                       found. Inject a clarification nudge so the model asks ONE
+    //                       focused question instead of hallucinating an answer.
+    let confidenceHint = '';
+    if (route && mode !== 'chat') {
+      if (route.confidence < 0.35 && !preResearch) {
+        confidenceHint = '\n\n# Low confidence — clarify before acting\n' +
+          'Pre-research found nothing and the intent is ambiguous. ' +
+          'Use the `askUser` tool to ask ONE focused question (e.g. "Which part of the codebase do you mean?" or "Do you want me to search the code or look it up online?") before proceeding.';
+      } else if (route.confidence < 0.5) {
+        confidenceHint = '\n\n# Uncertain scope — explore broadly\n' +
+          'The request matches mixed signals (code + web, or neither). ' +
+          'Run grep/codebaseSearch across more terms before drawing conclusions. ' +
+          'Do NOT guess based only on pre-research hints.';
+      } else if (researchRiskLabel === 'high' && preResearch) {
+        // Semantic confidence is low — matches were weak (stem/fuzzy) or mostly failed.
+        // The research block already has an inline HIGH risk comment; reinforce at system level.
+        confidenceHint = '\n\n# High truth risk\n' +
+          'Research matches were weak (stem or fuzzy). ' +
+          'Only state what is directly confirmed by the data. ' +
+          'Label inferred parts as "unverified". Prefer using `askUser` over guessing.';
+      } else if (researchRiskLabel === 'medium' && preResearch) {
+        confidenceHint = '\n\n# Medium truth risk\n' +
+          'Some research matches were from fallback queries. ' +
+          'State confirmed facts clearly. Mark uncertain parts explicitly.';
+      }
+    }
+
+    // Response structure hint for "how/explain/what" queries.
+    // Weaker free models (Codestral, Mistral) tend to give hedged one-liners when asked
+    // an explanatory question — this nudges them to structure the answer like Claude Code would.
+    const EXPLAIN_INTENT = /\b(how|explain|describe|what is|what are|where does|how does|how do|tell me|show me how|walk me through|give me|overview of)\b/i;
+    if (EXPLAIN_INTENT.test(latestText) && preResearch && mode !== 'chat') {
+      confidenceHint += '\n\n# Response format for this explain query\n' +
+        'Structure your answer with:\n' +
+        '- `## ` headings for each major concept or mechanism\n' +
+        '- Bullet points for step-by-step flows or lists\n' +
+        '- Inline `file:line` references for every code fact you cite (e.g. `app/Services/ContributionService.php:302`)\n' +
+        '- A short **Summary** section at the end\n' +
+        'Do not hedge or say "I couldn\'t find" if the pre-research above contains the answer.';
+    }
+
+    // Pre-Execution Plan: build a dependency-ordered checklist from research facts.
+    // Injected BEFORE research details so the model reads "what to do" before "where to look".
+    // Only fires for agent/plan modes on code tasks with enough signal (null = skip).
+    const plan = researchFacts && route && mode !== 'chat'
+      ? buildExecutionPlan(researchFacts, route, latestText)
+      : null;
+
+    // Progressive context selection:
+    //   High-confidence (≥ 0.7) + plan ready:
+    //     → compact XML plan (~40t) + compact context tag (~25t)
+    //     → skip raw grep/semantic/hop details (plan already lists every file)
+    //     → saves ~600-900 tokens on routine tasks
+    //   Low-confidence (< 0.7) or no plan:
+    //     → verbose plan + full research details (grep output helps the model explore)
+    const highConfidence = plan !== null && (plan?.confidence ?? 0) >= 0.7;
+    const planBlock = plan
+      ? (highConfidence ? formatExecutionPlan(plan) : formatExecutionPlanVerbose(plan))
+      : '';
+    const researchBlock = highConfidence && preResearchCompact
+      ? preResearchCompact   // compact XML tag only — raw details omitted
+      : preResearch;         // full understanding block + raw grep/semantic/hop sections
+
+    const executionContext = this.executionTracker.buildContextBlock();
+    const withResearch = (base: string): string =>
+      base
+      + (planBlock ? `\n\n${planBlock}` : '')
+      + (executionContext ? `\n\n${executionContext}` : '')
+      + (researchBlock ? `\n\n${researchBlock}` : '')
+      + confidenceHint;
+
     let result: AgentResult;
     try {
       if (mode === 'chat') {
-        // Ask: read-only, web tools only — never edits or runs commands.
         const webOn = vscode.workspace.getConfiguration('tiermux.tools').get<boolean>('web', true);
-        result = webOn
-          ? await this.runChat(augmented, augment(CHAT_SYSTEM), ropts, cb)
-          : await this.runSingle(augmented, augment(CHAT_SYSTEM), ropts, cb);
+        if (isCodebaseQ) {
+          // Codebase question in Ask mode: read-only agent with code tools (grep/readFile/repoMap…)
+          // and full project grounding — same posture as Plan mode, no edits allowed.
+          const askCodeSystem = withResearch(augment(CHAT_SYSTEM) + infoHint);
+          result = await this.runAgent(augmented, askCodeSystem, ropts, cb, { readOnly: true });
+        } else {
+          // Pure Ask: web-only path — no code tools, no grounding.
+          result = webOn
+            ? await this.runChat(augmented, augment(CHAT_SYSTEM), ropts, cb)
+            : await this.runSingle(augmented, augment(CHAT_SYSTEM), ropts, cb);
+        }
       } else if (mode === 'plan') {
         // Plan: research the codebase read-only, then propose a plan for approval.
-        result = await this.runAgent(augmented, augment(PLAN_SYSTEM), ropts, cb, { readOnly: true });
+        result = await this.runAgent(augmented, withResearch(augment(PLAN_SYSTEM)), ropts, cb, { readOnly: true });
       } else {
         // Agent: full tool access — reads, edits, runs commands.
-        result = await this.runAgent(augmented, augment(AGENT_SYSTEM) + infoHint, ropts, cb);
+        result = await this.runAgent(augmented, withResearch(augment(AGENT_SYSTEM) + infoHint), ropts, cb);
       }
     } finally {
       // Release this run's edit-advisory claims whether it finished, failed, or was cancelled,
@@ -406,6 +608,10 @@ export class Agent {
       unmarkEditing(opts.runContext?.requestId);
     }
     result.taskKind = routeKind;
+    // Record tool calls so the next run knows what was already done this session.
+    if (result.workMessages?.length) {
+      this.executionTracker.record(result.workMessages as Array<{ role?: string; content?: unknown }>);
+    }
     return result;
   }
 
@@ -696,6 +902,17 @@ export class Agent {
     const argStr = repairBrokenJson(call.function.arguments);
     try { args = JSON.parse(argStr); } catch { args = argStr; }
     cb.onTool?.({ toolCallId: call.id, name: call.function.name, args, state: 'running' });
+
+    // Return cached result for repeated read-only calls within the same run.
+    const dedupKey = Agent.DEDUP_TOOLS.has(call.function.name) ? `${call.function.name}:${argStr}` : undefined;
+    if (dedupKey) {
+      const hit = this.runDedup.get(dedupKey);
+      if (hit !== undefined) {
+        cb.onTool?.({ toolCallId: call.id, name: call.function.name, args, state: 'done', detail: hit.slice(0, 300) });
+        return { observation: hit, obsText: hit, isError: false };
+      }
+    }
+
     const observation = call.function.name === 'updateTodos'
       ? this.applyTodos(args, cb)
       : call.function.name === 'askUser'
@@ -707,6 +924,7 @@ export class Agent {
             : await this.tools.execute(call.function.name, argStr, opts.runContext);
     const obsText = contentToString(observation);
     const isError = obsText.includes('"error"');
+    if (dedupKey && !isError) this.runDedup.set(dedupKey, obsText);
     cb.onTool?.({ toolCallId: call.id, name: call.function.name, args, state: isError ? 'error' : 'done', detail: obsText.slice(0, 300) });
     return { observation, obsText, isError };
   }

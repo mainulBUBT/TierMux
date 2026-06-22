@@ -62,6 +62,7 @@ export function activate(context: vscode.ExtensionContext): void {
     router,
     mcp,
     index,
+    tools,
     modelStats,
     workspaceState: context.workspaceState,
     generateCommitMessage: () => generateCommitMessage(router),

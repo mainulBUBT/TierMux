@@ -2,6 +2,7 @@
 src/**
 node_modules/**
 .kilo/**
+.kilocode/**
 .tiermux/**
 .claude/**
 scripts/**
@@ -12,3 +13,6 @@ esbuild.js
 .gitignore
 .git/**
 *.vsix
+DEVELOPMENT.md
+FUTURE_PLAN.md
+package-lock.json

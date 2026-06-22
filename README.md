@@ -1,11 +1,11 @@
 # TierMux
 
-**One agent. 18+ free LLM providers, and growing. Smart per-task routing.**
+> **Stack free. Route smart. Ship faster.**
 
-TierMux is an agentic AI coding assistant for VS Code that multiplexes the **free tiers of 18+ LLM
-providers** (with more added over time) and routes each request to the best available model —
-automatically failing over when one is rate-limited or down. You add your own keys (some providers
-are keyless) and start coding.
+TierMux is an agentic AI coding assistant for VS Code that multiplexes the **free tiers of 18+
+LLM providers** (with more added over time) and routes each request to the best available model —
+automatically failing over when one is rate-limited or down. Before the agent even takes its first
+tool step, TierMux pre-researches your codebase so it starts with answers, not questions.
 
 > The name: **Tier** (free provider tiers) + **Mux** (a multiplexer that routes across them).
 
@@ -20,8 +20,12 @@ are keyless) and start coding.
   GitHub Models, Cohere, Cloudflare, Zhipu, Ollama, Kilo, Pollinations, LLM7, HuggingFace,
   OpenCode Zen, OVH, Agnes — plus any custom OpenAI-compatible endpoint, with **more providers
   and models added over time**.
-- **Smart routing.** It picks the right *kind* of model per task and remembers what worked, so a
-  quick "hi" stays cheap and a refactor gets a capable tool model.
+- **Thinks ahead.** A pre-agent research pipeline runs *before* the first model call — it greps
+  your workspace, walks the symbol index, and pre-fetches diagnostics so the agent starts with
+  context already in hand. Saves 2–3 round-trips on free-tier rate limits.
+- **Smart routing.** Intent is classified in milliseconds (no LLM call) and the right *kind* of
+  model is picked per task — a quick "hi" stays cheap and a refactor gets a capable tool model.
+  The router learns what worked, so the next similar task skips the failover cascade.
 - **Resilient.** Automatic failover with rate-limit cooldowns and tool-compatibility quarantine —
   one provider hiccup doesn't stop you.
 - **Yours.** Keys live in VS Code SecretStorage; you choose which providers to enable.
@@ -39,14 +43,19 @@ are keyless) and start coding.
   - **Plan** — proposes a numbered plan → you approve → it executes.
   - **Debug** — reproduce → isolate root cause → fix → re-verify.
   - **Orchestrator** — breaks a big task into subtasks and runs them in sequence.
+- **Pre-agent research.** Before the first model call, TierMux greps the workspace, walks the
+  symbol index, and collects diagnostics — injecting pre-researched context into the system prompt
+  so the agent starts informed, not cold.
 - **Agent tools** — read/list/search the workspace, diagnostics, create/write/edit/delete files
-  (every edit shown as a **diff for approval**), and **run commands** (gated by an approval policy).
+  (every edit shown as a **diff for approval**), and **run commands** (gated by an approval
+  policy).
 - **Checkpoints** — each turn is snapshotted; restore the workspace to before any message.
 - **Per-task model feedback** — 👍/👎 a reply and the router learns which model answers *your*
   tasks best (stored locally).
 - **Context-aware** — project grounding (knows your project's name/type/structure), ambient editor
   context, `@file`/`@folder`/`@symbol` mentions, and optional semantic codebase search.
-- **Reasoning effort** (Off → Very High) for reasoning-capable models, with a collapsible thinking view.
+- **Reasoning effort** (Off → Very High) for reasoning-capable models, with a collapsible
+  thinking view.
 - **Editor integration** — right-click Explain/Fix/Refactor/Tests/Docs, **Fix with AI** on
   diagnostics, **inline chat** (`Ctrl/Cmd+I`), ghost-text completions (off by default), and
   **AI commit messages** in the Source Control toolbar.

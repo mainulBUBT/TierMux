@@ -94,6 +94,11 @@ export interface IndexInfo {
   providerConfigured: boolean;
 }
 
+export interface CacheStatsPayload {
+  fileCache: { entries: number; sizeKb: number; enabled: boolean };
+  searchCache: { entries: number; enabled: boolean };
+}
+
 export interface ConfigPayload {
   catalog: CatalogModel[];
   fallback: FallbackEntry[];
@@ -114,6 +119,8 @@ export interface ConfigPayload {
   searchPriority: string;
   /** Providers toggled off at the platform level — models excluded from routing and pickers without losing their enabled flags. */
   disabledProviders: Platform[];
+  /** Performance cache statistics for the Settings → Context tab. */
+  cacheStats: CacheStatsPayload;
 }
 
 export interface SearchProviderStatus {
@@ -178,7 +185,11 @@ export type InMessage =
   | { type: 'setAutoApprove'; enabled: boolean }
   | { type: 'resume'; requestId: string }
   | { type: 'newChat' }
-  | { type: 'askUserResponse'; requestId: string; callId: string; answer: string; cancelled?: boolean; sessionId?: string };
+  | { type: 'askUserResponse'; requestId: string; callId: string; answer: string; cancelled?: boolean; sessionId?: string }
+  | { type: 'clearFileCache' }
+  | { type: 'clearSearchCache' }
+  | { type: 'clearAllCaches' }
+  | { type: 'setCacheEnabled'; key: 'file' | 'search'; enabled: boolean };
 
 /** A single tool step shown inside a turn's "Worked for Ns" disclosure. Mirrors the live
  *  `toolStatus` event so a re-rendered (e.g. post-revert) message can rebuild its step list. */

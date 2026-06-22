@@ -6,6 +6,10 @@ import * as vscode from 'vscode';
 import { buildRepoMapSummary } from '../agent/repoMap';
 
 const MAX_CHARS = 2000;
+// Module-level cache with 60-second TTL. Prevents multiple Agent instances from
+// each calling findFiles(3000) within the same user session.
+const GROUNDING_CACHE_TTL_MS = 60_000;
+let groundingModCache: { root: string; text: string; ts: number } | undefined;
 
 interface ProjectInfo { name: string; type: string; stack?: string }
 
@@ -97,6 +101,10 @@ export async function loadProjectGrounding(): Promise<string> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) return '';
   const root = folder.uri;
+  const rootStr = root.toString();
+  if (groundingModCache && groundingModCache.root === rootStr && Date.now() - groundingModCache.ts < GROUNDING_CACHE_TTL_MS) {
+    return groundingModCache.text;
+  }
   const info = await detectProject(root, folder.name);
 
   const sections: string[] = [];
@@ -117,5 +125,7 @@ export async function loadProjectGrounding(): Promise<string> {
     sections.push(`## Structure\n${struct.join('\n')}`);
   } catch { /* no workspace files to scan */ }
 
-  return sections.join('\n\n').slice(0, MAX_CHARS);
+  const text = sections.join('\n\n').slice(0, MAX_CHARS);
+  groundingModCache = { root: rootStr, text, ts: Date.now() };
+  return text;
 }

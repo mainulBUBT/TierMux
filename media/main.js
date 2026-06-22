@@ -1619,6 +1619,76 @@
     actions.appendChild(build);
     actions.appendChild(clear);
     settingsContentEl.appendChild(actions);
+
+    // ---- Performance Cache subsection ----
+    const cacheStats = state.cacheStats || { fileCache: { entries: 0, sizeKb: 0, enabled: true }, searchCache: { entries: 0, enabled: true } };
+    const cacheTitle = document.createElement('div');
+    cacheTitle.className = 'section-title';
+    cacheTitle.style.marginTop = '18px';
+    cacheTitle.textContent = 'Performance Cache';
+    settingsContentEl.appendChild(cacheTitle);
+    const cacheHint = document.createElement('div');
+    cacheHint.className = 'muted';
+    cacheHint.textContent = 'In-memory caches that prevent re-reading files and re-running searches during an agent run. Saves rate-limit quota on free LLMs.';
+    settingsContentEl.appendChild(cacheHint);
+
+    // File cache row
+    const fileRow = document.createElement('div');
+    fileRow.className = 'row-actions';
+    fileRow.style.marginTop = '8px';
+    const fileLbl = document.createElement('span');
+    fileLbl.style.flex = '1';
+    fileLbl.innerHTML = '<strong>File cache</strong> <span class="muted">' +
+      (cacheStats.fileCache.entries > 0 ? `${cacheStats.fileCache.entries} files · ${cacheStats.fileCache.sizeKb} KB` : 'empty') + '</span>';
+    const fileToggle = document.createElement('input');
+    fileToggle.type = 'checkbox';
+    fileToggle.checked = !!cacheStats.fileCache.enabled;
+    fileToggle.title = 'Enable file read cache';
+    fileToggle.addEventListener('change', () => vscode.postMessage({ type: 'setCacheEnabled', key: 'file', enabled: fileToggle.checked }));
+    const fileClear = document.createElement('button');
+    fileClear.className = 'icon-btn';
+    fileClear.textContent = 'Clear';
+    fileClear.disabled = cacheStats.fileCache.entries === 0;
+    fileClear.addEventListener('click', () => vscode.postMessage({ type: 'clearFileCache' }));
+    fileRow.appendChild(fileLbl);
+    fileRow.appendChild(fileToggle);
+    fileRow.appendChild(fileClear);
+    settingsContentEl.appendChild(fileRow);
+
+    // Search cache row
+    const searchRow = document.createElement('div');
+    searchRow.className = 'row-actions';
+    searchRow.style.marginTop = '4px';
+    const searchLbl = document.createElement('span');
+    searchLbl.style.flex = '1';
+    searchLbl.innerHTML = '<strong>Search cache</strong> <span class="muted">' +
+      (cacheStats.searchCache.entries > 0 ? `${cacheStats.searchCache.entries} queries cached` : 'empty') + ' · 30 s TTL</span>';
+    const searchToggle = document.createElement('input');
+    searchToggle.type = 'checkbox';
+    searchToggle.checked = !!cacheStats.searchCache.enabled;
+    searchToggle.title = 'Enable grep / search cache';
+    searchToggle.addEventListener('change', () => vscode.postMessage({ type: 'setCacheEnabled', key: 'search', enabled: searchToggle.checked }));
+    const searchClear = document.createElement('button');
+    searchClear.className = 'icon-btn';
+    searchClear.textContent = 'Clear';
+    searchClear.disabled = cacheStats.searchCache.entries === 0;
+    searchClear.addEventListener('click', () => vscode.postMessage({ type: 'clearSearchCache' }));
+    searchRow.appendChild(searchLbl);
+    searchRow.appendChild(searchToggle);
+    searchRow.appendChild(searchClear);
+    settingsContentEl.appendChild(searchRow);
+
+    // Clear all button
+    const cacheActions = document.createElement('div');
+    cacheActions.className = 'row-actions';
+    cacheActions.style.marginTop = '6px';
+    const clearAll = document.createElement('button');
+    clearAll.className = 'icon-btn';
+    clearAll.textContent = 'Clear all caches';
+    clearAll.disabled = cacheStats.fileCache.entries === 0 && cacheStats.searchCache.entries === 0;
+    clearAll.addEventListener('click', () => vscode.postMessage({ type: 'clearAllCaches' }));
+    cacheActions.appendChild(clearAll);
+    settingsContentEl.appendChild(cacheActions);
   }
 
   function renderMcpSection() {

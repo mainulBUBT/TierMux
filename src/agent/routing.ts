@@ -4,6 +4,7 @@
 // tool-capable one. This is what makes "Auto" feel smart instead of one-size-fits-all.
 import type { CatalogModel, FallbackEntry } from '../shared/types';
 import type { Catalog } from '../catalog/catalog';
+import { classifyInformationRoute } from '../router/informationRouter';
 
 export type TaskKind = 'trivial' | 'chat' | 'agent' | 'coding' | 'debug' | 'longContext' | 'plan' | 'vision';
 
@@ -11,8 +12,14 @@ export type TaskKind = 'trivial' | 'chat' | 'agent' | 'coding' | 'debug' | 'long
 const GREETING = /^(hi+|hey+|hello+|yo|sup|howdy|gm|gn|good (morning|afternoon|evening|night)|thanks?|thank you|thx|ty|ok(ay)?|k|cool|nice|great|awesome|bye|goodbye|cheers|np|no problem|got it|sounds good)\b[\s!.?]*$/i;
 // Action/edit verbs — broad on purpose so natural phrasings ("make X", "put Y") still trigger edits.
 const TASK_VERB = /\b(add|create|implement|build|write|fix|refactor|rename|move|delete|remove|update|change|modif(?:y|ies)|edit|generate|migrate|install|set ?up|wire|integrate|replace|convert|optimi[sz]e|run|test|make|put|turn|set|swap|drop|append|insert|extract|split|merge|comment|uncomment|format|bump|upgrade|downgrade|configure|enable|disable|support|handle|apply|hook|connect|expose|document|export|validate|cache|scaffold)\b/i;
-// Real bug/diagnosis language (kept narrow so it doesn't hijack every "why" question).
-const DEBUG_HINT = /\b(debug|bug|error|exception|stack ?trace|traceback|failing|fails?|failed|broken|crash(?:es|ed)?|throws?|not working|isn'?t working|won'?t (?:work|run|build|compile)|doesn'?t (?:work|run)|null pointer|segfault)\b/i;
+// Real bug/diagnosis language — broad enough to catch natural phrasings, narrow enough
+// not to hijack every "why" question. Groups:
+//   1. Explicit bug words: debug, bug, error, exception, crash, …
+//   2. "not <symptom-verb>": not loading, not showing, not rendering, …
+//   3. Inability: can't/cannot/won't/doesn't + action verb
+//   4. Wrong-value symptoms: shows 0, returns null, displays wrong, …
+//   5. State descriptions: "something wrong with", "is broken", "does nothing"
+const DEBUG_HINT = /\b(debug|bug|error|exception|stack ?trace|traceback|failing|fails?|failed|broken|crash(?:es|ed)?|throws?|not working|isn'?t working|won'?t (?:work|run|build|compile)|doesn'?t (?:work|run)|null pointer|segfault)\b|\bnot (?:loading|showing|rendering|displaying|working|saving|submitting|connecting|fetching|appearing|updating|redirecting|running|opening|logging in)\b|\b(?:can'?t|cannot|couldn'?t|won'?t|didn'?t|doesn'?t)\s+(?:log ?in|load|show|work|submit|run|open|save|fetch|connect|find|access|see|get|send|redirect|register|authenticate)\b|\b(?:shows?|returns?|displays?|gives?|outputs?)\s+(?:0|zero|null|undefined|nothing|empty|wrong|incorrect|the wrong)\b|\b(?:something (?:wrong|broken|off)|is (?:wrong|broken|incorrect)|looks (?:wrong|broken)|seems (?:broken|wrong)|does nothing|do nothing|nothing happens)\b/i;
 // Explanation-seeking phrasing — answer, don't act (read-only chat).
 const EXPLAIN_Q = /^\s*(how (?:do|to|can|could|would|does|is|are)|what(?:'?s| is| are| does| do)|why (?:do|does|is|are|would)|when (?:should|do|does|is)|which |who |whose |where (?:is|are|do|does|can)|should i|is it|are there|can i|could i|do i|does it|explain|describe|tell me|walk me|difference between)\b/i;
 // Code-editing intent: a referenced file path, a fenced code block, or a code-edit verb paired
@@ -61,10 +68,6 @@ export interface InformationNeed {
   web: number;
 }
 
-// Current/external-information triggers → lean web.
-const WEB_TRIGGERS = /\b(latest|today'?s?|current(?:ly)?|news|releases?d?|changelog|deprecat\w*|price|cost|weather|scores?|ranking|standings?|stock|20(?:2[4-9]|3\d)|this (?:week|month|year)|right now|recent(?:ly)?)\b/i;
-// Project/code triggers → lean workspace.
-const CODE_TRIGGERS = /\b(this (?:project|repo\w*|code\w*|file|app|feature|module|system)|where (?:is|are|does)|implement\w*|refactor\w*|\bfix\b|\bbug\b|controller|service|function|method|\bclass\b|component|endpoint|route|\bmodel\b|migration|schema|helper|middleware|column|table|\bconfig\b)\b/i;
 // Upgrade/compat triggers → need BOTH (inspect code + check external versions/notes).
 const HYBRID_TRIGGERS = /\b(upgrade|migrat\w*|compare|compatib\w*|integrat\w*|support\w*|bump|update\b[^.?!]*\bto\b)\b/i;
 
@@ -73,15 +76,18 @@ const HYBRID_TRIGGERS = /\b(upgrade|migrat\w*|compare|compatib\w*|integrat\w*|su
  * Independent 0–1 scores — NOT a split — so a hybrid ("upgrade Laravel to the latest version") can
  * score HIGH on both. Feeds informationSourceHint(), which biases the unified tool loop rather than
  * locking the model into a code-only or web-only path.
+ *
+ * Delegates to classifyInformationRoute for the richer signal set, then maps to the existing
+ * InformationNeed shape so callers remain unchanged.
  */
 export function classifyInformationNeed(text: string): InformationNeed {
   const t = text || '';
-  let workspace = 0;
-  let web = 0;
-  if (CODE_TRIGGERS.test(t) || isCodebaseQuestion(t)) workspace += 0.7;
-  if (FILE_REF.test(t)) workspace += 0.3;
-  if (WEB_TRIGGERS.test(t)) web += 0.7;
-  if (HYBRID_TRIGGERS.test(t)) { workspace += 0.5; web += 0.5; }
+  // Use the richer router for the codeSearch/webSearch flags, then apply legacy adjustments.
+  const route = classifyInformationRoute(t, 'agent');
+  let workspace = route.codeSearch ? 0.7 : 0;
+  let web = route.webSearch ? 0.7 : 0;
+  if (FILE_REF.test(t)) workspace = Math.min(1, workspace + 0.3);
+  if (HYBRID_TRIGGERS.test(t)) { workspace = Math.min(1, workspace + 0.5); web = Math.min(1, web + 0.5); }
   // A bare question with no strong signal: in a coding tool, default to checking the workspace.
   if (workspace === 0 && web === 0) workspace = 0.4;
   return { workspace: Math.min(1, workspace), web: Math.min(1, web) };

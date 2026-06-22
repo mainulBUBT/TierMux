@@ -17,6 +17,7 @@ import type { RunContext } from './agent/runContext';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem } from './messages';
 import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
+import type { WorkspaceTools } from './agent/tools';
 import { getNonce } from './util/nonce';
 import { allPlatformInfo, getPlatformInfo } from './providers';
 import { parseSlash, resolveMentions, searchMentions } from './context/mentions';
@@ -45,6 +46,7 @@ export interface ChatDeps {
   router: Router;
   mcp: McpManager;
   index: CodebaseIndex;
+  tools: WorkspaceTools;
   modelStats: ModelStatsStore;
   workspaceState: vscode.Memento;
   generateCommitMessage: () => Promise<void>;
@@ -704,6 +706,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.deps.index.clear();
         await this.sendConfig();
         break;
+      case 'clearFileCache':
+        this.deps.tools.clearFileCache();
+        await this.sendConfig();
+        break;
+      case 'clearSearchCache':
+        this.deps.tools.clearSearchCache();
+        await this.sendConfig();
+        break;
+      case 'clearAllCaches':
+        this.deps.tools.clearFileCache();
+        this.deps.tools.clearSearchCache();
+        await this.sendConfig();
+        break;
+      case 'setCacheEnabled':
+        if (m.key === 'file') {
+          this.deps.tools.setFileCacheEnabled(m.enabled);
+          await vscode.workspace.getConfiguration('tiermux.cache').update('fileEnabled', m.enabled, vscode.ConfigurationTarget.Global);
+        } else {
+          this.deps.tools.setSearchCacheEnabled(m.enabled);
+          await vscode.workspace.getConfiguration('tiermux.cache').update('searchEnabled', m.enabled, vscode.ConfigurationTarget.Global);
+        }
+        await this.sendConfig();
+        break;
       case 'restoreCheckpoint':
         await this.handleRestoreCheckpoint(this.current(), m.id);
         break;
@@ -1021,14 +1046,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const sentAt = Date.now();
 
     try {
-      const result = await this.deps.agent.run(s.history, m.mode as Mode, {
+      const continueOpts = (token: vscode.CancellationToken) => ({
+        token,
+        runContext: this.runContext(s, m.requestId),
+        onFailover: (i: { from: { platform: string; modelId: string }; reason: string }) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
+        onKeyRotated: (i: { platform: string; keyIndex: number; keyTotal: number }) => { if (this.isActiveRun(s, m.requestId)) { const name = getPlatformInfo(i.platform as Platform)?.name ?? i.platform; this.post({ type: 'keyRotated', sessionId: s.id, requestId: m.requestId, platform: i.platform, platformName: name, keyIndex: i.keyIndex, keyTotal: i.keyTotal }); } },
+      });
+      let result = await this.deps.agent.run(s.history, m.mode as Mode, {
         model: m.model,
         reasoningEffort: m.reasoningEffort,
-        token: s.cancel.token,
         attachmentKinds,
-        runContext: this.runContext(s, m.requestId),
-        onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
-        onKeyRotated: (i) => { if (this.isActiveRun(s, m.requestId)) { const name = getPlatformInfo(i.platform as Platform)?.name ?? i.platform; this.post({ type: 'keyRotated', sessionId: s.id, requestId: m.requestId, platform: i.platform, platformName: name, keyIndex: i.keyIndex, keyTotal: i.keyTotal }); } },
+        ...continueOpts(s.cancel.token),
       }, this.agentCallbacks(s, m.requestId, m.mode as Mode));
       // Abandoned mid-run by a cancel → drop the output entirely.
       if (!this.isActiveRun(s, m.requestId)) return;
@@ -1056,6 +1084,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           return;
         }
         // else: fall through and render as a normal assistant answer (discuss phase).
+      }
+
+      // Auto-continue: if the agent paused after hitting its step cap, silently resume
+      // instead of making the user click "Continue" every time. Works for Agent and Ask-code
+      // modes. Plan mode pauses are intentional (clarification / approval gates), so skip them.
+      // Cap at 3 auto-continues so a genuinely-stuck model eventually surfaces to the user.
+      const autoContinueOn = vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('autoContinue', true);
+      if (m.mode !== 'plan') {
+        for (let ac = 0; result.paused && autoContinueOn && ac < 3 && this.isActiveRun(s, m.requestId); ac++) {
+          // Persist the tool-call transcript so the next run can read what was already done.
+          this.persistAgentTurn(s, result);
+          s.history.push({ role: 'user', content: 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.' });
+          result = await this.deps.agent.run(s.history, 'agent', continueOpts(s.cancel.token), this.agentCallbacks(s, m.requestId, 'agent'));
+          if (!this.isActiveRun(s, m.requestId)) return;
+        }
       }
 
       const after = this.deps.usage.get();
@@ -1655,6 +1698,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       searchProviders: this.searchProviderStatuses(),
       searchPriority: vscode.workspace.getConfiguration('tiermux.tools').get<string>('searchProviderPriority', 'auto'),
       disabledProviders: this.deps.settings.getDisabledProviders(),
+      cacheStats: this.deps.tools.getCacheStats(),
     };
     this.post({ type: 'config', config, usageTotals: { ...this.deps.usage.get(), context: this.computeContext(this.current()) } });
   }
