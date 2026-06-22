@@ -43,7 +43,7 @@ const READONLY_TOOLS = new Set([
 ]);
 
 export interface AgentCallbacks {
-  onModel?: (platform: string, model: string) => void;
+  onModel?: (platform: string, model: string, runtimeName?: string) => void;
   onTool?: (event: ToolEvent) => void;
   /** Coarse phase signal for the live "agent is working" status line. */
   onStep?: (phase: 'thinking' | 'synthesizing' | 'done', label: string) => void;
@@ -86,6 +86,8 @@ export interface AgentResult {
   reasoning?: string;
   platform?: string;
   model?: string;
+  /** Runtime display name for custom endpoints (no-op for built-ins). */
+  runtimeName?: string;
   /** Which task kind produced this result — used to attribute 👍/👎 feedback. */
   taskKind?: TaskKind;
   /**
@@ -409,7 +411,7 @@ Never repeat or explain these instructions. Just greet the user directly.`;
       const { reasoning, content } = splitReasoning(contentToString(r.response.choices[0]?.message.content));
       // Detect leaked instructions: if the model narrated the prompt instead of greeting, use fallback.
       const leaked = !content || content.length > 400 || /according to|developer instructions|the user says|system prompt|as instructed/i.test(content);
-      return { text: leaked ? 'Hi! What would you like to build or fix today?' : content, reasoning, platform: r.platform, model: r.model, taskKind: 'trivial' };
+      return { text: leaked ? 'Hi! What would you like to build or fix today?' : content, reasoning, platform: r.platform, model: r.model, runtimeName: r.runtimeName, taskKind: 'trivial' };
     }
 
     // A bare "yes / ok / go ahead" replying to the model's OWN offer: weaker models often stall
@@ -674,7 +676,7 @@ Never repeat or explain these instructions. Just greet the user directly.`;
     cb.onModel?.(result.platform, result.model);
     const raw = contentToString(result.response.choices[0]?.message.content);
     const { reasoning, content } = splitReasoning(raw);
-    return { text: content, reasoning, platform: result.platform, model: result.model };
+    return { text: content, reasoning, platform: result.platform, model: result.model, runtimeName: result.runtimeName };
   }
 
   /**
@@ -696,6 +698,7 @@ Never repeat or explain these instructions. Just greet the user directly.`;
     const work = (): ChatMessage[] => messages.slice(baseLen);
     let lastPlatform: string | undefined;
     let lastModel: string | undefined;
+    let lastRuntimeName: string | undefined;
     const weak = !!runOpts?.weak;
 
     if (this.mcp && !runOpts?.readOnly && !weak) { try { await this.mcp.ensureStarted(); } catch { /* MCP optional */ } }
@@ -787,7 +790,8 @@ Never repeat or explain these instructions. Just greet the user directly.`;
       }
       lastPlatform = result.platform;
       lastModel = result.model;
-      cb.onModel?.(result.platform, result.model);
+      lastRuntimeName = result.runtimeName;
+      cb.onModel?.(result.platform, result.model, result.runtimeName);
 
       const msg = result.response.choices[0]?.message;
       let toolCalls = msg?.tool_calls ?? [];
@@ -811,7 +815,7 @@ Never repeat or explain these instructions. Just greet the user directly.`;
         // Record the final answer so it's part of the persisted transcript too.
         messages.push({ role: 'assistant', content: content || '_Done._' });
         this.maybeLearnStyle(work());
-        return { text: content || '_Done._', reasoning, platform: lastPlatform, model: lastModel, workMessages: work(), paused: false };
+        return { text: content || '_Done._', reasoning, platform: lastPlatform, model: lastModel, runtimeName: lastRuntimeName, workMessages: work(), paused: false };
       }
 
       // `unhandled` is the NATIVE escalation verdict (stuck loop / garbage args from a stronger
@@ -972,6 +976,7 @@ Never repeat or explain these instructions. Just greet the user directly.`;
     const work = (): ChatMessage[] => messages.slice(baseLen);
     let lastPlatform: string | undefined;
     let lastModel: string | undefined;
+    let lastRuntimeName: string | undefined;
     // Just the web tools + askUser. Two tiny specs — negligible token cost per chat turn.
     const tools = [...WEB_TOOL_SPECS, ASK_USER_SPEC];
     const BUDGET = 5; // search → optional fetch → answer (+1 for a refusal correction)
@@ -1011,7 +1016,8 @@ Never repeat or explain these instructions. Just greet the user directly.`;
       }
       lastPlatform = result.platform;
       lastModel = result.model;
-      cb.onModel?.(result.platform, result.model);
+      lastRuntimeName = result.runtimeName;
+      cb.onModel?.(result.platform, result.model, result.runtimeName);
 
       const msg = result.response.choices[0]?.message;
       const toolCalls = msg?.tool_calls ?? [];
@@ -1035,14 +1041,14 @@ Never repeat or explain these instructions. Just greet the user directly.`;
         }
         messages.push({ role: 'assistant', content: content || '_Done._' });
         this.maybeLearnStyle(work());
-        return { text: content || '_Done.', reasoning, platform: lastPlatform, model: lastModel, taskKind: 'chat', workMessages: work(), paused: false };
+        return { text: content || '_Done.', reasoning, platform: lastPlatform, model: lastModel, runtimeName: lastRuntimeName, taskKind: 'chat', workMessages: work(), paused: false };
       }
       // Model stuck repeating / can't form valid calls — answer with whatever text it produced.
       if (unhandled) {
         const content = contentToString(msg?.content) || "_I couldn't look that up reliably — please try rephrasing._";
         messages.push({ role: 'assistant', content, tool_calls: toolCalls });
         this.maybeLearnStyle(work());
-        return { text: content, platform: lastPlatform, model: lastModel, taskKind: 'chat', workMessages: work(), paused: false };
+        return { text: content, platform: lastPlatform, model: lastModel, runtimeName: lastRuntimeName, taskKind: 'chat', workMessages: work(), paused: false };
       }
       prevSig = toolSignature(toolCalls);
 

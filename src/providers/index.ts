@@ -1,11 +1,14 @@
 // Provider registry. Base URLs/headers/keyless flags ported from freellmapi's
 // server/src/providers/index.ts (MIT). The `custom` platform builds a provider
 // bound to a user-supplied base URL.
-import type { Platform, PlatformInfo } from '../shared/types';
+import type { Platform, PlatformInfo, CustomEndpoint } from '../shared/types';
 import type { BaseProvider } from './base';
 import { GoogleProvider } from './google';
 import { CloudflareProvider } from './cloudflare';
 import { OpenAICompatProvider, type OpenAICompatOpts } from './openai-compat';
+
+/** Session cache for custom endpoint providers. Cleared on endpoint edit/remove. */
+const customProviderCache = new Map<string, BaseProvider>();
 
 const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', keyUrl: 'https://console.groq.com/keys' },
@@ -55,18 +58,40 @@ platformInfo.set('cloudflare', { platform: 'cloudflare', name: 'Cloudflare Worke
 
 for (const c of COMPAT) registerCompat(c);
 
-// Custom — built per-call from a user-supplied base URL (settings override).
-platformInfo.set('custom', { platform: 'custom', name: 'Custom (OpenAI-compatible)', defaultBaseUrl: '', keyless: false });
+// No built-in 'custom' platformInfo — custom endpoints are user-defined.
 
 const CUSTOM_TIMEOUT_MS = 120000;
 
-export function resolveProvider(platform: Platform, baseUrlOverride?: string | null): BaseProvider | undefined {
+export function resolveProvider(
+  platform: Platform,
+  modelId?: string,
+  customEndpoints?: CustomEndpoint[],
+): BaseProvider | undefined {
   if (platform === 'custom') {
-    const trimmed = baseUrlOverride?.trim();
-    if (!trimmed) return undefined;
-    return new OpenAICompatProvider({ platform: 'custom', name: 'Custom', baseUrl: trimmed.replace(/\/+$/, ''), timeoutMs: CUSTOM_TIMEOUT_MS });
+    if (!modelId || !customEndpoints) return undefined;
+    const epId = modelId.split('::')[0];
+    const endpoint = customEndpoints.find((ep) => ep.id === epId);
+    if (!endpoint) return undefined;
+    // Check cache first.
+    if (customProviderCache.has(epId)) return customProviderCache.get(epId);
+    // Build and cache a new provider.
+    const provider = new OpenAICompatProvider({
+      platform: 'custom',
+      name: endpoint.name,
+      runtimeName: endpoint.name,
+      baseUrl: endpoint.baseUrl.replace(/\/+$/, ''),
+      extraHeaders: endpoint.extraHeaders,
+      timeoutMs: CUSTOM_TIMEOUT_MS,
+    });
+    customProviderCache.set(epId, provider);
+    return provider;
   }
   return providers.get(platform);
+}
+
+/** Clear the cached provider for an endpoint (call on edit/remove). */
+export function invalidateCustomProvider(id: string): void {
+  customProviderCache.delete(id);
 }
 
 export function getPlatformInfo(platform: Platform): PlatformInfo | undefined {

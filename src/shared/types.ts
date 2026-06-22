@@ -166,3 +166,27 @@ export interface PlatformInfo {
   /** Help URL for obtaining a key. */
   keyUrl?: string;
 }
+
+/** A user-added model under a custom OpenAI-compatible endpoint. */
+export interface CustomModel {
+  /** Upstream model ID (must NOT contain '::'). */
+  modelId: string;
+  /** User-visible label. Falls back to modelId when empty. */
+  displayName?: string;
+}
+
+/** A user-defined OpenAI-compatible endpoint. */
+export interface CustomEndpoint {
+  /** Stable ID (generated as 'c_' + 6 base36 chars). */
+  id: string;
+  /** User-chosen display name (must be unique among custom endpoints). */
+  name: string;
+  /** Base URL (validated http(s)://, trailing slash stripped). */
+  baseUrl: string;
+  /** Optional default headers (e.g., Cloudflare AI Gateway custom header). */
+  extraHeaders?: Record<string, string>;
+  /** Models the user wants to expose under this endpoint. */
+  models: CustomModel[];
+  /** Unix-ms when created. */
+  createdAt: number;
+}

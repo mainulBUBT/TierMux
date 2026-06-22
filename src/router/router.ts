@@ -41,6 +41,8 @@ export interface RouteResult {
   response: ChatCompletionResponse;
   platform: Platform;
   model: string;
+  /** Runtime display name for custom endpoints (no-op for built-ins). */
+  runtimeName?: string;
 }
 
 export class AllModelsFailedError extends Error {
@@ -351,7 +353,7 @@ export class Router {
         continue;
       }
 
-      const provider = resolveProvider(entry.platform, this.settings.getEndpoint(entry.platform));
+      const provider = resolveProvider(entry.platform, entry.modelId, this.settings.getCustomEndpoints());
       if (!provider) {
         failures.push({ platform: entry.platform, model: entry.modelId, reason: 'no_provider' });
         continue;
@@ -359,7 +361,7 @@ export class Router {
       // Resolve the API key (check model-specific key first, then platform key)
       let apiKey = entry.key
         ?? await this.secrets.getModelKey(entry.platform, entry.modelId)
-        ?? await this.secrets.resolveKey(entry.platform);
+        ?? await this.secrets.resolveKey(entry.platform, entry.modelId);
       if (apiKey === undefined) {
         failures.push({ platform: entry.platform, model: entry.modelId, reason: 'no_api_key' });
         continue;
@@ -411,7 +413,7 @@ export class Router {
           this.markHealth(entry.platform, entry.modelId, 'ok');
           // Remember the winner so the next same-kind task starts here, not at the top of the cascade.
           if (opts.taskKind) this.lastGood.set(opts.taskKind, `${entry.platform}::${entry.modelId}`);
-          return { response, platform: entry.platform, model: entry.modelId };
+          return { response, platform: entry.platform, model: entry.modelId, runtimeName: (provider as any).runtimeName };
         } catch (err) {
           const { reason, failoverable, retryAfterMs } = classify(err);
 

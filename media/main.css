@@ -769,3 +769,59 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .tab.status-finished .tab-dot { color: var(--vscode-charts-green, #89d185); }
 @keyframes tabspin { to { transform: rotate(360deg); } }
 
+
+/* Custom endpoints styles (mirror provider-card structure) */
+.custom-endpoint-card {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+.endpoint-card {
+  /* Alias for consistency with class name in HTML */
+}
+.section-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin: 16px 0 8px 0;
+  color: var(--vscode-foreground);
+}
+
+/* Inline modal dialog (replaces window.prompt/confirm/alert, which VS Code's
+   webview sandbox blocks). Renders over the whole panel. */
+.dlg-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.dlg {
+  min-width: 320px;
+  max-width: 460px;
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.dlg.dlg-danger .dlg-title { color: var(--vscode-errorForeground); }
+.dlg-title { font-weight: 600; font-size: 13px; margin-bottom: 8px; color: var(--vscode-foreground); }
+.dlg-msg { font-size: 12px; color: var(--vscode-descriptionForeground); margin-bottom: 12px; white-space: pre-wrap; }
+.dlg-field { display: block; margin-bottom: 10px; }
+.dlg-field span { display: block; font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 4px; }
+.dlg-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  border-radius: 4px;
+  font: inherit;
+  outline: none;
+}
+.dlg-field input:focus { border-color: var(--vscode-focusBorder); }
+.dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }

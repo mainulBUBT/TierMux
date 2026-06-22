@@ -29,6 +29,8 @@ export interface OpenAICompatOpts {
   /** Flatten array/multimodal content to string (Cohere/Cloudflare-style). */
   flattenContent?: boolean;
   reasoningStyle?: ReasoningStyle;
+  /** Runtime display name for custom endpoints (no-op for built-ins). */
+  runtimeName?: string;
 }
 
 export class OpenAICompatProvider extends BaseProvider {
@@ -45,6 +47,7 @@ export class OpenAICompatProvider extends BaseProvider {
     super();
     this.platform = opts.platform;
     this.name = opts.name;
+    this.runtimeName = opts.runtimeName ?? opts.name;
     this.baseUrl = opts.baseUrl;
     this.extraHeaders = opts.extraHeaders ?? {};
     this.timeoutMs = opts.timeoutMs ?? 60000;

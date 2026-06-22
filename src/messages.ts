@@ -121,6 +121,15 @@ export interface ConfigPayload {
   disabledProviders: Platform[];
   /** Performance cache statistics for the Settings → Context tab. */
   cacheStats: CacheStatsPayload;
+  /** User-defined custom OpenAI-compatible endpoints (summary — the webview reads fallback chain for enabled models). */
+  customEndpoints: Array<{
+    id: string;
+    name: string;
+    baseUrl: string;
+    keyless: boolean;
+    configured: boolean;
+    modelCount: number;
+  }>;
 }
 
 export interface SearchProviderStatus {
@@ -189,7 +198,14 @@ export type InMessage =
   | { type: 'clearFileCache' }
   | { type: 'clearSearchCache' }
   | { type: 'clearAllCaches' }
-  | { type: 'setCacheEnabled'; key: 'file' | 'search'; enabled: boolean };
+  | { type: 'setCacheEnabled'; key: 'file' | 'search'; enabled: boolean }
+  // Custom OpenAI-compatible endpoints
+  | { type: 'addCustomEndpoint'; name: string; baseUrl: string }
+  | { type: 'updateCustomEndpoint'; id: string; name?: string; baseUrl?: string; extraHeaders?: Record<string, string> }
+  | { type: 'removeCustomEndpoint'; id: string }
+  | { type: 'setCustomEndpointKey'; id: string; key: string | null }
+  | { type: 'addCustomModel'; endpointId: string; modelId: string; displayName?: string }
+  | { type: 'removeCustomModel'; endpointId: string; modelId: string };
 
 /** A single tool step shown inside a turn's "Worked for Ns" disclosure. Mirrors the live
  *  `toolStatus` event so a re-rendered (e.g. post-revert) message can rebuild its step list. */

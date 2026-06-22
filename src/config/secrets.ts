@@ -6,6 +6,8 @@ import { allPlatformInfo, getPlatformInfo } from '../providers';
 const PREFIX = 'tiermux.key.';
 const KEYS_PREFIX = 'tiermux.keys.';
 const MODEL_KEY_PREFIX = 'tiermux.modelKey.';
+const CUSTOM_KEY_PREFIX = 'tiermux.key.custom.';
+const CUSTOM_MODEL_KEY_PREFIX = 'tiermux.modelKey.custom.';
 
 function modelKeyId(platform: Platform, modelId: string): string {
   return `${platform}::${modelId}`;
@@ -138,6 +140,36 @@ export class SecretStore {
     await this.secrets.delete(MODEL_KEY_PREFIX + modelKeyId(platform, modelId));
   }
 
+  // ---- per-custom-endpoint API keys ----
+
+  async getCustomKey(id: string): Promise<string | undefined> {
+    return this.secrets.get(CUSTOM_KEY_PREFIX + id);
+  }
+
+  async setCustomKey(id: string, key: string): Promise<void> {
+    const trimmed = key.trim();
+    await this.secrets.store(CUSTOM_KEY_PREFIX + id, trimmed);
+    this.statuses.set('custom' as Platform, 'unknown');
+  }
+
+  async clearCustomKey(id: string): Promise<void> {
+    await this.secrets.delete(CUSTOM_KEY_PREFIX + id);
+  }
+
+  async getCustomModelKey(id: string, upstreamModelId: string): Promise<string | undefined> {
+    return this.secrets.get(CUSTOM_MODEL_KEY_PREFIX + id + '::' + upstreamModelId);
+  }
+
+  async setCustomModelKey(id: string, upstreamModelId: string, key: string): Promise<void> {
+    const trimmed = key.trim();
+    if (!trimmed) return;
+    await this.secrets.store(CUSTOM_MODEL_KEY_PREFIX + id + '::' + upstreamModelId, trimmed);
+  }
+
+  async clearCustomModelKey(id: string, upstreamModelId: string): Promise<void> {
+    await this.secrets.delete(CUSTOM_MODEL_KEY_PREFIX + id + '::' + upstreamModelId);
+  }
+
   /** Snapshot of `platform::modelId` keys that are currently set, restricted to
    *  the supplied catalog. Pass the catalog so we don't scan the secret store
    *  for unknown / removed models. */
@@ -227,7 +259,18 @@ export class SecretStore {
   /** Resolve the best available key for a platform; keyless platforms return ''.
    *  Prefers a non-cooled key; falls back to the first key if all are cooled
    *  (the router checks per-key cooldown separately and handles failover). */
-  async resolveKey(platform: Platform): Promise<string | undefined> {
+  async resolveKey(platform: Platform, modelId?: string): Promise<string | undefined> {
+    // Custom endpoints: prefer model key, then endpoint key, then '' (keyless allowed).
+    if (platform === 'custom' && modelId) {
+      const epId = modelId.split('::')[0];
+      const upstream = modelId.split('::').slice(1).join('::');
+      if (upstream) {
+        const mk = await this.getCustomModelKey(epId, upstream);
+        if (mk) return mk;
+      }
+      const ek = await this.getCustomKey(epId);
+      return ek ?? ''; // keyless local endpoint allowed
+    }
     const info = getPlatformInfo(platform);
     if (info?.keyless) return '';
     const next = await this.getNextAvailableKey(platform);

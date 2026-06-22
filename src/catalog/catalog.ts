@@ -79,8 +79,9 @@ export class Catalog {
   }
 
   /**
-   * Default fallback chain: every catalog model enabled, ordered by
-   * intelligence then speed (smartest/fastest first).
+   * Default fallback chain: every catalog model disabled by default, ordered by
+   * intelligence then speed (smartest/fastest first) so the priority order is
+   * ready once the user opts models in.
    */
   defaultFallback(): FallbackEntry[] {
     const sorted = [...this.all()].sort((a, b) =>
@@ -88,7 +89,7 @@ export class Catalog {
       a.speedRank - b.speedRank ||
       (b.released ?? '').localeCompare(a.released ?? ''), // newer first among equals
     );
-    return sorted.map((m, i) => ({ platform: m.platform, modelId: m.modelId, enabled: true, priority: i }));
+    return sorted.map((m, i) => ({ platform: m.platform, modelId: m.modelId, enabled: false, priority: i }));
   }
 
   /** Pick a fast model for inline completions among the given enabled entries. */

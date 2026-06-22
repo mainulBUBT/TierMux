@@ -33,6 +33,8 @@ export function providerHttpError(res: Response, message: string): ProviderHttpE
 export abstract class BaseProvider {
   abstract readonly platform: Platform;
   abstract readonly name: string;
+  /** Runtime display name for custom endpoints (no-op for built-ins, which leave undefined). */
+  runtimeName?: string;
   /** Providers whose free tier needs no API key (Kilo/Pollinations/OVH anon). */
   keyless = false;
 

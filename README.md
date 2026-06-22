@@ -88,7 +88,7 @@ Settings live under **TierMux** in VS Code settings (keys use the `tiermux.*` pr
 | `tiermux.rateLimitCooldownMs` | `60000` | How long to skip a rate-limited provider. |
 | `tiermux.completions.enabled` | `false` | Ghost-text inline completions. |
 
-Model enable/priority and per-provider endpoint overrides are managed in **⚙ Manage Models & Keys**.
+Model enable/priority and per-provider endpoint overrides are managed in **⚙ Manage Models & Keys**. This panel also lets you add **custom OpenAI-compatible endpoints** (vLLM, LiteLLM, Azure OpenAI deployments, Cloudflare AI Gateway, etc.) — each with its own base URL, API key, and model list. Custom endpoints appear in the model picker with your chosen name, so "vLLM" and "My LiteLLM" are distinct providers in the UI and in assistant turn footers.
 
 ---
 

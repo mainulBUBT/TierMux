@@ -242,6 +242,16 @@
     huggingface: 'HuggingFace', opencode: 'OpenCode', ovh: 'OVH', agnes: 'Agnes', custom: 'Custom',
   };
 
+  // Helper to resolve platform display name (including custom endpoints)
+  function platformDisplayName(platform, modelId) {
+    if (platform === 'custom' && modelId) {
+      const epId = modelId.split('::')[0];
+      const ep = (state.customEndpoints || []).find((e) => e.id === epId);
+      return ep ? ep.name : 'Custom';
+    }
+    return PLATFORM_NAMES[platform] || platform;
+  }
+
   const acPop = $('#ac-pop');
   const SLASH_COMMANDS = [
     { name: 'explain', detail: 'Explain the referenced code' },
@@ -848,6 +858,56 @@
 
   function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
+  // Inline modal dialog. VS Code webviews run in a sandboxed iframe without
+  // allow-modals, so window.prompt/confirm/alert are silently blocked (prompt
+  // returns null, confirm returns false). This renders a real form over the
+  // panel instead. Pass `fields` for a form (resolves to string[] or null on
+  // cancel); omit fields for a confirm/alert (resolves to true/false).
+  function inlineDialog({ title, message, fields, okLabel = 'OK', danger = false }) {
+    return new Promise((resolve) => {
+      const isForm = Array.isArray(fields) && fields.length > 0;
+      const overlay = document.createElement('div');
+      overlay.className = 'dlg-overlay';
+      const box = document.createElement('div');
+      box.className = 'dlg' + (danger ? ' dlg-danger' : '');
+      if (title) {
+        const h = document.createElement('div'); h.className = 'dlg-title'; h.textContent = title;
+        box.appendChild(h);
+      }
+      if (message) {
+        const p = document.createElement('div'); p.className = 'dlg-msg'; p.textContent = message;
+        box.appendChild(p);
+      }
+      const inputs = (fields || []).map((f) => {
+        const lab = document.createElement('label'); lab.className = 'dlg-field';
+        const sp = document.createElement('span'); sp.textContent = f.label || '';
+        const inp = document.createElement('input'); inp.type = f.secret ? 'password' : 'text';
+        if (f.placeholder) inp.placeholder = f.placeholder;
+        if (f.value != null) inp.value = f.value;
+        lab.appendChild(sp); lab.appendChild(inp);
+        box.appendChild(lab);
+        return inp;
+      });
+      const actions = document.createElement('div'); actions.className = 'dlg-actions';
+      const cancel = document.createElement('button'); cancel.className = 'secondary'; cancel.textContent = 'Cancel';
+      const ok = document.createElement('button'); ok.className = 'primary'; ok.textContent = okLabel;
+      actions.appendChild(cancel); actions.appendChild(ok);
+      box.appendChild(actions);
+      overlay.appendChild(box);
+      const done = (val) => { overlay.remove(); document.removeEventListener('keydown', onKey); resolve(val); };
+      const onKey = (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); done(isForm ? null : false); }
+        else if (e.key === 'Enter' && isForm) { e.preventDefault(); ok.click(); }
+      };
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) done(isForm ? null : false); });
+      cancel.addEventListener('click', () => done(isForm ? null : false));
+      ok.addEventListener('click', () => done(isForm ? inputs.map((i) => i.value) : true));
+      document.addEventListener('keydown', onKey);
+      document.body.appendChild(overlay);
+      if (inputs.length) setTimeout(() => inputs[0].focus(), 0);
+    });
+  }
+
   function updateReasoningAvailability() {
     let supports = false;
     if (currentModel !== 'auto') {
@@ -911,12 +971,35 @@
         lastPlatform = m.platform;
         const h = document.createElement('div');
         h.className = 'model-group';
-        h.textContent = PLATFORM_NAMES[m.platform] || m.platform;
+        h.textContent = platformDisplayName(m.platform, m.modelId);
         modelList.appendChild(h);
       }
       addModelItem(value, m.displayName, m);
       if (value === currentModel) selectedLabel = m.displayName;
     });
+    // Custom endpoints: add enabled models (grouped by endpoint)
+    const customModels = (state.fallback || []).filter((e) => e.platform === 'custom' && e.enabled);
+    if (customModels.length > 0) {
+      const byEndpoint = new Map();
+      customModels.forEach((e) => {
+        const epId = e.modelId.split('::')[0];
+        if (!byEndpoint.has(epId)) byEndpoint.set(epId, []);
+        byEndpoint.get(epId).push(e);
+      });
+      byEndpoint.forEach((models, epId) => {
+        const ep = (state.customEndpoints || []).find((e) => e.id === epId);
+        const h = document.createElement('div');
+        h.className = 'model-group';
+        h.textContent = ep ? ep.name : 'Custom';
+        modelList.appendChild(h);
+        models.forEach((e) => {
+          const upstreamId = e.modelId.split('::').slice(1).join('::');
+          const value = `custom::${e.modelId}`;
+          addModelItem(value, upstreamId, { supportsReasoning: false });
+          if (value === currentModel) selectedLabel = upstreamId;
+        });
+      });
+    }
     // If the selected model was unchecked/removed, fall back to Auto.
     if (currentModel !== 'auto' && !enabled.has(currentModel)) currentModel = 'auto';
     // Keep the button label in sync with the current selection.
@@ -1247,7 +1330,7 @@
     wrap.className = 'others-section';
     const h = document.createElement('div'); h.className = 'others-title'; h.textContent = 'Titles & commit messages';
     const desc = document.createElement('div'); desc.className = 'others-desc';
-    desc.textContent = 'Model used for short utility tasks (chat titles, commit messages). “Auto” prefers a strong keyless model, so it works with no API key.';
+    desc.textContent = 'Model used for short utility tasks (chat titles, commit messages). "Auto" prefers a strong keyless model, so it works with no API key.';
     const search = document.createElement('input');
     search.type = 'text'; search.className = 'others-search'; search.placeholder = 'Search models…';
     const list = document.createElement('div'); list.className = 'others-list';
@@ -1281,13 +1364,35 @@
       if (m.platform !== lastPlatform) {
         lastPlatform = m.platform;
         const g = document.createElement('div'); g.className = 'model-group';
-        g.textContent = PLATFORM_NAMES[m.platform] || m.platform;
+        g.textContent = platformDisplayName(m.platform, m.modelId);
         list.appendChild(g);
       }
       const keyless = KEYLESS.includes(m.platform);
       const name = m.displayName + (keyless ? ' (keyless)' : '');
-      addItem(`${m.platform}::${m.modelId}`, name, `${name} ${PLATFORM_NAMES[m.platform] || m.platform}`);
+      const platName = platformDisplayName(m.platform, m.modelId);
+      addItem(`${m.platform}::${m.modelId}`, name, `${name} ${platName}`);
     });
+    // Custom endpoints: add enabled models (grouped by endpoint)
+    const customModels = (state.fallback || []).filter((e) => e.platform === 'custom' && e.enabled);
+    if (customModels.length > 0) {
+      const byEndpoint = new Map();
+      customModels.forEach((e) => {
+        const epId = e.modelId.split('::')[0];
+        if (!byEndpoint.has(epId)) byEndpoint.set(epId, []);
+        byEndpoint.get(epId).push(e);
+      });
+      byEndpoint.forEach((models, epId) => {
+        const ep = (state.customEndpoints || []).find((e) => e.id === epId);
+        const g = document.createElement('div'); g.className = 'model-group';
+        g.textContent = ep ? ep.name : 'Custom';
+        list.appendChild(g);
+        models.forEach((e) => {
+          const upstreamId = e.modelId.split('::').slice(1).join('::');
+          const name = upstreamId + (ep?.configured ? '' : ' (no key)');
+          addItem(`custom::${e.modelId}`, name, `${name} ${ep ? ep.name : 'Custom'}`);
+        });
+      });
+    }
     search.addEventListener('input', () => {
       const q = search.value.trim().toLowerCase();
       list.querySelectorAll('.model-item').forEach((it) => { it.style.display = !q || it.dataset.search.includes(q) ? '' : 'none'; });
@@ -1313,6 +1418,9 @@
       (Number(!!b.configured) - Number(!!a.configured)) || a.name.localeCompare(b.name));
 
     provs.forEach((p) => {
+      // Skip the old 'custom' platform card — we now have a dedicated custom endpoints section
+      if (p.platform === 'custom') return;
+
       const card = document.createElement('div');
       card.className = 'provider-card';
 
@@ -1359,7 +1467,6 @@
       head.insertBefore(sw, head.firstChild);
       sw.addEventListener('click', (ev) => ev.stopPropagation());
       swCb.addEventListener('change', () => {
-        // Sends a provider-level enable/disable — does NOT touch individual model enabled flags.
         vscode.postMessage({ type: 'setProviderEnabled', platform: p.platform, enabled: swCb.checked });
       });
 
@@ -1378,8 +1485,6 @@
         provKeyBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
           if (p.keyless) return;
-          // If keys already exist: add another one to the pool.
-          // If no keys yet: use the standard setKey flow (supports paste of multiple).
           vscode.postMessage(keyCount > 0 ? { type: 'addKey', platform: p.platform } : { type: 'setKey', platform: p.platform });
         });
       }
@@ -1412,7 +1517,7 @@
       body.appendChild(epRow);
 
       // Key pool management (only for keyed, non-custom providers)
-      if (!p.keyless && p.platform !== 'custom') {
+      if (!p.keyless) {
         const keyHints = p.keyHints || [];
         if (keyHints.length > 0) {
           const keySecTitle = document.createElement('div');
@@ -1437,7 +1542,6 @@
             del.addEventListener('click', (ev) => {
               ev.stopPropagation();
               if (!confirming) {
-                // First click — show inline confirmation.
                 confirming = true;
                 chip.classList.add('confirming');
                 span.textContent = 'Remove this key?';
@@ -1461,7 +1565,6 @@
                 });
                 chip.appendChild(cancelBtn);
               } else {
-                // Second click (confirmed) — remove.
                 vscode.postMessage({ type: 'removeKeyAt', platform: p.platform, index: idx });
               }
             });
@@ -1515,12 +1618,15 @@
           keyBtn.title = hasKey
             ? 'This model has a custom API key (overrides the provider key). Click to manage.'
             : 'Set a custom API key for this model (overrides the provider key).';
-          keyBtn.addEventListener('click', () => {
+          keyBtn.addEventListener('click', async () => {
             const action = hasKey ? 'Update' : 'Set';
-            const next = window.prompt(
-              `${action} API key for ${m.displayName || e.modelId} (leave empty to clear):`,
-              '');
-            if (next === null) return; // cancelled
+            const res = await inlineDialog({
+              title: `${action} API key — ${m.displayName || e.modelId}`,
+              fields: [{ label: 'API key (leave empty to clear)', secret: true }],
+              okLabel: action,
+            });
+            if (res === null) return; // cancelled
+            const next = (res[0] || '').trim();
             if (next === '') {
               vscode.postMessage({ type: 'clearModelKey', platform: e.platform, modelId: e.modelId });
             } else {
@@ -1536,6 +1642,234 @@
       card.appendChild(body);
       settingsContentEl.appendChild(card);
     });
+
+    // ============ CUSTOM ENDPOINTS SECTION ============
+    const customEndpoints = (state.customEndpoints || []);
+    if (customEndpoints.length > 0 || true) { // Always show the section
+      const sectionTitle = document.createElement('div');
+      sectionTitle.className = 'section-title';
+      sectionTitle.style.marginTop = '24px';
+      sectionTitle.style.marginBottom = '8px';
+      sectionTitle.textContent = 'Custom endpoints (OpenAI-compatible)';
+      settingsContentEl.appendChild(sectionTitle);
+
+      const addBtn = document.createElement('button');
+      addBtn.className = 'secondary';
+      addBtn.textContent = '+ Add custom endpoint';
+      addBtn.style.marginBottom = '16px';
+      addBtn.addEventListener('click', async () => {
+        const res = await inlineDialog({
+          title: 'Add custom endpoint',
+          fields: [
+            { label: 'Name', placeholder: 'e.g., vLLM, My LiteLLM' },
+            { label: 'Base URL', placeholder: 'http://localhost:8000/v1' },
+          ],
+          okLabel: 'Add',
+        });
+        if (!res) return;
+        const name = (res[0] || '').trim();
+        const url = (res[1] || '').trim();
+        if (!name || !url) return;
+        vscode.postMessage({ type: 'addCustomEndpoint', name, baseUrl: url });
+      });
+      settingsContentEl.appendChild(addBtn);
+
+      customEndpoints.forEach((ep) => {
+        const card = document.createElement('div');
+        card.className = 'provider-card custom-endpoint-card';
+
+        const isOpen = expandedProviders.has('custom_' + ep.id);
+        const keyStatusText = ep.configured ? 'key set' : 'no key';
+        const head = document.createElement('div');
+        head.className = 'provider-head';
+        head.innerHTML = `
+          <span class="status-dot status-${ep.configured ? 'healthy' : 'missing'}"></span>
+          <span class="provider-name">${escapeHtml(ep.name)}</span>
+          <span class="muted prov-models-title">${ep.modelCount} model${ep.modelCount === 1 ? '' : 's'}</span>
+          <span class="chev">${isOpen ? '▾' : '▸'}</span>
+        `;
+
+        const body = document.createElement('div');
+        body.className = 'provider-body' + (isOpen ? '' : ' hidden');
+        head.addEventListener('click', () => {
+          const closed = body.classList.toggle('hidden');
+          head.querySelector('.chev').textContent = closed ? '▸' : '▾';
+          if (closed) expandedProviders.delete('custom_' + ep.id);
+          else expandedProviders.add('custom_' + ep.id);
+        });
+
+        // Name display + edit button
+        const nameRow = document.createElement('div');
+        nameRow.style.marginBottom = '8px';
+        nameRow.innerHTML = `<span class="muted">Name: </span><strong>${escapeHtml(ep.name)}</strong>`;
+        const editNameBtn = document.createElement('button');
+        editNameBtn.className = 'icon-btn';
+        editNameBtn.textContent = 'Rename';
+        editNameBtn.style.marginLeft = '8px';
+        editNameBtn.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          const res = await inlineDialog({
+            title: 'Rename endpoint',
+            fields: [{ label: 'Name', value: ep.name }],
+            okLabel: 'Rename',
+          });
+          const newName = res ? (res[0] || '').trim() : '';
+          if (newName && newName !== ep.name) {
+            vscode.postMessage({ type: 'updateCustomEndpoint', id: ep.id, name: newName });
+          }
+        });
+        nameRow.appendChild(editNameBtn);
+        body.appendChild(nameRow);
+
+        // Base URL input + Save button
+        const epInput = document.createElement('input');
+        epInput.type = 'text';
+        epInput.className = 'endpoint';
+        epInput.placeholder = 'https://...';
+        epInput.value = ep.baseUrl;
+        body.appendChild(epInput);
+        const epRow = document.createElement('div');
+        epRow.className = 'row-actions';
+        epRow.style.marginTop = '4px';
+        const saveEp = document.createElement('button');
+        saveEp.className = 'secondary';
+        saveEp.textContent = 'Save URL';
+        saveEp.addEventListener('click', () => {
+          const url = epInput.value.trim();
+          if (!/^https?:\/\/.+/i.test(url)) {
+            void inlineDialog({ title: 'Invalid base URL', message: 'Base URL must start with http:// or https://', okLabel: 'OK' });
+            return;
+          }
+          vscode.postMessage({ type: 'updateCustomEndpoint', id: ep.id, baseUrl: url });
+        });
+        const resetEp = document.createElement('button');
+        resetEp.className = 'icon-btn';
+        resetEp.textContent = 'Reset';
+        resetEp.addEventListener('click', () => { epInput.value = ep.baseUrl; });
+        epRow.appendChild(saveEp);
+        epRow.appendChild(resetEp);
+        body.appendChild(epRow);
+
+        // Key status + Set/Update/Clear button
+        const keyRow = document.createElement('div');
+        keyRow.style.marginTop = '8px';
+        keyRow.innerHTML = `<span class="muted">Key: </span><span>${ep.configured ? '•••• Set' : 'Not set'}</span>`;
+        const keyBtn = document.createElement('button');
+        keyBtn.className = 'secondary';
+        keyBtn.textContent = ep.configured ? 'Update key' : 'Set key';
+        keyBtn.style.marginLeft = '8px';
+        keyBtn.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          const action = ep.configured ? 'Update' : 'Set';
+          const res = await inlineDialog({
+            title: `${action} API key — ${ep.name}`,
+            fields: [{ label: 'API key (leave empty to clear)', secret: true }],
+            okLabel: action,
+          });
+          if (res !== null) {
+            vscode.postMessage({ type: 'setCustomEndpointKey', id: ep.id, key: (res[0] || '').trim() });
+          }
+        });
+        keyRow.appendChild(keyBtn);
+        if (ep.configured) {
+          const clearKeyBtn = document.createElement('button');
+          clearKeyBtn.className = 'icon-btn';
+          clearKeyBtn.textContent = 'Clear';
+          clearKeyBtn.style.marginLeft = '4px';
+          clearKeyBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            vscode.postMessage({ type: 'setCustomEndpointKey', id: ep.id, key: null });
+          });
+          keyRow.appendChild(clearKeyBtn);
+        }
+        body.appendChild(keyRow);
+
+        // Models section
+        const mt = document.createElement('div');
+        mt.className = 'muted prov-models-title';
+        mt.style.marginTop = '12px';
+        mt.textContent = 'Models';
+        body.appendChild(mt);
+
+        // Get models for this endpoint from fallback chain
+        const epModels = state.fallback.filter((e) => e.platform === 'custom' && e.modelId.startsWith(ep.id + '::'));
+        if (epModels.length === 0) {
+          const emptyHint = document.createElement('div');
+          emptyHint.className = 'muted';
+          emptyHint.style.marginBottom = '8px';
+          emptyHint.textContent = 'No models yet. Add a model ID to get started.';
+          body.appendChild(emptyHint);
+        }
+
+        epModels.forEach((e) => {
+          const idx = entries.findIndex((x) => x.platform === e.platform && x.modelId === e.modelId);
+          const upstreamId = e.modelId.split('::').slice(1).join('::');
+          const row = document.createElement('div');
+          row.className = 'pm-row';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = !!e.enabled;
+          cb.addEventListener('change', () => { entries[idx].enabled = cb.checked; vscode.postMessage({ type: 'setFallbackConfig', entries }); });
+          const info = document.createElement('div');
+          info.className = 'pm-info';
+          info.innerHTML = `<div class="pm-name">${escapeHtml(upstreamId)}</div>`;
+          const delBtn = document.createElement('button');
+          delBtn.className = 'icon-btn';
+          delBtn.textContent = '✕';
+          delBtn.title = 'Remove model';
+          delBtn.addEventListener('click', async (ev) => {
+            ev.stopPropagation();
+            if (await inlineDialog({ title: 'Remove model?', message: `Remove "${upstreamId}" from this endpoint?`, okLabel: 'Remove', danger: true })) {
+              vscode.postMessage({ type: 'removeCustomModel', endpointId: ep.id, modelId: upstreamId });
+            }
+          });
+          row.appendChild(cb);
+          row.appendChild(info);
+          row.appendChild(delBtn);
+          body.appendChild(row);
+        });
+
+        // Add model button
+        const addModelRow = document.createElement('div');
+        addModelRow.style.marginTop = '8px';
+        const addModelBtn = document.createElement('button');
+        addModelBtn.className = 'secondary';
+        addModelBtn.textContent = '+ Add model';
+        addModelBtn.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          const res = await inlineDialog({
+            title: 'Add model',
+            fields: [{ label: 'Model ID', placeholder: 'e.g., llama-3.1-8b-instruct' }],
+            okLabel: 'Add',
+          });
+          const modelId = res ? (res[0] || '').trim() : '';
+          if (!modelId) return;
+          vscode.postMessage({ type: 'addCustomModel', endpointId: ep.id, modelId });
+        });
+        addModelRow.appendChild(addModelBtn);
+        body.appendChild(addModelRow);
+
+        // Remove endpoint button
+        const removeRow = document.createElement('div');
+        removeRow.style.marginTop = '16px';
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'icon-btn';
+        removeBtn.style.color = 'var(--vscode-errorForeground)';
+        removeBtn.textContent = 'Remove endpoint';
+        removeBtn.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          if (await inlineDialog({ title: 'Remove endpoint?', message: `Remove "${ep.name}"? This removes all its models and keys.`, okLabel: 'Remove', danger: true })) {
+            vscode.postMessage({ type: 'removeCustomEndpoint', id: ep.id });
+          }
+        });
+        removeRow.appendChild(removeBtn);
+        body.appendChild(removeRow);
+
+        card.appendChild(head);
+        card.appendChild(body);
+        settingsContentEl.appendChild(card);
+      });
+    }
   }
 
   function renderIndexSection() {

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { ChatContent, ChatContentBlock, ChatMessage, Platform, TodoItem } from './shared/types';
+import type { ChatContent, ChatContentBlock, ChatMessage, Platform, TodoItem, CustomEndpoint } from './shared/types';
 import type { SecretStore } from './config/secrets';
 import type { SettingsStore } from './config/settingsStore';
 import type { Catalog } from './catalog/catalog';
@@ -19,7 +19,7 @@ import type { McpRegistryItem } from './messages';
 import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
 import type { WorkspaceTools } from './agent/tools';
 import { getNonce } from './util/nonce';
-import { allPlatformInfo, getPlatformInfo } from './providers';
+import { getPlatformInfo } from './providers';
 import { parseSlash, resolveMentions, searchMentions } from './context/mentions';
 import { contentToString } from './agent/content';
 import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSupportedAttachmentPath, kindForPath as kindFromName, mimeForPath as mimeForName } from './util/extractAttachments';
@@ -90,6 +90,7 @@ interface Session {
   // (the webview shows one session at a time and rebuilds on switch — see openSession).
   livePlatform?: string;
   liveModel?: string;
+  liveRuntimeName?: string;
   lastStepLabel?: string;
   lastTodos?: TodoItem[];
   /** Tool steps accumulated per active requestId, attached to the assistant transcript entry at
@@ -107,6 +108,16 @@ interface StoredSession {
 
 interface HistoryItem extends vscode.QuickPickItem {
   sessionId: string;
+}
+
+/** Helper to resolve the display name for a custom endpoint (or built-in platform). */
+function displayNameForEntry(entry: { platform: string; modelId: string }, deps: ChatDeps): string {
+  if (entry.platform === 'custom') {
+    const epId = entry.modelId.split('::')[0];
+    const endpoint = deps.settings.getCustomEndpoint(epId);
+    return endpoint?.name ?? 'Custom';
+  }
+  return entry.platform;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -784,6 +795,153 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'newChat':
         this.newChat();
         break;
+      // Custom OpenAI-compatible endpoints
+      case 'addCustomEndpoint': {
+        // Validate name (1-40 chars, trimmed, unique)
+        const name = m.name.trim();
+        if (name.length < 1 || name.length > 40) {
+          void vscode.window.showWarningMessage('Endpoint name must be 1-40 characters.');
+          break;
+        }
+        const existing = this.deps.settings.getCustomEndpoints();
+        if (existing.some((ep) => ep.name.toLowerCase() === name.toLowerCase())) {
+          void vscode.window.showWarningMessage(`An endpoint named "${name}" already exists.`);
+          break;
+        }
+        // Validate baseUrl
+        if (!/^https?:\/\/.+/i.test(m.baseUrl)) {
+          void vscode.window.showWarningMessage('Base URL must start with http:// or https://');
+          break;
+        }
+        // Generate id (c_ + 6 random base36 chars)
+        const id = 'c_' + Math.random().toString(36).slice(2, 8);
+        const endpoint: CustomEndpoint = {
+          id,
+          name,
+          baseUrl: m.baseUrl.replace(/\/+$/, ''),
+          models: [],
+          createdAt: Date.now(),
+        };
+        await this.deps.settings.upsertCustomEndpoint(endpoint);
+        void this.sendConfig();
+        break;
+      }
+      case 'updateCustomEndpoint': {
+        const endpoint = this.deps.settings.getCustomEndpoint(m.id);
+        if (!endpoint) {
+          void vscode.window.showWarningMessage('Endpoint not found.');
+          break;
+        }
+        const updated = { ...endpoint };
+        if (m.name !== undefined) {
+          const name = m.name.trim();
+          if (name.length < 1 || name.length > 40) {
+            void vscode.window.showWarningMessage('Endpoint name must be 1-40 characters.');
+            break;
+          }
+          if (name.toLowerCase() !== endpoint.name.toLowerCase() && this.deps.settings.getCustomEndpoints().some((ep) => ep.id !== m.id && ep.name.toLowerCase() === name.toLowerCase())) {
+            void vscode.window.showWarningMessage(`An endpoint named "${name}" already exists.`);
+            break;
+          }
+          updated.name = name;
+        }
+        if (m.baseUrl !== undefined) {
+          if (!/^https?:\/\/.+/i.test(m.baseUrl)) {
+            void vscode.window.showWarningMessage('Base URL must start with http:// or https://');
+            break;
+          }
+          updated.baseUrl = m.baseUrl.replace(/\/+$/, '');
+        }
+        if (m.extraHeaders !== undefined) updated.extraHeaders = m.extraHeaders;
+        await this.deps.settings.upsertCustomEndpoint(updated);
+        // Invalidate provider cache so the new URL/name is used
+        const { invalidateCustomProvider } = await import('./providers/index.js');
+        invalidateCustomProvider(m.id);
+        void this.sendConfig();
+        break;
+      }
+      case 'removeCustomEndpoint': {
+        // Validation already happened in webview (confirm dialog)
+        await this.deps.settings.removeCustomEndpoint(m.id);
+        await this.deps.secrets.clearCustomKey(m.id);
+        // Clear per-model keys
+        const endpoint = this.deps.settings.getCustomEndpoint(m.id);
+        if (endpoint) {
+          for (const model of endpoint.models) {
+            await this.deps.secrets.clearCustomModelKey(m.id, model.modelId);
+          }
+        }
+        // Remove fallback entries for this endpoint
+        const fallback = this.deps.settings.getFallback().filter((e) => !e.modelId.startsWith(m.id + '::'));
+        await this.deps.settings.setFallback(fallback);
+        // Invalidate provider cache
+        const { invalidateCustomProvider } = await import('./providers/index.js');
+        invalidateCustomProvider(m.id);
+        void this.sendConfig();
+        break;
+      }
+      case 'setCustomEndpointKey': {
+        if (m.key === null || m.key === '') {
+          await this.deps.secrets.clearCustomKey(m.id);
+        } else {
+          await this.deps.secrets.setCustomKey(m.id, m.key);
+        }
+        void this.sendConfig();
+        break;
+      }
+      case 'addCustomModel': {
+        const endpoint = this.deps.settings.getCustomEndpoint(m.endpointId);
+        if (!endpoint) {
+          void vscode.window.showWarningMessage('Endpoint not found.');
+          break;
+        }
+        // Validate modelId (1-200 chars, no ::, no whitespace, unique within endpoint)
+        const modelId = m.modelId.trim();
+        if (modelId.length < 1 || modelId.length > 200) {
+          void vscode.window.showWarningMessage('Model ID must be 1-200 characters.');
+          break;
+        }
+        if (/[\\s:]/.test(modelId)) {
+          void vscode.window.showWarningMessage('Model ID cannot contain whitespace or ::');
+          break;
+        }
+        if (endpoint.models.some((em) => em.modelId === modelId)) {
+          void vscode.window.showWarningMessage(`Model "${modelId}" already exists in this endpoint.`);
+          break;
+        }
+        // Add to endpoint.models
+        endpoint.models.push({ modelId, displayName: m.displayName });
+        await this.deps.settings.upsertCustomEndpoint(endpoint);
+        // Add fallback entry (disabled by default)
+        const fallback = this.deps.settings.getFallback();
+        const maxPriority = Math.max(0, ...fallback.map((e) => e.priority));
+        fallback.push({
+          platform: 'custom',
+          modelId: `${m.endpointId}::${modelId}`,
+          enabled: false,
+          priority: maxPriority + 1,
+        });
+        await this.deps.settings.setFallback(fallback);
+        void this.sendConfig();
+        break;
+      }
+      case 'removeCustomModel': {
+        const endpoint = this.deps.settings.getCustomEndpoint(m.endpointId);
+        if (!endpoint) {
+          void vscode.window.showWarningMessage('Endpoint not found.');
+          break;
+        }
+        // Remove from endpoint.models
+        endpoint.models = endpoint.models.filter((em) => em.modelId !== m.modelId);
+        await this.deps.settings.upsertCustomEndpoint(endpoint);
+        // Remove fallback entry
+        const fallback = this.deps.settings.getFallback().filter((e) => !(e.platform === 'custom' && e.modelId === `${m.endpointId}::${m.modelId}`));
+        await this.deps.settings.setFallback(fallback);
+        // Clear per-model key
+        await this.deps.secrets.clearCustomModelKey(m.endpointId, m.modelId);
+        void this.sendConfig();
+        break;
+      }
     }
   }
 
@@ -1049,7 +1207,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const continueOpts = (token: vscode.CancellationToken) => ({
         token,
         runContext: this.runContext(s, m.requestId),
-        onFailover: (i: { from: { platform: string; modelId: string }; reason: string }) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
+        onFailover: (i: { from: { platform: string; modelId: string }; reason: string }) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${displayNameForEntry(i.from, this.deps)}/${i.from.modelId}`, reason: i.reason }); },
         onKeyRotated: (i: { platform: string; keyIndex: number; keyTotal: number }) => { if (this.isActiveRun(s, m.requestId)) { const name = getPlatformInfo(i.platform as Platform)?.name ?? i.platform; this.post({ type: 'keyRotated', sessionId: s.id, requestId: m.requestId, platform: i.platform, platformName: name, keyIndex: i.keyIndex, keyTotal: i.keyTotal }); } },
       });
       let result = await this.deps.agent.run(s.history, m.mode as Mode, {
@@ -1110,7 +1268,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.platform, model: result.model, paused: result.paused });
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: result.model, paused: result.paused });
       this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext(s) } });
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned run — don't surface its error
@@ -1323,7 +1481,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.platform, model: result.model, paused: result.paused });
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: result.model, paused: result.paused });
       this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext(s) } });
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return;
@@ -1369,7 +1527,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.transcript.push({
       role: 'assistant',
       text: result.text,
-      model: result.model ? `${result.platform}/${result.model}` : undefined,
+      model: result.model ? `${result.runtimeName ?? result.platform}/${result.model}` : undefined,
       ts: Date.now(),
       secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)),
       reasoning: result.reasoning || undefined,
@@ -1431,23 +1589,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Build the streaming callbacks for a run, each gated on the run still being active IN ITS
    * SESSION. Centralizing the guard means a cancelled run goes quiet immediately instead of
    * rendering into another session. Not gated on viewed — background runs keep streaming.
-   * `mode` controls whether the agent's `askUser` tool surfaces in-chat (Plan + Agent) or via
-   * the native prompt (Debug + Orchestrator + Chat).
+   * The agent's `askUser` tool always surfaces as an in-chat card. Every mode can ask —
+   * including Chat, whose web loop carries askUser to clarify time-sensitive queries.
    */
-  private agentCallbacks(s: Session, requestId: string, mode: Mode): AgentCallbacks {
+  private agentCallbacks(s: Session, requestId: string, _mode: Mode): AgentCallbacks {
     const live = (): boolean => this.isActiveRun(s, requestId);
     // The webview shows one session at a time and rebuilds on switch, so we CACHE the live
     // status on the session (always, while the run is live) and only PUSH to the webview when
     // this session is the viewed one. openSession re-emits the cache so switching back to a
     // running agent shows its current step/todos immediately.
     const viewed = (): boolean => this.viewedSessionId === s.id;
-    // askUser only ever fires from tool-calling runs (agent/debug/plan/orchestrator, and Auto
-    // which resolves to one of those) — never from chat (no tools there). So render it in-chat
-    // for every mode that can actually ask. The raw `mode` here is the composer selection, so
-    // 'auto' must map to in-chat too (it resolves to agent internally in the Agent class).
-    const useInChatAsk = mode !== 'chat';
     return {
-      onModel: (platform, model) => { if (!live()) return; s.livePlatform = platform; s.liveModel = model; if (viewed()) this.post({ type: 'assistantStart', sessionId: s.id, requestId, platform, model }); },
+      onModel: (platform, model, runtimeName) => { if (!live()) return; s.livePlatform = platform; s.liveModel = model; s.liveRuntimeName = runtimeName; if (viewed()) this.post({ type: 'assistantStart', sessionId: s.id, requestId, platform: runtimeName ?? platform, model }); },
       onTool: (e) => {
         if (!live()) return;
         // Accumulate every step (regardless of view) so the turn's transcript entry can be
@@ -1475,7 +1628,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       onTodos: (todos) => { if (!live()) return; s.lastTodos = todos; if (viewed()) this.post({ type: 'todos', sessionId: s.id, requestId, todos, followingPlan: !!s.executingPlan }); },
       onAskUser: async (question, options) => {
         if (!live()) return '';
-        if (!useInChatAsk) return this.requestUserInput(question, options);
         // Mint a unique callId per prompt so the webview's response correlates back to the
         // exact pending promise. The agent loop is sequential so only one askUser can be
         // in-flight at a time per session — the callId is purely for response routing.
@@ -1483,25 +1635,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return this.requestAskUser(s, requestId, callId, question, options);
       },
     };
-  }
-
-  /**
-   * Backing for the agent's `askUser` tool: a native input box (free text) or quick pick
-   * (multiple choice). Blocks the run until answered; '' on cancel so the model can move on.
-   * Uses native prompts to avoid webview surgery — consistent with how the extension already
-   * asks for input elsewhere.
-   */
-  private async requestUserInput(question: string, options?: string[]): Promise<string> {
-    try { this.view?.show?.(true); } catch { /* reveal is best-effort */ }
-    if (options && options.length >= 2) {
-      const picked = await vscode.window.showQuickPick(
-        options.map((label) => ({ label })),
-        { placeHolder: question, ignoreFocusOut: true },
-      );
-      return picked ? picked.label : '';
-    }
-    const answer = await vscode.window.showInputBox({ prompt: question, ignoreFocusOut: true });
-    return answer ?? '';
   }
 
   /**
@@ -1559,7 +1692,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.platform, model: result.model, paused: result.paused });
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: result.model, paused: result.paused });
       this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext(s) } });
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return;
@@ -1674,11 +1807,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         keyHints: s.keyHints,
       };
     });
-    // include the 'custom' platform row for advanced users
-    const custom = allPlatformInfo().find((p) => p.platform === 'custom');
-    if (custom) {
-      platforms.push({ platform: 'custom', name: custom.name, configured: !!endpoints['custom'], keyless: false, status: 'unknown', defaultBaseUrl: custom.defaultBaseUrl, endpoint: endpoints['custom'], keyCount: 0, keyHints: [] });
-    }
     if (this.deps.mcp.hasServers()) { try { await this.deps.mcp.ensureStarted(); } catch { /* MCP optional */ } }
     await this.deps.index.load();
     const s = this.deps.index.stats();
@@ -1699,6 +1827,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       searchPriority: vscode.workspace.getConfiguration('tiermux.tools').get<string>('searchProviderPriority', 'auto'),
       disabledProviders: this.deps.settings.getDisabledProviders(),
       cacheStats: this.deps.tools.getCacheStats(),
+      customEndpoints: (await Promise.all(this.deps.settings.getCustomEndpoints().map(async (ep) => ({
+        id: ep.id,
+        name: ep.name,
+        baseUrl: ep.baseUrl,
+        keyless: false,
+        configured: !!(await this.deps.secrets.getCustomKey(ep.id)),
+        modelCount: ep.models.length,
+      })))),
     };
     this.post({ type: 'config', config, usageTotals: { ...this.deps.usage.get(), context: this.computeContext(this.current()) } });
   }

@@ -1,12 +1,13 @@
 // Persists the fallback chain (enabled + priority) and per-platform endpoint
 // overrides in globalState. The model-management UI is the source of truth.
 import * as vscode from 'vscode';
-import type { FallbackEntry, Platform } from '../shared/types';
+import type { FallbackEntry, Platform, CustomEndpoint } from '../shared/types';
 import type { Catalog } from '../catalog/catalog';
 
 const FALLBACK_KEY = 'tiermux.fallback';
 const ENDPOINTS_KEY = 'tiermux.endpoints';
 const DISABLED_PROVIDERS_KEY = 'tiermux.disabledProviders';
+const CUSTOM_ENDPOINTS_KEY = 'tiermux.customEndpoints';
 
 export class SettingsStore {
   private readonly _onChange = new vscode.EventEmitter<void>();
@@ -30,7 +31,13 @@ export class SettingsStore {
     const catalogModels = this.catalog.all();
     const inCatalog = new Set(catalogModels.map((m) => `${m.platform}::${m.modelId}`));
     // Keep stored entries that still exist; preserve user order/flags.
-    const kept = stored.filter((e) => inCatalog.has(`${e.platform}::${e.modelId}`));
+    // Custom endpoints: keep entries whose endpoint still exists in customEndpoints.
+    const endpoints = this.getCustomEndpoints();
+    const epIds = new Set(endpoints.map((ep) => ep.id));
+    const kept = stored.filter((e) =>
+      inCatalog.has(`${e.platform}::${e.modelId}`) ||
+      (e.platform === 'custom' && epIds.has(e.modelId.split('::')[0]))
+    );
     const known = new Set(kept.map((e) => `${e.platform}::${e.modelId}`));
     // Append catalog models not yet in the chain (disabled by default).
     let nextPriority = kept.reduce((mx, e) => Math.max(mx, e.priority), -1) + 1;
@@ -96,5 +103,37 @@ export class SettingsStore {
     delete map[platform];
     await this.state.update(ENDPOINTS_KEY, map);
     this._onChange.fire();
+  }
+
+  // ---- custom OpenAI-compatible endpoints ----
+
+  getCustomEndpoints(): CustomEndpoint[] {
+    return this.state.get<CustomEndpoint[]>(CUSTOM_ENDPOINTS_KEY) ?? [];
+  }
+
+  getCustomEndpoint(id: string): CustomEndpoint | undefined {
+    return this.getCustomEndpoints().find((ep) => ep.id === id);
+  }
+
+  async setCustomEndpoints(list: CustomEndpoint[]): Promise<void> {
+    await this.state.update(CUSTOM_ENDPOINTS_KEY, list);
+    this._onChange.fire();
+  }
+
+  async upsertCustomEndpoint(endpoint: CustomEndpoint): Promise<void> {
+    const current = this.getCustomEndpoints();
+    const existingIndex = current.findIndex((ep) => ep.id === endpoint.id);
+    if (existingIndex >= 0) {
+      current[existingIndex] = endpoint;
+    } else {
+      current.push(endpoint);
+    }
+    await this.setCustomEndpoints(current);
+  }
+
+  async removeCustomEndpoint(id: string): Promise<void> {
+    const current = this.getCustomEndpoints();
+    const filtered = current.filter((ep) => ep.id !== id);
+    await this.setCustomEndpoints(filtered);
   }
 }
