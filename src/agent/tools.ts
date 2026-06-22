@@ -13,7 +13,11 @@ import type { ChatMessage } from '../shared/types';
 import { search as ddgSearch, searchNews as ddgSearchNews, SafeSearchType } from 'duck-duck-scrape';
 
 const MAX_READ_BYTES = 100 * 1024;
-const MAX_SEARCH_RESULTS = 40;
+// Default cap on readFile return size. A 500-line file ≈ 30 KB; without a cap it sits in the
+// transcript for every subsequent model call, causing 1M+ input-token blowouts on long tasks.
+// The model sees totalLines + a notice, and can re-call with startLine/endLine for any range.
+const READ_DEFAULT_CAP = 6000;
+const MAX_SEARCH_RESULTS = 12; // was 40 — cut to match grep's MAX_FILES cap
 const MAX_DOC_CHARS_DEFAULT = 60_000;
 const EXCLUDE = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/build/**,**/.next/**,**/.venv/**}';
 const SEARCH_CACHE_TTL_MS = 30_000; // 30 seconds
@@ -90,7 +94,11 @@ export class WorkspaceTools {
     }
     try {
       switch (name) {
-        case 'readFile': return await this.readFile(String(args.path ?? ''));
+        case 'readFile': return await this.readFile(
+          String(args.path ?? ''),
+          args.startLine != null ? Number(args.startLine) : undefined,
+          args.endLine != null ? Number(args.endLine) : undefined,
+        );
         case 'listDir': return await this.listDir(String(args.path ?? '.'));
         case 'repoMap': return await this.repoMap();
         case 'searchWorkspace': return await this.searchWorkspace(String(args.query ?? ''));
@@ -118,24 +126,56 @@ export class WorkspaceTools {
     }
   }
 
-  private async readFile(p: string): Promise<string> {
+  private async readFile(p: string, startLine?: number, endLine?: number): Promise<string> {
     const uri = this.resolve(p);
     const key = uri.fsPath;
+    // Full-file cache: store the decoded text (not the JSON wrapper) so line-range slices
+    // can reuse it without a second disk read. The JSON result is re-built below.
+    let fullText: string | undefined;
     if (this.fileCacheEnabled) {
       const stat = await vscode.workspace.fs.stat(uri);
       const cached = this.fileCache.get(key);
-      if (cached && cached.mtime === stat.mtime) return cached.content;
+      if (cached && cached.mtime === stat.mtime) {
+        // cached.content is the full JSON result — extract text to apply line range
+        try { fullText = (JSON.parse(cached.content) as { content: string }).content; } catch { return cached.content; }
+      } else {
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        const truncated = bytes.byteLength > MAX_READ_BYTES;
+        fullText = new TextDecoder().decode(truncated ? bytes.slice(0, MAX_READ_BYTES) : bytes);
+        // Cache the full file result for future full reads
+        this.fileCache.set(key, { mtime: stat.mtime, content: JSON.stringify({ path: p, truncated, content: fullText }) });
+      }
+    } else {
       const bytes = await vscode.workspace.fs.readFile(uri);
       const truncated = bytes.byteLength > MAX_READ_BYTES;
-      const text = new TextDecoder().decode(truncated ? bytes.slice(0, MAX_READ_BYTES) : bytes);
-      const result = JSON.stringify({ path: p, truncated, content: text });
-      this.fileCache.set(key, { mtime: stat.mtime, content: result });
-      return result;
+      fullText = new TextDecoder().decode(truncated ? bytes.slice(0, MAX_READ_BYTES) : bytes);
     }
-    const bytes = await vscode.workspace.fs.readFile(uri);
-    const truncated = bytes.byteLength > MAX_READ_BYTES;
-    const text = new TextDecoder().decode(truncated ? bytes.slice(0, MAX_READ_BYTES) : bytes);
-    return JSON.stringify({ path: p, truncated, content: text });
+
+    const allLines = fullText.split('\n');
+    const totalLines = allLines.length;
+
+    // Line-range slice: only return the requested window. Big win for large files —
+    // model reads 30 lines instead of 500, saving 90% of input tokens.
+    if (startLine !== undefined || endLine !== undefined) {
+      const s = Math.max(0, (startLine ?? 1) - 1);
+      const e = Math.min(totalLines, endLine ?? totalLines);
+      const sliced = allLines.slice(s, e).join('\n');
+      return JSON.stringify({ path: p, startLine: s + 1, endLine: e, totalLines, content: sliced });
+    }
+
+    // Default cap: prevents full large files from sitting in the transcript across 20+ iterations.
+    // A 500-line file without a cap = 30 KB re-sent every model call = 600 KB over 20 iterations.
+    // The model uses totalLines + the notice to call back with startLine/endLine as needed.
+    if (fullText.length > READ_DEFAULT_CAP) {
+      return JSON.stringify({
+        path: p,
+        totalLines,
+        truncated: true,
+        notice: `File has ${totalLines} lines. Only first ${READ_DEFAULT_CAP} chars shown. Call readFile with startLine/endLine to read a specific range.`,
+        content: fullText.slice(0, READ_DEFAULT_CAP),
+      });
+    }
+    return JSON.stringify({ path: p, totalLines, truncated: false, content: fullText });
   }
 
   private async listDir(p: string): Promise<string> {
@@ -258,12 +298,27 @@ export class WorkspaceTools {
       this.invalidateWriteCaches(p);
       return JSON.stringify({ ok: true, path: p });
     }
-    // On failure: include current file content so the model retries with exact text instead
-    // of entering the common "editFile fail → grep loop" pattern (14+ greps, 400+ seconds).
+    // On failure: include the most relevant section of the file so the model can retry
+    // with exact text — eliminating the "editFile fail → 14 greps" pattern.
+    // Instead of blindly returning the first N chars, find the section with the most
+    // keyword overlap with the failed search string (much more likely to contain the target).
     let currentContent = '';
     try {
       const bytes = await vscode.workspace.fs.readFile(this.resolve(p));
-      currentContent = new TextDecoder().decode(bytes).slice(0, 3000);
+      const fullText = new TextDecoder().decode(bytes);
+      const fileLines = fullText.split('\n');
+      // Score each line by how many significant words from the search string it contains.
+      const searchWords = search.split(/\s+/).filter((w) => w.length >= 4);
+      let bestScore = 0;
+      let bestLine = 0;
+      for (let i = 0; i < fileLines.length; i++) {
+        const score = searchWords.filter((w) => fileLines[i].includes(w)).length;
+        if (score > bestScore) { bestScore = score; bestLine = i; }
+      }
+      // Return 50 lines centred on the best-matching line (or the top if no match).
+      const start = Math.max(0, bestLine - 10);
+      const end = Math.min(fileLines.length, bestLine + 40);
+      currentContent = fileLines.slice(start, end).join('\n').slice(0, 3000);
     } catch { /* best-effort */ }
     return JSON.stringify({
       error: r.error ?? 'Search string not found in file — the text you searched for does not appear verbatim.',
@@ -305,17 +360,39 @@ export class WorkspaceTools {
     }
     const include = path ? `${path.replace(/\/+$/, '')}/**/*` : '**/*';
     const candidates = await vscode.workspace.findFiles(include, EXCLUDE, 500);
-    const matches: Array<{ path: string; hits: Array<{ line: number; text: string }> }> = [];
+    // Limits: context lines increase output size ~5×, so reduce file+hit caps to compensate.
+    // 12 files × 3 hits × 5 lines × 120 chars ≈ 21 KB max — manageable in a model context.
+    // (Old: 40 × 5 × 200 = 40 KB; with context but no cap: 40 × 5 × 5 × 160 = 160 KB.)
+    const MAX_FILES = 12;
+    const MAX_HITS = 3;
+    const CONTEXT = 2; // lines before/after each match
+    const LINE_CAP = 120;
+    const TOTAL_CHARS_CAP = 20_000; // hard ceiling regardless of file/hit counts
+    let totalChars = 0;
+    const matches: Array<{ path: string; hits: Array<{ line: number; text: string; context: string }> }> = [];
     for (const f of candidates) {
+      if (totalChars >= TOTAL_CHARS_CAP) break;
       try {
         const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(f));
         const lines = text.split('\n');
-        const hits: Array<{ line: number; text: string }> = [];
+        const hits: Array<{ line: number; text: string; context: string }> = [];
         for (let i = 0; i < lines.length; i++) {
-          if (re.test(lines[i]) && hits.length < 5) hits.push({ line: i + 1, text: lines[i].trim().slice(0, 200) });
+          if (re.test(lines[i]) && hits.length < MAX_HITS) {
+            // Include surrounding lines so the model sees enough context to act without
+            // a separate readFile call — eliminates 1 RPD slot per grep hit.
+            const ctxStart = Math.max(0, i - CONTEXT);
+            const ctxEnd = Math.min(lines.length - 1, i + CONTEXT);
+            const context = lines.slice(ctxStart, ctxEnd + 1).map((l, idx) => {
+              const lineNum = ctxStart + idx + 1;
+              const marker = lineNum === i + 1 ? '>' : ' ';
+              return `${marker} ${lineNum}: ${l.slice(0, LINE_CAP)}`;
+            }).join('\n');
+            hits.push({ line: i + 1, text: lines[i].trim().slice(0, LINE_CAP), context });
+            totalChars += context.length;
+          }
         }
         if (hits.length) matches.push({ path: vscode.workspace.asRelativePath(f), hits });
-        if (matches.length >= 40) break;
+        if (matches.length >= MAX_FILES) break;
       } catch { /* skip unreadable */ }
     }
     const result = JSON.stringify({ pattern: p, path: path ?? null, matches });

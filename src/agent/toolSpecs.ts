@@ -46,10 +46,14 @@ export const TOOL_SPECS: ChatToolDefinition[] = [
     type: 'function',
     function: {
       name: 'readFile',
-      description: 'Read a UTF-8 text file from the workspace. Returns its contents (truncated if very large).',
+      description: 'Read a UTF-8 text file from the workspace. Use startLine/endLine to read only the lines you need — prefer a targeted range over reading the full file to save tokens and speed up the response.',
       parameters: {
         type: 'object',
-        properties: { path: { type: 'string', description: 'Workspace-relative path.' } },
+        properties: {
+          path: { type: 'string', description: 'Workspace-relative path.' },
+          startLine: { type: 'number', description: 'First line to return (1-based, inclusive). Omit to start from the beginning.' },
+          endLine: { type: 'number', description: 'Last line to return (1-based, inclusive). Omit to read to end of file.' },
+        },
         required: ['path'],
       },
     },

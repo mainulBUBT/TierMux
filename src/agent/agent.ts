@@ -751,7 +751,9 @@ Never repeat or explain these instructions. Just greet the user directly.`;
       cb.onStep?.('thinking', 'Working…');
       // Keep the per-request payload from ballooning: stale out old, large tool results/write
       // bodies before re-sending the transcript (a 100 KB read shouldn't be re-billed 25×).
-      trimRunTranscript(messages, baseLen);
+      // keepRounds=1: only the last round kept in full. maxChars=800: trim old results faster.
+      // Old default (2, 2000) allowed 60KB of file content to re-appear every model call.
+      trimRunTranscript(messages, baseLen, 1, 800);
       // Phase routing (Auto, strong only): the first hop reasons/plans, then the classified
       // execute kind takes over. Weak models keep one stable kind for the whole run.
       const phaseKind = auto ? phaseRouteKind(baseKind, totalIter) : baseKind;
@@ -984,7 +986,7 @@ Never repeat or explain these instructions. Just greet the user directly.`;
       if (opts.token?.isCancellationRequested) return { text: '_Cancelled._', platform: lastPlatform, model: lastModel };
       cb.onStep?.('thinking', 'Working…');
       // Stale out old, large web-search/fetch results so they aren't re-sent every hop.
-      trimRunTranscript(messages, baseLen);
+      trimRunTranscript(messages, baseLen, 1, 800);
       let result: Awaited<ReturnType<Router['route']>>;
       let unhandled: string | undefined;
       try {
