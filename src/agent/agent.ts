@@ -735,6 +735,10 @@ Never repeat or explain these instructions. Just greet the user directly.`;
     let floor = auto ? (opts.profile?.rankFloor ?? 4) : undefined;
     let totalIter = 0;
     let level = 0;
+    // Consecutive grep counter: if the model greps 3+ times in a row without a readFile,
+    // append a strong hint to the next grep result to break the loop.
+    // This is the primary cause of 400+ second hangs on free LLMs after editFile fails.
+    let consecutiveGreps = 0;
 
     while (totalIter < hardCeiling) {
       // First batch = the normal budget; an escalation batch is short (ESCALATION_BATCH).
@@ -845,7 +849,15 @@ Never repeat or explain these instructions. Just greet the user directly.`;
         const results: string[] = [];
         for (const call of toolCalls) {
           if (opts.token?.isCancellationRequested) return { text: '_Cancelled._', platform: lastPlatform, model: lastModel };
-          const { obsText } = await this.executeToolCall(call, opts, cb);
+          let { obsText } = await this.executeToolCall(call, opts, cb);
+          if (call.function.name === 'grep') {
+            consecutiveGreps++;
+            if (consecutiveGreps >= 3) {
+              obsText += `\n\n⚠️ TOOL LOOP: grep called ${consecutiveGreps}× in a row. STOP grepping. Call readFile on the most relevant file above to get its full content — then use that exact text in your next editFile call.`;
+            }
+          } else if (call.function.name !== 'think' && call.function.name !== 'updateTodos') {
+            consecutiveGreps = 0;
+          }
           results.push(`<tool_result name="${call.function.name}">\n${obsText}\n</tool_result>`);
         }
         messages.push({
@@ -857,7 +869,16 @@ Never repeat or explain these instructions. Just greet the user directly.`;
         messages.push({ role: 'assistant', content: contentToString(msg?.content), tool_calls: toolCalls });
         for (const call of toolCalls) {
           if (opts.token?.isCancellationRequested) return { text: '_Cancelled._', platform: lastPlatform, model: lastModel };
-          const { observation } = await this.executeToolCall(call, opts, cb);
+          let { observation } = await this.executeToolCall(call, opts, cb);
+          if (call.function.name === 'grep') {
+            consecutiveGreps++;
+            if (consecutiveGreps >= 3) {
+              const hint = `\n\n⚠️ TOOL LOOP: grep called ${consecutiveGreps}× in a row. STOP grepping. Call readFile on the most relevant file above to get its full content — then use that exact text in your next editFile call.`;
+              observation = contentToString(observation) + hint;
+            }
+          } else if (call.function.name !== 'think' && call.function.name !== 'updateTodos') {
+            consecutiveGreps = 0;
+          }
           messages.push({ role: 'tool', tool_call_id: call.id, name: call.function.name, content: observation });
         }
       }

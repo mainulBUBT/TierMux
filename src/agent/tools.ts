@@ -254,8 +254,22 @@ export class WorkspaceTools {
     const blocked = this.claimEdit(p, ctx);
     if (blocked) return blocked;
     const r = await this.editGate.edit(this.resolve(p), search, replace, ctx);
-    if (r.applied) this.invalidateWriteCaches(p);
-    return JSON.stringify(r.applied ? { ok: true, path: p } : { error: r.error ?? 'not applied' });
+    if (r.applied) {
+      this.invalidateWriteCaches(p);
+      return JSON.stringify({ ok: true, path: p });
+    }
+    // On failure: include current file content so the model retries with exact text instead
+    // of entering the common "editFile fail → grep loop" pattern (14+ greps, 400+ seconds).
+    let currentContent = '';
+    try {
+      const bytes = await vscode.workspace.fs.readFile(this.resolve(p));
+      currentContent = new TextDecoder().decode(bytes).slice(0, 3000);
+    } catch { /* best-effort */ }
+    return JSON.stringify({
+      error: r.error ?? 'Search string not found in file — the text you searched for does not appear verbatim.',
+      hint: 'Copy the exact text you want to replace from currentContent below, then retry editFile with that exact string.',
+      currentContent,
+    });
   }
   private async deleteFile(p: string, ctx?: RunContext): Promise<string> {
     const blocked = this.claimEdit(p, ctx);
