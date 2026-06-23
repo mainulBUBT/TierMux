@@ -2,10 +2,6 @@
   <img src="media/banner.png" alt="TierMux — Agentic AI Routing" width="560">
 </p>
 
-<p align="center">
-  <img src="media/logo.svg" alt="TierMux logo" width="200">
-</p>
-
 <h3 align="center">Stack free. Route smart. Ship faster.</h3>
 
 ---
@@ -31,18 +27,6 @@ how much you've saved so the "free" part is visible.
   hiccup doesn't stop you.
 - **Yours.** API keys live in VS Code SecretStorage. No backend, no telemetry, no opt-in to
   upload anything. Lifetime usage is stored locally and clearable.
-
----
-
-## At a glance
-
-The chat footer shows session tokens in real time, plus a **lifetime total** and an
-**estimated $ saved** counter that uses GPT-4o list price as the reference. Open
-**Settings → Others → Usage data** to see the same numbers with a one-click reset.
-
-<p align="center">
-  <img src="media/usage-footer.svg" alt="Chat footer showing session tokens, context window, lifetime totals with est. $ saved, and a Usage data card with Clear usage data button" width="720">
-</p>
 
 ---
 
@@ -128,13 +112,6 @@ are all managed in **⚙ Manage Models & Keys**.
 - **API keys** → VS Code SecretStorage (encrypted by the OS).
 - **👍 / 👎 stats and lifetime token counter** → local extension storage.
 - **No backend.** TierMux has no server. Nothing leaves your machine.
-
----
-
-## Development
-
-See **[DEVELOPMENT.md](DEVELOPMENT.md)** for the project layout, the build workflow, and the
-one-command rebrand script. See **[FUTURE_PLAN.md](FUTURE_PLAN.md)** for the roadmap.
 
 ## License
 
