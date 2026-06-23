@@ -2,142 +2,139 @@
   <img src="media/banner.png" alt="TierMux — Agentic AI Routing" width="560">
 </p>
 
+<p align="center">
+  <img src="media/logo.svg" alt="TierMux logo" width="200">
+</p>
+
 <h3 align="center">Stack free. Route smart. Ship faster.</h3>
 
 ---
 
-TierMux is an agentic AI coding assistant for VS Code that multiplexes the **free tiers of 18+
-LLM providers** (with more added over time) and routes each request to the best available model —
-automatically failing over when one is rate-limited or down. Before the agent even takes its first
-tool step, TierMux pre-researches your codebase so it starts with answers, not questions.
-
-<p align="center">
-  <img src="media/icon.svg" alt="TierMux icon — T with stacked tiers and routing arrow" width="96">
-</p>
+**TierMux** is a free, agentic AI coding assistant for VS Code. It routes every request to the best
+free model across **22 providers**, fails over automatically when one is rate-limited, and tracks
+how much you've saved so the "free" part is visible.
 
 > The name: **Tier** (free provider tiers) + **Mux** (a multiplexer that routes across them).
-
-> Provider adapters, the model catalog, and routing are adapted from the author's MIT-licensed
-> [`freellmapi`](https://github.com/tashfeenahmed/freellmapi) and run in-process here.
 
 ---
 
 ## Why TierMux
 
-- **Free first.** Stacks the free tiers of Gemini, Groq, Cerebras, OpenRouter, Mistral, NVIDIA,
+- **22 free providers, one model picker.** Gemini, Groq, Cerebras, OpenRouter, Mistral, NVIDIA,
   GitHub Models, Cohere, Cloudflare, Zhipu, Ollama, Kilo, Pollinations, LLM7, HuggingFace,
-  OpenCode Zen, OVH, Agnes — plus any custom OpenAI-compatible endpoint, with **more providers
-  and models added over time**.
-- **Thinks ahead.** A pre-agent research pipeline runs *before* the first model call — it greps
-  your workspace, walks the symbol index, and pre-fetches diagnostics so the agent starts with
-  context already in hand. Saves 2–3 round-trips on free-tier rate limits.
-- **Smart routing.** Intent is classified in milliseconds (no LLM call) and the right *kind* of
-  model is picked per task — a quick "hi" stays cheap and a refactor gets a capable tool model.
-  The router learns what worked, so the next similar task skips the failover cascade.
-- **Resilient.** Automatic failover with rate-limit cooldowns and tool-compatibility quarantine —
-  one provider hiccup doesn't stop you.
-- **Yours.** Keys live in VS Code SecretStorage; you choose which providers to enable.
-
----
-
-## Features
-
-- **Auto mode (default).** Classifies each message and picks the behavior **and** the best free
-  model — no mode-picking needed. A greeting gets a one-line reply on a fast model (no tools, no
-  token burn); an edit request runs the full agent on a smart tool-capable model.
-- **Explicit modes** (for power users):
-  - **Chat** — read-only Q&A.
-  - **Agent** — autonomous tool loop that reads/searches/edits files and **runs terminal commands**.
-  - **Plan** — proposes a numbered plan → you approve → it executes.
-  - **Debug** — reproduce → isolate root cause → fix → re-verify.
-  - **Orchestrator** — breaks a big task into subtasks and runs them in sequence.
-- **Pre-agent research.** Before the first model call, TierMux greps the workspace, walks the
-  symbol index, and collects diagnostics — injecting pre-researched context into the system prompt
-  so the agent starts informed, not cold.
-- **Agent tools** — read/list/search the workspace, diagnostics, create/write/edit/delete files
-  (every edit shown as a **diff for approval**), and **run commands** (gated by an approval
-  policy).
-- **Checkpoints** — each turn is snapshotted; restore the workspace to before any message.
-- **Per-task model feedback** — 👍/👎 a reply and the router learns which model answers *your*
-  tasks best (stored locally).
-- **Usage tracking** — the chat footer shows session tokens and a **lifetime total** of every
-  token TierMux has routed for you, plus an **estimated $ saved** counter (reference price
-  defaults to GPT-4o list price; tune with the settings below). Clear the lifetime counter
-  any time from **Settings → Others → Usage data**.
-- **Context-aware** — project grounding (knows your project's name/type/structure), ambient editor
-  context, `@file`/`@folder`/`@symbol` mentions, and optional semantic codebase search.
-- **Reasoning effort** (Off → Very High) for reasoning-capable models, with a collapsible
-  thinking view.
-- **Editor integration** — right-click Explain/Fix/Refactor/Tests/Docs, **Fix with AI** on
-  diagnostics, **inline chat** (`Ctrl/Cmd+I`), ghost-text completions (off by default), and
-  **AI commit messages** in the Source Control toolbar.
-- **MCP** — connect Model Context Protocol servers for extra tools.
+  OpenCode Zen, OVH, Agnes, SambaNova, SiliconFlow, ZenMux, OpenInference — plus any
+  custom OpenAI-compatible endpoint. More added over time.
+- **Auto-routing.** Send a message; the router classifies intent in milliseconds and picks a fast
+  tiny model for "hi" or a smart tool-capable one for refactors. Auto learns what worked, so
+  repeat tasks skip the failover cascade.
+- **Resilient.** Per-provider rate-limit cooldowns, key rotation, automatic failover. One provider
+  hiccup doesn't stop you.
+- **Yours.** API keys live in VS Code SecretStorage. No backend, no telemetry, no opt-in to
+  upload anything. Lifetime usage is stored locally and clearable.
 
 ---
 
 ## At a glance
 
-The chat footer surfaces per-session and lifetime token totals in real time, and a
-**Usage data** card in **Settings → Others** shows the same lifetime counter with a one-click
-reset.
+The chat footer shows session tokens in real time, plus a **lifetime total** and an
+**estimated $ saved** counter that uses GPT-4o list price as the reference. Open
+**Settings → Others → Usage data** to see the same numbers with a one-click reset.
 
 <p align="center">
-  <img src="media/usage-footer.svg" alt="Chat footer showing session tokens, context window, and lifetime totals with est. $ saved; Usage data card with Total tokens, Est. $ saved, and Clear usage data button" width="720">
+  <img src="media/usage-footer.svg" alt="Chat footer showing session tokens, context window, lifetime totals with est. $ saved, and a Usage data card with Clear usage data button" width="720">
 </p>
-
-The `Session:` segment is in-memory (resets on reload). The `Lifetime:` segment is persisted to
-VS Code's local extension storage and accumulates across every session. The **est. $ saved**
-number is computed at read time from `tiermux.usage.referencePriceInPer1M` and
-`tiermux.usage.referencePriceOutPer1M` (default GPT-4o list price) — set either to `0` to hide
-the dollar line.
 
 ---
 
-## Getting started (users)
+## Features
+
+### Three modes, one button
+
+| Mode | What it does |
+|---|---|
+| **Ask** | Read-only Q&A. Explains code, answers questions, never edits files. |
+| **Plan** | Researches the code, proposes a numbered plan, then edits only after you approve. |
+| **Agent** | Full agent loop — reads, edits, runs commands, tracks a live task list. |
+
+`Auto` (default) classifies each message and routes it to the best mode + model automatically.
+
+### Agent capabilities
+
+- **Pre-agent research.** Before the first model call, the agent greps the workspace, walks the
+  symbol index, and collects diagnostics so it starts with context, not cold.
+- **Tools.** Read / list / search the workspace, run diagnostics, create / write / edit / delete
+  files (every edit shown as a **diff for approval**), and run terminal commands (gated by an
+  approval policy).
+- **Checkpoints.** Every turn is snapshotted; restore the workspace to before any message.
+- **Quality-based escalation.** If a model returns empty, refuses, or loops on a tool call, the
+  router retries with a smarter model automatically.
+
+### Editor integration
+
+- Right-click **Explain / Fix / Refactor / Generate Tests / Generate Docs** on any selection.
+- **Fix with AI** on diagnostics, **inline chat** (`Ctrl/Cmd+I`).
+- **AI commit messages** in the Source Control toolbar.
+- Optional **ghost-text completions** (off by default — high request volume against free tiers).
+
+### Feedback and memory
+
+- **👍 / 👎** each reply. The router learns which model answers *your* tasks best (stored locally).
+- **Style memory.** TierMux infers your indent / quote / semicolon style and stays consistent.
+
+### Extensibility
+
+- **Custom OpenAI-compatible endpoints** — vLLM, LiteLLM, Azure OpenAI, Cloudflare AI Gateway, etc.
+- **MCP** — connect Model Context Protocol servers for extra tools.
+
+### Usage tracking
+
+- **Session + lifetime tokens** in the chat footer.
+- **Estimated $ saved** — reference prices are configurable; set them to `0` to hide the line.
+- **Usage data card** in Settings → Others with a one-click reset.
+
+---
+
+## Getting started
 
 1. Install the extension (or run it from source — see [DEVELOPMENT.md](DEVELOPMENT.md)).
 2. Open the **TierMux** view in the Activity Bar.
 3. Click **⚙ Manage Models & Keys** and **Set key** for at least one provider — or pick a
    **keyless** one (OVH / Pollinations / Kilo).
-4. Leave **Mode: Auto** and **Model: Auto**, and just type. Ask a question, or ask it to build or
-   fix something — Auto routes the rest.
+4. Leave **Mode: Auto** and **Model: Auto**, and just type.
 
 ---
 
 ## Configuration
 
-Settings live under **TierMux** in VS Code settings (keys use the `tiermux.*` prefix):
+Settings live under **TierMux** in VS Code settings. The most useful ones:
 
 | Setting | Default | What it does |
 |---|---|---|
 | `tiermux.agent.maxIterations` | `25` | Max agent tool steps before pausing to check in. |
 | `tiermux.agent.requireWriteConfirmation` | `true` | Show a diff and confirm before file writes. |
 | `tiermux.agent.commandApproval` | `always` | `always` / `allowlist` / `never` for `runCommand`. |
-| `tiermux.agent.commandTimeoutMs` | `120000` | Max time a single command may run. |
 | `tiermux.requestTimeoutMs` | `60000` | Per-provider request timeout before failover. |
 | `tiermux.rateLimitCooldownMs` | `60000` | How long to skip a rate-limited provider. |
-| `tiermux.completions.enabled` | `false` | Ghost-text inline completions. |
-| `tiermux.usage.referencePriceInPer1M` | `5` | Reference price per 1M input tokens used by the "est. $ saved" footer counter (USD). Set to `0` to disable. |
-| `tiermux.usage.referencePriceOutPer1M` | `15` | Reference price per 1M output tokens used by the "est. $ saved" footer counter (USD). Set to `0` to disable. |
+| `tiermux.usage.referencePriceInPer1M` | `5` | Reference price per 1M input tokens (USD) for the "est. $ saved" line. `0` hides it. |
+| `tiermux.usage.referencePriceOutPer1M` | `15` | Reference price per 1M output tokens (USD). `0` hides it. |
 
-Model enable/priority and per-provider endpoint overrides are managed in **⚙ Manage Models & Keys**. This panel also lets you add **custom OpenAI-compatible endpoints** (vLLM, LiteLLM, Azure OpenAI deployments, Cloudflare AI Gateway, etc.) — each with its own base URL, API key, and model list. Custom endpoints appear in the model picker with your chosen name, so "vLLM" and "My LiteLLM" are distinct providers in the UI and in assistant turn footers.
+Model enable/priority, per-provider endpoint overrides, and custom OpenAI-compatible endpoints
+are all managed in **⚙ Manage Models & Keys**.
 
 ---
 
-## Your keys & data
+## Your data
 
-TierMux talks directly to each provider you configure; your **API keys are stored in VS Code
-SecretStorage**. The 👍/👎 model-quality stats and **lifetime token usage counter** are kept in
-local extension storage. Nothing is sent to a backend — TierMux has no server. Any future data
-sharing (e.g. aggregate model-preference stats) will be **opt-in and off by default** — see
-[FUTURE_PLAN.md](FUTURE_PLAN.md).
+- **API keys** → VS Code SecretStorage (encrypted by the OS).
+- **👍 / 👎 stats and lifetime token counter** → local extension storage.
+- **No backend.** TierMux has no server. Nothing leaves your machine.
 
 ---
 
 ## Development
 
-See **[DEVELOPMENT.md](DEVELOPMENT.md)** to build and run TierMux from source (clone → `npm install`
-→ **F5**), the project layout, and the one-command rebrand workflow.
+See **[DEVELOPMENT.md](DEVELOPMENT.md)** for the project layout, the build workflow, and the
+one-command rebrand script. See **[FUTURE_PLAN.md](FUTURE_PLAN.md)** for the roadmap.
 
 ## License
 
