@@ -1,4 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M12 3l2.2 4.6 5 .7-3.6 3.5.9 5L12 14.9 7.5 16.8l.9-5L4.8 8.3l5-.7z"/>
-  <circle cx="12" cy="11" r="1.4" fill="currentColor" stroke="none"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <defs>
+    <linearGradient id="tiermux" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="55%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+  </defs>
+  <!-- stacked tiers: the "Tier" in TierMux -->
+  <rect x="3.5" y="14"   width="17" height="2.8" rx="1.4" fill="url(#tiermux)" opacity="0.9"/>
+  <rect x="3.5" y="17.6" width="17" height="2.8" rx="1.4" fill="url(#tiermux)" opacity="0.65"/>
+  <!-- upward arrow: smart routing up the tiers -->
+  <path d="M12 3 L18.6 9.8 H14.6 V12.4 H9.4 V9.8 H5.4 Z" fill="url(#tiermux)"/>
 </svg>

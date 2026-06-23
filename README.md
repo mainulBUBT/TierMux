@@ -1,6 +1,10 @@
-# TierMux
+<p align="center">
+  <img src="media/banner.png" alt="TierMux — Agentic AI Routing" width="560">
+</p>
 
-> **Stack free. Route smart. Ship faster.**
+<h3 align="center">Stack free. Route smart. Ship faster.</h3>
+
+---
 
 TierMux is an agentic AI coding assistant for VS Code that multiplexes the **free tiers of 18+
 LLM providers** (with more added over time) and routes each request to the best available model —
