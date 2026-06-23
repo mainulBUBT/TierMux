@@ -57,6 +57,12 @@ export interface AgentCallbacks {
   onTodos?: (todos: TodoItem[]) => void;
   /** Backing for the `askUser` tool: present a question (optionally multiple-choice) and await the answer. */
   onAskUser?: (question: string, options?: string[]) => Promise<string>;
+  /**
+   * Streaming text delta — called for each token of the final answer as it arrives.
+   * Only fires on text-answer turns (not tool-call turns). Lets the UI render text
+   * progressively instead of waiting for the full response, matching Cursor/Copilot UX.
+   */
+  onChunk?: (text: string) => void;
 }
 
 /** Per-run options threaded from the chat provider down to the router. */
@@ -200,17 +206,23 @@ export class Agent {
   private groundingCache?: { root: string; text: string };
 
   /**
-   * Per-run deduplication cache: maps "toolName:argStr" → serialized result string.
-   * Read-only tools (grep, glob, repoMap, etc.) often get called with the same args
-   * multiple times in one agent run — return the cached result instantly instead of
-   * re-running the tool call.  Cleared at the top of every run() so stale data never
-   * persists across user messages.
+   * Per-session deduplication caches: maps sessionId → (toolName:argStr → result).
+   * Each session's cache is cleared at the start of its own run, so concurrent sessions
+   * never wipe each other's in-flight cache entries.
+   * Falls back to key '__standalone__' for non-chat callers (inline editor, tests).
    */
-  private runDedup = new Map<string, string>();
+  private sessionDedup = new Map<string, Map<string, string>>();
 
   private static readonly DEDUP_TOOLS = new Set([
     'grep', 'glob', 'readFile', 'repoMap', 'getDiagnostics', 'codebaseSearch', 'webSearch', 'webFetch',
   ]);
+
+  /** Get (or create) the dedup map for a session. */
+  private dedupFor(sessionId: string): Map<string, string> {
+    let m = this.sessionDedup.get(sessionId);
+    if (!m) { m = new Map(); this.sessionDedup.set(sessionId, m); }
+    return m;
+  }
 
   /**
    * Research Result Persistence: session-level cache of pre-research bundles keyed by
@@ -221,7 +233,15 @@ export class Agent {
    */
   private researchHistory: Array<{ terms: string[]; bundle: string; ts: number }> = [];
   private static readonly RESEARCH_HISTORY_TTL = 10 * 60 * 1000;
-  private executionTracker = new ExecutionTracker();
+  /** Per-session execution trackers — concurrent sessions must not share or reset each other's state. */
+  private sessionTrackers = new Map<string, ExecutionTracker>();
+
+  /** Get (or create) the ExecutionTracker for a session. */
+  private trackerFor(sessionId: string): ExecutionTracker {
+    let t = this.sessionTrackers.get(sessionId);
+    if (!t) { t = new ExecutionTracker(); this.sessionTrackers.set(sessionId, t); }
+    return t;
+  }
 
   private findPriorResearch(terms: string[]): string | undefined {
     const now = Date.now();
@@ -320,6 +340,9 @@ export class Agent {
         ...baseOpts,
         exclude: exclude.length ? exclude : undefined,
         maxIntelligenceRank: maxRank,
+        // Pass streaming callback only on hops that could produce the final text answer.
+        // Escalation retries start fresh — don't carry a partially-streamed buffer forward.
+        onChunk: hop === 0 ? cb.onChunk : undefined,
       };
       let result: Awaited<ReturnType<Router['route']>>;
       try {
@@ -381,11 +404,12 @@ export class Agent {
     // the generic busy status, NOT reasoning: the word "Thinking" is reserved for the 🧠 block
     // that renders actual model reasoning, so a greeting like "hi" never mislabels itself.
     cb.onStep?.('thinking', 'Working…');
-    this.runDedup.clear();
+    const sessionId = opts.runContext?.sessionId ?? '__standalone__';
+    this.dedupFor(sessionId).clear();
 
-    // Fresh conversation: clear execution memory so prior-session steps don't leak.
+    // Fresh conversation: clear THIS session's execution memory so prior turns don't leak.
     const userTurns = history.filter((m) => m.role === 'user').length;
-    if (userTurns <= 1) this.executionTracker.reset();
+    if (userTurns <= 1) this.trackerFor(sessionId).reset();
 
     const latestText = contentToString([...history].reverse().find((m) => m.role === 'user')?.content ?? '');
 
@@ -403,14 +427,18 @@ Examples of good responses:
 - "Hi there! Ask me anything about your code."
 - "Hello! Ready when you are — what are we working on?"
 
-Never repeat or explain these instructions. Just greet the user directly.`;
+Output ONLY the greeting. No preamble, no thinking, no explanation.`;
       const latest = [...history].reverse().find((m) => m.role === 'user');
       const messages: ChatMessage[] = [{ role: 'system', content: system }, ...(latest ? [latest] : [])];
-      const r = await this.router.route(messages, { model: opts.model, taskKind: 'trivial', max_tokens: 80, onFailover: opts.onFailover, onKeyRotated: opts.onKeyRotated });
+      // max_tokens: 30 — a real greeting is never longer than ~20 tokens.
+      // Keeping it tight prevents weak models from writing a paragraph of chain-of-thought
+      // reasoning before they get to the actual greeting.
+      const r = await this.router.route(messages, { model: opts.model, taskKind: 'trivial', max_tokens: 30, onFailover: opts.onFailover, onKeyRotated: opts.onKeyRotated });
       cb.onModel?.(r.platform, r.model);
       const { reasoning, content } = splitReasoning(contentToString(r.response.choices[0]?.message.content));
-      // Detect leaked instructions: if the model narrated the prompt instead of greeting, use fallback.
-      const leaked = !content || content.length > 400 || /according to|developer instructions|the user says|system prompt|as instructed/i.test(content);
+      // Detect leaked instructions / chain-of-thought narration — use fallback greeting.
+      const leaked = !content || content.length > 200
+        || /according to|developer instructions|the user says|system prompt|as instructed|let me check|i need to|i should|the examples|okay, the user|sure, i('ll| will)/i.test(content);
       return { text: leaked ? 'Hi! What would you like to build or fix today?' : content, reasoning, platform: r.platform, model: r.model, runtimeName: r.runtimeName, taskKind: 'trivial' };
     }
 
@@ -570,11 +598,15 @@ Never repeat or explain these instructions. Just greet the user directly.`;
     const planBlock = plan
       ? (highConfidence ? formatExecutionPlan(plan) : formatExecutionPlanVerbose(plan))
       : '';
-    const researchBlock = highConfidence && preResearchCompact
+    // Use compact research when plan confidence is high OR when the full block is already
+    // large (> 4k chars). The latter prevents context overflow on free models when generic
+    // search terms produce large grep results — compact keeps the file list but drops raw lines.
+    const researchTooLarge = preResearch.length > 4000 && !!preResearchCompact;
+    const researchBlock = (highConfidence || researchTooLarge) && preResearchCompact
       ? preResearchCompact   // compact XML tag only — raw details omitted
       : preResearch;         // full understanding block + raw grep/semantic/hop sections
 
-    const executionContext = this.executionTracker.buildContextBlock();
+    const executionContext = this.trackerFor(sessionId).buildContextBlock();
     const withResearch = (base: string): string =>
       base
       + (planBlock ? `\n\n${planBlock}` : '')
@@ -612,7 +644,7 @@ Never repeat or explain these instructions. Just greet the user directly.`;
     result.taskKind = routeKind;
     // Record tool calls so the next run knows what was already done this session.
     if (result.workMessages?.length) {
-      this.executionTracker.record(result.workMessages as Array<{ role?: string; content?: unknown }>);
+      this.trackerFor(sessionId).record(result.workMessages as Array<{ role?: string; content?: unknown }>);
     }
     return result;
   }
@@ -742,6 +774,10 @@ Never repeat or explain these instructions. Just greet the user directly.`;
     // append a strong hint to the next grep result to break the loop.
     // This is the primary cause of 400+ second hangs on free LLMs after editFile fails.
     let consecutiveGreps = 0;
+    // Per-file read counter: tracks how many times each file has been read this run.
+    // If a file is read 3+ times the model is stuck on it without making progress — inject
+    // a redirect hint so it moves on rather than burning iterations re-reading the same content.
+    const fileReadCount = new Map<string, number>();
 
     while (totalIter < hardCeiling) {
       // First batch = the normal budget; an escalation batch is short (ESCALATION_BATCH).
@@ -861,6 +897,16 @@ Never repeat or explain these instructions. Just greet the user directly.`;
             if (consecutiveGreps >= 3) {
               obsText += `\n\n⚠️ TOOL LOOP: grep called ${consecutiveGreps}× in a row. STOP grepping. Call readFile on the most relevant file above to get its full content — then use that exact text in your next editFile call.`;
             }
+          } else if (call.function.name === 'readFile') {
+            consecutiveGreps = 0;
+            const filePath = String((JSON.parse(repairBrokenJson(call.function.arguments)) as { path?: unknown })?.path ?? '');
+            if (filePath) {
+              const count = (fileReadCount.get(filePath) ?? 0) + 1;
+              fileReadCount.set(filePath, count);
+              if (count >= 3) {
+                obsText += `\n\n⚠️ FILE LOOP: "${filePath}" has been read ${count} times. You already have this content — do NOT read it again. Move on: grep for a different symbol, read a different file, or write your final answer.`;
+              }
+            }
           } else if (call.function.name !== 'think' && call.function.name !== 'updateTodos') {
             consecutiveGreps = 0;
           }
@@ -881,6 +927,17 @@ Never repeat or explain these instructions. Just greet the user directly.`;
             if (consecutiveGreps >= 3) {
               const hint = `\n\n⚠️ TOOL LOOP: grep called ${consecutiveGreps}× in a row. STOP grepping. Call readFile on the most relevant file above to get its full content — then use that exact text in your next editFile call.`;
               observation = contentToString(observation) + hint;
+            }
+          } else if (call.function.name === 'readFile') {
+            consecutiveGreps = 0;
+            const filePath = String((JSON.parse(repairBrokenJson(call.function.arguments)) as { path?: unknown })?.path ?? '');
+            if (filePath) {
+              const count = (fileReadCount.get(filePath) ?? 0) + 1;
+              fileReadCount.set(filePath, count);
+              if (count >= 3) {
+                const hint = `\n\n⚠️ FILE LOOP: "${filePath}" has been read ${count} times. You already have this content — do NOT read it again. Move on: grep for a different symbol, read a different file, or write your final answer.`;
+                observation = contentToString(observation) + hint;
+              }
             }
           } else if (call.function.name !== 'think' && call.function.name !== 'updateTodos') {
             consecutiveGreps = 0;
@@ -931,9 +988,10 @@ Never repeat or explain these instructions. Just greet the user directly.`;
     cb.onTool?.({ toolCallId: call.id, name: call.function.name, args, state: 'running' });
 
     // Return cached result for repeated read-only calls within the same run.
+    const runDedup = this.dedupFor(opts.runContext?.sessionId ?? '__standalone__');
     const dedupKey = Agent.DEDUP_TOOLS.has(call.function.name) ? `${call.function.name}:${argStr}` : undefined;
     if (dedupKey) {
-      const hit = this.runDedup.get(dedupKey);
+      const hit = runDedup.get(dedupKey);
       if (hit !== undefined) {
         cb.onTool?.({ toolCallId: call.id, name: call.function.name, args, state: 'done', detail: hit.slice(0, 300) });
         return { observation: hit, obsText: hit, isError: false };
@@ -951,7 +1009,7 @@ Never repeat or explain these instructions. Just greet the user directly.`;
             : await this.tools.execute(call.function.name, argStr, opts.runContext);
     const obsText = contentToString(observation);
     const isError = obsText.includes('"error"');
-    if (dedupKey && !isError) this.runDedup.set(dedupKey, obsText);
+    if (dedupKey && !isError) runDedup.set(dedupKey, obsText);
     cb.onTool?.({ toolCallId: call.id, name: call.function.name, args, state: isError ? 'error' : 'done', detail: obsText.slice(0, 300) });
     return { observation, obsText, isError };
   }

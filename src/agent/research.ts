@@ -32,6 +32,16 @@ const MAX_SEMANTIC_CHARS = 2000;
 const MAX_DIAGNOSTICS_CHARS = 1500;
 const MAX_REPOMAP_CHARS = 1000;
 const MAX_WEB_CHARS = 2000;
+// Per directly-referenced file: large enough to contain the relevant section without a
+// second LLM readFile call. Smart excerpt finds the keyword first, so these chars are
+// almost always the right section, not the file header.
+const MAX_DIRECT_FILE_CHARS = 3000;
+
+// Hard cap on the total pre-research block injected into the system prompt.
+// Raised to 8k to accommodate large direct-file reads while keeping the overall
+// prompt manageable. Direct reads are high-value (user pointed at the file explicitly),
+// so the extra budget is well spent compared to noisy grep fallback content.
+const MAX_TOTAL_RESEARCH_CHARS = 8000;
 
 type GrepResult = { matches?: Array<{ path: string; hits: Array<{ line: number; text: string }> }> };
 type WebResult = { results?: Array<{ title: string; url: string; snippet: string }> };
@@ -220,12 +230,15 @@ export async function runResearchPipeline(
   const sections: string[] = [];
 
   const wantsGrep = route.codeSearch && route.searchTerms.length > 0;
-  const wantsSecondGrep = wantsGrep && route.searchTerms.length > 1 && route.confidence < 0.7;
+  // Skip the second grep when the user explicitly referenced files — those direct reads
+  // already contain the relevant context, so a second grep just adds noise and latency.
+  const hasDirectFiles = (route.directFiles ?? []).length > 0;
+  const wantsSecondGrep = wantsGrep && !hasDirectFiles && route.searchTerms.length > 1 && route.confidence < 0.7;
 
   interface SymbolSection { section: string; quality: 'exact' | 'fuzzy' }
 
-  // ---- Fan-out: semantic search + grep(s) + diagnostics all in parallel ----
-  const [semanticSection, grepResult0, grepResult1, symbolResult, webResult, diagSection] = await Promise.all([
+  // ---- Fan-out: semantic search + grep(s) + direct file reads + diagnostics all in parallel ----
+  const [semanticSection, grepResult0, grepResult1, symbolResult, webResult, diagSection, directSection] = await Promise.all([
     // Semantic search (embedding-based, highest quality signal)
     (async (): Promise<string | null> => {
       if (!wantsGrep || !index?.isEnabled() || !index.hasIndex()) return null;
@@ -297,6 +310,46 @@ export async function runResearchPipeline(
         return null;
       }
     })(),
+
+    // Direct file reads for explicitly-mentioned paths (@path or bare path/to/file.ext).
+    // Uses a smart keyword-anchored excerpt: finds the line in the file that best matches
+    // the user's query terms, then returns a window around it. This means the model gets
+    // the RELEVANT section (e.g. the map JS block, not the HTML header) without calling
+    // readFile in its loop. Capped at MAX_DIRECT_FILE_CHARS per file — large enough to
+    // be self-contained, small enough not to overflow free-model context windows.
+    (async (): Promise<string | null> => {
+      const files = (route.directFiles ?? []).slice(0, 2);
+      if (files.length === 0) return null;
+      const excerpts: string[] = [];
+      for (const path of files) {
+        try {
+          const raw = await tools.execute('readFile', JSON.stringify({ path }));
+          if (typeof raw !== 'string' || !raw.trim()) continue;
+          const lines = raw.split('\n');
+          // Find the best anchor line: the one that contains the most search terms.
+          const keywords = route.searchTerms.map((t) => t.toLowerCase());
+          let bestLine = 0;
+          let bestScore = 0;
+          for (let i = 0; i < lines.length; i++) {
+            const l = lines[i].toLowerCase();
+            const score = keywords.filter((k) => l.includes(k)).length;
+            if (score > bestScore) { bestScore = score; bestLine = i; }
+          }
+          // Window: 40 lines before the anchor + 60 after (code that causes a bug is
+          // usually below the symptom line, so bias the window downward).
+          const start = Math.max(0, bestLine - 40);
+          const end = Math.min(lines.length, bestLine + 60);
+          const excerpt = lines.slice(start, end).join('\n').slice(0, MAX_DIRECT_FILE_CHARS);
+          const note = bestScore > 0
+            ? ` (lines ${start + 1}–${end}, anchored on "${route.searchTerms[0]}")`
+            : ` (lines ${start + 1}–${end})`;
+          excerpts.push(`**${path}**${note}:\n\`\`\`\n${excerpt}\n\`\`\``);
+        } catch { continue; }
+      }
+      return excerpts.length
+        ? `### Directly referenced files\n\n${excerpts.join('\n\n')}`
+        : null;
+    })(),
   ]);
 
   // ---- Unwrap typed results ----
@@ -317,6 +370,7 @@ export async function runResearchPipeline(
   //   web full-query match     → +medium
   //   web partial/minimal      → +low
   const matchQualities: MatchQuality[] = [
+    ...(directSection ? ['exact' as MatchQuality] : []),  // direct read = highest confidence
     ...(symbolResult ? [symbolResult.quality] : []),
     ...(grepResult0 ? [grepResult0.quality as MatchQuality] : []),
     ...(grepResult1 ? [grepResult1.quality as MatchQuality] : []),
@@ -338,6 +392,7 @@ export async function runResearchPipeline(
     semanticConfidence >= 0.4 ? 'medium' : 'high';
 
   // ---- Coverage score (retrieval only — kept separate from semantic confidence) ----
+  const wantsDirectRead = (route.directFiles ?? []).length > 0;
   const channels: Array<{ name: string; attempted: boolean; succeeded: boolean }> = [
     { name: 'symbol', attempted: wantsGrep, succeeded: !!symbolSection },
     { name: 'semantic', attempted: wantsGrep && (!!index?.isEnabled() && !!index.hasIndex()), succeeded: !!semanticSection },
@@ -345,6 +400,7 @@ export async function runResearchPipeline(
     { name: 'grep2', attempted: wantsSecondGrep, succeeded: !!grepSection1 },
     { name: 'web', attempted: route.webSearch && route.searchTerms.length > 0, succeeded: !!webSection },
     { name: 'diag', attempted: route.needsDebug, succeeded: !!diagSection },
+    { name: 'direct', attempted: wantsDirectRead, succeeded: !!directSection },
   ];
   const attempted = channels.filter((c) => c.attempted);
   const succeeded = attempted.filter((c) => c.succeeded);
@@ -361,7 +417,9 @@ export async function runResearchPipeline(
     excerptSection = await readGrepExcerpts(tools, grepSection0).catch(() => null);
   }
 
-  // Symbol index goes first — it's the most precise signal (exact file+line).
+  // Direct file reads go first — highest signal, zero inference needed.
+  if (directSection) sections.push(directSection);
+  // Symbol index — most precise structural signal (exact file+line).
   if (symbolSection) sections.push(symbolSection);
   if (semanticSection) sections.push(semanticSection);
   if (grepSection0) sections.push(grepSection0);
@@ -471,5 +529,14 @@ export async function runResearchPipeline(
     ? `${calibrationTag}${coverageHint}\n\n${understanding}\n\n---\n\n## Research details (use as reference)`
     : `${calibrationTag}${coverageHint}\n\n## Pre-research (starting hints — keep investigating with your tools for a complete answer)`;
 
-  return { text: `${header}\n\n${sections.join('\n\n')}`, compactText, facts, coverageScore, semanticConfidence, riskLabel };
+  // Cap total block size: trim raw sections from the end (least precise first) until we're
+  // under the budget. The header + understanding block are kept intact — they're already
+  // compressed. This prevents a 12k+ char research block overwhelming free model context windows.
+  const rawSections = sections.join('\n\n');
+  const full = `${header}\n\n${rawSections}`;
+  const trimmed = full.length > MAX_TOTAL_RESEARCH_CHARS
+    ? full.slice(0, MAX_TOTAL_RESEARCH_CHARS) + '\n\n<!-- research truncated to stay within context budget -->'
+    : full;
+
+  return { text: trimmed, compactText, facts, coverageScore, semanticConfidence, riskLabel };
 }

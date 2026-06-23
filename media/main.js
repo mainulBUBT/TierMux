@@ -111,12 +111,18 @@
   // ---------- layout ----------
   const app = $('#app');
   app.innerHTML = `
-    <div class="chat-header">
-      <input id="chat-title" class="chat-title" type="text" placeholder="New chat" autocomplete="off" spellcheck="false" />
-    </div>
-    <div class="session-rail" id="session-rail"></div>
-    <div class="thread" id="thread"></div>
-    <div class="settings" id="settings"></div>
+    <div class="chat-layout" id="chat-layout">
+      <div class="history-dropdown hidden" id="history-dropdown">
+        <div class="history-dropdown-header">
+          <input type="text" id="history-search" class="history-search" placeholder="Search sessions…" autocomplete="off" />
+        </div>
+        <div class="history-list" id="history-list"></div>
+      </div>
+      <div class="chat-header">
+        <input id="chat-title" class="chat-title" type="text" placeholder="New chat" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="thread" id="thread"></div>
+      <div class="settings" id="settings"></div>
     <div class="composer" id="composer">
       <div class="index-status hidden" id="index-status"></div>
       <div class="changed-bar hidden" id="changed-bar"></div>
@@ -156,10 +162,14 @@
         </div>
       </div>
       <div class="footer" id="footer">No tokens used yet.</div>
+    </div>
     </div>`;
 
   const thread = $('#thread');
-  const railEl = $('#session-rail');
+  const railEl = null; // replaced by history dropdown
+  const historyDropdown = $('#history-dropdown');
+  const historySearch = $('#history-search');
+  const historyList = $('#history-list');
   const settingsEl = $('#settings');
   const composer = $('#composer');
   const input = $('#input');
@@ -289,40 +299,90 @@
     setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 200); }, 1400);
   }
 
-  // ---------- session tabs (one per concurrent chat; click to switch, + for new) ----------
+  // ---------- session history dropdown ----------
   const STATUS_DOT = { idle: '●', queued: '⏳', running: '⟳', needsApproval: '!', finished: '✓' };
   const STATUS_TITLE = {
     idle: 'Idle', queued: 'Queued', running: 'Running',
     needsApproval: 'Needs your approval', finished: 'Finished',
   };
+
+  function fmtSessionDate(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const isToday = d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    const date = isToday ? 'Today' : `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+    const h = d.getHours(), m = d.getMinutes();
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 || 12;
+    return `${date} ${h12}:${pad(m)} ${ampm}`;
+  }
+
+  let historyOpen = false;
+  let historyQuery = '';
+
+  function toggleHistory(force) {
+    historyOpen = typeof force === 'boolean' ? force : !historyOpen;
+    if (historyOpen) {
+      historyDropdown.classList.remove('hidden');
+      historySearch.value = '';
+      historyQuery = '';
+      renderTabs();
+      historySearch.focus();
+    } else {
+      historyDropdown.classList.add('hidden');
+    }
+  }
+
+  historySearch.addEventListener('input', () => {
+    historyQuery = historySearch.value.toLowerCase();
+    renderTabs();
+  });
+  historySearch.addEventListener('click', (e) => e.stopPropagation());
+  historyDropdown.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('click', (e) => { if (historyOpen && !historyDropdown.contains(e.target)) toggleHistory(false); });
+
   function renderTabs() {
-    railEl.innerHTML = '';
-    sessionList.forEach((s) => {
-      const tab = document.createElement('button');
-      tab.type = 'button';
-      tab.className = 'tab' + (s.id === viewedSessionId ? ' active' : '') + (' status-' + (s.status || 'idle'));
-      tab.title = s.title || 'New chat';
+    if (!historyOpen) return;
+    historyList.innerHTML = '';
+    const filtered = historyQuery
+      ? sessionList.filter(s => (s.title || '').toLowerCase().includes(historyQuery))
+      : sessionList;
+    if (!filtered.length) {
+      const empty = document.createElement('div');
+      empty.className = 'history-empty';
+      empty.textContent = historyQuery ? 'No matching sessions' : 'No sessions yet';
+      historyList.appendChild(empty);
+      return;
+    }
+    filtered.forEach((s) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'history-item' + (s.id === viewedSessionId ? ' active' : '') + (' status-' + (s.status || 'idle'));
+      const left = document.createElement('div');
+      left.className = 'history-item-left';
       const dot = document.createElement('span');
-      dot.className = 'tab-dot';
+      dot.className = 'history-dot';
       dot.textContent = STATUS_DOT[s.status || 'idle'] || '●';
       dot.title = STATUS_TITLE[s.status || 'idle'] || '';
       const lbl = document.createElement('span');
-      lbl.className = 'tab-label';
-      lbl.textContent = s.title || 'New chat';
-      tab.appendChild(dot);
-      tab.appendChild(lbl);
-      tab.addEventListener('click', () => {
+      lbl.className = 'history-label';
+      lbl.textContent = s.title || 'New session';
+      left.appendChild(dot);
+      left.appendChild(lbl);
+      const ts = document.createElement('span');
+      ts.className = 'history-ts';
+      ts.textContent = fmtSessionDate(s.updatedAt || s.createdAt);
+      item.appendChild(left);
+      item.appendChild(ts);
+      item.addEventListener('click', () => {
         if (s.id !== viewedSessionId) vscode.postMessage({ type: 'switchSession', sessionId: s.id });
+        toggleHistory(false);
       });
-      railEl.appendChild(tab);
+      historyList.appendChild(item);
     });
-    const add = document.createElement('button');
-    add.type = 'button';
-    add.className = 'tab add';
-    add.title = 'New chat';
-    add.textContent = '+';
-    add.addEventListener('click', () => vscode.postMessage({ type: 'newChat' }));
-    railEl.appendChild(add);
   }
 
   // ---------- empty / welcome state ----------
@@ -2147,7 +2207,7 @@
     // (background) session are ignored here — the host caches their state and replays it
     // when we switch to them (see switchSession). switchSession/sessionList carry their own
     // sessionId semantics and are handled below, so they're excluded from this filter.
-    const PER_SESSION = new Set(['userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'keyRotated', 'assistantMessage', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'checkpoint', 'changedFiles', 'busy', 'notice', 'error']);
+    const PER_SESSION = new Set(['userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'checkpoint', 'changedFiles', 'busy', 'notice', 'error']);
     if (PER_SESSION.has(msg.type) && msg.sessionId && viewedSessionId && msg.sessionId !== viewedSessionId) return;
     switch (msg.type) {
       case 'config':
@@ -2192,6 +2252,9 @@
         break;
       case 'toggleSettings':
         toggleSettings();
+        break;
+      case 'toggleHistory':
+        toggleHistory();
         break;
       case 'assistantStart': {
         const t = ensureTarget(msg.requestId, msg.platform, msg.model);
@@ -2532,8 +2595,30 @@
         scrollDown();
         break;
       }
+      case 'assistantChunk': {
+        // Live streaming token — append to the buffer and re-render markdown incrementally.
+        // We throttle DOM updates to every 40ms (one rAF cycle) so a fast model doesn't
+        // cause layout thrash on every token. The buffer is flushed fully on assistantMessage.
+        const t = ensureTarget(msg.requestId);
+        t._streamBuf = (t._streamBuf || '') + msg.text;
+        t._wasStreamed = true;
+        if (!t._streamPending) {
+          t._streamPending = true;
+          requestAnimationFrame(() => {
+            t._streamPending = false;
+            if (!t._streamBuf) return;
+            t.body.innerHTML = '';
+            t.body.appendChild(renderMarkdown(t._streamBuf));
+            scrollDown();
+          });
+        }
+        break;
+      }
       case 'assistantMessage': {
         const t = ensureTarget(msg.requestId);
+        // Clear the streaming buffer — assistantMessage carries the authoritative full text.
+        t._streamBuf = '';
+        t._streamPending = false;
         stopStatusTimer(msg.requestId, true);
         // Add a fold-up 💭 Reasoning disclosure only when no live 🧠 Thinking block already
         // captured this reasoning inline — otherwise the same reasoning would show twice.
@@ -2546,7 +2631,16 @@
         // Finalize the work summary (reveals it as "Worked for Ns", collapsed).
         finalizeWork(msg.requestId);
         t.el._copyText = msg.text;
-        typeInto(t.body, msg.text);
+        // If chunks already streamed the text live, skip typeInto — the body already shows
+        // the full content and re-animating it would flash/clear what the user is reading.
+        // Only use typeInto when no streaming happened (non-streaming models / tool turns).
+        if (t._wasStreamed) {
+          t._wasStreamed = false;
+          t.body.innerHTML = '';
+          t.body.appendChild(renderMarkdown(msg.text));
+        } else {
+          typeInto(t.body, msg.text);
+        }
         // The final message carries the model that actually answered — use it as
         // the source of truth so the footer never blanks (e.g. when a forced model
         // failed over before assistantStart could set t.model).

@@ -41,23 +41,28 @@ const CODE_Q = /\b(where (is|are|can i find|defined)|how (does|do|is|are) .* (wo
 // "find/locate X", "look into", "check if", "give me an idea", "see if", "investigate". Users
 // ask about their own codebase this way constantly, with no textbook question verb.
 const RESEARCH_INTENT = /\b(search|find|locate|look (?:up|into|for|at)|check|investigat\w*|give me (?:an? )?idea|show me|tell me about|see (?:if|how|where|whether)|trace|grep|explore|understand|figure out|analyz\w*|review)\b/i;
+// Unambiguous web-only triggers — time-sensitive or external data that can't live in the repo.
+const WEB_ONLY = /\b(latest|today'?s?|current(?:ly)? (?:price|version|release|news)|news|released?|changelog|price|cost|weather|score|ranking|standings?|stock|20(?:2[4-9]|3\d)|this (?:week|month|year)|right now|recent(?:ly)? released?)\b/i;
 
 /**
  * True when a question is really about the user's codebase — so Auto should investigate with
  * read-only tools (read/grep/graph) instead of answering blind.
  *
- * Two ways to qualify:
+ * Three ways to qualify:
  *  1. An explicit project reference ("in this project", "this codebase", "this feature") — the user
  *     scoped it themselves, so investigate locally no matter the phrasing.
- *  2. An investigative shape (a question OR a research imperative like "search"/"find"/"give me an
- *     idea") paired with a codebase signal (repo word, code noun, or file path).
- * General "how does a car engine work" stays on the cheap chat path (no code signal, no project ref).
+ *  2. An investigative shape paired with a codebase signal (repo word, code noun, or file path).
+ *  3. An investigative shape with NO web-only signal — in a coding tool, ambiguous questions
+ *     ("how does routing work?", "what is tiermux?") almost always mean the local project.
+ *     Project search first; if nothing relevant is found, the model falls back to web.
  */
 export function isCodebaseQuestion(t: string): boolean {
   if (STRONG_REPO.test(t)) return true;
   const investigative = EXPLAIN_Q.test(t) || CODE_Q.test(t) || RESEARCH_INTENT.test(t);
   if (!investigative) return false;
-  return REPO_WORD.test(t) || CODE_NOUN.test(t) || FILE_REF.test(t);
+  if (REPO_WORD.test(t) || CODE_NOUN.test(t) || FILE_REF.test(t)) return true;
+  // No explicit codebase signal, but also no clear web-only trigger → default to project search.
+  return !WEB_ONLY.test(t);
 }
 
 /** What information sources a request needs — biases tool choice (workspace vs web). */

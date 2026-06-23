@@ -16,6 +16,11 @@ export interface InformationRoute {
   /** Key terms extracted from the request — used to seed pre-research grep/search. */
   searchTerms: string[];
   /**
+   * Explicitly mentioned file paths (from @path syntax or bare paths in the message).
+   * The research pipeline reads these directly — skipping the grep→model→readFile cycle.
+   */
+  directFiles: string[];
+  /**
    * 0–1 confidence. High = one signal dominates (safe to use it exclusively).
    * Low = signals are mixed — run broader research rather than betting on one path.
    */
@@ -50,6 +55,9 @@ const SEARCH_STOP = new Set([
   // Generic domain words that appear in almost every file — poor grep signal
   'user', 'users', 'earn', 'earned', 'point', 'points', 'data', 'info', 'item',
   'items', 'list', 'result', 'results', 'value', 'values', 'type', 'types',
+  // Generic path components (from URLs / file paths) — poor grep signal in Laravel/MVC projects
+  'resources', 'views', 'admin', 'blade', 'public', 'assets', 'storage', 'modules',
+  'controllers', 'providers', 'requests', 'models', 'routes', 'config', 'lang',
 ]);
 
 /**
@@ -81,10 +89,16 @@ const CONCEPT_EXPANSIONS: Record<string, string[]> = {
   import: ['upload', 'csv', 'parse'],
 };
 
-/** Extract candidate search terms from the user's request. */
-function extractSearchTerms(text: string): string[] {
+interface ExtractResult {
+  terms: string[];
+  directFiles: string[];
+}
+
+/** Extract candidate search terms and explicit file paths from the user's request. */
+function extractSearchTerms(text: string): ExtractResult {
   const seen = new Set<string>();
   const terms: string[] = [];
+  const directFiles: string[] = [];
   const add = (t: string): void => {
     const k = t.toLowerCase();
     if (!seen.has(k)) { seen.add(k); terms.push(t); }
@@ -102,38 +116,47 @@ function extractSearchTerms(text: string): string[] {
   // 3. camelCase identifiers: calculateDeliveryFee, getUserById.
   for (const m of text.matchAll(/\b([a-z][a-z]+[A-Z][a-zA-Z]+)\b/g)) add(m[1]);
 
-  // 4. File references: src/services/payment.ts → payment.
-  for (const m of text.matchAll(/(?:^|\s)([\w-./]+\.[a-zA-Z]{1,5})\b/g)) {
-    const fname = m[1].replace(/.*\//, '').replace(/\.[^.]+$/, '');
-    if (fname.length >= 3) add(fname);
+  // 4. File references: src/services/payment.ts → collect as direct read + add stem as term.
+  // Strip leading @ (Blade/framework path syntax like @resources/views/...) before matching.
+  const textForFileRefs = text.replace(/@([\w-./]+\.[a-zA-Z]{1,5})/g, (_, p) => { directFiles.push(p); return ` ${p}`; });
+  for (const m of textForFileRefs.matchAll(/(?:^|\s)([\w-./]+\.[a-zA-Z]{1,5})\b/g)) {
+    const fullPath = m[1];
+    // Collect bare paths (e.g. "app/Models/Order.php") as direct reads too.
+    if (fullPath.includes('/') && !directFiles.includes(fullPath)) directFiles.push(fullPath);
+    // Use only the meaningful part of the filename stem as a search term.
+    const stem = fullPath.replace(/.*\//, '').replace(/\.[^.]+$/, '');
+    // For hyphenated names (order-view), add camelCase variant (orderView) — better grep signal.
+    const camel = stem.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+    if (stem.length >= 3 && !SEARCH_STOP.has(stem.toLowerCase())) add(stem);
+    if (camel !== stem && camel.length >= 3) add(camel);
   }
 
-  // 5. Significant content words (≥4 chars, not stop words) — catches plain domain nouns like
-  //    "price" or "submit" in "how price submit user in this project give me the workflow".
-  //    Only fills remaining slots after the more-specific patterns above.
-  for (const m of text.matchAll(/\b([a-z]{4,})\b/gi)) {
+  // 5. Strip path/file noise from text before extracting plain content words, so "order-view.blade.php"
+  // doesn't let "blade" or "views" sneak in before meaningful domain words like "driver" or "showing".
+  const stripped = text
+    .replace(/@?[\w-./]+\.[a-zA-Z]{1,5}/g, ' ')  // remove file paths
+    .replace(/https?:\/\/\S+/g, ' ');              // remove URLs
+
+  for (const m of stripped.matchAll(/\b([a-z]{4,})\b/gi)) {
     if (terms.length >= 4) break;
     const w = m[1].toLowerCase();
     if (!SEARCH_STOP.has(w) && !seen.has(w)) { seen.add(w); terms.push(w); }
   }
 
-  // 6. Concept expansion: replace/augment generic terms with related technical identifiers.
-  //    "earn point" → also search "reputation", "score", "statistic" which are the actual
-  //    column/class names developers use. This fires AFTER the base terms are set so it
-  //    doesn't crowd out explicit names the user typed.
+  // 6. Concept expansion — at most ONE expansion per base term to avoid polluting the search.
+  //    "earn point" → "reputation" (first match only), not the whole array.
   const expanded = [...terms];
   for (const term of [...terms]) {
+    if (expanded.length >= 6) break;
     const extras = CONCEPT_EXPANSIONS[term.toLowerCase()];
     if (extras) {
-      for (const e of extras) {
-        if (expanded.length >= 6) break;
-        const k = e.toLowerCase();
-        if (!seen.has(k)) { seen.add(k); expanded.push(e); }
-      }
+      const e = extras[0];
+      const k = e.toLowerCase();
+      if (!seen.has(k)) { seen.add(k); expanded.push(e); }
     }
   }
 
-  return expanded.slice(0, 6);
+  return { terms: expanded.slice(0, 6), directFiles };
 }
 
 /**
@@ -170,14 +193,18 @@ export function classifyInformationRoute(text: string, taskKind: TaskKind): Info
   // ---- debug signal ----
   const needsDebug = DEBUG_HINT.test(t) || taskKind === 'debug';
 
-  const codeSearch = Math.min(1, codeScore) >= 0.4;
+  // Lower threshold for agent/coding/debug tasks — isCodebaseQuestion already confirmed
+  // the query is about the project, so a weaker signal (0.3 from taskKind alone) is enough
+  // to warrant grep/semantic pre-research rather than going empty into the first model call.
+  const codeSearchThreshold = (taskKind === 'agent' || taskKind === 'coding' || taskKind === 'debug') ? 0.3 : 0.4;
+  const codeSearch = Math.min(1, codeScore) >= codeSearchThreshold;
   const webSearch = Math.min(1, webScore) >= 0.5;
 
   // Confidence: 1.0 when exactly one signal dominates; lower when both or neither fire.
   const dominated = (codeSearch && !webSearch) || (webSearch && !codeSearch);
   const confidence = dominated ? 0.9 : codeSearch || webSearch ? 0.5 : 0.3;
 
-  const searchTerms = codeSearch ? extractSearchTerms(t) : [];
+  const extracted = codeSearch ? extractSearchTerms(t) : { terms: [], directFiles: [] };
 
-  return { codeSearch, webSearch, needsPlan, needsDebug, searchTerms, confidence };
+  return { codeSearch, webSearch, needsPlan, needsDebug, searchTerms: extracted.terms, directFiles: extracted.directFiles, confidence };
 }

@@ -35,6 +35,14 @@ export interface RouteOptions extends CompletionOptions {
   exclude?: string[];
   /** Quality-based escalation: only consider models at least this smart (intelligenceRank <= this). */
   maxIntelligenceRank?: number;
+  /**
+   * Streaming text callback — called with each text delta as it arrives.
+   * When provided the router uses streamChatCompletion instead of chatCompletion,
+   * giving the user live token-by-token output instead of waiting for the full response.
+   * Tool-call turns (where the model outputs JSON, not prose) are excluded — streaming
+   * raw JSON fragments is not useful and confuses the UI.
+   */
+  onChunk?: (text: string) => void;
 }
 
 export interface RouteResult {
@@ -407,7 +415,36 @@ export class Router {
         // Trim the conversation to fit this model's context window.
         const fitted = fitMessages(messages, inputBudget(model?.contextWindow, maxOut, reserved)).messages;
         try {
-          const response = await provider.chatCompletion(apiKey, fitted, entry.modelId, completionOpts);
+          let response: ChatCompletionResponse;
+          // Stream when: caller wants live chunks AND this is a text-answer turn (no tools).
+          // Tool-call turns produce JSON fragments, not prose — streaming them is useless and
+          // would send partial JSON to onChunk, confusing the UI. The agent already knows
+          // which turns need tools vs. which produce the final answer.
+          const wantsStream = !!(opts.onChunk && !opts.tools?.length);
+          if (wantsStream) {
+            const chunks: string[] = [];
+            let toolCalls: import('../shared/types').ChatToolCall[] | undefined;
+            for await (const chunk of provider.streamChatCompletion(apiKey, fitted, entry.modelId, completionOpts)) {
+              const delta = chunk.choices?.[0]?.delta;
+              if (!delta) continue;
+              if (delta.content) {
+                chunks.push(delta.content);
+                opts.onChunk!(delta.content);
+              }
+              if (delta.tool_calls?.length) toolCalls = delta.tool_calls;
+            }
+            const fullText = chunks.join('');
+            response = {
+              id: `chatcmpl-stream-${Date.now()}`,
+              object: 'chat.completion',
+              created: Math.floor(Date.now() / 1000),
+              model: entry.modelId,
+              choices: [{ index: 0, message: { role: 'assistant', content: fullText, ...(toolCalls ? { tool_calls: toolCalls } : {}) }, finish_reason: 'stop' }],
+              usage: { prompt_tokens: 0, completion_tokens: chunks.length, total_tokens: chunks.length },
+            };
+          } else {
+            response = await provider.chatCompletion(apiKey, fitted, entry.modelId, completionOpts);
+          }
           this.usage.add(response.usage);
           this.secrets.setStatus(entry.platform, 'healthy');
           this.markHealth(entry.platform, entry.modelId, 'ok');

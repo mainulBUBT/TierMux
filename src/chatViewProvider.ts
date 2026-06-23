@@ -28,7 +28,7 @@ import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense } from './agent/condense';
 import { recommendFreeStrong } from './catalog/recommend';
 import { parseClarifying, type ClarifyingQuestion } from './agent/clarify';
-import { deriveTitleFrom, looksLikeActionablePlan, planStepsToTodos, sanitizeTitle, timeAgo } from './session/titles';
+import { deriveTitleFrom, looksLikeActionablePlan, planStepsToTodos, sanitizeTitle } from './session/titles';
 
 const SLASH_PROMPTS: Record<string, string> = {
   explain: 'Explain the following / the referenced code clearly:',
@@ -69,6 +69,8 @@ interface Session {
   transcript: TranscriptMessage[];
   title?: string;
   titleGenerated: boolean;
+  createdAt: number;
+  updatedAt: number;
   // runtime — NEVER persisted (a dead agent process can't resume mid-run):
   activeRequestId?: string;
   cancel?: vscode.CancellationTokenSource;
@@ -106,9 +108,6 @@ interface StoredSession {
   transcript: TranscriptMessage[];
 }
 
-interface HistoryItem extends vscode.QuickPickItem {
-  sessionId: string;
-}
 
 /** Helper to resolve the display name for a custom endpoint (or built-in platform). */
 function displayNameForEntry(entry: { platform: string; modelId: string }, deps: ChatDeps): string {
@@ -165,12 +164,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Build a fresh, empty session (for New chat). */
   private createSession(): Session {
+    const now = Date.now();
     const s: Session = {
       id: this.newSessionId(),
       history: [],
       transcript: [],
       title: undefined,
       titleGenerated: false,
+      createdAt: now,
+      updatedAt: now,
       pendingApprovals: new Map(),
       approvalSeq: 0,
       voteCtx: new Map(),
@@ -200,6 +202,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       checkpoints: new CheckpointManager(),
       lastWindow: 0,
       liveSteps: new Map(),
+      createdAt: s.ts ?? Date.now(),
+      updatedAt: s.ts ?? Date.now(),
     };
   }
 
@@ -252,11 +256,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private postSessionList(): void {
-    const sessions = Array.from(this.sessions.values()).map((s) => ({
-      id: s.id,
-      title: s.title?.trim() || this.deriveTitle(s) || 'New chat',
-      status: this.statusOf.get(s.id) ?? 'idle',
-    }));
+    const sessions = Array.from(this.sessions.values())
+      .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+      .map((s) => ({
+        id: s.id,
+        title: s.title?.trim() || this.deriveTitle(s) || 'New session',
+        status: this.statusOf.get(s.id) ?? 'idle',
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+      }));
     this.post({ type: 'sessionList', sessions });
   }
 
@@ -459,39 +467,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Browse past chats and reopen one (native QuickPick). */
   async showHistory(): Promise<void> {
     await vscode.commands.executeCommand('tiermux.chat.focus');
-    this.persist(this.viewedSessionId); // make sure the current chat is in the list
-    const sessions = this.loadSessions();
-    if (!sessions.length) { void vscode.window.showInformationMessage('No chat history yet.'); return; }
-
-    const qp = vscode.window.createQuickPick<HistoryItem>();
-    qp.title = 'Chat History';
-    qp.placeholder = 'Select a chat to reopen';
-    const edit = { iconPath: new vscode.ThemeIcon('edit'), tooltip: 'Rename' };
-    const trash = { iconPath: new vscode.ThemeIcon('trash'), tooltip: 'Delete' };
-    const toItems = (list: StoredSession[]): HistoryItem[] => list.map((s) => ({
-      label: (s.id === this.viewedSessionId ? '$(circle-filled) ' : '') + s.title,
-      description: `${timeAgo(s.ts)} · ${s.transcript.filter((t) => t.role === 'user').length} msgs`,
-      sessionId: s.id,
-      buttons: [edit, trash],
-    }));
-    qp.items = toItems(sessions);
-    qp.onDidAccept(() => { const sel = qp.selectedItems[0]; if (sel) this.openSession(sel.sessionId); qp.hide(); });
-    qp.onDidTriggerItemButton(async (e) => {
-      if (e.button === edit) {
-        const cur = this.loadSessions().find((x) => x.id === e.item.sessionId)?.title ?? '';
-        const next = await vscode.window.showInputBox({ title: 'Rename chat', prompt: 'Rename chat', value: cur });
-        if (next && next.trim()) {
-          this.renameSession(e.item.sessionId, next.trim());
-          qp.items = toItems(this.loadSessions());
-        }
-        return;
-      }
-      this.deleteSession(e.item.sessionId);
-      qp.items = toItems(this.loadSessions());
-      if (!qp.items.length) qp.hide();
-    });
-    qp.onDidHide(() => qp.dispose());
-    qp.show();
+    this.persist(this.viewedSessionId);
+    this.postSessionList();
+    this.post({ type: 'toggleHistory' });
   }
 
   /** Rename a stored session (also updates the live title if it's a live session). */
@@ -598,6 +576,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'renameSession':
         this.handleRenameSession(m.title);
+        break;
+      case 'renameSessionById':
+        if (m.sessionId && m.title) this.renameSession(m.sessionId, m.title);
+        break;
+      case 'deleteSessionById':
+        if (m.sessionId) this.deleteSession(m.sessionId);
         break;
       case 'cancel':
         this.stopRun(m.sessionId ?? this.viewedSessionId);
@@ -861,11 +845,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case 'removeCustomEndpoint': {
-        // Validation already happened in webview (confirm dialog)
-        await this.deps.settings.removeCustomEndpoint(m.id);
-        await this.deps.secrets.clearCustomKey(m.id);
-        // Clear per-model keys
+        // Fetch models BEFORE removing the endpoint — removal clears it from storage.
         const endpoint = this.deps.settings.getCustomEndpoint(m.id);
+        await this.deps.settings.removeCustomEndpoint(m.id);
+        // Clear endpoint-level key and all per-model keys.
+        await this.deps.secrets.clearCustomKey(m.id);
         if (endpoint) {
           for (const model of endpoint.models) {
             await this.deps.secrets.clearCustomModelKey(m.id, model.modelId);
@@ -901,7 +885,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           void vscode.window.showWarningMessage('Model ID must be 1-200 characters.');
           break;
         }
-        if (/[\\s:]/.test(modelId)) {
+        if (/[\s:]/.test(modelId)) {
           void vscode.window.showWarningMessage('Model ID cannot contain whitespace or ::');
           break;
         }
@@ -1178,6 +1162,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const userContent = this.buildUserContent(prompt, contextText, m.attachments);
     s.history.push({ role: 'user', content: userContent });
     s.transcript.push({ role: 'user', text: prompt, requestId: m.requestId, ts: Date.now(), historyLen: s.history.length - 1 });
+    s.updatedAt = Date.now();
     void this.maybeGenerateTitle(s); // title from the user's message right away (e.g. "hi" -> "Greetings")
 
     s.cancel?.dispose();
@@ -1626,6 +1611,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       onStep: (phase, label) => { if (!live()) return; s.lastStepLabel = label; if (viewed()) this.post({ type: 'agentStep', sessionId: s.id, requestId, phase, label }); },
       onTodos: (todos) => { if (!live()) return; s.lastTodos = todos; if (viewed()) this.post({ type: 'todos', sessionId: s.id, requestId, todos, followingPlan: !!s.executingPlan }); },
+      onChunk: (text) => { if (!live() || !viewed()) return; this.post({ type: 'assistantChunk', sessionId: s.id, requestId, text }); },
       onAskUser: async (question, options) => {
         if (!live()) return '';
         // Mint a unique callId per prompt so the webview's response correlates back to the

@@ -155,6 +155,8 @@ export type InMessage =
   | { type: 'deferPlan'; requestId: string; steps: string }
   | { type: 'answerClarifying'; requestId: string; answers: string[] }
   | { type: 'renameSession'; title: string }
+  | { type: 'renameSessionById'; sessionId: string; title: string }
+  | { type: 'deleteSessionById'; sessionId: string }
   | { type: 'vote'; requestId: string; vote: 'up' | 'down' | 'none' }
   | { type: 'cancel'; requestId: string; sessionId?: string }
   | { type: 'commandApprovalResponse'; id: string; approved: boolean; sessionId?: string }
@@ -244,7 +246,7 @@ export type SessionStatus = 'idle' | 'queued' | 'running' | 'needsApproval' | 'f
 // Extension -> Webview
 export type OutMessage =
   | { type: 'config'; config: ConfigPayload; usageTotals: UsageTotals }
-  | { type: 'sessionList'; sessions: Array<{ id: string; title: string; status: SessionStatus }> }
+  | { type: 'sessionList'; sessions: Array<{ id: string; title: string; status: SessionStatus; createdAt?: number; updatedAt?: number }> }
   | { type: 'switchSession'; sessionId: string; messages: TranscriptMessage[] }
   | { type: 'userEcho'; sessionId: string; requestId: string; text: string }
   | { type: 'assistantStart'; sessionId: string; requestId: string; platform: string; model: string }
@@ -255,6 +257,7 @@ export type OutMessage =
   | { type: 'clarifyingQuestions'; sessionId: string; requestId: string; questions: ClarifyingQuestion[] }
   | { type: 'sessionTitle'; sessionId: string; title: string }
   | { type: 'assistantMessage'; sessionId: string; requestId: string; text: string; reasoning?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean }
+  | { type: 'assistantChunk'; sessionId: string; requestId: string; text: string }
   | { type: 'usageTotals'; totals: UsageTotals }
   | { type: 'indexProgress'; building: boolean; done: number; total: number; phase: 'scanning' | 'embedding' | 'done' | 'error' }
   | { type: 'checkpoint'; sessionId: string; requestId: string; id: string; files: CheckpointFile[] }
@@ -271,6 +274,7 @@ export type OutMessage =
   | { type: 'mcpRegistryResults'; queryId: number; items: McpRegistryItem[]; error?: string }
   | { type: 'setInput'; text: string }
   | { type: 'toggleSettings' }
+  | { type: 'toggleHistory' }
   | { type: 'notice'; sessionId: string; text: string }
   | { type: 'error'; sessionId?: string; requestId?: string; message: string }
   | { type: 'busy'; sessionId: string; busy: boolean };
