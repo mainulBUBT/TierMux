@@ -437,13 +437,24 @@ export class Router {
               if (delta.tool_calls?.length) toolCalls = delta.tool_calls;
             }
             const fullText = chunks.join('');
+            // Most providers don't emit `usage` in their SSE chunks (would need
+            // `stream_options.include_usage` set on the request, which the OpenAI
+            // stream spec supports but not every free provider honors). Until the
+            // request body opts in, estimate the counts from the data we DO have:
+            // the fitted messages we actually sent (prompt) and the assembled
+            // text we received (completion). Same heuristic the rest of the router
+            // uses for context-fit pre-checks (`estimateMessagesTokens(messages)`
+            // at line 347), so the session and lifetime counters stay consistent
+            // with the budget logic.
+            const promptTokens = estimateMessagesTokens(fitted);
+            const completionTokens = estimateTokens(fullText);
             response = {
               id: `chatcmpl-stream-${Date.now()}`,
               object: 'chat.completion',
               created: Math.floor(Date.now() / 1000),
               model: entry.modelId,
               choices: [{ index: 0, message: { role: 'assistant', content: fullText, ...(toolCalls ? { tool_calls: toolCalls } : {}) }, finish_reason: 'stop' }],
-              usage: { prompt_tokens: 0, completion_tokens: chunks.length, total_tokens: chunks.length },
+              usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
             };
           } else {
             response = await provider.chatCompletion(apiKey, fitted, entry.modelId, completionOpts);

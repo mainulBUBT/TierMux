@@ -4,6 +4,7 @@ import { Catalog } from './catalog/catalog';
 import { SecretStore } from './config/secrets';
 import { SettingsStore } from './config/settingsStore';
 import { UsageTracker } from './config/usage';
+import { UsageStore } from './config/usageStore';
 import { ModelStatsStore } from './config/modelStats';
 import { Router } from './router/router';
 import { EditGate } from './edits/applyEdit';
@@ -30,8 +31,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const secrets = new SecretStore(context.secrets);
   const settings = new SettingsStore(context.globalState, catalog);
   const usage = new UsageTracker();
+  const usageStore = new UsageStore(context.globalState);
   const modelStats = new ModelStatsStore(context.globalState);
-  const router = new Router(secrets, settings, catalog, usage, modelStats);
+  const router = new Router(secrets, settings, catalog, usage, modelStats, usageStore);
 
   const editGate = new EditGate(() =>
     vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('requireWriteConfirmation', true),
@@ -58,6 +60,7 @@ export function activate(context: vscode.ExtensionContext): void {
     settings,
     catalog,
     usage,
+    usageStore,
     agent,
     router,
     mcp,

@@ -108,6 +108,16 @@
     return `${fmtTokens(u.promptTokens)} in · ${fmtTokens(u.completionTokens)} out`;
   }
 
+  // Dollar formatter for the "est. $ saved" line. Two decimals by default;
+  // sub-cent amounts show as "$0.00" so the line never reads like a precise bill.
+  function fmtUsd(n) {
+    if (typeof n !== 'number' || !isFinite(n) || n <= 0) return '$0.00';
+    if (n < 0.01) return '<$0.01';
+    if (n < 1) return '$' + n.toFixed(2);
+    if (n < 100) return '$' + n.toFixed(2);
+    return '$' + n.toFixed(1);
+  }
+
   // ---------- layout ----------
   const app = $('#app');
   app.innerHTML = `
@@ -1458,6 +1468,38 @@
       list.querySelectorAll('.model-item').forEach((it) => { it.style.display = !q || it.dataset.search.includes(q) ? '' : 'none'; });
       list.querySelectorAll('.model-group').forEach((g) => { g.style.display = q ? 'none' : ''; });
     });
+
+    // Usage data: persistent lifetime totals + a button to clear them.
+    const usageWrap = document.createElement('div');
+    usageWrap.className = 'usage-data-section';
+    const usageTitle = document.createElement('div');
+    usageTitle.className = 'others-title';
+    usageTitle.textContent = 'Usage data';
+    const usageDesc = document.createElement('div');
+    usageDesc.className = 'others-desc';
+    usageDesc.textContent = 'Lifetime token totals (persisted across sessions) and an estimated dollar amount you saved by using free tiers. Cleared manually only.';
+    const usageStats = document.createElement('div');
+    usageStats.className = 'usage-stats';
+    usageStats.id = 'usage-stats-card';
+    const usageClear = document.createElement('button');
+    usageClear.className = 'secondary';
+    usageClear.id = 'usage-clear-btn';
+    usageClear.textContent = 'Clear usage data';
+    usageClear.title = 'Reset the lifetime token and $ saved counters. This cannot be undone.';
+    usageClear.addEventListener('click', () => {
+      const ok = window.confirm('Clear all lifetime usage data? This will reset the persistent token and est. $ saved counters. This cannot be undone.');
+      if (ok) {
+        usageClear.disabled = true;
+        usageClear.textContent = 'Clearing…';
+        vscode.postMessage({ type: 'clearUsage' });
+      }
+    });
+    usageWrap.append(usageTitle, usageDesc, usageStats, usageClear);
+    settingsContentEl.appendChild(usageWrap);
+    // Card was just built; populate it from the last known lifetime values
+    // (the `config`/`usageTotals` messages update this same cache, so re-rendering
+    // the tab while the user has it open still shows fresh numbers).
+    renderUsageStatsCard();
   }
 
   function renderProviders() {
@@ -2216,6 +2258,7 @@
         renderAutoApprove();
         rebuildModelPicker();
         updateFooter(msg.usageTotals);
+        renderUsageStatsCard(msg.usageTotals && msg.usageTotals.lifetime);
         renderIndexStatus(state.index && state.index.building ? { building: true, done: 0, total: 0, phase: 'embedding' } : { building: false });
         if (settingsOpen) renderSettings();
         break;
@@ -2666,6 +2709,7 @@
       }
       case 'usageTotals':
         updateFooter(msg.totals);
+        renderUsageStatsCard(msg.totals && msg.totals.lifetime);
         break;
       case 'indexProgress':
         renderIndexStatus(msg);
@@ -2926,7 +2970,39 @@
       const kw = w >= 1000 ? Math.round(w / 1000) + 'k' : w;
       ctx = `  ·  ctx ~${t}/${kw} (${pct}%)`;
     }
-    $('#footer').textContent = session + ctx;
+    let lifetime = '';
+    if (totals.lifetime && (totals.lifetime.totalTokens > 0 || totals.lifetime.estimatedSavingsUsd > 0)) {
+      const lt = totals.lifetime;
+      lifetime = `  ·  Lifetime: ${fmtTokens(lt.totalTokens)} tokens · est. ${fmtUsd(lt.estimatedSavingsUsd)} saved`;
+    }
+    $('#footer').textContent = session + ctx + lifetime;
+  }
+
+  // Render the "Usage data" card inside the Others tab. Safe to call before
+  // the user opens the tab — looks up the element by id and bails if missing.
+  let lastLifetime = { totalTokens: 0, totalRequests: 0, estimatedSavingsUsd: 0 };
+  function renderUsageStatsCard(lifetime) {
+    if (lifetime) lastLifetime = lifetime;
+    const el = document.getElementById('usage-stats-card');
+    if (!el) return;
+    const lt = lastLifetime;
+    el.innerHTML = '';
+    const row = (label, value) => {
+      const r = document.createElement('div'); r.className = 'usage-stat-row';
+      const l = document.createElement('span'); l.className = 'usage-stat-label'; l.textContent = label;
+      const v = document.createElement('span'); v.className = 'usage-stat-value'; v.textContent = value;
+      r.append(l, v);
+      el.appendChild(r);
+    };
+    row('Total tokens', fmtTokens(lt.totalTokens || 0));
+    row('Total requests', String(lt.totalRequests || 0));
+    row('Est. $ saved', fmtUsd(lt.estimatedSavingsUsd || 0));
+    // Reset the clear button label if it was in "Clearing…" state.
+    const btn = document.getElementById('usage-clear-btn');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Clear usage data';
+    }
   }
 
   renderEmpty();

@@ -423,6 +423,18 @@
           "default": 60000,
           "description": "How long (ms) to skip a rate-limited provider before trying it again. Honors a provider's Retry-After header when present."
         },
+        "tiermux.usage.referencePriceInPer1M": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "description": "Reference price per 1M input tokens used to estimate how much you would have paid on a paid tier (default mirrors OpenAI GPT-4o). 0 disables the dollar estimate. Used only for the 'est. $ saved' line in the chat footer — you are not actually billed this amount, since every provider TierMux uses is free."
+        },
+        "tiermux.usage.referencePriceOutPer1M": {
+          "type": "number",
+          "default": 15,
+          "minimum": 0,
+          "description": "Reference price per 1M output tokens used to estimate how much you would have paid on a paid tier (default mirrors OpenAI GPT-4o). 0 disables the dollar estimate. Used only for the 'est. $ saved' line in the chat footer."
+        },
         "tiermux.chat.typingSpeedMs": {
           "type": "number",
           "default": 8,

@@ -37,6 +37,14 @@ export type UsageTotals = UsagePayload & {
   requests: number;
   /** Estimated current conversation size vs the active model's window. */
   context?: { tokens: number; window: number };
+  /** Persistent across-reload totals (see UsageStore). Optional so older callers
+   *  that pre-date the lifetime field still type-check. */
+  lifetime?: {
+    totalTokens: number;
+    totalRequests: number;
+    estimatedSavingsUsd: number;
+    firstRecordedAt: number;
+  };
 };
 
 export interface KeyStatusInfo {
@@ -201,6 +209,7 @@ export type InMessage =
   | { type: 'clearSearchCache' }
   | { type: 'clearAllCaches' }
   | { type: 'setCacheEnabled'; key: 'file' | 'search'; enabled: boolean }
+  | { type: 'clearUsage' }
   // Custom OpenAI-compatible endpoints
   | { type: 'addCustomEndpoint'; name: string; baseUrl: string }
   | { type: 'updateCustomEndpoint'; id: string; name?: string; baseUrl?: string; extraHeaders?: Record<string, string> }

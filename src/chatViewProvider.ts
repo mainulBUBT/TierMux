@@ -4,6 +4,7 @@ import type { SecretStore } from './config/secrets';
 import type { SettingsStore } from './config/settingsStore';
 import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
+import type { UsageStore } from './config/usageStore';
 import { Agent, type Mode, type AgentResult, type AgentCallbacks } from './agent/agent';
 import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
@@ -42,6 +43,7 @@ export interface ChatDeps {
   settings: SettingsStore;
   catalog: Catalog;
   usage: UsageTracker;
+  usageStore: UsageStore;
   agent: Agent;
   router: Router;
   mcp: McpManager;
@@ -714,6 +716,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.deps.tools.clearSearchCache();
         await this.sendConfig();
         break;
+      case 'clearUsage':
+        await this.deps.usageStore.clear();
+        await this.sendConfig();
+        this.post({ type: 'notice', sessionId: this.viewedSessionId, text: '🧹 Lifetime usage data cleared.' });
+        break;
       case 'setCacheEnabled':
         if (m.key === 'file') {
           this.deps.tools.setFileCacheEnabled(m.enabled);
@@ -1110,7 +1117,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const prior = s.history.length;
       s.history = r.messages;
       this.persist(s.id);
-      this.post({ type: 'usageTotals', totals: { ...this.deps.usage.get(), context: this.computeContext(s) } });
+      this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
       this.post({ type: 'notice', sessionId: s.id, text: `🗜 Context compacted — ${prior} → ${r.messages.length} messages. Earlier turns summarized; the last few kept verbatim.` });
     } catch (e) {
       this.post({ type: 'error', sessionId: s.id, message: `Compact failed: ${e instanceof Error ? e.message : String(e)}` });
@@ -1254,7 +1261,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: result.model, paused: result.paused });
-      this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext(s) } });
+      this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned run — don't surface its error
       this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
@@ -1467,7 +1474,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: result.model, paused: result.paused });
-      this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext(s) } });
+      this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return;
       this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
@@ -1679,7 +1686,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: result.model, paused: result.paused });
-      this.post({ type: 'usageTotals', totals: { ...after, context: this.computeContext(s) } });
+      this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return;
       this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
@@ -1822,7 +1829,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         modelCount: ep.models.length,
       })))),
     };
-    this.post({ type: 'config', config, usageTotals: { ...this.deps.usage.get(), context: this.computeContext(this.current()) } });
+    this.post({ type: 'config', config, usageTotals: this.currentUsageTotals(this.current()) });
   }
 
   /** Estimated current conversation size vs the active model's context window. */
@@ -1835,6 +1842,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       window = m?.contextWindow ?? 32768;
     }
     return { tokens, window };
+  }
+
+  /** Session-scoped totals + persistent lifetime totals + context. Single source
+   *  of truth for the footer's `usageTotals` post so the session and lifetime
+   *  numbers can never drift between call sites. */
+  private currentUsageTotals(s: Session) {
+    const sessionTotals = this.deps.usage.get();
+    const lifetime = this.deps.usageStore.getLifetime();
+    return {
+      ...sessionTotals,
+      context: this.computeContext(s),
+      lifetime: {
+        totalTokens: lifetime.totalTokens,
+        totalRequests: lifetime.totalRequests,
+        estimatedSavingsUsd: lifetime.estimatedSavingsUsd,
+        firstRecordedAt: lifetime.firstRecordedAt,
+      },
+    };
   }
 
   private rememberWindow(s: Session, platform?: string, model?: string): void {

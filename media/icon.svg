@@ -1,14 +1,41 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
-  <defs>
-    <linearGradient id="tiermux" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#a855f7"/>
-      <stop offset="55%" stop-color="#7c3aed"/>
-      <stop offset="100%" stop-color="#2563eb"/>
-    </linearGradient>
-  </defs>
-  <!-- stacked tiers: the "Tier" in TierMux -->
-  <rect x="3.5" y="14"   width="17" height="2.8" rx="1.4" fill="url(#tiermux)" opacity="0.9"/>
-  <rect x="3.5" y="17.6" width="17" height="2.8" rx="1.4" fill="url(#tiermux)" opacity="0.65"/>
-  <!-- upward arrow: smart routing up the tiers -->
-  <path d="M12 3 L18.6 9.8 H14.6 V12.4 H9.4 V9.8 H5.4 Z" fill="url(#tiermux)"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+  <title>TierMux — T with stacked tiers and routing arrow</title>
+
+  <!-- T glyph: three stacked tier bars + central stem, with the routing arrow
+       cut out via fill-rule="evenodd" so VSCode themes the whole shape with
+       the activity-bar foreground color (no background rectangle). -->
+  <path fill-rule="evenodd" d="
+    M 1.5 1.5
+    L 22.5 1.5
+    L 20.5 4.5
+    L 1.5 4.5
+    Z
+
+    M 1.5 7.5
+    L 22.5 7.5
+    L 20.5 10.5
+    L 1.5 10.5
+    Z
+
+    M 1.5 13.5
+    L 22.5 13.5
+    L 20.5 16.5
+    L 1.5 16.5
+    Z
+
+    M 9.5 4.5
+    L 9.5 22.5
+    L 14.5 22.5
+    L 14.5 4.5
+    Z
+
+    M 12 5.5
+    L 7.5 11
+    L 10 11
+    L 10 20
+    L 14 20
+    L 14 11
+    L 16.5 11
+    Z
+  "/>
 </svg>

@@ -11,6 +11,10 @@ LLM providers** (with more added over time) and routes each request to the best 
 automatically failing over when one is rate-limited or down. Before the agent even takes its first
 tool step, TierMux pre-researches your codebase so it starts with answers, not questions.
 
+<p align="center">
+  <img src="media/icon.svg" alt="TierMux icon — T with stacked tiers and routing arrow" width="96">
+</p>
+
 > The name: **Tier** (free provider tiers) + **Mux** (a multiplexer that routes across them).
 
 > Provider adapters, the model catalog, and routing are adapted from the author's MIT-licensed
@@ -56,6 +60,10 @@ tool step, TierMux pre-researches your codebase so it starts with answers, not q
 - **Checkpoints** — each turn is snapshotted; restore the workspace to before any message.
 - **Per-task model feedback** — 👍/👎 a reply and the router learns which model answers *your*
   tasks best (stored locally).
+- **Usage tracking** — the chat footer shows session tokens and a **lifetime total** of every
+  token TierMux has routed for you, plus an **estimated $ saved** counter (reference price
+  defaults to GPT-4o list price; tune with the settings below). Clear the lifetime counter
+  any time from **Settings → Others → Usage data**.
 - **Context-aware** — project grounding (knows your project's name/type/structure), ambient editor
   context, `@file`/`@folder`/`@symbol` mentions, and optional semantic codebase search.
 - **Reasoning effort** (Off → Very High) for reasoning-capable models, with a collapsible
@@ -64,6 +72,24 @@ tool step, TierMux pre-researches your codebase so it starts with answers, not q
   diagnostics, **inline chat** (`Ctrl/Cmd+I`), ghost-text completions (off by default), and
   **AI commit messages** in the Source Control toolbar.
 - **MCP** — connect Model Context Protocol servers for extra tools.
+
+---
+
+## At a glance
+
+The chat footer surfaces per-session and lifetime token totals in real time, and a
+**Usage data** card in **Settings → Others** shows the same lifetime counter with a one-click
+reset.
+
+<p align="center">
+  <img src="media/usage-footer.svg" alt="Chat footer showing session tokens, context window, and lifetime totals with est. $ saved; Usage data card with Total tokens, Est. $ saved, and Clear usage data button" width="720">
+</p>
+
+The `Session:` segment is in-memory (resets on reload). The `Lifetime:` segment is persisted to
+VS Code's local extension storage and accumulates across every session. The **est. $ saved**
+number is computed at read time from `tiermux.usage.referencePriceInPer1M` and
+`tiermux.usage.referencePriceOutPer1M` (default GPT-4o list price) — set either to `0` to hide
+the dollar line.
 
 ---
 
@@ -91,6 +117,8 @@ Settings live under **TierMux** in VS Code settings (keys use the `tiermux.*` pr
 | `tiermux.requestTimeoutMs` | `60000` | Per-provider request timeout before failover. |
 | `tiermux.rateLimitCooldownMs` | `60000` | How long to skip a rate-limited provider. |
 | `tiermux.completions.enabled` | `false` | Ghost-text inline completions. |
+| `tiermux.usage.referencePriceInPer1M` | `5` | Reference price per 1M input tokens used by the "est. $ saved" footer counter (USD). Set to `0` to disable. |
+| `tiermux.usage.referencePriceOutPer1M` | `15` | Reference price per 1M output tokens used by the "est. $ saved" footer counter (USD). Set to `0` to disable. |
 
 Model enable/priority and per-provider endpoint overrides are managed in **⚙ Manage Models & Keys**. This panel also lets you add **custom OpenAI-compatible endpoints** (vLLM, LiteLLM, Azure OpenAI deployments, Cloudflare AI Gateway, etc.) — each with its own base URL, API key, and model list. Custom endpoints appear in the model picker with your chosen name, so "vLLM" and "My LiteLLM" are distinct providers in the UI and in assistant turn footers.
 
@@ -99,8 +127,9 @@ Model enable/priority and per-provider endpoint overrides are managed in **⚙ M
 ## Your keys & data
 
 TierMux talks directly to each provider you configure; your **API keys are stored in VS Code
-SecretStorage**. The 👍/👎 model-quality stats are kept in local extension storage. Any future
-data sharing (e.g. aggregate model-preference stats) will be **opt-in and off by default** — see
+SecretStorage**. The 👍/👎 model-quality stats and **lifetime token usage counter** are kept in
+local extension storage. Nothing is sent to a backend — TierMux has no server. Any future data
+sharing (e.g. aggregate model-preference stats) will be **opt-in and off by default** — see
 [FUTURE_PLAN.md](FUTURE_PLAN.md).
 
 ---
