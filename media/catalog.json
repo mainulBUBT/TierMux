@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Updated catalog \u2014 106 free-tier models from 24 providers. Agnes 2.0 Flash added (June 2026).",
+  "note": "Updated catalog \u2014 126 models from 22 providers. Openference aggregator expanded with 8 models (June 2026).",
   "models": [
     {
       "platform": "sambanova",
@@ -1855,6 +1855,164 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "released": "2025-12"
+    },
+    {
+      "platform": "openference",
+      "modelId": "GLM-5.2",
+      "displayName": "GLM 5.2 (Openference)",
+      "intelligenceRank": 1,
+      "speedRank": 2,
+      "sizeLabel": "Large",
+      "contextWindow": 200000,
+      "monthlyTokenBudget": "50 req / 5h free",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "released": "2026-05",
+      "tags": [
+        "coding",
+        "agent",
+        "reasoning"
+      ],
+      "insight": "Latest GLM flagship; ~200K context, strong reasoning"
+    },
+    {
+      "platform": "openference",
+      "modelId": "DeepSeek-V4-Flash",
+      "displayName": "DeepSeek V4 Flash (Openference)",
+      "intelligenceRank": 2,
+      "speedRank": 2,
+      "sizeLabel": "Large",
+      "contextWindow": 1000000,
+      "monthlyTokenBudget": "50 req / 5h free",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "released": "2026-04",
+      "tags": [
+        "coding",
+        "reasoning",
+        "long-context"
+      ],
+      "insight": "Low-cost flash model with 1M context"
+    },
+    {
+      "platform": "openference",
+      "modelId": "DeepSeek-V4-Pro",
+      "displayName": "DeepSeek V4 Pro (Openference)",
+      "intelligenceRank": 1,
+      "speedRank": 3,
+      "sizeLabel": "Frontier",
+      "contextWindow": 1000000,
+      "monthlyTokenBudget": "50 req / 5h free",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "released": "2026-04",
+      "tags": [
+        "coding",
+        "reasoning",
+        "flagship"
+      ],
+      "insight": "Flagship DeepSeek; highest reasoning quality"
+    },
+    {
+      "platform": "openference",
+      "modelId": "GLM-4.6V",
+      "displayName": "GLM 4.6V (Openference)",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "sizeLabel": "Large",
+      "contextWindow": 128000,
+      "monthlyTokenBudget": "50 req / 5h free",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "released": "2026-05",
+      "tags": [
+        "multimodal",
+        "vision",
+        "reasoning"
+      ],
+      "insight": "Only GLM in catalog with vision support"
+    },
+    {
+      "platform": "openference",
+      "modelId": "GLM-5.1",
+      "displayName": "GLM 5.1 (Openference)",
+      "intelligenceRank": 2,
+      "speedRank": 2,
+      "sizeLabel": "Large",
+      "contextWindow": 128000,
+      "monthlyTokenBudget": "50 req / 5h free",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "released": "2026-05",
+      "tags": [
+        "coding",
+        "reasoning"
+      ],
+      "insight": "General-purpose reasoning model"
+    },
+    {
+      "platform": "openference",
+      "modelId": "Kimi K2.6",
+      "displayName": "Kimi K2.6 (Openference)",
+      "intelligenceRank": 2,
+      "speedRank": 2,
+      "sizeLabel": "Large",
+      "contextWindow": 256000,
+      "monthlyTokenBudget": "50 req / 5h free",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "released": "2026-05",
+      "tags": [
+        "coding",
+        "long-context"
+      ],
+      "insight": "Moonshot long-context model; ~256K context"
+    },
+    {
+      "platform": "openference",
+      "modelId": "Kimi K2.7 Code",
+      "displayName": "Kimi K2.7 Code (Openference)",
+      "intelligenceRank": 1,
+      "speedRank": 2,
+      "sizeLabel": "Large",
+      "contextWindow": 256000,
+      "monthlyTokenBudget": "50 req / 5h free",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "released": "2026-05",
+      "tags": [
+        "coding",
+        "swe",
+        "agent"
+      ],
+      "insight": "Code-specialized for software engineering"
+    },
+    {
+      "platform": "openference",
+      "modelId": "Qwen3.7 Plus",
+      "displayName": "Qwen 3.7 Plus (Openference)",
+      "intelligenceRank": 2,
+      "speedRank": 1,
+      "sizeLabel": "Large",
+      "contextWindow": 262000,
+      "monthlyTokenBudget": "50 req / 5h free",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "released": "2026-05",
+      "tags": [
+        "reasoning",
+        "fast",
+        "coding"
+      ],
+      "insight": "Qwen latest fast reasoning; ~262K context"
     }
   ]
 }

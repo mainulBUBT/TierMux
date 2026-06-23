@@ -37,6 +37,12 @@ export abstract class BaseProvider {
   runtimeName?: string;
   /** Providers whose free tier needs no API key (Kilo/Pollinations/OVH anon). */
   keyless = false;
+  /**
+   * Optional provider-specific preflight timeout (ms). If set, the router uses
+   * this instead of the default 5s for health checks. Useful for models that
+   * are slow to start (e.g., reasoning models with cold starts).
+   */
+  preflightTimeoutMs?: number;
 
   abstract chatCompletion(
     apiKey: string,

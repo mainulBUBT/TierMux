@@ -31,6 +31,8 @@ export interface OpenAICompatOpts {
   reasoningStyle?: ReasoningStyle;
   /** Runtime display name for custom endpoints (no-op for built-ins). */
   runtimeName?: string;
+  /** Optional override for preflight health check timeout (ms). */
+  preflightTimeoutMs?: number;
 }
 
 export class OpenAICompatProvider extends BaseProvider {
@@ -55,6 +57,7 @@ export class OpenAICompatProvider extends BaseProvider {
     this.forceSingleToolCall = opts.forceSingleToolCall ?? false;
     this.reasoningStyle = opts.reasoningStyle ?? 'effort';
     this.flattenContent = opts.flattenContent ?? false;
+    this.preflightTimeoutMs = opts.preflightTimeoutMs;
   }
 
   private resolveBaseUrl(options?: CompletionOptions): string {

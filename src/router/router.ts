@@ -18,6 +18,7 @@ import type { SecretStore } from '../config/secrets';
 import type { SettingsStore } from '../config/settingsStore';
 import type { Catalog } from '../catalog/catalog';
 import type { UsageTracker } from '../config/usage';
+import type { UsageStore } from '../config/usageStore';
 import type { ModelStatsStore } from '../config/modelStats';
 
 export interface RouteOptions extends CompletionOptions {
@@ -122,6 +123,7 @@ export class Router {
     private readonly catalog: Catalog,
     private readonly usage: UsageTracker,
     private readonly stats?: ModelStatsStore,
+    private readonly usageStore?: UsageStore,
   ) {}
 
   /**
@@ -313,8 +315,9 @@ export class Router {
   private async preflightPing(provider: ReturnType<typeof resolveProvider>, apiKey: string, platform: Platform, modelId: string): Promise<{ ok: boolean; reason?: string }> {
     if (!provider) return { ok: false, reason: 'no_provider' };
     if (this.healthOf(platform, modelId) === 'ok') return { ok: true };
+    const timeout = provider.preflightTimeoutMs ?? Router.PING_TIMEOUT_MS;
     try {
-      await provider.ping(apiKey, modelId, Router.PING_TIMEOUT_MS);
+      await provider.ping(apiKey, modelId, timeout);
       this.markHealth(platform, modelId, 'ok');
       return { ok: true };
     } catch (err) {
@@ -446,6 +449,7 @@ export class Router {
             response = await provider.chatCompletion(apiKey, fitted, entry.modelId, completionOpts);
           }
           this.usage.add(response.usage);
+          this.usageStore?.addRequest(response.usage?.prompt_tokens || 0, response.usage?.completion_tokens || 0);
           this.secrets.setStatus(entry.platform, 'healthy');
           this.markHealth(entry.platform, entry.modelId, 'ok');
           // Remember the winner so the next same-kind task starts here, not at the top of the cascade.
