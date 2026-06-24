@@ -365,29 +365,16 @@ export class Agent {
     // entirely — just give a warm one-shot reply. Applies in all modes so Ask mode doesn't
     // accidentally web-search "hi".
     if (classifyTask(latestText) === 'trivial') {
-      // Use few-shot examples rather than meta-instructions — weak free models tend to narrate
-      // "The user says hello. According to instructions…" instead of just replying when given
-      // instruction-style system prompts. Concrete examples short-circuit that failure mode.
-      const system = `You are TierMux, a VS Code AI assistant. Respond with a short, warm greeting — one or two sentences max.
-
-Examples of good responses:
-- "Hey! What would you like to build or fix today?"
-- "Hi there! Ask me anything about your code."
-- "Hello! Ready when you are — what are we working on?"
-
-Output ONLY the greeting. No preamble, no thinking, no explanation.`;
-      const latest = [...history].reverse().find((m) => m.role === 'user');
-      const messages: ChatMessage[] = [{ role: 'system', content: system }, ...(latest ? [latest] : [])];
-      // max_tokens: 30 — a real greeting is never longer than ~20 tokens.
-      // Keeping it tight prevents weak models from writing a paragraph of chain-of-thought
-      // reasoning before they get to the actual greeting.
-      const r = await this.router.route(messages, { model: opts.model, taskKind: 'trivial', max_tokens: 30, onFailover: opts.onFailover, onKeyRotated: opts.onKeyRotated });
-      cb.onModel?.(r.platform, r.model);
-      const { reasoning, content } = splitReasoning(contentToString(r.response.choices[0]?.message.content));
-      // Detect leaked instructions / chain-of-thought narration — use fallback greeting.
-      const leaked = !content || content.length > 200
-        || /according to|developer instructions|the user says|system prompt|as instructed|let me check|i need to|i should|the examples|okay, the user|sure, i('ll| will)/i.test(content);
-      return { text: leaked ? 'Hi! What would you like to build or fix today?' : content, reasoning, platform: r.platform, model: r.model, runtimeName: r.runtimeName, taskKind: 'trivial' };
+      // Greetings get an instant hardcoded reply — no model call needed.
+      // Sending "hello" to a free LLM API costs 30-60s of latency for zero value.
+      const GREETINGS = [
+        "Hey! What would you like to build or fix today?",
+        "Hi there! Ask me anything about your code.",
+        "Hello! Ready when you are — what are we working on?",
+        "Hey! Drop a question or a task and I'll get started.",
+      ];
+      const idx = latestText.length % GREETINGS.length; // deterministic, no Math.random()
+      return { text: GREETINGS[idx], platform: 'local', model: 'instant', taskKind: 'trivial' };
     }
 
     // A bare "yes / ok / go ahead" replying to the model's OWN offer: weaker models often stall

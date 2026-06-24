@@ -23,7 +23,7 @@ const EXPLAIN_Q = /^\s*(how (?:do|to|can|could|would|does|is|are)|what(?:'?s| is
 // code work pulls into `coding` (which then prefers coder-tagged models).
 const FILE_REF = /(?:^|\s|[(["'`])(\.\/)?(\w[\w-./]*\.[a-zA-Z]{1,5})\b|```/;
 const CODE_VERB = /\b(refactor|implement|write|generate|port|migrate|optimi[sz]e|debug|fix|extend|extract|scaffold|wire)\b/i;
-const CODE_NOUN = /\b(function|method|class|component|hook|endpoint|api|route|handler|test|spec|schema|query|type|interface|module|util|service|model|directive|middleware)\b/i;
+const CODE_NOUN = /\b(function|method|class|component|hook|endpoint|api|route|handler|test|spec|schema|query|type|interface|module|util|service|model|directive|middleware|controller|repository|migration|contribution|submission|webhook|queue|observer|listener|factory|seeder|validation|request|resource|policy|scope|trait|enum|entity|payload|dto)\b/i;
 const CODE_HINT = (t: string): boolean => FILE_REF.test(t) || (CODE_VERB.test(t) && CODE_NOUN.test(t));
 // Words indicating the user means THEIR codebase (not general knowledge).
 const REPO_WORD = /\b(repo|repository|codebase|code base|this file|these files|this project|the project|our code|the code|this code|in here|this codebase)\b/i;
@@ -32,11 +32,6 @@ const REPO_WORD = /\b(repo|repository|codebase|code base|this file|these files|t
 const STRONG_REPO = /\b(this (?:project|codebase|repo(?:sitory)?|code|file|app|application|system|feature|module)|these files|in this (?:repo(?:sitory)?|code)|in here|our (?:code\s?base|repo)|the codebase)\b/i;
 // A question shape that asks about code/location/behavior (broader than EXPLAIN_Q — covers
 // "where is X defined", "how does X work", "what does X do", "show me / find X").
-const CODE_Q = /\b(where (is|are|can i find|defined)|how (does|do|is|are) .* (work|implemented|defined|used)|what (does|is) .* do|show me|find me|point me to|which file)\b/i;
-// Investigative INTENT phrased as an imperative rather than a question — "search the code",
-// "find/locate X", "look into", "check if", "give me an idea", "see if", "investigate". Users
-// ask about their own codebase this way constantly, with no textbook question verb.
-const RESEARCH_INTENT = /\b(search|find|locate|look (?:up|into|for|at)|check|investigat\w*|give me (?:an? )?idea|show me|tell me about|see (?:if|how|where|whether)|trace|grep|explore|understand|figure out|analyz\w*|review)\b/i;
 // Unambiguous web-only triggers — time-sensitive or external data that can't live in the repo.
 const WEB_ONLY = /\b(latest|today'?s?|current(?:ly)? (?:price|version|release|news)|news|released?|changelog|price|cost|weather|score|ranking|standings?|stock|20(?:2[4-9]|3\d)|this (?:week|month|year)|right now|recent(?:ly)? released?)\b/i;
 
@@ -53,12 +48,14 @@ const WEB_ONLY = /\b(latest|today'?s?|current(?:ly)? (?:price|version|release|ne
  *     Project search first; if nothing relevant is found, the model falls back to web.
  */
 export function isCodebaseQuestion(t: string): boolean {
+  // Explicit project reference → always codebase, no web fallback.
   if (STRONG_REPO.test(t)) return true;
-  const investigative = EXPLAIN_Q.test(t) || CODE_Q.test(t) || RESEARCH_INTENT.test(t);
-  if (!investigative) return false;
-  if (REPO_WORD.test(t) || CODE_NOUN.test(t) || FILE_REF.test(t)) return true;
-  // No explicit codebase signal, but also no clear web-only trigger → default to project search.
-  return !WEB_ONLY.test(t);
+  // Code signal present → codebase wins even if WEB_ONLY also matches.
+  if (CODE_NOUN.test(t) || FILE_REF.test(t) || REPO_WORD.test(t)) return true;
+  // Unambiguous web-only query with no code signal → go to web.
+  if (WEB_ONLY.test(t)) return false;
+  // Default: in a coding tool the user is almost always asking about their project.
+  return true;
 }
 
 /** What information sources a request needs — biases tool choice (workspace vs web). */

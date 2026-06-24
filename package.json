@@ -186,6 +186,18 @@
         "title": "Generate Onboarding Tour",
         "category": "TierMux",
         "icon": "$(compass)"
+      },
+      {
+        "command": "tiermux.showTelemetry",
+        "title": "Show Telemetry",
+        "category": "TierMux",
+        "icon": "$(graph-line)"
+      },
+      {
+        "command": "tiermux.resetTelemetry",
+        "title": "Reset Telemetry",
+        "category": "TierMux",
+        "icon": "$(refresh)"
       }
     ],
     "menus": {
