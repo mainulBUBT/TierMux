@@ -77,6 +77,8 @@ export interface RunOpts {
   reasoningEffort?: ReasoningEffort;
   token?: vscode.CancellationToken;
   taskKind?: TaskKind;
+  /** Sampling temperature override (0 = deterministic). Set by the benchmark runner for reproducible runs; undefined leaves the provider default. */
+  temperature?: number;
   /** Per-attachment kind on the latest user turn, used to upgrade to a vision-capable model. */
   attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'>;
   /** True when the user left the model on Auto. */
@@ -89,7 +91,15 @@ export interface RunOpts {
    * Omitted for non-chat callers (inline editor chat) → gates use their default behavior.
    */
   runContext?: RunContext;
+  /** Benchmark mode: never pause/check-in on iteration cap (would corrupt the answer
+   *  and every downstream score). Cap is raised to BENCH_MAX_ITERATIONS instead. */
+  bench?: boolean;
 }
+
+/** Hard cap when RunOpts.bench is set. Much higher than the user-facing default (25)
+ *  so a long-tail query isn't truncated into a useless "I've paused" stub, but still
+ *  bounded so a stuck agent can't burn the night. */
+const BENCH_MAX_ITERATIONS = 200;
 
 export interface AgentResult {
   text: string;
@@ -631,6 +641,7 @@ export class Agent {
       model: opts.model,
       reasoningEffort: opts.reasoningEffort,
       taskKind: opts.taskKind,
+      temperature: opts.temperature,
       onFailover: opts.onFailover,
       onKeyRotated: opts.onKeyRotated,
     }, cb);
@@ -696,7 +707,7 @@ export class Agent {
     // and re-sending the growing history burns their tiny free-tier budget).
     void opts.auto; // auto-escalation removed
     const baseKind = opts.taskKind ?? 'agent';
-    const baseBudget = this.maxIterations();
+    const baseBudget = opts.bench ? BENCH_MAX_ITERATIONS : this.maxIterations();
     const hardCeiling = baseBudget;
     let floor: number | undefined;
     let totalIter = 0;
@@ -739,6 +750,7 @@ export class Agent {
           model: opts.model,
           reasoningEffort: opts.reasoningEffort,
           taskKind: phaseKind,
+          temperature: opts.temperature,
           tools: toolsFiltered,
           tool_choice: 'auto',
           requireTools: true,
@@ -747,11 +759,16 @@ export class Agent {
           onKeyRotated: opts.onKeyRotated,
         }, cb);
         result = routed;
+        trackRequest();
       } catch (e) {
         // Free models frequently drop out mid-task. If we've already made progress, pause
         // and hand back the work so far so the user can resume; if it failed on the very
         // first call (no progress yet), surface the error through the normal path.
         if (messages.length > baseLen) {
+          if (opts.bench) {
+            // Bench: never pause. Re-throw so the runner records the error and continues.
+            throw e;
+          }
           return {
             text: '⚠️ The model stopped responding partway through. Your progress is saved — choose **Continue** and I’ll pick up where I left off.',
             platform: lastPlatform, model: lastModel, workMessages: work(), paused: true,
@@ -797,6 +814,11 @@ export class Agent {
       if (unhandled && !textMode) {
         messages.push({ role: 'assistant', content: msgText || '_The model could not make progress._', tool_calls: toolCalls });
         this.maybeLearnStyle(work());
+        if (opts.bench) {
+          // Bench: never pause. Return whatever the model produced as the final answer
+          // (likely will score 0, but at least it's not a "click Continue" stub).
+          return { text: msgText || '_The model could not make progress._', platform: lastPlatform, model: lastModel, workMessages: work(), paused: false };
+        }
         return {
           text: "⚠️ I'm stuck — the model kept repeating itself or couldn't form valid tool calls, even after retrying with a stronger model. Choose **Continue** to try again, or rephrase the task.",
           platform: lastPlatform, model: lastModel, workMessages: work(), paused: true,
@@ -900,6 +922,16 @@ export class Agent {
     break;
     }
     this.maybeLearnStyle(work());
+    // Bench mode must NEVER return a paused stub — a "choose Continue to resume"
+    // answer is uncorruptable by the judge and would tank reasoning/answer scores.
+    // The 200-iter cap is generous; reaching it means the model is in a loop and
+    // should answer with whatever it has so far.
+    if (opts.bench) {
+      const partial = work().filter((m) => m.role === 'assistant' && typeof m.content === 'string').pop();
+      const partialText = typeof partial?.content === 'string' ? partial.content : '_The agent exhausted the benchmark iteration cap before producing an answer._';
+      messages.push({ role: 'assistant', content: partialText });
+      return { text: partialText, platform: lastPlatform, model: lastModel, workMessages: work(), paused: false };
+    }
     return {
       text: "I've paused after a number of steps to check in. I can keep going from here — choose **Continue** and I'll resume where I left off.",
       platform: lastPlatform,
@@ -1009,6 +1041,7 @@ export class Agent {
           model: opts.model,
           reasoningEffort: opts.reasoningEffort,
           taskKind: 'chat',
+          temperature: opts.temperature,
           tools,
           tool_choice: 'auto',
           requireTools: true,

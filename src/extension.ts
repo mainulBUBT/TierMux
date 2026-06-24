@@ -25,8 +25,10 @@ import { openMemoryForEdit } from './context/userMemory';
 import { buildStructuralGraph, updateFileInGraph } from './context/structuralGraph';
 import { buildInvertedIndex, invalidateIndexCache, removeFileFromIndex, renameFileInIndex } from './context/invertedIndex';
 import { formatTelemetryReport, resetTelemetry, getSnapshot, onTelemetryUpdate } from './context/telemetry';
+import { runBenchmarkCommand } from './bench/command';
 
 export function activate(context: vscode.ExtensionContext): void {
+  console.log('[tiermux-bench-debug] activate() STARTED');
   const catalog = new Catalog(context.extensionPath);
   catalog.loadCached(context.globalState); // instant: last fetched model list (offline-safe)
   const secrets = new SecretStore(context.secrets);
@@ -191,7 +193,6 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('tiermux.manageSearchProviders', () => manageSearchProviders()),
     vscode.commands.registerCommand('tiermux.addSelectionToChat', () => chat.addSelectionToChat()),
     vscode.commands.registerCommand('tiermux.reconnectMcp', async () => { await mcp.reconnect(); void vscode.window.showInformationMessage('Reconnected MCP servers.'); }),
-    vscode.commands.registerCommand('tiermux.buildIndex', () => index.build()),
     vscode.commands.registerCommand('tiermux.clearIndex', async () => { await index.clear(); void vscode.window.showInformationMessage('Cleared codebase index.'); }),
     vscode.commands.registerCommand('tiermux.refreshModels', async () => {
       await catalog.refresh(
@@ -224,7 +225,12 @@ export function activate(context: vscode.ExtensionContext): void {
         void vscode.window.showInformationMessage(`TierMux: index built — ${Object.keys(idx.entries).length} terms indexed.`);
       });
     }),
+    vscode.commands.registerCommand('tiermux.bench', () => {
+      console.log('[tiermux-bench-debug] bench command INVOKED');
+      return runBenchmarkCommand({ agent, router, catalog, index, globalStorageUri: context.globalStorageUri });
+    }),
   );
+  console.log('[tiermux-bench-debug] activate() COMPLETED — all commands registered');
 
   // Advanced features -------------------------------------------------------
   context.subscriptions.push(

@@ -1,5 +1,5 @@
 // Embedding provider client for the optional codebase index. Supports the free
-// embedding endpoints: Google (text-embedding-004), Cohere (/embed), and any
+// embedding endpoints: Google (gemini-embedding-001), Cohere (/embed), and any
 // OpenAI-compatible /embeddings endpoint. Uses the SecretStore key for the
 // chosen platform.
 import * as vscode from 'vscode';
@@ -42,7 +42,7 @@ export function getEmbeddingConfig(): EmbeddingConfig {
 
 export function defaultEmbeddingModel(platform: Platform): string {
   switch (platform) {
-    case 'google': return 'text-embedding-004';
+    case 'google': return 'gemini-embedding-001';
     case 'cohere': return 'embed-english-v3.0';
     case 'mistral': return 'mistral-embed';
     default: return 'text-embedding-3-small';

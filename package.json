@@ -2,7 +2,7 @@
   "name": "tiermux",
   "displayName": "TierMux",
   "description": "Agentic AI coding assistant powered by the free tiers of 18+ LLM providers (and growing), with automatic failover and smart per-task model routing. Bring your own keys.",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.6",
   "publisher": "mainul-islam",
   "license": "MIT",
   "repository": {
@@ -33,7 +33,10 @@
     "autocomplete"
   ],
   "main": "./dist/extension.js",
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:tiermux.bench"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -198,6 +201,11 @@
         "title": "Reset Telemetry",
         "category": "TierMux",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "tiermux.bench",
+        "title": "Run Benchmark",
+        "category": "TierMux"
       }
     ],
     "menus": {
@@ -494,7 +502,7 @@
         "tiermux.embeddings.model": {
           "type": "string",
           "default": "",
-          "description": "Embedding model id (blank = provider default, e.g. text-embedding-004 for Google)."
+          "description": "Embedding model id (blank = provider default, e.g. gemini-embedding-001 for Google)."
         },
         "tiermux.embeddings.autoContext": {
           "type": "boolean",
