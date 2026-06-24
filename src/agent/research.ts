@@ -7,20 +7,14 @@ import type { CodebaseIndex } from '../index/codebaseIndex';
 import type { InformationRoute } from '../router/informationRouter';
 import { loadStructuralGraph } from '../context/structuralGraph';
 import { getOrBuildSymbolIndex, searchSymbols, formatSymbolHits } from '../context/symbolIndex';
-import { parseResearchFacts, compressToUnderstandingBlock, compactContextBlock, type ResearchFacts } from '../context/researchCompressor';
 
 export interface ResearchResult {
-  /** Full text: Understanding block + raw grep/semantic/hop sections. Used when confidence < 0.7. */
+  /** Full text injected into system prompt. */
   text: string;
-  /** Compact text: XML-style context tag only. Used when execution plan covers the file list. */
+  /** Compact text: shorter version used when context is large. */
   compactText: string;
-  facts: ResearchFacts;
   /** 0–1. What fraction of attempted research channels returned data (retrieval only). */
   coverageScore: number;
-  /** 0–1. Quality-weighted average of match types (exact/fuzzy/stem). Separate from coverageScore. */
-  semanticConfidence: number;
-  /** Truth risk label: "low" = safe to answer, "medium" = answer with uncertainty, "high" = only confirmed facts. */
-  riskLabel: 'low' | 'medium' | 'high';
 }
 
 const MAX_HOP_FILES = 6;
@@ -358,55 +352,22 @@ export async function runResearchPipeline(
   const symbolSection = symbolResult?.section ?? null;
   const webSection = webResult?.section ?? null;
 
-  // ---- Semantic confidence: separate from coverage ----
-  // retrievalCoverage = how much data we got
-  // semanticConfidence = how correct/relevant that data is likely to be
-  //
-  // Quality signals:
-  //   exact symbol/grep match  → +high
-  //   fuzzy symbol match       → +medium
-  //   stem grep match          → +low  (validated but semantically weaker)
-  //   semantic embedding match → +high (it's a semantic match by definition)
-  //   web full-query match     → +medium
-  //   web partial/minimal      → +low
-  const matchQualities: MatchQuality[] = [
-    ...(directSection ? ['exact' as MatchQuality] : []),  // direct read = highest confidence
-    ...(symbolResult ? [symbolResult.quality] : []),
-    ...(grepResult0 ? [grepResult0.quality as MatchQuality] : []),
-    ...(grepResult1 ? [grepResult1.quality as MatchQuality] : []),
-    ...(semanticSection ? ['exact' as MatchQuality] : []),
-    ...(webResult ? [webResult.coverage === 'full' ? 'exact' as MatchQuality : webResult.coverage === 'partial' ? 'fuzzy' as MatchQuality : 'stem' as MatchQuality] : []),
-  ];
 
-  const QUALITY_SCORE: Record<MatchQuality, number> = { exact: 1.0, fuzzy: 0.6, stem: 0.3, 'web-partial': 0.5, 'web-minimal': 0.25 };
-  const semanticConfidence = matchQualities.length === 0
-    ? 0
-    : matchQualities.reduce((sum, q) => sum + QUALITY_SCORE[q], 0) / matchQualities.length;
 
-  // Risk label: truth calibration, not just retrieval coverage.
-  //   LOW     → safe to answer directly
-  //   MEDIUM  → answer with stated uncertainty
-  //   HIGH    → only answer confirmed facts; label unknowns explicitly
-  const riskLabel: 'low' | 'medium' | 'high' =
-    semanticConfidence >= 0.7 ? 'low' :
-    semanticConfidence >= 0.4 ? 'medium' : 'high';
-
-  // ---- Coverage score (retrieval only — kept separate from semantic confidence) ----
+  // ---- Coverage score ----
   const wantsDirectRead = (route.directFiles ?? []).length > 0;
-  const channels: Array<{ name: string; attempted: boolean; succeeded: boolean }> = [
-    { name: 'symbol', attempted: wantsGrep, succeeded: !!symbolSection },
-    { name: 'semantic', attempted: wantsGrep && (!!index?.isEnabled() && !!index.hasIndex()), succeeded: !!semanticSection },
-    { name: 'grep', attempted: wantsGrep, succeeded: !!grepSection0 },
-    { name: 'grep2', attempted: wantsSecondGrep, succeeded: !!grepSection1 },
-    { name: 'web', attempted: route.webSearch && route.searchTerms.length > 0, succeeded: !!webSection },
-    { name: 'diag', attempted: route.needsDebug, succeeded: !!diagSection },
-    { name: 'direct', attempted: wantsDirectRead, succeeded: !!directSection },
+  const channels: Array<{ attempted: boolean; succeeded: boolean }> = [
+    { attempted: wantsGrep, succeeded: !!symbolSection },
+    { attempted: wantsGrep && (!!index?.isEnabled() && !!index.hasIndex()), succeeded: !!semanticSection },
+    { attempted: wantsGrep, succeeded: !!grepSection0 },
+    { attempted: wantsSecondGrep, succeeded: !!grepSection1 },
+    { attempted: route.webSearch && route.searchTerms.length > 0, succeeded: !!webSection },
+    { attempted: route.needsDebug, succeeded: !!diagSection },
+    { attempted: wantsDirectRead, succeeded: !!directSection },
   ];
   const attempted = channels.filter((c) => c.attempted);
   const succeeded = attempted.filter((c) => c.succeeded);
   const coverageScore = attempted.length > 0 ? succeeded.length / attempted.length : 1.0;
-  const coveragePct = Math.round(coverageScore * 100);
-  const channelDetail = attempted.map((c) => `${c.name}${c.succeeded ? '✓' : '✗'}`).join(' ');
 
   // ---- Auto-read top grep hits: extract actual file content around matched lines ----
   // This replaces 2-4 model readFile() round trips with pre-fetched excerpts, giving
@@ -493,50 +454,14 @@ export async function runResearchPipeline(
     } catch { /* best-effort */ }
   }
 
-  const emptyFacts: ResearchFacts = { symbols: [], fileHits: [], importEdges: [], webTitles: [], diagErrors: 0, searchTerms: route.searchTerms };
-  if (!sections.length) return { text: '', compactText: '', facts: emptyFacts, coverageScore: 0, semanticConfidence: 0, riskLabel: 'high' };
+  if (!sections.length) return { text: '', compactText: '', coverageScore: 0 };
 
-  // ---- Context Compression: synthesise a structured understanding block ----
-  const facts = parseResearchFacts(sections, route.searchTerms);
-
-  // Compact path: XML-style tag (~25 tokens). Used when execution plan is high-confidence.
-  const compactText = compactContextBlock(facts);
-
-  // Truth calibration tag — compact, machine-readable.
-  // Two separate scores: retrieval (how much data) vs semantic (how correct).
-  // The model MUST read both before deciding how confidently to answer.
-  const semPct = Math.round(semanticConfidence * 100);
-  const calibrationTag = `<truth-calibration retrieval="${coveragePct}%" semantic="${semPct}%" risk="${riskLabel}" channels="${channelDetail}" />`;
-
-  // Risk-calibrated hint: drives model behavior, not just "answer anyway."
-  let coverageHint = '';
-  const failed = attempted.filter((c) => !c.succeeded).map((c) => c.name).join(', ') || 'none';
-  if (riskLabel === 'high') {
-    coverageHint = `\n\n<!-- ⚠️ HIGH truth risk (semantic confidence ${semPct}%). ` +
-      `Matches were weak or based on stem/fuzzy. Failed channels: ${failed}. ` +
-      `ONLY answer what is directly confirmed by the data above. ` +
-      `EXPLICITLY label any inferred or uncertain parts as "unverified". ` +
-      `Do NOT fill gaps with general knowledge — prefer asking the user. -->`;
-  } else if (riskLabel === 'medium') {
-    coverageHint = `\n\n<!-- ⚡ MEDIUM truth risk (semantic confidence ${semPct}%). ` +
-      `Some matches were fuzzy or from fallback queries. Failed: ${failed}. ` +
-      `Answer with calibrated uncertainty. State what is confirmed vs inferred. -->`;
-  }
-
-  // Full path: Understanding block + raw sections (~400-900 tokens). Used for low-confidence.
-  const understanding = compressToUnderstandingBlock(facts);
-  const header = understanding
-    ? `${calibrationTag}${coverageHint}\n\n${understanding}\n\n---\n\n## Research details (use as reference)`
-    : `${calibrationTag}${coverageHint}\n\n## Pre-research (starting hints — keep investigating with your tools for a complete answer)`;
-
-  // Cap total block size: trim raw sections from the end (least precise first) until we're
-  // under the budget. The header + understanding block are kept intact — they're already
-  // compressed. This prevents a 12k+ char research block overwhelming free model context windows.
+  const header = `## Pre-research (starting hints — keep investigating with your tools for a complete answer)`;
   const rawSections = sections.join('\n\n');
   const full = `${header}\n\n${rawSections}`;
-  const trimmed = full.length > MAX_TOTAL_RESEARCH_CHARS
+  const text = full.length > MAX_TOTAL_RESEARCH_CHARS
     ? full.slice(0, MAX_TOTAL_RESEARCH_CHARS) + '\n\n<!-- research truncated to stay within context budget -->'
     : full;
 
-  return { text: trimmed, compactText, facts, coverageScore, semanticConfidence, riskLabel };
+  return { text, compactText: text, coverageScore };
 }

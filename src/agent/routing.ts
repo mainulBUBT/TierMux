@@ -1,7 +1,3 @@
-// Task-aware routing. Classifies a request from cheap signals (no extra LLM call,
-// no latency) and orders candidate models by what the task actually needs — so a
-// "hello" uses a fast tiny model with no tools, and a refactor uses a smart
-// tool-capable one. This is what makes "Auto" feel smart instead of one-size-fits-all.
 import type { CatalogModel, FallbackEntry } from '../shared/types';
 import type { Catalog } from '../catalog/catalog';
 import { classifyInformationRoute } from '../router/informationRouter';
@@ -88,7 +84,7 @@ const HYBRID_TRIGGERS = /\b(upgrade|migrat\w*|compare|compatib\w*|integrat\w*|su
 export function classifyInformationNeed(text: string): InformationNeed {
   const t = text || '';
   // Use the richer router for the codeSearch/webSearch flags, then apply legacy adjustments.
-  const route = classifyInformationRoute(t, 'agent');
+  const route = classifyInformationRoute(t);
   let workspace = route.codeSearch ? 0.7 : 0;
   let web = route.webSearch ? 0.7 : 0;
   if (FILE_REF.test(t)) workspace = Math.min(1, workspace + 0.3);
@@ -248,36 +244,3 @@ export function orderForTask(
   return [...sorted.map((x) => x.e), ...unknown];
 }
 
-/**
- * A cheap pre-task sizing of the work, derived from code-graph impact breadth and
- * embeddings-index novelty. Drives the intelligence floor (rankFloor) and the step
- * budget Auto grants a run. `null` signals mean "unknown" → fall back to moderate.
- */
-export interface TaskProfile {
-  complexity: 'light' | 'moderate' | 'heavy';
-  /** Max intelligence rank allowed (lower = smarter). Heavy work gets a stricter floor. */
-  rankFloor: number;
-  impactFiles: number | null;
-  topSimilarity: number | null;
-}
-
-export function deriveTaskProfile(impactFiles: number | null, topSimilarity: number | null): TaskProfile {
-  const heavy = (impactFiles != null && impactFiles > 8) || (topSimilarity != null && topSimilarity < 0.3);
-  const light = (impactFiles == null || impactFiles <= 2) && (topSimilarity == null || topSimilarity > 0.5);
-  const complexity: TaskProfile['complexity'] = heavy ? 'heavy' : light ? 'light' : 'moderate';
-  const rankFloor = complexity === 'heavy' ? 2 : complexity === 'moderate' ? 3 : 5;
-  return { complexity, rankFloor, impactFiles, topSimilarity };
-}
-
-/**
- * The task kind to route at a given iteration of the agent loop. Auto runs move through
- * phases: the first hop reasons/plans (a reasoning model decomposes the task), then the
- * classified execute kind takes over (coder for code, agent/debug otherwise). Non-agent
- * bases (e.g. plan) are returned unchanged so read-only research routing stays stable.
- */
-export function phaseRouteKind(base: TaskKind, iteration: number): TaskKind {
-  // Vision/plan/chat/trivial/longContext have their own model ordering that shouldn't be
-  // phase-rewritten — only agent/coding/debug tasks move through a plan→execute progression.
-  if (base !== 'agent' && base !== 'coding' && base !== 'debug') return base;
-  return iteration === 0 ? 'plan' : base;
-}

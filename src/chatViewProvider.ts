@@ -23,6 +23,7 @@ import { getNonce } from './util/nonce';
 import { getPlatformInfo } from './providers';
 import { parseSlash, resolveMentions, searchMentions } from './context/mentions';
 import { contentToString } from './agent/content';
+import { getSnapshot as getRetrievalSnapshot } from './context/telemetry';
 import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSupportedAttachmentPath, kindForPath as kindFromName, mimeForPath as mimeForName } from './util/extractAttachments';
 import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
@@ -1850,6 +1851,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private currentUsageTotals(s: Session) {
     const sessionTotals = this.deps.usage.get();
     const lifetime = this.deps.usageStore.getLifetime();
+    const retrieval = getRetrievalSnapshot();
     return {
       ...sessionTotals,
       context: this.computeContext(s),
@@ -1859,6 +1861,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         estimatedSavingsUsd: lifetime.estimatedSavingsUsd,
         firstRecordedAt: lifetime.firstRecordedAt,
       },
+      retrieval: retrieval.totalRequests >= 3 ? retrieval : undefined,
     };
   }
 

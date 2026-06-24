@@ -23,7 +23,8 @@ import { registerInlineCompletions } from './completions/inlineCompletion';
 import { registerCommitMessage, generateCommitMessage } from './scm/commitMessage';
 import { openMemoryForEdit } from './context/userMemory';
 import { buildStructuralGraph, updateFileInGraph } from './context/structuralGraph';
-import { buildTour, tourMarkdown } from './context/onboardingTour';
+import { buildInvertedIndex, invalidateIndexCache, removeFileFromIndex, renameFileInIndex } from './context/invertedIndex';
+import { formatTelemetryReport, resetTelemetry, getSnapshot, onTelemetryUpdate } from './context/telemetry';
 
 export function activate(context: vscode.ExtensionContext): void {
   const catalog = new Catalog(context.extensionPath);
@@ -83,11 +84,59 @@ export function activate(context: vscode.ExtensionContext): void {
   // Stream index-build progress into the chat webview (transient "Indexing…" strip).
   index.onProgress((p) => chat.onIndexProgress(p));
 
+  // Build inverted index in background on activate (incremental — only changed files).
+  void buildInvertedIndex(false);
+
+  // Retrieval quality status bar item — bottom right, always visible.
+  // Shows symbol/cache hit rate. Green ≥80%, orange ≥60%, red <60%.
+  // Only renders after ≥3 requests so the number is meaningful.
+  const telemetryBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
+  telemetryBar.command = 'tiermux.showTelemetry';
+  context.subscriptions.push(telemetryBar);
+  context.subscriptions.push({ dispose: onTelemetryUpdate(() => {
+    const s = getSnapshot();
+    if (s.totalRequests < 3) return; // not meaningful yet
+    const hitRate = s.symbolHitRate + s.cacheHitRate; // combined: symbol OR cache resolved it
+    const icon = hitRate >= 80 ? '$(zap)' : hitRate >= 60 ? '$(warning)' : '$(error)';
+    const color = hitRate >= 80
+      ? new vscode.ThemeColor('charts.green')
+      : hitRate >= 60
+        ? new vscode.ThemeColor('charts.yellow')
+        : new vscode.ThemeColor('charts.red');
+    telemetryBar.text = `${icon} ${hitRate}%`;
+    telemetryBar.color = color;
+    telemetryBar.tooltip = [
+      `TierMux — Retrieval Quality (${s.totalRequests} requests)`,
+      ``,
+      `Symbol index : ${s.symbolHitRate}%  ${s.symbolHitRate >= 50 ? '✓' : '✗'} (target ≥50%)`,
+      `Cache hits   : ${s.cacheHitRate}%`,
+      `Grep calls   : ${s.grepRate}%  ${s.grepRate <= 20 ? '✓' : '✗'} (target <20%)`,
+      ``,
+      `Combined (no-grep): ${hitRate}%  ${hitRate >= 80 ? '✓ GOOD' : hitRate >= 60 ? '~ OK' : '✗ POOR'}`,
+      `Click to see full report`,
+    ].join('\n');
+    telemetryBar.show();
+  }) });
+
   // Incrementally re-embed an indexed file when it's saved.
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument((doc) => {
       void index.updateFile(doc.uri);
       void updateFileInGraph(doc.uri);
+      invalidateIndexCache(); // triggers incremental rebuild on next lookup
+    }),
+    vscode.workspace.onDidDeleteFiles((e) => {
+      for (const f of e.files) {
+        const rel = vscode.workspace.asRelativePath(f);
+        void removeFileFromIndex(rel);
+      }
+    }),
+    vscode.workspace.onDidRenameFiles((e) => {
+      for (const f of e.files) {
+        const oldRel = vscode.workspace.asRelativePath(f.oldUri);
+        const newRel = vscode.workspace.asRelativePath(f.newUri);
+        void renameFileInIndex(oldRel, newRel);
+      }
     }),
   );
 
@@ -153,28 +202,26 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showInformationMessage('TierMux: model catalog refreshed.');
     }),
     vscode.commands.registerCommand('tiermux.editMemory', () => openMemoryForEdit()),
+    vscode.commands.registerCommand('tiermux.showTelemetry', () => {
+      const channel = vscode.window.createOutputChannel('TierMux Telemetry');
+      channel.clear();
+      channel.appendLine(formatTelemetryReport());
+      channel.show(true);
+    }),
+    vscode.commands.registerCommand('tiermux.resetTelemetry', () => {
+      resetTelemetry();
+      void vscode.window.showInformationMessage('TierMux: telemetry counters reset.');
+    }),
     vscode.commands.registerCommand('tiermux.buildGraph', async () => {
       await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Building code graph…' }, async () => {
         const graph = await buildStructuralGraph(true);
         void vscode.window.showInformationMessage(`TierMux: graph built — ${graph.files.length} files, ${graph.imports.length} imports, ${graph.calls.length} call edges.`);
       });
     }),
-    vscode.commands.registerCommand('tiermux.generateOnboardingTour', async () => {
-      await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Generating onboarding tour…' }, async () => {
-        const graph = await buildStructuralGraph(true);
-        if (graph.files.length === 0) {
-          void vscode.window.showWarningMessage('TierMux: no files found to build a tour from.');
-          return;
-        }
-        const tour = buildTour(graph);
-        const md = tourMarkdown(tour);
-        const folder = vscode.workspace.workspaceFolders?.[0];
-        if (folder) {
-          const uri = vscode.Uri.joinPath(folder.uri, '.tiermux', 'tour.md');
-          try { await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(folder.uri, '.tiermux')); } catch { /* exists */ }
-          await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(md));
-          await vscode.commands.executeCommand('vscode.open', uri);
-        }
+    vscode.commands.registerCommand('tiermux.buildIndex', async () => {
+      await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Building inverted index…' }, async () => {
+        const idx = await buildInvertedIndex(true);
+        void vscode.window.showInformationMessage(`TierMux: index built — ${Object.keys(idx.entries).length} terms indexed.`);
       });
     }),
   );

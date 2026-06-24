@@ -9,7 +9,6 @@ import { buildRepoMapSummary } from './repoMap';
 import { loadSkill, listSkills } from './skills';
 import type { RunContext } from './runContext';
 import { buildStructuralGraph, loadStructuralGraph, graphSummary, symbolGraph } from '../context/structuralGraph';
-import { analyzeImpact, impactMarkdown } from '../context/impactAnalysis';
 import { editConflicts, markEditing } from './editLock';
 import { extractDocxText, extractPdfText, IMAGE_BYTE_LIMIT, isSupportedAttachmentPath, kindForPath, mimeForPath } from '../util/extractAttachments';
 import type { ChatMessage } from '../shared/types';
@@ -119,7 +118,7 @@ export class WorkspaceTools {
         case 'skill': return await this.skill(String(args.name ?? ''));
         case 'buildGraph': return await this.buildGraph();
         case 'getSymbolGraph': return await this.getSymbolGraph(String(args.file ?? ''));
-        case 'impactAnalysis': return await this.impactAnalysis(args.files as string[] | undefined);
+        case 'impactAnalysis': return JSON.stringify({ error: 'impactAnalysis removed in MVP' });
         case 'readImage': return await this.readImage(String(args.path ?? ''));
         case 'readDocument': return await this.readDocument(String(args.path ?? ''), typeof args.maxChars === 'number' ? args.maxChars : undefined);
         default: return JSON.stringify({ error: `Unknown tool: ${name}` });
@@ -607,8 +606,10 @@ export class WorkspaceTools {
   private async readDocument(p: string, maxChars: number | undefined): Promise<string> {
     if (!p) return JSON.stringify({ error: 'Missing required parameter: path.' });
     const uri = this.resolve(p);
-    if (!isSupportedAttachmentPath(uri.fsPath)) return JSON.stringify({ error: `Unsupported file type: ${p}. Supported: PDF, DOCX, MD, TXT, JSON, images.` });
+    // For source code and plain text files that aren't PDF/DOCX/images,
+    // treat as text — don't reject them with an error that stalls the model.
     const kind = kindForPath(uri.fsPath);
+    if (kind === 'image') return JSON.stringify({ error: `Use readImage for image files: ${p}` });
     const cap = Math.max(1000, Math.min(maxChars ?? MAX_DOC_CHARS_DEFAULT, 200_000));
     const bytes = await vscode.workspace.fs.readFile(uri);
     if (bytes.byteLength === 0) return JSON.stringify({ error: `File is empty: ${p}` });
@@ -657,13 +658,6 @@ export class WorkspaceTools {
     return JSON.stringify(result);
   }
 
-  private async impactAnalysis(files: string[] | undefined): Promise<string> {
-    if (!files || !Array.isArray(files) || files.length === 0) return JSON.stringify({ error: 'Missing required parameter: files (array of workspace-relative paths).' });
-    const graph = await loadStructuralGraph();
-    if (!graph) return JSON.stringify({ error: 'No structural graph built yet. Call buildGraph first.' });
-    const analysis = analyzeImpact(graph, files);
-    return JSON.stringify({ changedFiles: analysis.changedFiles, impactedCount: analysis.impacted.length, impacted: analysis.impacted.slice(0, 30), byLayer: Object.fromEntries(Object.entries(analysis.byLayer).map(([k, v]) => [k, v.length])), markdown: impactMarkdown(analysis) });
-  }
 }
 
 // ---- web helpers (best-effort; web tools are on by default via `tiermux.tools.web`) ----

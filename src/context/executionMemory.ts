@@ -68,6 +68,9 @@ export function extractStepsFromMessages(
 export class ExecutionTracker {
   private state: ExecutionState = { steps: [], filesModified: new Set() };
 
+  /** Read-only view of all files modified in this session — used by conversationMemory. */
+  get modifiedFiles(): ReadonlySet<string> { return this.state.filesModified; }
+
   /** Record steps from a completed run. Deduplicates file paths. */
   record(messages: Array<{ role?: string; content?: unknown }>): void {
     const newSteps = extractStepsFromMessages(messages);

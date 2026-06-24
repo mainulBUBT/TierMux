@@ -63,17 +63,33 @@
 
   function typeInto(container, fullText) {
     container.innerHTML = '';
-    const total = fullText.length;
-    if (total < 40) { container.appendChild(renderMarkdown(fullText)); scrollDown(); return; }
-    let i = 0;
-    const step = Math.max(2, Math.floor(total / 160));
-    const timer = setInterval(() => {
-      i += step;
-      if (i >= total) { clearInterval(timer); container.innerHTML = ''; container.appendChild(renderMarkdown(fullText)); scrollDown(); return; }
-      container.innerHTML = '';
-      container.appendChild(renderMarkdown(fullText.slice(0, i)));
+    const words = fullText.split(/(\s+)/); // preserve whitespace tokens
+    if (words.length < 6) {
+      const node = renderMarkdown(fullText);
+      node.style.animation = 'fadeSlideIn 0.2s ease';
+      container.appendChild(node);
       scrollDown();
-    }, 16);
+      return;
+    }
+    // Reveal words progressively to mimic streaming. Batch size grows with length
+    // so short replies feel snappy and long ones don't drag.
+    const batch = Math.max(3, Math.floor(words.length / 60));
+    let i = 0;
+    function tick() {
+      i += batch;
+      const slice = words.slice(0, i).join('');
+      container.innerHTML = '';
+      container.appendChild(renderMarkdown(slice));
+      scrollDown();
+      if (i < words.length) requestAnimationFrame(tick);
+      else {
+        // Final render — ensure exact text with no truncation artifacts.
+        container.innerHTML = '';
+        container.appendChild(renderMarkdown(fullText));
+        scrollDown();
+      }
+    }
+    requestAnimationFrame(tick);
   }
 
   // ---------- icons (inline SVG, offline) ----------
@@ -714,7 +730,7 @@
       const secs = started ? Math.max(1, Math.round((Date.now() - started) / 1000)) : null;
       if (t.workLabel) t.workLabel.textContent = secs != null ? `Worked for ${secs}s` : 'Worked';
       t.work.classList.remove('pending');
-      t.work.open = false;
+      t.work.open = true;
     }
   }
 
@@ -2258,7 +2274,7 @@
         renderAutoApprove();
         rebuildModelPicker();
         updateFooter(msg.usageTotals);
-        renderUsageStatsCard(msg.usageTotals && msg.usageTotals.lifetime);
+        renderUsageStatsCard(msg.usageTotals && msg.usageTotals.lifetime, msg.usageTotals && msg.usageTotals.retrieval);
         renderIndexStatus(state.index && state.index.building ? { building: true, done: 0, total: 0, phase: 'embedding' } : { building: false });
         if (settingsOpen) renderSettings();
         break;
@@ -2305,6 +2321,27 @@
         // carries no model) — set it now so the footer shows the model that
         // actually produced the answer, not a blank.
         if (msg.model) t.model = `${msg.platform || ''}/${msg.model}`;
+        // Show the resolved model name in the live status area so the user knows
+        // which model is running (especially useful when Auto routing picks one).
+        if (msg.model && t.statusLabel) {
+          const item = modelList.querySelector(`.model-item[data-value="${CSS.escape(`${msg.platform}::${msg.model}`)}"]`);
+          const label = item?.querySelector('.mi-label')?.textContent || msg.model;
+          t.statusLabel.textContent = label;
+        }
+        // When the user picked a specific model but the extension routed to a
+        // different one (failover / escalation), update the picker to show what
+        // actually ran so the user isn't confused.
+        if (msg.platform && msg.model && currentModel !== 'auto') {
+          const resolved = `${msg.platform}::${msg.model}`;
+          if (resolved !== currentModel) {
+            const item = modelList.querySelector(`.model-item[data-value="${CSS.escape(resolved)}"]`);
+            if (item) {
+              const label = item.querySelector('.mi-label')?.textContent || resolved;
+              setModel(resolved, label);
+              if (viewedSessionId) saveComposer(viewedSessionId);
+            }
+          }
+        }
         startStatusTimer(msg.requestId);
         break;
       }
@@ -2709,7 +2746,7 @@
       }
       case 'usageTotals':
         updateFooter(msg.totals);
-        renderUsageStatsCard(msg.totals && msg.totals.lifetime);
+        renderUsageStatsCard(msg.totals && msg.totals.lifetime, msg.totals && msg.totals.retrieval);
         break;
       case 'indexProgress':
         renderIndexStatus(msg);
@@ -2981,22 +3018,45 @@
   // Render the "Usage data" card inside the Others tab. Safe to call before
   // the user opens the tab — looks up the element by id and bails if missing.
   let lastLifetime = { totalTokens: 0, totalRequests: 0, estimatedSavingsUsd: 0 };
-  function renderUsageStatsCard(lifetime) {
+  let lastRetrieval = null;
+  function renderUsageStatsCard(lifetime, retrieval) {
     if (lifetime) lastLifetime = lifetime;
+    if (retrieval !== undefined) lastRetrieval = retrieval;
     const el = document.getElementById('usage-stats-card');
     if (!el) return;
     const lt = lastLifetime;
     el.innerHTML = '';
-    const row = (label, value) => {
+    const row = (label, value, badge) => {
       const r = document.createElement('div'); r.className = 'usage-stat-row';
       const l = document.createElement('span'); l.className = 'usage-stat-label'; l.textContent = label;
       const v = document.createElement('span'); v.className = 'usage-stat-value'; v.textContent = value;
       r.append(l, v);
+      if (badge) {
+        const b = document.createElement('span');
+        b.className = 'usage-stat-badge ' + badge.cls;
+        b.textContent = badge.text;
+        r.appendChild(b);
+      }
       el.appendChild(r);
     };
     row('Total tokens', fmtTokens(lt.totalTokens || 0));
     row('Total requests', String(lt.totalRequests || 0));
     row('Est. $ saved', fmtUsd(lt.estimatedSavingsUsd || 0));
+
+    // Retrieval quality section — only shown after ≥3 agent requests
+    if (lastRetrieval && lastRetrieval.totalRequests >= 3) {
+      const sep = document.createElement('div'); sep.className = 'usage-stat-sep'; el.appendChild(sep);
+      const hdr = document.createElement('div'); hdr.className = 'usage-stat-hdr'; hdr.textContent = 'Retrieval quality'; el.appendChild(hdr);
+      const hitRate = (lastRetrieval.symbolHitRate || 0) + (lastRetrieval.cacheHitRate || 0);
+      const kpi = hitRate >= 80 ? { cls: 'badge-green', text: 'GOOD' } : hitRate >= 60 ? { cls: 'badge-yellow', text: 'OK' } : { cls: 'badge-red', text: 'POOR' };
+      row('Cache hit rate', hitRate + '%', kpi);
+      row('  Symbol index', (lastRetrieval.symbolHitRate || 0) + '%');
+      row('  Bundle cache', (lastRetrieval.cacheHitRate || 0) + '%');
+      const grepKpi = (lastRetrieval.grepRate || 0) <= 20 ? { cls: 'badge-green', text: '✓' } : { cls: 'badge-red', text: '✗ high' };
+      row('Grep fallback', (lastRetrieval.grepRate || 0) + '%', grepKpi);
+      row('Requests sampled', String(lastRetrieval.totalRequests));
+    }
+
     // Reset the clear button label if it was in "Clearing…" state.
     const btn = document.getElementById('usage-clear-btn');
     if (btn) {

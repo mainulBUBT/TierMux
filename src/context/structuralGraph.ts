@@ -122,6 +122,86 @@ function extractExports(text: string, filePath = ''): ExportInfo[] {
     return exports;
   }
 
+  // ---- Go: extract top-level func, type struct/interface ----
+  if (ext === 'go') {
+    const exports: ExportInfo[] = [];
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]; const ln = i + 1;
+      // func Name( or func (recv) Name(
+      const fn = /^func\s+(?:\(\s*\w+\s+\*?\w+\s*\)\s+)?(\w+)\s*\(/.exec(line);
+      if (fn && /^[A-Z]/.test(fn[1])) { exports.push({ name: fn[1], kind: 'function', line: ln }); continue; }
+      const typ = /^type\s+(\w+)\s+(struct|interface)/.exec(line);
+      if (typ && /^[A-Z]/.test(typ[1])) exports.push({ name: typ[1], kind: typ[2] === 'interface' ? 'interface' : 'class', line: ln });
+    }
+    return exports;
+  }
+
+  // ---- Rust: extract pub fn, pub struct, pub enum, pub trait ----
+  if (ext === 'rs') {
+    const exports: ExportInfo[] = [];
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]; const ln = i + 1;
+      const fn = /^(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)\s*[<(]/.exec(line);
+      if (fn) { exports.push({ name: fn[1], kind: 'function', line: ln }); continue; }
+      const st = /^(?:pub(?:\([^)]*\))?\s+)?struct\s+(\w+)/.exec(line);
+      if (st) { exports.push({ name: st[1], kind: 'class', line: ln }); continue; }
+      const en = /^(?:pub(?:\([^)]*\))?\s+)?enum\s+(\w+)/.exec(line);
+      if (en) { exports.push({ name: en[1], kind: 'enum', line: ln }); continue; }
+      const tr = /^(?:pub(?:\([^)]*\))?\s+)?trait\s+(\w+)/.exec(line);
+      if (tr) exports.push({ name: tr[1], kind: 'interface', line: ln });
+    }
+    return exports;
+  }
+
+  // ---- Java: extract class, interface, enum, and public methods ----
+  if (ext === 'java') {
+    const exports: ExportInfo[] = [];
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]; const ln = i + 1;
+      const cls = /^\s*(?:public|protected|private|abstract|final|\s)*(?:class|interface|enum|record)\s+(\w+)/.exec(line);
+      if (cls) { exports.push({ name: cls[1], kind: 'class', line: ln }); continue; }
+      // public/protected return-type methodName(
+      const meth = /^\s*(?:public|protected)\s+(?:static\s+)?(?:final\s+)?(?:\w+(?:<[^>]*>)?(?:\[\])*\s+)(\w+)\s*\(/.exec(line);
+      if (meth && !/^(?:if|for|while|switch|catch)$/.test(meth[1])) {
+        exports.push({ name: meth[1], kind: 'function', line: ln });
+      }
+    }
+    return exports;
+  }
+
+  // ---- C#: extract class, interface, enum, and public methods ----
+  if (ext === 'cs') {
+    const exports: ExportInfo[] = [];
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]; const ln = i + 1;
+      const cls = /^\s*(?:public|internal|protected|private|abstract|sealed|partial|\s)*(?:class|interface|enum|struct|record)\s+(\w+)/.exec(line);
+      if (cls) { exports.push({ name: cls[1], kind: 'class', line: ln }); continue; }
+      const meth = /^\s*(?:public|protected|internal)\s+(?:static\s+|virtual\s+|override\s+|async\s+|abstract\s+)*(?:\w+(?:<[^>]*>)?(?:\[\])?\s+)(\w+)\s*\(/.exec(line);
+      if (meth && !/^(?:if|for|while|switch|catch|using|new)$/.test(meth[1])) {
+        exports.push({ name: meth[1], kind: 'function', line: ln });
+      }
+    }
+    return exports;
+  }
+
+  // ---- Kotlin: extract class, interface, fun ----
+  if (ext === 'kt') {
+    const exports: ExportInfo[] = [];
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]; const ln = i + 1;
+      const cls = /^\s*(?:open\s+|abstract\s+|data\s+|sealed\s+|inner\s+)*(?:class|interface|object|enum\s+class)\s+(\w+)/.exec(line);
+      if (cls) { exports.push({ name: cls[1], kind: 'class', line: ln }); continue; }
+      const fn = /^\s*(?:(?:public|private|protected|internal|override|suspend|inline|open)\s+)*fun\s+(\w+)\s*[<(]/.exec(line);
+      if (fn) exports.push({ name: fn[1], kind: 'function', line: ln });
+    }
+    return exports;
+  }
+
   // ---- TypeScript / JavaScript (original logic) ----
   const exports: ExportInfo[] = [];
   const lines = text.split('\n');
@@ -454,6 +534,77 @@ export function graphSummary(graph: StructuralGraph): string {
   const callCount = graph.calls.length;
   lines.push(`Files: ${graph.files.length}, Imports: ${importCount}, Call edges: ${callCount}`);
 
+  return lines.join('\n');
+}
+
+/**
+ * Lightweight references index: given a symbol name, return which files reference it
+ * and which files define it. Derived from existing call + import edges — no extra scan.
+ *
+ * Use for conceptual queries like "where does OrderStatus change?":
+ *   lookupReferences(graph, 'OrderStatus') → [{file, kind:'def'}, {file, kind:'ref', callSite}]
+ */
+export interface ReferenceHit {
+  file: string;
+  kind: 'def' | 'ref';
+  line?: number;
+  callSite?: string;
+}
+
+export function lookupReferences(graph: StructuralGraph, symbolName: string): ReferenceHit[] {
+  const name = symbolName.toLowerCase();
+  const hits: ReferenceHit[] = [];
+
+  // Definitions
+  for (const f of graph.files) {
+    for (const exp of f.exports) {
+      if (exp.name.toLowerCase() === name || exp.name.toLowerCase().includes(name)) {
+        hits.push({ file: f.path, kind: 'def', line: exp.line });
+      }
+    }
+  }
+
+  // Call-site references
+  const defFiles = new Set(hits.map((h) => h.file));
+  for (const c of graph.calls) {
+    if (c.callSite.toLowerCase().includes(name) && !defFiles.has(c.from)) {
+      hits.push({ file: c.from, kind: 'ref', line: c.line, callSite: c.callSite });
+    }
+  }
+
+  // Import references (files that import a file where the symbol is defined)
+  for (const defFile of defFiles) {
+    for (const imp of graph.imports) {
+      if (imp.to === defFile && !hits.some((h) => h.file === imp.from)) {
+        hits.push({ file: imp.from, kind: 'ref', line: imp.line });
+      }
+    }
+  }
+
+  // Defs first, then refs sorted by file path
+  return [
+    ...hits.filter((h) => h.kind === 'def'),
+    ...hits.filter((h) => h.kind === 'ref').sort((a, b) => a.file.localeCompare(b.file)),
+  ].slice(0, 12);
+}
+
+/**
+ * Format reference hits as a compact tree for system prompt injection.
+ * Example:
+ *   OrderStatus
+ *    ├─ def  app/Models/Order.php:12
+ *    ├─ ref  app/Services/OrderService.php:88 (updateStatus)
+ *    └─ ref  app/Http/Controllers/OrderController.php:34
+ */
+export function formatReferences(symbolName: string, hits: ReferenceHit[]): string {
+  if (!hits.length) return '';
+  const lines = [`${symbolName}`];
+  hits.forEach((h, i) => {
+    const prefix = i === hits.length - 1 ? ' └─' : ' ├─';
+    const loc = h.line ? `:${h.line}` : '';
+    const site = h.callSite ? ` (${h.callSite})` : '';
+    lines.push(`${prefix} ${h.kind}  ${h.file}${loc}${site}`);
+  });
   return lines.join('\n');
 }
 

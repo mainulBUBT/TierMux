@@ -1,6 +1,6 @@
 // Agent loop: drives Chat / Plan / Agent modes over the router + tools.
 import * as vscode from 'vscode';
-import type { ChatContent, ChatMessage, ChatToolCall, Platform, ReasoningEffort, TodoItem } from '../shared/types';
+import type { ChatContent, ChatMessage, ChatToolCall, ReasoningEffort, TodoItem } from '../shared/types';
 import type { Router } from '../router/router';
 import type { WorkspaceTools, ToolEvent } from './tools';
 import type { McpManager } from '../mcp/mcpManager';
@@ -13,18 +13,24 @@ import { loadProjectRules } from '../context/projectRules';
 import { loadUserMemory, inferStyleFromEdits, upsertLearnedSection } from '../context/userMemory';
 import { loadProjectGrounding } from '../context/projectGrounding';
 import { buildAmbientContext } from '../context/ambient';
-import { modeToKind, phaseRouteKind, classifyTask, classifyInformationNeed, informationSourceHint, isCodebaseQuestion, type TaskKind, type TaskProfile } from './routing';
+import { modeToKind, classifyTask, classifyInformationNeed, informationSourceHint, isCodebaseQuestion, type TaskKind } from './routing';
 import { classifyInformationRoute } from '../router/informationRouter';
-import { runResearchPipeline } from './research';
-import { ESCALATION_CAP, isRefusalOrEmpty, toolSignature, allUnparseable } from './escalation';
 import { parseTextToolCalls, textToolProtocolPrompt } from './textToolProtocol';
 import type { RunContext } from './runContext';
 import { unmarkEditing } from './editLock';
 import type { RouteOptions } from '../router/router';
-import { buildStructuralGraph, loadStructuralGraph, graphSummary } from '../context/structuralGraph';
-import { lookupBundle, saveBundle, extractBundleData } from '../context/bundleCache';
+import { buildStructuralGraph, loadStructuralGraph, graphSummary, type StructuralGraph } from '../context/structuralGraph';
+import { lookupBundle, saveBundle, formatBundle, compressGrepResults } from '../context/bundleCache';
+import { getOrBuildSymbolIndex, searchSymbols, formatSymbolHits } from '../context/symbolIndex';
+import { lookupInvertedIndex, formatIndexHits, indexIsFresh } from '../context/invertedIndex';
+import { pickTemplate, getTemplate, templatePromptBlock } from './templates';
+import { buildVmContext, recordFailure, clearFailure } from '../context/vmContext';
+import { trackRequest, trackToolCall, trackSymbolHit, trackCacheHit, trackIndexHit, trackGrep, trackWindowRead, trackFullFileRead } from '../context/telemetry';
+import { compressToolResult, resolveToolArgs, type ResolverEntry } from '../context/toolResultCompressor';
+import * as fs from 'fs';
+import * as path from 'path';
 import { ExecutionTracker } from '../context/executionMemory';
-import { buildExecutionPlan, formatExecutionPlan, formatExecutionPlanVerbose } from '../context/executionPlanner';
+import { buildConversationMemory } from '../context/conversationMemory';
 
 export type Mode = 'chat' | 'plan' | 'agent';
 
@@ -73,9 +79,7 @@ export interface RunOpts {
   taskKind?: TaskKind;
   /** Per-attachment kind on the latest user turn, used to upgrade to a vision-capable model. */
   attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'>;
-  /** Pre-task sizing (complexity + intelligence floor) from graph/index signals. Auto only. */
-  profile?: TaskProfile;
-  /** True when the user left the model on Auto — enables phase routing + auto-escalation. */
+  /** True when the user left the model on Auto. */
   auto?: boolean;
   onFailover?: (i: { from: { platform: string; modelId: string }; reason: string }) => void;
   onKeyRotated?: (i: { platform: string; keyIndex: number; keyTotal: number }) => void;
@@ -202,6 +206,9 @@ export class Agent {
     private readonly index?: CodebaseIndex,
   ) {}
 
+  /** Tracks files modified + commands run across all runs in this session (per Agent instance = per chat). */
+  private readonly execTracker = new ExecutionTracker();
+
   /** Cached project-identity summary, keyed by workspace root (rarely changes mid-session). */
   private groundingCache?: { root: string; text: string };
 
@@ -233,15 +240,6 @@ export class Agent {
    */
   private researchHistory: Array<{ terms: string[]; bundle: string; ts: number }> = [];
   private static readonly RESEARCH_HISTORY_TTL = 10 * 60 * 1000;
-  /** Per-session execution trackers — concurrent sessions must not share or reset each other's state. */
-  private sessionTrackers = new Map<string, ExecutionTracker>();
-
-  /** Get (or create) the ExecutionTracker for a session. */
-  private trackerFor(sessionId: string): ExecutionTracker {
-    let t = this.sessionTrackers.get(sessionId);
-    if (!t) { t = new ExecutionTracker(); this.sessionTrackers.set(sessionId, t); }
-    return t;
-  }
 
   private findPriorResearch(terms: string[]): string | undefined {
     const now = Date.now();
@@ -328,59 +326,13 @@ export class Agent {
     messages: ChatMessage[],
     baseOpts: RouteOptions,
     cb: AgentCallbacks,
-    prevSig?: string,
-  ): Promise<{ result: Awaited<ReturnType<Router['route']>>; unhandled?: string }> {
-    const exclude: string[] = [];
-    // Seed the intelligence floor from the caller (e.g. a TaskProfile rankFloor) so the
-    // very first hop already respects it; escalation only tightens this further.
-    let maxRank = baseOpts.maxIntelligenceRank;
-    let last: Awaited<ReturnType<Router['route']>> | undefined;
-    for (let hop = 0; hop <= ESCALATION_CAP; hop++) {
-      const opts: RouteOptions = {
-        ...baseOpts,
-        exclude: exclude.length ? exclude : undefined,
-        maxIntelligenceRank: maxRank,
-        // Pass streaming callback only on hops that could produce the final text answer.
-        // Escalation retries start fresh — don't carry a partially-streamed buffer forward.
-        onChunk: hop === 0 ? cb.onChunk : undefined,
-      };
-      let result: Awaited<ReturnType<Router['route']>>;
-      try {
-        result = await this.router.route(messages, opts);
-      } catch (e) {
-        // First hop failing is a genuine "all models errored" — let the caller handle it.
-        if (hop === 0) throw e;
-        // A later hop found no model meeting the floor (no stronger model available) → use the last result.
-        if (last) return { result: last, unhandled: 'no stronger model' };
-        throw e;
-      }
-      last = result;
-
-      const msg = result.response.choices[0]?.message;
-      const toolCalls = msg?.tool_calls ?? [];
-      for (const call of toolCalls) {
-        if (call.function?.name) call.function.name = sanitizeToolName(call.function.name);
-      }
-
-      let unhandled: string | undefined;
-      if (toolCalls.length === 0) {
-        if (isRefusalOrEmpty(contentToString(msg?.content))) unhandled = 'refusal';
-      } else if (prevSig && toolSignature(toolCalls) === prevSig) {
-        unhandled = 'loop';
-      } else if (allUnparseable(toolCalls)) {
-        unhandled = 'unparseable';
-      }
-
-      if (!unhandled || hop === ESCALATION_CAP) return { result, unhandled };
-
-      // Escalate: drop this model and require one at least as smart; orderForTask then tries
-      // the smarter candidates first. Surface the retry so the user sees why it slowed.
-      exclude.push(`${result.platform}::${result.model}`);
-      const rank = this.router.intelligenceRankOf(result.platform as Platform, result.model);
-      if (rank != null) maxRank = rank;
-      cb.onStep?.('thinking', 'Model struggled — retrying with a stronger model…');
+  ): Promise<Awaited<ReturnType<Router['route']>>> {
+    const result = await this.router.route(messages, { ...baseOpts, onChunk: cb.onChunk });
+    const toolCalls = result.response.choices[0]?.message?.tool_calls ?? [];
+    for (const call of toolCalls) {
+      if (call.function?.name) call.function.name = sanitizeToolName(call.function.name);
     }
-    throw new Error('escalation loop exited unexpectedly'); // unreachable — loop returns above
+    return result;
   }
 
   /** Backing for the `askUser` tool: ask the user (free-text or multiple-choice) and return the answer. */
@@ -406,10 +358,6 @@ export class Agent {
     cb.onStep?.('thinking', 'Working…');
     const sessionId = opts.runContext?.sessionId ?? '__standalone__';
     this.dedupFor(sessionId).clear();
-
-    // Fresh conversation: clear THIS session's execution memory so prior turns don't leak.
-    const userTurns = history.filter((m) => m.role === 'user').length;
-    if (userTurns <= 1) this.trackerFor(sessionId).reset();
 
     const latestText = contentToString([...history].reverse().find((m) => m.role === 'user')?.content ?? '');
 
@@ -471,6 +419,10 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
     const routeKind: TaskKind = contentKind;
     const ropts: RunOpts = { ...opts, taskKind: routeKind };
 
+    // Execution template: pick recipe based on query keywords (agent mode only).
+    // Chat/Plan use their own fixed tool sets so templates don't apply there.
+    const template = mode === 'agent' ? getTemplate(pickTemplate(latestText)) : undefined;
+
     const [rules, grounding, memory] = await Promise.all([loadProjectRules(), this.grounding(), loadUserMemory()]);
     const graphContext = wantsCodeContext ? await this.graphContext() : '';
     const augment = (base: string): string => {
@@ -491,161 +443,151 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
     // BOTH code + web tools (the runAgent loop) — the web-only runChat path can't search the workspace.
     const infoHint = informationSourceHint(classifyInformationNeed(latestText));
 
-    // Pre-research: gather grep/semantic/diagnostics context BEFORE the first model call so the
-    // agent can skip redundant early tool calls (saves 2–3 iterations = 2–3 free-LLM rate-limit slots).
-    // Only runs for agent/plan modes that need codebase context; skipped for pure chat (web-only path).
-    // For codebase questions in Ask mode, force 'agent' kind so codeSearch threshold is met.
-    const researchKind: TaskKind = isCodebaseQ ? 'agent' : routeKind;
-    const route = wantsCodeContext ? classifyInformationRoute(latestText, researchKind) : undefined;
-    const researchEnabled = route && vscode.workspace.getConfiguration('tiermux.cache').get<boolean>('researchEnabled', true);
+    // Context lookup: symbolIndex (O(1)) → bundleCache (Jaccard) → grep (fallback).
+    // Each layer feeds the next: symbolIndex hits become bundleCache symbols; grep output
+    // is compressed into a summary before caching — model never sees raw grep text.
+    const route = wantsCodeContext ? classifyInformationRoute(latestText) : undefined;
+    // Load graph once — used for pre-research lookup AND tool result compression (FLOW chain).
+    const structGraph = wantsCodeContext ? await loadStructuralGraph().catch(() => undefined) : undefined;
     let preResearch = '';
-    let preResearchCompact = '';
-    let researchFacts: import('../context/researchCompressor').ResearchFacts | undefined;
-    let researchRiskLabel: 'low' | 'medium' | 'high' = 'low';
+    if (route?.codeSearch && route.searchTerms.length) {
+      trackRequest();
+      // 1. symbolIndex — O(1) exact + fuzzy lookup from structural graph (no disk I/O).
+      const graph = structGraph;
+      const symbolHits = graph
+        ? route.searchTerms.flatMap((t) => searchSymbols(getOrBuildSymbolIndex(graph), t, 4))
+        : [];
+      const symbolSection = symbolHits.length ? formatSymbolHits(symbolHits) : '';
 
-    if (researchEnabled && route) {
-      // 1. Check disk bundle cache first (24h TTL, Jaccard ≥ 0.5 match).
-      //    Cache hit = zero grep + zero semantic search, instant context.
-      const cached = await lookupBundle(route.searchTerms).catch(() => undefined);
-      if (cached) {
-        preResearch = cached.rawBundle;
+      // Fast exit: if symbol index covers all search terms, skip everything else.
+      // Definition hits (isDef) count double — a class/function definition is near-certain.
+      const symbolCoverage = route.searchTerms.length === 0 ? 0
+        : route.searchTerms.filter((t) =>
+            symbolHits.some((h) => h.name.toLowerCase().includes(t.toLowerCase())),
+          ).length / route.searchTerms.length;
+      if (symbolCoverage >= 0.8) {
+        // High confidence — symbol index covers this query. Skip bundleCache + index + grep.
+        trackSymbolHit();
+        preResearch = symbolSection;
+        void saveBundle({ terms: route.searchTerms, files: [], symbols: symbolHits.map((h) => ({ name: h.name, file: h.file, line: h.line, kind: h.kind })), patterns: route.searchTerms, summary: symbolSection, hitScore: 1, confidence: symbolCoverage, ttl: 24 * 60 * 60 * 1000 });
       } else {
-        // 2. Cache miss → run full pipeline (greps + semantic + symbol + web in parallel).
-        const result = await runResearchPipeline(route, this.tools, this.index).catch(() => undefined);
-        preResearch = result?.text ?? '';
-        preResearchCompact = result?.compactText ?? '';
-        researchFacts = result?.facts;
-        researchRiskLabel = result?.riskLabel ?? 'low';
-        // 3. Save result to disk bundle cache for future queries on the same task.
-        if (preResearch && route.searchTerms.length) {
-          void saveBundle(extractBundleData(preResearch, route.searchTerms));
+        // 2. bundleCache — Jaccard match, confidence-gated injection.
+        const cached = await lookupBundle(route.searchTerms).catch(() => undefined);
+        if (cached) {
+          trackCacheHit();
+          preResearch = formatBundle(cached);
+          if (symbolSection) preResearch = symbolSection + '\n\n' + preResearch;
+        } else {
+          // 3. Inverted index (precomputed, O(1)) — covers terms not found in symbol index.
+          const uncoveredBySymbol = symbolHits.length
+            ? route.searchTerms.filter((t) => !symbolHits.some((h) => h.name.toLowerCase().includes(t.toLowerCase())))
+            : route.searchTerms;
+
+          const fresh = await indexIsFresh();
+          let indexSection = '';
+          let termsForGrep = uncoveredBySymbol.slice(0, 3);
+          if (fresh && uncoveredBySymbol.length) {
+            const { hits, misses } = await lookupInvertedIndex(uncoveredBySymbol);
+            if (hits.length) { trackIndexHit(); indexSection = formatIndexHits(hits); }
+            termsForGrep = misses.slice(0, 2); // grep only what index doesn't know
+          }
+
+          // 4. grep — only for terms the index missed (regex patterns, brand-new files).
+          const rawGrep = termsForGrep.length
+            ? (await Promise.all(
+                termsForGrep.map((term) => {
+                  trackGrep();
+                  return this.tools.execute('grep', JSON.stringify({ pattern: term, maxResults: 5 }), opts.runContext)
+                    .then((r) => String(r))
+                    .catch(() => '');
+                }),
+              )).filter(Boolean).join('\n\n')
+            : '';
+
+          // Compress all sources into summary + symbols — never cache raw text.
+          const compressed = compressGrepResults([indexSection, rawGrep].filter(Boolean).join('\n\n'), route.searchTerms);
+          for (const h of symbolHits) {
+            if (!compressed.symbols.find((s) => s.name === h.name)) {
+              compressed.symbols.push({ name: h.name, file: h.file, line: h.line, kind: h.kind });
+            }
+          }
+          const mergedConfidence = Math.max(compressed.confidence, symbolHits.length > 0 ? 0.8 : 0);
+          void saveBundle({ ...compressed, terms: route.searchTerms, confidence: mergedConfidence, ttl: 24 * 60 * 60 * 1000 });
+
+          preResearch = [symbolSection, compressed.summary].filter(Boolean).join('\n\n');
         }
       }
-    }
 
-    // Research Result Persistence: also check session-level memory (covers last 10 min,
-    // supplements the disk cache for very recent follow-up queries in the same session).
-    if (route?.searchTerms.length) {
+      // Session memory: prepend prior research for follow-up queries in same session.
       const prior = this.findPriorResearch(route.searchTerms);
-      if (prior && prior !== preResearch) {
-        preResearch = prior + (preResearch ? `\n\n---\n\n${preResearch}` : '');
-      }
+      if (prior && prior !== preResearch) preResearch = prior + (preResearch ? `\n\n---\n\n${preResearch}` : '');
       if (preResearch) this.saveResearch(route.searchTerms, preResearch);
     }
 
-    // Confidence Gate: decide how certain we are about the routing decision.
-    //
-    //  confidence ≥ 0.5  → normal: we know what to look for, pre-research is solid.
-    //  0.35–0.5           → uncertain: pre-research ran but signals were mixed.
-    //                       Tell the model to explore more broadly before committing.
-    //  < 0.35 + no results → blind: neither code nor web signals fired AND nothing was
-    //                       found. Inject a clarification nudge so the model asks ONE
-    //                       focused question instead of hallucinating an answer.
-    let confidenceHint = '';
-    if (route && mode !== 'chat') {
-      if (route.confidence < 0.35 && !preResearch) {
-        confidenceHint = '\n\n# Low confidence — clarify before acting\n' +
-          'Pre-research found nothing and the intent is ambiguous. ' +
-          'Use the `askUser` tool to ask ONE focused question (e.g. "Which part of the codebase do you mean?" or "Do you want me to search the code or look it up online?") before proceeding.';
-      } else if (route.confidence < 0.5) {
-        confidenceHint = '\n\n# Uncertain scope — explore broadly\n' +
-          'The request matches mixed signals (code + web, or neither). ' +
-          'Run grep/codebaseSearch across more terms before drawing conclusions. ' +
-          'Do NOT guess based only on pre-research hints.';
-      } else if (researchRiskLabel === 'high' && preResearch) {
-        // Semantic confidence is low — matches were weak (stem/fuzzy) or mostly failed.
-        // The research block already has an inline HIGH risk comment; reinforce at system level.
-        confidenceHint = '\n\n# High truth risk\n' +
-          'Research matches were weak (stem or fuzzy). ' +
-          'Only state what is directly confirmed by the data. ' +
-          'Label inferred parts as "unverified". Prefer using `askUser` over guessing.';
-      } else if (researchRiskLabel === 'medium' && preResearch) {
-        confidenceHint = '\n\n# Medium truth risk\n' +
-          'Some research matches were from fallback queries. ' +
-          'State confirmed facts clearly. Mark uncertain parts explicitly.';
-      }
-    }
+    const withResearch = (base: string): string =>
+      base + (preResearch ? `\n\n${preResearch}` : '');
 
-    // Response structure hint for "how/explain/what" queries.
-    // Weaker free models (Codestral, Mistral) tend to give hedged one-liners when asked
-    // an explanatory question — this nudges them to structure the answer like Claude Code would.
-    const EXPLAIN_INTENT = /\b(how|explain|describe|what is|what are|where does|how does|how do|tell me|show me how|walk me through|give me|overview of)\b/i;
-    if (EXPLAIN_INTENT.test(latestText) && preResearch && mode !== 'chat') {
-      confidenceHint += '\n\n# Response format for this explain query\n' +
-        'Structure your answer with:\n' +
-        '- `## ` headings for each major concept or mechanism\n' +
-        '- Bullet points for step-by-step flows or lists\n' +
-        '- Inline `file:line` references for every code fact you cite (e.g. `app/Services/ContributionService.php:302`)\n' +
-        '- A short **Summary** section at the end\n' +
-        'Do not hedge or say "I couldn\'t find" if the pre-research above contains the answer.';
-    }
-
-    // Pre-Execution Plan: build a dependency-ordered checklist from research facts.
-    // Injected BEFORE research details so the model reads "what to do" before "where to look".
-    // Only fires for agent/plan modes on code tasks with enough signal (null = skip).
-    const plan = researchFacts && route && mode !== 'chat'
-      ? buildExecutionPlan(researchFacts, route, latestText)
+    // Agent mode: build full VM context (ACTIVE_FILE + SYMBOL_HITS + LAST_ERROR + GIT_DIFF + GOAL).
+    // Chat/Plan keep the simpler preResearch path — VM context is only for the execution engine.
+    const vmContext = mode === 'agent'
+      ? await buildVmContext({ symbolHits: preResearch, goal: latestText, sessionId }).catch(() => preResearch)
       : null;
 
-    // Progressive context selection:
-    //   High-confidence (≥ 0.7) + plan ready:
-    //     → compact XML plan (~40t) + compact context tag (~25t)
-    //     → skip raw grep/semantic/hop details (plan already lists every file)
-    //     → saves ~600-900 tokens on routine tasks
-    //   Low-confidence (< 0.7) or no plan:
-    //     → verbose plan + full research details (grep output helps the model explore)
-    const highConfidence = plan !== null && (plan?.confidence ?? 0) >= 0.7;
-    const planBlock = plan
-      ? (highConfidence ? formatExecutionPlan(plan) : formatExecutionPlanVerbose(plan))
+    // Conversation memory: compressed last 3-5 turns → previous goal + files in context.
+    // Injected BEFORE the structured context so the model understands "continue X" intent
+    // without re-searching for files it already knows about.
+    const convMem = mode !== 'chat'
+      ? buildConversationMemory(history, this.execTracker)
       : '';
-    // Use compact research when plan confidence is high OR when the full block is already
-    // large (> 4k chars). The latter prevents context overflow on free models when generic
-    // search terms produce large grep results — compact keeps the file list but drops raw lines.
-    const researchTooLarge = preResearch.length > 4000 && !!preResearchCompact;
-    const researchBlock = (highConfidence || researchTooLarge) && preResearchCompact
-      ? preResearchCompact   // compact XML tag only — raw details omitted
-      : preResearch;         // full understanding block + raw grep/semantic/hop sections
 
-    const executionContext = this.trackerFor(sessionId).buildContextBlock();
-    const withResearch = (base: string): string =>
-      base
-      + (planBlock ? `\n\n${planBlock}` : '')
-      + (executionContext ? `\n\n${executionContext}` : '')
-      + (researchBlock ? `\n\n${researchBlock}` : '')
-      + confidenceHint;
+    const withVmContext = (base: string): string => {
+      const conv = convMem ? `\n\n${convMem}` : '';
+      const ctx = vmContext
+        ? `\n\n# Structured context (use this — do not search for what is already here)\n${vmContext}`
+        : (preResearch ? `\n\n${preResearch}` : '');
+      return base + conv + ctx;
+    };
+
+    // Append template recipe block to the agent system prompt (agent mode only).
+    const withTemplate = (base: string): string =>
+      template ? base + `\n\n${templatePromptBlock(template)}` : base;
 
     let result: AgentResult;
     try {
       if (mode === 'chat') {
         const webOn = vscode.workspace.getConfiguration('tiermux.tools').get<boolean>('web', true);
         if (isCodebaseQ) {
-          // Codebase question in Ask mode: read-only agent with code tools (grep/readFile/repoMap…)
-          // and full project grounding — same posture as Plan mode, no edits allowed.
           const askCodeSystem = withResearch(augment(CHAT_SYSTEM) + infoHint);
-          result = await this.runAgent(augmented, askCodeSystem, ropts, cb, { readOnly: true });
+          result = await this.runAgent(augmented, askCodeSystem, ropts, cb, { readOnly: true, graph: structGraph });
         } else {
-          // Pure Ask: web-only path — no code tools, no grounding.
           result = webOn
             ? await this.runChat(augmented, augment(CHAT_SYSTEM), ropts, cb)
             : await this.runSingle(augmented, augment(CHAT_SYSTEM), ropts, cb);
         }
       } else if (mode === 'plan') {
-        // Plan: research the codebase read-only, then propose a plan for approval.
-        result = await this.runAgent(augmented, withResearch(augment(PLAN_SYSTEM)), ropts, cb, { readOnly: true });
+        result = await this.runAgent(augmented, withResearch(augment(PLAN_SYSTEM)), ropts, cb, { readOnly: true, graph: structGraph });
       } else {
-        // Agent: full tool access — reads, edits, runs commands.
-        result = await this.runAgent(augmented, withResearch(augment(AGENT_SYSTEM) + infoHint), ropts, cb);
+        // Agent mode: full VM context + template recipe + tool restriction.
+        const agentSystem = withTemplate(withVmContext(augment(AGENT_SYSTEM)));
+        result = await this.runAgent(augmented, agentSystem, ropts, cb, {
+          allowedTools: template?.allowedTools,
+          graph: structGraph,
+        });
       }
     } finally {
       // Release this run's edit-advisory claims whether it finished, failed, or was cancelled,
       // so a subsequent run isn't falsely told the files are still being edited.
       unmarkEditing(opts.runContext?.requestId);
     }
-    result.taskKind = routeKind;
-    // Record tool calls so the next run knows what was already done this session.
+    // Record file writes/edits from this run so conversationMemory can surface them next turn.
     if (result.workMessages?.length) {
-      this.trackerFor(sessionId).record(result.workMessages as Array<{ role?: string; content?: unknown }>);
+      this.execTracker.record(result.workMessages);
     }
+    // Reset tracker on a brand-new chat (no prior history = user started fresh).
+    if (history.filter((m) => m.role === 'user').length <= 1) {
+      this.execTracker.reset();
+    }
+    result.taskKind = routeKind;
     return result;
   }
 
@@ -698,7 +640,7 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
   ): Promise<AgentResult> {
     const messages: ChatMessage[] = [{ role: 'system', content: system }, ...history];
     cb.onStep?.('thinking', 'Working…');
-    const { result } = await this.routeEscalated(messages, {
+    const result = await this.routeEscalated(messages, {
       model: opts.model,
       reasoningEffort: opts.reasoningEffort,
       taskKind: opts.taskKind,
@@ -721,7 +663,7 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
     system: string,
     opts: RunOpts,
     cb: AgentCallbacks,
-    runOpts?: { readOnly?: boolean; weak?: boolean },
+    runOpts?: { readOnly?: boolean; weak?: boolean; allowedTools?: string[]; graph?: StructuralGraph },
   ): Promise<AgentResult> {
     const messages: ChatMessage[] = [{ role: 'system', content: system }, ...history];
     // Everything appended past this prefix is the agent's working transcript; it's
@@ -751,7 +693,11 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
         ...(indexOn ? [CODEBASE_SEARCH_SPEC] : []),
         ...(runOpts?.readOnly ? [] : this.mcp?.listToolSpecs() ?? []),
       ];
-    const toolsFiltered = tools.filter((t) => !runOpts?.readOnly || READONLY_TOOLS.has(t.function.name));
+    const toolsFiltered = tools.filter((t) => {
+      if (runOpts?.readOnly && !READONLY_TOOLS.has(t.function.name)) return false;
+      if (runOpts?.allowedTools && !runOpts.allowedTools.includes(t.function.name)) return false;
+      return true;
+    });
     // Teach weak models the XML text tool-protocol so they can ACT even when the provider
     // ignores native function-calling — the dominant "replies with prose, never edits" failure.
     // Strong models keep native calling untouched; the parser below is a harmless safety net.
@@ -761,15 +707,12 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
     // auto-escalation past the step cap. Weak free models get a SIMPLE single-model path instead
     // — phase switching and extra escalation batches hurt them (they can't hand off context well,
     // and re-sending the growing history burns their tiny free-tier budget).
-    const auto = !!opts.auto && !weak;
+    void opts.auto; // auto-escalation removed
     const baseKind = opts.taskKind ?? 'agent';
     const baseBudget = this.maxIterations();
-    const ESCALATION_BATCH = 8; // max extra iterations per auto-escalation
-    const hardCeiling = auto ? baseBudget + ESCALATION_BATCH : baseBudget;
-    const AUTO_ESCALATE_CAP = 1; // one automatic escalation beyond the base budget
-    let floor = auto ? (opts.profile?.rankFloor ?? 4) : undefined;
+    const hardCeiling = baseBudget;
+    let floor: number | undefined;
     let totalIter = 0;
-    let level = 0;
     // Consecutive grep counter: if the model greps 3+ times in a row without a readFile,
     // append a strong hint to the next grep result to break the loop.
     // This is the primary cause of 400+ second hangs on free LLMs after editFile fails.
@@ -778,10 +721,18 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
     // If a file is read 3+ times the model is stuck on it without making progress — inject
     // a redirect hint so it moves on rather than burning iterations re-reading the same content.
     const fileReadCount = new Map<string, number>();
+    // Path resolver: alias (model-facing short name) → ResolverEntry (full path + optional line hint).
+    // Built incrementally from grep results; applied before executeToolCall.
+    const pathResolver = new Map<string, ResolverEntry>();
+    // Validate that a resolved path still exists on disk (TTL check).
+    // On failure the caller removes the stale alias from pathResolver.
+    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const validateResolvedPath = wsRoot
+      ? (relPath: string): boolean => fs.existsSync(path.join(wsRoot, relPath))
+      : undefined;
 
     while (totalIter < hardCeiling) {
-      // First batch = the normal budget; an escalation batch is short (ESCALATION_BATCH).
-      const phaseBudget = Math.min(hardCeiling - totalIter, level === 0 ? baseBudget : ESCALATION_BATCH);
+      const phaseBudget = hardCeiling - totalIter;
       for (let i = 0; i < phaseBudget; i++, totalIter++) {
       // Cancel = stop, not pause: don't persist a partial transcript (it could end on an
       // assistant tool_calls turn with no tool results, which would break the next request).
@@ -793,9 +744,7 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
       // keepRounds=1: only the last round kept in full. maxChars=800: trim old results faster.
       // Old default (2, 2000) allowed 60KB of file content to re-appear every model call.
       trimRunTranscript(messages, baseLen, 1, 800);
-      // Phase routing (Auto, strong only): the first hop reasons/plans, then the classified
-      // execute kind takes over. Weak models keep one stable kind for the whole run.
-      const phaseKind = auto ? phaseRouteKind(baseKind, totalIter) : baseKind;
+      const phaseKind = baseKind;
       let result: Awaited<ReturnType<Router['route']>>;
       let unhandled: string | undefined;
       try {
@@ -808,10 +757,9 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
           requireTools: true,
           maxIntelligenceRank: floor,
           onFailover: opts.onFailover,
-      onKeyRotated: opts.onKeyRotated,
-        }, cb, prevSig);
-        result = routed.result;
-        unhandled = routed.unhandled;
+          onKeyRotated: opts.onKeyRotated,
+        }, cb);
+        result = routed;
       } catch (e) {
         // Free models frequently drop out mid-task. If we've already made progress, pause
         // and hand back the work so far so the user can resume; if it failed on the very
@@ -846,8 +794,10 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
         if (parsed.length) { toolCalls = parsed; textMode = true; }
       }
 
+      const msgText = contentToString(msg?.content);
+
       if (toolCalls.length === 0) {
-        const { reasoning, content } = splitReasoning(contentToString(msg?.content));
+        const { reasoning, content } = splitReasoning(msgText);
         // Record the final answer so it's part of the persisted transcript too.
         messages.push({ role: 'assistant', content: content || '_Done._' });
         this.maybeLearnStyle(work());
@@ -858,7 +808,7 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
       // model). A successful text-protocol parse means the model actually acted, so it doesn't
       // apply — only bail here when we're NOT in text mode.
       if (unhandled && !textMode) {
-        messages.push({ role: 'assistant', content: contentToString(msg?.content) || '_The model could not make progress._', tool_calls: toolCalls });
+        messages.push({ role: 'assistant', content: msgText || '_The model could not make progress._', tool_calls: toolCalls });
         this.maybeLearnStyle(work());
         return {
           text: "⚠️ I'm stuck — the model kept repeating itself or couldn't form valid tool calls, even after retrying with a stronger model. Choose **Continue** to try again, or rephrase the task.",
@@ -866,9 +816,8 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
         };
       }
 
-      // Text-mode loop guard: routeEscalated only compares NATIVE calls, so a weak model
-      // repeating the same XML block verbatim would otherwise burn iterations to the cap.
-      const curSig = toolSignature(toolCalls);
+      // Text-mode loop guard: detect repeated XML tool blocks and bail.
+      const curSig = toolCalls.map((c) => c.function.name + ':' + c.function.arguments).join('|');
       if (textMode && prevSig && curSig === prevSig) {
         messages.push({ role: 'assistant', content: contentToString(msg?.content) });
         this.maybeLearnStyle(work());
@@ -891,7 +840,12 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
         const results: string[] = [];
         for (const call of toolCalls) {
           if (opts.token?.isCancellationRequested) return { text: '_Cancelled._', platform: lastPlatform, model: lastModel };
+          call.function.arguments = resolveToolArgs(call.function.name, call.function.arguments, pathResolver, validateResolvedPath);
+          trackToolCall();
           let { obsText } = await this.executeToolCall(call, opts, cb);
+          const { text: compressedText, resolver } = compressToolResult(call.function.name, obsText, call.function.arguments, runOpts?.graph);
+          obsText = compressedText;
+          for (const [k, v] of resolver) pathResolver.set(k, v);
           if (call.function.name === 'grep') {
             consecutiveGreps++;
             if (consecutiveGreps >= 3) {
@@ -899,7 +853,10 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
             }
           } else if (call.function.name === 'readFile') {
             consecutiveGreps = 0;
-            const filePath = String((JSON.parse(repairBrokenJson(call.function.arguments)) as { path?: unknown })?.path ?? '');
+            const readArgs = JSON.parse(repairBrokenJson(call.function.arguments)) as { path?: unknown; startLine?: unknown };
+            const filePath = String(readArgs.path ?? '');
+            // Track window vs full-file read AFTER resolveToolArgs may have injected startLine
+            if (readArgs.startLine !== undefined) { trackWindowRead(); } else { trackFullFileRead(); }
             if (filePath) {
               const count = (fileReadCount.get(filePath) ?? 0) + 1;
               fileReadCount.set(filePath, count);
@@ -921,7 +878,12 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
         messages.push({ role: 'assistant', content: contentToString(msg?.content), tool_calls: toolCalls });
         for (const call of toolCalls) {
           if (opts.token?.isCancellationRequested) return { text: '_Cancelled._', platform: lastPlatform, model: lastModel };
+          call.function.arguments = resolveToolArgs(call.function.name, call.function.arguments, pathResolver, validateResolvedPath);
+          trackToolCall();
           let { observation } = await this.executeToolCall(call, opts, cb);
+          const { text: compressedObs, resolver: obsResolver } = compressToolResult(call.function.name, contentToString(observation), call.function.arguments, runOpts?.graph);
+          for (const [k, v] of obsResolver) pathResolver.set(k, v);
+          if (compressedObs !== contentToString(observation)) observation = compressedObs;
           if (call.function.name === 'grep') {
             consecutiveGreps++;
             if (consecutiveGreps >= 3) {
@@ -930,7 +892,9 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
             }
           } else if (call.function.name === 'readFile') {
             consecutiveGreps = 0;
-            const filePath = String((JSON.parse(repairBrokenJson(call.function.arguments)) as { path?: unknown })?.path ?? '');
+            const readArgs = JSON.parse(repairBrokenJson(call.function.arguments)) as { path?: unknown; startLine?: unknown };
+            const filePath = String(readArgs.path ?? '');
+            if (readArgs.startLine !== undefined) { trackWindowRead(); } else { trackFullFileRead(); }
             if (filePath) {
               const count = (fileReadCount.get(filePath) ?? 0) + 1;
               fileReadCount.set(filePath, count);
@@ -945,16 +909,6 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
           messages.push({ role: 'tool', tool_call_id: call.id, name: call.function.name, content: observation });
         }
       }
-    }
-    // Budget exhausted without finishing. Auto escalates to a stronger model and continues;
-    // everything else (or once the escalation cap / hard ceiling is reached) pauses for the user.
-    if (auto && level < AUTO_ESCALATE_CAP && totalIter < hardCeiling) {
-      level++;
-      floor = Math.max(1, (floor ?? 4) - 1);
-      cb.onStep?.('thinking', 'Still working — escalating to a stronger model to finish…');
-      // Safe to append: the transcript ends on tool results, so a user turn here mirrors resume.
-      messages.push({ role: 'user', content: 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.' });
-      continue;
     }
     break;
     }
@@ -1011,6 +965,17 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
     const isError = obsText.includes('"error"');
     if (dedupKey && !isError) runDedup.set(dedupKey, obsText);
     cb.onTool?.({ toolCallId: call.id, name: call.function.name, args, state: isError ? 'error' : 'done', detail: obsText.slice(0, 300) });
+
+    // Failure memory: if a write/edit/patch call fails, record it so the next LLM call
+    // knows not to retry the same approach. Cleared at the start of each successful run.
+    const WRITE_TOOLS = new Set(['editFile', 'writeFile', 'createFile', 'applyDiff']);
+    const sid = opts.runContext?.sessionId ?? '__standalone__';
+    if (WRITE_TOOLS.has(call.function.name) && isError) {
+      recordFailure(sid, call.function.arguments.slice(0, 200), obsText.slice(0, 100));
+    } else if (WRITE_TOOLS.has(call.function.name) && !isError) {
+      clearFailure(sid);
+    }
+
     return { observation, obsText, isError };
   }
 
@@ -1038,12 +1003,12 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
     // Just the web tools + askUser. Two tiny specs — negligible token cost per chat turn.
     const tools = [...WEB_TOOL_SPECS, ASK_USER_SPEC];
     const BUDGET = 5; // search → optional fetch → answer (+1 for a refusal correction)
-    let prevSig = '';
     // A weak model sometimes searches, gets results, then still gives a canned "I only
     // handle code" refusal. Track whether we searched so we can catch that and retry once
     // on a stronger model instead of handing the user an unhelpful non-answer.
     let searched = false;
     let corrected = false;
+    let lastPartialText = '';
 
     for (let i = 0; i < BUDGET; i++) {
       if (opts.token?.isCancellationRequested) return { text: '_Cancelled._', platform: lastPlatform, model: lastModel };
@@ -1063,10 +1028,9 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
           // After a refusal-correction, demand a stronger model so the retry actually answers.
           maxIntelligenceRank: corrected ? 3 : undefined,
           onFailover: opts.onFailover,
-      onKeyRotated: opts.onKeyRotated,
-        }, cb, prevSig);
-        result = routed.result;
-        unhandled = routed.unhandled;
+          onKeyRotated: opts.onKeyRotated,
+        }, cb);
+        result = routed;
       } catch {
         // Chat is best-effort: if the tool-capable model fails, fall back to a plain
         // one-shot answer rather than surfacing an error for a casual question.
@@ -1082,9 +1046,11 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
       for (const call of toolCalls) {
         if (call.function?.name) call.function.name = sanitizeToolName(call.function.name);
       }
+      const chatMsgText = contentToString(msg?.content);
+      if (chatMsgText) lastPartialText = chatMsgText;
 
       if (toolCalls.length === 0) {
-        const { reasoning, content } = splitReasoning(contentToString(msg?.content));
+        const { reasoning, content } = splitReasoning(chatMsgText);
         // Caught a refusal AFTER a successful search: the model has the results in context
         // but bailed with "I only handle code". Don't ship that — record it, nudge once, and
         // loop again on a stronger model (see maxIntelligenceRank above) to get a real answer.
@@ -1103,13 +1069,11 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
       }
       // Model stuck repeating / can't form valid calls — answer with whatever text it produced.
       if (unhandled) {
-        const content = contentToString(msg?.content) || "_I couldn't look that up reliably — please try rephrasing._";
+        const content = chatMsgText || lastPartialText || "_I couldn't look that up reliably — please try rephrasing._";
         messages.push({ role: 'assistant', content, tool_calls: toolCalls });
         this.maybeLearnStyle(work());
         return { text: content, platform: lastPlatform, model: lastModel, runtimeName: lastRuntimeName, taskKind: 'chat', workMessages: work(), paused: false };
       }
-      prevSig = toolSignature(toolCalls);
-
       const stepThought = turnReasoning(msg);
       if (stepThought) cb.onReasoning?.(stepThought);
 
@@ -1121,11 +1085,12 @@ Output ONLY the greeting. No preamble, no thinking, no explanation.`;
         messages.push({ role: 'tool', tool_call_id: call.id, name: call.function.name, content: observation });
       }
     }
-    // Budget exhausted without a final answer — return the last model/text we have.
+    // Budget exhausted without a final answer.
+    // Use whatever partial text the model produced rather than a canned error.
     this.maybeLearnStyle(work());
     return {
-      text: "_I couldn't finish looking that up. Try rephrasing, or switch to Agent mode for a deeper search._",
-      platform: lastPlatform, model: lastModel, taskKind: 'chat', workMessages: work(), paused: false,
+      text: lastPartialText || "_Ran out of steps before finishing. Try a more specific question, or continue this conversation._",
+      platform: lastPlatform, model: lastModel, workMessages: work(), paused: false,
     };
   }
 

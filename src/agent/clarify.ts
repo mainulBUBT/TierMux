@@ -59,17 +59,26 @@ export function parseClarifying(input: string): ParsedClarifying {
   for (const raw of block.split('\n')) {
     const line = raw.trim();
     if (!line) continue;
-    // `Q[Short Label]: question` — the optional [Label] becomes the tab label.
-    const q = line.match(/^Q(?:\s*\[([^\]]+)\])?\s*[:.)]?\s+(.+)$/i);
-    if (q) {
+    // `Q[Short Label]: question` — label and question text are both optional independently.
+    // Lenient: `Q[Label]` alone (no text), `Q: question` (no label), or `Q[Label]: question`.
+    const q = line.match(/^Q(?:\s*\[([^\]]+)\])?(?:\s*[:.)]?\s*(.+))?$/i);
+    if (q && (q[1] || q[2])) {
       if (current && current.options.length >= 2) questions.push(current); // drop 1-option duds
-      current = { text: q[2].trim(), label: q[1]?.trim() || undefined, options: [] };
+      const label = q[1]?.trim() || undefined;
+      const text = q[2]?.trim() || label || 'Choose an option';
+      current = { text, label, options: [] };
       continue;
     }
     // `- Title :: one-line description` — the ` :: ` and description are optional.
-    const opt = line.match(/^[-*]\s+(.+)$/);
+    // Lenient: also accept lines without a leading `-`/`*` when they contain ` :: `.
+    const opt = line.match(/^(?:[-*]\s+)?(.+)$/) ;
     if (opt && current) {
-      const [title, ...rest] = opt[1].split(/\s+::\s+/);
+      const candidate = opt[1];
+      // Must be an option line: either starts with `-`/`*`, or contains ` :: ` (bare option style).
+      const hasBullet = /^[-*]\s/.test(line);
+      const hasSeparator = candidate.includes(' :: ');
+      if (!hasBullet && !hasSeparator) continue;
+      const [title, ...rest] = candidate.split(/\s+::\s+/);
       const description = rest.join(' :: ').trim();
       if (title.trim()) current.options.push({ title: title.trim(), description: description || undefined });
     }
