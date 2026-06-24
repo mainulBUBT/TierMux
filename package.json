@@ -189,28 +189,28 @@
       }
     ],
     "menus": {
-    "view/title": [
-      {
-        "command": "tiermux.newChat",
-        "when": "view == tiermux.chat",
-        "group": "navigation@1"
-      },
-      {
-        "command": "tiermux.showHistory",
-        "when": "view == tiermux.chat",
-        "group": "navigation@2"
-      },
-      {
-        "command": "tiermux.compactChat",
-        "when": "view == tiermux.chat",
-        "group": "navigation@3"
-      },
-      {
-        "command": "tiermux.openModelSettings",
-        "when": "view == tiermux.chat",
-        "group": "navigation@4"
-      }
-    ],
+      "view/title": [
+        {
+          "command": "tiermux.newChat",
+          "when": "view == tiermux.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "tiermux.showHistory",
+          "when": "view == tiermux.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "tiermux.compactChat",
+          "when": "view == tiermux.chat",
+          "group": "navigation@3"
+        },
+        {
+          "command": "tiermux.openModelSettings",
+          "when": "view == tiermux.chat",
+          "group": "navigation@4"
+        }
+      ],
       "editor/context": [
         {
           "submenu": "tiermux.editorSubmenu",
@@ -356,7 +356,13 @@
         },
         "tiermux.tools.searchProviderPriority": {
           "type": "string",
-          "enum": ["auto", "exa", "brave", "custom", "duckduckgo"],
+          "enum": [
+            "auto",
+            "exa",
+            "brave",
+            "custom",
+            "duckduckgo"
+          ],
           "enumDescriptions": [
             "Auto = use the first provider that has a key configured (Exa → Brave → custom endpoint → free DuckDuckGo). Recommended.",
             "Exa AI only (requires tiermux.tools.exaApiKey).",
@@ -599,6 +605,7 @@
     "typescript": "^5.5.4"
   },
   "dependencies": {
+    "diff2html": "^3.4.56",
     "duck-duck-scrape": "^2.2.7",
     "mammoth": "^1.12.0",
     "pdf-parse": "^2.4.5"

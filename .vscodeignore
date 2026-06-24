@@ -15,4 +15,7 @@ esbuild.js
 *.vsix
 DEVELOPMENT.md
 FUTURE_PLAN.md
+BENCHMARK.md
+BENCHMARK_QUERIES.md
+media/banner.png
 package-lock.json

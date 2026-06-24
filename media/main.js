@@ -53,6 +53,22 @@
         // does not sanitize URLs) — same render sink, cheap defense-in-depth.
         div.querySelectorAll('a[href]').forEach((a) => { if (/^\s*(javascript|data|vbscript):/i.test(a.getAttribute('href') || '')) a.removeAttribute('href'); });
         if (window.hljs) div.querySelectorAll('pre code').forEach((b) => { try { window.hljs.highlightElement(b); } catch (_) {} });
+        // Render diff blocks with diff2html instead of plain syntax highlighting
+        if (window.Diff2Html) {
+          div.querySelectorAll('pre code.language-diff').forEach((b) => {
+            try {
+              const diffHtml = window.Diff2Html.html(b.textContent || '', {
+                drawFileList: false,
+                matching: 'lines',
+                outputFormat: 'line-by-line',
+              });
+              const wrapper = document.createElement('div');
+              wrapper.className = 'd2h-wrapper';
+              wrapper.innerHTML = diffHtml;
+              b.closest('pre')?.replaceWith(wrapper);
+            } catch (_) {}
+          });
+        }
         return div;
       }
     } catch (_) {}

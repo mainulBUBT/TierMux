@@ -1938,6 +1938,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <meta http-equiv="Content-Security-Policy" content="${csp}" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link href="${uri('vendor/highlight.css')}" rel="stylesheet" nonce="${nonce}" />
+  <link href="${uri('vendor/diff2html.min.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('main.css')}" rel="stylesheet" nonce="${nonce}" />
   <title>${PRODUCT_NAME}</title>
 </head>
@@ -1946,6 +1947,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <script nonce="${nonce}">window.__PRODUCT_NAME__ = ${JSON.stringify(PRODUCT_NAME)};</script>
   <script nonce="${nonce}" src="${uri('vendor/marked.min.js')}"></script>
   <script nonce="${nonce}" src="${uri('vendor/highlight.min.js')}"></script>
+  <script nonce="${nonce}" src="${uri('vendor/diff2html.min.js')}"></script>
   <script nonce="${nonce}" src="${uri('main.js')}"></script>
 </body>
 </html>`;
