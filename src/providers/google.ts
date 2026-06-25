@@ -20,6 +20,7 @@ const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 interface GeminiPart {
   text?: string;
+  thought?: boolean;
   inlineData?: { mimeType: string; data: string };
   thoughtSignature?: string;
   functionCall?: { id?: string; name?: string; args?: unknown };
@@ -194,7 +195,7 @@ function extractToolCalls(parts: GeminiPart[] | undefined): ChatToolCall[] {
 }
 function extractText(parts: GeminiPart[] | undefined): string | null {
   if (!parts) return null;
-  const text = parts.map((p) => p.text ?? '').join('');
+  const text = parts.filter((p) => !p.thought).map((p) => p.text ?? '').join('');
   return text.length > 0 ? text : null;
 }
 
@@ -210,15 +211,18 @@ export class GoogleProvider extends BaseProvider {
   readonly platform = 'google' as const;
   readonly name = 'Google AI Studio';
 
-  private buildBody(contents: unknown, systemInstruction: unknown, options?: CompletionOptions) {
+  private buildBody(contents: unknown, systemInstruction: unknown, options?: CompletionOptions, modelId?: string) {
     const tools = toGeminiTools(options?.tools);
+    // Gemma models don't support thinkingConfig — only include it for Gemini models.
+    const isGemma = modelId?.startsWith('gemma-');
+    const thinking = isGemma ? undefined : thinkingConfig(options?.reasoningEffort);
     const body: Record<string, unknown> = {
       contents,
       generationConfig: {
         temperature: options?.temperature,
         maxOutputTokens: options?.max_tokens,
         topP: options?.top_p,
-        ...(thinkingConfig(options?.reasoningEffort) ?? {}),
+        ...(thinking ?? {}),
       },
       tools,
       toolConfig: tools ? toGeminiToolConfig(options?.tool_choice) : undefined,
@@ -234,7 +238,7 @@ export class GoogleProvider extends BaseProvider {
     const res = await this.fetchWithTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify(this.buildBody(contents, systemInstruction, options)),
+      body: JSON.stringify(this.buildBody(contents, systemInstruction, options, modelId)),
     }, options?.timeoutMs);
 
     if (!res.ok) {

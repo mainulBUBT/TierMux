@@ -198,6 +198,30 @@ function trimRunTranscript(messages: ChatMessage[], protectBefore: number, keepR
   }
 }
 
+/**
+ * Extract a compact symbol list (class/function names) from file text for use in
+ * FILE LOOP hints. Keeps the model oriented on what's in the file without re-sending
+ * its full content every time it forgets and re-reads the same file.
+ */
+function extractFileSymbols(content: string, filePath: string): string {
+  const ext = (filePath.split('.').pop() ?? '').toLowerCase();
+  let re: RegExp;
+  if (ext === 'php') {
+    re = /(?:class|interface|trait|function)\s+(\w+)/g;
+  } else if (['ts', 'tsx', 'js', 'jsx', 'mjs'].includes(ext)) {
+    re = /(?:export\s+)?(?:async\s+)?(?:function|class)\s+(\w+)|(?:export\s+)?const\s+(\w+)\s*=/g;
+  } else {
+    re = /(?:function|class|def|fn)\s+(\w+)/g;
+  }
+  const symbols: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    const name = m[1] || m[2];
+    if (name && !symbols.includes(name)) { symbols.push(name); if (symbols.length >= 15) break; }
+  }
+  return symbols.join(', ');
+}
+
 function looksLikeCodeRefusal(text: string): boolean {
   // Normalize curly apostrophes so "can't" / "can’t" both match.
   const t = (text || '').toLowerCase().replace(/[’‘]/g, "'").trim();
@@ -445,28 +469,56 @@ export class Agent {
     // is compressed into a summary before caching — model never sees raw grep text.
     const route = wantsCodeContext ? classifyInformationRoute(latestText) : undefined;
     // Load graph once — used for pre-research lookup AND tool result compression (FLOW chain).
-    const structGraph = wantsCodeContext ? await loadStructuralGraph().catch(() => undefined) : undefined;
+    // Lazily build if absent: tiermux.graph.enabled gates context injection, NOT the symbol index
+    // (the symbol index is a zero-cost O(1) lookup — we always want it available).
+    let structGraph = wantsCodeContext ? await loadStructuralGraph().catch(() => undefined) : undefined;
+    if (!structGraph && wantsCodeContext && route?.codeSearch) {
+      try { structGraph = await buildStructuralGraph(false); } catch { /* non-critical */ }
+    }
     let preResearch = '';
     if (route?.codeSearch && route.searchTerms.length) {
       trackRequest();
       // 1. symbolIndex — O(1) exact + fuzzy lookup from structural graph (no disk I/O).
+      // Stem each term so "calculated" → tries "calculat" → hits "calculatePrice".
+      // Each term is searched both as-is AND with common English suffixes stripped.
       const graph = structGraph;
+      const stemTerm = (t: string): string[] => {
+        const stems = [t];
+        if (t.endsWith('ated') && t.length > 6) stems.push(t.slice(0, -2));   // calculated→calculat
+        if (t.endsWith('tion') && t.length > 6) stems.push(t.slice(0, -4));   // calculation→calculat
+        if (t.endsWith('ing') && t.length > 5)  stems.push(t.slice(0, -3));   // calculating→calculat
+        if (t.endsWith('ed') && t.length > 4)   stems.push(t.slice(0, -2));   // stored→stor
+        if (t.endsWith('s') && t.length > 4)    stems.push(t.slice(0, -1));   // prices→price
+        if (t.endsWith('er') && t.length > 5)   stems.push(t.slice(0, -2));   // cheaper→cheap
+        if (t.endsWith('est') && t.length > 5)  stems.push(t.slice(0, -3));   // cheapest→cheap
+        return [...new Set(stems)];
+      };
       const symbolHits = graph
-        ? route.searchTerms.flatMap((t) => searchSymbols(getOrBuildSymbolIndex(graph), t, 4))
+        ? route.searchTerms.flatMap((t) =>
+            stemTerm(t).flatMap((stem) => searchSymbols(getOrBuildSymbolIndex(graph), stem, 4)),
+          )
         : [];
-      const symbolSection = symbolHits.length ? formatSymbolHits(symbolHits) : '';
+      // Deduplicate hits (same file:line may appear from multiple stems)
+      const seenSym = new Set<string>();
+      const dedupedHits = symbolHits.filter((h) => {
+        const k = `${h.file}:${h.line}`;
+        if (seenSym.has(k)) return false;
+        seenSym.add(k);
+        return true;
+      });
+      if (dedupedHits.length) trackSymbolHit(); // track ANY symbol index contribution
+      const symbolSection = dedupedHits.length ? formatSymbolHits(dedupedHits) : '';
 
       // Fast exit: if symbol index covers all search terms, skip everything else.
-      // Definition hits (isDef) count double — a class/function definition is near-certain.
       const symbolCoverage = route.searchTerms.length === 0 ? 0
         : route.searchTerms.filter((t) =>
-            symbolHits.some((h) => h.name.toLowerCase().includes(t.toLowerCase())),
+            dedupedHits.some((h) => h.name.toLowerCase().includes(t.toLowerCase()) ||
+              stemTerm(t).some((s) => h.name.toLowerCase().includes(s.toLowerCase()))),
           ).length / route.searchTerms.length;
       if (symbolCoverage >= 0.8) {
         // High confidence — symbol index covers this query. Skip bundleCache + index + grep.
-        trackSymbolHit();
         preResearch = symbolSection;
-        void saveBundle({ terms: route.searchTerms, files: [], symbols: symbolHits.map((h) => ({ name: h.name, file: h.file, line: h.line, kind: h.kind })), patterns: route.searchTerms, summary: symbolSection, hitScore: 1, confidence: symbolCoverage, ttl: 24 * 60 * 60 * 1000 });
+        void saveBundle({ terms: route.searchTerms, files: [], symbols: dedupedHits.map((h) => ({ name: h.name, file: h.file, line: h.line, kind: h.kind })), patterns: route.searchTerms, summary: symbolSection, hitScore: 1, confidence: symbolCoverage, ttl: 24 * 60 * 60 * 1000 });
       } else {
         // 2. bundleCache — Jaccard match, confidence-gated injection.
         const cached = await lookupBundle(route.searchTerms).catch(() => undefined);
@@ -476,8 +528,8 @@ export class Agent {
           if (symbolSection) preResearch = symbolSection + '\n\n' + preResearch;
         } else {
           // 3. Inverted index (precomputed, O(1)) — covers terms not found in symbol index.
-          const uncoveredBySymbol = symbolHits.length
-            ? route.searchTerms.filter((t) => !symbolHits.some((h) => h.name.toLowerCase().includes(t.toLowerCase())))
+          const uncoveredBySymbol = dedupedHits.length
+            ? route.searchTerms.filter((t) => !stemTerm(t).some((s) => dedupedHits.some((h) => h.name.toLowerCase().includes(s.toLowerCase()))))
             : route.searchTerms;
 
           const fresh = await indexIsFresh();
@@ -503,12 +555,12 @@ export class Agent {
 
           // Compress all sources into summary + symbols — never cache raw text.
           const compressed = compressGrepResults([indexSection, rawGrep].filter(Boolean).join('\n\n'), route.searchTerms);
-          for (const h of symbolHits) {
+          for (const h of dedupedHits) {
             if (!compressed.symbols.find((s) => s.name === h.name)) {
               compressed.symbols.push({ name: h.name, file: h.file, line: h.line, kind: h.kind });
             }
           }
-          const mergedConfidence = Math.max(compressed.confidence, symbolHits.length > 0 ? 0.8 : 0);
+          const mergedConfidence = Math.max(compressed.confidence, dedupedHits.length > 0 ? 0.8 : 0);
           void saveBundle({ ...compressed, terms: route.searchTerms, confidence: mergedConfidence, ttl: 24 * 60 * 60 * 1000 });
 
           preResearch = [symbolSection, compressed.summary].filter(Boolean).join('\n\n');
@@ -526,9 +578,11 @@ export class Agent {
 
     // Agent mode: build full VM context (ACTIVE_FILE + SYMBOL_HITS + LAST_ERROR + GIT_DIFF + GOAL).
     // Chat/Plan keep the simpler preResearch path — VM context is only for the execution engine.
+    console.log('[TierMux] PRE_RESEARCH_BUILT', { route: route?.intent, codeSearch: route?.codeSearch, preResearchLen: preResearch.length, preResearch: preResearch.slice(0, 400) });
     const vmContext = mode === 'agent'
       ? await buildVmContext({ symbolHits: preResearch, goal: latestText, sessionId }).catch(() => preResearch)
       : null;
+    console.log('[TierMux] VM_CONTEXT_BUILT', { vmContextLen: vmContext?.length ?? 0, vmContext: vmContext?.slice(0, 500) });
 
     // Conversation memory: compressed last 3-5 turns → previous goal + files in context.
     // Injected BEFORE the structured context so the model understands "continue X" intent
@@ -540,8 +594,8 @@ export class Agent {
     const withVmContext = (base: string): string => {
       const conv = convMem ? `\n\n${convMem}` : '';
       const ctx = vmContext
-        ? `\n\n# Structured context (use this — do not search for what is already here)\n${vmContext}`
-        : (preResearch ? `\n\n${preResearch}` : '');
+        ? `\n\n# PRE-RESEARCH — MANDATORY: readFile these exact locations first, then answer. Skip grep entirely if these files are listed.\n${vmContext}`
+        : (preResearch ? `\n\n# PRE-RESEARCH — MANDATORY: readFile these exact locations first, then answer. Skip grep entirely if these files are listed.\n${preResearch}` : '');
       return base + conv + ctx;
     };
 
@@ -716,9 +770,12 @@ export class Agent {
     // This is the primary cause of 400+ second hangs on free LLMs after editFile fails.
     let consecutiveGreps = 0;
     // Per-file read counter: tracks how many times each file has been read this run.
-    // If a file is read 3+ times the model is stuck on it without making progress — inject
-    // a redirect hint so it moves on rather than burning iterations re-reading the same content.
+    // If a file is read 2+ times the model is stuck on it — inject a redirect hint with
+    // a compact symbol list so it can navigate without re-reading the full content.
     const fileReadCount = new Map<string, number>();
+    // Compact symbol summary per file (extracted on first read). Injected into FILE LOOP hints
+    // so the model knows what's in the file without needing to re-read it.
+    const fileSummaryCache = new Map<string, string>(); // normalised path → "fn1, fn2, cls1"
     // Path resolver: alias (model-facing short name) → ResolverEntry (full path + optional line hint).
     // Built incrementally from grep results; applied before executeToolCall.
     const pathResolver = new Map<string, ResolverEntry>();
@@ -857,7 +914,15 @@ export class Agent {
           for (const [k, v] of resolver) pathResolver.set(k, v);
           if (call.function.name === 'grep') {
             consecutiveGreps++;
-            if (consecutiveGreps >= 3) {
+            // Reject patterns < 4 chars — they match directory names / everything and
+            // are never useful as a code search signal. Redirect to pre-research.
+            try {
+              const gArgs = JSON.parse(call.function.arguments) as { pattern?: string };
+              if (typeof gArgs.pattern === 'string' && gArgs.pattern.trim().length < 4) {
+                obsText = `⚠️ Pattern "${gArgs.pattern}" is too short to be a useful search signal. If PRE-RESEARCH in your context already lists file locations, use readFile on those exact files instead. Otherwise grep for a specific function name, class name, or method (4+ characters).`;
+              }
+            } catch { /* ignore */ }
+            if (consecutiveGreps >= 2) {
               obsText += `\n\n⚠️ TOOL LOOP: grep called ${consecutiveGreps}× in a row. STOP grepping. Call readFile on the most relevant file above to get its full content — then use that exact text in your next editFile call.`;
             }
           } else if (call.function.name === 'readFile') {
@@ -867,10 +932,22 @@ export class Agent {
             // Track window vs full-file read AFTER resolveToolArgs may have injected startLine
             if (readArgs.startLine !== undefined) { trackWindowRead(); } else { trackFullFileRead(); }
             if (filePath) {
-              const count = (fileReadCount.get(filePath) ?? 0) + 1;
-              fileReadCount.set(filePath, count);
-              if (count >= 3) {
-                obsText += `\n\n⚠️ FILE LOOP: "${filePath}" has been read ${count} times. You already have this content — do NOT read it again. Move on: grep for a different symbol, read a different file, or write your final answer.`;
+              // Normalize path for dedup — prevents case/slash differences from bypassing the cache
+              const normPath = filePath.replace(/\\/g, '/').toLowerCase();
+              const count = (fileReadCount.get(normPath) ?? 0) + 1;
+              fileReadCount.set(normPath, count);
+              if (count === 1) {
+                // Populate symbol summary on FIRST read regardless of window (windowed reads
+                // give partial symbols but that's better than nothing for the FILE LOOP hint)
+                try {
+                  const parsed = JSON.parse(obsText) as { content?: string };
+                  const syms = extractFileSymbols(parsed?.content ?? '', filePath);
+                  if (syms && !fileSummaryCache.has(normPath)) fileSummaryCache.set(normPath, syms);
+                } catch { /* best-effort */ }
+              }
+              if (count >= 2) {
+                const syms = fileSummaryCache.get(normPath) ?? '';
+                obsText += `\n\n⚠️ FILE LOOP: "${filePath}" read ${count}× — do NOT read again. ${syms ? `Key symbols: ${syms}. ` : ''}If you need a specific section, grep for the function name instead.`;
               }
             }
           } else if (call.function.name !== 'think' && call.function.name !== 'updateTodos') {
@@ -895,7 +972,13 @@ export class Agent {
           if (compressedObs !== contentToString(observation)) observation = compressedObs;
           if (call.function.name === 'grep') {
             consecutiveGreps++;
-            if (consecutiveGreps >= 3) {
+            try {
+              const gArgs = JSON.parse(call.function.arguments) as { pattern?: string };
+              if (typeof gArgs.pattern === 'string' && gArgs.pattern.trim().length < 4) {
+                observation = `⚠️ Pattern "${gArgs.pattern}" is too short to be a useful search signal. If PRE-RESEARCH in your context already lists file locations, use readFile on those exact files instead. Otherwise grep for a specific function name, class name, or method (4+ characters).`;
+              }
+            } catch { /* ignore */ }
+            if (consecutiveGreps >= 2) {
               const hint = `\n\n⚠️ TOOL LOOP: grep called ${consecutiveGreps}× in a row. STOP grepping. Call readFile on the most relevant file above to get its full content — then use that exact text in your next editFile call.`;
               observation = contentToString(observation) + hint;
             }
@@ -905,10 +988,19 @@ export class Agent {
             const filePath = String(readArgs.path ?? '');
             if (readArgs.startLine !== undefined) { trackWindowRead(); } else { trackFullFileRead(); }
             if (filePath) {
-              const count = (fileReadCount.get(filePath) ?? 0) + 1;
-              fileReadCount.set(filePath, count);
-              if (count >= 3) {
-                const hint = `\n\n⚠️ FILE LOOP: "${filePath}" has been read ${count} times. You already have this content — do NOT read it again. Move on: grep for a different symbol, read a different file, or write your final answer.`;
+              const normPath = filePath.replace(/\\/g, '/').toLowerCase();
+              const count = (fileReadCount.get(normPath) ?? 0) + 1;
+              fileReadCount.set(normPath, count);
+              if (count === 1) {
+                try {
+                  const parsed = JSON.parse(contentToString(observation)) as { content?: string };
+                  const syms = extractFileSymbols(parsed?.content ?? '', filePath);
+                  if (syms && !fileSummaryCache.has(normPath)) fileSummaryCache.set(normPath, syms);
+                } catch { /* best-effort */ }
+              }
+              if (count >= 2) {
+                const syms = fileSummaryCache.get(normPath) ?? '';
+                const hint = `\n\n⚠️ FILE LOOP: "${filePath}" read ${count}× — do NOT read again. ${syms ? `Key symbols: ${syms}. ` : ''}If you need a specific section, grep for the function name instead.`;
                 observation = contentToString(observation) + hint;
               }
             }
@@ -962,7 +1054,22 @@ export class Agent {
 
     // Return cached result for repeated read-only calls within the same run.
     const runDedup = this.dedupFor(opts.runContext?.sessionId ?? '__standalone__');
-    const dedupKey = Agent.DEDUP_TOOLS.has(call.function.name) ? `${call.function.name}:${argStr}` : undefined;
+    // readFile: normalize key to path-only (full-file reads only) so "Helpers.php" and
+    // "app/Helpers.php" with different JSON formatting still hit the same cache entry.
+    // Windowed reads (startLine/endLine) keep the full args key — their slice varies.
+    let dedupKey: string | undefined;
+    if (Agent.DEDUP_TOOLS.has(call.function.name)) {
+      if (call.function.name === 'readFile') {
+        try {
+          const ra = JSON.parse(argStr) as { path?: unknown; startLine?: unknown; endLine?: unknown };
+          dedupKey = (!ra.startLine && !ra.endLine)
+            ? `readFile:path:${String(ra.path ?? '').replace(/\\/g, '/').toLowerCase()}`
+            : `${call.function.name}:${argStr}`;
+        } catch { dedupKey = `${call.function.name}:${argStr}`; }
+      } else {
+        dedupKey = `${call.function.name}:${argStr}`;
+      }
+    }
     if (dedupKey) {
       const hit = runDedup.get(dedupKey);
       if (hit !== undefined) {

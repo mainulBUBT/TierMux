@@ -384,12 +384,12 @@ export class Router {
       // skip the probe entirely.
       if (retryCount === 0) {
         const cached = this.healthOf(entry.platform, entry.modelId);
-        if (cached === 'bad') {
+        if (cached === 'bad' && !provider.skipPreflight) {
           failures.push({ platform: entry.platform, model: entry.modelId, reason: 'preflight_failed' });
           opts.onFailover?.({ from: entry, reason: 'preflight_failed' });
           continue;
         }
-        if (cached === undefined) {
+        if (cached === undefined && !provider.skipPreflight) {
           const probe = await this.preflightPing(provider, apiKey, entry.platform, entry.modelId);
           if (!probe.ok) {
             failures.push({ platform: entry.platform, model: entry.modelId, reason: probe.reason ?? 'preflight_failed' });

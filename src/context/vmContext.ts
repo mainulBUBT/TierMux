@@ -21,7 +21,6 @@ const TOKEN_BUDGET = 1500;
 const CHARS_PER_TOKEN = 4;
 const CHAR_BUDGET = TOKEN_BUDGET * CHARS_PER_TOKEN; // 6000 chars
 
-const MAX_SYMBOL_COUNT = 3;
 const MAX_DIFF_LINES = 10;
 const MAX_ERROR_COUNT = 1;
 const MAX_ACTIVE_FILE_CHARS = 400;
@@ -155,10 +154,9 @@ export async function buildVmContext(input: VmContextInput): Promise<string> {
   // GOAL always fits (capped to MAX_GOAL_CHARS)
   tryAdd(`## GOAL\n${input.goal.trim().slice(0, MAX_GOAL_CHARS)}`);
 
-  // 1. SYMBOL_HITS — highest signal, always try first
+  // 1. SYMBOL_HITS — highest signal, always try first (no line-slice: budget cap handles it)
   if (input.symbolHits) {
-    const lines = input.symbolHits.trim().split('\n').slice(0, MAX_SYMBOL_COUNT + 2);
-    tryAdd(`## SYMBOL_HITS\n${lines.join('\n')}`);
+    tryAdd(`## SYMBOL_HITS\n${input.symbolHits.trim()}`);
   }
 
   // 2. LAST_ERROR — urgent; prefer over diff and file

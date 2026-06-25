@@ -48,6 +48,11 @@ export interface BenchSummary {
    *  so retrieval scores are coming from raw file reads. Reported as a % (0–100). */
   retrievalPipelineUsage: number;
   overall: number; // mean of retrieval/reasoning/answer
+  /** Number of queries that hit the 120s wall-clock cap.
+   *  These are performance/planner failures — their answer/reasoning scores are 0 not
+   *  because the model is wrong but because it ran out of time. Track separately so
+   *  you can distinguish: timedOut=true → planner problem; timedOut=false,answer=0 → model problem. */
+  timedOutCount: number;
   pass: boolean;
   passRetrieval: boolean;
   passReasoning: boolean;
@@ -115,10 +120,12 @@ export function summarize(results: QueryResult[], meta: RunMeta): BenchSummary {
   const pipeHits = results.filter((r) => r.pipelineUsed).length;
   const retrievalPipelineUsage = count ? Math.round((pipeHits / count) * 1000) / 10 : 0;
 
-  const byCategory = breakdownByCategory(results);
-  const diagnosis = diagnose(retrieval, reasoning, answer, continuation, pass, retrievalPipelineUsage);
+  const timedOutCount = results.filter((r) => r.timedOut).length;
 
-  return { run: meta, n: count, retrieval, reasoning, answer, continuation, consistencySpread, medianOverall, medianReasoning, medianAnswer, retrievalPipelineUsage, overall, pass, passRetrieval, passReasoning, passAnswer, diagnosis, byCategory, telemetry };
+  const byCategory = breakdownByCategory(results);
+  const diagnosis = diagnose(retrieval, reasoning, answer, continuation, pass, retrievalPipelineUsage, timedOutCount);
+
+  return { run: meta, n: count, retrieval, reasoning, answer, continuation, consistencySpread, medianOverall, medianReasoning, medianAnswer, retrievalPipelineUsage, timedOutCount, overall, pass, passRetrieval, passReasoning, passAnswer, diagnosis, byCategory, telemetry };
 }
 
 /** When the same base query was run multiple times (ids like E1#1, E1#2, …), return the spread of overall scores. */
@@ -214,20 +221,25 @@ function breakdownByCategory(results: QueryResult[]): Record<string, CategorySco
   return out;
 }
 
-function diagnose(retrieval: number, reasoning: number, _answer: number, continuation: number | null, pass: boolean, retrievalPipelineUsage: number): string {
-  if (pass) return 'MVP PASSED — all three thresholds met; architecture can be frozen.';
+function diagnose(retrieval: number, reasoning: number, _answer: number, continuation: number | null, pass: boolean, retrievalPipelineUsage: number, timedOutCount: number): string {
+  const timeoutNote = timedOutCount > 0 ? ` (${timedOutCount} queries timed out — planner/performance problem, not model quality)` : '';
+  if (pass) return `MVP PASSED — all three thresholds met; architecture can be frozen.${timeoutNote}`;
+  // Timeouts dominate — performance issue, not model quality.
+  if (timedOutCount > 0 && reasoning < PASS.reasoning) {
+    return `${timedOutCount} queries timed out (120s cap) — planner loop issue. Pattern: retrieval=1,timedOut=true → symbolIndex/pre-research not firing; model doing blind grep→read loops. Fix: check informationRouter routing + invertedIndex freshness.`;
+  }
   // Chain-only failure → memory subsystem, not retrieval/reasoning.
   if (continuation !== null && continuation < 75 && retrieval >= PASS.retrieval && reasoning >= PASS.reasoning) {
-    return 'Conversation memory issue — single-shot retrieval+reasoning OK but chain follow-ups fail; inspect conversationMemory / executionTracker.';
+    return `Conversation memory issue — single-shot retrieval+reasoning OK but chain follow-ups fail; inspect conversationMemory / executionTracker.${timeoutNote}`;
   }
   // Retrieval scores OK but the index stack was bypassed — agent is brute-forcing with
   // raw file reads. Pass the bench but the index subsystem is unvalidated.
   if (retrieval >= PASS.retrieval && retrievalPipelineUsage < 30) {
-    return `Retrieval high (${retrieval}%) but index pipeline used in only ${retrievalPipelineUsage}% of queries — agent is succeeding with raw file reads, so the index stack is unvalidated. Investigate codebaseSearch / searchWorkspace wiring.`;
+    return `Retrieval high (${retrieval}%) but index pipeline exercised in only ${retrievalPipelineUsage}% of queries — agent is brute-forcing with raw file reads; symbolIndex / bundleCache / invertedIndex not firing. Check pre-research path in agent.ts (route.needsRetrieval, searchTerms extraction).${timeoutNote}`;
   }
-  if (retrieval < PASS.retrieval) return 'Retrieval pipeline issue — fix symbol index / alias / grep threshold.';
-  if (reasoning < PASS.reasoning) return 'Free-model bottleneck — retrieval OK but reasoning weak; tune model routing.';
-  return 'Answer quality below threshold — retrieval + reasoning OK; improve prompt/templates.';
+  if (retrieval < PASS.retrieval) return `Retrieval pipeline issue — fix symbol index / alias / grep threshold.${timeoutNote}`;
+  if (reasoning < PASS.reasoning) return `Free-model bottleneck — retrieval OK but reasoning weak; tune model routing.${timeoutNote}`;
+  return `Answer quality below threshold — retrieval + reasoning OK; improve prompt/templates.${timeoutNote}`;
 }
 
 function avgTelemetry(results: QueryResult[]): TelemetrySnapshot {
@@ -260,12 +272,13 @@ function renderScores(results: QueryResult[], meta: RunMeta): string {
   lines.push(`- TierMux commit \`${meta.gitCommit}\`  ·  ${meta.timestamp}`);
   lines.push(`- Queries: ${results.length}`);
   lines.push('');
-  lines.push('| Query | Retrieval | Pipeline | Reasoning | Answer | Retrieved | Judge note |');
-  lines.push('|-------|-----------|----------|-----------|--------|-----------|------------|');
+  lines.push('| Query | Retrieval | Pipeline | Reasoning | Answer | Timeout | Retrieved | Judge note |');
+  lines.push('|-------|-----------|----------|-----------|--------|---------|-----------|------------|');
   for (const r of results) {
     const note = (r.judgeExplanation || '—').replace(/\|/g, '\\|').slice(0, 80);
     const flag = r.chainFollowUp ? ' ↳' : '';
-    lines.push(`| ${r.id}${flag} | ${r.retrieval} | ${r.pipelineUsed ? '✓' : '·'} | ${r.reasoningScore} | ${r.answerScore} | ${(r.retrieved.join(', ') || '—')} | ${note} |`);
+    const timeout = r.timedOut ? '⏱' : '·';
+    lines.push(`| ${r.id}${flag} | ${r.retrieval} | ${r.pipelineUsed ? '✓' : '·'} | ${r.reasoningScore} | ${r.answerScore} | ${timeout} | ${(r.retrieved.join(', ') || '—')} | ${note} |`);
   }
   lines.push('');
   lines.push('**Totals (%):**');
@@ -275,6 +288,7 @@ function renderScores(results: QueryResult[], meta: RunMeta): string {
   lines.push(`- Answer: ${s.answer}% ${mark(s.passAnswer)}`);
   if (s.continuation !== null) lines.push(`- Continuation (chain follow-ups): ${s.continuation}%`);
   lines.push(`- Overall (mean): ${s.overall}%`);
+  if (s.timedOutCount > 0) lines.push(`- ⏱ Timed out (120s cap): ${s.timedOutCount}/${results.length} queries — planner/performance problem, scores for these are 0 (not model quality)`);
   if (s.medianOverall !== null) {
     lines.push(`- Overall (median, robust to judge outliers): ${s.medianOverall}%`);
     lines.push(`- Consistency spread (max−min overall across repeats): ${s.consistencySpread ?? 0}`);
@@ -292,9 +306,11 @@ function renderScores(results: QueryResult[], meta: RunMeta): string {
   lines.push(`Diagnosis: ${s.diagnosis}`);
   lines.push('');
   lines.push('Telemetry (avg per query): ' +
-    `symbolHitRate ${s.telemetry.symbolHitRate}% · ` +
-    `grepRate ${s.telemetry.grepRate}% · ` +
+    `symbolHits ${s.telemetry.symbolIndexHits} · ` +
+    `invertedIndexHits ${s.telemetry.invertedIndexHits} · ` +
+    `grepCalls ${s.telemetry.grepCalls} · ` +
     `windowReadRate ${s.telemetry.windowReadRate}% · ` +
+    `fullFileReads ${s.telemetry.fullFileReads} · ` +
     `avgToolCalls ${s.telemetry.avgToolCalls}`);
   return lines.join('\n') + '\n';
 }

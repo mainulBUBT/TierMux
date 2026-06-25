@@ -386,6 +386,25 @@
   historyDropdown.addEventListener('click', (e) => e.stopPropagation());
   document.addEventListener('click', (e) => { if (historyOpen && !historyDropdown.contains(e.target)) toggleHistory(false); });
 
+  // Delegated handler — one listener, survives every renderTabs() re-render.
+  historyList.addEventListener('click', (e) => {
+    const target = e.target;
+    // Delete button: data-delete-id is set on the span or its SVG parent span
+    const delEl = target.closest ? target.closest('[data-delete-id]') : null;
+    if (delEl) {
+      const sid = delEl.dataset.deleteId;
+      if (sid) vscode.postMessage({ type: 'deleteSessionById', sessionId: sid });
+      return; // do NOT switch session or close dropdown
+    }
+    // Session row click — switch and close
+    const row = target.closest ? target.closest('[data-session-id]') : null;
+    if (row) {
+      const sid = row.dataset.sessionId;
+      if (sid && sid !== viewedSessionId) vscode.postMessage({ type: 'switchSession', sessionId: sid });
+      toggleHistory(false);
+    }
+  });
+
   function renderTabs() {
     if (!historyOpen) return;
     historyList.innerHTML = '';
@@ -400,9 +419,11 @@
       return;
     }
     filtered.forEach((s) => {
-      const item = document.createElement('button');
-      item.type = 'button';
+      const item = document.createElement('div');
       item.className = 'history-item' + (s.id === viewedSessionId ? ' active' : '') + (' status-' + (s.status || 'idle'));
+      item.dataset.sessionId = s.id;
+      item.setAttribute('role', 'button');
+      item.tabIndex = 0;
       const left = document.createElement('div');
       left.className = 'history-item-left';
       const dot = document.createElement('span');
@@ -417,12 +438,15 @@
       const ts = document.createElement('span');
       ts.className = 'history-ts';
       ts.textContent = fmtSessionDate(s.updatedAt || s.createdAt);
+      const delBtn = document.createElement('span');
+      delBtn.className = 'history-delete-btn';
+      delBtn.title = 'Delete session';
+      delBtn.setAttribute('role', 'button');
+      delBtn.dataset.deleteId = s.id;
+      delBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" pointer-events="none"><path d="M6 2h4v1H6V2zm-2 2v9a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4H4zm2 2h1v5H6V6zm3 0h1v5H9V6zM1 3h14v1H1V3z"/></svg>';
       item.appendChild(left);
       item.appendChild(ts);
-      item.addEventListener('click', () => {
-        if (s.id !== viewedSessionId) vscode.postMessage({ type: 'switchSession', sessionId: s.id });
-        toggleHistory(false);
-      });
+      item.appendChild(delBtn);
       historyList.appendChild(item);
     });
   }

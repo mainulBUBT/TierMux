@@ -789,6 +789,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
   display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;
   background: transparent; border: none; color: var(--vscode-foreground);
   font-family: inherit; font-size: 12px; padding: 7px 10px; cursor: pointer; text-align: left;
+  user-select: none; box-sizing: border-box;
 }
 .history-item:hover { background: var(--vscode-list-hoverBackground); }
 .history-item.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); font-weight: 600; }
@@ -801,6 +802,14 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .history-item.status-needsApproval .history-dot { color: var(--vscode-charts-orange, #d18616); font-weight: 700; }
 .history-item.status-finished .history-dot { color: var(--vscode-charts-green, #89d185); }
 .history-empty { padding: 12px 10px; font-size: 12px; opacity: .5; text-align: center; }
+.history-delete-btn {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+  background: transparent; border: none; cursor: pointer; padding: 2px 3px; border-radius: 3px;
+  color: var(--vscode-foreground); opacity: 0; transition: opacity .12s, background .12s;
+  line-height: 1;
+}
+.history-item:hover .history-delete-btn { opacity: .45; }
+.history-delete-btn:hover { opacity: 1 !important; background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-errorForeground); }
 @keyframes tabspin { to { transform: rotate(360deg); } }
 
 

@@ -43,6 +43,8 @@ export abstract class BaseProvider {
    * are slow to start (e.g., reasoning models with cold starts).
    */
   preflightTimeoutMs?: number;
+  /** Skip the preflight ping entirely for this provider (e.g. slow platforms where ping costs real time). */
+  skipPreflight = false;
 
   abstract chatCompletion(
     apiKey: string,

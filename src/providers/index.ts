@@ -16,20 +16,23 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'nvidia', name: 'NVIDIA NIM', baseUrl: 'https://integrate.api.nvidia.com/v1', forceSingleToolCall: true, keyUrl: 'https://build.nvidia.com' },
   { platform: 'mistral', name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', keyUrl: 'https://console.mistral.ai/api-keys' },
   { platform: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', reasoningStyle: 'openrouter', extraHeaders: { 'HTTP-Referer': 'https://github.com/tashfeenahmed/freellmapi', 'X-Title': 'tiermux' }, keyUrl: 'https://openrouter.ai/keys' },
-  { platform: 'github', name: 'GitHub Models', baseUrl: 'https://models.github.ai/inference', keyUrl: 'https://github.com/settings/tokens' },
+  { platform: 'github', name: 'GitHub Models', baseUrl: 'https://models.github.ai/inference', skipPreflight: true, keyUrl: 'https://github.com/settings/tokens' },
   { platform: 'zhipu', name: 'Zhipu AI', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', keyUrl: 'https://open.bigmodel.cn' },
   { platform: 'huggingface', name: 'HuggingFace Router', baseUrl: 'https://router.huggingface.co/v1', keyUrl: 'https://huggingface.co/settings/tokens' },
-  { platform: 'ollama', name: 'Ollama Cloud', baseUrl: 'https://ollama.com/v1', timeoutMs: 120000, keyUrl: 'https://ollama.com/settings/keys' },
+  { platform: 'ollama', name: 'Ollama Cloud', baseUrl: 'https://ollama.com/v1', timeoutMs: 120000, skipPreflight: true, keyUrl: 'https://ollama.com/settings/keys' },
   { platform: 'kilo', name: 'Kilo Gateway', baseUrl: 'https://api.kilo.ai/api/gateway/v1', keyless: true },
   { platform: 'pollinations', name: 'Pollinations', baseUrl: 'https://text.pollinations.ai/openai/v1', keyless: true },
   { platform: 'llm7', name: 'LLM7', baseUrl: 'https://api.llm7.io/v1', keyUrl: 'https://llm7.io' },
   { platform: 'opencode', name: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen/v1', keyUrl: 'https://opencode.ai/auth' },
   { platform: 'ovh', name: 'OVH AI Endpoints', baseUrl: 'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1', keyless: true },
-  { platform: 'agnes', name: 'Agnes AI', baseUrl: 'https://apihub.agnes-ai.com/v1', timeoutMs: 120000, keyUrl: 'https://platform.agnes-ai.com' },
+  { platform: 'agnes', name: 'Agnes AI', baseUrl: 'https://apihub.agnes-ai.com/v1', timeoutMs: 120000, skipPreflight: true, keyUrl: 'https://platform.agnes-ai.com' },
   { platform: 'sambanova', name: 'SambaNova', baseUrl: 'https://api.sambanova.ai/v1', keyUrl: 'https://cloud.sambanova.ai/apis' },
   { platform: 'siliconflow', name: 'SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', keyUrl: 'https://cloud.siliconflow.cn/account/ak' },
-  { platform: 'zenmux', name: 'ZenMux', baseUrl: 'https://zenmux.ai/api/v1', timeoutMs: 120000, reasoningStyle: 'openrouter', extraHeaders: { 'HTTP-Referer': 'https://github.com/tashfeenahmed/freellmapi', 'X-Title': 'tiermux' }, keyUrl: 'https://zenmux.ai/dashboard/keys' },
-  { platform: 'openference', name: 'Openference', baseUrl: 'https://api.openference.com/v1', keyUrl: 'https://openference.com', preflightTimeoutMs: 25000 },
+  { platform: 'zenmux', name: 'ZenMux', baseUrl: 'https://zenmux.ai/api/v1', timeoutMs: 30000, skipPreflight: true, reasoningStyle: 'openrouter', extraHeaders: { 'HTTP-Referer': 'https://github.com/tashfeenahmed/freellmapi', 'X-Title': 'tiermux' }, keyUrl: 'https://zenmux.ai/dashboard/keys' },
+  // Openference requires a whitelisted coding-agent User-Agent; cline is accepted.
+  // Long-term: contact Openference support to add tiermux to their allowlist.
+  // skipPreflight: models are slow to cold-start; ping wastes time and tokens.
+  { platform: 'openference', name: 'Openference', baseUrl: 'https://api.openference.com/v1', extraHeaders: { 'User-Agent': 'cline/3.18.0 VSCode/1.99.0' }, skipPreflight: true, keyUrl: 'https://openference.com' },
 ];
 
 const providers = new Map<Platform, BaseProvider>();
@@ -47,7 +50,9 @@ function registerCompat(opts: OpenAICompatOpts & { keyUrl?: string }) {
 }
 
 // Google (Gemini) — bespoke adapter.
-providers.set('google', new GoogleProvider());
+const googleProvider = new GoogleProvider();
+googleProvider.skipPreflight = true;
+providers.set('google', googleProvider);
 platformInfo.set('google', { platform: 'google', name: 'Google AI Studio', defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta', keyless: false, keyUrl: 'https://aistudio.google.com/apikey' });
 
 // Cohere — OpenAI-compatible via the compatibility endpoint (flatten content).

@@ -62,6 +62,10 @@ export interface QueryResult {
    *  Mandatory for any future re-grading / diff / debugging — never trust a benchmark that
    *  doesn't keep this around. */
   judgeRaw?: string;
+  /** True when the query hit the BENCH_QUERY_TIMEOUT_MS wall-clock cap.
+   *  Judge scores are unreliable for timed-out runs — partial answers score 0 even when
+   *  the model was on track. Track separately so you can filter them out of aggregate stats. */
+  timedOut?: boolean;
   error?: string;
 }
 
@@ -88,6 +92,11 @@ export class BenchmarkSession {
   /** Reset between chains by dropping history (next ask starts length-1). */
   reset(): void { this.history = []; this.step = 0; }
 }
+
+/** Wall-clock cap per query. A stuck agent shouldn't burn more than 2 minutes per
+ *  question — at that point it's looping, not reasoning. Cancellation is via the
+ *  existing CancellationToken so the bench path gets a clean _Cancelled_ answer. */
+const BENCH_QUERY_TIMEOUT_MS = 120_000;
 
 export class Benchmark {
   private counter = 0;
@@ -128,12 +137,13 @@ export class Benchmark {
       autoApprove: () => true,
     };
 
+    const tokenSource = new vscode.CancellationTokenSource();
     const opts: RunOpts = {
       model: this.cfg.model,
       reasoningEffort: this.cfg.effort,
       temperature: 0, // deterministic benchmark mode
       runContext,
-      token: new vscode.CancellationTokenSource().token,
+      token: tokenSource.token,
       bench: true, // never pause/check-in — corrupts the answer
     };
 
@@ -141,11 +151,18 @@ export class Benchmark {
     this.cfg.log?.(`▶ ${query.id}: ${query.text}`);
     let result: AgentResult | undefined;
     let error: string | undefined;
+    const timeoutId = setTimeout(() => {
+      this.cfg.log?.(`  ⏱ ${query.id}: timeout after ${BENCH_QUERY_TIMEOUT_MS / 1000}s — forcing stop`);
+      tokenSource.cancel();
+    }, BENCH_QUERY_TIMEOUT_MS);
     try {
       result = await this.cfg.agent.run(history, 'agent' as Mode, opts, cb);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
       this.cfg.log?.(`  ✗ ${query.id} errored: ${error}`);
+    } finally {
+      clearTimeout(timeoutId);
+      tokenSource.dispose();
     }
 
     // Append the assistant turn so chain history stays well-formed.
@@ -156,7 +173,8 @@ export class Benchmark {
       history.push({ role: 'assistant', content: finalText });
     }
 
-    const answerText = result?.text?.trim() || answer.trim();
+    const timedOut = result?.text?.trim() === '_Cancelled._';
+    const answerText = timedOut ? '' : (result?.text?.trim() || answer.trim());
     // Also fold in tool traces from workMessages (authoritative) if onTool missed any.
     if (result?.workMessages) {
       for (const m of result.workMessages) {
@@ -172,7 +190,7 @@ export class Benchmark {
     }
 
     const openedFiles = uniqueFiles(trace);
-    const { score, matched, pipelineUsed } = scoreRetrieval(trace, query.expectedTokens);
+    const { score, matched, pipelineUsed: tracePipeline } = scoreRetrieval(trace, query.expectedTokens);
     const verdict = await judgeAnswer(this.cfg.router, this.cfg.judgeModel, {
       query, answer: answerText, reasoning: result?.reasoning ?? reasoning,
     });
@@ -180,9 +198,18 @@ export class Benchmark {
     const telemetry = getSnapshot();
     resetTelemetry();
 
+    // Pre-research pipeline (symbolIndex / bundleCache / invertedIndex / grep) runs in
+    // TypeScript *before* the LLM loop, so it never appears in the tool trace. We use
+    // telemetry counters as the authoritative signal that the index stack was exercised.
+    const pipelineUsed = tracePipeline
+      || telemetry.symbolIndexHits > 0
+      || telemetry.invertedIndexHits > 0
+      || telemetry.bundleCacheHits > 0
+      || telemetry.grepCalls > 0;
+
     if (restore && this.cfg.restore !== false) await this.gitRestore();
 
-    this.cfg.log?.(`  ${score === 1 ? '✓' : '✗'} retrieval=${score} reasoning=${verdict.reasoning} answer=${verdict.answer}  [${matched.join(',') || 'none'}]`);
+    this.cfg.log?.(`  ${timedOut ? '⏱' : score === 1 ? '✓' : '✗'} retrieval=${score} reasoning=${verdict.reasoning} answer=${verdict.answer}${timedOut ? ' TIMED_OUT' : ''}  [${matched.join(',') || 'none'}]  symHits=${telemetry.symbolIndexHits} idxHits=${telemetry.invertedIndexHits} toolCalls=${telemetry.totalToolCalls} fullReads=${telemetry.fullFileReads} winReads=${telemetry.windowReads}`);
 
     return {
       id: query.id,
@@ -200,6 +227,7 @@ export class Benchmark {
       judgeRaw: verdict.raw,
       chainFollowUp,
       telemetry,
+      timedOut: timedOut || undefined,
       error,
     };
   }

@@ -33,6 +33,8 @@ export interface OpenAICompatOpts {
   runtimeName?: string;
   /** Optional override for preflight health check timeout (ms). */
   preflightTimeoutMs?: number;
+  /** Skip the preflight ping entirely for this provider. */
+  skipPreflight?: boolean;
 }
 
 export class OpenAICompatProvider extends BaseProvider {
@@ -58,6 +60,7 @@ export class OpenAICompatProvider extends BaseProvider {
     this.reasoningStyle = opts.reasoningStyle ?? 'effort';
     this.flattenContent = opts.flattenContent ?? false;
     this.preflightTimeoutMs = opts.preflightTimeoutMs;
+    this.skipPreflight = opts.skipPreflight ?? false;
   }
 
   private resolveBaseUrl(options?: CompletionOptions): string {

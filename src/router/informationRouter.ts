@@ -24,11 +24,29 @@ const WEB = /\b(today|latest|news|price|weather|score|ranking|standings?|stock|r
 const DEBUG = /\b(bug|error|exception|stacktrace|stack trace|traceback|failing|fails?|failed|broken|crash|throws?|not working|null pointer|segfault)\b|\bnot (?:loading|showing|rendering|working|saving|connecting|fetching)\b|\b(?:can'?t|cannot|won'?t|doesn'?t)\s+(?:load|show|work|run|save|fetch|connect|find)\b|\b(?:shows?|returns?)\s+(?:null|undefined|nothing|wrong|0)\b/i;
 const CODE = /(?:^|\s)(\.\/)?[\w-./]+\.[a-zA-Z]{1,5}\b|```|\b(function|method|class|component|hook|endpoint|api|route|handler|service|model|controller|repository|middleware)\b|\b(refactor|implement|fix|debug|add|create|update|delete|rename|move|write|generate)\b/i;
 
+// Implementation-investigation questions — "how is X calculated?", "where is X defined?" etc.
+// Must be checked BEFORE WEB so queries like "how is cheapest price calculated?" route to code
+// rather than web (WEB matches the word "price").
+const HOW_IMPL = /\bhow (?:is|are|does|do|can|would)\b.{0,80}\b(?:calculat|comput|determin|implement|process|handl|fetch|retriev|generat|sort|filter|rank|validat|format|convert|transform|resol|work|built|done|stored?|cach|assign|select|choos|execut|trigger|call)\w*/i;
+// "where is X defined/stored/handled" — location questions about code structure.
+const WHERE_DEF = /\bwhere (?:is|are|does|do)\b.{0,60}\b(?:defin|locat|implement|handl|stored?|process|calculat|comput|register|declar)\w*/i;
+// Feature/data queries about application domain objects — short noun-phrase questions that
+// describe a feature ("customer wallet", "admin panel", "transaction filters") rather than
+// asking HOW/WHERE but are clearly about the codebase, not the web.
+// These have no verb, so they skip HOW_IMPL, and no code noun, so they skip CODE.
+const FEATURE_QUERY = /\b(?:admin|panel|dashboard|wallet|transaction|invoice|order|product|module|filter|report|customer|vendor|rider|zone|store|branch|coupon|promo|discount|delivery|payment|refund|subscription|notification|setting|config|permission|role)\b/i;
+
 export function route(query: string): RouteIntent {
   const t = query || '';
+  // Implementation/location questions checked BEFORE WEB so domain words ("price", "score")
+  // in "how is X calculated?" don't hijack to web.
+  if (HOW_IMPL.test(t) || WHERE_DEF.test(t)) return 'code';
   if (WEB.test(t)) return 'web';
   if (DEBUG.test(t)) return 'debug';
   if (CODE.test(t)) return 'code';
+  // Short feature-domain queries ("admin panel customer wallet?", "monthly debit credit filter?")
+  // — no code keyword but clearly about the codebase. Route as code so pre-research fires.
+  if (FEATURE_QUERY.test(t)) return 'code';
   return 'chat';
 }
 
