@@ -95,16 +95,18 @@ const TEMPLATES: Record<TemplateKind, ExecutionTemplate> = {
     kind: 'explain',
     label: 'Explain',
     steps: [
-      'grep for the symbol, function, or pattern the user asked about',
-      'readFile the relevant section (do not read the whole file — only the relevant lines)',
-      'trace any key dependencies: grep for what it calls or imports',
-      'write a clear explanation with file:line references for every claim',
+      'Use PRE-RESEARCH as the primary starting point for retrieval — if it lists file locations, read THOSE files first (do not grep, do not glob)',
+      'readFile with the startLine/endLine range shown in PRE-RESEARCH — NEVER the full file (full reads are tracked and penalised)',
+      'stop reading as soon as the previous read gave you enough evidence to answer — a flow like Controller → Service → Helper may need 2–3 reads, but stop the moment you have it',
+      'fall back to listDir → glob → grep ONLY if PRE-RESEARCH is empty or partial (does not identify a specific file)',
+      'write a clear explanation with file:line references for every claim — no speculation',
     ],
     allowedTools: ['grep', 'readFile', 'glob', 'codebaseSearch', 'listDir', 'think', 'getSymbolGraph'],
     outputConstraint:
       'Output a structured explanation using ## headers. ' +
-      'Every code fact MUST have a file:line reference (e.g. `src/service.ts:42`). ' +
-      'No speculation. If something is unclear, say "not found in context" — do not guess.',
+      'Every code fact MUST have a file:line reference (e.g. `app/Services/MarketComparisonService.php:42`). ' +
+      'No speculation. If something is unclear, say "not found in context" — do not guess. ' +
+      'Never call grep if PRE-RESEARCH already identifies the relevant file.',
   },
 
   edit: {

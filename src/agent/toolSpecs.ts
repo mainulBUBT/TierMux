@@ -46,12 +46,12 @@ export const TOOL_SPECS: ChatToolDefinition[] = [
     type: 'function',
     function: {
       name: 'readFile',
-      description: 'Read a UTF-8 text file from the workspace. Use startLine/endLine to read only the lines you need — prefer a targeted range over reading the full file to save tokens and speed up the response.',
+      description: 'Read a UTF-8 text file from the workspace. ALWAYS pass startLine and endLine when a PRE-RESEARCH line range is given — full-file reads are tracked and penalised in the benchmark. For files over ~150 lines, default to a 1–80 or 1–120 window unless you need a different region. Reading a window cuts token cost ~5× and keeps you on-budget.',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Workspace-relative path.' },
-          startLine: { type: 'number', description: 'First line to return (1-based, inclusive). Omit to start from the beginning.' },
+          startLine: { type: 'number', description: 'First line to return (1-based, inclusive). Pass this whenever a PRE-RESEARCH line range is given, or when the file is large (>150 lines).' },
           endLine: { type: 'number', description: 'Last line to return (1-based, inclusive). Omit to read to end of file.' },
         },
         required: ['path'],

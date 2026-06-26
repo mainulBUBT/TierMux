@@ -31,11 +31,13 @@ const EXCLUDE_DIRS = new Set([
 // Also exclude path segments that look like vendor sub-paths
 const EXCLUDE_PATH_RE = /\/(vendor|node_modules|dist|build|coverage|storage\/logs)\//;
 
+import { tokenizePathSegments } from './pathTokens';
+
 const MAX_HITS_PER_TERM = 8;
-const MAX_TERMS = 5000;
+const MAX_TERMS = 8000;
 const MAX_FILES = 600;
 
-// Stop words — skip indexing these (common English + code keywords with no search value)
+
 const STOP = new Set([
   'about','after','also','back','been','both','call','code','come','does','done','down',
   'each','even','file','files','find','from','give','goes','good','have','help','here',
@@ -164,6 +166,15 @@ function indexFile(relPath: string, content: string): Record<string, IndexHit[]>
       addHit(term, { file: relPath, line: i + 1, text });
     }
   }
+
+  // Path tokens: the file's own location is the highest-signal search index.
+  // Indexing the path means a query for "comparison" or "market" resolves to
+  // MarketComparisonService.php in O(1) without any runtime grep. Path-derived
+  // hits carry isDef=true so they outrank body-text usage hits.
+  for (const term of tokenizePathSegments(relPath)) {
+    addHit(term, { file: relPath, line: 1, text: relPath, isDef: true });
+  }
+
   return result;
 }
 

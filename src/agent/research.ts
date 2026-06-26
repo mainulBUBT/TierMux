@@ -6,7 +6,7 @@ import type { WorkspaceTools } from './tools';
 import type { CodebaseIndex } from '../index/codebaseIndex';
 import type { InformationRoute } from '../router/informationRouter';
 import { loadStructuralGraph } from '../context/structuralGraph';
-import { getOrBuildSymbolIndex, searchSymbols, formatSymbolHits } from '../context/symbolIndex';
+import { getOrBuildSymbolIndex, getOrBuildPathIndex, searchSymbols, formatSymbolHits } from '../context/symbolIndex';
 
 export interface ResearchResult {
   /** Full text injected into system prompt. */
@@ -263,11 +263,12 @@ export async function runResearchPipeline(
         const graph = await loadStructuralGraph();
         if (!graph || graph.files.length === 0) return null;
         const idx = getOrBuildSymbolIndex(graph);
+        const pathIdx = getOrBuildPathIndex(graph);
         const hits: Array<{ name: string; file: string; line: number; kind: 'function' | 'class' | 'interface' | 'type' | 'const' | 'let' | 'var' | 'default' | 'enum' }> = [];
         for (const term of route.searchTerms) {
-          // Exact first, then fuzzy. Stop when we have 8 hits total.
+          // Exact first, then fuzzy (with path-token fallback). Stop when we have 8 hits total.
           const exact = (idx.get(term) ?? []).map((e) => ({ name: term, ...e }));
-          const fuzzy = exact.length === 0 ? searchSymbols(idx, term, 4) : [];
+          const fuzzy = exact.length === 0 ? searchSymbols(idx, term, 8, pathIdx) : [];
           hits.push(...exact, ...fuzzy);
           if (hits.length >= 8) break;
         }

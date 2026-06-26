@@ -131,6 +131,7 @@ export class Benchmark {
     const runContext: RunContext = {
       sessionId: 'bench',
       requestId,
+      outDir: this.cfg.outDir,           // debug log goes to <outDir>/pre-research.jsonl
       checkpoints: { record: () => {} },
       approveEdit: async () => true,    // allow edits → git restore after
       approveCommand: async () => false, // reject command exec (no side effects)
@@ -145,6 +146,7 @@ export class Benchmark {
       runContext,
       token: tokenSource.token,
       bench: true, // never pause/check-in — corrupts the answer
+      chainFollowUp, // relax bundle-cache Jaccard to 0.4 for chain steps after the first
     };
 
     resetTelemetry();
@@ -210,6 +212,67 @@ export class Benchmark {
     if (restore && this.cfg.restore !== false) await this.gitRestore();
 
     this.cfg.log?.(`  ${timedOut ? '⏱' : score === 1 ? '✓' : '✗'} retrieval=${score} reasoning=${verdict.reasoning} answer=${verdict.answer}${timedOut ? ' TIMED_OUT' : ''}  [${matched.join(',') || 'none'}]  symHits=${telemetry.symbolIndexHits} idxHits=${telemetry.invertedIndexHits} toolCalls=${telemetry.totalToolCalls} fullReads=${telemetry.fullFileReads} winReads=${telemetry.windowReads}`);
+
+    // Per-query summary — joins the agent's pre-research log with this query's
+    // telemetry snapshot by requestId. BACKWARD SCAN makes lookup O(1) amortised
+    // (matching record is almost always the most recent). Derived metrics are
+    // computed HERE from authoritative data:
+    //   - toolCalls, windowReads, fullFileReads: telemetry snapshot
+    //   - injectedFileUsedRate: workspace-relative paths, slash-normalised.
+    //     Case folding only on case-insensitive filesystems (Windows, macOS
+    //     APFS default) so Linux CI doesn't merge Admin/Helpers.php with
+    //     admin/helpers.php. This is an OS-AWARE DEFAULT, not a guarantee —
+    //     APFS can be formatted case-sensitive.
+    try {
+      const perQueryUri = vscode.Uri.file(path.join(this.cfg.outDir, 'summary-per-query.jsonl'));
+      let preResearch: Record<string, unknown> = {};
+      try {
+        const preUri = vscode.Uri.file(path.join(this.cfg.outDir, 'pre-research.jsonl'));
+        const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(preUri));
+        const lines = text.split('\n').filter(Boolean);
+        for (let i = lines.length - 1; i >= 0; i--) {
+          try {
+            const r = JSON.parse(lines[i]) as Record<string, unknown>;
+            if (r.requestId === requestId) { preResearch = r; break; }
+          } catch { /* skip malformed line */ }
+        }
+      } catch { /* pre-research log missing */ }
+
+      const injectedRaw = (preResearch.filesInjected as string[] | undefined) ?? [];
+      const readRaw = (preResearch.readFiles as Array<{ path: string }> | undefined) ?? [];
+      const normalizeSep = (p: string): string => p.replace(/\\/g, '/');
+      const isCaseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
+      const normalize = isCaseInsensitive
+        ? (p: string): string => normalizeSep(p).toLowerCase()
+        : normalizeSep;
+      const readSet = new Set(readRaw.map((r) => normalize(r.path)));
+      const usedRate = injectedRaw.length === 0
+        ? null
+        : Math.round((injectedRaw.filter((f) => readSet.has(normalize(f))).length / injectedRaw.length) * 100) / 100;
+
+      const summaryLine = JSON.stringify({
+        id: query.id,
+        requestId,
+        ts: Date.now(),
+        route: preResearch.route ?? null,
+        symbolHits: preResearch.symbolHits ?? 0,
+        symbolCoverage: preResearch.symbolCoverage ?? 0,
+        cacheHit: preResearch.cacheHit ?? false,
+        grepUsed: preResearch.grepUsed ?? false,
+        filesInjected: injectedRaw,
+        readFiles: readRaw,
+        toolCalls: telemetry.totalToolCalls,
+        windowReads: telemetry.windowReads,
+        fullFileReads: telemetry.fullFileReads,
+        injectedFileUsedRate: usedRate,
+        retrieval: score,
+        timedOut: !!timedOut,
+      }) + '\n';
+
+      let existing = '';
+      try { existing = new TextDecoder().decode(await vscode.workspace.fs.readFile(perQueryUri)); } catch {}
+      await vscode.workspace.fs.writeFile(perQueryUri, new TextEncoder().encode(existing + summaryLine));
+    } catch { /* non-critical */ }
 
     return {
       id: query.id,

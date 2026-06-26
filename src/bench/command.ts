@@ -161,10 +161,13 @@ function gitHead(): Promise<string> {
 }
 
 function stamp(): string {
-  // YYYYMMDD-HHMM — stable, filesystem-safe. (Command runs in the host, Date is allowed here.)
+  // YYYYMMDD-HHMMSS — second resolution so back-to-back re-runs (same minute,
+  // same label) get distinct outDirs and don't clobber each other. Sequential
+  // benchmark execution guarantees no two runs share a second; for parallel or
+  // distributed execution, switch to a UUID-based runId.
   const d = new Date();
   const p = (n: number): string => String(n).padStart(2, '0');
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
 function msg(e: unknown): string { return e instanceof Error ? e.message : String(e); }

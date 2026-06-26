@@ -16,8 +16,66 @@
 import * as vscode from 'vscode';
 
 const CACHE_REL = '.tiermux/bundle-cache.json';
+const SYNONYMS_REL = '.tiermux/synonyms.json';
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_ENTRIES = 50;
+
+// Domain synonym map — per-workspace, NOT hardcoded.
+//
+// The previous version shipped a Laravel/bazardor-flavoured list baked into the
+// source. That actively hurt any other project: "user"→"customer" or
+// "product"→"item" would silently match unrelated bundles in a Rust CLI, a
+// Python ML repo, a SaaS Next.js app, etc. Synonyms are inherently project-
+// specific vocabulary, so they live in the workspace, not the binary.
+//
+// To enable synonym expansion for a workspace, create `.tiermux/synonyms.json`:
+//   {
+//     "cheapest": ["lowest", "minimum"],
+//     "market":   ["shop", "store", "vendor"]
+//   }
+// `lookupBundle({ expandSynonyms: true })` will then grow the search-term set
+// with whatever is defined here. File is loaded fresh per lookup (small JSON,
+// typical size <2KB) and cached in memory per process.
+
+let _synonymsCache: { at: number; map: Record<string, string[]> } | undefined;
+const SYNONYMS_TTL_MS = 30_000;
+
+async function loadSynonyms(): Promise<Record<string, string[]>> {
+  if (_synonymsCache && Date.now() - _synonymsCache.at < SYNONYMS_TTL_MS) {
+    return _synonymsCache.map;
+  }
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+  if (!root) return {};
+  try {
+    const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(root, SYNONYMS_REL));
+    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      // Validate shape: every value must be string[].
+      const map: Record<string, string[]> = {};
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        if (Array.isArray(v) && v.every((x) => typeof x === 'string')) {
+          map[k.toLowerCase()] = (v as string[]).map((s) => s.toLowerCase());
+        }
+      }
+      _synonymsCache = { at: Date.now(), map };
+      return map;
+    }
+  } catch { /* file missing or malformed — fall through to empty map */ }
+  _synonymsCache = { at: Date.now(), map: {} };
+  return {};
+}
+
+/** Apply a pre-loaded synonyms map to a term list. Lowercased, deduplicated,
+ *  original-preserving. Used by `lookupBundle` to expand both sides of a
+ *  Jaccard comparison against the same map. */
+function applySynonyms(terms: string[], map: Record<string, string[]>): string[] {
+  const out = new Set<string>(terms.map((t) => t.toLowerCase()));
+  for (const t of terms) {
+    const k = t.toLowerCase();
+    for (const syn of map[k] ?? []) out.add(syn);
+  }
+  return [...out];
+}
 
 export interface TaskBundle {
   /** Normalised, sorted search terms — the cache key. */
@@ -96,10 +154,31 @@ function jaccard(a: string[], b: string[]): number {
 
 /**
  * Look up a cached bundle for the given search terms.
- * Returns bundle only if Jaccard ≥ 0.5 AND within TTL AND confidence ≥ 0.5.
+ * Returns bundle only if Jaccard ≥ minJaccard AND within TTL AND confidence ≥ 0.5.
+ *
+ * Options:
+ *   expandSynonyms  Grow the search-term set with workspace-local synonyms from
+ *                   `.tiermux/synonyms.json` before matching. No-op if the file
+ *                   doesn't exist. Synonyms are project-specific by design — the
+ *                   user (or a project maintainer) decides what counts as a
+ *                   synonym for their domain.
+ *   minJaccard      Override the 0.5 default. Pass 0.4 for chain follow-ups where
+ *                   the user has shifted intent slightly (add, fix, etc.).
  */
-export async function lookupBundle(terms: string[]): Promise<TaskBundle | undefined> {
+export interface LookupOpts {
+  expandSynonyms?: boolean;
+  minJaccard?: number;
+}
+
+export async function lookupBundle(terms: string[], opts: LookupOpts = {}): Promise<TaskBundle | undefined> {
   if (terms.length === 0) return undefined;
+  const minJ = opts.minJaccard ?? 0.5;
+  // Load the synonyms file ONCE per call (30s in-memory cache after that).
+  // When no file is present, `expandTerms` is a no-op and we score on the
+  // original terms — same behaviour as before, just with one extra map lookup.
+  const synonyms = opts.expandSynonyms ? await loadSynonyms() : undefined;
+  const hasSynonyms = !!synonyms && Object.keys(synonyms).length > 0;
+  const searchTerms = hasSynonyms ? applySynonyms(terms, synonyms!) : terms;
   const all = await loadAll();
   const now = Date.now();
   const fresh = all.filter((b) => now - b.ts < (b.ttl ?? DEFAULT_TTL_MS));
@@ -107,8 +186,13 @@ export async function lookupBundle(terms: string[]): Promise<TaskBundle | undefi
   let best: TaskBundle | undefined;
   let bestScore = 0;
   for (const b of fresh) {
-    const score = jaccard(terms, b.terms);
-    if (score >= 0.5 && score > bestScore && b.confidence >= 0.5) {
+    // Expand BOTH sides when synonyms are configured — otherwise query "X" vs
+    // bundle "synonym-of-X" scores ≈ 1/6 (the union grows but the intersection
+    // doesn't), which is the OPPOSITE of what synonym expansion should do.
+    // With both sides expanded, the shared synonym roots lift the intersection.
+    const bundleTerms = hasSynonyms ? applySynonyms(b.terms, synonyms!) : b.terms;
+    const score = jaccard(searchTerms, bundleTerms);
+    if (score >= minJ && score > bestScore && b.confidence >= 0.5) {
       best = b;
       bestScore = score;
     }

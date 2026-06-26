@@ -20,8 +20,8 @@ import type { RunContext } from './runContext';
 import { unmarkEditing } from './editLock';
 import type { RouteOptions } from '../router/router';
 import { buildStructuralGraph, loadStructuralGraph, graphSummary, type StructuralGraph } from '../context/structuralGraph';
-import { lookupBundle, saveBundle, formatBundle, compressGrepResults } from '../context/bundleCache';
-import { getOrBuildSymbolIndex, searchSymbols, formatSymbolHits } from '../context/symbolIndex';
+import { lookupBundle, saveBundle, formatBundle, compressGrepResults, type TaskBundle } from '../context/bundleCache';
+import { getOrBuildSymbolIndex, getOrBuildPathIndex, searchSymbols, formatSymbolHits } from '../context/symbolIndex';
 import { lookupInvertedIndex, formatIndexHits, indexIsFresh } from '../context/invertedIndex';
 import { pickTemplate, getTemplate, templatePromptBlock } from './templates';
 import { buildVmContext, recordFailure, clearFailure } from '../context/vmContext';
@@ -94,6 +94,13 @@ export interface RunOpts {
   /** Benchmark mode: never pause/check-in on iteration cap (would corrupt the answer
    *  and every downstream score). Cap is raised to BENCH_MAX_ITERATIONS instead. */
   bench?: boolean;
+  /** True for chain steps after the first — used to relax the bundle-cache
+   *  Jaccard floor (0.4 instead of 0.5) since the user has shifted intent
+   *  slightly. Set by the bench runner for chain follow-ups; production
+   *  callers leave it false. Critical: do NOT infer this from history.length
+   *  — resumed sessions have non-empty history on their first new turn, and
+   *  should still use the 0.5 floor. */
+  chainFollowUp?: boolean;
 }
 
 /** Hard cap when RunOpts.bench is set. Much higher than the user-facing default (25)
@@ -243,6 +250,12 @@ export class Agent {
   /** Tracks files modified + commands run across all runs in this session (per Agent instance = per chat). */
   private readonly execTracker = new ExecutionTracker();
 
+  /**
+   * Per-run read trace. Reset at the start of each run() so executeToolCall
+   * can append to it and the post-loop debug log can dump it. Captures
+   * {path, startLine?, endLine?} for every readFile call in the run. */
+  private readsInThisTurn: Array<{ path: string; startLine?: number; endLine?: number }> = [];
+
   /** Cached project-identity summary, keyed by workspace root (rarely changes mid-session). */
   private groundingCache?: { root: string; text: string };
 
@@ -385,6 +398,8 @@ export class Agent {
     opts: RunOpts,
     cb: AgentCallbacks = {},
   ): Promise<AgentResult> {
+    // Reset the per-run read trace so executeToolCall accumulates fresh for this run.
+    this.readsInThisTurn = [];
     // Show the "Working…" indicator immediately — before grounding/context prep and
     // the (slow, free-tier) model call — so the UI never looks frozen while waiting. This is
     // the generic busy status, NOT reasoning: the word "Thinking" is reserved for the 🧠 block
@@ -476,7 +491,24 @@ export class Agent {
       try { structGraph = await buildStructuralGraph(false); } catch { /* non-critical */ }
     }
     let preResearch = '';
-    if (route?.codeSearch && route.searchTerms.length) {
+    // Smart search (pre-research) runs when EITHER:
+    //   - the model is 'auto' (Auto routing pairs pre-research with intelligent failover
+    //     so results are always acted on by a capable model), OR
+    //   - this is a benchmark run. The bench PINS a specific model for determinism
+    //     (see runner.ts — model is never 'auto'), which would otherwise disable the
+    //     entire retrieval pipeline the bench exists to measure (symbolIndex / bundleCache
+    //     / invertedIndex / grep). Forcing pre-research on under `opts.bench` is what
+    //     lets the KPIs reflect the real architecture instead of a bypassed one.
+    // When a user interactively pins a specific model they trust it to investigate on
+    // its own — pre-research would just burn tokens and potentially confuse the model.
+    const isAutoModel = !opts.model || opts.model === 'auto';
+    const preResearchEnabled = isAutoModel || !!opts.bench;
+    console.log('[TierMux] PRE_RESEARCH_GATE', {
+      intent: route?.intent, codeSearch: route?.codeSearch,
+      terms: route?.searchTerms, isAutoModel, bench: !!opts.bench,
+      enabled: preResearchEnabled, graphFiles: structGraph?.files?.length ?? 0,
+    });
+    if (route?.codeSearch && route.searchTerms.length && preResearchEnabled) {
       trackRequest();
       // 1. symbolIndex — O(1) exact + fuzzy lookup from structural graph (no disk I/O).
       // Stem each term so "calculated" → tries "calculat" → hits "calculatePrice".
@@ -495,7 +527,9 @@ export class Agent {
       };
       const symbolHits = graph
         ? route.searchTerms.flatMap((t) =>
-            stemTerm(t).flatMap((stem) => searchSymbols(getOrBuildSymbolIndex(graph), stem, 4)),
+            stemTerm(t).flatMap((stem) =>
+              searchSymbols(getOrBuildSymbolIndex(graph), stem, 8, getOrBuildPathIndex(graph)),
+            ),
           )
         : [];
       // Deduplicate hits (same file:line may appear from multiple stems)
@@ -507,6 +541,10 @@ export class Agent {
         return true;
       });
       if (dedupedHits.length) trackSymbolHit(); // track ANY symbol index contribution
+      console.log('[TierMux] PRE_RESEARCH_SEARCH', {
+        terms: route.searchTerms, hits: dedupedHits.length,
+        sample: dedupedHits.slice(0, 3).map((h) => `${h.name}@${h.file}:${h.line}`),
+      });
       const symbolSection = dedupedHits.length ? formatSymbolHits(dedupedHits) : '';
 
       // Fast exit: if symbol index covers all search terms, skip everything else.
@@ -515,13 +553,27 @@ export class Agent {
             dedupedHits.some((h) => h.name.toLowerCase().includes(t.toLowerCase()) ||
               stemTerm(t).some((s) => h.name.toLowerCase().includes(s.toLowerCase()))),
           ).length / route.searchTerms.length;
+      // Hoisted so the debug log below can read them regardless of which
+      // branch the pre-research pipeline took.
+      let cached: TaskBundle | undefined;
+      let indexSection = '';
+      let termsForGrep: string[] = [];
       if (symbolCoverage >= 0.8) {
         // High confidence — symbol index covers this query. Skip bundleCache + index + grep.
         preResearch = symbolSection;
         void saveBundle({ terms: route.searchTerms, files: [], symbols: dedupedHits.map((h) => ({ name: h.name, file: h.file, line: h.line, kind: h.kind })), patterns: route.searchTerms, summary: symbolSection, hitScore: 1, confidence: symbolCoverage, ttl: 24 * 60 * 60 * 1000 });
       } else {
         // 2. bundleCache — Jaccard match, confidence-gated injection.
-        const cached = await lookupBundle(route.searchTerms).catch(() => undefined);
+        // Expand domain synonyms so "cheapest" can hit a "minimum" bundle, and
+        // lower the Jaccard floor for chain follow-ups (the user has shifted
+        // intent slightly — e.g. "now add X" after "how does X work?"). The
+        // follow-up signal comes from opts.chainFollowUp, NOT from
+        // history.length — a resumed session has non-empty history on its
+        // first new turn and should still use the 0.5 floor.
+        cached = await lookupBundle(route.searchTerms, {
+          expandSynonyms: true,
+          minJaccard: opts.chainFollowUp ? 0.4 : 0.5,
+        }).catch(() => undefined);
         if (cached) {
           trackCacheHit();
           preResearch = formatBundle(cached);
@@ -533,12 +585,15 @@ export class Agent {
             : route.searchTerms;
 
           const fresh = await indexIsFresh();
-          let indexSection = '';
-          let termsForGrep = uncoveredBySymbol.slice(0, 3);
           if (fresh && uncoveredBySymbol.length) {
             const { hits, misses } = await lookupInvertedIndex(uncoveredBySymbol);
             if (hits.length) { trackIndexHit(); indexSection = formatIndexHits(hits); }
             termsForGrep = misses.slice(0, 2); // grep only what index doesn't know
+          }
+          if (termsForGrep.length === 0) {
+            // Index wasn't fresh, or no uncovered terms — fall back to the
+            // full set (original behaviour). Preserves the pre-fix semantics.
+            termsForGrep = uncoveredBySymbol.slice(0, 3);
           }
 
           // 4. grep — only for terms the index missed (regex patterns, brand-new files).
@@ -571,10 +626,68 @@ export class Agent {
       const prior = this.findPriorResearch(route.searchTerms);
       if (prior && prior !== preResearch) preResearch = prior + (preResearch ? `\n\n---\n\n${preResearch}` : '');
       if (preResearch) this.saveResearch(route.searchTerms, preResearch);
+
+      // Debug report → .tiermux/pre-research-debug.jsonl (or <bench-outDir>/pre-research.jsonl when outDir is set)
+      // AGENT SIDE: raw events only. No derived metrics. The bench runner joins
+      // this with telemetry snapshot by requestId.
+      try {
+        const benchOutDir = (opts.runContext as { outDir?: string } | undefined)?.outDir;
+        const debugUri = benchOutDir
+          ? vscode.Uri.file(benchOutDir + '/pre-research.jsonl')
+          : vscode.Uri.joinPath(
+              vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file('.'),
+              '.tiermux',
+              'pre-research-debug.jsonl',
+            );
+        const debugRecord = {
+          requestId: opts.runContext?.requestId ?? null,
+          ts: Date.now(),
+          route: route?.intent,
+          searchTerms: route?.searchTerms,
+          symbolHits: dedupedHits.length,
+          symbolNames: dedupedHits.slice(0, 8).map((h) => h.name),
+          symbolCoverage: Math.round(symbolCoverage * 100) / 100,
+          cacheHit: !!cached,
+          indexUsed: !!indexSection,
+          grepUsed: termsForGrep.length > 0,
+          // Workspace-relative paths preserved (no basename stripping) so
+          // collisions like Admin/Helpers.php vs Vendor/Helpers.php remain
+          // distinguishable in the log. The runner does basename comparison
+          // when computing injectedFileUsedRate, with case-folding only on
+          // case-insensitive filesystems.
+          filesInjected: Array.from(new Set([
+            ...dedupedHits.map((h) => h.file),
+            ...(cached?.files ?? []),
+          ])).slice(0, 8),
+          readFiles: this.readsInThisTurn.map((r) => ({
+            path: r.path,
+            startLine: r.startLine,
+            endLine: r.endLine,
+          })),
+          preResearchNonEmpty: preResearch.length > 0,
+        };
+        void (async () => {
+          try {
+            let existing = '';
+            try { existing = new TextDecoder().decode(await vscode.workspace.fs.readFile(debugUri)); } catch {}
+            const dir = vscode.Uri.joinPath(debugUri, '..');
+            await vscode.workspace.fs.createDirectory(dir);
+            await vscode.workspace.fs.writeFile(
+              debugUri,
+              new TextEncoder().encode(existing + JSON.stringify(debugRecord) + '\n'),
+            );
+          } catch { /* non-critical */ }
+        })();
+      } catch { /* never let debug break the agent */ }
     }
 
-    const withResearch = (base: string): string =>
-      base + (preResearch ? `\n\n${preResearch}` : '');
+    const withResearch = (base: string): string => {
+      if (preResearch) return base + `\n\n${preResearch}`;
+      // Empty pre-research on the chat/plan path: nudge the model to investigate
+      // instead of answering from memory. Chat mode is read-only, so mention the
+      // read-only tools explicitly. Forbid askUser — the workspace is right here.
+      return base + `\n\n# NO PRE-RESEARCH AVAILABLE — investigate the workspace with TOOLS, not by asking\nThe workspace index returned no relevant symbols or content for this query. Do NOT answer from memory and do NOT call \`askUser\` to ask which project this is — the project is the one currently open in your editor. Use read-only tools: \`repoMap\`, \`glob\`, \`grep\` for a specific symbol, then \`readFile\` the file that obviously owns the feature. Answer only after you have read the real code.`;
+    };
 
     // Agent mode: build full VM context (ACTIVE_FILE + SYMBOL_HITS + LAST_ERROR + GIT_DIFF + GOAL).
     // Chat/Plan keep the simpler preResearch path — VM context is only for the execution engine.
@@ -593,9 +706,22 @@ export class Agent {
 
     const withVmContext = (base: string): string => {
       const conv = convMem ? `\n\n${convMem}` : '';
-      const ctx = vmContext
-        ? `\n\n# PRE-RESEARCH — MANDATORY: readFile these exact locations first, then answer. Skip grep entirely if these files are listed.\n${vmContext}`
-        : (preResearch ? `\n\n# PRE-RESEARCH — MANDATORY: readFile these exact locations first, then answer. Skip grep entirely if these files are listed.\n${preResearch}` : '');
+      // Only inject "MANDATORY: readFile these locations" when we actually have
+      // locations. An empty list under that header tricks weak models into
+      // thinking pre-research already covered the query — they answer from
+      // memory instead of running tools.
+      let ctx = '';
+      if (vmContext) {
+        ctx = `\n\n# PRE-RESEARCH — MANDATORY: readFile these exact locations with startLine/endLine. Skip grep entirely if these files are listed. Full-file reads are tracked and penalised — pass the line range from PRE-RESEARCH whenever one is given.\n${vmContext}`;
+      } else if (preResearch) {
+        ctx = `\n\n# PRE-RESEARCH — MANDATORY: readFile these exact locations with startLine/endLine. Skip grep entirely if these files are listed. Full-file reads are tracked and penalised — pass the line range from PRE-RESEARCH whenever one is given.\n${preResearch}`;
+      } else {
+        // No pre-research available — tell the model explicitly it MUST investigate
+        // (grep/repoMap/readFile) before answering, not that the work is already done.
+        // Critical: forbid askUser here. The codebase is discoverable with tools —
+        // asking the user "which project?" is the wrong move when repoMap exists.
+        ctx = `\n\n# NO PRE-RESEARCH AVAILABLE — investigate the workspace with TOOLS, not by asking\nThe workspace index returned no relevant symbols or content for this query. Do NOT answer from memory and do NOT call \`askUser\` to ask which project this is — the project is the one currently open in your editor. Your first action MUST be one of these read-only tools: \`repoMap\` (see project structure), \`glob\` (e.g. \`**/*.php\` or \`**/Services/**\`), or \`grep\` for a specific symbol. After locating the likely file, \`readFile\` it with startLine/endLine and answer from the real code.`;
+      }
       return base + conv + ctx;
     };
 
@@ -625,6 +751,25 @@ export class Agent {
           graph: structGraph,
         });
       }
+    } catch (e) {
+      if (opts.bench) {
+        throw e;
+      }
+      // Auto routing: let the error propagate so chatViewProvider shows the structured
+      // error message (AllModelsFailedError gives a clear per-reason description).
+      if (isAutoModel) {
+        throw e;
+      }
+      // Specific model: the user pinned a model on purpose — they do NOT want silent
+      // failover to another model. Surface the error inline and offer Continue so they
+      // can inspect/fix (e.g. top-up quota, update key) and resume without losing work.
+      const errMessage = e instanceof Error ? e.message : String(e);
+      result = {
+        text: `⚠️ ${errMessage}`,
+        platform: 'error',
+        model: 'failed',
+        paused: true,
+      };
     } finally {
       // Release this run's edit-advisory claims whether it finished, failed, or was cancelled,
       // so a subsequent run isn't falsely told the files are still being edited.
@@ -932,6 +1077,15 @@ export class Agent {
             // Track window vs full-file read AFTER resolveToolArgs may have injected startLine
             if (readArgs.startLine !== undefined) { trackWindowRead(); } else { trackFullFileRead(); }
             if (filePath) {
+              // Capture for the pre-research debug log (raw events — the bench
+              // runner computes injectedFileUsedRate by joining with filesInjected).
+              this.readsInThisTurn.push({
+                path: filePath,
+                startLine: typeof readArgs.startLine === 'number' ? readArgs.startLine : undefined,
+                endLine: typeof (readArgs as { endLine?: unknown }).endLine === 'number'
+                  ? (readArgs as { endLine: number }).endLine
+                  : undefined,
+              });
               // Normalize path for dedup — prevents case/slash differences from bypassing the cache
               const normPath = filePath.replace(/\\/g, '/').toLowerCase();
               const count = (fileReadCount.get(normPath) ?? 0) + 1;
