@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { ChatContent, ChatContentBlock, ChatMessage, Platform, TodoItem, CustomEndpoint } from './shared/types';
+import type { ChatContent, ChatContentBlock, ChatMessage, Platform, TodoItem, CustomEndpoint, ReasoningEffort } from './shared/types';
 import type { SecretStore } from './config/secrets';
 import type { SettingsStore } from './config/settingsStore';
 import type { Catalog } from './catalog/catalog';
@@ -101,6 +101,8 @@ interface Session {
   /** Tool steps accumulated per active requestId, attached to the assistant transcript entry at
    *  turn completion so a re-rendered message (e.g. after "Revert to here") keeps its step list. */
   liveSteps: Map<string, TranscriptStep[]>;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
 }
 
 interface StoredSession {
@@ -109,6 +111,8 @@ interface StoredSession {
   ts: number;
   history: ChatMessage[];
   transcript: TranscriptMessage[];
+  model?: string;
+  reasoningEffort?: string;
 }
 
 
@@ -184,6 +188,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       checkpoints: new CheckpointManager(),
       lastWindow: 0,
       liveSteps: new Map(),
+      model: undefined,
+      reasoningEffort: undefined,
     };
     this.sessions.set(s.id, s);
     return s;
@@ -207,6 +213,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       liveSteps: new Map(),
       createdAt: s.ts ?? Date.now(),
       updatedAt: s.ts ?? Date.now(),
+      model: s.model,
+      reasoningEffort: s.reasoningEffort as ReasoningEffort | undefined,
     };
   }
 
@@ -243,7 +251,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!s) return;
     const others = this.loadSessions().filter((x) => x.id !== sessionId);
     if (s.transcript.length) {
-      others.unshift({ id: s.id, title: s.title ?? this.deriveTitle(s), ts: Date.now(), history: s.history, transcript: s.transcript });
+      others.unshift({ id: s.id, title: s.title ?? this.deriveTitle(s), ts: Date.now(), history: s.history, transcript: s.transcript, model: s.model, reasoningEffort: s.reasoningEffort });
     }
     void this.deps.workspaceState.update(SESSIONS_KEY, others.slice(0, MAX_SESSIONS));
     if (sessionId === this.viewedSessionId) void this.deps.workspaceState.update(CURRENT_KEY, sessionId);
@@ -1166,6 +1174,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (slash && SLASH_PROMPTS[slash.name]) prompt = `${SLASH_PROMPTS[slash.name]}\n\n${slash.rest}`;
 
     const s = this.current();
+    s.model = m.model;
+    s.reasoningEffort = m.reasoningEffort;
     const contextText = await resolveMentions(prompt).catch(() => '');
     const userContent = this.buildUserContent(prompt, contextText, m.attachments);
     s.history.push({ role: 'user', content: userContent });
@@ -1247,7 +1257,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Persist the tool-call transcript so the next run can read what was already done.
           this.persistAgentTurn(s, result);
           s.history.push({ role: 'user', content: 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.' });
-          result = await this.deps.agent.run(s.history, 'agent', continueOpts(s.cancel.token), this.agentCallbacks(s, m.requestId, 'agent'));
+          result = await this.deps.agent.run(s.history, 'agent', {
+            model: s.model,
+            reasoningEffort: s.reasoningEffort,
+            ...continueOpts(s.cancel.token),
+          }, this.agentCallbacks(s, m.requestId, 'agent'));
           if (!this.isActiveRun(s, m.requestId)) return;
         }
       }
@@ -1339,6 +1353,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       : `${laterTurns} message${laterTurns > 1 ? 's' : ''} will be removed.`;
     const choice = await vscode.window.showWarningMessage(`Revert to this point? ${detail}`, { modal: true }, 'Revert');
     if (choice !== 'Revert') return;
+
+    // Stop any in-flight run for this session: the transcript/history we're about to
+    // truncate is what that run is appending to, so leaving it going would strand it
+    // (and leave the busy indicator pinned red). rebuild=false — we re-post below.
+    this.stopRun(s.id, false);
 
     if (firstCpId) await s.checkpoints.restore(firstCpId);
     s.checkpoints.dropByRequestIds(removedIds);
@@ -1459,6 +1478,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const sentAt = Date.now();
     try {
       const result = await this.deps.agent.run(s.history, 'agent', {
+        model: s.model,
+        reasoningEffort: s.reasoningEffort,
         token: s.cancel.token,
         runContext: this.runContext(s, m.requestId),
         onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
@@ -1672,6 +1693,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const sentAt = Date.now();
     try {
       const result = await this.deps.agent.run(s.history, 'agent', {
+        model: s.model,
+        reasoningEffort: s.reasoningEffort,
         token: s.cancel.token,
         runContext: this.runContext(s, m.requestId),
         onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
@@ -1733,6 +1756,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.checkpoints.begin(m.requestId, 'Plan (clarified)');
     try {
       const result = await this.deps.agent.run(s.history, 'plan', {
+        model: s.model,
+        reasoningEffort: s.reasoningEffort,
         token: s.cancel.token,
         runContext: this.runContext(s, m.requestId),
         onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },

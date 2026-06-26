@@ -770,7 +770,10 @@
       const secs = started ? Math.max(1, Math.round((Date.now() - started) / 1000)) : null;
       if (t.workLabel) t.workLabel.textContent = secs != null ? `Worked for ${secs}s` : 'Worked';
       t.work.classList.remove('pending');
-      t.work.open = true;
+      // Collapse once the run is done — leave just the "Worked for Ns" summary to
+      // click open. (It's open while streaming via the .pending class so the user can
+      // watch the steps land live; auto-collapsing on finish keeps the answer readable.)
+      t.work.open = false;
     }
   }
 
@@ -795,6 +798,7 @@
     autoGrow(); // reset the textarea back to one line after sending (don't leave it stuck tall)
     pendingAttachments = [];
     renderChips();
+    updateSendEnabled();
   }
 
   $('#btn-send').addEventListener('click', send);
@@ -807,10 +811,17 @@
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
-  input.addEventListener('input', () => { autoGrow(); updateAutocomplete(); });
+  input.addEventListener('input', () => { autoGrow(); updateAutocomplete(); updateSendEnabled(); });
   input.addEventListener('click', updateAutocomplete);
   input.addEventListener('blur', () => setTimeout(closeAc, 120));
   function autoGrow() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 220) + 'px'; }
+  // Disable the send button when there's nothing to send (no text and no attachments).
+  // While busy it becomes the Stop button, which must stay clickable.
+  function updateSendEnabled() {
+    const sb = $('#btn-send');
+    if (busy) { sb.disabled = false; return; }
+    sb.disabled = input.value.trim().length === 0 && pendingAttachments.length === 0;
+  }
 
   // ---------- per-session composer state (draft / model / mode / reasoning / attachments) ----------
   // The thread is already session-isolated; this stashes the composer for the session we're
@@ -833,11 +844,12 @@
     setMode(c ? c.mode : 'chat');
     currentModel = c ? c.model : 'auto';
     rebuildModelPicker(); // syncs the model button label + reasoning availability to currentModel
-    reasoningSel.value = c ? c.reasoning : 'medium';
+    reasoningSel.value = c ? c.reasoning : 'off';
     updateReasoningAvailability();
     pendingAttachments = c && c.attachments ? c.attachments.slice() : [];
     renderChips();
     autoGrow();
+    updateSendEnabled();
   }
   // Persist the draft as the user types, so a background switch never loses it.
   input.addEventListener('input', () => { if (viewedSessionId) saveComposer(viewedSessionId); });
@@ -980,6 +992,7 @@
       chip.querySelector('button').addEventListener('click', () => { pendingAttachments.splice(idx, 1); renderChips(); });
       chipsEl.appendChild(chip);
     });
+    updateSendEnabled();
   }
 
   function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
@@ -1571,6 +1584,50 @@
     state.fallback.forEach((e) => { (modelsByPlatform[e.platform] = modelsByPlatform[e.platform] || []).push(e); });
     const entries = state.fallback.slice();
 
+    // Changing routing config while an agent is mid-run can strand it on a disabled
+    // model/provider — so any toggle here cancels the active turn first.
+    const stopIfBusy = () => {
+      if (busy) vscode.postMessage({ type: 'cancel', requestId: 'current', sessionId: viewedSessionId });
+    };
+
+    // Global master toggle — flip every provider's on/off switch at once (same
+    // mechanism as each provider card's switch, just applied to all of them).
+    // Disabling all providers mid-run strands the active agent on dead routing, so
+    // when an LLM is actively working we also cancel the running turn.
+    const toggleablePlatforms = state.platforms.filter((p) => p.platform !== 'custom');
+    const disabledSet = new Set(state.disabledProviders || []);
+    const allProvidersOn = toggleablePlatforms.length > 0 && toggleablePlatforms.every((p) => !disabledSet.has(p.platform));
+    const anyProviderOn = toggleablePlatforms.some((p) => !disabledSet.has(p.platform));
+    const allBar = document.createElement('div');
+    allBar.className = 'pm-all-bar';
+    const allText = document.createElement('span');
+    allText.className = 'pm-all-text';
+    allText.textContent = 'All providers';
+    const allLabel = document.createElement('label');
+    allLabel.className = 'prov-switch';
+    allLabel.title = 'Enable or disable every provider at once';
+    const allCb = document.createElement('input');
+    allCb.type = 'checkbox';
+    allCb.checked = allProvidersOn;
+    allCb.indeterminate = !allProvidersOn && anyProviderOn;
+    const allTrack = document.createElement('span');
+    allTrack.className = 'sw-track';
+    const allThumb = document.createElement('span');
+    allThumb.className = 'sw-thumb';
+    allTrack.appendChild(allThumb);
+    allLabel.appendChild(allCb);
+    allLabel.appendChild(allTrack);
+    allBar.appendChild(allText);
+    allBar.appendChild(allLabel);
+    allCb.addEventListener('change', () => {
+      const on = allCb.checked;
+      toggleablePlatforms.forEach((p) => {
+        vscode.postMessage({ type: 'setProviderEnabled', platform: p.platform, enabled: on });
+      });
+      stopIfBusy();
+    });
+    settingsContentEl.appendChild(allBar);
+
     // Configured (or keyless) providers first, then alphabetical.
     const provs = state.platforms.slice().sort((a, b) =>
       (Number(!!b.configured) - Number(!!a.configured)) || a.name.localeCompare(b.name));
@@ -1626,6 +1683,7 @@
       sw.addEventListener('click', (ev) => ev.stopPropagation());
       swCb.addEventListener('change', () => {
         vscode.postMessage({ type: 'setProviderEnabled', platform: p.platform, enabled: swCb.checked });
+        stopIfBusy();
       });
 
       const body = document.createElement('div');
@@ -1736,63 +1794,70 @@
 
       // Models for this provider (enable toggles)
       const models = modelsByPlatform[p.platform] || [];
+      const modelCbs = []; // individual model checkboxes, for the bulk toggle to sync
+      let allModelCb = null; // per-provider "all models" checkbox (created when there are models)
       if (models.length) {
         const mt = document.createElement('div');
-        mt.className = 'muted prov-models-title';
-        mt.textContent = isProviderDisabled ? 'Models (provider off — not routing)' : 'Models';
+        mt.className = 'prov-models-head';
+        const mtLabel = document.createElement('span');
+        mtLabel.className = 'muted prov-models-title';
+        mtLabel.textContent = isProviderDisabled ? 'Models (provider off — not routing)' : 'Models';
+        mt.appendChild(mtLabel);
+
+        // Per-provider bulk toggle — check / uncheck every model for this provider.
+        allModelCb = document.createElement('input');
+        allModelCb.type = 'checkbox';
+        allModelCb.className = 'prov-models-all';
+        allModelCb.title = 'Toggle all models for this provider';
+        allModelCb.checked = models.every((e) => e.enabled);
+        allModelCb.indeterminate = !allModelCb.checked && models.some((e) => e.enabled);
+        allModelCb.addEventListener('change', () => {
+          const on = allModelCb.checked;
+          models.forEach((e, i) => { e.enabled = on; if (modelCbs[i]) modelCbs[i].checked = on; });
+          allModelCb.indeterminate = false;
+          vscode.postMessage({ type: 'setFallbackConfig', entries });
+          stopIfBusy();
+        });
+        mt.appendChild(allModelCb);
         body.appendChild(mt);
       }
-      const modelKeySet = new Set(state.modelKeys || []);
       models.forEach((e) => {
-        const idx = entries.findIndex((x) => x.platform === e.platform && x.modelId === e.modelId);
         const m = cat[e.platform + '::' + e.modelId] || {};
         const caps = [];
         if (m.supportsTools) caps.push('T');
         if (m.supportsVision) caps.push('V');
         if (m.supportsReasoning) caps.push('R');
-        const row = document.createElement('div');
+        // Row is a <label> so clicking the model name / meta toggles the checkbox,
+        // not just the small box itself. Mutate the entry by reference (not by
+        // findIndex, which can resolve to the wrong entry when a model has a
+        // duplicate fallback row — that made the second row's checkbox a no-op).
+        const row = document.createElement('label');
         row.className = 'pm-row';
         if (isProviderDisabled) row.style.opacity = '.4';
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.checked = !!e.enabled;
-        cb.addEventListener('change', () => { entries[idx].enabled = cb.checked; vscode.postMessage({ type: 'setFallbackConfig', entries }); });
+        cb.addEventListener('change', () => {
+          e.enabled = cb.checked;
+          vscode.postMessage({ type: 'setFallbackConfig', entries });
+          // Keep the bulk toggle in sync with the individual rows.
+          if (allModelCb) {
+            allModelCb.checked = models.every((x) => x.enabled);
+            allModelCb.indeterminate = !allModelCb.checked && models.some((x) => x.enabled);
+          }
+          stopIfBusy();
+        });
+        modelCbs.push(cb);
         const info = document.createElement('div');
         info.className = 'pm-info';
         info.innerHTML = `<div class="pm-name">${escapeHtml(m.displayName || e.modelId)}</div>
-          <div class="meta">ctx ${m.contextWindow ? (m.contextWindow / 1000) + 'k' : '?'} · ${escapeHtml(m.sizeLabel || '')} · ${escapeHtml(m.monthlyTokenBudget || '')}</div>`;
+          <div class="meta">ctx ${m.contextWindow ? fmtTokens(m.contextWindow) : '?'} · ${escapeHtml(m.sizeLabel || '')} · ${escapeHtml(m.monthlyTokenBudget || '')}</div>`;
         const capsEl = document.createElement('div');
         capsEl.className = 'caps';
         capsEl.innerHTML = caps.map((c) => `<span class="cap" title="${c === 'T' ? 'tools' : c === 'V' ? 'vision' : 'reasoning'}">${c}</span>`).join('');
         row.appendChild(cb);
         row.appendChild(info);
         row.appendChild(capsEl);
-        // Per-model key button (skipped for keyless platforms; optional override otherwise).
-        if (!p.keyless) {
-          const hasKey = modelKeySet.has(`${e.platform}::${e.modelId}`);
-          const keyBtn = document.createElement('button');
-          keyBtn.className = 'icon-btn';
-          keyBtn.textContent = hasKey ? 'Key ✓' : 'Key';
-          keyBtn.title = hasKey
-            ? 'This model has a custom API key (overrides the provider key). Click to manage.'
-            : 'Set a custom API key for this model (overrides the provider key).';
-          keyBtn.addEventListener('click', async () => {
-            const action = hasKey ? 'Update' : 'Set';
-            const res = await inlineDialog({
-              title: `${action} API key — ${m.displayName || e.modelId}`,
-              fields: [{ label: 'API key (leave empty to clear)', secret: true }],
-              okLabel: action,
-            });
-            if (res === null) return; // cancelled
-            const next = (res[0] || '').trim();
-            if (next === '') {
-              vscode.postMessage({ type: 'clearModelKey', platform: e.platform, modelId: e.modelId });
-            } else {
-              vscode.postMessage({ type: 'setModelKey', platform: e.platform, modelId: e.modelId, key: next });
-            }
-          });
-          row.appendChild(keyBtn);
-        }
         body.appendChild(row);
       });
 
@@ -2348,6 +2413,10 @@
         input.value = msg.text || '';
         input.focus();
         autoGrow();
+        // Programmatic value assignment doesn't fire the 'input' event, so recompute
+        // the send button's disabled state — otherwise text sits in the box but Send
+        // stays disabled (e.g. after a run finished with an empty composer).
+        updateSendEnabled();
         break;
       case 'toggleSettings':
         toggleSettings();
@@ -2368,20 +2437,11 @@
           const label = item?.querySelector('.mi-label')?.textContent || msg.model;
           t.statusLabel.textContent = label;
         }
-        // When the user picked a specific model but the extension routed to a
-        // different one (failover / escalation), update the picker to show what
-        // actually ran so the user isn't confused.
-        if (msg.platform && msg.model && currentModel !== 'auto') {
-          const resolved = `${msg.platform}::${msg.model}`;
-          if (resolved !== currentModel) {
-            const item = modelList.querySelector(`.model-item[data-value="${CSS.escape(resolved)}"]`);
-            if (item) {
-              const label = item.querySelector('.mi-label')?.textContent || resolved;
-              setModel(resolved, label);
-              if (viewedSessionId) saveComposer(viewedSessionId);
-            }
-          }
-        }
+        // NOTE: a forced (non-Auto) model pick is honored EXACTLY by the router — it never
+        // failovers to another model (router.ts candidates() returns only the forced entry).
+        // So we must NOT rewrite the picker here: doing so would silently override and persist
+        // a model the user never chose. The per-message status label above already shows which
+        // model produced THIS answer; the picker stays on the user's explicit selection.
         startStatusTimer(msg.requestId);
         break;
       }
@@ -2837,6 +2897,7 @@
         sb.innerHTML = busy ? ICON.stop : ICON.send;
         sb.title = busy ? 'Stop' : 'Send (Enter)';
         sb.classList.toggle('stopping', busy);
+        updateSendEnabled();
         // Backstop: any run that ended without a terminal message (e.g. plan mode's
         // early return) still flips busy off — clear any lingering live status then.
         if (!busy) for (const id of statusTimers.keys()) stopStatusTimer(id, true);

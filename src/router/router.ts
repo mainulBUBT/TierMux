@@ -301,6 +301,11 @@ export class Router {
     return e.state;
   }
 
+  /** The cached probe reason for a model (auth/timeout/network/...), if any. */
+  private cachedHealthReason(platform: Platform, modelId: string): string | undefined {
+    return this.health.get(`${platform}::${modelId}`)?.reason;
+  }
+
   private markHealth(platform: Platform, modelId: string, state: 'ok' | 'bad', reason?: string): void {
     this.health.set(`${platform}::${modelId}`, { state, at: Date.now(), reason });
   }
@@ -373,7 +378,9 @@ export class Router {
       let apiKey = entry.key
         ?? await this.secrets.getModelKey(entry.platform, entry.modelId)
         ?? await this.secrets.resolveKey(entry.platform, entry.modelId);
-      if (apiKey === undefined) {
+      // Custom endpoints without a configured key are treated as missing (not keyless).
+      // Empty-string keys from resolveKey happen when getCustomKey returns undefined.
+      if (apiKey === undefined || (entry.platform === 'custom' && apiKey === '')) {
         failures.push({ platform: entry.platform, model: entry.modelId, reason: 'no_api_key' });
         continue;
       }
@@ -385,15 +392,20 @@ export class Router {
       if (retryCount === 0) {
         const cached = this.healthOf(entry.platform, entry.modelId);
         if (cached === 'bad' && !provider.skipPreflight) {
-          failures.push({ platform: entry.platform, model: entry.modelId, reason: 'preflight_failed' });
-          opts.onFailover?.({ from: entry, reason: 'preflight_failed' });
+          // Surface the cached probe reason (auth/timeout/network/...) instead of
+          // a generic 'preflight_failed' so the user knows what actually broke.
+          const reason = this.cachedHealthReason(entry.platform, entry.modelId) ?? 'preflight_failed';
+          failures.push({ platform: entry.platform, model: entry.modelId, reason });
+          // Only signal failover when in Auto mode — forced models shouldn't show
+          // "Routing to the best available model" since there's no actual routing.
+          if (!forced) opts.onFailover?.({ from: entry, reason });
           continue;
         }
         if (cached === undefined && !provider.skipPreflight) {
           const probe = await this.preflightPing(provider, apiKey, entry.platform, entry.modelId);
           if (!probe.ok) {
             failures.push({ platform: entry.platform, model: entry.modelId, reason: probe.reason ?? 'preflight_failed' });
-            opts.onFailover?.({ from: entry, reason: probe.reason ?? 'preflight_failed' });
+            if (!forced) opts.onFailover?.({ from: entry, reason: probe.reason ?? 'preflight_failed' });
             continue;
           }
         }
@@ -491,6 +503,15 @@ export class Router {
             }
             // All keys for this platform are cooled — cool the platform itself.
             this.secrets.setCooldown(entry.platform, retryAfterMs ?? this.rateLimitCooldownMs());
+
+            // Pinned model: wait for the cooldown and retry the SAME model (up to MAX_RETRIES).
+            // This handles per-second / short-window rate limits transparently without failing over.
+            if (forced && retryCount < MAX_RETRIES) {
+              const waitMs = Math.min(retryAfterMs ?? this.rateLimitCooldownMs(), 15_000);
+              await new Promise((resolve) => setTimeout(resolve, waitMs));
+              triedModels.set(modelKey, retryCount + 1);
+              continue;
+            }
           } else if (reason === 'auth') {
             this.secrets.setStatus(entry.platform, 'invalid');
           } else {
@@ -517,8 +538,10 @@ export class Router {
           triedModels.set(modelKey, retryCount + 1);
 
           failures.push({ platform: entry.platform, model: entry.modelId, reason });
-          opts.onFailover?.({ from: entry, reason });
-          if (!failoverable) break candidates;
+          // Only signal failover when in Auto mode — forced models shouldn't show
+          // "Routing to the best available model" since there's no actual routing.
+          if (!forced) opts.onFailover?.({ from: entry, reason });
+          if (!failoverable || forced) break candidates;
           continue candidates;
         }
       }

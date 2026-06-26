@@ -658,6 +658,8 @@ button#mode-btn .mode-label { overflow: hidden; text-overflow: ellipsis; white-s
 }
 .send-btn:hover { background: var(--vscode-button-hoverBackground); }
 .send-btn.stopping { background: var(--vscode-errorForeground, #c33); color: #fff; }
+.send-btn:disabled { opacity: .45; cursor: not-allowed; }
+.send-btn:disabled:hover { background: var(--vscode-button-background); }
 button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; cursor: pointer; border-radius: 4px; padding: 4px 10px; }
 button.primary:hover { background: var(--vscode-button-hoverBackground); }
 button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: none; cursor: pointer; border-radius: 4px; padding: 4px 10px; }
@@ -710,6 +712,9 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .prov-switch input:checked ~ .sw-track { background: var(--vscode-button-background); }
 .sw-thumb { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; background: #fff; border-radius: 50%; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
 .prov-switch input:checked ~ .sw-track .sw-thumb { transform: translateX(12px); }
+/* Global "all models" master toggle bar */
+.pm-all-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; margin-bottom: 8px; border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 4px; background: var(--vscode-editor-inactiveSelectionBackground, transparent); }
+.pm-all-text { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; opacity: .9; }
 .provider-body { padding: 4px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
 .provider-body.hidden { display: none; }
 .provider-body .endpoint {
@@ -717,6 +722,8 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
   border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 4px; padding: 3px 6px;
 }
 .prov-models-title { margin-top: 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
+.prov-models-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.prov-models-all { margin: 0; cursor: pointer; }
 .key-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; margin-bottom: 2px; }
 .key-chip { display: flex; align-items: center; gap: 4px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border-radius: 4px; padding: 2px 6px; font-size: 11px; font-family: var(--vscode-editor-font-family, monospace); }
 .key-chip .key-hint { opacity: .85; letter-spacing: .04em; }
