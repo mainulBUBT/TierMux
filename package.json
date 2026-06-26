@@ -521,6 +521,11 @@
           "minimum": 0,
           "description": "Pause between embedding requests while indexing. Raise this (e.g. 500–1000) if your embedding provider keeps rate-limiting the index build."
         },
+        "tiermux.useOpenCodeEngine": {
+          "type": "boolean",
+          "default": true,
+          "description": "[EXPERIMENTAL] Use OpenCode as the agent engine instead of TierMux's built-in agent. Requires the bundled OpenCode binary."
+        },
         "tiermux.cache.fileEnabled": {
           "type": "boolean",
           "default": true,

@@ -3,3 +3,9 @@ dist/
 media/vendor/
 *.vsix
 .DS_Store
+# OpenCode bundled binary (downloaded at runtime)
+bin/
+# Test extension path artifacts (created during dev)
+extensionPath/
+# Local OpenCode user config (may contain secrets)
+.tiermux/opencode.jsonc

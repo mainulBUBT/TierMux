@@ -33,7 +33,9 @@ const STRONG_REPO = /\b(this (?:project|codebase|repo(?:sitory)?|code|file|app|a
 // A question shape that asks about code/location/behavior (broader than EXPLAIN_Q — covers
 // "where is X defined", "how does X work", "what does X do", "show me / find X").
 // Unambiguous web-only triggers — time-sensitive or external data that can't live in the repo.
-const WEB_ONLY = /\b(latest|today'?s?|current(?:ly)? (?:price|version|release|news)|news|released?|changelog|price|cost|weather|score|ranking|standings?|stock|20(?:2[4-9]|3\d)|this (?:week|month|year)|right now|recent(?:ly)? released?)\b/i;
+// `price` / `cost` intentionally omitted — they commonly appear in codebase questions
+// ("how is the price calculated in this project?") and should not force a web route.
+const WEB_ONLY = /\b(latest|today'?s?|current(?:ly)? (?:version|release|news)|news|released?|changelog|weather|score|ranking|standings?|stock|20(?:2[4-9]|3\d)|this (?:week|month|year)|right now|recent(?:ly)? released?)\b/i;
 
 /**
  * True when a question is really about the user's codebase — so Auto should investigate with

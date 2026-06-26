@@ -15,9 +15,10 @@ import type { CodebaseIndex } from './index/codebaseIndex';
 import { CheckpointManager } from './edits/checkpoints';
 import type { ModelStatsStore, Vote } from './config/modelStats';
 import type { RunContext } from './agent/runContext';
+import type { OpenCodeClient } from './backend/opencodeClient';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem } from './messages';
-import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
+import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, SessionStatus, TranscriptMessage, TranscriptStep, UsagePayload } from './messages';
 import type { WorkspaceTools } from './agent/tools';
 import { getNonce } from './util/nonce';
 import { getPlatformInfo } from './providers';
@@ -53,6 +54,7 @@ export interface ChatDeps {
   modelStats: ModelStatsStore;
   workspaceState: vscode.Memento;
   generateCommitMessage: () => Promise<void>;
+  openCodeClient?: OpenCodeClient;
 }
 
 const SESSIONS_KEY = 'tiermux.sessions';
@@ -149,6 +151,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Shared across all sessions — a workspace-level preference.
    */
   autoApprove = false;
+
+  // ---- OpenCode engine state ----
+  /** TierMux session ID → OpenCode session ID */
+  private ocSessions = new Map<string, string>();
 
   constructor(private readonly extensionUri: vscode.Uri, private readonly deps: ChatDeps) {
     this.autoApprove = deps.workspaceState.get<boolean>(AUTO_APPROVE_KEY, false);
@@ -277,6 +283,84 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         updatedAt: s.updatedAt,
       }));
     this.post({ type: 'sessionList', sessions });
+  }
+
+  // ---------- OpenCode engine ----------
+
+  private useOpenCodeEngine(): boolean {
+    return !!this.deps.openCodeClient &&
+      vscode.workspace.getConfiguration('tiermux').get<boolean>('useOpenCodeEngine', false);
+  }
+
+  /** Create an OpenCode session for a TierMux session and store the mapping. */
+  private async ensureOCSession(tierMuxSessionId: string): Promise<string> {
+    const existing = this.ocSessions.get(tierMuxSessionId);
+    if (existing) {
+      const sessions = await this.deps.openCodeClient!.listSessions();
+      if (sessions.some((s) => s.id === existing)) return existing;
+    }
+    const oc = await this.deps.openCodeClient!.createSession('TierMux Session');
+    this.ocSessions.set(tierMuxSessionId, oc.id);
+    return oc.id;
+  }
+
+  /** Run a message through TierMux's own Router (real model/token/duration info)
+   *  and sync the conversation to an OpenCode session for context persistence. */
+  private async handleSendWithOpenCode(
+    s: Session,
+    m: Extract<InMessage, { type: 'sendMessage' }>,
+    prompt: string,
+  ): Promise<void> {
+    if (!this.deps.openCodeClient) return;
+
+    const sentAt = Date.now();
+    const before = this.deps.usage.get();
+
+    try {
+      const ocSessionId = await this.ensureOCSession(s.id);
+      // Sync user message to OpenCode session (best-effort, non-blocking)
+      this.deps.openCodeClient.sendMessageAsync(ocSessionId, prompt).catch(() => {});
+
+      // Route through TierMux's own agent — gets real model/token info via Router
+      const result = await this.deps.agent.run(s.history, m.mode as Mode, {
+        model: m.model,
+        reasoningEffort: m.reasoningEffort,
+        token: s.cancel?.token,
+        runContext: this.runContext(s, m.requestId),
+        onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${displayNameForEntry(i.from, this.deps)}/${i.from.modelId}`, reason: i.reason }); },
+        onKeyRotated: (i) => { if (this.isActiveRun(s, m.requestId)) { const name = getPlatformInfo(i.platform as Platform)?.name ?? i.platform; this.post({ type: 'keyRotated', sessionId: s.id, requestId: m.requestId, platform: i.platform, platformName: name, keyIndex: i.keyIndex, keyTotal: i.keyTotal }); } },
+      }, this.agentCallbacks(s, m.requestId, m.mode as Mode));
+
+      if (!this.isActiveRun(s, m.requestId)) return;
+
+      const after = this.deps.usage.get();
+      const usage: UsagePayload = {
+        promptTokens: Math.max(0, after.promptTokens - before.promptTokens),
+        completionTokens: Math.max(0, after.completionTokens - before.completionTokens),
+        totalTokens: Math.max(0, after.totalTokens - before.totalTokens),
+      };
+
+      // Sync assistant response to OpenCode session for context continuity
+      const assistantText = result.text || '(no response)';
+      this.deps.openCodeClient.sendMessageAsync(ocSessionId, assistantText).catch(() => {});
+
+      // Push to transcript with real model/duration info
+      this.pushAssistantTurn(s, m.requestId, result, sentAt, usage);
+      s.voteCtx.set(m.requestId, { taskKind: result.taskKind!, platform: result.platform!, model: result.model!, last: 'none' as Vote });
+
+      // Post assistantMessage with real model/platform/usage (no hardcoded values)
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId,
+        text: assistantText, reasoning: result.reasoning, usage,
+        platform: result.runtimeName ?? result.platform, model: result.model,
+        paused: result.paused,
+      });
+    } catch (e) {
+      if (!this.isActiveRun(s, m.requestId)) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[TierMux] OpenCode engine error:', msg);
+      this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: msg });
+      if (s.history[s.history.length - 1]?.role === 'user') s.history.pop();
+    }
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -1197,6 +1281,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       ? m.attachmentKinds
       : (m.attachments ?? []).map((a) => a.kind);
 
+    // OpenCode engine path (behind feature flag)
+    if (this.useOpenCodeEngine()) {
+      s.checkpoints.begin(m.requestId, prompt.slice(0, 60));
+      try {
+        await this.handleSendWithOpenCode(s, m, prompt);
+        if (!this.isActiveRun(s, m.requestId)) return;
+        this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
+        this.persist(s.id);
+      } catch (e) {
+        if (!this.isActiveRun(s, m.requestId)) return;
+        this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
+        if (s.history[s.history.length - 1]?.role === 'user') s.history.pop();
+      } finally {
+        if (this.isActiveRun(s, m.requestId)) {
+          s.activeRequestId = undefined;
+          this.settlePendingApprovals(s, false);
+          this.settlePendingAskUser(s);
+          await this.finishCheckpoint(s, m.requestId);
+          this.persist(s.id);
+          this.post({ type: 'busy', sessionId: s.id, busy: false });
+          this.setStatus(s.id, 'finished');
+          await this.maybeAutoCompact(s);
+          void this.maybeGenerateTitle(s);
+        }
+      }
+      return;
+    }
+
     const release = await this.acquireRunSlot(s.id);
     // Cancelled (Stop) while queued → release the slot and bail before running.
     if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
@@ -1572,6 +1684,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (qi >= 0) { this.runQueue.splice(qi, 1)[0].resolve(); }
     s.cancel?.cancel();
     s.activeRequestId = undefined; // invalidates the run's liveness guard (isActiveRun)
+    // Abort OpenCode session if using OpenCode engine
+    if (this.useOpenCodeEngine() && this.deps.openCodeClient) {
+      const ocId = this.ocSessions.get(sessionId);
+      if (ocId) {
+        this.deps.openCodeClient.abortSession(ocId).catch(() => {});
+        this.ocSessions.delete(sessionId);
+      }
+    }
     this.settlePendingApprovals(s, false); // unblock any command/edit awaiting a click
     this.settlePendingAskUser(s); // unblock any in-chat askUser card
     s.pendingClarify = undefined;

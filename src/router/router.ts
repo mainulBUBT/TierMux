@@ -115,7 +115,7 @@ export class Router {
    */
   private health = new Map<string, { state: 'ok' | 'bad'; at: number; reason?: string }>();
   private static readonly HEALTH_TTL_MS = 60_000;
-  private static readonly PING_TIMEOUT_MS = 5000;
+  private static readonly PING_TIMEOUT_MS = 2000;
 
   constructor(
     private readonly secrets: SecretStore,
@@ -471,6 +471,20 @@ export class Router {
           } else {
             response = await provider.chatCompletion(apiKey, fitted, entry.modelId, completionOpts);
           }
+
+          // Empty response (no text, no tool calls): treat as failure and failover.
+          // Some misconfigured endpoints return HTTP 200 with empty content — don't
+          // accept that as a successful answer when better models are available.
+          const responseContent = response.choices?.[0]?.message?.content;
+          const hasToolCalls = !!(response.choices?.[0]?.message?.tool_calls?.length);
+          if (!forced && !responseContent && !hasToolCalls) {
+            this.markHealth(entry.platform, entry.modelId, 'bad', 'empty_response');
+            this.secrets.setStatus(entry.platform, 'error');
+            failures.push({ platform: entry.platform, model: entry.modelId, reason: 'empty_response' });
+            opts.onFailover?.({ from: entry, reason: 'empty_response' });
+            continue candidates;
+          }
+
           this.usage.add(response.usage);
           this.usageStore?.addRequest(response.usage?.prompt_tokens || 0, response.usage?.completion_tokens || 0);
           this.secrets.setStatus(entry.platform, 'healthy');
