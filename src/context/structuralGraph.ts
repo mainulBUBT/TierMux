@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { contentHash, loadVersion, saveVersion, computeWorkspaceHash, detectChanges } from './graphVersion';
 import { detectEntrypoints, type EntrypointInfo } from './entrypointDetection';
 
-const EXCLUDE = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/build/**,**/.next/**,**/.venv/**}';
+const EXCLUDE = '{**/node_modules/**,**/vendor/**,**/.git/**,**/dist/**,**/out/**,**/build/**,**/.next/**,**/.venv/**,**/storage/**,**/public/**}';
 const SUPPORTED_EXTS = '**/*.{ts,tsx,js,jsx,mjs,cjs,php,py}';
 const SUPPORTED_EXT_RE = /\.(ts|tsx|js|jsx|mjs|cjs|php|py)$/;
 const MAX_FILES = 800;
