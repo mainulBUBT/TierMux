@@ -7,5 +7,20 @@ media/vendor/
 bin/
 # Test extension path artifacts (created during dev)
 extensionPath/
-# Local OpenCode user config (may contain secrets)
+# OpenCode user config (may contain secrets)
 .tiermux/opencode.jsonc
+# OpenCode provider package install (auto-generated, ~10 MB node_modules)
+.tiermux/opencode/node_modules/
+.tiermux/opencode/package.json
+.tiermux/opencode/package-lock.json
+# Auto-generated opencode.jsonc (provider config, written on activate)
+.tiermux/opencode/config.json
+# Legacy retrieval artifacts (pre-research removed in v7.0)
+.tiermux/graph/
+.tiermux/memory.md
+# Kilo AI extension artifacts (separate extension, not part of TierMux)
+.kilo/
+# Claude Code / Antigravity IDE metadata
+.claude/
+.benchmarks/
+.puku/

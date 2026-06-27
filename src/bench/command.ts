@@ -12,8 +12,10 @@ import type { Agent } from '../agent/agent';
 import type { Router } from '../router/router';
 import type { Catalog } from '../catalog/catalog';
 import type { CodebaseIndex } from '../index/codebaseIndex';
-import { buildStructuralGraph } from '../context/structuralGraph';
-import { buildInvertedIndex } from '../context/invertedIndex';
+// Pre-research graph + inverted index removed in v7.0. Bench still measures
+// the legacy agent loop (when OpenCode engine is disabled or fails), but the
+// O(1) symbol lookup + bundle cache no longer exist. The `agent.run()` path
+// will simply skip pre-research for the OpenCode engine case.
 import { resetTelemetry } from '../context/telemetry';
 import { queriesForScope, planExecution, type Scope } from './queries';
 import { Benchmark, runUnits } from './runner';
@@ -94,10 +96,8 @@ export async function runBenchmarkCommand(deps: BenchDeps): Promise<void> {
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'TierMux Benchmark', cancellable: false },
     async () => {
-      log('Building graph + index…');
+      log('Pre-research removed in v7.0; running bench directly.');
       resetTelemetry();
-      try { await buildStructuralGraph(true); } catch (e) { log(`  graph build warning: ${msg(e)}`); }
-      try { await buildInvertedIndex(true); } catch (e) { log(`  index build warning: ${msg(e)}`); }
       try { await deps.index.build(); } catch (e) { log(`  codebase index warning: ${msg(e)}`); }
 
       const bench = new Benchmark({

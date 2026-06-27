@@ -5,10 +5,10 @@ import * as os from 'os';
 import * as nodePath from 'path';
 import { EditGate } from '../edits/applyEdit';
 import { CommandGate } from '../edits/commandGate';
-import { buildRepoMapSummary } from './repoMap';
+// buildRepoMapSummary / loadSkill removed in v7.0 (subsumed by OpenCode LSP / skills dir).
 import { loadSkill, listSkills } from './skills';
 import type { RunContext } from './runContext';
-import { buildStructuralGraph, loadStructuralGraph, graphSummary, symbolGraph } from '../context/structuralGraph';
+// structuralGraph (build/load/graphSummary/symbolGraph) removed in v7.0.
 import { editConflicts, markEditing } from './editLock';
 import { extractDocxText, extractPdfText, IMAGE_BYTE_LIMIT, isSupportedAttachmentPath, kindForPath, mimeForPath } from '../util/extractAttachments';
 import type { ChatMessage } from '../shared/types';
@@ -19,7 +19,6 @@ const MAX_READ_BYTES = 100 * 1024;
 // transcript for every subsequent model call, causing 1M+ input-token blowouts on long tasks.
 // The model sees totalLines + a notice, and can re-call with startLine/endLine for any range.
 const READ_DEFAULT_CAP = 6000;
-const MAX_SEARCH_RESULTS = 12; // was 40 — cut to match grep's MAX_FILES cap
 const MAX_DOC_CHARS_DEFAULT = 60_000;
 const EXCLUDE = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/build/**,**/.next/**,**/.venv/**,**/vendor/**,**/storage/**,**/cache/**,**/.cache/**,**/logs/**,**/bootstrap/cache/**,**/__pycache__/**,**/target/**,**/.gradle/**}';
 const SEARCH_CACHE_TTL_MS = 30_000; // 30 seconds
@@ -96,31 +95,25 @@ export class WorkspaceTools {
     }
     try {
       switch (name) {
-        case 'readFile': return await this.readFile(
-          String(args.path ?? ''),
-          args.startLine != null ? Number(args.startLine) : undefined,
-          args.endLine != null ? Number(args.endLine) : undefined,
-        );
+        case 'readFile': return await this.readFile(String(args.path ?? ''), args.startLine != null ? Number(args.startLine) : undefined, args.endLine != null ? Number(args.endLine) : undefined);
         case 'listDir': return await this.listDir(String(args.path ?? '.'));
         case 'repoMap': return await this.repoMap();
-        case 'searchWorkspace': return await this.searchWorkspace(String(args.query ?? ''));
+        case 'glob': return await this.glob(String(args.pattern ?? ''), args.path ? String(args.path) : undefined);
+        case 'grep': return await this.grep(String(args.pattern ?? ''), args.path ? String(args.path) : undefined, args.regex === true);
         case 'getDiagnostics': return await this.getDiagnostics(args.path ? String(args.path) : undefined);
         case 'runCommand': return await this.runCommand(String(args.command ?? ''), args.cwd ? String(args.cwd) : undefined, ctx);
         case 'writeFile': return await this.writeFile(String(args.path ?? ''), String(args.content ?? ''), ctx);
         case 'createFile': return await this.createFile(String(args.path ?? ''), String(args.content ?? ''), ctx);
         case 'editFile': return await this.editFile(String(args.path ?? ''), String(args.search ?? ''), String(args.replace ?? ''), ctx);
         case 'deleteFile': return await this.deleteFile(String(args.path ?? ''), ctx);
-        case 'glob': return await this.glob(String(args.pattern ?? ''), args.path ? String(args.path) : undefined);
-        case 'grep': return await this.grep(String(args.pattern ?? ''), args.path ? String(args.path) : undefined, args.regex === true);
         case 'webFetch': return await this.webFetch(String(args.url ?? ''));
         case 'webSearch': return await this.webSearch(String(args.query ?? ''));
-        case 'think': return JSON.stringify({ ok: true }); // visible reasoning step — no side effects
+        case 'think': return JSON.stringify({ ok: true });
         case 'skill': return await this.skill(String(args.name ?? ''));
-        case 'buildGraph': return await this.buildGraph();
-        case 'getSymbolGraph': return await this.getSymbolGraph(String(args.file ?? ''));
         case 'impactAnalysis': return JSON.stringify({ error: 'impactAnalysis removed in MVP' });
         case 'readImage': return await this.readImage(String(args.path ?? ''));
         case 'readDocument': return await this.readDocument(String(args.path ?? ''), typeof args.maxChars === 'number' ? args.maxChars : undefined);
+        // `searchWorkspace` removed — OpenCode has a faster native search tool.
         default: return JSON.stringify({ error: `Unknown tool: ${name}` });
       }
     } catch (e) {
@@ -191,48 +184,28 @@ export class WorkspaceTools {
 
   /** Cheap workspace overview so the agent can orient itself. */
   private async repoMap(): Promise<string> {
-    return JSON.stringify(await buildRepoMapSummary());
-  }
-
-  private async searchWorkspace(query: string): Promise<string> {
-    const q = query.trim();
-    if (!q) return JSON.stringify({ error: 'Empty query.' });
-    if (this.searchCacheEnabled) {
-      const key = `search:${q}`;
-      const cached = this.searchCache.get(key);
-      if (cached && Date.now() - cached.ts < SEARCH_CACHE_TTL_MS) return cached.result;
-    }
-    const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
-
-    // File-name / glob matches.
-    const nameGlob = q.includes('*') || q.includes('/') ? q : `**/*${terms[0]}*`;
-    const files = (await vscode.workspace.findFiles(nameGlob, EXCLUDE, 20)).map((f) => vscode.workspace.asRelativePath(f));
-
-    // Content matches, ranked by how many query terms each file hits.
-    const candidates = await vscode.workspace.findFiles(
-      '**/*.{ts,tsx,js,jsx,mjs,cjs,py,go,rs,java,kt,c,cc,cpp,h,hpp,cs,rb,php,swift,scala,json,md,txt,html,css,scss,yaml,yml,sh,sql}',
-      EXCLUDE, 500,
-    );
-    const perFile: Array<{ path: string; score: number; hits: Array<{ line: number; text: string }> }> = [];
-    for (const f of candidates) {
-      try {
-        const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(f));
-        const lines = text.split('\n');
-        const hits: Array<{ line: number; text: string }> = [];
-        let score = 0;
-        for (let i = 0; i < lines.length; i++) {
-          const low = lines[i].toLowerCase();
-          const matched = terms.filter((t) => low.includes(t)).length;
-          if (matched > 0) { score += matched; if (hits.length < 3) hits.push({ line: i + 1, text: lines[i].trim().slice(0, 200) }); }
+    const ROOT = vscode.workspace.workspaceFolders?.[0]?.name ?? 'workspace';
+    const exclude = '{**/node_modules/**,**/vendor/**,**/storage/**,**/.git/**,**/dist/**,**/build/**,**/cache/**,**/tests/**}';
+    const patterns = ['*', 'src/*', 'app/*', 'app/**/*', 'lib/*', 'packages/*', 'resources/*', 'docs/*', 'config/*', 'routes/*', 'scripts/*'];
+    const seen = new Set<string>();
+    try {
+      for (const p of patterns) {
+        const files = await vscode.workspace.findFiles(p, exclude, 50);
+        for (const f of files) {
+          const rel = vscode.workspace.asRelativePath(f);
+          if (!seen.has(rel) && seen.size < 50) seen.add(rel);
         }
-        if (score > 0) perFile.push({ path: vscode.workspace.asRelativePath(f), score, hits });
-      } catch { /* skip unreadable */ }
+      }
+      return JSON.stringify({
+        root: ROOT,
+        files: [...seen].sort(),
+      });
+    } catch {
+      return JSON.stringify({ error: 'Could not scan workspace' });
     }
-    perFile.sort((a, b) => b.score - a.score);
-    const result = JSON.stringify({ files, matches: perFile.slice(0, MAX_SEARCH_RESULTS) });
-    if (this.searchCacheEnabled) this.searchCache.set(`search:${q}`, { result, ts: Date.now() });
-    return result;
   }
+
+
 
   private async getDiagnostics(p?: string): Promise<string> {
     const collect = (uri: vscode.Uri) =>
@@ -640,27 +613,9 @@ export class WorkspaceTools {
       ...(truncated ? { notice: `Truncated to first ${cap} of ${text.length} characters. Use maxChars to control, or readFile for the raw bytes (text files only).` } : {}),
     });
   }
-
-  private async buildGraph(): Promise<string> {
-    try {
-      const graph = await buildStructuralGraph(true);
-      return JSON.stringify({ ok: true, files: graph.files.length, imports: graph.imports.length, calls: graph.calls.length, entrypoints: graph.entrypoints.length, summary: graphSummary(graph) });
-    } catch (e) {
-      return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
-    }
-  }
-
-  private async getSymbolGraph(file: string): Promise<string> {
-    if (!file) return JSON.stringify({ error: 'Missing required parameter: file.' });
-    const graph = await loadStructuralGraph();
-    if (!graph) return JSON.stringify({ error: 'No structural graph built yet. Call buildGraph first.' });
-    const result = symbolGraph(graph, file);
-    return JSON.stringify(result);
-  }
-
 }
 
-// ---- web helpers (best-effort; web tools are on by default via `tiermux.tools.web`) ----
+  // ---- web helpers (best-effort; web tools are on by default via `tiermux.tools.web`)
 
 /** Strip tags/scripts/style, decode common entities, collapse whitespace. Good enough for reading. */
 function htmlToText(html: string): string {

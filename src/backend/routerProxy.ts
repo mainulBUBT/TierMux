@@ -11,6 +11,7 @@ export interface ProxyRequest {
   stream?: boolean;
   temperature?: number;
   max_tokens?: number;
+  reasoning_effort?: string;
 }
 
 export interface ProxyResponse {
@@ -118,18 +119,22 @@ export class RouterProxy {
   private async handleChat(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const body = await this.readBody(req);
     const proxyReq: ProxyRequest = JSON.parse(body);
-    const { messages, stream, temperature, model: requestedModel } = proxyReq;
+    const { messages, stream, temperature, model: requestedModel, reasoning_effort: bodyEffort } = proxyReq;
     const useStream = stream !== false;
 
-    if (!messages || !messages.length) {
-      res.writeHead(400);
-      res.end(JSON.stringify({ error: 'messages_required' }));
-      return;
-    }
+    // Decode model name → reasoning effort. OpenCode sends the model variant as configured
+    // in the provider config (tiermux-auto / tiermux-high / tiermux-low / tiermux-off).
+    // Extract the suffix and set reasoningEffort + temperature accordingly.
+    const TEMP: Record<string, number> = { off: 0.7, low: 0.5, medium: 0.1, high: 0.0 };
+    const modelMatch = (requestedModel ?? '').match(/^tiermux-(auto|off|low|medium|high)$/) as [string, string] | null;
+    const effortFromModel = modelMatch?.[1] as 'auto' | 'off' | 'low' | 'medium' | 'high' | undefined;
+    const effort = bodyEffort ?? effortFromModel ?? 'auto';
+    const resolvedTemp = effort === 'auto' ? temperature : (TEMP[effort] ?? temperature);
 
     const routeOpts: RouteOptions = {
-      model: !requestedModel || requestedModel === '__tiermux__/auto' ? 'auto' : requestedModel,
-      temperature,
+      model: 'auto',
+      temperature: resolvedTemp,
+      reasoningEffort: effort === 'auto' ? undefined : effort as RouteOptions['reasoningEffort'],
       requireTools: true,
       onChunk: useStream ? (text: string) => {
         const chunk: ProxyResponse = {

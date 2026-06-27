@@ -22,8 +22,10 @@ import { registerInlineChat } from './editor/inlineChat';
 import { registerInlineCompletions } from './completions/inlineCompletion';
 import { registerCommitMessage, generateCommitMessage } from './scm/commitMessage';
 import { openMemoryForEdit } from './context/userMemory';
-import { buildStructuralGraph, updateFileInGraph } from './context/structuralGraph';
-import { buildInvertedIndex, invalidateIndexCache, removeFileFromIndex, renameFileInIndex } from './context/invertedIndex';
+// Pre-research modules (symbolIndex, invertedIndex, bundleCache, structuralGraph, repoMap)
+// removed in v7.0 — superseded by OpenCode's `grep`/`glob`/LSP tools when
+// `tiermux.useOpenCodeEngine` is true (the default). The file-watcher handlers
+// that used to keep the inverted index in sync are no-ops now.
 import { formatTelemetryReport, resetTelemetry, getSnapshot, onTelemetryUpdate } from './context/telemetry';
 import { runBenchmarkCommand } from './bench/command';
 import { OpenCodeManager } from './backend/opencodeManager';
@@ -56,9 +58,18 @@ export function activate(context: vscode.ExtensionContext): void {
       const proxyPort = await routerProxy!.start();
       const configDir = await writeOpenCodeConfig(proxyPort, context.extensionPath);
       openCodeManager!.setExtraEnv({ OPENCODE_CONFIG: configDir });
-      openCodeManager!.getServer().catch((err: Error) =>
-        console.error('[TierMux] Failed to start OpenCode:', err),
-      );
+      // Show download notification on first run; subsequent starts are instant.
+      if (await openCodeManager!.needsDownload()) {
+        void vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification,
+          title: 'TierMux: reasoning and initializing…',
+          cancellable: false,
+        }, () => openCodeManager!.getServer().then(() => {}));
+      } else {
+        openCodeManager!.getServer().catch((err: Error) =>
+          console.error('[TierMux] Failed to start OpenCode:', err),
+        );
+      }
     })();
     context.subscriptions.push({ dispose: () => { routerProxy?.stop(); openCodeManager?.stop(); } });
   }
@@ -124,8 +135,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // Stream index-build progress into the chat webview (transient "Indexing…" strip).
   index.onProgress((p) => chat.onIndexProgress(p));
 
-  // Build inverted index in background on activate (incremental — only changed files).
-  void buildInvertedIndex(false);
+  // Pre-research removed — OpenCode handles code intelligence via LSP/grep/glob.
 
   // Retrieval quality status bar item — bottom right, always visible.
   // Shows symbol/cache hit rate. Green ≥80%, orange ≥60%, red <60%.
@@ -158,26 +168,12 @@ export function activate(context: vscode.ExtensionContext): void {
     telemetryBar.show();
   }) });
 
-  // Incrementally re-embed an indexed file when it's saved.
+  // File-watcher for the embeddings index (still used by Agent fallback path).
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument((doc) => {
       void index.updateFile(doc.uri);
-      void updateFileInGraph(doc.uri);
-      invalidateIndexCache(); // triggers incremental rebuild on next lookup
     }),
-    vscode.workspace.onDidDeleteFiles((e) => {
-      for (const f of e.files) {
-        const rel = vscode.workspace.asRelativePath(f);
-        void removeFileFromIndex(rel);
-      }
-    }),
-    vscode.workspace.onDidRenameFiles((e) => {
-      for (const f of e.files) {
-        const oldRel = vscode.workspace.asRelativePath(f.oldUri);
-        const newRel = vscode.workspace.asRelativePath(f.newUri);
-        void renameFileInIndex(oldRel, newRel);
-      }
-    }),
+    // onDidDeleteFiles / onDidRenameFiles no longer touch the removed inverted index.
   );
 
   // Reconnect MCP servers when their configuration changes; refresh the panel
@@ -252,16 +248,10 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showInformationMessage('TierMux: telemetry counters reset.');
     }),
     vscode.commands.registerCommand('tiermux.buildGraph', async () => {
-      await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Building code graph…' }, async () => {
-        const graph = await buildStructuralGraph(true);
-        void vscode.window.showInformationMessage(`TierMux: graph built — ${graph.files.length} files, ${graph.imports.length} imports, ${graph.calls.length} call edges.`);
-      });
+      void vscode.window.showInformationMessage('TierMux: code graph is no longer needed (OpenCode LSP handles it). This command is a no-op in v7.0+.');
     }),
     vscode.commands.registerCommand('tiermux.buildIndex', async () => {
-      await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Building inverted index…' }, async () => {
-        const idx = await buildInvertedIndex(true);
-        void vscode.window.showInformationMessage(`TierMux: index built — ${Object.keys(idx.entries).length} terms indexed.`);
-      });
+      void vscode.window.showInformationMessage('TierMux: inverted index is no longer needed (OpenCode grep/glob handles it). This command is a no-op in v7.0+.');
     }),
     vscode.commands.registerCommand('tiermux.bench', () => {
       console.log('[tiermux-bench-debug] bench command INVOKED');

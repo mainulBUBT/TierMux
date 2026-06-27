@@ -18,6 +18,9 @@ export async function writeOpenCodeConfig(
   const configPath = path.join(configDir, 'config.json');
   const pkgPath = path.join(configDir, 'package.json');
 
+  // Ensure config dir exists BEFORE writing into it (otherwise readFileAsync/writeFileAsync ENOENT).
+  await fs.promises.mkdir(configDir, { recursive: true });
+
   // Ensure the provider npm package is available.
   const pkg: PkgJson = { dependencies: {} };
   try {
@@ -35,9 +38,9 @@ export async function writeOpenCodeConfig(
     }
   }
 
-  // Write the TierMux provider config.
+  // Write the TierMux provider config to BOTH locations (legacy dir + canonical .jsonc)
+  // so any code path that reads either finds the right baseURL with the live proxy port.
   // `model` (singular) is the OpenCode 1.2.15 default-model key.
-  // TierMux always sends a `model` in each message body, so this is just the fallback.
   const config = {
     provider: {
       tiermux: {
@@ -45,15 +48,27 @@ export async function writeOpenCodeConfig(
         name: 'TierMux Router',
         options: {
           baseURL: `http://127.0.0.1:${proxyPort}/v1`,
+          maxTokens: 2048,
         },
         models: {
           'tiermux-auto': {},
+          'tiermux-high': {},
+          'tiermux-medium': {},
+          'tiermux-low': {},
+          'tiermux-off': {},
         },
       },
     },
     model: 'tiermux/tiermux-auto',
   };
 
+  // 1. Legacy path (extensionPath/.tiermux/opencode/config.json)
   await writeFileAsync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+
+  // 2. Canonical .jsonc (read by OpenCode when OPENCODE_CONFIG env points here)
+  const canonicalPath = path.join(extensionPath, '.tiermux', 'opencode.jsonc');
+  await writeFileAsync(canonicalPath, JSON.stringify(config, null, 2), 'utf-8');
+
+  console.log(`[TierMux] OpenCode config written: proxyPort=${proxyPort}, baseURL=${config.provider.tiermux.options.baseURL}`);
   return configDir;
 }

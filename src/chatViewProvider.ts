@@ -105,13 +105,14 @@ interface Session {
   liveSteps: Map<string, TranscriptStep[]>;
   model?: string;
   reasoningEffort?: ReasoningEffort;
+  /** Last token usage from an OpenCode-driven run, surfaced via SSE event. */
+  lastUsage?: UsagePayload;
 }
 
 interface StoredSession {
   id: string;
   title: string;
   ts: number;
-  history: ChatMessage[];
   transcript: TranscriptMessage[];
   model?: string;
   reasoningEffort?: string;
@@ -205,7 +206,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private hydrateSession(s: StoredSession): Session {
     return {
       id: s.id,
-      history: s.history ?? [],
+      history: [],
       transcript: s.transcript ?? [],
       title: s.title,
       titleGenerated: !!s.title || (s.transcript?.some((t) => t.role === 'user') ?? false),
@@ -257,7 +258,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!s) return;
     const others = this.loadSessions().filter((x) => x.id !== sessionId);
     if (s.transcript.length) {
-      others.unshift({ id: s.id, title: s.title ?? this.deriveTitle(s), ts: Date.now(), history: s.history, transcript: s.transcript, model: s.model, reasoningEffort: s.reasoningEffort });
+      others.unshift({ id: s.id, title: s.title ?? this.deriveTitle(s), ts: Date.now(), transcript: s.transcript, model: s.model, reasoningEffort: s.reasoningEffort });
     }
     void this.deps.workspaceState.update(SESSIONS_KEY, others.slice(0, MAX_SESSIONS));
     if (sessionId === this.viewedSessionId) void this.deps.workspaceState.update(CURRENT_KEY, sessionId);
@@ -304,8 +305,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return oc.id;
   }
 
-  /** Run a message through TierMux's own Router (real model/token/duration info)
-   *  and sync the conversation to an OpenCode session for context persistence. */
+  /** Run a message through OpenCode — full agent delegation (agent loop, tools, LSPs,
+   *  multi-step reasoning live in OpenCode; TierMux is just the LLM provider via RouterProxy).
+   *  Falls back to the in-process Agent if OpenCode can't start. */
   private async handleSendWithOpenCode(
     s: Session,
     m: Extract<InMessage, { type: 'sendMessage' }>,
@@ -314,14 +316,115 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!this.deps.openCodeClient) return;
 
     const sentAt = Date.now();
-    const before = this.deps.usage.get();
+
+    // Try OpenCode first; if it can't start (binary missing, port conflict, etc.) fall back.
+    let ocSessionId: string | undefined;
+    try {
+      ocSessionId = await this.ensureOCSession(s.id);
+    } catch (e) {
+      console.warn('[TierMux] OpenCode session create failed, falling back to in-process agent:', e);
+      await this.handleSendWithAgent(s, m);
+      return;
+    }
+
+    // Subscribe to OpenCode SSE events for streaming + tool + reasoning
+    const live = () => this.isActiveRun(s, m.requestId);
+    const unsubscribe = this.deps.openCodeClient.subscribeToEvents((event) => {
+      if (!live()) return;
+      const p = event.payload as Record<string, unknown>;
+      // Filter to this session only
+      const evSessionId = (p?.sessionID as string) ?? (p?.sessionId as string);
+      if (evSessionId && evSessionId !== ocSessionId) return;
+
+      // OpenCode event types: message.part.updated (with part.type), message.updated, etc.
+      if (event.type === 'message.part.updated' || (p as any)?.type === 'message.part.updated') {
+        const part = (p as any).part as { type?: string; text?: string; id?: string; tool?: string } | undefined;
+        if (!part) return;
+        if (part.type === 'text' && part.text) {
+          this.post({ type: 'assistantChunk', sessionId: s.id, requestId: m.requestId, text: part.text });
+        } else if (part.type === 'reasoning' && part.text) {
+          this.post({ type: 'agentStep', sessionId: s.id, requestId: m.requestId, phase: 'thinking', label: part.text.slice(0, 80) });
+        } else if (part.type === 'tool' || part.type === 'tool_use') {
+          this.post({ type: 'agentStep', sessionId: s.id, requestId: m.requestId, phase: 'thinking', label: `tool: ${part.tool ?? part.id ?? '?'}` });
+        }
+      } else if (event.type === 'message.updated' || (p as any)?.type === 'message.updated') {
+        const info = (p as any).info as { role?: string; tokens?: { input?: number; output?: number } } | undefined;
+        if (info?.role === 'assistant' && info.tokens) {
+          // Surface token usage from OpenCode if present
+          s.lastUsage = { promptTokens: info.tokens.input ?? 0, completionTokens: info.tokens.output ?? 0, totalTokens: (info.tokens.input ?? 0) + (info.tokens.output ?? 0) };
+        }
+      }
+    });
 
     try {
-      const ocSessionId = await this.ensureOCSession(s.id);
-      // Sync user message to OpenCode session (best-effort, non-blocking)
-      this.deps.openCodeClient.sendMessageAsync(ocSessionId, prompt).catch(() => {});
+      // Reasoning effort → select OpenCode model variant (RouterProxy decodes it to
+      // set temperature + reasoningEffort on the TierMux router). Plan mode always
+      // uses high reasoning.
+      const EFFORT = m.reasoningEffort ?? 'medium';
+      s.reasoningEffort = EFFORT;
+      const modelId = `tiermux-${m.mode === 'plan' ? 'high' : EFFORT}`;
 
-      // Route through TierMux's own agent — gets real model/token info via Router
+      // Auto-approve → if OFF, tell the model to ask before every edit.
+      // When OFF, the agent still has edit tools (build agent permission: allow)
+      // but is prompted to surface every change first. In plan mode edits are
+      // blocked entirely by OC's native plan agent, so this is agent/chat only.
+      const approvalHint = !this.autoApprove && m.mode !== 'plan'
+        ? `\n\n[EDIT APPROVAL] Before ANY file write, edit, create, or delete: present the exact change to the user, explain what it does, and wait for an explicit "yes" before executing. Never apply edits silently.`
+        : '';
+      const ocPrompt = prompt + approvalHint;
+
+      // Send via OpenCode (waits for completion). TierMux router picks the actual free model
+      // through the RouterProxy; OpenCode never knows which provider the response came from.
+      const result = await this.deps.openCodeClient.sendMessageAndWait(ocSessionId, ocPrompt, {
+        model: { providerID: 'tiermux', modelID: modelId },
+        agent: m.mode === 'plan' ? 'plan' : 'build',
+      });
+
+      if (!live()) return;
+
+      // Extract text from parts
+      const text = (result.parts ?? [])
+        .filter((p) => p.type === 'text')
+        .map((p) => (p as any).text ?? p.content ?? '')
+        .join('') || '(no response)';
+
+      // Build usage payload (from OpenCode tokens if surfaced, else lastUsage, else 0s)
+      const usage: UsagePayload = {
+        promptTokens: s.lastUsage?.promptTokens ?? 0,
+        completionTokens: s.lastUsage?.completionTokens ?? 0,
+        totalTokens: s.lastUsage?.totalTokens ?? 0,
+      };
+
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId,
+        text, reasoning: undefined, usage,
+        platform: 'tiermux', model: 'tiermux-auto',
+        paused: false,
+      });
+
+      // History stored in OpenCode's SQLite DB via sendMessageAndWait above.
+      // TierMux only persists the UI-facing transcript for session-list display.
+      this.persist(s.id);
+    } catch (e) {
+      if (!live()) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[TierMux] OpenCode engine error:', msg);
+      this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: msg });
+    } finally {
+      unsubscribe();
+      void sentAt; // reserved for future latency tracking
+    }
+  }
+
+  /** Fallback path — original in-process Agent.run() loop. Used when OpenCode fails to start. */
+  private async handleSendWithAgent(
+    s: Session,
+    m: Extract<InMessage, { type: 'sendMessage' }>,
+  ): Promise<void> {
+    const release = await this.acquireRunSlot(s.id);
+    if (s.activeRequestId !== m.requestId) { release(); return; }
+    const sentAt = Date.now();
+    const before = this.deps.usage.get();
+    try {
       const result = await this.deps.agent.run(s.history, m.mode as Mode, {
         model: m.model,
         reasoningEffort: m.reasoningEffort,
@@ -332,32 +435,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }, this.agentCallbacks(s, m.requestId, m.mode as Mode));
 
       if (!this.isActiveRun(s, m.requestId)) return;
-
       const after = this.deps.usage.get();
       const usage: UsagePayload = {
         promptTokens: Math.max(0, after.promptTokens - before.promptTokens),
         completionTokens: Math.max(0, after.completionTokens - before.completionTokens),
         totalTokens: Math.max(0, after.totalTokens - before.totalTokens),
       };
-
-      // Sync assistant response to OpenCode session for context continuity
-      const assistantText = result.text || '(no response)';
-      this.deps.openCodeClient.sendMessageAsync(ocSessionId, assistantText).catch(() => {});
-
-      // Push to transcript with real model/duration info
+      const text = result.text || '(no response)';
       this.pushAssistantTurn(s, m.requestId, result, sentAt, usage);
       s.voteCtx.set(m.requestId, { taskKind: result.taskKind!, platform: result.platform!, model: result.model!, last: 'none' as Vote });
-
-      // Post assistantMessage with real model/platform/usage (no hardcoded values)
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId,
-        text: assistantText, reasoning: result.reasoning, usage,
+        text, reasoning: result.reasoning, usage,
         platform: result.runtimeName ?? result.platform, model: result.model,
         paused: result.paused,
       });
+      release();
     } catch (e) {
+      release();
       if (!this.isActiveRun(s, m.requestId)) return;
       const msg = e instanceof Error ? e.message : String(e);
-      console.error('[TierMux] OpenCode engine error:', msg);
       this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: msg });
       if (s.history[s.history.length - 1]?.role === 'user') s.history.pop();
     }

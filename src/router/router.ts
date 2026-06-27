@@ -94,9 +94,10 @@ function classify(err: unknown): { reason: string; failoverable: boolean; retryA
     if (s === 404) return { reason: 'not_found', failoverable: true };
     if (s === 400) return { reason: 'bad_request', failoverable: true };
     // 402 Payment Required = the model is paid-only / out of free quota under
-    // this key. Failing over to another model on the same provider will hit
-    // the same 402, so don't burn through the chain — surface the error.
-    if (s === 402) return { reason: 'paid_only', failoverable: false };
+    // the user's current key. In AUTO mode, make it failoverable so the next
+    // enabled model in the chain gets a chance. If ALL models 402, the error
+    // surfaces as "All models exhausted" with the per-reason breakdown.
+    if (s === 402) return { reason: 'paid_only', failoverable: true };
     if (s && s >= 500) return { reason: 'server_error', failoverable: true };
     return { reason: `http_${s ?? '?'}`, failoverable: true };
   }
