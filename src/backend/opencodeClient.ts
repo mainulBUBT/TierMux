@@ -26,6 +26,20 @@ export interface OCMessage {
   parts: Array<{ id: string; type: string; content: string }>;
 }
 
+// OC pauses at its built-in step limit and emits a message asking the user to "Continue".
+// Detect this so callers can auto-continue instead of surfacing the pause to the user.
+const PAUSE_PATTERNS = [
+  "I've paused after",
+  "choose Continue",
+  "I can keep going from here",
+];
+export function isOCPaused(msg: OCMessage): boolean {
+  const text = (msg.parts ?? [])
+    .map(p => (p as any).text ?? p.content ?? '')
+    .join(' ');
+  return PAUSE_PATTERNS.some(p => text.includes(p));
+}
+
 export interface OCEvent {
   type: string;
   payload: Record<string, unknown>;

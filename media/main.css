@@ -171,13 +171,13 @@ body {
 .tool-card.state-running { border-color: var(--vscode-progressBar-background, #0a84ff); }
 .tool-card.state-done    { border-color: var(--vscode-testing-iconPassed, #57a64a); }
 .tool-card.state-error   { border-color: var(--vscode-errorForeground, #c33); }
-.tool-head { display: flex; gap: 6px; align-items: center; min-width: 0; }
-.tool-ic { flex: 0 0 auto; font-size: 11px; opacity: .55; width: 14px; text-align: center; }
+.tool-head { display: flex; gap: 5px; align-items: center; min-width: 0; flex-wrap: nowrap; }
+.tool-ic { flex: 0 0 14px; font-size: 11px; opacity: .55; text-align: center; }
 .tool-title {
-  flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; opacity: .9;
 }
-.tool-hint { flex: 0 0 auto; font-size: 10.5px; opacity: .5; white-space: nowrap; }
+.tool-hint { flex: 0 0 auto; font-size: 10.5px; opacity: .45; white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
 .tool-card .state {
   flex: 0 0 auto; font-size: 11px; line-height: 1;
 }
@@ -190,11 +190,12 @@ body {
 .state.error  { color: var(--vscode-errorForeground, #c33); }
 @keyframes state-pulse { 0%,100% { opacity: .4; } 50% { opacity: 1; } }
 @keyframes fadeSlideIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-.tool-more { margin-top: 3px; }
-.tool-more summary { cursor: pointer; opacity: .5; font-size: 10.5px; list-style: none; }
+.tool-more { margin-top: 2px; }
+.tool-more summary { cursor: pointer; opacity: .45; font-size: 10.5px; list-style: none; display: flex; align-items: center; gap: 3px; }
 .tool-more summary::-webkit-details-marker { display: none; }
-.tool-more summary::before { content: '▸ '; }
-details[open].tool-more summary::before { content: '▾ '; }
+.tool-more summary::before { content: '▸'; font-size: 9px; }
+details[open].tool-more summary::before { content: '▾'; }
+details[open].tool-more summary { opacity: .6; }
 .tool-more pre { margin: 4px 0 2px; max-height: 180px; overflow: auto; font-size: 11px; opacity: .8;
   background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1));
   padding: 6px 8px; border-radius: 4px; }
@@ -838,12 +839,12 @@ body.vscode-light .empty-recent-card { background: var(--vscode-editorWidget-bac
 .history-empty { padding: 12px 10px; font-size: 12px; opacity: .5; text-align: center; }
 .history-delete-btn {
   flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
-  background: transparent; border: none; cursor: pointer; padding: 2px 3px; border-radius: 3px;
-  color: var(--vscode-foreground); opacity: 0; transition: opacity .12s, background .12s;
-  line-height: 1;
+  background: transparent; border: none; cursor: pointer; padding: 4px 6px; border-radius: 4px;
+  color: var(--vscode-foreground); opacity: 0;
+  transition: opacity .15s, color .1s, background .12s; line-height: 1;
 }
-.history-item:hover .history-delete-btn { opacity: .45; }
-.history-delete-btn:hover { opacity: 1 !important; background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-errorForeground); }
+.history-item:hover .history-delete-btn { opacity: .5; }
+.history-delete-btn:hover { opacity: 1 !important; color: var(--vscode-errorForeground); background: var(--vscode-toolbar-hoverBackground); }
 @keyframes tabspin { to { transform: rotate(360deg); } }
 
 

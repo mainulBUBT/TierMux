@@ -2,7 +2,16 @@
 // the agent follows the repo's rules every turn.
 import * as vscode from 'vscode';
 
-const RULE_FILES = ['AGENTS.md', 'CLAUDE.md', '.cursorrules', '.windsurfrules', '.github/copilot-instructions.md'];
+// .tiermux/prompt.md is TierMux's own rules file — checked first so project-specific
+// rules take precedence. Standard agent files (AGENTS.md, CLAUDE.md, etc.) follow.
+const RULE_FILES = [
+  '.tiermux/prompt.md',
+  'AGENTS.md',
+  'CLAUDE.md',
+  '.cursorrules',
+  '.windsurfrules',
+  '.github/copilot-instructions.md',
+];
 const MAX_CHARS = 8000;
 
 export async function loadProjectRules(): Promise<string> {

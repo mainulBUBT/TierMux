@@ -31,6 +31,8 @@ import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense } from './agent/condense';
 import { recommendFreeStrong } from './catalog/recommend';
 import { parseClarifying, type ClarifyingQuestion } from './agent/clarify';
+import { loadProjectRules } from './context/projectRules';
+import { isOCPaused } from './backend/opencodeClient';
 import { deriveTitleFrom, looksLikeActionablePlan, planStepsToTodos, sanitizeTitle } from './session/titles';
 
 const SLASH_PROMPTS: Record<string, string> = {
@@ -120,6 +122,58 @@ interface StoredSession {
 
 
 /** Helper to resolve the display name for a custom endpoint (or built-in platform). */
+/**
+ * Per-mode behavioral contract injected into every OC prompt.
+ * These are the minimum instructions needed to keep free models efficient;
+ * OC's own agent system handles everything else.
+ */
+function buildModeHint(mode: string, requireApproval: boolean): string {
+  const approval = requireApproval && mode !== 'plan'
+    ? '\n- Before any file write/edit/delete: show the exact diff and wait for user approval.'
+    : '';
+
+  if (mode === 'chat' || mode === 'ask') {
+    // Ask: answer directly, minimal tool use, never edit files
+    return `\n\n<mode:ask>
+Answer the question directly and concisely.
+- Only read files if their exact content is needed to answer accurately.
+- Do not grep, glob, or explore the codebase speculatively.
+- Never edit, create, or delete files.
+- If the question is ambiguous, ask one clarifying question instead of assuming.
+</mode:ask>`;
+  }
+
+  if (mode === 'plan') {
+    // Plan: focused research then structured output — no edits
+    return `\n\n<mode:plan>
+Research phase: before each tool call, write one line — "Looking for: [what] to understand [why]."
+Stop researching after 8 targeted lookups or when you have enough to write a complete plan.
+Never edit files during planning.
+
+Output the plan in this exact format:
+## Plan
+1. \`path/to/file\` — what changes and why
+2. ...
+
+If the task is unclear, ask one clarifying question before researching.
+</mode:plan>`;
+  }
+
+  // Agent / Auto: structured execution, no loops, no redundant reads
+  return `\n\n<mode:agent>
+Before any tool calls, write:
+## Approach
+1. [step]
+2. ...
+
+Execution rules:${approval}
+- Never re-read a file already in your context.
+- If a search returns nothing, try a different approach — do not repeat the same grep with similar terms.
+- After each file edit, verify it is correct before moving to the next step.
+- If stuck or the task is ambiguous after 3 attempts, ask the user one specific question instead of guessing.
+</mode:agent>`;
+}
+
 function displayNameForEntry(entry: { platform: string; modelId: string }, deps: ChatDeps): string {
   if (entry.platform === 'custom') {
     const epId = entry.modelId.split('::')[0];
@@ -365,53 +419,47 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const resolvedEffort = m.mode === 'plan' ? 'high' : EFFORT;
       const modelId = `tiermux-${resolvedEffort}`;
 
-      // Auto-approve → if OFF, tell the model to ask before every edit.
-      // When OFF, the agent still has edit tools (build agent permission: allow)
-      // but is prompted to surface every change first. In plan mode edits are
-      // blocked entirely by OC's native plan agent, so this is agent/chat only.
-      const approvalHint = !this.autoApprove && m.mode !== 'plan'
-        ? `\n\n[EDIT APPROVAL] Before ANY file write, edit, create, or delete: present the exact change to the user, explain what it does, and wait for an explicit "yes" before executing. Never apply edits silently.`
-        : '';
-
-      // Build context prefix for OC: repo map on first message + semantic chunks on every message.
-      // This gives OC an immediate project map and relevant code without burning tool-call round-trips.
       const isFirstOCMessage = !this.ocSessions.has(s.id);
-      const contextParts: string[] = [];
 
+      // On the first message of a session: inject repo map + project rules (AGENTS.md,
+      // CLAUDE.md, .cursorrules, .tiermux/prompt.md, etc.) so OC starts oriented and
+      // follows the project's conventions without needing tool-call round-trips to find them.
+      const contextParts: string[] = [];
       if (isFirstOCMessage) {
         try {
           const map = await this.deps.tools.repoMap();
           const parsed = JSON.parse(map) as { root?: string; files?: string[] };
           if (parsed.files?.length) {
-            contextParts.push(`[PROJECT STRUCTURE — ${parsed.root ?? 'workspace'}]\n${parsed.files.join('\n')}`);
+            contextParts.push(`[Project: ${parsed.root ?? 'workspace'}]\n${parsed.files.join('\n')}`);
           }
         } catch { /* non-critical */ }
-      }
 
-      if (this.deps.index.isEnabled() && this.deps.index.hasIndex()) {
         try {
-          const chunks = await this.deps.index.search(prompt, 5);
-          if (chunks.length) {
-            const block = chunks
-              .map(r => `// ${r.file}:${r.startLine}-${r.endLine}\n${r.text.replace(/^\/\/.*\n/, '').slice(0, 1200)}`)
-              .join('\n\n');
-            contextParts.push(`[RELEVANT CODE — auto-retrieved, use if helpful]\n\`\`\`\n${block}\n\`\`\``);
-          }
+          const rules = await loadProjectRules();
+          if (rules) contextParts.push(`[Project rules — follow these]\n${rules}`);
         } catch { /* non-critical */ }
       }
 
-      const contextPrefix = contextParts.length
-        ? contextParts.join('\n\n') + '\n\n---\n\n'
-        : '';
-      const ocPrompt = contextPrefix + prompt + approvalHint;
+      const contextPrefix = contextParts.length ? contextParts.join('\n\n') + '\n\n' : '';
+
+      const modeHint = buildModeHint(m.mode, !this.autoApprove);
+      const ocPrompt = contextPrefix + prompt + modeHint;
 
       // Send via OpenCode (waits for completion). TierMux router picks the actual free model
       // through the RouterProxy; OpenCode never knows which provider the response came from.
-      const result = await this.deps.openCodeClient.sendMessageAndWait(ocSessionId, ocPrompt, {
+      const ocOpts = {
         model: { providerID: 'tiermux', modelID: modelId },
         agent: m.mode === 'plan' ? 'plan' : 'build',
         reasoning_effort: resolvedEffort,
-      });
+      };
+      let result = await this.deps.openCodeClient.sendMessageAndWait(ocSessionId, ocPrompt, ocOpts);
+
+      // OC pauses at its built-in step limit (~25 steps) and emits a "Continue?" message.
+      // Auto-continue up to 8 times; if still paused after that, surface it to the user.
+      for (let i = 0; i < 8 && live() && isOCPaused(result); i++) {
+        result = await this.deps.openCodeClient.sendMessageAndWait(ocSessionId, 'continue', ocOpts);
+      }
+      const ocStillPaused = live() && isOCPaused(result);
 
       if (!live()) return;
 
@@ -431,7 +479,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId,
         text, reasoning: undefined, usage,
         platform: 'tiermux', model: 'tiermux-auto',
-        paused: false,
+        paused: ocStillPaused,
       });
 
       // History stored in OpenCode's SQLite DB via sendMessageAndWait above.
@@ -1927,6 +1975,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async handleResume(m: Extract<InMessage, { type: 'resume' }>): Promise<void> {
     const s = this.current();
+
+    // If this session has an OC session backing it, continue via OC instead of in-process agent.
+    const ocSessionId = this.ocSessions.get(s.id);
+    if (ocSessionId && this.deps.openCodeClient) {
+      s.cancel?.dispose();
+      s.cancel = new vscode.CancellationTokenSource();
+      s.activeRequestId = m.requestId;
+      const release = await this.acquireRunSlot(s.id);
+      if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
+      this.post({ type: 'busy', sessionId: s.id, busy: true });
+      try {
+        const ocOpts = { model: { providerID: 'tiermux', modelID: `tiermux-${s.reasoningEffort ?? 'auto'}` } };
+        let result = await this.deps.openCodeClient.sendMessageAndWait(ocSessionId, 'continue', ocOpts);
+        for (let i = 0; i < 8 && isOCPaused(result); i++) {
+          result = await this.deps.openCodeClient.sendMessageAndWait(ocSessionId, 'continue', ocOpts);
+        }
+        const text = (result.parts ?? []).filter((p) => p.type === 'text').map((p) => (p as any).text ?? p.content ?? '').join('') || '(no response)';
+        const usage = { promptTokens: s.lastUsage?.promptTokens ?? 0, completionTokens: s.lastUsage?.completionTokens ?? 0, totalTokens: s.lastUsage?.totalTokens ?? 0 };
+        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text, reasoning: undefined, usage, platform: 'tiermux', model: 'tiermux-auto', paused: isOCPaused(result) });
+        this.persist(s.id);
+      } catch (e) {
+        this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
+      } finally {
+        release();
+        if (this.isActiveRun(s, m.requestId)) { s.activeRequestId = undefined; this.settlePendingApprovals(s, false); }
+        this.setStatus(s.id, 'idle');
+        this.post({ type: 'busy', sessionId: s.id, busy: false });
+      }
+      return;
+    }
+
     s.history.push({
       role: 'user',
       content: 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.',
@@ -2168,27 +2247,49 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     s.titleGenerated = true; // guard before the call to avoid duplicate runs
     try {
-      const snippet = `User's message: ${(firstReal.text ?? '').slice(0, 800)}`;
-      // Prefer a strong free model so titles are good; fall back to Auto if none is keyed.
-      const model = await this.deps.router.pickUtilityModel();
-      const result = await this.deps.router.route(
-        [
-          { role: 'system', content: TITLE_SYSTEM },
-          { role: 'user', content: snippet },
-        ],
-        // Thinking off + a little headroom so the reply is the title itself, not a thought.
-        { temperature: 0.3, max_tokens: 48, model, taskKind: 'trivial', reasoningEffort: 'off' },
-      );
-      // Reject leaked reasoning AND a misapplied greeting title — we only reach here for
-      // a real (non-trivial) message, so "Starting Conversation"/"New chat" from the model
-      // is wrong; derive a title from the message instead of leaving it stuck.
-      let title = sanitizeTitle(contentToString(result.response.choices[0]?.message.content));
+      const snippet = (firstReal.text ?? '').slice(0, 800);
+      let raw = '';
+
+      // Try OC first — create a throw-away session, get title, delete it.
+      const oc = this.deps.openCodeClient;
+      if (oc && await oc.health()) {
+        let tempOcId: string | undefined;
+        try {
+          const prompt = `${TITLE_SYSTEM}\n\nUser's message: ${snippet}`;
+          const tempSession = await oc.createSession('__title__');
+          tempOcId = tempSession.id;
+          const result = await oc.sendMessageAndWait(tempOcId, prompt, {
+            model: { providerID: 'tiermux', modelID: 'tiermux-auto' },
+            reasoning_effort: 'low',
+          });
+          raw = (result.parts ?? [])
+            .filter((p) => p.type === 'text')
+            .map((p) => (p as any).text ?? p.content ?? '')
+            .join('').trim();
+        } finally {
+          if (tempOcId) oc.deleteSession(tempOcId).catch(() => {});
+        }
+      }
+
+      // Fall back to the in-process router if OC wasn't available or returned nothing.
+      if (!raw) {
+        const model = await this.deps.router.pickUtilityModel();
+        const result = await this.deps.router.route(
+          [
+            { role: 'system', content: TITLE_SYSTEM },
+            { role: 'user', content: `User's message: ${snippet}` },
+          ],
+          { temperature: 0.3, max_tokens: 48, model, taskKind: 'trivial', reasoningEffort: 'off' },
+        );
+        raw = contentToString(result.response.choices[0]?.message.content);
+      }
+
+      let title = sanitizeTitle(raw);
       if (/^(starting conversation|new chat|untitled|chat)$/i.test(title)) title = '';
       s.title = title || deriveTitleFrom(firstReal.text ?? '');
       this.persist(s.id);
       this.updateViewTitle();
     } catch {
-      // LLM unavailable — still move off the provisional title using the real message.
       s.title = deriveTitleFrom(firstReal.text ?? '');
       this.persist(s.id);
       this.updateViewTitle();

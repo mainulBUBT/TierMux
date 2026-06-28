@@ -371,9 +371,11 @@
       historyDropdown.classList.remove('hidden');
       historySearch.value = '';
       historyQuery = '';
+      expandedHistoryId = null;
       renderTabs();
       historySearch.focus();
     } else {
+      expandedHistoryId = null;
       historyDropdown.classList.add('hidden');
     }
   }
@@ -384,20 +386,35 @@
   });
   historySearch.addEventListener('click', (e) => e.stopPropagation());
   historyDropdown.addEventListener('click', (e) => e.stopPropagation());
-  document.addEventListener('click', (e) => { if (historyOpen && !historyDropdown.contains(e.target)) toggleHistory(false); });
+  document.addEventListener('click', (e) => {
+    if (historyOpen && !historyDropdown.contains(e.target)) toggleHistory(false);
+  });
 
   // Delegated handler — one listener, survives every renderTabs() re-render.
   historyList.addEventListener('click', (e) => {
     const target = e.target;
-    // Delete button: data-delete-id is set on the span or its SVG parent span
-    const delEl = target.closest ? target.closest('[data-delete-id]') : null;
+    // Delete button — must check before row so click on trash doesn't also switch session
+    const delEl = target.closest('[data-delete-id]');
     if (delEl) {
+      e.stopPropagation();
       const sid = delEl.dataset.deleteId;
-      if (sid) vscode.postMessage({ type: 'deleteSessionById', sessionId: sid });
-      return; // do NOT switch session or close dropdown
+      if (sid) {
+        // Optimistic removal — don't wait for backend sessionList refresh
+        const row = delEl.closest('[data-session-id]');
+        if (row) row.remove();
+        sessionList = sessionList.filter(s => s.id !== sid);
+        if (!historyList.querySelector('.history-item')) {
+          const empty = document.createElement('div');
+          empty.className = 'history-empty';
+          empty.textContent = 'No sessions yet';
+          historyList.appendChild(empty);
+        }
+        vscode.postMessage({ type: 'deleteSessionById', sessionId: sid });
+      }
+      return;
     }
-    // Session row click — switch and close
-    const row = target.closest ? target.closest('[data-session-id]') : null;
+    // Row click → switch session and close
+    const row = target.closest('[data-session-id]');
     if (row) {
       const sid = row.dataset.sessionId;
       if (sid && sid !== viewedSessionId) vscode.postMessage({ type: 'switchSession', sessionId: sid });
@@ -443,7 +460,7 @@
       delBtn.title = 'Delete session';
       delBtn.setAttribute('role', 'button');
       delBtn.dataset.deleteId = s.id;
-      delBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" pointer-events="none"><path d="M6 2h4v1H6V2zm-2 2v9a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4H4zm2 2h1v5H6V6zm3 0h1v5H9V6zM1 3h14v1H1V3z"/></svg>';
+      delBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M6 2h4v1H6V2zm-2 2v9a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4H4zm2 2h1v5H6V6zm3 0h1v5H9V6zM1 3h14v1H1V3z"/></svg>';
       item.appendChild(left);
       item.appendChild(ts);
       item.appendChild(delBtn);
@@ -486,7 +503,7 @@
     el.innerHTML = `
       <div class="empty-hero">
         ${logoHtml}
-        <div class="empty-heading">What can I do for you?</div>
+        <div class="empty-heading">Stack free. Route smart. Ship faster.</div>
       </div>
       ${recentHtml}`;
 
@@ -496,7 +513,7 @@
       });
     });
     const viewAllBtn = el.querySelector('#empty-view-all-btn');
-    if (viewAllBtn) viewAllBtn.addEventListener('click', () => toggleHistory(true));
+    if (viewAllBtn) viewAllBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleHistory(true); });
     thread.appendChild(el);
   }
 
@@ -1276,9 +1293,13 @@
       return { icon: '◌', title: 'Thinking' + (th ? ': ' + th.replace(/\s+/g, ' ').trim().slice(0, 80) : '') };
     }
     const a = String(firstArg(args) || '');
-    // Count lines in result to show an inline hint (e.g. “4 results”)
-    const resultLines = detail ? detail.split('\n').filter(Boolean).length : 0;
-    const hint = resultLines > 0 ? `${resultLines} line${resultLines === 1 ? '' : 's'}` : '';
+    // Show first meaningful line of output as inline hint, with line count if > 1
+    const resultLines = detail ? detail.split('\n').filter(Boolean) : [];
+    const lineCount = resultLines.length;
+    const firstLine = (resultLines[0] || '').trim().slice(0, 72);
+    const hint = lineCount === 0 ? '' :
+      lineCount === 1 ? firstLine :
+      firstLine ? `${firstLine}  +${lineCount - 1}` : `${lineCount} lines`;
     const M = {
       readFile:        ['⊞', a ? `read  ${a}` : 'read file'],
       listDir:         ['⊟', a ? `ls  ${a}` : 'list dir'],
@@ -1347,14 +1368,17 @@
     // State class on card for left-border colour
     card.className = 'tool-card state-' + msg.state;
     card.dataset.tc = msg.toolCallId;
-    const argStr = (msg.args && typeof msg.args === 'object') ? JSON.stringify(msg.args, null, 2) : String(msg.args || '');
-    const parts = [];
-    if (argStr && argStr !== '{}') parts.push(argStr);
-    if (msg.detail) parts.push(msg.detail);
     const more = card.querySelector('.tool-more');
-    const body = parts.join('\n\n');
-    if (body.trim()) { more.querySelector('pre').textContent = body; more.classList.remove('hidden'); }
-    else more.classList.add('hidden');
+    if (msg.detail) {
+      more.querySelector('pre').textContent = msg.detail;
+      more.classList.remove('hidden');
+      // Auto-expand short results (≤ 5 lines) so output is visible without clicking
+      const lineCount = msg.detail.split('\n').filter(Boolean).length;
+      if (msg.state === 'done' && lineCount <= 5) more.open = true;
+      else if (msg.state !== 'done') more.open = false;
+    } else {
+      more.classList.add('hidden');
+    }
     scrollDown();
   }
 

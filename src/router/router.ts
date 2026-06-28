@@ -20,6 +20,8 @@ import type { Catalog } from '../catalog/catalog';
 import type { UsageTracker } from '../config/usage';
 import type { UsageStore } from '../config/usageStore';
 import type { ModelStatsStore } from '../config/modelStats';
+import { RateTracker } from './rateTracker';
+import { LatencyTracker } from './latencyTracker';
 
 export interface RouteOptions extends CompletionOptions {
   /** Force a specific model (platform::modelId or 'auto'). */
@@ -108,6 +110,8 @@ function classify(err: unknown): { reason: string; failoverable: boolean; retryA
 export class Router {
   /** Last model (platform::modelId) that succeeded for each task kind — tried first next time. */
   private lastGood = new Map<TaskKind, string>();
+  private rateTracker = new RateTracker();
+  private latencyTracker = new LatencyTracker();
   /**
    * Per-model health cache. `ok` = ping succeeded recently, `bad` = ping
    * failed recently (skip without trying). Entries self-expire after
@@ -206,6 +210,14 @@ export class Router {
     const m = this.catalog.find(top.platform, top.modelId);
     if (!m) return undefined;
     return { intelligenceRank: m.intelligenceRank, supportsReasoning: m.supportsReasoning };
+  }
+
+  private estimateComplexity(messages: ChatMessage[], taskKind?: string): 'simple' | 'complex' {
+    if (taskKind === 'trivial') return 'simple';
+    if (taskKind === 'agent' || taskKind === 'debug') return 'complex';
+    // Long conversations or large messages indicate a complex task
+    if (messages.length > 6 || estimateMessagesTokens(messages) > 800) return 'complex';
+    return 'simple';
   }
 
   /** Build the ordered candidate list for a request. */
@@ -358,6 +370,23 @@ export class Router {
       if (fitting.length > 0 && fitting.length < cands.length) {
         cands = [...fitting, ...cands.filter((e) => !fits(e))];
       }
+
+      // Complexity-aware latency preference.
+      // Simple tasks (short messages, chat/trivial taskKind): within the same
+      // intelligence tier (rank ±1), prefer whichever model has the lower p50
+      // latency from real measurements. Complex tasks (agent/debug, long history)
+      // keep the intelligence-first order that orderForTask already produced.
+      const complexity = this.estimateComplexity(messages, opts.taskKind);
+      if (complexity === 'simple') {
+        cands = [...cands].sort((a, b) => {
+          const ra = this.catalog.find(a.platform, a.modelId)?.intelligenceRank ?? 5;
+          const rb = this.catalog.find(b.platform, b.modelId)?.intelligenceRank ?? 5;
+          if (Math.abs(ra - rb) > 1) return 0; // different quality tiers — preserve order
+          const la = this.latencyTracker.p50(a.platform, a.modelId) ?? Infinity;
+          const lb = this.latencyTracker.p50(b.platform, b.modelId) ?? Infinity;
+          return la - lb;
+        });
+      }
     }
 
     candidates: for (const entry of cands) {
@@ -413,6 +442,18 @@ export class Router {
       }
 
       const model: CatalogModel | undefined = this.catalog.find(entry.platform, entry.modelId);
+
+      // Proactive rate-limit check: if we know this model's RPM/RPD limit and we've
+      // already hit it this window, skip straight to the next model instead of waiting
+      // for a 429 round-trip. Records every outbound attempt (below) so the window
+      // stays accurate even across retries.
+      if (model && !this.rateTracker.canSend(entry.platform, entry.modelId, model.rpmLimit, model.rpdLimit)) {
+        const coolMs = this.rateTracker.rpmCooldownMs(entry.platform, entry.modelId, model.rpmLimit);
+        failures.push({ platform: entry.platform, model: entry.modelId, reason: `rpm_limit (${Math.ceil(coolMs / 1000)}s cooldown)` });
+        if (!forced) opts.onFailover?.({ from: entry, reason: 'rpm_limit' });
+        continue;
+      }
+
       const completionOpts: CompletionOptions = {
         temperature: opts.temperature,
         max_tokens: opts.max_tokens,
@@ -436,6 +477,11 @@ export class Router {
           // Tool-call turns produce JSON fragments, not prose — streaming them is useless and
           // would send partial JSON to onChunk, confusing the UI. The agent already knows
           // which turns need tools vs. which produce the final answer.
+          // Record this attempt in the rate tracker BEFORE the HTTP call so the
+          // window stays accurate even if the request errors.
+          this.rateTracker.record(entry.platform, entry.modelId);
+          const t0 = Date.now();
+
           const wantsStream = !!(opts.onChunk && !opts.tools?.length);
           if (wantsStream) {
             const chunks: string[] = [];
@@ -486,6 +532,7 @@ export class Router {
             continue candidates;
           }
 
+          this.latencyTracker.record(entry.platform, entry.modelId, Date.now() - t0);
           this.usage.add(response.usage);
           this.usageStore?.addRequest(response.usage?.prompt_tokens || 0, response.usage?.completion_tokens || 0);
           this.secrets.setStatus(entry.platform, 'healthy');

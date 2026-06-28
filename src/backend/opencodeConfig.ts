@@ -48,7 +48,7 @@ export async function writeOpenCodeConfig(
         name: 'TierMux Router',
         options: {
           baseURL: `http://127.0.0.1:${proxyPort}/v1`,
-          maxTokens: 2048,
+          maxTokens: 16384,
         },
         models: {
           'tiermux-auto': {},
@@ -60,6 +60,12 @@ export async function writeOpenCodeConfig(
       },
     },
     model: 'tiermux/tiermux-auto',
+    // Raise OC's built-in step limit so it pauses less often mid-task.
+    // TierMux also auto-continues on pause as a safety net.
+    autoshare: false,
+    agent: {
+      maxSteps: 200,
+    },
   };
 
   // 1. Legacy path (extensionPath/.tiermux/opencode/config.json)
