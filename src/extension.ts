@@ -28,10 +28,6 @@ import { openMemoryForEdit } from './context/userMemory';
 // that used to keep the inverted index in sync are no-ops now.
 import { formatTelemetryReport, resetTelemetry, getSnapshot, onTelemetryUpdate } from './context/telemetry';
 import { runBenchmarkCommand } from './bench/command';
-import { OpenCodeManager } from './backend/opencodeManager';
-import { RouterProxy } from './backend/routerProxy';
-import { OpenCodeClient } from './backend/opencodeClient';
-import { writeOpenCodeConfig } from './backend/opencodeConfig';
 
 export function activate(context: vscode.ExtensionContext): void {
   console.log('[tiermux-bench-debug] activate() STARTED');
@@ -43,48 +39,6 @@ export function activate(context: vscode.ExtensionContext): void {
   const usageStore = new UsageStore(context.globalState);
   const modelStats = new ModelStatsStore(context.globalState);
   const router = new Router(secrets, settings, catalog, usage, modelStats, usageStore);
-
-  // ---- OpenCode engine (behind feature flag) ----
-  const useOpenCode = () => vscode.workspace.getConfiguration('tiermux').get<boolean>('useOpenCodeEngine', false);
-  let openCodeClient: OpenCodeClient | undefined;
-  let openCodeManager: OpenCodeManager | undefined;
-  let routerProxy: RouterProxy | undefined;
-
-  if (useOpenCode()) {
-    routerProxy = new RouterProxy(router, catalog, settings, secrets);
-    openCodeManager = new OpenCodeManager(context);
-    openCodeClient = new OpenCodeClient(openCodeManager);
-    void (async () => {
-      const proxyPort = await routerProxy!.start();
-      const configDir = await writeOpenCodeConfig(proxyPort, context.extensionPath);
-      openCodeManager!.setExtraEnv({ OPENCODE_CONFIG: configDir });
-      // Show download notification on first run; subsequent starts are instant.
-      if (await openCodeManager!.needsDownload()) {
-        void vscode.window.withProgress({
-          location: vscode.ProgressLocation.Notification,
-          title: 'TierMux: reasoning and initializing…',
-          cancellable: false,
-        }, () => openCodeManager!.getServer().then(() => {}));
-      } else {
-        openCodeManager!.getServer().catch((err: Error) =>
-          console.error('[TierMux] Failed to start OpenCode:', err),
-        );
-      }
-    })();
-    context.subscriptions.push({ dispose: () => { routerProxy?.stop(); openCodeManager?.stop(); } });
-  }
-
-  // Watch for the feature flag toggle — start/stop OpenCode on change.
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration((e) => {
-      if (!e.affectsConfiguration('tiermux.useOpenCodeEngine')) return;
-      if (useOpenCode()) {
-        void vscode.window.showInformationMessage('TierMux: OpenCode engine enabled. Reload window to activate.');
-      } else {
-        void vscode.window.showInformationMessage('TierMux: OpenCode engine disabled. Reload window to deactivate.');
-      }
-    }),
-  );
 
   const editGate = new EditGate(() =>
     vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('requireWriteConfirmation', true),
@@ -112,7 +66,6 @@ export function activate(context: vscode.ExtensionContext): void {
     catalog,
     usage,
     usageStore,
-    agent,
     router,
     mcp,
     index,
@@ -120,7 +73,6 @@ export function activate(context: vscode.ExtensionContext): void {
     modelStats,
     workspaceState: context.workspaceState,
     generateCommitMessage: () => generateCommitMessage(router),
-    openCodeClient,
   });
 
   // File edits that don't come from a chat run (e.g. inline editor chat, which has no

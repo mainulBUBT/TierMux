@@ -631,9 +631,12 @@
     "typescript": "^5.5.4"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^4.0.2",
+    "ai": "^7.0.4",
     "diff2html": "^3.4.56",
     "duck-duck-scrape": "^2.2.7",
     "mammoth": "^1.12.0",
-    "pdf-parse": "^2.4.5"
+    "pdf-parse": "^2.4.5",
+    "zod": "^3.25.76"
   }
 }

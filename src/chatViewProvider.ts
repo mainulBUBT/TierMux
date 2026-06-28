@@ -5,7 +5,8 @@ import type { SettingsStore } from './config/settingsStore';
 import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
 import type { UsageStore } from './config/usageStore';
-import { Agent, type Mode, type AgentResult, type AgentCallbacks } from './agent/agent';
+import type { Mode } from './agent/agent';
+import { runChatStream, runAgentStream, runPlanStream, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
 import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
 import type { Router } from './router/router';
@@ -15,7 +16,6 @@ import type { CodebaseIndex } from './index/codebaseIndex';
 import { CheckpointManager } from './edits/checkpoints';
 import type { ModelStatsStore, Vote } from './config/modelStats';
 import type { RunContext } from './agent/runContext';
-import type { OpenCodeClient } from './backend/opencodeClient';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem } from './messages';
 import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, SessionStatus, TranscriptMessage, TranscriptStep, UsagePayload } from './messages';
@@ -31,8 +31,6 @@ import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense } from './agent/condense';
 import { recommendFreeStrong } from './catalog/recommend';
 import { parseClarifying, type ClarifyingQuestion } from './agent/clarify';
-import { loadProjectRules } from './context/projectRules';
-import { isOCPaused } from './backend/opencodeClient';
 import { deriveTitleFrom, looksLikeActionablePlan, planStepsToTodos, sanitizeTitle } from './session/titles';
 
 const SLASH_PROMPTS: Record<string, string> = {
@@ -48,7 +46,6 @@ export interface ChatDeps {
   catalog: Catalog;
   usage: UsageTracker;
   usageStore: UsageStore;
-  agent: Agent;
   router: Router;
   mcp: McpManager;
   index: CodebaseIndex;
@@ -56,7 +53,13 @@ export interface ChatDeps {
   modelStats: ModelStatsStore;
   workspaceState: vscode.Memento;
   generateCommitMessage: () => Promise<void>;
-  openCodeClient?: OpenCodeClient;
+}
+
+function tokenToAbortSignal(token: import('vscode').CancellationToken): AbortSignal {
+  const ctrl = new AbortController();
+  if (token.isCancellationRequested) ctrl.abort();
+  else token.onCancellationRequested(() => ctrl.abort());
+  return ctrl.signal;
 }
 
 const SESSIONS_KEY = 'tiermux.sessions';
@@ -122,58 +125,6 @@ interface StoredSession {
 
 
 /** Helper to resolve the display name for a custom endpoint (or built-in platform). */
-/**
- * Per-mode behavioral contract injected into every OC prompt.
- * These are the minimum instructions needed to keep free models efficient;
- * OC's own agent system handles everything else.
- */
-function buildModeHint(mode: string, requireApproval: boolean): string {
-  const approval = requireApproval && mode !== 'plan'
-    ? '\n- Before any file write/edit/delete: show the exact diff and wait for user approval.'
-    : '';
-
-  if (mode === 'chat' || mode === 'ask') {
-    // Ask: answer directly, minimal tool use, never edit files
-    return `\n\n<mode:ask>
-Answer the question directly and concisely.
-- Only read files if their exact content is needed to answer accurately.
-- Do not grep, glob, or explore the codebase speculatively.
-- Never edit, create, or delete files.
-- If the question is ambiguous, ask one clarifying question instead of assuming.
-</mode:ask>`;
-  }
-
-  if (mode === 'plan') {
-    // Plan: focused research then structured output — no edits
-    return `\n\n<mode:plan>
-Research phase: before each tool call, write one line — "Looking for: [what] to understand [why]."
-Stop researching after 8 targeted lookups or when you have enough to write a complete plan.
-Never edit files during planning.
-
-Output the plan in this exact format:
-## Plan
-1. \`path/to/file\` — what changes and why
-2. ...
-
-If the task is unclear, ask one clarifying question before researching.
-</mode:plan>`;
-  }
-
-  // Agent / Auto: structured execution, no loops, no redundant reads
-  return `\n\n<mode:agent>
-Before any tool calls, write:
-## Approach
-1. [step]
-2. ...
-
-Execution rules:${approval}
-- Never re-read a file already in your context.
-- If a search returns nothing, try a different approach — do not repeat the same grep with similar terms.
-- After each file edit, verify it is correct before moving to the next step.
-- If stuck or the task is ambiguous after 3 attempts, ask the user one specific question instead of guessing.
-</mode:agent>`;
-}
-
 function displayNameForEntry(entry: { platform: string; modelId: string }, deps: ChatDeps): string {
   if (entry.platform === 'custom') {
     const epId = entry.modelId.split('::')[0];
@@ -208,9 +159,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   autoApprove = false;
 
   // ---- OpenCode engine state ----
-  /** TierMux session ID → OpenCode session ID */
-  private ocSessions = new Map<string, string>();
-
   constructor(private readonly extensionUri: vscode.Uri, private readonly deps: ChatDeps) {
     this.autoApprove = deps.workspaceState.get<boolean>(AUTO_APPROVE_KEY, false);
     const stored = this.loadSessions();
@@ -340,205 +288,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'sessionList', sessions });
   }
 
-  // ---------- OpenCode engine ----------
-
-  private useOpenCodeEngine(): boolean {
-    return !!this.deps.openCodeClient &&
-      vscode.workspace.getConfiguration('tiermux').get<boolean>('useOpenCodeEngine', false);
-  }
-
-  /** Create an OpenCode session for a TierMux session and store the mapping. */
-  private async ensureOCSession(tierMuxSessionId: string): Promise<string> {
-    const existing = this.ocSessions.get(tierMuxSessionId);
-    if (existing) {
-      const sessions = await this.deps.openCodeClient!.listSessions();
-      if (sessions.some((s) => s.id === existing)) return existing;
-    }
-    const oc = await this.deps.openCodeClient!.createSession('TierMux Session');
-    this.ocSessions.set(tierMuxSessionId, oc.id);
-    return oc.id;
-  }
-
-  /** Run a message through OpenCode — full agent delegation (agent loop, tools, LSPs,
-   *  multi-step reasoning live in OpenCode; TierMux is just the LLM provider via RouterProxy).
-   *  Falls back to the in-process Agent if OpenCode can't start. */
-  private async handleSendWithOpenCode(
-    s: Session,
-    m: Extract<InMessage, { type: 'sendMessage' }>,
-    prompt: string,
-  ): Promise<void> {
-    if (!this.deps.openCodeClient) return;
-
-    const sentAt = Date.now();
-
-    // Try OpenCode first; if it can't start (binary missing, port conflict, etc.) fall back.
-    let ocSessionId: string | undefined;
-    try {
-      ocSessionId = await this.ensureOCSession(s.id);
-    } catch (e) {
-      console.warn('[TierMux] OpenCode session create failed, falling back to in-process agent:', e);
-      await this.handleSendWithAgent(s, m);
-      return;
-    }
-
-    // Subscribe to OpenCode SSE events for streaming + tool + reasoning
-    const live = () => this.isActiveRun(s, m.requestId);
-    const unsubscribe = this.deps.openCodeClient.subscribeToEvents((event) => {
-      if (!live()) return;
-      const p = event.payload as Record<string, unknown>;
-      // Filter to this session only
-      const evSessionId = (p?.sessionID as string) ?? (p?.sessionId as string);
-      if (evSessionId && evSessionId !== ocSessionId) return;
-
-      // OpenCode event types: message.part.updated (with part.type), message.updated, etc.
-      if (event.type === 'message.part.updated' || (p as any)?.type === 'message.part.updated') {
-        const part = (p as any).part as { type?: string; text?: string; id?: string; tool?: string } | undefined;
-        if (!part) return;
-        if (part.type === 'text' && part.text) {
-          this.post({ type: 'assistantChunk', sessionId: s.id, requestId: m.requestId, text: part.text });
-        } else if (part.type === 'reasoning' && part.text) {
-          this.post({ type: 'agentStep', sessionId: s.id, requestId: m.requestId, phase: 'thinking', label: part.text.slice(0, 80) });
-        } else if (part.type === 'tool' || part.type === 'tool_use') {
-          this.post({ type: 'agentStep', sessionId: s.id, requestId: m.requestId, phase: 'thinking', label: `tool: ${part.tool ?? part.id ?? '?'}` });
-        }
-      } else if (event.type === 'message.updated' || (p as any)?.type === 'message.updated') {
-        const info = (p as any).info as { role?: string; tokens?: { input?: number; output?: number } } | undefined;
-        if (info?.role === 'assistant' && info.tokens) {
-          // Surface token usage from OpenCode if present
-          s.lastUsage = { promptTokens: info.tokens.input ?? 0, completionTokens: info.tokens.output ?? 0, totalTokens: (info.tokens.input ?? 0) + (info.tokens.output ?? 0) };
-        }
-      }
-    });
-
-    try {
-      // Effort is encoded two ways so RouterProxy can read whichever OC forwards:
-      //   1. modelID suffix ('tiermux-medium') — always works, decoded by regex in RouterProxy
-      //   2. reasoning_effort field in the OC message body — forwarded if OC/AI-SDK supports it
-      const EFFORT = m.reasoningEffort ?? 'medium';
-      s.reasoningEffort = EFFORT;
-      const resolvedEffort = m.mode === 'plan' ? 'high' : EFFORT;
-      const modelId = `tiermux-${resolvedEffort}`;
-
-      const isFirstOCMessage = !this.ocSessions.has(s.id);
-
-      // On the first message of a session: inject repo map + project rules (AGENTS.md,
-      // CLAUDE.md, .cursorrules, .tiermux/prompt.md, etc.) so OC starts oriented and
-      // follows the project's conventions without needing tool-call round-trips to find them.
-      const contextParts: string[] = [];
-      if (isFirstOCMessage) {
-        try {
-          const map = await this.deps.tools.repoMap();
-          const parsed = JSON.parse(map) as { root?: string; files?: string[] };
-          if (parsed.files?.length) {
-            contextParts.push(`[Project: ${parsed.root ?? 'workspace'}]\n${parsed.files.join('\n')}`);
-          }
-        } catch { /* non-critical */ }
-
-        try {
-          const rules = await loadProjectRules();
-          if (rules) contextParts.push(`[Project rules — follow these]\n${rules}`);
-        } catch { /* non-critical */ }
-      }
-
-      const contextPrefix = contextParts.length ? contextParts.join('\n\n') + '\n\n' : '';
-
-      const modeHint = buildModeHint(m.mode, !this.autoApprove);
-      const ocPrompt = contextPrefix + prompt + modeHint;
-
-      // Send via OpenCode (waits for completion). TierMux router picks the actual free model
-      // through the RouterProxy; OpenCode never knows which provider the response came from.
-      const ocOpts = {
-        model: { providerID: 'tiermux', modelID: modelId },
-        agent: m.mode === 'plan' ? 'plan' : 'build',
-        reasoning_effort: resolvedEffort,
-      };
-      let result = await this.deps.openCodeClient.sendMessageAndWait(ocSessionId, ocPrompt, ocOpts);
-
-      // OC pauses at its built-in step limit (~25 steps) and emits a "Continue?" message.
-      // Auto-continue up to 8 times; if still paused after that, surface it to the user.
-      for (let i = 0; i < 8 && live() && isOCPaused(result); i++) {
-        result = await this.deps.openCodeClient.sendMessageAndWait(ocSessionId, 'continue', ocOpts);
-      }
-      const ocStillPaused = live() && isOCPaused(result);
-
-      if (!live()) return;
-
-      // Extract text from parts
-      const text = (result.parts ?? [])
-        .filter((p) => p.type === 'text')
-        .map((p) => (p as any).text ?? p.content ?? '')
-        .join('') || '(no response)';
-
-      // Build usage payload (from OpenCode tokens if surfaced, else lastUsage, else 0s)
-      const usage: UsagePayload = {
-        promptTokens: s.lastUsage?.promptTokens ?? 0,
-        completionTokens: s.lastUsage?.completionTokens ?? 0,
-        totalTokens: s.lastUsage?.totalTokens ?? 0,
-      };
-
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId,
-        text, reasoning: undefined, usage,
-        platform: 'tiermux', model: 'tiermux-auto',
-        paused: ocStillPaused,
-      });
-
-      // History stored in OpenCode's SQLite DB via sendMessageAndWait above.
-      // TierMux only persists the UI-facing transcript for session-list display.
-      this.persist(s.id);
-    } catch (e) {
-      if (!live()) return;
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error('[TierMux] OpenCode engine error:', msg);
-      this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: msg });
-    } finally {
-      unsubscribe();
-      void sentAt; // reserved for future latency tracking
-    }
-  }
-
-  /** Fallback path — original in-process Agent.run() loop. Used when OpenCode fails to start. */
-  private async handleSendWithAgent(
-    s: Session,
-    m: Extract<InMessage, { type: 'sendMessage' }>,
-  ): Promise<void> {
-    const release = await this.acquireRunSlot(s.id);
-    if (s.activeRequestId !== m.requestId) { release(); return; }
-    const sentAt = Date.now();
-    const before = this.deps.usage.get();
-    try {
-      const result = await this.deps.agent.run(s.history, m.mode as Mode, {
-        model: m.model,
-        reasoningEffort: m.reasoningEffort,
-        token: s.cancel?.token,
-        runContext: this.runContext(s, m.requestId),
-        onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${displayNameForEntry(i.from, this.deps)}/${i.from.modelId}`, reason: i.reason }); },
-        onKeyRotated: (i) => { if (this.isActiveRun(s, m.requestId)) { const name = getPlatformInfo(i.platform as Platform)?.name ?? i.platform; this.post({ type: 'keyRotated', sessionId: s.id, requestId: m.requestId, platform: i.platform, platformName: name, keyIndex: i.keyIndex, keyTotal: i.keyTotal }); } },
-      }, this.agentCallbacks(s, m.requestId, m.mode as Mode));
-
-      if (!this.isActiveRun(s, m.requestId)) return;
-      const after = this.deps.usage.get();
-      const usage: UsagePayload = {
-        promptTokens: Math.max(0, after.promptTokens - before.promptTokens),
-        completionTokens: Math.max(0, after.completionTokens - before.completionTokens),
-        totalTokens: Math.max(0, after.totalTokens - before.totalTokens),
-      };
-      const text = result.text || '(no response)';
-      this.pushAssistantTurn(s, m.requestId, result, sentAt, usage);
-      s.voteCtx.set(m.requestId, { taskKind: result.taskKind!, platform: result.platform!, model: result.model!, last: 'none' as Vote });
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId,
-        text, reasoning: result.reasoning, usage,
-        platform: result.runtimeName ?? result.platform, model: result.model,
-        paused: result.paused,
-      });
-      release();
-    } catch (e) {
-      release();
-      if (!this.isActiveRun(s, m.requestId)) return;
-      const msg = e instanceof Error ? e.message : String(e);
-      this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: msg });
-      if (s.history[s.history.length - 1]?.role === 'user') s.history.pop();
-    }
-  }
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
@@ -1452,40 +1201,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.settlePendingAskUser(s);
     s.executingPlan = false;
 
-    // Surface vision/PDF signals to the router so Auto picks a vision-capable model
-    // when the user attached an image or PDF (not just "Auto with a long text").
-    const attachmentKinds = (m.attachmentKinds && m.attachmentKinds.length > 0)
-      ? m.attachmentKinds
-      : (m.attachments ?? []).map((a) => a.kind);
-
-    // OpenCode engine path (behind feature flag)
-    if (this.useOpenCodeEngine()) {
-      s.checkpoints.begin(m.requestId, prompt.slice(0, 60));
-      try {
-        await this.handleSendWithOpenCode(s, m, prompt);
-        if (!this.isActiveRun(s, m.requestId)) return;
-        this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
-        this.persist(s.id);
-      } catch (e) {
-        if (!this.isActiveRun(s, m.requestId)) return;
-        this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
-        if (s.history[s.history.length - 1]?.role === 'user') s.history.pop();
-      } finally {
-        if (this.isActiveRun(s, m.requestId)) {
-          s.activeRequestId = undefined;
-          this.settlePendingApprovals(s, false);
-          this.settlePendingAskUser(s);
-          await this.finishCheckpoint(s, m.requestId);
-          this.persist(s.id);
-          this.post({ type: 'busy', sessionId: s.id, busy: false });
-          this.setStatus(s.id, 'finished');
-          await this.maybeAutoCompact(s);
-          void this.maybeGenerateTitle(s);
-        }
-      }
-      return;
-    }
-
     const release = await this.acquireRunSlot(s.id);
     // Cancelled (Stop) while queued → release the slot and bail before running.
     if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
@@ -1496,18 +1211,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const sentAt = Date.now();
 
     try {
-      const continueOpts = (token: vscode.CancellationToken) => ({
-        token,
-        runContext: this.runContext(s, m.requestId),
-        onFailover: (i: { from: { platform: string; modelId: string }; reason: string }) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${displayNameForEntry(i.from, this.deps)}/${i.from.modelId}`, reason: i.reason }); },
-        onKeyRotated: (i: { platform: string; keyIndex: number; keyTotal: number }) => { if (this.isActiveRun(s, m.requestId)) { const name = getPlatformInfo(i.platform as Platform)?.name ?? i.platform; this.post({ type: 'keyRotated', sessionId: s.id, requestId: m.requestId, platform: i.platform, platformName: name, keyIndex: i.keyIndex, keyTotal: i.keyTotal }); } },
-      });
-      let result = await this.deps.agent.run(s.history, m.mode as Mode, {
-        model: m.model,
-        reasoningEffort: m.reasoningEffort,
-        attachmentKinds,
-        ...continueOpts(s.cancel.token),
-      }, this.agentCallbacks(s, m.requestId, m.mode as Mode));
+      const cbk = this.agentCallbacks(s, m.requestId, m.mode as Mode);
+      const sdkMode = m.mode as 'chat' | 'agent' | 'plan';
+      let result = sdkMode === 'chat'
+        ? await runChatStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model))
+        : sdkMode === 'plan'
+          ? await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), this.deps.tools.toToolSet(this.runContext(s, m.requestId)))
+          : await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), this.deps.tools.toToolSet(this.runContext(s, m.requestId)));
       // Abandoned mid-run by a cancel → drop the output entirely.
       if (!this.isActiveRun(s, m.requestId)) return;
 
@@ -1546,11 +1256,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Persist the tool-call transcript so the next run can read what was already done.
           this.persistAgentTurn(s, result);
           s.history.push({ role: 'user', content: 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.' });
-          result = await this.deps.agent.run(s.history, 'agent', {
-            model: s.model,
-            reasoningEffort: s.reasoningEffort,
-            ...continueOpts(s.cancel.token),
-          }, this.agentCallbacks(s, m.requestId, 'agent'));
+          result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model), this.deps.tools.toToolSet(this.runContext(s, m.requestId)));
           if (!this.isActiveRun(s, m.requestId)) return;
         }
       }
@@ -1766,14 +1472,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.checkpoints.begin(m.requestId, 'Plan execution');
     const sentAt = Date.now();
     try {
-      const result = await this.deps.agent.run(s.history, 'agent', {
-        model: s.model,
-        reasoningEffort: s.reasoningEffort,
-        token: s.cancel.token,
-        runContext: this.runContext(s, m.requestId),
-        onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
-        onKeyRotated: (i) => { if (this.isActiveRun(s, m.requestId)) { const name = getPlatformInfo(i.platform as Platform)?.name ?? i.platform; this.post({ type: 'keyRotated', sessionId: s.id, requestId: m.requestId, platform: i.platform, platformName: name, keyIndex: i.keyIndex, keyTotal: i.keyTotal }); } },
-      }, this.agentCallbacks(s, m.requestId, 'agent'));
+      const cbk3 = this.agentCallbacks(s, m.requestId, 'agent');
+      const result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk3, s.model), this.deps.tools.toToolSet(this.runContext(s, m.requestId)));
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
@@ -1861,14 +1561,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (qi >= 0) { this.runQueue.splice(qi, 1)[0].resolve(); }
     s.cancel?.cancel();
     s.activeRequestId = undefined; // invalidates the run's liveness guard (isActiveRun)
-    // Abort OpenCode session if using OpenCode engine
-    if (this.useOpenCodeEngine() && this.deps.openCodeClient) {
-      const ocId = this.ocSessions.get(sessionId);
-      if (ocId) {
-        this.deps.openCodeClient.abortSession(ocId).catch(() => {});
-        this.ocSessions.delete(sessionId);
-      }
-    }
     this.settlePendingApprovals(s, false); // unblock any command/edit awaiting a click
     this.settlePendingAskUser(s); // unblock any in-chat askUser card
     s.pendingClarify = undefined;
@@ -1896,6 +1588,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
   }
 
+  private makeAgentOpts(
+    s: Session,
+    _requestId: string,
+    mode: 'chat' | 'agent' | 'plan',
+    effort: ReasoningEffort,
+    callbacks: ReturnType<typeof this.agentCallbacks>,
+    pinnedModel?: string,
+  ): AgentOpts {
+    return {
+      messages: s.history,
+      mode,
+      effort,
+      pinnedModel,
+      abortSignal: s.cancel ? tokenToAbortSignal(s.cancel.token) : undefined,
+      ...callbacks,
+    };
+  }
+
   /**
    * Build the streaming callbacks for a run, each gated on the run still being active IN ITS
    * SESSION. Centralizing the guard means a cancelled run goes quiet immediately instead of
@@ -1903,7 +1613,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * The agent's `askUser` tool always surfaces as an in-chat card. Every mode can ask —
    * including Chat, whose web loop carries askUser to clarify time-sensitive queries.
    */
-  private agentCallbacks(s: Session, requestId: string, _mode: Mode): AgentCallbacks {
+  private agentCallbacks(s: Session, requestId: string, _mode: Mode): Omit<AgentOpts, 'messages' | 'mode' | 'effort' | 'abortSignal' | 'pinnedModel' | 'taskKind'> {
     const live = (): boolean => this.isActiveRun(s, requestId);
     // The webview shows one session at a time and rebuilds on switch, so we CACHE the live
     // status on the session (always, while the run is live) and only PUSH to the webview when
@@ -1912,16 +1622,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const viewed = (): boolean => this.viewedSessionId === s.id;
     return {
       onModel: (platform, model, runtimeName) => { if (!live()) return; s.livePlatform = platform; s.liveModel = model; s.liveRuntimeName = runtimeName; if (viewed()) this.post({ type: 'assistantStart', sessionId: s.id, requestId, platform: runtimeName ?? platform, model }); },
-      onTool: (e) => {
+      onTool: (e: ToolEvent) => {
         if (!live()) return;
         // Accumulate every step (regardless of view) so the turn's transcript entry can be
         // rebuilt with its full step list after a re-render (e.g. "Revert to here").
         const steps = s.liveSteps.get(requestId) ?? [];
         const i = steps.findIndex((st) => st.toolCallId === e.toolCallId);
-        const entry: TranscriptStep = { toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail };
+        const mappedState = e.state === 'queued' ? 'running' : e.state as 'running' | 'done' | 'error';
+        const entry: TranscriptStep = { toolCallId: e.toolCallId, name: e.name, args: e.args, state: mappedState, detail: e.detail };
         if (i >= 0) steps[i] = entry; else steps.push(entry);
         s.liveSteps.set(requestId, steps);
-        if (viewed()) this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: e.state, detail: e.detail });
+        if (viewed()) this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: mappedState, detail: e.detail });
       },
       onReasoning: (text) => {
         if (!live()) return;
@@ -1935,7 +1646,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.liveSteps.set(requestId, steps);
         if (viewed()) this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: id, name: 'reasoning', args: undefined, state: 'done', detail: t });
       },
-      onStep: (phase, label) => { if (!live()) return; s.lastStepLabel = label; if (viewed()) this.post({ type: 'agentStep', sessionId: s.id, requestId, phase, label }); },
+      onStep: (phase, label) => { if (!live()) return; s.lastStepLabel = label; if (viewed()) this.post({ type: 'agentStep', sessionId: s.id, requestId, phase: phase as 'thinking' | 'synthesizing' | 'done', label }); },
       onTodos: (todos) => { if (!live()) return; s.lastTodos = todos; if (viewed()) this.post({ type: 'todos', sessionId: s.id, requestId, todos, followingPlan: !!s.executingPlan }); },
       onChunk: (text) => { if (!live() || !viewed()) return; this.post({ type: 'assistantChunk', sessionId: s.id, requestId, text }); },
       onAskUser: async (question, options) => {
@@ -1945,6 +1656,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // in-flight at a time per session — the callId is purely for response routing.
         const callId = `ask-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         return this.requestAskUser(s, requestId, callId, question, options);
+      },
+      onFailover: (from, reason) => {
+        if (!live()) return;
+        const sep = from.indexOf('::');
+        const platformId = sep >= 0 ? from.slice(0, sep) : from;
+        const modelId = sep >= 0 ? from.slice(sep + 2) : '';
+        this.post({ type: 'failoverNotice', sessionId: s.id, requestId, from: `${displayNameForEntry({ platform: platformId, modelId }, this.deps)}/${modelId}`, reason });
+      },
+      onKeyRotated: (info) => {
+        if (!live()) return;
+        const name = getPlatformInfo(info.platform as Platform)?.name ?? info.platform;
+        this.post({ type: 'keyRotated', sessionId: s.id, requestId, platform: info.platform, platformName: name, keyIndex: info.keyIndex, keyTotal: info.keyTotal });
+      },
+      onError: (message) => {
+        if (!live()) return;
+        this.post({ type: 'error', sessionId: s.id, requestId, message });
       },
     };
   }
@@ -1976,35 +1703,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async handleResume(m: Extract<InMessage, { type: 'resume' }>): Promise<void> {
     const s = this.current();
 
-    // If this session has an OC session backing it, continue via OC instead of in-process agent.
-    const ocSessionId = this.ocSessions.get(s.id);
-    if (ocSessionId && this.deps.openCodeClient) {
-      s.cancel?.dispose();
-      s.cancel = new vscode.CancellationTokenSource();
-      s.activeRequestId = m.requestId;
-      const release = await this.acquireRunSlot(s.id);
-      if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
-      this.post({ type: 'busy', sessionId: s.id, busy: true });
-      try {
-        const ocOpts = { model: { providerID: 'tiermux', modelID: `tiermux-${s.reasoningEffort ?? 'auto'}` } };
-        let result = await this.deps.openCodeClient.sendMessageAndWait(ocSessionId, 'continue', ocOpts);
-        for (let i = 0; i < 8 && isOCPaused(result); i++) {
-          result = await this.deps.openCodeClient.sendMessageAndWait(ocSessionId, 'continue', ocOpts);
-        }
-        const text = (result.parts ?? []).filter((p) => p.type === 'text').map((p) => (p as any).text ?? p.content ?? '').join('') || '(no response)';
-        const usage = { promptTokens: s.lastUsage?.promptTokens ?? 0, completionTokens: s.lastUsage?.completionTokens ?? 0, totalTokens: s.lastUsage?.totalTokens ?? 0 };
-        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text, reasoning: undefined, usage, platform: 'tiermux', model: 'tiermux-auto', paused: isOCPaused(result) });
-        this.persist(s.id);
-      } catch (e) {
-        this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
-      } finally {
-        release();
-        if (this.isActiveRun(s, m.requestId)) { s.activeRequestId = undefined; this.settlePendingApprovals(s, false); }
-        this.setStatus(s.id, 'idle');
-        this.post({ type: 'busy', sessionId: s.id, busy: false });
-      }
-      return;
-    }
 
     s.history.push({
       role: 'user',
@@ -2020,14 +1718,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.checkpoints.begin(m.requestId, 'Continue');
     const sentAt = Date.now();
     try {
-      const result = await this.deps.agent.run(s.history, 'agent', {
-        model: s.model,
-        reasoningEffort: s.reasoningEffort,
-        token: s.cancel.token,
-        runContext: this.runContext(s, m.requestId),
-        onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
-        onKeyRotated: (i) => { if (this.isActiveRun(s, m.requestId)) { const name = getPlatformInfo(i.platform as Platform)?.name ?? i.platform; this.post({ type: 'keyRotated', sessionId: s.id, requestId: m.requestId, platform: i.platform, platformName: name, keyIndex: i.keyIndex, keyTotal: i.keyTotal }); } },
-      }, this.agentCallbacks(s, m.requestId, 'agent'));
+      const cbk4 = this.agentCallbacks(s, m.requestId, 'agent');
+      const result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk4, s.model), this.deps.tools.toToolSet(this.runContext(s, m.requestId)));
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
@@ -2083,14 +1775,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'busy', sessionId: s.id, busy: true });
     s.checkpoints.begin(m.requestId, 'Plan (clarified)');
     try {
-      const result = await this.deps.agent.run(s.history, 'plan', {
-        model: s.model,
-        reasoningEffort: s.reasoningEffort,
-        token: s.cancel.token,
-        runContext: this.runContext(s, m.requestId),
-        onFailover: (i) => { if (this.isActiveRun(s, m.requestId)) this.post({ type: 'failoverNotice', sessionId: s.id, requestId: m.requestId, from: `${i.from.platform}/${i.from.modelId}`, reason: i.reason }); },
-        onKeyRotated: (i) => { if (this.isActiveRun(s, m.requestId)) { const name = getPlatformInfo(i.platform as Platform)?.name ?? i.platform; this.post({ type: 'keyRotated', sessionId: s.id, requestId: m.requestId, platform: i.platform, platformName: name, keyIndex: i.keyIndex, keyTotal: i.keyTotal }); } },
-      }, this.agentCallbacks(s, m.requestId, 'plan'));
+      const cbk5 = this.agentCallbacks(s, m.requestId, 'plan');
+      const result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), this.deps.tools.toToolSet(this.runContext(s, m.requestId)));
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       // Ignore any further questions block on this pass — go straight to a proposed plan.
       const clar = parseClarifying(result.text);
@@ -2250,28 +1936,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const snippet = (firstReal.text ?? '').slice(0, 800);
       let raw = '';
 
-      // Try OC first — create a throw-away session, get title, delete it.
-      const oc = this.deps.openCodeClient;
-      if (oc && await oc.health()) {
-        let tempOcId: string | undefined;
-        try {
-          const prompt = `${TITLE_SYSTEM}\n\nUser's message: ${snippet}`;
-          const tempSession = await oc.createSession('__title__');
-          tempOcId = tempSession.id;
-          const result = await oc.sendMessageAndWait(tempOcId, prompt, {
-            model: { providerID: 'tiermux', modelID: 'tiermux-auto' },
-            reasoning_effort: 'low',
-          });
-          raw = (result.parts ?? [])
-            .filter((p) => p.type === 'text')
-            .map((p) => (p as any).text ?? p.content ?? '')
-            .join('').trim();
-        } finally {
-          if (tempOcId) oc.deleteSession(tempOcId).catch(() => {});
-        }
-      }
-
-      // Fall back to the in-process router if OC wasn't available or returned nothing.
       if (!raw) {
         const model = await this.deps.router.pickUtilityModel();
         const result = await this.deps.router.route(

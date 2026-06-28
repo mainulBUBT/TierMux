@@ -1,4 +1,6 @@
 // Workspace tool implementations. All paths are confined to the workspace root.
+import { tool } from '@ai-sdk/provider-utils';
+import { z } from 'zod';
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as os from 'os';
@@ -612,6 +614,138 @@ export class WorkspaceTools {
       content: body,
       ...(truncated ? { notice: `Truncated to first ${cap} of ${text.length} characters. Use maxChars to control, or readFile for the raw bytes (text files only).` } : {}),
     });
+  }
+
+  /** Returns all workspace tools as an AI SDK v7 ToolSet for use with streamText/generateText. */
+  toToolSet(ctx?: RunContext) {
+    const self = this;
+    return {
+      readFile: tool({
+        description: 'Read a file from the workspace. Returns content with line numbers. Use startLine/endLine to read a specific range.',
+        inputSchema: z.object({
+          path: z.string().describe('Workspace-relative or absolute file path.'),
+          startLine: z.number().int().optional().describe('1-based first line to read (inclusive).'),
+          endLine: z.number().int().optional().describe('1-based last line to read (inclusive).'),
+        }),
+        execute: async ({ path, startLine, endLine }) =>
+          self.readFile(path, startLine, endLine) as Promise<string>,
+      }),
+
+      listDir: tool({
+        description: 'List the contents of a directory in the workspace.',
+        inputSchema: z.object({ path: z.string().optional().describe('Directory path. Defaults to workspace root.') }),
+        execute: async ({ path = '.' }) => self.listDir(path),
+      }),
+
+      glob: tool({
+        description: 'Find files matching a glob pattern in the workspace.',
+        inputSchema: z.object({
+          pattern: z.string().describe('Glob pattern, e.g. "src/**/*.ts".'),
+          path: z.string().optional().describe('Directory to search from. Defaults to workspace root.'),
+        }),
+        execute: async ({ pattern, path }) => self.glob(pattern, path),
+      }),
+
+      grep: tool({
+        description: 'Search for a text pattern across workspace files.',
+        inputSchema: z.object({
+          pattern: z.string().describe('Text or regex pattern to search for.'),
+          path: z.string().optional().describe('Directory or file to search. Defaults to workspace root.'),
+          regex: z.boolean().optional().describe('Treat pattern as a regular expression. Default false.'),
+        }),
+        execute: async ({ pattern, path, regex }) => self.grep(pattern, path, regex ?? false),
+      }),
+
+      repoMap: tool({
+        description: 'Get a high-level map of the repository structure — files, key exports, and entry points.',
+        inputSchema: z.object({}),
+        execute: async () => self.repoMap(),
+      }),
+
+      getDiagnostics: tool({
+        description: 'Get TypeScript/lint errors and warnings for a file or the whole workspace.',
+        inputSchema: z.object({
+          path: z.string().optional().describe('File path to check. Omit for all open files.'),
+        }),
+        execute: async ({ path }) => self.getDiagnostics(path),
+      }),
+
+      writeFile: tool({
+        description: 'Write (overwrite) a file with new content. Requires user approval.',
+        inputSchema: z.object({
+          path: z.string().describe('Workspace-relative or absolute file path.'),
+          content: z.string().describe('Full new file content.'),
+        }),
+        execute: async ({ path, content }) => self.writeFile(path, content, ctx),
+      }),
+
+      createFile: tool({
+        description: 'Create a new file. Fails if the file already exists.',
+        inputSchema: z.object({
+          path: z.string().describe('Workspace-relative or absolute file path.'),
+          content: z.string().describe('Initial file content.'),
+        }),
+        execute: async ({ path, content }) => self.createFile(path, content, ctx),
+      }),
+
+      editFile: tool({
+        description: 'Replace an exact string in a file. The search string must match exactly (including whitespace/indentation).',
+        inputSchema: z.object({
+          path: z.string().describe('Workspace-relative or absolute file path.'),
+          search: z.string().describe('Exact string to find in the file.'),
+          replace: z.string().describe('String to replace it with.'),
+        }),
+        execute: async ({ path, search, replace }) => self.editFile(path, search, replace, ctx),
+      }),
+
+      deleteFile: tool({
+        description: 'Delete a file from the workspace. Requires user approval.',
+        inputSchema: z.object({ path: z.string().describe('Workspace-relative or absolute file path.') }),
+        execute: async ({ path }) => self.deleteFile(path, ctx),
+      }),
+
+      runCommand: tool({
+        description: 'Run a shell command in the workspace. Requires user approval. Use for builds, tests, installs.',
+        inputSchema: z.object({
+          command: z.string().describe('Shell command to run.'),
+          cwd: z.string().optional().describe('Working directory. Defaults to workspace root.'),
+        }),
+        execute: async ({ command, cwd }) => self.runCommand(command, cwd, ctx),
+      }),
+
+      webSearch: tool({
+        description: 'Search the web for current information. Returns titles, URLs, and snippets.',
+        inputSchema: z.object({ query: z.string().describe('Search query.') }),
+        execute: async ({ query }) => self.webSearch(query),
+      }),
+
+      webFetch: tool({
+        description: 'Fetch the text content of a URL. Strips HTML to plain text.',
+        inputSchema: z.object({ url: z.string().url().describe('URL to fetch.') }),
+        execute: async ({ url }) => self.webFetch(url),
+      }),
+
+      readImage: tool({
+        description: 'Read an image file and return it as base64 for vision models.',
+        inputSchema: z.object({ path: z.string().describe('Path to image file (png, jpg, gif, webp).') }),
+        execute: async ({ path }) => self.readImage(path) as Promise<string>,
+      }),
+
+      readDocument: tool({
+        description: 'Extract text from a PDF or DOCX file.',
+        inputSchema: z.object({
+          path: z.string().describe('Path to the PDF or DOCX file.'),
+          maxChars: z.number().int().optional().describe('Maximum characters to return. Default 60000.'),
+        }),
+        execute: async ({ path, maxChars }) => self.readDocument(path, maxChars),
+      }),
+
+      skill: tool({
+        description: 'Load and run a named skill from the .tiermux/skills directory.',
+        inputSchema: z.object({ name: z.string().describe('Skill name (filename without extension).') }),
+        execute: async ({ name }) => self.skill(name),
+      }),
+    };
   }
 }
 
