@@ -1,9 +1,10 @@
 import type { OpenCodeManager } from './opencodeManager';
 
-// OpenCode 1.2.15 message API schema:
-//   parts: [{ type: 'text', text: '...', id: '...' }]  (note: `text`, not `content`)
-//   model: { providerID: 'tiermux', modelID: 'tiermux-auto' }  (object, not string)
+// OpenCode 1.17.11 message API schema:
+//   parts: [{ type: 'text', text: '...', id: 'prt<uuid>' }]  (id must start with "prt"; note: `text`, not `content`)
+//   model: { providerID: 'tiermux', modelID: 'tiermux-{effort}' }  (object, not string; suffix encodes reasoning effort)
 //   agent: 'build'  (string, default agent name)
+//   reasoning_effort: 'low'|'medium'|'high'  (forwarded to the AI SDK provider request if OC supports it)
 const DEFAULT_MODEL = { providerID: 'tiermux', modelID: 'tiermux-auto' };
 const DEFAULT_AGENT = 'build';
 
@@ -88,17 +89,19 @@ export class OpenCodeClient {
   async sendMessageAndWait(
     sessionId: string,
     message: string,
-    opts?: { model?: { providerID: string; modelID: string }; agent?: string },
+    opts?: { model?: { providerID: string; modelID: string }; agent?: string; reasoning_effort?: string },
   ): Promise<OCMessage> {
     const { baseUrl, password } = await this.manager.getServer();
+    const body: Record<string, unknown> = {
+      parts: [{ type: 'text', text: message, id: `prt${crypto.randomUUID()}` }],
+      model: opts?.model ?? DEFAULT_MODEL,
+      agent: opts?.agent ?? DEFAULT_AGENT,
+    };
+    if (opts?.reasoning_effort) { body['reasoning_effort'] = opts.reasoning_effort; }
     const res = await fetch(`${baseUrl}/session/${encodeURIComponent(sessionId)}/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeader(password) },
-      body: JSON.stringify({
-        parts: [{ type: 'text', text: message, id: crypto.randomUUID() }],
-        model: opts?.model ?? DEFAULT_MODEL,
-        agent: opts?.agent ?? DEFAULT_AGENT,
-      }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       const errBody = await res.text().catch(() => '');
@@ -117,7 +120,7 @@ export class OpenCodeClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeader(password) },
       body: JSON.stringify({
-        parts: [{ type: 'text', text: message, id: crypto.randomUUID() }],
+        parts: [{ type: 'text', text: message, id: `prt${crypto.randomUUID()}` }],
         model: opts?.model ?? DEFAULT_MODEL,
         agent: opts?.agent ?? DEFAULT_AGENT,
       }),

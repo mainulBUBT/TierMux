@@ -183,7 +183,7 @@ export class WorkspaceTools {
   }
 
   /** Cheap workspace overview so the agent can orient itself. */
-  private async repoMap(): Promise<string> {
+  async repoMap(): Promise<string> {
     const ROOT = vscode.workspace.workspaceFolders?.[0]?.name ?? 'workspace';
     const exclude = '{**/node_modules/**,**/vendor/**,**/storage/**,**/.git/**,**/dist/**,**/build/**,**/cache/**,**/tests/**}';
     const patterns = ['*', 'src/*', 'app/*', 'app/**/*', 'lib/*', 'packages/*', 'resources/*', 'docs/*', 'config/*', 'routes/*', 'scripts/*'];

@@ -458,12 +458,56 @@
     clearEmpty();
     const el = document.createElement('div');
     el.className = 'empty';
+
+    const recents = sessionList.filter(s => s.id !== viewedSessionId).slice(0, 5);
+    const recentHtml = recents.length ? `
+      <div class="empty-recents">
+        <div class="empty-recents-header">
+          <div class="empty-recents-label">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1H2V3zm0 3h12v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6zm3 2a.5.5 0 0 0 0 1h6a.5.5 0 0 0 0-1H5zm0 2a.5.5 0 0 0 0 1h4a.5.5 0 0 0 0-1H5z"/></svg>
+            RECENT
+          </div>
+          <button class="empty-view-all" id="empty-view-all-btn">View All ›</button>
+        </div>
+        ${recents.map(s => `
+          <div class="empty-recent-card" data-id="${s.id}">
+            <div class="empty-card-title">${s.title || 'Untitled'}</div>
+            <div class="empty-card-meta">
+              <span class="empty-card-date">${fmtTs(s.updatedAt || s.ts)}</span>
+              <span class="empty-card-cost">$0.00</span>
+            </div>
+          </div>`).join('')}
+      </div>` : '';
+
+    const logoHtml = window.__LOGO_URI__
+      ? `<img class="empty-logo-img" src="${window.__LOGO_URI__}" alt="TierMux" onerror="this.style.display='none'" />`
+      : `<div class="empty-logo">⚡</div>`;
+
     el.innerHTML = `
-      <div class="empty-logo">⚡</div>
-      <div class="empty-title">${window.__PRODUCT_NAME__ || 'TierMux'}</div>
-      <div class="empty-sub">Your AI coding assistant — ask it to build features, fix bugs, or explain your codebase. Routed across ~18 free providers with automatic failover.</div>
-      <div class="empty-sub muted">Open ⚙ in the title bar to add an API key.</div>`;
+      <div class="empty-hero">
+        ${logoHtml}
+        <div class="empty-heading">What can I do for you?</div>
+      </div>
+      ${recentHtml}`;
+
+    el.querySelectorAll('.empty-recent-card').forEach(card => {
+      card.addEventListener('click', () => {
+        vscode.postMessage({ type: 'switchSession', sessionId: card.dataset.id });
+      });
+    });
+    const viewAllBtn = el.querySelector('#empty-view-all-btn');
+    if (viewAllBtn) viewAllBtn.addEventListener('click', () => toggleHistory(true));
     thread.appendChild(el);
+  }
+
+  function fmtTs(ts) {
+    if (!ts) return '';
+    const d = new Date(ts), now = new Date();
+    const diffMs = now - d, diffDays = Math.floor(diffMs / 86400000);
+    if (diffDays === 0) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays < 7) return d.toLocaleDateString([], { weekday: 'short' });
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   }
 
   // ---------- send ----------
@@ -2408,6 +2452,7 @@
       case 'sessionList':
         sessionList = msg.sessions || [];
         renderTabs();
+        if (thread.querySelector('.empty')) renderEmpty();
         break;
       case 'setInput':
         input.value = msg.text || '';

@@ -201,6 +201,26 @@ export function activate(context: vscode.ExtensionContext): void {
   // Kick off an automatic build on startup when already enabled + configured.
   void index.maybeAutoBuild();
 
+  // One-time prompt: if embeddings is disabled and the user has a workspace open,
+  // ask once whether they want to enable the semantic index for faster code search.
+  void (async () => {
+    const ASKED_KEY = 'tiermux.indexPromptShown';
+    if (context.globalState.get<boolean>(ASKED_KEY)) return;
+    if (index.isEnabled()) return;
+    if (!vscode.workspace.workspaceFolders?.length) return;
+    // Small delay so it doesn't fire immediately on first install.
+    await new Promise(r => setTimeout(r, 4000));
+    const pick = await vscode.window.showInformationMessage(
+      'TierMux: Enable semantic codebase indexing for faster, smarter code search?',
+      'Enable & Build', 'Not Now',
+    );
+    await context.globalState.update(ASKED_KEY, true);
+    if (pick === 'Enable & Build') {
+      await vscode.workspace.getConfiguration('tiermux.embeddings').update('enabled', true, vscode.ConfigurationTarget.Workspace);
+      void index.build();
+    }
+  })();
+
   // Model catalog: fetch the published list in the background on every startup;
   // when it changes, refresh the chat view. Cached + bundled lists keep it
   // working offline (see Catalog).

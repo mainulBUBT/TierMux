@@ -357,12 +357,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     try {
-      // Reasoning effort → select OpenCode model variant (RouterProxy decodes it to
-      // set temperature + reasoningEffort on the TierMux router). Plan mode always
-      // uses high reasoning.
+      // Effort is encoded two ways so RouterProxy can read whichever OC forwards:
+      //   1. modelID suffix ('tiermux-medium') — always works, decoded by regex in RouterProxy
+      //   2. reasoning_effort field in the OC message body — forwarded if OC/AI-SDK supports it
       const EFFORT = m.reasoningEffort ?? 'medium';
       s.reasoningEffort = EFFORT;
-      const modelId = `tiermux-${m.mode === 'plan' ? 'high' : EFFORT}`;
+      const resolvedEffort = m.mode === 'plan' ? 'high' : EFFORT;
+      const modelId = `tiermux-${resolvedEffort}`;
 
       // Auto-approve → if OFF, tell the model to ask before every edit.
       // When OFF, the agent still has edit tools (build agent permission: allow)
@@ -371,13 +372,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const approvalHint = !this.autoApprove && m.mode !== 'plan'
         ? `\n\n[EDIT APPROVAL] Before ANY file write, edit, create, or delete: present the exact change to the user, explain what it does, and wait for an explicit "yes" before executing. Never apply edits silently.`
         : '';
-      const ocPrompt = prompt + approvalHint;
+
+      // Build context prefix for OC: repo map on first message + semantic chunks on every message.
+      // This gives OC an immediate project map and relevant code without burning tool-call round-trips.
+      const isFirstOCMessage = !this.ocSessions.has(s.id);
+      const contextParts: string[] = [];
+
+      if (isFirstOCMessage) {
+        try {
+          const map = await this.deps.tools.repoMap();
+          const parsed = JSON.parse(map) as { root?: string; files?: string[] };
+          if (parsed.files?.length) {
+            contextParts.push(`[PROJECT STRUCTURE — ${parsed.root ?? 'workspace'}]\n${parsed.files.join('\n')}`);
+          }
+        } catch { /* non-critical */ }
+      }
+
+      if (this.deps.index.isEnabled() && this.deps.index.hasIndex()) {
+        try {
+          const chunks = await this.deps.index.search(prompt, 5);
+          if (chunks.length) {
+            const block = chunks
+              .map(r => `// ${r.file}:${r.startLine}-${r.endLine}\n${r.text.replace(/^\/\/.*\n/, '').slice(0, 1200)}`)
+              .join('\n\n');
+            contextParts.push(`[RELEVANT CODE — auto-retrieved, use if helpful]\n\`\`\`\n${block}\n\`\`\``);
+          }
+        } catch { /* non-critical */ }
+      }
+
+      const contextPrefix = contextParts.length
+        ? contextParts.join('\n\n') + '\n\n---\n\n'
+        : '';
+      const ocPrompt = contextPrefix + prompt + approvalHint;
 
       // Send via OpenCode (waits for completion). TierMux router picks the actual free model
       // through the RouterProxy; OpenCode never knows which provider the response came from.
       const result = await this.deps.openCodeClient.sendMessageAndWait(ocSessionId, ocPrompt, {
         model: { providerID: 'tiermux', modelID: modelId },
         agent: m.mode === 'plan' ? 'plan' : 'build',
+        reasoning_effort: resolvedEffort,
       });
 
       if (!live()) return;
@@ -2185,7 +2218,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div id="app"></div>
-  <script nonce="${nonce}">window.__PRODUCT_NAME__ = ${JSON.stringify(PRODUCT_NAME)};</script>
+  <script nonce="${nonce}">window.__PRODUCT_NAME__ = ${JSON.stringify(PRODUCT_NAME)}; window.__LOGO_URI__ = ${JSON.stringify(uri('logo-mono.png').toString())};</script>
   <script nonce="${nonce}" src="${uri('vendor/marked.min.js')}"></script>
   <script nonce="${nonce}" src="${uri('vendor/highlight.min.js')}"></script>
   <script nonce="${nonce}" src="${uri('vendor/diff2html.min.js')}"></script>

@@ -9,6 +9,7 @@
     "type": "git",
     "url": "https://github.com/mainulBUBT/TierMux.git"
   },
+  "icon": "media/icon.png",
   "preview": true,
   "engines": {
     "vscode": "^1.90.0"
