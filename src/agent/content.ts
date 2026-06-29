@@ -84,3 +84,10 @@ export function contentHasImage(content: unknown): boolean {
 export function messagesHaveImage(messages: ChatMessage[]): boolean {
   return messages.some((m) => contentHasImage(m.content));
 }
+
+/** Split a leading `<think>…</think>` reasoning block from message text. */
+export function splitReasoning(text: string): { reasoning?: string; content: string } {
+  const m = /^\s*<think>([\s\S]*?)<\/think>\s*/i.exec(text);
+  if (m) return { reasoning: m[1].trim(), content: text.slice(m[0].length).trim() };
+  return { content: text };
+}

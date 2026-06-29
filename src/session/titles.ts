@@ -1,5 +1,5 @@
 import type { TodoItem } from '../shared/types';
-import { splitReasoning } from '../agent/agent';
+import { splitReasoning } from '../agent/content';
 
 /** A short relative-time label ("just now", "5m ago", "2h ago", "3d ago"). */
 export function timeAgo(ts: number): string {

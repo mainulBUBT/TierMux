@@ -35,8 +35,7 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:tiermux.bench"
+    "onStartupFinished"
   ],
   "contributes": {
     "viewsContainers": {
@@ -180,10 +179,20 @@
         "icon": "$(notebook)"
       },
       {
-        "command": "tiermux.buildGraph",
-        "title": "Build Code Graph",
+        "command": "tiermux.showTelemetry",
+        "title": "Show Telemetry",
         "category": "TierMux",
-        "icon": "$(graph)"
+        "icon": "$(graph-line)"
+      },
+      {
+        "command": "tiermux.resetTelemetry",
+        "title": "Reset Telemetry",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.testOcBridge",
+        "title": "Test OC Bridge",
+        "category": "TierMux"
       },
       {
         "command": "tiermux.generateOnboardingTour",
@@ -206,6 +215,21 @@
       {
         "command": "tiermux.bench",
         "title": "Run Benchmark",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.testOcBridge",
+        "title": "Test OC Bridge",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.showEngineLog",
+        "title": "Show Engine Log",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.toggleOcTrace",
+        "title": "Toggle OC Trace",
         "category": "TierMux"
       }
     ],
@@ -527,6 +551,11 @@
           "default": true,
           "description": "[EXPERIMENTAL] Use OpenCode as the agent engine instead of TierMux's built-in agent. Requires the bundled OpenCode binary."
         },
+        "tiermux.engine.traceOcEvents": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log every raw OpenCode SSE event to the 'TierMux Engine' output channel. Use this to debug chat issues — turn on, send a chat, then check View → Output → TierMux Engine."
+        },
         "tiermux.cache.fileEnabled": {
           "type": "boolean",
           "default": true,
@@ -616,9 +645,10 @@
   "scripts": {
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
-    "rebrand": "node scripts/rebrand.mjs",
     "typecheck": "tsc --noEmit",
-    "package": "vsce package --no-dependencies"
+    "package": "vsce package --no-dependencies",
+    "fetch:binaries": "node scripts/fetch-opencode.mjs",
+    "package:full": "npm run fetch:binaries && npm run build && vsce package --no-dependencies"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
@@ -631,12 +661,9 @@
     "typescript": "^5.5.4"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^4.0.2",
-    "ai": "^7.0.4",
     "diff2html": "^3.4.56",
     "duck-duck-scrape": "^2.2.7",
     "mammoth": "^1.12.0",
-    "pdf-parse": "^2.4.5",
-    "zod": "^3.25.76"
+    "pdf-parse": "^2.4.5"
   }
 }

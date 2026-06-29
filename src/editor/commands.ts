@@ -2,7 +2,7 @@
 // Each gathers the selection (or whole file) and routes a prompt to the chat.
 import * as vscode from 'vscode';
 import type { ChatViewProvider } from '../chatViewProvider';
-import type { Mode } from '../agent/agent';
+import type { Mode } from '../shared/types';
 
 interface Action {
   command: string;

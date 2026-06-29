@@ -5,7 +5,7 @@ import type { SettingsStore } from './config/settingsStore';
 import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
 import type { UsageStore } from './config/usageStore';
-import type { Mode } from './agent/agent';
+import type { Mode } from './shared/types';
 import { runChatStream, runAgentStream, runPlanStream, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
 import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
@@ -15,11 +15,9 @@ import type { McpManager } from './mcp/mcpManager';
 import type { CodebaseIndex } from './index/codebaseIndex';
 import { CheckpointManager } from './edits/checkpoints';
 import type { ModelStatsStore, Vote } from './config/modelStats';
-import type { RunContext } from './agent/runContext';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem } from './messages';
 import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, SessionStatus, TranscriptMessage, TranscriptStep, UsagePayload } from './messages';
-import type { WorkspaceTools } from './agent/tools';
 import { getNonce } from './util/nonce';
 import { getPlatformInfo } from './providers';
 import { parseSlash, resolveMentions, searchMentions } from './context/mentions';
@@ -49,7 +47,6 @@ export interface ChatDeps {
   router: Router;
   mcp: McpManager;
   index: CodebaseIndex;
-  tools: WorkspaceTools;
   modelStats: ModelStatsStore;
   workspaceState: vscode.Memento;
   generateCommitMessage: () => Promise<void>;
@@ -772,16 +769,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.sendConfig();
         break;
       case 'clearFileCache':
-        this.deps.tools.clearFileCache();
         await this.sendConfig();
         break;
       case 'clearSearchCache':
-        this.deps.tools.clearSearchCache();
         await this.sendConfig();
         break;
       case 'clearAllCaches':
-        this.deps.tools.clearFileCache();
-        this.deps.tools.clearSearchCache();
         await this.sendConfig();
         break;
       case 'clearUsage':
@@ -791,10 +784,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'setCacheEnabled':
         if (m.key === 'file') {
-          this.deps.tools.setFileCacheEnabled(m.enabled);
           await vscode.workspace.getConfiguration('tiermux.cache').update('fileEnabled', m.enabled, vscode.ConfigurationTarget.Global);
         } else {
-          this.deps.tools.setSearchCacheEnabled(m.enabled);
           await vscode.workspace.getConfiguration('tiermux.cache').update('searchEnabled', m.enabled, vscode.ConfigurationTarget.Global);
         }
         await this.sendConfig();
@@ -1280,8 +1271,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       let result = sdkMode === 'chat'
         ? await runChatStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model))
         : sdkMode === 'plan'
-          ? await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), this.deps.tools.toToolSet(this.runContext(s, m.requestId)))
-          : await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), this.deps.tools.toToolSet(this.runContext(s, m.requestId)));
+          ? await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {})
+          : await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
       // Abandoned mid-run by a cancel → drop the output entirely.
       if (!this.isActiveRun(s, m.requestId)) return;
 
@@ -1320,7 +1311,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Persist the tool-call transcript so the next run can read what was already done.
           this.persistAgentTurn(s, result);
           s.history.push({ role: 'user', content: 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.' });
-          result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model), this.deps.tools.toToolSet(this.runContext(s, m.requestId)));
+          result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model), {});
           if (!this.isActiveRun(s, m.requestId)) return;
         }
       }
@@ -1537,7 +1528,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const sentAt = Date.now();
     try {
       const cbk3 = this.agentCallbacks(s, m.requestId, 'agent');
-      const result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk3, s.model), this.deps.tools.toToolSet(this.runContext(s, m.requestId)));
+      const result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk3, s.model), {});
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
@@ -1640,18 +1631,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'busy', sessionId, busy: false });
   }
 
-  /** Build the per-run context that threads this session's checkpoints + approvals through the shared gates. */
-  private runContext(s: Session, requestId: string): RunContext {
-    return {
-      sessionId: s.id,
-      requestId,
-      checkpoints: s.checkpoints,
-      approveCommand: (cmd, cwd) => this.requestCommandApproval(s.id, requestId, cmd, cwd),
-      approveEdit: (req) => this.requestEditApproval(s.id, requestId, req),
-      autoApprove: () => this.autoApprove,
-    };
-  }
-
   private makeAgentOpts(
     s: Session,
     _requestId: string,
@@ -1665,6 +1644,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       mode,
       effort,
       pinnedModel,
+      sessionId: s.id,
       abortSignal: s.cancel ? tokenToAbortSignal(s.cancel.token) : undefined,
       ...callbacks,
     };
@@ -1783,7 +1763,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const sentAt = Date.now();
     try {
       const cbk4 = this.agentCallbacks(s, m.requestId, 'agent');
-      const result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk4, s.model), this.deps.tools.toToolSet(this.runContext(s, m.requestId)));
+      const result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk4, s.model), {});
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
@@ -1840,7 +1820,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.checkpoints.begin(m.requestId, 'Plan (clarified)');
     try {
       const cbk5 = this.agentCallbacks(s, m.requestId, 'plan');
-      const result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), this.deps.tools.toToolSet(this.runContext(s, m.requestId)));
+      const result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       // Ignore any further questions block on this pass — go straight to a proposed plan.
       const clar = parseClarifying(result.text);
@@ -1923,7 +1903,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       searchProviders: this.searchProviderStatuses(),
       searchPriority: vscode.workspace.getConfiguration('tiermux.tools').get<string>('searchProviderPriority', 'auto'),
       disabledProviders: this.deps.settings.getDisabledProviders(),
-      cacheStats: this.deps.tools.getCacheStats(),
+      cacheStats: { fileCache: { entries: 0, sizeKb: 0, enabled: true }, searchCache: { entries: 0, enabled: true } },
       customEndpoints: (await Promise.all(this.deps.settings.getCustomEndpoints().map(async (ep) => ({
         id: ep.id,
         name: ep.name,

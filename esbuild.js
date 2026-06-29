@@ -56,6 +56,22 @@ function copyVendor() {
   if (fs.existsSync(hljsTheme)) {
     copy(hljsTheme, path.join(vendorDir, 'highlight.css'));
   }
+
+  // diff2html: pre-minified browser bundle (CSS + core JS). Used by the chat
+  // webview to render unified/split diffs. These are referenced in
+  // chatViewProvider.ts:2024,2033 — without them the webview logs 404s.
+  const d2hCss = path.join(__dirname, 'node_modules', 'diff2html', 'bundles', 'css', 'diff2html.min.css');
+  if (fs.existsSync(d2hCss)) {
+    copy(d2hCss, path.join(vendorDir, 'diff2html.min.css'));
+  } else {
+    console.warn('[esbuild] diff2html.min.css not found — run npm install');
+  }
+  const d2hJs = path.join(__dirname, 'node_modules', 'diff2html', 'bundles', 'js', 'diff2html.min.js');
+  if (fs.existsSync(d2hJs)) {
+    copy(d2hJs, path.join(vendorDir, 'diff2html.min.js'));
+  } else {
+    console.warn('[esbuild] diff2html.min.js not found — run npm install');
+  }
 }
 
 // Emits begin/end markers so VS Code's background problemMatcher (in tasks.json)

@@ -7,11 +7,14 @@ import { UsageTracker } from './config/usage';
 import { UsageStore } from './config/usageStore';
 import { ModelStatsStore } from './config/modelStats';
 import { Router } from './router/router';
+import { startRouterProxy } from './backend/routerProxy';
+import { launchOpenCode, stopOpenCode, type OcConnection } from './backend/ocLauncher';
+import { runBridgeDiagnostic, formatReport } from './backend/ocDiagnostics';
 import { EditGate } from './edits/applyEdit';
 import { CommandGate, type CommandApproval } from './edits/commandGate';
 import { registerCheckpointContentProvider } from './edits/checkpoints';
-import { WorkspaceTools } from './agent/tools';
-import { Agent } from './agent/agent';
+// (ToolCache was removed in v7 — its no-op stand-in is no longer needed.)
+import { setOcEngine, setOcTrace } from './agent/sdk';
 import { McpManager } from './mcp/mcpManager';
 import { CodebaseIndex } from './index/codebaseIndex';
 import { ChatViewProvider } from './chatViewProvider';
@@ -27,7 +30,53 @@ import { openMemoryForEdit } from './context/userMemory';
 // `tiermux.useOpenCodeEngine` is true (the default). The file-watcher handlers
 // that used to keep the inverted index in sync are no-ops now.
 import { formatTelemetryReport, resetTelemetry, getSnapshot, onTelemetryUpdate } from './context/telemetry';
-import { runBenchmarkCommand } from './bench/command';
+
+// OpenAI-compatible router proxy handle; closed on deactivation.
+let routerProxy: { baseURL: string; close(): void } | undefined;
+// OpenCode engine handle (undefined when the OC engine is off / unavailable).
+let ocConnection: OcConnection | undefined;
+// "TierMux Engine" Output channel — surfaces the proxy URL, first-run download
+// progress, OC stdout/stderr, and any startup error. Visible via View → Output
+// → TierMux Engine (or `tiermux.showEngineLog`).
+let engineLog: vscode.OutputChannel | undefined;
+const ts = () => new Date().toISOString().slice(11, 23);
+
+/**
+ * Start the OC engine pointed at the router proxy. Logs the outcome; never throws
+ * — a missing binary just means the integration stays off and the built-in agent runs.
+ */
+async function startOpenCodeEngine(extensionPath: string, routerProxyBaseURL: string, cacheDir: string): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!engineLog) engineLog = vscode.window.createOutputChannel('TierMux Engine');
+  const log = (msg: string) => engineLog?.appendLine(`[${ts()}] ${msg}`);
+  log(`startOpenCodeEngine: proxy=${routerProxyBaseURL} cacheDir=${cacheDir}`);
+  try {
+    // withProgress makes the first-run binary download visible; later boots are instant (cached).
+    ocConnection = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Window, title: 'Starting TierMux engine' },
+      (progress) => launchOpenCode({
+        extensionPath,
+        routerProxyBaseURL,
+        workspaceRoot,
+        cacheDir,
+        onProgress: (msg) => progress.report({ message: msg }),
+        log,
+      }),
+    );
+    setOcEngine(ocConnection); // flip sdk.ts onto the OC path
+    // Wire the OC SSE trace toggle (sink passed directly — no global indirection).
+    const traceSink = (raw: string) => engineLog?.appendLine(`[${ts()}] [oc-event] ${raw}`);
+    setOcTrace(vscode.workspace.getConfiguration('tiermux.engine').get<boolean>('traceOcEvents', false), traceSink);
+    log(`OpenCode engine UP at ${ocConnection.baseURL} (routing via ${routerProxyBaseURL})`);
+    console.log(`[tiermux] OpenCode engine up at ${ocConnection.baseURL} (routing via ${routerProxyBaseURL})`);
+  } catch (err) {
+    setOcEngine(undefined); // ensure sdk.ts reports "engine not running" instead of a silent hang
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`OpenCode engine UNAVAILABLE: ${msg}`);
+    engineLog?.show(true);
+    console.warn(`[tiermux] OpenCode engine unavailable. (${msg})`);
+  }
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   console.log('[tiermux-bench-debug] activate() STARTED');
@@ -39,6 +88,23 @@ export function activate(context: vscode.ExtensionContext): void {
   const usageStore = new UsageStore(context.globalState);
   const modelStats = new ModelStatsStore(context.globalState);
   const router = new Router(secrets, settings, catalog, usage, modelStats, usageStore);
+
+  // OpenAI-compatible router proxy. OC (the agent engine) is pointed at this URL
+  // as a custom provider, so every model call it makes is routed across TierMux's
+  // free providers with failover. Without the OC engine up, chat/agent runs cannot
+  // happen — the built-in agent loop was removed in v7.0.
+  void startRouterProxy(router)
+    .then((srv) => {
+      routerProxy = srv;
+      console.log(`[tiermux] router proxy listening on ${srv.baseURL}`);
+      // Bring up the OC engine now that the proxy URL is known.
+      if (vscode.workspace.getConfiguration('tiermux').get<boolean>('useOpenCodeEngine', true)) {
+        void startOpenCodeEngine(context.extensionUri.fsPath, srv.baseURL, context.globalStorageUri.fsPath);
+      } else {
+        console.warn('[tiermux] OpenCode engine disabled (tiermux.useOpenCodeEngine = false). Chat and agent runs will not work — re-enable the engine to use TierMux.');
+      }
+    })
+    .catch((err) => console.error('[tiermux] router proxy failed to start:', err));
 
   const editGate = new EditGate(() =>
     vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('requireWriteConfirmation', true),
@@ -54,11 +120,9 @@ export function activate(context: vscode.ExtensionContext): void {
     () => vscode.workspace.getConfiguration('tiermux.agent').get<number>('commandTimeoutMs', 120000),
     () => vscode.workspace.getConfiguration('tiermux.agent').get<string[]>('commandAllowlist', []),
   );
-  const tools = new WorkspaceTools(editGate, commandGate);
   const mcp = new McpManager();
   context.subscriptions.push({ dispose: () => mcp.dispose() });
   const index = new CodebaseIndex(context.globalStorageUri, secrets);
-  const agent = new Agent(router, tools, mcp, index);
 
   const chat = new ChatViewProvider(context.extensionUri, {
     secrets,
@@ -69,7 +133,6 @@ export function activate(context: vscode.ExtensionContext): void {
     router,
     mcp,
     index,
-    tools,
     modelStats,
     workspaceState: context.workspaceState,
     generateCommitMessage: () => generateCommitMessage(router),
@@ -137,6 +200,12 @@ export function activate(context: vscode.ExtensionContext): void {
       if (e.affectsConfiguration('tiermux.embeddings') || e.affectsConfiguration('tiermux.context')) {
         chat.refresh();
         void index.maybeAutoBuild();
+      }
+      if (e.affectsConfiguration('tiermux.engine.traceOcEvents')) {
+        const on = vscode.workspace.getConfiguration('tiermux.engine').get<boolean>('traceOcEvents', false);
+        if (!engineLog) engineLog = vscode.window.createOutputChannel('TierMux Engine');
+        const traceSink = (raw: string) => engineLog?.appendLine(`[${ts()}] [oc-event] ${raw}`);
+        setOcTrace(on, traceSink);
       }
       if (e.affectsConfiguration('tiermux.catalog')) {
         void catalog.refresh(
@@ -219,15 +288,46 @@ export function activate(context: vscode.ExtensionContext): void {
       resetTelemetry();
       void vscode.window.showInformationMessage('TierMux: telemetry counters reset.');
     }),
-    vscode.commands.registerCommand('tiermux.buildGraph', async () => {
-      void vscode.window.showInformationMessage('TierMux: code graph is no longer needed (OpenCode LSP handles it). This command is a no-op in v7.0+.');
+    // Exercises the router proxy + OC engine end-to-end and reports which paths OC
+    // serves. Used to verify the bridge and discover OC's REST/SSE shape before rewiring the UI.
+    // If the OC engine isn't up but a binary is now available (e.g. the user pre-seeded the
+    // cache after activation), re-attempt the launch so they don't have to reload the window.
+    vscode.commands.registerCommand('tiermux.testOcBridge', async () => {
+      if (!ocConnection) {
+        const cacheDir = context.globalStorageUri.fsPath;
+        const ocBin = `${cacheDir}/bin/opencode`;
+        const fs = await import('fs');
+        if (fs.existsSync(ocBin)) {
+          engineLog?.appendLine(`[${ts()}] testOcBridge: found binary at ${ocBin}, retrying launch…`);
+          await startOpenCodeEngine(context.extensionUri.fsPath, routerProxy?.baseURL ?? '', cacheDir);
+        }
+      }
+      const results = await runBridgeDiagnostic({ routerProxy, ocConnection });
+      const report = formatReport(results);
+      console.log('[tiermux] OC bridge diagnostic:\n' + report);
+      const channel = vscode.window.createOutputChannel('TierMux OC Bridge');
+      channel.show(true);
+      channel.appendLine(report);
+      const pass = results.filter((r) => r.ok).length;
+      void vscode.window.showInformationMessage(`TierMux OC bridge: ${pass}/${results.length} checks passed (see output).`);
     }),
-    vscode.commands.registerCommand('tiermux.buildIndex', async () => {
-      void vscode.window.showInformationMessage('TierMux: inverted index is no longer needed (OpenCode grep/glob handles it). This command is a no-op in v7.0+.');
+    // Reveal the "TierMux Engine" output channel so the user can see proxy URL,
+    // first-run download progress, OC stdout/stderr, and any startup error.
+    vscode.commands.registerCommand('tiermux.showEngineLog', () => {
+      if (!engineLog) engineLog = vscode.window.createOutputChannel('TierMux Engine');
+      engineLog.show(true);
     }),
-    vscode.commands.registerCommand('tiermux.bench', () => {
-      console.log('[tiermux-bench-debug] bench command INVOKED');
-      return runBenchmarkCommand({ agent, router, catalog, index, globalStorageUri: context.globalStorageUri });
+    // Toggle the OC SSE event trace on/off (writes raw frames to the engine channel).
+    vscode.commands.registerCommand('tiermux.toggleOcTrace', async () => {
+      const cfg = vscode.workspace.getConfiguration('tiermux.engine');
+      const next = !cfg.get<boolean>('traceOcEvents', false);
+      await cfg.update('traceOcEvents', next, vscode.ConfigurationTarget.Global);
+      if (!engineLog) engineLog = vscode.window.createOutputChannel('TierMux Engine');
+      const traceSink = (raw: string) => engineLog?.appendLine(`[${ts()}] [oc-event] ${raw}`);
+      setOcTrace(next, traceSink);
+      engineLog.appendLine(`[${ts()}] OC event trace ${next ? 'ENABLED' : 'DISABLED'}`);
+      engineLog.show(true);
+      void vscode.window.showInformationMessage(`TierMux: OC event trace ${next ? 'enabled' : 'disabled'}.`);
     }),
   );
   console.log('[tiermux-bench-debug] activate() COMPLETED — all commands registered');
@@ -242,7 +342,10 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 }
 
-export function deactivate(): void { /* no-op */ }
+export function deactivate(): void {
+  stopOpenCode(ocConnection);
+  routerProxy?.close();
+}
 
 async function setApiKey(secrets: SecretStore, platformArg?: Platform): Promise<void> {
   let platform = platformArg;

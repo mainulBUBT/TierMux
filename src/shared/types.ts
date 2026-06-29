@@ -32,6 +32,9 @@ export type Platform =
 // field caps at 'high', so providers map it down (Gemini uses a larger budget).
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
 
+/** The three TierMux chat modes (mapped to OC agents + routing profiles). */
+export type Mode = 'chat' | 'plan' | 'agent';
+
 // ---- OpenAI-compatible chat types ----
 
 export interface ChatToolCallFunction {
