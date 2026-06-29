@@ -98,8 +98,15 @@ export class OpenAICompatProvider extends BaseProvider {
       : messages.map((m) => m.content === null || m.content === undefined || typeof m.content === 'string'
           ? m
           : { ...m, content: stripFileBlocks(m.content) });
+    // Custom-endpoint model IDs are namespaced as `<endpointId>::<upstreamModelId>` so the
+    // router can map them back to an endpoint. The upstream API only knows the bare model
+    // name, so strip the prefix on the wire — otherwise it 4xxs on an unknown model, which
+    // surfaces to the user as a misleading "rejected the API key" auth error.
+    const wireModel = this.platform === 'custom' && modelId.includes('::')
+      ? modelId.split('::').slice(1).join('::')
+      : modelId;
     return JSON.stringify({
-      model: modelId,
+      model: wireModel,
       messages: wireMessages,
       temperature: options?.temperature,
       max_tokens: options?.max_tokens,

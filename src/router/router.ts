@@ -57,12 +57,12 @@ export interface RouteResult {
 }
 
 export class AllModelsFailedError extends Error {
-  constructor(readonly failures: Array<{ platform: Platform; model: string; reason: string }>) {
+  constructor(readonly failures: Array<{ platform: Platform; model: string; reason: string; detail?: string }>) {
     super(AllModelsFailedError.describe(failures));
     this.name = 'AllModelsFailedError';
   }
 
-  private static describe(failures: Array<{ platform: Platform; model: string; reason: string }>): string {
+  private static describe(failures: Array<{ platform: Platform; model: string; reason: string; detail?: string }>): string {
     if (failures.length === 0) {
       return 'No enabled models are configured. Open "Manage Models & Keys" to enable a model and add an API key.';
     }
@@ -71,40 +71,52 @@ export class AllModelsFailedError extends Error {
     if (failures.length === 1) {
       const f = failures[0];
       const who = `${f.platform}/${f.model}`;
+      const isCustom = f.platform === 'custom';
+      // The upstream's own words ("invalid model", "invalid api key", ...) — appended so a
+      // misclassified failure (e.g. a 401 that's really a bad model id on a gateway that
+      // auths-after-routing) is debuggable instead of a dead-end "update your key".
+      const upstream = f.detail ? ` — endpoint said: ${f.detail}` : '';
       switch (f.reason) {
         case 'no_api_key': return `${who} needs an API key. Add one in "Manage Models & Keys", or set the model to Auto.`;
         case 'no_provider': return `${who} has no provider available. Pick another model, or set it to Auto.`;
-        case 'not_found': return `${who} looks deprecated or removed by the provider. Pick another model, or set it to Auto.`;
+        case 'not_found': return `${who} looks deprecated or removed by the provider${isCustom ? ' (or the model ID is wrong for this endpoint)' : ''}. Pick another model, or set it to Auto.${upstream}`;
         case 'rate_limited': return `${who} is rate-limited right now. Try again shortly, or set the model to Auto for automatic failover.`;
-        case 'auth': return `${who} rejected the API key. Update it in "Manage Models & Keys".`;
+        case 'auth': return isCustom
+          ? `${who} rejected the request (HTTP 401/403). Check the endpoint's API key, base URL, and model ID in "Manage Models & Keys".${upstream}`
+          : `${who} rejected the API key. Update it in "Manage Models & Keys".${upstream}`;
+        case 'bad_request': return `${who} rejected the request (HTTP 400)${isCustom ? ' — often a wrong model ID or unsupported parameter for this endpoint' : ''}.${upstream}`;
         case 'paid_only': return `${who} is paid-only or out of free quota on this provider (HTTP 402). Pick a different model, or set the model to Auto.`;
-        default: return `${who} failed (${f.reason}). Try again, or set the model to Auto.`;
+        default: return `${who} failed (${f.reason}). Try again, or set the model to Auto.${upstream}`;
       }
     }
     return `All ${failures.length} model(s) failed: ` + failures.map((f) => `${f.platform}/${f.model} (${f.reason})`).join(', ');
   }
 }
 
-function classify(err: unknown): { reason: string; failoverable: boolean; retryAfterMs?: number } {
+function classify(err: unknown): { reason: string; failoverable: boolean; retryAfterMs?: number; detail?: string } {
+  // The upstream's own error text (e.g. "invalid model", "invalid api key") — preserved so the
+  // surfaced message can show what actually failed instead of only a canned reason. Critical for
+  // custom endpoints, where "auth" might really be a bad model id or wrong base URL.
+  const detail = err instanceof Error && err.message ? err.message : undefined;
   if (err instanceof ProviderHttpError) {
     const s = err.status;
     const retryAfterMs = err.retryAfterMs;
-    if (s === 429) return { reason: 'rate_limited', failoverable: true, retryAfterMs };
-    if (s === 401 || s === 403) return { reason: 'auth', failoverable: true };
-    if (s === 408) return { reason: 'timeout', failoverable: true };
-    if (s === 413) return { reason: 'http_413', failoverable: true };
-    if (s === 404) return { reason: 'not_found', failoverable: true };
-    if (s === 400) return { reason: 'bad_request', failoverable: true };
+    if (s === 429) return { reason: 'rate_limited', failoverable: true, retryAfterMs, detail };
+    if (s === 401 || s === 403) return { reason: 'auth', failoverable: true, detail };
+    if (s === 408) return { reason: 'timeout', failoverable: true, detail };
+    if (s === 413) return { reason: 'http_413', failoverable: true, detail };
+    if (s === 404) return { reason: 'not_found', failoverable: true, detail };
+    if (s === 400) return { reason: 'bad_request', failoverable: true, detail };
     // 402 Payment Required = the model is paid-only / out of free quota under
     // the user's current key. In AUTO mode, make it failoverable so the next
     // enabled model in the chain gets a chance. If ALL models 402, the error
     // surfaces as "All models exhausted" with the per-reason breakdown.
-    if (s === 402) return { reason: 'paid_only', failoverable: true };
-    if (s && s >= 500) return { reason: 'server_error', failoverable: true };
-    return { reason: `http_${s ?? '?'}`, failoverable: true };
+    if (s === 402) return { reason: 'paid_only', failoverable: true, detail };
+    if (s && s >= 500) return { reason: 'server_error', failoverable: true, detail };
+    return { reason: `http_${s ?? '?'}`, failoverable: true, detail };
   }
   // Network errors (fetch TypeError) and anything else: try the next model.
-  return { reason: 'network', failoverable: true };
+  return { reason: 'network', failoverable: true, detail };
 }
 
 export class Router {
@@ -346,7 +358,7 @@ export class Router {
   }
 
   async route(messages: ChatMessage[], opts: RouteOptions = {}): Promise<RouteResult> {
-    const failures: Array<{ platform: Platform; model: string; reason: string }> = [];
+    const failures: Array<{ platform: Platform; model: string; reason: string; detail?: string }> = [];
     const maxOut = opts.max_tokens ?? 4096;
     // The tool manifest is appended to every request but isn't part of the
     // trimmed message list — reserve budget for it so we don't 413.
@@ -541,7 +553,7 @@ export class Router {
           if (opts.taskKind) this.lastGood.set(opts.taskKind, `${entry.platform}::${entry.modelId}`);
           return { response, platform: entry.platform, model: entry.modelId, runtimeName: (provider as any).runtimeName };
         } catch (err) {
-          const { reason, failoverable, retryAfterMs } = classify(err);
+          const { reason, failoverable, retryAfterMs, detail } = classify(err);
 
           // Payload too large with tools: retry this same model once with a
           // tighter budget before failing over.
@@ -599,7 +611,7 @@ export class Router {
           // Increment the retry count for this model
           triedModels.set(modelKey, retryCount + 1);
 
-          failures.push({ platform: entry.platform, model: entry.modelId, reason });
+          failures.push({ platform: entry.platform, model: entry.modelId, reason, detail });
           // Only signal failover when in Auto mode — forced models shouldn't show
           // "Routing to the best available model" since there's no actual routing.
           if (!forced) opts.onFailover?.({ from: entry, reason });

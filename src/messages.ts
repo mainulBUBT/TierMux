@@ -216,7 +216,9 @@ export type InMessage =
   | { type: 'removeCustomEndpoint'; id: string }
   | { type: 'setCustomEndpointKey'; id: string; key: string | null }
   | { type: 'addCustomModel'; endpointId: string; modelId: string; displayName?: string }
-  | { type: 'removeCustomModel'; endpointId: string; modelId: string };
+  | { type: 'removeCustomModel'; endpointId: string; modelId: string }
+  /** Ask the host to GET <baseUrl>/models for an endpoint and stream back the model IDs (Kilo/Cline-style auto-discovery). */
+  | { type: 'fetchCustomEndpointModels'; id: string };
 
 /** A single tool step shown inside a turn's "Worked for Ns" disclosure. Mirrors the live
  *  `toolStatus` event so a re-rendered (e.g. post-revert) message can rebuild its step list. */
@@ -273,6 +275,8 @@ export type OutMessage =
   | { type: 'toolStatus'; sessionId: string; requestId: string; toolCallId: string; name: string; args: unknown; state: 'running' | 'done' | 'error'; detail?: string }
   | { type: 'changedFiles'; sessionId: string; id: string; files: CheckpointFile[] }
   | { type: 'agentStep'; sessionId: string; requestId: string; phase: 'thinking' | 'synthesizing' | 'done'; label: string }
+  /** Result of fetchCustomEndpointModels: the model IDs discovered at the endpoint (or an error). */
+  | { type: 'customEndpointModels'; id: string; models: string[]; error?: string }
   | { type: 'askUserPrompt'; sessionId: string; requestId: string; callId: string; question: string; options?: string[] }
   | { type: 'askUserDismissed'; sessionId: string; requestId: string; callId: string }
   | { type: 'todos'; sessionId: string; requestId: string; todos: TodoItem[]; followingPlan?: boolean }

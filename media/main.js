@@ -1384,6 +1384,9 @@
 
   // ---------- settings panel ----------
   let settingsOpen = false;
+  // Custom-endpoint model discovery: epId -> { loading?, models?: string[], error?: string }.
+  // Populated by the 'customEndpointModels' host reply; read while rendering each endpoint card.
+  const fetchedEndpointModels = new Map();
   function toggleSettings() {
     closeModelPop();
     closeAc();
@@ -2138,7 +2141,83 @@
           vscode.postMessage({ type: 'addCustomModel', endpointId: ep.id, modelId });
         });
         addModelRow.appendChild(addModelBtn);
+
+        // Fetch-models button — discover the endpoint's catalog from <baseUrl>/models and
+        // render a clickable list (Kilo/Cline-style), instead of typing every ID by hand.
+        const discovery = fetchedEndpointModels.get(ep.id);
+        const fetchBtn = document.createElement('button');
+        fetchBtn.className = 'secondary';
+        fetchBtn.style.marginLeft = '8px';
+        fetchBtn.textContent = discovery && discovery.loading ? 'Fetching…' : '⟳ Fetch models from API';
+        fetchBtn.disabled = !!(discovery && discovery.loading);
+        fetchBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          fetchedEndpointModels.set(ep.id, { loading: true });
+          vscode.postMessage({ type: 'fetchCustomEndpointModels', id: ep.id });
+          renderSettings();
+        });
+        addModelRow.appendChild(fetchBtn);
         body.appendChild(addModelRow);
+
+        // Discovered-models list (clickable chips). Only the IDs not already added are shown.
+        if (discovery && !discovery.loading) {
+          const wrap = document.createElement('div');
+          wrap.style.marginTop = '8px';
+          if (discovery.error) {
+            wrap.className = 'muted';
+            wrap.style.color = 'var(--vscode-errorForeground)';
+            wrap.textContent = 'Could not fetch models: ' + discovery.error;
+          } else {
+            const added = new Set(epModels.map((e) => e.modelId.split('::').slice(1).join('::')));
+            const fresh = (discovery.models || []).filter((id) => !added.has(id));
+            if (!discovery.models || discovery.models.length === 0) {
+              wrap.className = 'muted';
+              wrap.textContent = 'The endpoint returned no models.';
+            } else if (fresh.length === 0) {
+              wrap.className = 'muted';
+              wrap.textContent = 'All ' + discovery.models.length + ' models from this endpoint are already added.';
+            } else {
+              const label = document.createElement('div');
+              label.className = 'muted';
+              label.style.marginBottom = '6px';
+              label.textContent = 'Click to add (' + fresh.length + ' available):';
+              wrap.appendChild(label);
+              const chips = document.createElement('div');
+              chips.className = 'model-chip-row';
+              chips.style.display = 'flex';
+              chips.style.flexWrap = 'wrap';
+              chips.style.gap = '6px';
+              fresh.forEach((id) => {
+                const chip = document.createElement('button');
+                chip.className = 'secondary model-chip';
+                chip.textContent = '+ ' + id;
+                chip.title = 'Add ' + id;
+                chip.addEventListener('click', (ev) => {
+                  ev.stopPropagation();
+                  vscode.postMessage({ type: 'addCustomModel', endpointId: ep.id, modelId: id });
+                  chip.disabled = true;
+                  chip.textContent = '✓ ' + id;
+                });
+                chips.appendChild(chip);
+              });
+              wrap.appendChild(chips);
+              if (fresh.length > 1) {
+                const addAll = document.createElement('button');
+                addAll.className = 'secondary';
+                addAll.style.marginTop = '8px';
+                addAll.textContent = 'Add all ' + fresh.length;
+                addAll.addEventListener('click', (ev) => {
+                  ev.stopPropagation();
+                  fresh.forEach((id) => vscode.postMessage({ type: 'addCustomModel', endpointId: ep.id, modelId: id }));
+                  addAll.disabled = true;
+                  addAll.textContent = '✓ Added';
+                });
+                wrap.appendChild(addAll);
+              }
+            }
+          }
+          body.appendChild(wrap);
+        }
 
         // Remove endpoint button
         const removeRow = document.createElement('div');
@@ -2449,6 +2528,11 @@
         updateFooter(msg.usageTotals);
         renderUsageStatsCard(msg.usageTotals && msg.usageTotals.lifetime, msg.usageTotals && msg.usageTotals.retrieval);
         renderIndexStatus(state.index && state.index.building ? { building: true, done: 0, total: 0, phase: 'embedding' } : { building: false });
+        if (settingsOpen) renderSettings();
+        break;
+      case 'customEndpointModels':
+        // Host finished discovering an endpoint's models — cache and re-render the card.
+        fetchedEndpointModels.set(msg.id, { models: msg.models || [], error: msg.error });
         if (settingsOpen) renderSettings();
         break;
       case 'userEcho':

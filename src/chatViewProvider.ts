@@ -124,6 +124,53 @@ interface StoredSession {
 }
 
 
+/**
+ * Discover the model list for an OpenAI-compatible endpoint.
+ */
+async function fetchOpenAICompatModels(
+  baseUrl: string,
+  key: string | undefined,
+  extraHeaders?: Record<string, string>,
+): Promise<string[]> {
+  const base = baseUrl.replace(/\/+$/, '');
+  const headers: Record<string, string> = { Accept: 'application/json', ...(extraHeaders ?? {}) };
+  if (key) headers.Authorization = `Bearer ${key}`;
+
+  const tryFetch = async (url: string): Promise<{ ok: boolean; status: number; body: unknown }> => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    try {
+      const res = await fetch(url, { headers, signal: ctrl.signal, redirect: 'follow' });
+      const body = res.ok ? await res.json().catch(() => undefined) : undefined;
+      return { ok: res.ok, status: res.status, body };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  let res = await tryFetch(`${base}/models`);
+  if (!res.ok && res.status === 404 && !/\/v1$/i.test(base)) {
+    res = await tryFetch(`${base}/v1/models`);
+  }
+  if (!res.ok) {
+    throw new Error(
+      res.status === 401 || res.status === 403
+        ? 'Unauthorized — check the API key for this endpoint.'
+        : `Endpoint returned HTTP ${res.status} for /models.`,
+    );
+  }
+
+  const raw = res.body as { data?: unknown; models?: unknown } | unknown[] | undefined;
+  const list = Array.isArray(raw) ? raw
+    : Array.isArray((raw as { data?: unknown })?.data) ? (raw as { data: unknown[] }).data
+    : Array.isArray((raw as { models?: unknown })?.models) ? (raw as { models: unknown[] }).models
+    : [];
+  const ids = list
+    .map((entry) => typeof entry === 'string' ? entry : String((entry as { id?: unknown })?.id ?? '').trim())
+    .filter((id): id is string => !!id);
+  return [...new Set(ids)].sort((a, b) => a.localeCompare(b));
+}
+
 /** Helper to resolve the display name for a custom endpoint (or built-in platform). */
 function displayNameForEntry(entry: { platform: string; modelId: string }, deps: ChatDeps): string {
   if (entry.platform === 'custom') {
@@ -289,9 +336,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
 
+
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
     this.ready = false;
+
     view.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media')],
@@ -950,6 +999,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // Clear per-model key
         await this.deps.secrets.clearCustomModelKey(m.endpointId, m.modelId);
         void this.sendConfig();
+        break;
+      }
+      case 'fetchCustomEndpointModels': {
+        const endpoint = this.deps.settings.getCustomEndpoint(m.id);
+        if (!endpoint) {
+          this.post({ type: 'customEndpointModels', id: m.id, models: [], error: 'Endpoint not found.' });
+          break;
+        }
+        try {
+          const key = await this.deps.secrets.getCustomKey(m.id);
+          const models = await fetchOpenAICompatModels(endpoint.baseUrl, key, endpoint.extraHeaders);
+          this.post({ type: 'customEndpointModels', id: m.id, models });
+        } catch (e) {
+          this.post({ type: 'customEndpointModels', id: m.id, models: [], error: e instanceof Error ? e.message : String(e) });
+        }
         break;
       }
     }

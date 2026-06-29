@@ -88,6 +88,13 @@ export function resolveProvider(
       baseUrl: endpoint.baseUrl.replace(/\/+$/, ''),
       extraHeaders: endpoint.extraHeaders,
       timeoutMs: CUSTOM_TIMEOUT_MS,
+      // Skip the 2s preflight ping for user-configured endpoints. Custom/self-hosted
+      // models are often slow on first response, so the ping aborts and gets the model
+      // wrongly marked dead (cached 60s) before the real request — the dominant cause of
+      // "custom endpoint times out instantly". A custom model is a single forced pick with
+      // no failover chain, so preflight buys nothing; the real request runs with the full
+      // CUSTOM_TIMEOUT_MS budget instead. Matches how Cline/Kilo treat custom providers.
+      skipPreflight: true,
     });
     customProviderCache.set(epId, provider);
     return provider;
