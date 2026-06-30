@@ -773,7 +773,7 @@
     const flow = document.createElement('div'); flow.className = 'flow';
     const statusEl = document.createElement('div');
     statusEl.className = 'agent-status';
-    statusEl.innerHTML = `<span class="agent-dot-single"></span><span class="agent-label">Working…</span><span class="agent-elapsed"></span>`;
+    statusEl.innerHTML = `<span class="agent-dots"><span></span><span></span><span></span></span><span class="agent-label">Working…</span><span class="agent-elapsed"></span>`;
     // `bubble` stays AFTER the flow for interactive cards (approvals/plans/clarify) and the
     // non-streamed final answer — keeping those paths untouched.
     const bubble = document.createElement('div');
@@ -887,6 +887,12 @@
 
     t.flow.insertBefore(det, workNodes[0]);
     workNodes.forEach((n) => det.appendChild(n));
+    // Chat: collapse each tool step's output inside the summary so expanding the summary
+    // shows compact steps (icon + label + status), each individually expandable on click.
+    // Agent/plan are left as-is (fully expanded for transparency).
+    if (currentMode === 'chat') {
+      det.querySelectorAll('.tool-more').forEach((m) => { m.open = false; });
+    }
     scrollDown();
   }
 
@@ -1451,14 +1457,16 @@
       pre.className = 'diff-view';
       pre.appendChild(buildInlineDiff(editArgs.old_string, editArgs.new_string));
       more.classList.remove('hidden');
-      if (msg.state === 'done') more.open = true;
+      if (msg.state === 'done' && currentMode !== 'chat') more.open = true;
     } else if (msg.detail) {
       pre.className = '';
       pre.textContent = msg.detail;
       more.classList.remove('hidden');
       // Always expand when done — CSS max-height keeps it from taking over the screen.
       // While running, expand so partial output streams in visibly.
-      more.open = true;
+      // Chat mode stays compact (collapsed): the answer is the focus, not the tool log —
+      // the user can click any step to expand it. Agent/plan keep the verbose live view.
+      if (currentMode !== 'chat') more.open = true;
     } else {
       more.classList.add('hidden');
     }
@@ -3156,11 +3164,14 @@
         const t = msg.requestId ? ensureTarget(msg.requestId) : null;
         if (msg.requestId) stopStatusTimer(msg.requestId, true);
         if (msg.requestId) finalizeWork(msg.requestId);
-        const el = document.createElement('div'); el.className = 'error-notice';
-        el.textContent = '⚠ ' + msg.message;
         // Append into the flow (same layer as response text) so it appears directly
         // after the work summary — not nested inside the outer t.body bubble.
         const dest = t ? t.flow ?? t.body : (currentTurn || thread);
+        // Replace any prior error notice for this turn so a failed retry (e.g. an
+        // escalated takeover that also errors) can't stack two identical red marks.
+        dest.querySelectorAll('.error-notice').forEach((e) => e.remove());
+        const el = document.createElement('div'); el.className = 'error-notice';
+        el.textContent = '⚠ ' + msg.message;
         dest.appendChild(el);
         scrollDown();
         break;

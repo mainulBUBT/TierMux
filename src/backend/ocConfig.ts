@@ -62,6 +62,57 @@ export function buildOcConfig(opts: OcConfigOptions): string {
     // Force every agent in OC to use the TierMux provider by default, so model
     // selection always flows through the router. Users can still override per-session.
     model: 'tiermux/auto',
+    // Custom agents. OC's built-in `build` edits and `plan` writes a plan file then
+    // exits — neither fits Chat mode, which needs a read-only Q&A answerer. So we
+    // register our own `chat` agent: it may inspect the project (read/list/glob/grep)
+    // and fetch current info (web_fetch/web_search), but CANNOT edit/write/move/remove
+    // files or run commands/bash/subagents. Tool names match OC's wire names (note the
+    // underscores on the web tools). `permission` is the modern per-tool allow/deny map;
+    // `tools: {bool}` also works but is deprecated. OC reads this ONLY at startup, so a
+    // running OC process won't see a new agent until it restarts (a window reload does it).
+    agent: {
+      chat: {
+        mode: 'primary',
+        description: 'Read-only Q&A: searches the project and the web, cannot modify files or run commands.',
+        prompt: 'Answer the user. Use read/list/glob/grep to inspect the project and web_fetch/web_search for '
+          + 'current information. You CANNOT edit, write, move, or remove files, and cannot run commands or '
+          + 'subagents — if an action is required, say so and suggest the user switch to Agent mode. '
+          + 'Cite file paths and URLs.',
+        permission: {
+          read: 'allow', list: 'allow', glob: 'allow', grep: 'allow',
+          web_fetch: 'allow', web_search: 'allow',
+          write: 'deny', edit: 'deny', bash: 'deny',
+          move: 'deny', remove: 'deny', task: 'deny', todowrite: 'deny', code_execution: 'deny',
+        },
+      },
+      // Plan mode. OC's BUILT-IN `plan` agent writes its output to .opencode/plans/*.md and then
+      // `plan_exit`s into `build` — that's file/handoff-oriented, so it never returns the plan as a
+      // text answer and TierMux's planProposed card gets garbage. This custom `planx` agent is a
+      // read-only researcher that returns the plan INLINE as text (which chatViewProvider turns into
+      // the approval card). Named `planx` (not `plan`) so it doesn't collide with the built-in.
+      planx: {
+        mode: 'primary',
+        description: 'Read-only planner: researches the project and returns a step-by-step plan as text.',
+        prompt: 'You are TierMux\'s planner. Research the request with read/list/glob/grep (and '
+          + 'web_fetch/web_search when needed), then reply with a concise, actionable plan as TEXT: '
+          + 'numbered steps, each naming the file/symbol it touches and what to do. Do NOT edit, write, '
+          + 'move, or remove files, and do NOT run commands — planning only.\n'
+          + 'If the request is ambiguous, FIRST emit a clarifying-questions block in EXACTLY this format '
+          + 'and then stop (no plan yet):\n'
+          + '???QUESTIONS???\n'
+          + 'Q[Short Label]: the question?\n'
+          + '- Option A :: optional one-line description\n'
+          + '- Option B :: optional one-line description\n'
+          + '???END???\n'
+          + 'Otherwise skip the block and output only the plan. Keep it tight and skimmable.',
+        permission: {
+          read: 'allow', list: 'allow', glob: 'allow', grep: 'allow',
+          web_fetch: 'allow', web_search: 'allow',
+          write: 'deny', edit: 'deny', bash: 'deny',
+          move: 'deny', remove: 'deny', task: 'deny', todowrite: 'deny', code_execution: 'deny',
+        },
+      },
+    },
     // Append our identity/behavior instructions to every agent's system prompt so the
     // assistant presents as TierMux (not "opencode") and acts on the task directly.
     ...(opts.instructionsPaths?.length ? { instructions: opts.instructionsPaths } : {}),

@@ -208,12 +208,13 @@ async function handleChatCompletion(
       const result = await router.route(messages, routeOpts);
       lastRouted = { platform: result.platform, model: result.model, runtimeName: result.runtimeName };
       buffered = chunks.join('');
-      // Tool-call turns (OC always sends tools for build/plan) don't stream via
+      const choice = result.response.choices?.[0];
+      // Tool-call turns (OC sends tools for chat/build/plan) don't stream via
       // onChunk — the Router buffers and returns a single response. Nothing was
       // streamed, so emit the final message (text + tool_calls) as one chunk;
       // otherwise OC receives an empty assistant message → blank reply.
       if (!chunks.length) {
-        const msg = result.response.choices?.[0]?.message;
+        const msg = choice?.message;
         const content = typeof msg?.content === 'string' ? msg.content : '';
         if (content || msg?.tool_calls?.length) {
           sendSSE(res, makeChunk(body.model ?? 'tiermux', {
@@ -222,9 +223,21 @@ async function handleChatCompletion(
           }));
         }
       }
-      // Final chunk: carry finish_reason + the upstream usage the router measured.
+      // Final chunk: finish_reason MUST match what the turn actually was. A tool-call
+      // turn ends with 'tool_calls' (NOT 'stop') — OC's agent loop keys off this to
+      // execute the requested tools and feed their results back for another step.
+      // Sending 'stop' on a tool-call turn makes OC run the tool ONCE then end the run
+      // with no follow-up answer (the "tool runs, then it stops" symptom). Honor the
+      // upstream finish_reason (the Router passes the provider's value through), and
+      // force 'tool_calls' when tool_calls are present as a safety net.
+      const toolMsg = choice?.message;
+      const hasTools = !!toolMsg?.tool_calls?.length;
+      const upstreamReason = choice?.finish_reason;
+      const finishReason: string = hasTools
+        ? 'tool_calls'
+        : (upstreamReason && upstreamReason !== 'tool_calls' ? upstreamReason : 'stop');
       const usage = result.response.usage;
-      sendSSE(res, makeChunk(body.model ?? 'tiermux', { content: '' }, 'stop', result.response.model, usage));
+      sendSSE(res, makeChunk(body.model ?? 'tiermux', { content: '' }, finishReason, result.response.model, usage));
       res.write('data: [DONE]\n\n');
       res.end();
     } catch (err) {

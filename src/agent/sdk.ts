@@ -94,7 +94,7 @@ function profileFor(mode: 'chat' | 'agent' | 'plan'): string {
  * fetches the session messages as a fallback so we always return *something* when OC did
  * produce output.
  */
-async function runViaOc(opts: AgentOpts, _retryCount = 0): Promise<AgentResult> {
+async function runViaOc(opts: AgentOpts, _retryCount = 0, escalate = false): Promise<AgentResult> {
   if (!ocClient) {
     opts.onError('TierMux engine is not running. Run "npm run fetch:binaries" (or set OPENCODE_BIN), then reload the window.');
     return { text: '' };
@@ -102,9 +102,15 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0): Promise<AgentResult> 
   const client = ocClient;
 
   const key = opts.sessionId ?? '__default__';
-  const agent = opts.mode === 'plan' ? 'plan' : 'build';
+  // `planx` is our custom read-only planner (returns the plan as text). NOT OC's built-in `plan`,
+  // which writes a plan file and plan_exit-hands-off to build — wrong for TierMux's planProposed card.
+  const agent = opts.mode === 'chat' ? 'chat' : opts.mode === 'plan' ? 'planx' : 'build';
   // Honor the user's explicitly-selected model; fall back to the routing profile only when on auto.
-  const modelID = opts.pinnedModel && opts.pinnedModel !== 'auto' ? opts.pinnedModel : profileFor(opts.mode);
+  // `escalate` (set by the empty-result takeover below) forces the `smart` profile so a retried run
+  // lands on a stronger, intelligence-first model instead of re-picking the weak free one that just
+  // produced no answer. We do NOT override an explicit user pin — only the auto/profile path.
+  const profile = escalate ? 'smart' : profileFor(opts.mode);
+  const modelID = opts.pinnedModel && opts.pinnedModel !== 'auto' ? opts.pinnedModel : profile;
 
   let ocId = ocSessions.get(key);
   // If the user changed the model since the last run, the existing OC session was created
@@ -183,6 +189,25 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0): Promise<AgentResult> 
       resolve(r);
     };
 
+    // Empty-result takeover: if a run ends with NO usable text (model gave up, tool loop
+    // died empty, OC errored mid-run), retry ONCE on the `smart` profile so a stronger
+    // model takes over — mirrors the 5xx retry in the prompt().catch() below. Bounded by
+    // `_retryCount` so a genuinely unanswerable turn still terminates. Returns true when a
+    // retry was kicked off; the caller MUST then skip finish() (the retry resolves later).
+    // Only invoked asynchronously (from event handlers / watchdog), by which point
+    // `unsub`/`watchdog` below are initialized.
+    const tryEscalate = (): boolean => {
+      if (out.trim() || _retryCount) return false;
+      console.log(`[tiermux] OC run produced no answer — escalating to smart profile, retrying once`);
+      opts.onFailover(`tiermux/${profile}`, 'no_answer → escalating to smart');
+      ocSessions.delete(key);
+      ocSessionModels.delete(key);
+      unsub();
+      clearTimeout(watchdog);
+      void runViaOc(opts, 1, true).then(finish);
+      return true;
+    };
+
     // Track the latest text we saw per part id, so `message.part.updated` (which carries
     // the full text) can be diffed against the previous value to emit deltas.
     const lastTextByPart = new Map<string, string>();
@@ -224,6 +249,7 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0): Promise<AgentResult> 
             const text = extractLastAssistantText(msgs);
             if (text && !out) { out = text; opts.onChunk(text); }
           } catch { /* ignore */ }
+          if (tryEscalate()) return;
           finish({ text: out, platform, model, taskKind: opts.taskKind });
         })();
       }, INACTIVITY_MS);
@@ -376,9 +402,13 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0): Promise<AgentResult> 
         const errMsg = typeof p.error === 'string'
           ? p.error
           : p.error?.message ?? p.message ?? 'OC session error';
-        opts.onError(errMsg);
         // Resolve the run NOW — otherwise the promise hangs until the 90s hard timeout,
         // leaving "Working…" and any in-flight todos stuck on screen after a failure.
+        // If we got no text, first try to take over on a stronger model (once). Escalate
+        // BEFORE surfacing the error: otherwise a run that recovers (or fails and retries)
+        // shows a redundant red error — the failover notice already explains the takeover.
+        if (tryEscalate()) return;
+        opts.onError(errMsg);
         finish({ text: out, platform, model, taskKind: opts.taskKind });
         return;
       }
@@ -399,6 +429,8 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0): Promise<AgentResult> 
               opts.onChunk(text);
             }
           } catch { /* ignore — keep whatever we have */ }
+          // Still no answer after the fallback fetch — let a stronger model take over (once).
+          if (tryEscalate()) return;
           finish({ text: out, platform, model, taskKind: opts.taskKind });
         })();
         return;
@@ -441,7 +473,9 @@ const OC_TOOL_NAMES: Record<string, string> = {
   glob: 'glob',
   grep: 'grep',
   webfetch: 'webFetch',
+  web_fetch: 'webFetch',
   websearch: 'webSearch',
+  web_search: 'webSearch',
   task: 'skill',
 };
 function normalizeToolName(name: string): string {
@@ -476,6 +510,10 @@ function extractLastAssistantText(msgs: unknown): string {
       for (const p of m.content) {
         if (typeof p === 'string') { texts.push(p); continue; }
         if (p && typeof p === 'object') {
+          // Never surface reasoning (chain-of-thought) or tool parts as the answer —
+          // reasoning is where models ramble identity text ("As Claude Code, I…"), which
+          // otherwise leaks in as "random words" when a run ends via this fallback.
+          if (p.type === 'reasoning' || p.type === 'tool' || p.type === 'tool_call') continue;
           if (typeof p.text === 'string') texts.push(p.text);
           else if (typeof p.content === 'string') texts.push(p.content);
         }
@@ -488,6 +526,7 @@ function extractLastAssistantText(msgs: unknown): string {
       const texts: string[] = [];
       for (const p of m.parts) {
         if (!p || typeof p !== 'object') continue;
+        if (p.type === 'reasoning' || p.type === 'tool') continue;
         if (p.type === 'text' && typeof p.text === 'string') texts.push(p.text);
         else if (typeof p.text === 'string') texts.push(p.text);
       }
@@ -501,35 +540,18 @@ function extractLastAssistantText(msgs: unknown): string {
 // ---- Public API — what chatViewProvider calls ----
 
 /**
- * Chat mode: a plain question. Stream STRAIGHT through the Router — no OC session, no tool
- * loop. This is the fast path: tokens stream live and we skip the agent overhead that made
- * simple questions take 30–150s when they were (needlessly) run through OC's `build` agent.
+ * Chat mode: a question answered with **read-only tool access**. Runs through OC's custom
+ * `chat` agent (defined in ocConfig.ts) over `tiermux/fast` — the agent may inspect the
+ * project (read/list/glob/grep) and fetch current info (web_fetch/web_search), but cannot
+ * edit/write files or run commands. The OC session is keyed by TierMux session id so prior
+ * turns are retained server-side, just like agent/plan mode.
+ *
+ * (Previously this streamed straight through the Router with no tools — fast, but the model
+ * could neither see the project nor reach the web. Routed through OC now so chat can answer
+ * codebase and realtime questions; the lean tool set keeps trivial questions to ~one round-trip.)
  */
-export async function runChatStream(router: Router, opts: AgentOpts): Promise<AgentResult> {
-  opts.onStep('thinking', 'Thinking…');
-  let out = '';
-  try {
-    const result = await router.route(opts.messages, {
-      model: opts.pinnedModel && opts.pinnedModel !== 'auto' ? opts.pinnedModel : 'auto',
-      taskKind: 'chat',
-      reasoningEffort: opts.effort,
-      onChunk: (delta) => { out += delta; opts.onChunk(delta); },
-      onFailover: (info) => opts.onFailover(`${info.from.platform}/${info.from.modelId}`, info.reason),
-      onKeyRotated: opts.onKeyRotated,
-    });
-    const platform = result.runtimeName ?? result.platform;
-    opts.onModel(platform, result.model, result.runtimeName);
-    // Non-streaming providers return the whole answer at once — emit it so the UI isn't blank.
-    const msg = result.response.choices?.[0]?.message;
-    if (!out && typeof msg?.content === 'string' && msg.content) {
-      out = msg.content;
-      opts.onChunk(out);
-    }
-    return { text: out, platform, model: result.model, runtimeName: result.runtimeName, taskKind: opts.taskKind };
-  } catch (err) {
-    opts.onError(err instanceof Error ? err.message : String(err));
-    return { text: out };
-  }
+export async function runChatStream(_router: Router, opts: AgentOpts): Promise<AgentResult> {
+  return runViaOc({ ...opts, mode: 'chat' });
 }
 
 /** Agent mode: full tool loop via OC `build` over `tiermux/smart`. */
