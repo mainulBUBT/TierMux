@@ -88,7 +88,9 @@ interface Session {
   cards: OutMessage[];
   voteCtx: Map<string, { taskKind: string; platform: string; model: string; last: Vote }>;
   pendingPlanUser?: ChatContent;
-  pendingClarify?: { requestId: string; userContent: ChatContent; prompt: string; questions: ClarifyingQuestion[] };
+  /** URI of the plan MD file saved at proposal time — updated if the user edits steps before approving. */
+  pendingPlanFile?: { uri: vscode.Uri; title: string };
+  pendingClarify?: { requestId: string; userContent: ChatContent; prompt: string; questions: ClarifyingQuestion[]; mode: 'plan' | 'agent' };
   /** In-flight `askUser` tool calls, keyed by OpenAI tool_call_id, awaiting a webview answer. */
   pendingAskUser: Map<string, (answer: string) => void>;
   /** True while an approved plan is being executed in Agent mode — drives the "Following the approved plan" header. */
@@ -177,6 +179,13 @@ function displayNameForEntry(entry: { platform: string; modelId: string }, deps:
   }
   return entry.platform;
 }
+
+/**
+ * If the agent's response ends with a question or an invitation for user input, extract the
+ * last paragraph as the prompt text. Covers both `?`-terminated questions and common
+ * conversational forms that don't end with a question mark (e.g. "Let me know which step",
+ * "Please tell me", "Which one would you prefer").
+ */
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'tiermux.chat';
@@ -1283,7 +1292,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // turn (re-added after answers), surface the questions as an interactive card, re-plan.
           s.history.pop();
           s.pendingPlanUser = userContent;
-          s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: clar.questions };
+          s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: clar.questions, mode: 'plan' };
           this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: clar.questions });
           return;
         }
@@ -1295,7 +1304,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           s.history.pop(); // not committed yet — re-added on approval
           s.pendingPlanUser = userContent;
           this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
-          void this.savePlan(prompt, clar.text);
+          void this.savePlan(s, prompt, clar.text);
           return;
         }
         // else: fall through and render as a normal assistant answer (discuss phase).
@@ -1325,8 +1334,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: result.model, paused: result.paused });
+      // Check for a ???QUESTIONS??? block in the response (agent asked for user input).
+      // Strip it from the displayed text and show the structured Q&A card instead.
+      const agentClar = m.mode !== 'chat' && !result.paused ? parseClarifying(result.text) : { questions: null, text: result.text };
+      const displayText = agentClar.questions ? agentClar.text : result.text;
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: result.model, paused: result.paused });
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
+      if (agentClar.questions && agentClar.questions.length) {
+        s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: agentClar.questions, mode: m.mode as 'plan' | 'agent' };
+        this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: agentClar.questions });
+      }
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned run — don't surface its error
       this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
@@ -1446,8 +1463,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.postCheckpoints(s);
   }
 
-  /** Persist a proposed plan as a visible markdown checklist file in the workspace. */
-  private async savePlan(title: string, steps: string): Promise<void> {
+  /** Persist a proposed plan as a visible markdown checklist file in the workspace.
+   *  Stores the file URI on the session so edits before approval can overwrite it. */
+  private async savePlan(s: Session, title: string, steps: string): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('tiermux.plan');
     if (!cfg.get<boolean>('saveToFile', true)) return;
     const ws = vscode.workspace.workspaceFolders?.[0];
@@ -1459,16 +1477,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}`;
     const dir = vscode.Uri.joinPath(ws.uri, ...folder.split('/'));
     const fileUri = vscode.Uri.joinPath(dir, `${stamp}-${clean}.md`);
-    // Turn list lines into a checklist so progress is trackable.
+    s.pendingPlanFile = { uri: fileUri, title: title || 'Untitled' };
+    await this.writePlanFile(s, steps);
+  }
+
+  /** Write (or overwrite) the plan MD file for the session with the current steps. */
+  private async writePlanFile(s: Session, steps: string): Promise<void> {
+    if (!s.pendingPlanFile) return;
+    const { uri, title } = s.pendingPlanFile;
     const checklist = steps.split('\n').map((line) => {
       const mm = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.*)$/);
       return mm ? `- [ ] ${mm[1]}` : line;
     }).join('\n');
-    const body = `# Plan: ${title || 'Untitled'}\n\n_Generated by ${PRODUCT_NAME} · ${d.toLocaleString()}_\n\n${checklist}\n`;
+    const body = `# Plan: ${title}\n\n_Generated by ${PRODUCT_NAME} · ${new Date().toLocaleString()}_\n\n${checklist}\n`;
     try {
-      await vscode.workspace.fs.createDirectory(dir);
-      await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(body));
-      this.post({ type: 'notice', sessionId: this.viewedSessionId, text: `📄 Plan saved to ${vscode.workspace.asRelativePath(fileUri)}` });
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(uri, '..'));
+      await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(body));
+      this.post({ type: 'notice', sessionId: this.viewedSessionId, text: `📄 Plan saved to ${vscode.workspace.asRelativePath(uri)}` });
     } catch (e) {
       this.post({ type: 'notice', sessionId: this.viewedSessionId, text: `Could not save plan file: ${e instanceof Error ? e.message : String(e)}` });
     }
@@ -1489,6 +1514,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         (c as { deferred?: boolean }).deferred = true;
       }
     }
+    // Overwrite the plan file with any edits the user made before deferring.
+    if (m.steps) void this.writePlanFile(s, m.steps);
   }
 
   private async handleApprovePlan(m: Extract<InMessage, { type: 'approvePlan' }>): Promise<void> {
@@ -1496,14 +1523,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.removeCards(s, (c) => c.type === 'clarifyingQuestions');
     if (!m.approved) {
       s.pendingPlanUser = undefined;
-      // Mark the cached planProposed card as discarded so it persists in the transcript
-      // (the webview will re-render it with a "✗ Discarded" label via the `planDiscarded` flag).
+      s.pendingPlanFile = undefined;
       for (const c of s.cards) {
         if (c.type === 'planProposed' && c.requestId === m.requestId) (c as { discarded?: boolean }).discarded = true;
       }
       this.post({ type: 'planDiscarded', sessionId: s.id, requestId: m.requestId });
       return;
     }
+    // Overwrite the plan file with any edits the user made before approving.
+    if (m.steps) void this.writePlanFile(s, m.steps);
+    s.pendingPlanFile = undefined;
     this.removeCards(s, (c) => c.type === 'planProposed');
     const original = s.pendingPlanUser;
     s.pendingPlanUser = undefined;
@@ -1796,17 +1825,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Resume a paused Plan-mode run after the user answers its clarifying questions. */
+  /** Resume after the user answers a clarifying-questions card (plan pre-flight or agent end-of-turn). */
   private async handleAnswerClarifying(m: Extract<InMessage, { type: 'answerClarifying' }>): Promise<void> {
     const s = this.current();
     const ctx = (s.pendingClarify && s.pendingClarify.requestId === m.requestId) ? s.pendingClarify : undefined;
     s.pendingClarify = undefined;
-    if (!ctx) return; // stale submission (e.g. after a cancel) — ignore
+    if (!ctx) return;
 
-    // Fold the answers into the prompt and re-run Plan mode for a real plan.
     const qa = ctx.questions
       .map((q, i) => `Q: ${q.text}\nA: ${m.answers[i] ?? '(no answer)'}`)
       .join('\n');
+
+    // Agent/plan end-of-turn: send answers as a new user message to continue the OC session.
+    if (ctx.mode === 'agent') {
+      const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      await this.handleSend({ type: 'sendMessage', requestId, text: qa, mode: 'agent', model: s.model ?? 'auto', reasoningEffort: s.reasoningEffort ?? 'medium' });
+      return;
+    }
+
+    // Plan pre-flight: fold answers in and re-run Plan mode for a real plan.
     const base = s.history.length;
     s.history.push({ role: 'user', content: ctx.userContent });
     s.history.push({ role: 'user', content: `Clarifications from the user:\n${qa}\n\nUsing these answers, produce the step-by-step plan now.` });
@@ -1821,11 +1858,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       const cbk5 = this.agentCallbacks(s, m.requestId, 'plan');
       const result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});
-      if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
-      // Ignore any further questions block on this pass — go straight to a proposed plan.
+      if (!this.isActiveRun(s, m.requestId)) return;
       const clar = parseClarifying(result.text);
       this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
-      void this.savePlan(ctx.prompt, clar.text);
+      void this.savePlan(s, ctx.prompt, clar.text);
       // pendingPlanUser (set in handleSend) stays for the subsequent Approve flow.
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return;

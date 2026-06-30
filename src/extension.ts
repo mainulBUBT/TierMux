@@ -45,7 +45,12 @@ const ts = () => new Date().toISOString().slice(11, 23);
  * Start the OC engine pointed at the router proxy. Logs the outcome; never throws
  * — a missing binary just means the integration stays off and the built-in agent runs.
  */
-async function startOpenCodeEngine(extensionPath: string, routerProxyBaseURL: string, cacheDir: string): Promise<void> {
+async function startOpenCodeEngine(
+  extensionPath: string,
+  routerProxyBaseURL: string,
+  cacheDir: string,
+  enabledModelIds: string[],
+): Promise<void> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!engineLog) engineLog = vscode.window.createOutputChannel('TierMux Engine');
   const log = (msg: string) => engineLog?.appendLine(`[${ts()}] ${msg}`);
@@ -59,6 +64,7 @@ async function startOpenCodeEngine(extensionPath: string, routerProxyBaseURL: st
         routerProxyBaseURL,
         workspaceRoot,
         cacheDir,
+        enabledModelIds,
         onProgress: (msg) => progress.report({ message: msg }),
         log,
       }),
@@ -99,7 +105,12 @@ export function activate(context: vscode.ExtensionContext): void {
       console.log(`[tiermux] router proxy listening on ${srv.baseURL}`);
       // Bring up the OC engine now that the proxy URL is known.
       if (vscode.workspace.getConfiguration('tiermux').get<boolean>('useOpenCodeEngine', true)) {
-        void startOpenCodeEngine(context.extensionUri.fsPath, srv.baseURL, context.globalStorageUri.fsPath);
+        // Encode all currently enabled models as tm_<base64url> so OC's static model
+        // registry accepts them. Models added after launch need a reload.
+        const enabledModelIds = settings.enabledByPriority().map(
+          (e) => 'tm_' + Buffer.from(`${e.platform}::${e.modelId}`).toString('base64url'),
+        );
+        void startOpenCodeEngine(context.extensionUri.fsPath, srv.baseURL, context.globalStorageUri.fsPath, enabledModelIds);
       } else {
         console.warn('[tiermux] OpenCode engine disabled (tiermux.useOpenCodeEngine = false). Chat and agent runs will not work — re-enable the engine to use TierMux.');
       }
@@ -299,7 +310,10 @@ export function activate(context: vscode.ExtensionContext): void {
         const fs = await import('fs');
         if (fs.existsSync(ocBin)) {
           engineLog?.appendLine(`[${ts()}] testOcBridge: found binary at ${ocBin}, retrying launch…`);
-          await startOpenCodeEngine(context.extensionUri.fsPath, routerProxy?.baseURL ?? '', cacheDir);
+          const retryModelIds = settings.enabledByPriority().map(
+            (e) => 'tm_' + Buffer.from(`${e.platform}::${e.modelId}`).toString('base64url'),
+          );
+          await startOpenCodeEngine(context.extensionUri.fsPath, routerProxy?.baseURL ?? '', cacheDir, retryModelIds);
         }
       }
       const results = await runBridgeDiagnostic({ routerProxy, ocConnection });

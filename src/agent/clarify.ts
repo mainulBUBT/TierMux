@@ -63,7 +63,7 @@ export function parseClarifying(input: string): ParsedClarifying {
     // Lenient: `Q[Label]` alone (no text), `Q: question` (no label), or `Q[Label]: question`.
     const q = line.match(/^Q(?:\s*\[([^\]]+)\])?(?:\s*[:.)]?\s*(.+))?$/i);
     if (q && (q[1] || q[2])) {
-      if (current && current.options.length >= 2) questions.push(current); // drop 1-option duds
+      if (current) questions.push(current); // push even with 0 options (free-form question)
       const label = q[1]?.trim() || undefined;
       const text = q[2]?.trim() || label || 'Choose an option';
       current = { text, label, options: [] };
@@ -83,7 +83,7 @@ export function parseClarifying(input: string): ParsedClarifying {
       if (title.trim()) current.options.push({ title: title.trim(), description: description || undefined });
     }
   }
-  if (current && current.options.length >= 2) questions.push(current);
+  if (current) questions.push(current);
 
   return { questions: questions.length ? questions : null, text };
 }

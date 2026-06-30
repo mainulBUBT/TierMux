@@ -18,7 +18,6 @@ import type {
   ChatToolDefinition,
   ChatToolChoice,
   ReasoningEffort,
-  CatalogModel,
 } from '../shared/types';
 import { AllModelsFailedError } from '../router/router';
 import type { TaskKind } from '../agent/routing';
@@ -27,6 +26,17 @@ import type { TaskKind } from '../agent/routing';
 const PROFILE_FAST = 'tiermux/fast';
 const PROFILE_SMART = 'tiermux/smart';
 const PROFILE_AUTO = 'tiermux/auto';
+
+// The concrete provider+model the Router last resolved a turn onto (e.g. platform
+// "chutes", model "stepfun/step-3.7-flash:free"), as opposed to the virtual profile OC
+// requested ("tiermux/auto"). The agent driver (sdk.ts) reads this to show the *actual*
+// picked model in the UI instead of the "tiermux" placeholder. Safe because runs are
+// serialized — there is only ever one active run, so "last" == "current".
+export interface RoutedModel { platform: string; model: string; runtimeName?: string }
+let lastRouted: RoutedModel | undefined;
+export function getLastRoutedModel(): RoutedModel | undefined {
+  return lastRouted;
+}
 
 export interface RouterProxyServer {
   port: number;
@@ -108,26 +118,25 @@ async function handleModels(router: Router, res: http.ServerResponse): Promise<v
     { id: PROFILE_SMART, object: 'model', created: 0, owned_by: 'tiermux' },
   ];
   for (const m of listEnabledModels(router)) {
-    data.push({ id: `${m.platform}::${m.modelId}`, object: 'model', created: 0, owned_by: m.platform });
+    // Expose the tm_-encoded ID (not the raw platform::modelId) so OC accepts it at session
+    // creation. Raw IDs contain '::', '/', ':' which OC rejects. sdk.ts sends the same
+    // encoding; mapProfile decodes it back before routing.
+    const rawId = `${m.platform}::${m.modelId}`;
+    const encodedId = 'tm_' + Buffer.from(rawId).toString('base64url');
+    data.push({ id: encodedId, object: 'model', created: 0, owned_by: m.platform });
   }
   sendJSON(res, 200, { object: 'list', data });
 }
 
-/** Catalog models that are currently enabled in the fallback chain. */
-function listEnabledModels(router: Router): CatalogModel[] {
-  // `router` keeps its catalog/settings private; reach in via the same accessor the
-  // settings panel uses. Mirrored here to avoid widening the Router's public surface.
-  const entries = (router as unknown as {
+/** All enabled models (catalog + custom endpoints) in the fallback chain. */
+function listEnabledModels(router: Router): Array<{ platform: string; modelId: string }> {
+  // Include ALL enabled entries — catalog models AND custom endpoint models.
+  // Previously this filtered through catalog.find(), which silently dropped custom
+  // endpoint models (they have no catalog entry), causing OC to 500 when asked to
+  // use them (the encoded model ID never appeared in /v1/models so OC rejected it).
+  return (router as unknown as {
     settings: { enabledByPriority(): Array<{ platform: string; modelId: string }> };
-    catalog: { find(platform: string, modelId: string): CatalogModel | undefined };
   }).settings.enabledByPriority();
-  const out: CatalogModel[] = [];
-  for (const e of entries) {
-    const m = (router as unknown as { catalog: { find(p: string, i: string): CatalogModel | undefined } })
-      .catalog.find(e.platform, e.modelId);
-    if (m) out.push(m);
-  }
-  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +206,22 @@ async function handleChatCompletion(
 
     try {
       const result = await router.route(messages, routeOpts);
+      lastRouted = { platform: result.platform, model: result.model, runtimeName: result.runtimeName };
       buffered = chunks.join('');
+      // Tool-call turns (OC always sends tools for build/plan) don't stream via
+      // onChunk — the Router buffers and returns a single response. Nothing was
+      // streamed, so emit the final message (text + tool_calls) as one chunk;
+      // otherwise OC receives an empty assistant message → blank reply.
+      if (!chunks.length) {
+        const msg = result.response.choices?.[0]?.message;
+        const content = typeof msg?.content === 'string' ? msg.content : '';
+        if (content || msg?.tool_calls?.length) {
+          sendSSE(res, makeChunk(body.model ?? 'tiermux', {
+            ...(content ? { content } : {}),
+            ...(msg?.tool_calls?.length ? { tool_calls: msg.tool_calls } : {}),
+          }));
+        }
+      }
       // Final chunk: carry finish_reason + the upstream usage the router measured.
       const usage = result.response.usage;
       sendSSE(res, makeChunk(body.model ?? 'tiermux', { content: '' }, 'stop', result.response.model, usage));
@@ -221,6 +245,7 @@ async function handleChatCompletion(
   // Non-streaming: the Router already returns an OpenAI-shaped ChatCompletionResponse.
   try {
     const result = await router.route(messages, routeOpts);
+    lastRouted = { platform: result.platform, model: result.model, runtimeName: result.runtimeName };
     sendJSON(res, 200, result.response);
   } catch (err) {
     res.writeHead(statusFor(err), { 'Content-Type': 'application/json' });
@@ -234,19 +259,28 @@ async function handleChatCompletion(
  * - Real ids (platform::modelId) are passed through to pin a specific model.
  */
 function mapProfile(model: string | undefined): { model?: string; taskKind?: TaskKind } {
-  if (!model || model === PROFILE_AUTO) {
+  // OC's @ai-sdk/openai-compatible adapter sends the BARE model id ("auto"/"fast"/
+  // "smart"), not the provider-prefixed "tiermux/auto" we declare it under. Accept
+  // both the bare id and the "tiermux/"-prefixed form so routing works either way.
+  const bare = (p: string) => p.replace(/^tiermux\//, '');
+  // Decode base64url-encoded model IDs (sdk.ts encodes any non-virtual model with 'tm_' prefix
+  // because OC rejects special chars like '::', ':', '/' in model IDs and returns 500).
+  const decode = (p: string) => p.startsWith('tm_') ? Buffer.from(p.slice(3), 'base64url').toString('utf8') : p;
+  const id = decode(bare(model ?? PROFILE_AUTO));
+  if (id === bare(PROFILE_AUTO)) {
     return { model: 'auto' };
   }
-  if (model === PROFILE_FAST) {
+  if (id === bare(PROFILE_FAST)) {
     // Speed-first ordering (trivial/chat branch of orderForTask).
     return { model: 'auto', taskKind: 'chat' };
   }
-  if (model === PROFILE_SMART) {
+  if (id === bare(PROFILE_SMART)) {
     // Intelligence-first ordering (agent branch): smartest tool-capable model.
     return { model: 'auto', taskKind: 'agent' };
   }
-  // A real platform::modelId (or an OpenAI-style "provider/model" OC may send).
-  return { model: model.includes('::') ? model : model };
+  // A real platform::modelId — pass the decoded id (not the original model string which
+  // may carry the 'tiermux/' prefix or the 'tm_' base64url encoding).
+  return { model: id };
 }
 
 // ---------------------------------------------------------------------------

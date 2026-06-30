@@ -5,8 +5,53 @@
 // integration off — the built-in agent keeps working).
 import { ChildProcess, spawn } from 'child_process';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { resolveOcBinary } from './ocBinary';
 import { buildOcConfig } from './ocConfig';
+
+/**
+ * Load agent prompt files from `.tiermux/agent/` in the extension directory.
+ * Files are sorted alphabetically and concatenated so the order is predictable
+ * (identity.md → behavior.md → ask-format.md → any future additions).
+ * Falls back to a minimal inline string if the directory is missing or unreadable.
+ */
+function loadAgentInstructions(extensionPath: string, log: (m: string) => void): string {
+  const agentDir = path.join(extensionPath, '.tiermux', 'agent');
+  try {
+    const files = fs.readdirSync(agentDir)
+      .filter((f) => f.endsWith('.md'))
+      .sort();
+    if (!files.length) throw new Error('no .md files found');
+    return files
+      .map((f) => {
+        try { return fs.readFileSync(path.join(agentDir, f), 'utf8').trim(); }
+        catch { return ''; }
+      })
+      .filter(Boolean)
+      .join('\n\n');
+  } catch (err) {
+    log(`[tiermux] could not load .tiermux/agent/ prompts: ${err instanceof Error ? err.message : err} — using fallback`);
+    return '# Identity\nYou are TierMux, an AI coding assistant. Never identify as "opencode".';
+  }
+}
+
+/** Write the assembled agent instructions to a temp file so OC can load them via --instructions. */
+function writeInstructionsFile(extensionPath: string, cacheDir: string | undefined, log: (m: string) => void): string | undefined {
+  try {
+    const content = loadAgentInstructions(extensionPath, log);
+    const dir = cacheDir ?? os.tmpdir();
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'tiermux-instructions.md');
+    fs.writeFileSync(file, content, 'utf8');
+    log(`[tiermux] wrote agent instructions (${content.length} chars) → ${file}`);
+    return file;
+  } catch (err) {
+    log(`could not write instructions file: ${err instanceof Error ? err.message : err}`);
+    return undefined;
+  }
+}
 
 export interface OcConnection {
   port: number;
@@ -28,6 +73,12 @@ export interface OcLaunchOptions {
   workspaceRoot?: string;
   /** Writable cache dir (VS Code globalStoragePath) for the first-run binary download. */
   cacheDir?: string;
+  /**
+   * `tm_<base64url>` encoded IDs of all currently enabled catalog and custom-endpoint
+   * models. Baked into the OC config's static `models` block so OC accepts them at
+   * session creation. See buildOcConfig / ocConfig.ts.
+   */
+  enabledModelIds?: string[];
   /** Progress callback for the first-run download. */
   onProgress?: (message: string) => void;
   /** Optional logger that mirrors progress + diagnostics into the "TierMux Engine"
@@ -55,12 +106,18 @@ export async function launchOpenCode(opts: OcLaunchOptions): Promise<OcConnectio
     log,
   });
   if (!binary) {
-    throw new Error('OpenCode binary not found (set OPENCODE_BIN, install opencode, or bundle it).');
+    throw new Error('TierMux engine binary not found (set OPENCODE_BIN, install opencode, or bundle it).');
   }
   log(`binary resolved: ${binary}`);
 
   const password = newPassword();
-  const configContent = buildOcConfig({ routerProxyBaseURL: opts.routerProxyBaseURL, apiKey: 'local' });
+  const instructionsFile = writeInstructionsFile(opts.extensionPath, opts.cacheDir, log);
+  const configContent = buildOcConfig({
+    routerProxyBaseURL: opts.routerProxyBaseURL,
+    apiKey: 'local',
+    instructionsPaths: instructionsFile ? [instructionsFile] : undefined,
+    extraModelIds: opts.enabledModelIds,
+  });
   const cwd = opts.workspaceRoot ?? process.cwd();
 
   // `--port 0` lets the OS pick an ephemeral port; we read the real one from stdout.
@@ -95,7 +152,7 @@ export async function launchOpenCode(opts: OcLaunchOptions): Promise<OcConnectio
     };
 
     const timer = setTimeout(
-      () => fail(`Timed out after ${LAUNCH_TIMEOUT_MS / 1000}s waiting for OpenCode server to start. (First-run binary download can take several minutes on slow networks — see the TierMux Engine output channel.)`),
+      () => fail(`Timed out after ${LAUNCH_TIMEOUT_MS / 1000}s waiting for the TierMux engine to start. (First-run binary download can take several minutes on slow networks — see the TierMux Engine output channel.)`),
       LAUNCH_TIMEOUT_MS,
     );
 

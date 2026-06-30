@@ -549,12 +549,12 @@
         "tiermux.useOpenCodeEngine": {
           "type": "boolean",
           "default": true,
-          "description": "[EXPERIMENTAL] Use OpenCode as the agent engine instead of TierMux's built-in agent. Requires the bundled OpenCode binary."
+          "description": "[EXPERIMENTAL] Use the bundled TierMux engine instead of the legacy built-in agent."
         },
         "tiermux.engine.traceOcEvents": {
           "type": "boolean",
           "default": false,
-          "description": "Log every raw OpenCode SSE event to the 'TierMux Engine' output channel. Use this to debug chat issues — turn on, send a chat, then check View → Output → TierMux Engine."
+          "description": "Log every raw TierMux engine event to the 'TierMux Engine' output channel. Use this to debug chat issues — turn on, send a chat, then check View → Output → TierMux Engine."
         },
         "tiermux.cache.fileEnabled": {
           "type": "boolean",

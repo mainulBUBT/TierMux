@@ -104,6 +104,26 @@ body {
 .foot-acts { margin-left: auto; display: flex; gap: 2px; opacity: .6; }
 .msg.assistant:hover .foot-acts { opacity: 1; }
 /* "Worked for Ns" disclosure over the agent's steps */
+/* Chronological agent timeline: tool cards, reasoning blocks, and streamed text
+   segments stack in event order. Text segments reuse .bubble typography. */
+.flow { display: flex; flex-direction: column; gap: 6px; }
+.flow > .flow-text { margin: 2px 0; }
+.flow > .tool-card, .flow > .think-block { margin: 1px 0; }
+
+/* Collapsed work summary — wraps tool cards + think-blocks after run completes */
+.work-summary { margin: 2px 0 4px; }
+.work-sum-label {
+  list-style: none; cursor: pointer;
+  font-size: 11px; opacity: .5;
+  display: flex; align-items: center; gap: 4px;
+  padding: 2px 0; user-select: none;
+}
+.work-sum-label::-webkit-details-marker { display: none; }
+.work-sum-label::before { content: '▸ '; font-size: 9px; transition: transform .15s; }
+details[open].work-summary > .work-sum-label::before { content: '▾ '; }
+details[open].work-summary > .work-sum-label { opacity: .7; }
+.work-summary > .tool-card, .work-summary > .think-block { margin: 1px 0; }
+
 .work { font-size: 12px; }
 .work > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px; opacity: .75; }
 /* While the live .agent-status header is shown, hide the redundant "Working…" summary;
@@ -118,12 +138,13 @@ body {
    answer streams in (the "Worked for Ns" disclosure then takes over). */
 .agent-status { display: flex; align-items: center; gap: 7px; font-size: 12px; opacity: .85; padding: 2px 2px 4px; }
 .agent-status.hidden { display: none; }
-.agent-spinner {
-  flex: 0 0 auto; width: 12px; height: 12px; border-radius: 50%;
-  border: 2px solid var(--vscode-panel-border);
-  border-top-color: var(--vscode-progressBar-background, #0a84ff);
-  animation: idx-spin .8s linear infinite;
+/* Single pulsing dot — one indicator is enough alongside the tool-card state dot */
+.agent-dot-single {
+  width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--vscode-progressBar-background, #0a84ff);
+  animation: dot-pulse 1.4s ease-in-out infinite;
 }
+@keyframes dot-pulse { 0%, 100% { opacity: .3; transform: scale(.8); } 50% { opacity: 1; transform: scale(1); } }
 .agent-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-elapsed { flex: 0 0 auto; opacity: .6; font-variant-numeric: tabular-nums; font-size: 11px; }
 .bubble pre {
@@ -168,9 +189,11 @@ body {
   padding: 2px 0 2px 9px; font-size: 12px;
   transition: border-color .15s;
 }
-.tool-card.state-running { border-color: var(--vscode-progressBar-background, #0a84ff); }
+.tool-card.state-running { border-color: var(--vscode-progressBar-background, #0a84ff); background: color-mix(in srgb, var(--vscode-progressBar-background, #0a84ff) 5%, transparent); }
 .tool-card.state-done    { border-color: var(--vscode-testing-iconPassed, #57a64a); }
 .tool-card.state-error   { border-color: var(--vscode-errorForeground, #c33); }
+.tool-card.validation[data-val-result="pass"] { border-color: var(--vscode-testing-iconPassed, #57a64a); }
+.tool-card.validation[data-val-result="fail"] { border-color: var(--vscode-errorForeground, #c33); }
 .tool-head { display: flex; gap: 5px; align-items: center; min-width: 0; flex-wrap: nowrap; }
 .tool-ic { flex: 0 0 14px; font-size: 11px; opacity: .55; text-align: center; }
 .tool-title {
@@ -196,9 +219,13 @@ body {
 .tool-more summary::before { content: '▸'; font-size: 9px; }
 details[open].tool-more summary::before { content: '▾'; }
 details[open].tool-more summary { opacity: .6; }
-.tool-more pre { margin: 4px 0 2px; max-height: 180px; overflow: auto; font-size: 11px; opacity: .8;
+.tool-more pre { margin: 4px 0 2px; max-height: 260px; overflow: auto; font-size: 11px; opacity: .8;
   background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1));
   padding: 6px 8px; border-radius: 4px; }
+/* Inline diff for edit/write tool cards */
+.tool-more pre.diff-view { background: none; padding: 0; }
+.diff-del { color: var(--vscode-diffEditor-removedTextBackground, #c33); background: color-mix(in srgb, #c33 8%, transparent); padding: 0 6px; white-space: pre-wrap; }
+.diff-add { color: var(--vscode-diffEditor-insertedTextBackground, #57a64a); background: color-mix(in srgb, #57a64a 8%, transparent); padding: 0 6px; white-space: pre-wrap; }
 .notice { font-size: 11px; opacity: .7; font-style: italic; }
 
 /* Final-answer reasoning disclosure */
@@ -223,8 +250,26 @@ details[open].reasoning summary::before { content: '▾ '; }
 .think-block > details > summary::-webkit-details-marker { display: none; }
 .think-block > details > summary::before { content: '▸ '; }
 details[open].think-block > details > summary::before { content: '▾ '; }
-.think-block[data-live='1'] { border-color: var(--vscode-progressBar-background, #0a84ff); }
+.think-block[data-live='1'] {
+  border-color: var(--vscode-progressBar-background, #0a84ff);
+  background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--vscode-progressBar-background, #0a84ff) 5%, transparent) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: think-shimmer 2.4s linear infinite;
+}
 .think-block[data-live='1'] > details > summary { opacity: .8; }
+@keyframes think-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+/* Blinking cursor at end of streaming text — appears on the last block element */
+.bubble.streaming > *:last-child::after {
+  content: '▋';
+  display: inline;
+  color: var(--vscode-progressBar-background, #0a84ff);
+  animation: cur-blink .65s step-start infinite;
+  font-size: .8em;
+  margin-left: 1px;
+  vertical-align: baseline;
+}
+@keyframes cur-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 .think-ic { flex: 0 0 auto; font-size: 11px; }
 .think-cap { letter-spacing: .01em; }
 .think-body { margin-top: 4px; opacity: .75; font-style: italic; font-size: 11.5px; }
@@ -232,6 +277,11 @@ details[open].think-block > details > summary::before { content: '▾ '; }
 .think-body :is(pre, code) { font-style: normal; }
 
 .error { color: var(--vscode-errorForeground); }
+/* Error notice inline in the flow — simpler than a nested bubble */
+.error-notice {
+  font-size: 12px; opacity: .85; padding: 2px 0;
+  color: var(--vscode-errorForeground);
+}
 
 /* Transient toasts for quick actions (copy / like / unlike) — anchored at the click */
 .toast {
@@ -246,22 +296,42 @@ details[open].think-block > details > summary::before { content: '▾ '; }
 .toast.show { opacity: 1; }
 
 /* Plan approval */
-.plan-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.plan-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .resume-actions { display: flex; gap: 8px; margin-top: 8px; }
 
-/* Structured, editable plan checklist (pre-approval) */
-.plan-head { font-size: 11px; font-weight: 600; opacity: .75; margin-bottom: 6px; }
-.plan-list { border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, .25)); border-radius: 6px; padding: 8px 10px; margin: 4px 0; }
-.plan-row { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; padding: 2px 0; line-height: 1.5; }
-.plan-row .plan-ic { flex: 0 0 auto; width: 14px; text-align: center; opacity: .7; }
-.plan-row .plan-tx { flex: 1 1 auto; outline: none; border-radius: 4px; padding: 1px 4px; white-space: pre-wrap; word-break: break-word; }
+/* Plan card — Cursor-style clean numbered list */
+.plan-head {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase;
+  opacity: .5; margin-bottom: 8px;
+}
+.plan-head-icon { font-size: 12px; }
+.plan-list { margin: 4px 0 2px; display: flex; flex-direction: column; gap: 1px; }
+.plan-row {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 13px; padding: 4px 6px; border-radius: 5px; line-height: 1.55;
+  transition: background .1s;
+}
+.plan-row:hover { background: var(--vscode-list-hoverBackground, rgba(127,127,127,.08)); }
+.plan-row .plan-ic {
+  flex: 0 0 22px; text-align: right;
+  font-size: 11px; font-variant-numeric: tabular-nums;
+  opacity: .35; padding-top: 2px;
+}
+.plan-row .plan-tx { flex: 1 1 auto; outline: none; border-radius: 3px; padding: 0 2px; white-space: pre-wrap; word-break: break-word; }
 .plan-row .plan-tx[contenteditable]:focus { background: var(--vscode-input-background); box-shadow: 0 0 0 1px var(--vscode-focusBorder); }
-.plan-row .plan-del { flex: 0 0 auto; opacity: 0; cursor: pointer; font-size: 11px; padding: 0 2px; }
-.plan-row:hover .plan-del { opacity: .5; }
-.plan-row .plan-del:hover { opacity: 1; }
-.plan-add { font-size: 11px; opacity: .7; cursor: pointer; margin-top: 6px; user-select: none; }
-.plan-add:hover { opacity: 1; }
-.plan-note { font-size: 11px; opacity: .75; margin-top: 6px; }
+.plan-row .plan-del { flex: 0 0 auto; opacity: 0; cursor: pointer; font-size: 13px; line-height: 1; padding: 0 3px; color: var(--vscode-errorForeground); }
+.plan-row:hover .plan-del { opacity: .35; }
+.plan-row .plan-del:hover { opacity: .8; }
+.plan-add { font-size: 11px; opacity: .5; cursor: pointer; margin-top: 4px; padding: 2px 6px; user-select: none; }
+.plan-add:hover { opacity: .85; }
+.plan-note { font-size: 11px; opacity: .65; margin-top: 8px; font-style: italic; }
+/* Action buttons */
+.plan-run { font-size: 12px; padding: 5px 14px; }
+.plan-discuss { font-size: 11px; opacity: .7; background: none; border: none; cursor: pointer; padding: 5px 8px; color: inherit; }
+.plan-discuss:hover { opacity: 1; text-decoration: underline; }
+.plan-reject { font-size: 11px; opacity: .45; background: none; border: none; cursor: pointer; padding: 5px 8px; color: inherit; margin-left: auto; }
+.plan-reject:hover { opacity: .8; color: var(--vscode-errorForeground); }
 
 /* Live task checklist (TodoWrite-style) */
 .todo-list {

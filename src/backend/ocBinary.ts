@@ -95,7 +95,7 @@ export async function resolveOcBinary(extensionPath: string, opts: ResolveOption
     } catch (err) {
       log(`download failed: ${err instanceof Error ? err.message : err}`);
       console.warn('[tiermux] OC binary download failed, falling back to PATH:', err);
-      opts.onProgress?.(`OpenCode download failed: ${err instanceof Error ? err.message : err}`);
+      opts.onProgress?.(`TierMux engine download failed: ${err instanceof Error ? err.message : err}`);
     }
   } else {
     log(`no cacheDir provided — skipping download`);
@@ -143,9 +143,9 @@ async function downloadBinary(
   const binDir = path.join(cacheDir, 'bin');
   await fs.promises.mkdir(cacheDir, { recursive: true });
 
-  onProgress?.(`Downloading OpenCode ${target}…`);
+  onProgress?.(`Downloading TierMux engine (${target})…`);
   log?.(`GET ${url} → ${archive}`);
-  await download(url, archive, (mb) => onProgress?.(`Downloading OpenCode ${target}… ${mb} MB`));
+  await download(url, archive, (mb) => onProgress?.(`Downloading TierMux engine (${target})… ${mb} MB`));
   log?.(`download complete: ${archive}`);
 
   // `tar -xf` extracts both .zip and .tar.gz on macOS/Linux/Win10+.

@@ -679,13 +679,31 @@
     st.className = 'state ' + state;
     const icon2 = STATE_ICON[state];
     st.textContent = (icon2 === null || icon2 === undefined) ? '' : icon2;
-    const argStr = (step.args && typeof step.args === 'object') ? JSON.stringify(step.args, null, 2) : String(step.args || '');
-    const parts = [];
-    if (argStr && argStr !== '{}') parts.push(argStr);
-    if (step.detail) parts.push(step.detail);
-    const body = parts.join('\n\n');
+    const isValidationStatic = step.name === 'runCommand' && /\b(tsc|eslint|prettier|lint|typecheck|check|jest|vitest|mocha|pytest|go\s+test|cargo\s+(check|test)|npm\s+test|yarn\s+test|pnpm\s+test)\b/.test(
+      String(step.args && typeof step.args === 'object' ? (step.args.command ?? JSON.stringify(step.args)) : step.args || '')
+    );
+    if (isValidationStatic) { card.className += ' validation'; }
     const more = card.querySelector('.tool-more');
-    if (body.trim()) { more.querySelector('pre').textContent = body; more.classList.remove('hidden'); }
+    const pre = more.querySelector('pre');
+    const isEditStatic = step.name === 'editFile' || step.name === 'writeFile' || step.name === 'createFile';
+    const editArgsStatic = isEditStatic && step.args && typeof step.args === 'object' ? step.args : null;
+    if (editArgsStatic && editArgsStatic.old_string != null && editArgsStatic.new_string != null) {
+      pre.className = 'diff-view';
+      pre.appendChild(buildInlineDiff(editArgsStatic.old_string, editArgsStatic.new_string));
+      more.classList.remove('hidden');
+      more.open = true;
+    } else {
+      const argStr = (step.args && typeof step.args === 'object') ? JSON.stringify(step.args, null, 2) : String(step.args || '');
+      const parts = [];
+      if (argStr && argStr !== '{}') parts.push(argStr);
+      if (step.detail) parts.push(step.detail);
+      const body = parts.join('\n\n');
+      if (body.trim()) {
+        pre.textContent = body;
+        more.classList.remove('hidden');
+        more.open = true;
+      }
+    }
     return card;
   }
 
@@ -699,31 +717,42 @@
     el._copyText = text;
     details = details || {};
     const steps = (details.steps || []).filter(Boolean);
-    // Inline 🧠 Thinking blocks (reasoning steps) already render the reasoning, so only fall
-    // back to a 💭 Reasoning disclosure when the steps don't carry it — never show it twice.
     const hasReasoning = !!details.reasoning && !steps.some((s) => s.name === 'reasoning');
-    // Live runs nest reasoning inside the "Worked for Ns" disclosure (it lives in t.tools),
-    // and that disclosure is dropped only when it holds neither reasoning nor any step.
-    if (hasReasoning || steps.length) {
-      const work = document.createElement('details'); work.className = 'work';
-      const sum = document.createElement('summary');
-      sum.innerHTML = `<span class="work-chevron">${ICON.chevron}</span><span class="work-label">Worked${secs != null ? ` for ${secs}s` : ''}</span>`;
-      work.appendChild(sum);
-      const tools = document.createElement('div'); tools.className = 'tools';
-      if (hasReasoning) {
-        const det = document.createElement('details'); det.className = 'reasoning';
-        det.innerHTML = `<summary>Reasoning</summary>`;
-        det.appendChild(renderMarkdown(details.reasoning));
-        tools.appendChild(det);
-      }
-      steps.forEach((step) => tools.appendChild(buildToolCard(step)));
-      work.appendChild(tools);
-      el.appendChild(work);
+
+    // Chronological flow — same visual as live agent runs (Phase 1b).
+    const flow = document.createElement('div'); flow.className = 'flow';
+
+    // Reasoning block goes first (it preceded the work, like in live runs).
+    if (hasReasoning) {
+      const det = document.createElement('details'); det.className = 'think-block';
+      det.innerHTML = `<summary>Reasoning</summary>`;
+      det.appendChild(renderMarkdown(details.reasoning));
+      flow.appendChild(det);
     }
-    const bubble = document.createElement('div');
-    bubble.className = 'bubble';
-    bubble.appendChild(renderMarkdown(text));
-    el.appendChild(bubble);
+
+    // Tool cards and text segments interleaved in recorded step order.
+    // Each step is either a tool card or (for reasoning-named steps) a think-block.
+    steps.forEach((step) => {
+      if (step.name === 'reasoning' && step.content) {
+        const det = document.createElement('details'); det.className = 'think-block';
+        det.innerHTML = `<summary>Reasoning</summary>`;
+        det.appendChild(renderMarkdown(step.content));
+        flow.appendChild(det);
+      } else {
+        flow.appendChild(buildToolCard(step));
+      }
+    });
+
+    // Main answer text at the end (matches live: text segment appended after tool cards).
+    if (text) {
+      const seg = document.createElement('div'); seg.className = 'flow-text bubble';
+      seg.appendChild(renderMarkdown(text));
+      flow.appendChild(seg);
+    }
+
+    // Only attach flow if it has children (pure-text ask-mode: just the text seg).
+    if (flow.children.length) el.appendChild(flow);
+
     let footStr = (model || '');
     if (details.usage) footStr += `  ·  ${fmtUsage(details.usage)}`;
     if (secs != null) footStr += `  ·  ${secs}s`;
@@ -738,23 +767,23 @@
     const el = document.createElement('div');
     el.className = 'msg assistant';
     el._copyText = '';
-    // "Worked for Ns" collapsible holding the agent's steps + reasoning.
-    const work = document.createElement('details'); work.className = 'work pending'; work.open = true;
-    const sum = document.createElement('summary');
-    sum.innerHTML = `<span class="work-chevron">${ICON.chevron}</span><span class="work-label">Working…</span>`;
-    const tools = document.createElement('div'); tools.className = 'tools';
-    work.appendChild(sum); work.appendChild(tools);
+    // Chronological "flow": tool cards, reasoning blocks, and streamed text segments append
+    // here in the order events arrive (professional agent timeline, like Cursor/Copilot/OC).
+    // `tools` aliases the flow so existing tool/failover/reasoning code keeps working.
+    const flow = document.createElement('div'); flow.className = 'flow';
     const statusEl = document.createElement('div');
     statusEl.className = 'agent-status';
-    statusEl.innerHTML = `<span class="agent-spinner"></span><span class="agent-label">Working…</span><span class="agent-elapsed"></span>`;
+    statusEl.innerHTML = `<span class="agent-dot-single"></span><span class="agent-label">Working…</span><span class="agent-elapsed"></span>`;
+    // `bubble` stays AFTER the flow for interactive cards (approvals/plans/clarify) and the
+    // non-streamed final answer — keeping those paths untouched.
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     el.appendChild(statusEl);
-    el.appendChild(work);
+    el.appendChild(flow);
     el.appendChild(bubble);
     (currentTurn || thread).appendChild(el);
     const modelStr = model ? `${platform || ''}/${model}` : '';
-    t = { el, body: bubble, tools, work, workLabel: sum.querySelector('.work-label'), statusEl, statusLabel: statusEl.querySelector('.agent-label'), statusElapsed: statusEl.querySelector('.agent-elapsed'), model: modelStr, requestId };
+    t = { el, body: bubble, tools: flow, flow, currentText: null, statusEl, statusLabel: statusEl.querySelector('.agent-label'), statusElapsed: statusEl.querySelector('.agent-elapsed'), model: modelStr, requestId };
     targets.set(requestId, t);
     scrollDown();
     return t;
@@ -819,23 +848,46 @@
       if (t && t.statusEl) t.statusEl.classList.add('hidden');
     }
   }
-  // Collapse the live status into the final "Worked for Ns" disclosure (or drop it
-  // when the agent did no steps). Reveals the summary the .pending class had hidden.
+  // Finalize a turn's flow. Wraps all tool cards and think-blocks into a collapsed
+  // <details> summary so the final answer is immediately visible after the run ends.
+  // Text segments (.flow-text) stay outside so the answer is never hidden.
   function finalizeWork(requestId) {
     const t = targets.get(requestId);
-    if (!t || !t.work) return;
-    if (t.tools.children.length === 0) {
-      t.work.remove();
-    } else {
-      const started = t.startedAt ?? startTimes.get(requestId);
-      const secs = started ? Math.max(1, Math.round((Date.now() - started) / 1000)) : null;
-      if (t.workLabel) t.workLabel.textContent = secs != null ? `Worked for ${secs}s` : 'Worked';
-      t.work.classList.remove('pending');
-      // Collapse once the run is done — leave just the "Worked for Ns" summary to
-      // click open. (It's open while streaming via the .pending class so the user can
-      // watch the steps land live; auto-collapsing on finish keeps the answer readable.)
-      t.work.open = false;
-    }
+    if (!t) return;
+    t.currentText = null;
+    if (!t.flow) return;
+
+    // Drop empty text segments — multiple tool calls each reset currentText, leaving
+    // blank .flow-text divs in the flow that create visual whitespace.
+    Array.from(t.flow.children)
+      .filter((el) => el.classList.contains('flow-text') && !el.textContent.trim())
+      .forEach((el) => el.remove());
+
+    if (t.flow.children.length === 0) { t.flow.remove(); return; }
+
+    const workNodes = Array.from(t.flow.children).filter(
+      (el) => el.classList.contains('tool-card') || el.classList.contains('think-block')
+    );
+    if (!workNodes.length) return;
+
+    const toolCount = workNodes.filter((el) => el.classList.contains('tool-card')).length;
+    const thinkCount = workNodes.filter((el) => el.classList.contains('think-block')).length;
+    const elapsed = t.startedAt ? Math.round((Date.now() - t.startedAt) / 1000) : null;
+    const parts = [];
+    if (elapsed != null) parts.push(`Worked for ${elapsed}s`);
+    if (toolCount) parts.push(`${toolCount} tool use${toolCount !== 1 ? 's' : ''}`);
+    if (thinkCount && !toolCount) parts.push(`${thinkCount} thought${thinkCount !== 1 ? 's' : ''}`);
+
+    const det = document.createElement('details');
+    det.className = 'work-summary';
+    const sum = document.createElement('summary');
+    sum.className = 'work-sum-label';
+    sum.textContent = parts.join('  ·  ') || 'Worked';
+    det.appendChild(sum);
+
+    t.flow.insertBefore(det, workNodes[0]);
+    workNodes.forEach((n) => det.appendChild(n));
+    scrollDown();
   }
 
   function send() {
@@ -1200,8 +1252,14 @@
         });
       });
     }
+    // Custom endpoint models use platform='custom' which may not be in activePlatforms,
+    // so they won't appear in `enabled`. Build a separate set so a user's custom-endpoint
+    // selection isn't silently wiped on every config refresh.
+    const customEnabled = new Set(
+      (state.fallback || []).filter((e) => e.platform === 'custom' && e.enabled).map((e) => `custom::${e.modelId}`)
+    );
     // If the selected model was unchecked/removed, fall back to Auto.
-    if (currentModel !== 'auto' && !enabled.has(currentModel)) currentModel = 'auto';
+    if (currentModel !== 'auto' && !enabled.has(currentModel) && !customEnabled.has(currentModel)) currentModel = 'auto';
     // Keep the button label in sync with the current selection.
     if (currentModel === 'auto') { modelBtnLabel.textContent = 'Auto'; modelBtn.title = 'Auto (smart routing)'; }
     else if (selectedLabel) { modelBtnLabel.textContent = selectedLabel; modelBtn.title = selectedLabel; }
@@ -1282,7 +1340,7 @@
   // Turn raw tool calls into a human-readable "what the agent is doing" line.
   function firstArg(a) {
     if (!a || typeof a !== 'object') return '';
-    return a.path || a.file || a.filename || a.relativePath || a.query || a.pattern || a.dir || a.directory || a.term || '';
+    return a.path || a.file || a.filePath || a.filename || a.relativePath || a.query || a.pattern || a.dir || a.directory || a.term || a.command || '';
   }
   function toolLabel(name, args, detail) {
     if (name === 'step' && args && typeof args === 'object') {
@@ -1300,6 +1358,16 @@
     const hint = lineCount === 0 ? '' :
       lineCount === 1 ? firstLine :
       firstLine ? `${firstLine}  +${lineCount - 1}` : `${lineCount} lines`;
+    // readFile: show line range if OC provides offset + limit
+    if (name === 'readFile') {
+      const ao = args && typeof args === 'object' ? args : {};
+      const offset = ao.offset ?? ao.startLine ?? ao.start_line;
+      const limit  = ao.limit  ?? ao.count;
+      let rtitle = a ? `read  ${a}` : 'read file';
+      if (a && offset != null && limit != null) rtitle = `read  ${a}, lines ${offset}–${offset + limit - 1}`;
+      else if (a && offset != null) rtitle = `read  ${a} from line ${offset}`;
+      return { icon: '⊞', title: rtitle, hint };
+    }
     const M = {
       readFile:        ['⊞', a ? `read  ${a}` : 'read file'],
       listDir:         ['⊟', a ? `ls  ${a}` : 'list dir'],
@@ -1366,20 +1434,53 @@
     if (icon2 === null) { st.textContent = ''; } // CSS handles running dot
     else st.textContent = icon2 != null ? icon2 : msg.state;
     // State class on card for left-border colour
-    card.className = 'tool-card state-' + msg.state;
+    const isValidation = msg.name === 'runCommand' && /\b(tsc|eslint|prettier|lint|typecheck|check|jest|vitest|mocha|pytest|go\s+test|cargo\s+(check|test)|npm\s+test|yarn\s+test|pnpm\s+test)\b/.test(
+      String(msg.args && typeof msg.args === 'object' ? (msg.args.command ?? JSON.stringify(msg.args)) : msg.args || '')
+    );
+    let cls = 'tool-card state-' + msg.state;
+    if (isValidation) cls += ' validation';
+    card.className = cls;
     card.dataset.tc = msg.toolCallId;
     const more = card.querySelector('.tool-more');
-    if (msg.detail) {
-      more.querySelector('pre').textContent = msg.detail;
+    const pre = more.querySelector('pre');
+    const isEdit = msg.name === 'editFile' || msg.name === 'writeFile' || msg.name === 'createFile';
+    const editArgs = isEdit && msg.args && typeof msg.args === 'object' ? msg.args : null;
+    if (editArgs && editArgs.old_string != null && editArgs.new_string != null) {
+      // Inline diff for patch-style edits
+      pre.textContent = '';
+      pre.className = 'diff-view';
+      pre.appendChild(buildInlineDiff(editArgs.old_string, editArgs.new_string));
       more.classList.remove('hidden');
-      // Auto-expand short results (≤ 5 lines) so output is visible without clicking
-      const lineCount = msg.detail.split('\n').filter(Boolean).length;
-      if (msg.state === 'done' && lineCount <= 5) more.open = true;
-      else if (msg.state !== 'done') more.open = false;
+      if (msg.state === 'done') more.open = true;
+    } else if (msg.detail) {
+      pre.className = '';
+      pre.textContent = msg.detail;
+      more.classList.remove('hidden');
+      // Always expand when done — CSS max-height keeps it from taking over the screen.
+      // While running, expand so partial output streams in visibly.
+      more.open = true;
     } else {
       more.classList.add('hidden');
     }
+    // Validation result: add pass/fail attribute when done so CSS can colour it
+    if (isValidation && msg.state === 'done') {
+      const exitMatch = String(msg.detail || '').match(/exit\s*(?:code\s*)?(\d+)/i);
+      const failed = exitMatch ? exitMatch[1] !== '0' : /error|fail/i.test(String(msg.detail || ''));
+      card.setAttribute('data-val-result', failed ? 'fail' : 'pass');
+    }
     scrollDown();
+  }
+
+  /** Build a simple before/after diff fragment for inline edit display. */
+  function buildInlineDiff(oldStr, newStr) {
+    const frag = document.createDocumentFragment();
+    String(oldStr).split('\n').forEach((l) => {
+      const row = document.createElement('div'); row.className = 'diff-del'; row.textContent = '− ' + l; frag.appendChild(row);
+    });
+    String(newStr).split('\n').forEach((l) => {
+      const row = document.createElement('div'); row.className = 'diff-add'; row.textContent = '+ ' + l; frag.appendChild(row);
+    });
+    return frag;
   }
 
   // ---------- settings panel ----------
@@ -2613,7 +2714,12 @@
       case 'toolStatus': {
         const t = ensureTarget(msg.requestId);
         if (msg.state === 'running' && t.statusLabel) t.statusLabel.textContent = toolVerb(msg.name, msg.args);
+        // A NEW card closes the current text segment so following text appears after it.
+        // (Updates to an existing card — same toolCallId — must NOT, or streaming text
+        // mid-tool would fragment.) build/upsert handles the DOM; we only flip the flag.
+        const isNew = !t.flow.querySelector(`[data-tc="${msg.toolCallId}"]`);
         upsertTool(t, msg);
+        if (isNew) t.currentText = null;
         break;
       }
       case 'failoverNotice': {
@@ -2716,7 +2822,8 @@
         stopStatusTimer(msg.requestId, true);
         finalizeWork(msg.requestId);
         t.body.innerHTML = '';
-        const head = document.createElement('div'); head.className = 'plan-head'; head.textContent = 'Proposed plan';
+        const head = document.createElement('div'); head.className = 'plan-head';
+        head.innerHTML = `<span class="plan-head-icon">◈</span><span>Plan</span>`;
         t.body.appendChild(head);
         // A replayed or already-decided card (session switch, kept after Discard/Keep-discussing) —
         // show a read-only checklist, no edit controls, no action row.
@@ -2726,16 +2833,15 @@
         if (settled) { scrollDown(); break; }
         const collect = () => collectPlanSteps(listEl);
         const actions = document.createElement('div'); actions.className = 'plan-actions';
-        const approve = document.createElement('button'); approve.className = 'primary'; approve.textContent = 'Approve & Run';
-        const discuss = document.createElement('button'); discuss.className = 'secondary'; discuss.textContent = 'Keep discussing';
-        const reject = document.createElement('button'); reject.className = 'secondary'; reject.textContent = 'Discard';
+        const approve = document.createElement('button'); approve.className = 'primary plan-run'; approve.textContent = '▶  Run plan';
+        const discuss = document.createElement('button'); discuss.className = 'plan-discuss'; discuss.textContent = 'Discuss';
+        const reject = document.createElement('button'); reject.className = 'plan-reject'; reject.textContent = 'Discard';
         approve.addEventListener('click', () => { actions.remove(); vscode.postMessage({ type: 'approvePlan', requestId: newId(), approved: true, steps: collect() }); });
         reject.addEventListener('click', () => { actions.remove(); vscode.postMessage({ type: 'approvePlan', requestId: newId(), approved: false, steps: collect() }); });
         discuss.addEventListener('click', () => {
-          // Release the gate but keep the plan (and "Approve & Run") around to build later.
           discuss.remove(); reject.remove();
           const note = document.createElement('div'); note.className = 'plan-note';
-          note.textContent = '💬 Kept for discussion — refine the steps above or the saved plan file, then Approve & Run when ready.';
+          note.textContent = 'Kept for discussion — edit steps above or the saved plan, then Run when ready.';
           t.body.appendChild(note);
           vscode.postMessage({ type: 'deferPlan', requestId: msg.requestId, steps: collect() });
         });
@@ -2933,15 +3039,24 @@
         // We throttle DOM updates to every 40ms (one rAF cycle) so a fast model doesn't
         // cause layout thrash on every token. The buffer is flushed fully on assistantMessage.
         const t = ensureTarget(msg.requestId);
-        t._streamBuf = (t._streamBuf || '') + msg.text;
         t._wasStreamed = true;
-        if (!t._streamPending) {
-          t._streamPending = true;
+        // Append into the CURRENT text segment of the flow. A tool/reasoning card between
+        // text closes the segment (sets currentText=null), so the next token opens a new
+        // segment AFTER that card — yielding text → tool → text interleaving in order.
+        if (!t.currentText) {
+          t.currentText = document.createElement('div');
+          t.currentText.className = 'flow-text bubble streaming';
+          t.currentText._buf = '';
+          t.flow.appendChild(t.currentText);
+        }
+        const seg = t.currentText;
+        seg._buf += msg.text;
+        if (!seg._pending) {
+          seg._pending = true;
           requestAnimationFrame(() => {
-            t._streamPending = false;
-            if (!t._streamBuf) return;
-            t.body.innerHTML = '';
-            t.body.appendChild(renderMarkdown(t._streamBuf));
+            seg._pending = false;
+            seg.innerHTML = '';
+            seg.appendChild(renderMarkdown(seg._buf));
             scrollDown();
           });
         }
@@ -2949,31 +3064,34 @@
       }
       case 'assistantMessage': {
         const t = ensureTarget(msg.requestId);
-        // Clear the streaming buffer — assistantMessage carries the authoritative full text.
-        t._streamBuf = '';
-        t._streamPending = false;
         stopStatusTimer(msg.requestId, true);
-        // Add a fold-up 💭 Reasoning disclosure only when no live 🧠 Thinking block already
-        // captured this reasoning inline — otherwise the same reasoning would show twice.
-        if (msg.reasoning && !t.tools.querySelector('.think-block')) {
+        // Remove streaming cursor from all text segments
+        t.flow.querySelectorAll('.streaming').forEach((el) => el.classList.remove('streaming'));
+        // Flush any pending streamed text segment immediately (a queued rAF may not have run).
+        if (t.currentText && t.currentText._buf != null) {
+          t.currentText.innerHTML = '';
+          t.currentText.appendChild(renderMarkdown(t.currentText._buf));
+        }
+        // Fold-up 💭 Reasoning disclosure only when no live 🧠 Thinking block already
+        // captured it inline — otherwise the same reasoning would show twice. Placed at the
+        // top of the flow (it preceded the work).
+        if (msg.reasoning && !t.flow.querySelector('.think-block')) {
           const det = document.createElement('details'); det.className = 'reasoning';
           det.innerHTML = `<summary>Reasoning</summary>`;
           det.appendChild(renderMarkdown(msg.reasoning));
-          t.tools.insertBefore(det, t.tools.firstChild); // inside the "Worked for Ns" disclosure
+          t.flow.insertBefore(det, t.flow.firstChild);
         }
-        // Finalize the work summary (reveals it as "Worked for Ns", collapsed).
-        finalizeWork(msg.requestId);
         t.el._copyText = msg.text;
-        // If chunks already streamed the text live, skip typeInto — the body already shows
-        // the full content and re-animating it would flash/clear what the user is reading.
-        // Only use typeInto when no streaming happened (non-streaming models / tool turns).
-        if (t._wasStreamed) {
-          t._wasStreamed = false;
-          t.body.innerHTML = '';
-          t.body.appendChild(renderMarkdown(msg.text));
-        } else {
-          typeInto(t.body, msg.text);
+        // Streamed turns already show their text interleaved in the flow — don't re-render
+        // (that would duplicate). Only render here when nothing streamed (buffered tool turns
+        // / non-streaming providers): append the full answer as a final flow segment.
+        if (!t._wasStreamed) {
+          const seg = document.createElement('div'); seg.className = 'flow-text bubble';
+          seg.appendChild(renderMarkdown(msg.text));
+          t.flow.appendChild(seg);
         }
+        t._wasStreamed = false;
+        finalizeWork(msg.requestId);
         // The final message carries the model that actually answered — use it as
         // the source of truth so the footer never blanks (e.g. when a forced model
         // failed over before assistantStart could set t.model).
@@ -3038,9 +3156,12 @@
         const t = msg.requestId ? ensureTarget(msg.requestId) : null;
         if (msg.requestId) stopStatusTimer(msg.requestId, true);
         if (msg.requestId) finalizeWork(msg.requestId);
-        const el = document.createElement('div'); el.className = 'bubble error';
+        const el = document.createElement('div'); el.className = 'error-notice';
         el.textContent = '⚠ ' + msg.message;
-        (t ? t.body : currentTurn || thread).appendChild(el);
+        // Append into the flow (same layer as response text) so it appears directly
+        // after the work summary — not nested inside the outer t.body bubble.
+        const dest = t ? t.flow ?? t.body : (currentTurn || thread);
+        dest.appendChild(el);
         scrollDown();
         break;
       }
@@ -3144,23 +3265,30 @@
 
   function addPlanRow(listEl, text, focus) {
     const row = document.createElement('div'); row.className = 'plan-row';
-    const ic = document.createElement('span'); ic.className = 'plan-ic'; ic.textContent = '○';
+    const rows = listEl.querySelectorAll('.plan-row');
+    const ic = document.createElement('span'); ic.className = 'plan-ic';
+    ic.textContent = (rows.length + 1) + '.';
     const tx = document.createElement('span'); tx.className = 'plan-tx'; tx.contentEditable = 'plaintext-only'; tx.textContent = text || '';
     tx.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); addPlanRow(listEl, '', true); }
       else if (e.key === 'Backspace' && !tx.textContent && listEl.querySelectorAll('.plan-row').length > 1) {
         e.preventDefault();
         const prev = row.previousElementSibling; row.remove();
+        renumberPlanRows(listEl);
         const p = prev && prev.querySelector ? prev.querySelector('.plan-tx') : null; if (p) p.focus();
       }
     });
-    const del = document.createElement('span'); del.className = 'plan-del'; del.textContent = '✕'; del.title = 'Remove step';
-    del.addEventListener('click', () => { if (listEl.querySelectorAll('.plan-row').length > 1) row.remove(); });
+    const del = document.createElement('span'); del.className = 'plan-del'; del.title = 'Remove';
+    del.innerHTML = '&times;';
+    del.addEventListener('click', () => { if (listEl.querySelectorAll('.plan-row').length > 1) { row.remove(); renumberPlanRows(listEl); } });
     row.appendChild(ic); row.appendChild(tx); row.appendChild(del);
     const addBtn = listEl.querySelector('.plan-add');
     if (addBtn) listEl.insertBefore(row, addBtn); else listEl.appendChild(row);
     if (focus) tx.focus();
     return row;
+  }
+  function renumberPlanRows(listEl) {
+    listEl.querySelectorAll('.plan-row .plan-ic').forEach((ic, i) => { ic.textContent = (i + 1) + '.'; });
   }
 
   function renderPlanChecklist(items, editable) {
@@ -3171,9 +3299,9 @@
       listEl.appendChild(add);
       (items.length ? items : ['']).forEach((it) => addPlanRow(listEl, it, false));
     } else {
-      items.forEach((it) => {
+      items.forEach((it, i) => {
         const row = document.createElement('div'); row.className = 'plan-row';
-        const ic = document.createElement('span'); ic.className = 'plan-ic'; ic.textContent = '○';
+        const ic = document.createElement('span'); ic.className = 'plan-ic'; ic.textContent = (i + 1) + '.';
         const tx = document.createElement('span'); tx.className = 'plan-tx'; tx.textContent = it;
         row.appendChild(ic); row.appendChild(tx); listEl.appendChild(row);
       });

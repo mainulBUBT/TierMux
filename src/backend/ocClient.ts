@@ -17,7 +17,8 @@ const PATHS = {
   sessionPrompt: (id: string) => `/session/${id}/message`,
   sessionCommand: (id: string) => `/session/${id}/command`,
   sessionAbort: (id: string) => `/session/${id}/abort`,
-  sessionMessages: (id: string) => `/session/${id}/messages`,
+  // OC 1.x: GET messages is `/session/{id}/message` (singular) — the plural 404s.
+  sessionMessages: (id: string) => `/session/${id}/message`,
   agents: '/app/agents',
   models: '/config/providers',
   events: '/global/event',
@@ -52,9 +53,13 @@ export class OcClient {
     return h;
   }
 
-  private async request<T>(path: string, init?: RequestInit, timeoutMs = 15000): Promise<T> {
+  private async request<T>(path: string, init?: RequestInit, timeoutMs = 15000, extraSignal?: AbortSignal): Promise<T> {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    // timeoutMs <= 0 → no timeout (caller relies on `extraSignal` / SSE to end the call).
+    const timer = timeoutMs > 0 ? setTimeout(() => ctrl.abort(), timeoutMs) : undefined;
+    const onExtraAbort = () => ctrl.abort();
+    extraSignal?.addEventListener('abort', onExtraAbort, { once: true });
+    if (extraSignal?.aborted) ctrl.abort();
     try {
       const res = await fetch(`${this.base}${path}`, { ...init, signal: ctrl.signal });
       const text = await res.text().catch(() => '');
@@ -70,7 +75,8 @@ export class OcClient {
         throw parseErr;
       }
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
+      extraSignal?.removeEventListener('abort', onExtraAbort);
     }
   }
 
@@ -84,8 +90,14 @@ export class OcClient {
     }
   }
 
-  /** Create a new session. Optionally pin agent + model up front. */
-  async createSession(opts?: { agent?: string; model?: PromptBody['model']; title?: string }): Promise<OcSessionInfo> {
+  /**
+   * Create a new session. Optionally pin agent + model up front.
+   *
+   * NOTE: OC's `POST /session` schema uses `model: { providerID, id }` — a DIFFERENT
+   * key (`id`) than the prompt endpoint's `model: { providerID, modelID }`. Sending
+   * `modelID` here returns 400 BadRequest and the whole run dies at session creation.
+   */
+  async createSession(opts?: { agent?: string; model?: { providerID: string; id: string }; title?: string }): Promise<OcSessionInfo> {
     const body = JSON.stringify(opts ?? {});
     console.log(`[tiermux] OC POST ${PATHS.sessionCreate} body=${body}`);
     const result = await this.request<OcSessionInfo>(PATHS.sessionCreate, {
@@ -97,8 +109,13 @@ export class OcClient {
     return result;
   }
 
-  /** Send a prompt to a session. The agent run streams over the global SSE event bus. */
-  async prompt(sessionId: string, body: PromptBody): Promise<void> {
+  /**
+   * Send a prompt to a session. OC's POST /message BLOCKS until the whole agent run
+   * finishes (results stream separately over the global SSE bus). We do NOT impose a
+   * fixed timeout — a run can legitimately take many minutes — and instead let OC drive
+   * completion. The optional `signal` (the run's cancel token) aborts it on user-stop.
+   */
+  async prompt(sessionId: string, body: PromptBody, signal?: AbortSignal): Promise<void> {
     const bodyStr = JSON.stringify(body);
     console.log(`[tiermux] OC POST ${PATHS.sessionPrompt(sessionId)} body=${bodyStr}`);
     try {
@@ -106,7 +123,7 @@ export class OcClient {
         method: 'POST',
         headers: this.headers(true),
         body: bodyStr,
-      }, 60_000);
+      }, 0, signal); // no fixed timeout — SSE drives the result; user cancel aborts via `signal`
       console.log(`[tiermux] OC prompt() returned 2xx`);
     } catch (err) {
       console.error(`[tiermux] OC prompt() failed:`, err);
