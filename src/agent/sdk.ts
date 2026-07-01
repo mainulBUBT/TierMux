@@ -6,10 +6,13 @@
 // chatViewProvider is unchanged. When OC isn't connected, runs surface a clear error
 // rather than silently falling back to a second engine.
 import type { Router } from '../router/router';
+import { AllModelsFailedError } from '../router/router';
 import type { ChatMessage, TodoItem, ReasoningEffort } from '../shared/types';
 import type { OcConnection } from '../backend/ocLauncher';
 import { OcClient } from '../backend/ocClient';
 import { getLastRoutedModel, setForcedModel } from '../backend/routerProxy';
+import { classifyTask } from './routing';
+import { assessAnswerQuality } from './answerQuality';
 
 // ---- Trace toggle — when true, raw OC SSE frames are logged via the supplied sink. ----
 let traceOcEvents = false;
@@ -18,6 +21,15 @@ let traceSink: ((raw: string) => void) | undefined;
 export function setOcTrace(on: boolean, sink?: (raw: string) => void): void {
   traceOcEvents = on;
   if (sink) traceSink = sink;
+}
+
+// ---- Quality-gate toggle — when true, weak-but-non-empty answers escalate to the
+// next chain hop (FrugalGPT-style) instead of being accepted. Wires to
+// `tiermux.agent.qualityGate`. See plans/groovy-tinkering-swan.md. ----
+let qualityGateEnabled = true;
+/** Setter for `extension.ts` to wire `tiermux.agent.qualityGate` (refreshed on config change). */
+export function setQualityGate(on: boolean): void {
+  qualityGateEnabled = on;
 }
 
 // ---- Public types (frozen — chatViewProvider depends on these) ----
@@ -87,7 +99,11 @@ export function setOcEngine(conn: OcConnection | undefined): void {
  */
 const FALLBACK_CHAIN: Record<'chat' | 'agent' | 'plan', string[]> = {
   chat: ['fast', 'smart'],
-  agent: ['smart'],
+  // Two hops of `smart`: a dropped connection (or a hung/broken OC session) escalates to
+  // a FRESH smart run rather than downgrading to `fast`. The router still rotates the
+  // underlying provider/key per hop, so the second attempt often lands on a different
+  // upstream — full quality preserved, no silent downgrade on a transient network blip.
+  agent: ['smart', 'smart'],
   plan: ['smart'],
 };
 
@@ -184,7 +200,7 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
   opts.onModel(platform, model);
   opts.onStep('thinking', 'Working…');
 
-  return new Promise<AgentResult>((resolve) => {
+  return new Promise<AgentResult>((resolve, reject) => {
     let done = false;
     const finish = (r: AgentResult) => {
       if (done) return;
@@ -204,6 +220,18 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
       }
       resolve(r);
     };
+    // Reject the run (rather than resolving via onError) ONLY for terminal router
+    // exhaustion — every provider/key failed. Throwing AllModelsFailedError lets the
+    // chatViewProvider catch surface the "enable these free models" recommendation
+    // instead of a cryptic 503. Reuses `done` so it can't race finish().
+    const fail = (err: Error) => {
+      if (done) return;
+      done = true;
+      clearTimeout(watchdog);
+      unsub();
+      setForcedModel(undefined);
+      reject(err);
+    };
 
     // Empty-result takeover: if a run ends with NO usable text (model gave up, tool loop
     // died empty, OC errored mid-run), hand off to the NEXT link in `chain` so a stronger
@@ -212,17 +240,49 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
     // Returns true when a hop was kicked off; the caller MUST then skip finish() (the
     // retry resolves later). Only invoked asynchronously (from event handlers / watchdog),
     // by which point `unsub`/`watchdog` below are initialized.
-    const tryEscalate = (): boolean => {
-      if (out.trim() || isFinalHop) return false;
+    const tryEscalate = (force = false, weak?: { primary?: string }): boolean => {
+      // Pinned model / last hop: nowhere to hand off to.
+      if (isFinalHop) { console.log(`[tiermux][DBG] tryEscalate SKIP: isFinalHop (model=${modelID} hop=${hop} chain=${chain.join('>')})`); return false; }
+      const hasOut = !!out.trim();
+      // Accept a good answer: text present, not a forced (network) retry, and not
+      // flagged weak by the quality gate. (Previously this bailed on ANY non-empty
+      // out — the weak param is what lets weak-but-non-empty answers escalate.)
+      if (!force && hasOut && !weak) { console.log(`[tiermux][DBG] tryEscalate SKIP: accepted (hasOut=${hasOut} force=${force} weak=${weak ? JSON.stringify(weak) : '-'})`); return false; }
+      console.log(`[tiermux][DBG] tryEscalate DECIDE: force=${force} hasOut=${hasOut} weak=${weak ? JSON.stringify(weak) : '-'} model=${modelID}`);
       const nextProfile = chain[hop + 1];
-      console.log(`[tiermux] OC run produced no answer on ${modelID} — handing off to ${nextProfile}`);
-      opts.onFailover(`tiermux/${profile}`, `no_answer → escalating to ${nextProfile}`);
+      const reason = force ? 'network_error' : !hasOut ? 'no_answer' : 'weak_answer';
+      const detail = weak?.primary ? `weak_answer:${weak.primary}` : reason;
+      console.log(`[tiermux] OC run ${detail} on ${modelID} — handing off to ${nextProfile}`);
+      opts.onFailover(`tiermux/${profile}`, `${detail} → escalating to ${nextProfile}`);
       ocSessions.delete(key);
       ocSessionModels.delete(key);
       unsub();
       clearTimeout(watchdog);
-      void runViaOc(opts, _retryCount, hop + 1).then(finish);
+      // hop+1 carries _retryCount unchanged: an OC-session drop shouldn't burn the prompt()
+      // retry budget — that's for transient 5xx on a single hop, not a profile escalation.
+      void runViaOc(opts, _retryCount, hop + 1).then(finish, fail);
       return true;
+    };
+
+    // Quality gate (FrugalGPT-style): if the run produced a WEAK-but-non-empty
+    // answer (refusal / repetition / truncation / too-short-for-task), escalate
+    // to the next chain hop instead of accepting it. `userText` is the last user
+    // message, already resolved above; the task kind is recomputed locally
+    // because AgentOpts.taskKind is not populated by the caller. Bounded by
+    // isFinalHop (pinned/last hop) and the qualityGateEnabled kill-switch.
+    const maybeEscalateWeak = (): boolean => {
+      const len = out.trim().length;
+      if (!out.trim() || isFinalHop || !qualityGateEnabled) {
+        console.log(`[tiermux][DBG] quality-gate SKIP: len=${len} isFinalHop=${isFinalHop} enabled=${qualityGateEnabled} model=${modelID}`);
+        return false;
+      }
+      const q = assessAnswerQuality(out, classifyTask(userText));
+      const tail = JSON.stringify(out.slice(-60));
+      console.log(`[tiermux][DBG] quality-gate DECIDE: len=${len} score=${q.score} signals=[${q.signals.join(',')}] primary=${q.primary ?? '-'} weak=${q.weak} model=${modelID} tail=${tail}`);
+      if (!q.weak) return false;
+      const escalated = tryEscalate(false, { primary: q.primary });
+      console.log(`[tiermux][DBG] quality-gate RESULT: escalated=${escalated}`);
+      return escalated;
     };
 
     // Track the latest text we saw per part id, so `message.part.updated` (which carries
@@ -266,7 +326,7 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
     // in `chain`) get a much shorter fuse: a dead or hung free-tier model should hand off
     // to the next link quickly rather than making the user wait out the full window.
     const INACTIVITY_MS = 3 * 60_000;
-    const TOOL_INACTIVITY_MS = 15 * 60_000;
+    const TOOL_INACTIVITY_MS = 5 * 60_000;
     const FAST_FAIL_MS = 45_000;
     let toolActive = false;
     let watchdog: ReturnType<typeof setTimeout>;
@@ -453,7 +513,11 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
 
       // ---- Session idle: resolve. If we never saw streaming deltas, fetch messages as a fallback. ----
       if (t === 'session.idle' || t === 'idle' || t === 'session.complete' || t === 'session.done' || t === 'session.completed') {
+        console.log(`[tiermux][DBG] session.idle: outLen=${out.trim().length} model=${modelID} hop=${hop} chain=${chain.join('>')}`);
         if (out.trim()) {
+          // Quality gate: a non-empty but weak answer (refusal/loop/truncation/
+          // too-short) escalates to the next chain hop before we accept it.
+          if (maybeEscalateWeak()) return;
           finish({ text: out, platform, model, taskKind: opts.taskKind });
           return;
         }
@@ -469,6 +533,8 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
           } catch { /* ignore — keep whatever we have */ }
           // Still no answer after the fallback fetch — let a stronger model take over (once).
           if (tryEscalate()) return;
+          // Fetched text may be non-empty but weak — run the quality gate on it too.
+          if (maybeEscalateWeak()) return;
           finish({ text: out, platform, model, taskKind: opts.taskKind });
         })();
         return;
@@ -483,14 +549,30 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
         // 5xx means the OC session is broken (server-side crash, stale session after restart, etc.).
         // Drop it from the cache so the next attempt gets a fresh session, then retry once automatically.
         const is5xx = /→\s*5\d\d/.test(msg);
-        if (is5xx && _retryCount === 0) {
-          console.log(`[tiermux] OC prompt() 5xx — dropping session ${ocId}, retrying with a fresh session`);
+        // Network-layer failures (OC bridge ↔ router connection lost) surface as Node undici's
+        // `TypeError: fetch failed` or one of its underlying causes. The router already treats these
+        // as failoverable; here at the OC layer we must too, or the agent dead-ends on a dropped
+        // connection. Retry once on the same hop; if that's exhausted, escalate to the next profile.
+        const isNetwork = /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|socket hang up|other side closed|terminated|network error/i.test(msg);
+        if ((is5xx || isNetwork) && _retryCount === 0) {
+          console.log(`[tiermux] OC prompt() ${is5xx ? '5xx' : 'network error'} — dropping session ${ocId}, retrying with a fresh session`);
           ocSessions.delete(key);
           ocSessionModels.delete(key);
           unsub();
           clearTimeout(watchdog);
           // Retry the full run on the SAME hop (will create a new OC session on the way in).
-          void runViaOc(opts, 1, chainIndex).then(finish);
+          void runViaOc(opts, 1, chainIndex).then(finish, fail);
+          return;
+        }
+        // Retry budget spent (or this was a repeat). Before surfacing the error, try a fresh hop —
+        // a network blip shouldn't kill the turn if there's another profile link available.
+        if (isNetwork && tryEscalate(true)) return;
+        // Terminal router exhaustion (routerProxy maps AllModelsFailedError → 503). Reject the run
+        // so the chatViewProvider catch fires maybeRecommendModels() — surfacing a concrete "enable
+        // these free models" prompt rather than a bare 503. Empty failures: the detail was already
+        // logged by the router; the recommendation only checks instanceof.
+        if (/→\s*503/.test(msg)) {
+          fail(new AllModelsFailedError([]));
           return;
         }
         opts.onError(msg);

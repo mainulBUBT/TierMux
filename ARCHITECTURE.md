@@ -101,7 +101,8 @@ belong to the Router and to OC respectively. Pure protocol translation.
   and emitted as one chunk.
 - **On `AllModelsFailedError`:** throws with a detailed message naming which
   providers failed and why (key missing, rate-limited, deprecated, rejected
-  key, etc.) — surfaced to the chat footer.
+  key, etc.); the proxy maps it to 503. The OC layer re-throws it on a
+  terminal 503 so the free-model recommendation fires (see Engine boundary).
 
 ### Provider adapters — `src/providers/*.ts`
 
@@ -149,6 +150,39 @@ funnel through `runViaOc`, which:
 - On `session.idle` with no accumulated text, fetches session messages as
   a fallback so we always return *something* when OC did produce output.
 
+**Profile fallback chain** (`FALLBACK_CHAIN`, in-process, not OC-aware): each
+`run*Stream` mode walks an ordered list of virtual profiles left-to-right on
+failure. A pinned user model collapses to a length-1 chain (no hand-off).
+
+| Mode | Chain | Why |
+|---|---|---|
+| Ask | `fast → smart` | free tier first, escalate to strong once |
+| Agent | `smart → smart` | two fresh `smart` hops — full quality preserved, no downgrade to `fast` |
+| Plan | `smart` | single hop |
+
+**Failure escalation** (two paths, both bounded by `isFinalHop`):
+
+- *Empty-answer takeover* — `session.idle` / `session.error` / watchdog fire
+  with no accumulated text → drop the OC session, re-run on the next hop.
+- *Network-error recovery* — `prompt()` rejects with a transport-layer failure
+  (`fetch failed`, `ECONNRESET`, `ETIMEDOUT`, `ENOTFOUND`, … — classified by
+  regex, mirroring the Router's `network` bucket) → retry once on the same hop
+  with a fresh session, then force-escalate to the next hop. 5xx from a broken
+  OC session gets the same retry-once treatment. Only when every hop is
+  exhausted does the error surface via `onError`.
+
+**Watchdog** — an *inactivity* timer (not a total-run cap); every SSE event
+resets it, so a long-but-live run is never cut short. Window depends on state:
+45 s on non-final hops (fail fast to the next link), 3 min plain, 5 min while a
+tool is in-flight (was 15 min — tightened so a dropped mid-tool connection
+hands off instead of hanging).
+
+**Exhaustion → `AllModelsFailedError`** — a terminal 503 from the Router
+(`AllModelsFailedError` mapped to 503 by the proxy) *rejects* the run rather
+than resolving via `onError`, so the `chatViewProvider` catch fires
+`maybeRecommendModels()` and the user gets a concrete "enable these free
+models" prompt instead of a bare 503.
+
 ### Settings + secrets — `src/config/`
 
 - `SecretStore` (per-platform keys, multi-key pool, per-key + per-platform
@@ -190,6 +224,10 @@ funnel through `runViaOc`, which:
 | Ask | `tiermux/fast` | `build` | yes | no |
 | Plan | `tiermux/smart` | `plan` | yes | no (read-only) |
 | Agent | `tiermux/smart` | `build` | yes | yes |
+
+Profiles are virtual; the profile *sent* to OC is the first hop. Internal
+escalation may re-run on a later hop (Agent: `smart → smart`) — see the
+fallback chain under Engine boundary.
 
 ---
 

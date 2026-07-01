@@ -336,6 +336,11 @@
           "default": true,
           "description": "Show a diff and ask for confirmation before the agent writes/creates/deletes a file."
         },
+        "tiermux.agent.qualityGate": {
+          "type": "boolean",
+          "default": true,
+          "description": "Escalate to the next model when an answer is weak (refusal, repetition, truncation, or too-short-for-task) instead of accepting it. Only fires when the fallback chain has another hop (never for a pinned model)."
+        },
         "tiermux.agent.commandApproval": {
           "type": "string",
           "enum": [
@@ -646,6 +651,7 @@
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
+    "test:e2e": "esbuild scripts/qualityGate.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/qualityGate.e2e.cjs && node dist/qualityGate.e2e.cjs",
     "package": "vsce package --no-dependencies",
     "fetch:binaries": "node scripts/fetch-opencode.mjs",
     "package:full": "npm run fetch:binaries && npm run build && vsce package --no-dependencies"

@@ -1,8 +1,9 @@
 // Pure helpers for cleaning and validating commit-message model output.
 // No `vscode` imports so this can be unit-tested standalone in scripts/selftest.ts.
 
-/** Known refusal / preamble prefixes that are never a valid commit message. */
-const REFUSAL_PREFIXES = /^(i cannot|i'm sorry|im sorry|as an ai|sure[!,.]?\s*|okay[!,.]?\s*|certainly[!,.]?\s*|of course[!,.]?\s*)/i;
+// Refusal-prefix and repeated-line detection live in the general-purpose quality
+// module (src/agent/answerQuality.ts) and are reused here. See plans/groovy-tinkering-swan.md.
+import { REFUSAL_PREFIXES, hasRepeatedLineRun } from '../agent/answerQuality';
 
 /**
  * Reduce a raw model reply to ONLY the commit message. Strips reasoning
@@ -74,19 +75,6 @@ export function cleanCommitMessage(raw: string): string {
   s = s.replace(/^>+\s*/gm, '').trim();
 
   return s;
-}
-
-/** Detect `count` or more identical consecutive lines (e.g. noise loops). */
-function hasRepeatedLineRun(text: string, count: number): boolean {
-  const lines = text.split('\n');
-  let runStart = 0;
-  while (runStart < lines.length) {
-    let runEnd = runStart + 1;
-    while (runEnd < lines.length && lines[runEnd] === lines[runStart]) runEnd++;
-    if (runEnd - runStart >= count) return true;
-    runStart = runEnd;
-  }
-  return false;
 }
 
 /** Heuristic: is this output almost certainly not a usable commit message? */

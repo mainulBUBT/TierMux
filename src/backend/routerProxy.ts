@@ -184,6 +184,7 @@ async function handleChatCompletion(
   const messages = body.messages.map(toTierMuxMessage);
   const stream = body.stream === true;
   const lastUserText = extractLastUserText(body.messages);
+  console.log(`[tiermux][DBG] completion-request: model=${body.model ?? '-'} max_tokens=${body.max_tokens ?? 'UNSET'} stream=${stream} msgs=${messages.length} tools=${(body.tools ?? []).length}`);
 
   const routeOpts: RouteOptions = {
     ...mapProfile(body.model, lastUserText),

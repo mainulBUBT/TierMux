@@ -4,6 +4,7 @@ import { repairToolArguments, rescueInlineToolCalls, toolSchemaMap } from '../sr
 import { contentToString, messagesHaveImage } from '../src/agent/content';
 import { Catalog } from '../src/catalog/catalog';
 import { cleanCommitMessage, looksLikeGarbage, buildTemplateFallback } from '../src/scm/commitMessageClean';
+import { assessAnswerQuality } from '../src/agent/answerQuality';
 import { splitReasoningStandalone } from './_split';
 import * as path from 'path';
 
@@ -94,6 +95,33 @@ ok('good: subject with body', !looksLikeGarbage('feat: add OAuth\n\nAdds OAuth2 
 ok('good: fix prefix', !looksLikeGarbage('fix: handle null user'));
 ok('good: scoped prefix', !looksLikeGarbage('feat(router): add rate limiting'));
 ok('good: imperative no-prefix', !looksLikeGarbage('Add OAuth login flow to auth module'));
+
+// assessAnswerQuality: FrugalGPT-style quality gate (see plans/groovy-tinkering-swan.md).
+// Signals score additively; weak = score >= WEAK_THRESHOLD (40). refusal/repetition/truncation
+// each escalate alone; too_short (15) never escalates alone — only pushes past threshold
+// when another signal agrees.
+const q = (t: string, k: any) => assessAnswerQuality(t, k);
+
+ok('quality: empty -> not weak', q('', 'agent').weak === false);
+ok('quality: trivial short-circuits', q('hi', 'trivial').weak === false);
+ok('quality: refusal alone -> weak, primary refusal',
+  (() => { const r = q('I cannot help with that request because it violates policy and I am programmed to decline such things entirely.', 'agent'); return r.weak && r.primary === 'refusal' && r.signals.includes('refusal'); })());
+ok('quality: dominant refusal -> weak',
+  q("I'm sorry, I can't do that.", 'chat').weak === true);
+ok('quality: repetition -> weak, primary repetition',
+  (() => { const r = q('done\ndone\ndone\n', 'agent'); return r.weak && r.primary === 'repetition' && r.signals.includes('repetition'); })());
+ok('quality: mid-sentence truncation -> weak, primary truncation',
+  (() => { const r = q('The fix is to update the configuration file and then restart the server and', 'agent'); return r.weak && r.primary === 'truncation'; })());
+ok('quality: unmatched code fence -> truncation',
+  (() => { const r = q('Here is the code:\n```ts\nconst x = 1', 'agent'); return r.weak && r.primary === 'truncation'; })());
+ok('quality: too_short alone for coding -> NOT weak',
+  (() => { const r = q('const x = 1', 'coding'); return !r.weak && r.signals.length === 1 && r.signals[0] === 'too_short'; })());
+ok('quality: short + mid-sentence -> too_short AND truncation',
+  (() => { const r = q('updating the config and', 'agent'); return r.weak && r.signals.includes('too_short') && r.signals.includes('truncation'); })());
+ok('quality: refusal + repetition -> primary refusal',
+  (() => { const r = q('I cannot help\nI cannot help\nI cannot help', 'agent'); return r.weak && r.primary === 'refusal' && r.signals.includes('repetition'); })());
+ok('quality: good 30-word answer -> not weak, no signals',
+  (() => { const r = q('The simplest way to fix this bug is to add a null check before accessing the property, which prevents the crash and keeps the existing behavior intact for all callers.', 'agent'); return !r.weak && r.signals.length === 0; })());
 
 // buildTemplateFallback: deterministic message from file paths.
 const fakeDiff = [

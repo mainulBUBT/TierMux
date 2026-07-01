@@ -14,7 +14,7 @@ import { EditGate } from './edits/applyEdit';
 import { CommandGate, type CommandApproval } from './edits/commandGate';
 import { registerCheckpointContentProvider } from './edits/checkpoints';
 // (ToolCache was removed in v7 — its no-op stand-in is no longer needed.)
-import { setOcEngine, setOcTrace } from './agent/sdk';
+import { setOcEngine, setOcTrace, setQualityGate } from './agent/sdk';
 import { McpManager } from './mcp/mcpManager';
 import { CodebaseIndex } from './index/codebaseIndex';
 import { ChatViewProvider } from './chatViewProvider';
@@ -122,6 +122,10 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   context.subscriptions.push(editGate.register());
 
+  // Quality gate (FrugalGPT-style): escalate weak-but-non-empty answers. Default on;
+  // re-read in the onDidChangeConfiguration listener below.
+  setQualityGate(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('qualityGate', true));
+
   // One shared checkpoint content provider for every session (VS Code allows one per scheme);
   // each ChatViewProvider session owns its own CheckpointManager data on top of it.
   context.subscriptions.push(registerCheckpointContentProvider());
@@ -217,6 +221,9 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!engineLog) engineLog = vscode.window.createOutputChannel('TierMux Engine');
         const traceSink = (raw: string) => engineLog?.appendLine(`[${ts()}] [oc-event] ${raw}`);
         setOcTrace(on, traceSink);
+      }
+      if (e.affectsConfiguration('tiermux.agent.qualityGate')) {
+        setQualityGate(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('qualityGate', true));
       }
       if (e.affectsConfiguration('tiermux.catalog')) {
         void catalog.refresh(
