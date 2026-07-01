@@ -79,10 +79,17 @@ export function setOcEngine(conn: OcConnection | undefined): void {
   if (!ocClient) { ocSessions.clear(); ocSessionModels.clear(); }
 }
 
-/** Routing profile (virtual model the router proxy exposes) per TierMux mode. */
-function profileFor(mode: 'chat' | 'agent' | 'plan'): string {
-  return mode === 'chat' ? 'fast' : 'smart';
-}
+/**
+ * Ordered routing profiles (virtual models the router proxy exposes) per TierMux mode.
+ * `runViaOc` walks this chain left-to-right on empty-answer failures — chat starts on the
+ * free/fast tier and hands off to `smart` once; agent/plan already start on `smart` so
+ * there's nowhere cheaper to try first.
+ */
+const FALLBACK_CHAIN: Record<'chat' | 'agent' | 'plan', string[]> = {
+  chat: ['fast', 'smart'],
+  agent: ['smart'],
+  plan: ['smart'],
+};
 
 /**
  * Drive one agent run through OC: ensure an OC session for this TierMux session, send the
@@ -94,7 +101,7 @@ function profileFor(mode: 'chat' | 'agent' | 'plan'): string {
  * fetches the session messages as a fallback so we always return *something* when OC did
  * produce output.
  */
-async function runViaOc(opts: AgentOpts, _retryCount = 0, escalate = false): Promise<AgentResult> {
+async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promise<AgentResult> {
   if (!ocClient) {
     opts.onError('TierMux engine is not running. Run "npm run fetch:binaries" (or set OPENCODE_BIN), then reload the window.');
     return { text: '' };
@@ -105,12 +112,15 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, escalate = false): Pro
   // `planx` is our custom read-only planner (returns the plan as text). NOT OC's built-in `plan`,
   // which writes a plan file and plan_exit-hands-off to build — wrong for TierMux's planProposed card.
   const agent = opts.mode === 'chat' ? 'chat' : opts.mode === 'plan' ? 'planx' : 'build';
-  // Honor the user's explicitly-selected model; fall back to the routing profile only when on auto.
-  // `escalate` (set by the empty-result takeover below) forces the `smart` profile so a retried run
-  // lands on a stronger, intelligence-first model instead of re-picking the weak free one that just
-  // produced no answer. We do NOT override an explicit user pin — only the auto/profile path.
-  const profile = escalate ? 'smart' : profileFor(opts.mode);
-  const modelID = opts.pinnedModel && opts.pinnedModel !== 'auto' ? opts.pinnedModel : profile;
+  // Honor the user's explicitly-selected model; fall back to the routing chain only when on auto.
+  // An explicit user pin means there's nothing to fall back to — treat it as a length-1 chain so
+  // `tryEscalate` below never tries to hand off away from the model the user chose.
+  const pinned = opts.pinnedModel && opts.pinnedModel !== 'auto' ? opts.pinnedModel : undefined;
+  const chain = pinned ? [pinned] : (FALLBACK_CHAIN[opts.mode] ?? ['smart']);
+  const hop = Math.min(chainIndex, chain.length - 1);
+  const isFinalHop = hop >= chain.length - 1;
+  const profile = chain[hop];
+  const modelID = pinned ?? profile;
 
   let ocId = ocSessions.get(key);
   // If the user changed the model since the last run, the existing OC session was created
@@ -196,21 +206,22 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, escalate = false): Pro
     };
 
     // Empty-result takeover: if a run ends with NO usable text (model gave up, tool loop
-    // died empty, OC errored mid-run), retry ONCE on the `smart` profile so a stronger
+    // died empty, OC errored mid-run), hand off to the NEXT link in `chain` so a stronger
     // model takes over — mirrors the 5xx retry in the prompt().catch() below. Bounded by
-    // `_retryCount` so a genuinely unanswerable turn still terminates. Returns true when a
-    // retry was kicked off; the caller MUST then skip finish() (the retry resolves later).
-    // Only invoked asynchronously (from event handlers / watchdog), by which point
-    // `unsub`/`watchdog` below are initialized.
+    // `isFinalHop` (the chain's length) so a genuinely unanswerable turn still terminates.
+    // Returns true when a hop was kicked off; the caller MUST then skip finish() (the
+    // retry resolves later). Only invoked asynchronously (from event handlers / watchdog),
+    // by which point `unsub`/`watchdog` below are initialized.
     const tryEscalate = (): boolean => {
-      if (out.trim() || _retryCount) return false;
-      console.log(`[tiermux] OC run produced no answer — escalating to smart profile, retrying once`);
-      opts.onFailover(`tiermux/${profile}`, 'no_answer → escalating to smart');
+      if (out.trim() || isFinalHop) return false;
+      const nextProfile = chain[hop + 1];
+      console.log(`[tiermux] OC run produced no answer on ${modelID} — handing off to ${nextProfile}`);
+      opts.onFailover(`tiermux/${profile}`, `no_answer → escalating to ${nextProfile}`);
       ocSessions.delete(key);
       ocSessionModels.delete(key);
       unsub();
       clearTimeout(watchdog);
-      void runViaOc(opts, 1, true).then(finish);
+      void runViaOc(opts, _retryCount, hop + 1).then(finish);
       return true;
     };
 
@@ -250,12 +261,18 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, escalate = false): Pro
     // tool is in-flight (`toolActive`, set from the tool-status branches below) and use
     // a much longer window while one is — the short window still applies to plain
     // "OC went silent" hangs where no tool is running.
+    //
+    // Non-final hops (a weak/free model that still has a stronger fallback ahead of it
+    // in `chain`) get a much shorter fuse: a dead or hung free-tier model should hand off
+    // to the next link quickly rather than making the user wait out the full window.
     const INACTIVITY_MS = 3 * 60_000;
     const TOOL_INACTIVITY_MS = 15 * 60_000;
+    const FAST_FAIL_MS = 45_000;
     let toolActive = false;
     let watchdog: ReturnType<typeof setTimeout>;
     const resetWatchdog = () => {
       clearTimeout(watchdog);
+      const windowMs = !isFinalHop ? FAST_FAIL_MS : toolActive ? TOOL_INACTIVITY_MS : INACTIVITY_MS;
       watchdog = setTimeout(() => {
         void (async () => {
           try {
@@ -266,7 +283,7 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, escalate = false): Pro
           if (tryEscalate()) return;
           finish({ text: out, platform, model, taskKind: opts.taskKind });
         })();
-      }, toolActive ? TOOL_INACTIVITY_MS : INACTIVITY_MS);
+      }, windowMs);
     };
     resetWatchdog();
 
@@ -472,8 +489,8 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, escalate = false): Pro
           ocSessionModels.delete(key);
           unsub();
           clearTimeout(watchdog);
-          // Retry the full run (will create a new OC session on the way in).
-          void runViaOc(opts, 1).then(finish);
+          // Retry the full run on the SAME hop (will create a new OC session on the way in).
+          void runViaOc(opts, 1, chainIndex).then(finish);
           return;
         }
         opts.onError(msg);
