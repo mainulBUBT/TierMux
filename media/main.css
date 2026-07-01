@@ -262,8 +262,13 @@ details[open].think-block > details > summary::before { content: '▾ '; }
 .think-block[data-live='1'] > details > summary { opacity: .8; }
 @keyframes think-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-/* Blinking cursor at end of streaming text — appears on the last block element */
-.bubble.streaming > *:last-child::after {
+/* Blinking cursor at end of streaming text. Walks the "last child" chain down to the
+   innermost leaf (no element children) so it lands on the actual last rendered text —
+   not detached below a container block like a code fence, list, or table. */
+.bubble.streaming > *:last-child:not(:has(*))::after,
+.bubble.streaming > *:last-child > *:last-child:not(:has(*))::after,
+.bubble.streaming > *:last-child > *:last-child > *:last-child:not(:has(*))::after,
+.bubble.streaming > *:last-child > *:last-child > *:last-child > *:last-child:not(:has(*))::after {
   content: '▋';
   display: inline;
   color: var(--vscode-progressBar-background, #0a84ff);

@@ -244,7 +244,15 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, escalate = false): Pro
     // Every event resets it (see resetWatchdog() in the subscribe callback), so an
     // actively-streaming run — however long — is never cut short. User cancel resolves
     // immediately via the abort path. On fire we still try to salvage the last message.
+    //
+    // A running tool (bash build, big write) can legitimately emit nothing until it
+    // completes, which is longer than 3 minutes for real workloads. Track whether a
+    // tool is in-flight (`toolActive`, set from the tool-status branches below) and use
+    // a much longer window while one is — the short window still applies to plain
+    // "OC went silent" hangs where no tool is running.
     const INACTIVITY_MS = 3 * 60_000;
+    const TOOL_INACTIVITY_MS = 15 * 60_000;
+    let toolActive = false;
     let watchdog: ReturnType<typeof setTimeout>;
     const resetWatchdog = () => {
       clearTimeout(watchdog);
@@ -258,7 +266,7 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, escalate = false): Pro
           if (tryEscalate()) return;
           finish({ text: out, platform, model, taskKind: opts.taskKind });
         })();
-      }, INACTIVITY_MS);
+      }, toolActive ? TOOL_INACTIVITY_MS : INACTIVITY_MS);
     };
     resetWatchdog();
 
@@ -328,6 +336,11 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, escalate = false): Pro
             const st = part.state;
             const stObj = st && typeof st === 'object' ? st : null;
             const status = stObj?.status ?? (typeof st === 'string' ? st : 'running');
+            // Re-arm with the up-to-date flag — the resetWatchdog() at the top of this
+            // callback ran before we knew this event was a tool update, so it may have
+            // scheduled using the PREVIOUS (stale) toolActive value.
+            toolActive = mapToolStatus(status) === 'running';
+            resetWatchdog();
             opts.onTool({
               toolCallId: partId,
               name: normalizeToolName(part.tool ?? part.name ?? 'tool'),
@@ -378,6 +391,8 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, escalate = false): Pro
         const st = p.state;
         const stObj = st && typeof st === 'object' ? st : null;
         const status = stObj?.status ?? (typeof st === 'string' ? st : 'running');
+        toolActive = mapToolStatus(status) === 'running';
+        resetWatchdog();
         opts.onTool({
           toolCallId: p.id ?? p.callID ?? '',
           name: normalizeToolName(p.name ?? p.tool ?? 'tool'),
