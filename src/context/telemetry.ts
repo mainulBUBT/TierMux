@@ -6,7 +6,7 @@
 //
 // Lifetime: extension session. Resets on reload. Not persisted to disk.
 
-export interface TelemetrySnapshot {
+interface TelemetrySnapshot {
   totalRequests: number;
   totalToolCalls: number;
   symbolIndexHits: number;
@@ -44,19 +44,6 @@ export function onTelemetryUpdate(cb: () => void): () => void {
   listeners.add(cb);
   return () => listeners.delete(cb);
 }
-function notify(): void { listeners.forEach((cb) => { try { cb(); } catch { /**/ } }); }
-
-// ---- Counters ----
-export function trackRequest(): void      { counts.totalRequests++;       notify(); }
-export function trackToolCall(): void     { counts.totalToolCalls++;      notify(); }
-export function trackSymbolHit(): void    { counts.symbolIndexHits++;     notify(); }
-export function trackCacheHit(): void     { counts.bundleCacheHits++;     notify(); }
-export function trackIndexHit(): void     { counts.invertedIndexHits++;   notify(); }
-export function trackGrep(): void         { counts.grepCalls++;           notify(); }
-export function trackLargeRead(): void    { counts.largeContextReads++;   notify(); }
-export function trackWindowRead(): void   { counts.windowReads++;         notify(); }
-export function trackFullFileRead(): void { counts.fullFileReads++;       notify(); }
-
 // ---- Snapshot ----
 function rate(n: number, total: number): number {
   return total === 0 ? 0 : Math.round((n / total) * 100);

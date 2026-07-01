@@ -20,7 +20,7 @@ import type {
   ReasoningEffort,
 } from '../shared/types';
 import { AllModelsFailedError } from '../router/router';
-import type { TaskKind } from '../agent/routing';
+import { classifyTask, type TaskKind } from '../agent/routing';
 
 /** Virtual models OC can request to select a routing profile (vs. a real model). */
 const PROFILE_FAST = 'tiermux/fast';
@@ -37,6 +37,18 @@ let lastRouted: RoutedModel | undefined;
 export function getLastRoutedModel(): RoutedModel | undefined {
   return lastRouted;
 }
+
+/**
+ * The non-virtual model the current run wants forced (e.g. "custom::c_abc123::gpt-4o").
+ * Set by sdk.ts before prompting OC; cleared when the run resolves. Safe as a singleton
+ * because runs are serialized — only one active OC run exists at any moment. When set,
+ * mapProfile returns this model regardless of what OC sent in the `model` field, so
+ * OC sessions can always use a virtual profile (no static registry requirement) while
+ * the router still forces the real pinned model on every completion call.
+ */
+let forcedModelForRun: string | undefined;
+export function setForcedModel(m: string | undefined): void { forcedModelForRun = m; }
+export function getForcedModel(): string | undefined { return forcedModelForRun; }
 
 export interface RouterProxyServer {
   port: number;
@@ -171,9 +183,10 @@ async function handleChatCompletion(
 
   const messages = body.messages.map(toTierMuxMessage);
   const stream = body.stream === true;
+  const lastUserText = extractLastUserText(body.messages);
 
   const routeOpts: RouteOptions = {
-    ...mapProfile(body.model),
+    ...mapProfile(body.model, lastUserText),
     tools: body.tools,
     tool_choice: body.tool_choice,
     parallel_tool_calls: body.parallel_tool_calls,
@@ -267,11 +280,41 @@ async function handleChatCompletion(
 }
 
 /**
+ * Extract the text of the last user-role message from an OC messages array.
+ * Used to classify the task kind for smart routing. Finds the last user turn
+ * even when the messages array ends with tool results (multi-step agent runs).
+ */
+function extractLastUserText(messages: unknown[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as Record<string, unknown>;
+    if (m.role !== 'user') continue;
+    const content = m.content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((p: unknown) => {
+          const part = p as Record<string, unknown>;
+          return part.type === 'text' ? String(part.text ?? '') : '';
+        })
+        .join(' ')
+        .trim();
+    }
+  }
+  return '';
+}
+
+/**
  * Map an OC-requested model id onto Router routing knobs.
  * - Virtual profiles (tiermux/fast|smart|auto) select a routing profile.
  * - Real ids (platform::modelId) are passed through to pin a specific model.
  */
-function mapProfile(model: string | undefined): { model?: string; taskKind?: TaskKind } {
+function mapProfile(model: string | undefined, lastUserText?: string): { model?: string; taskKind?: TaskKind } {
+  // If sdk.ts set a forced model for this run, use it unconditionally — OC's session
+  // was created with a virtual profile (so OC accepts it without a registry entry),
+  // but the router must still force the real pinned model on every completion call.
+  const forced = getForcedModel();
+  if (forced) return { model: forced };
+
   // OC's @ai-sdk/openai-compatible adapter sends the BARE model id ("auto"/"fast"/
   // "smart"), not the provider-prefixed "tiermux/auto" we declare it under. Accept
   // both the bare id and the "tiermux/"-prefixed form so routing works either way.
@@ -284,15 +327,17 @@ function mapProfile(model: string | undefined): { model?: string; taskKind?: Tas
     return { model: 'auto' };
   }
   if (id === bare(PROFILE_FAST)) {
-    // Speed-first ordering (trivial/chat branch of orderForTask).
+    // Speed-first ordering — chat mode is always read-only Q&A, so fast wins.
     return { model: 'auto', taskKind: 'chat' };
   }
   if (id === bare(PROFILE_SMART)) {
-    // Intelligence-first ordering (agent branch): smartest tool-capable model.
-    return { model: 'auto', taskKind: 'agent' };
+    // Classify the actual user message so the right model comparator fires:
+    // debug → reasoning models, coding → coder-tagged, trivial → speed-first, etc.
+    // Falls back to 'agent' when there's no user text (e.g. health-check probes).
+    const kind: TaskKind = lastUserText ? classifyTask(lastUserText) : 'agent';
+    return { model: 'auto', taskKind: kind };
   }
-  // A real platform::modelId — pass the decoded id (not the original model string which
-  // may carry the 'tiermux/' prefix or the 'tm_' base64url encoding).
+  // A real tm_-encoded platform::modelId — pass the decoded id.
   return { model: id };
 }
 

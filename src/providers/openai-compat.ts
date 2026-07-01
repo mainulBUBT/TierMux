@@ -16,7 +16,7 @@ import { repairToolArguments, rescueInlineToolCalls, toolSchemaMap, sanitizeTool
 import { flattenMessageContent, stripFileBlocks } from '../agent/content';
 
 /** How a provider expects the reasoning-effort knob to be expressed. */
-export type ReasoningStyle = 'none' | 'effort' | 'openrouter';
+type ReasoningStyle = 'none' | 'effort' | 'openrouter';
 
 export interface OpenAICompatOpts {
   platform: Platform;

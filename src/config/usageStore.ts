@@ -13,7 +13,7 @@
 // signal, not a bill.
 import * as vscode from 'vscode';
 
-export interface LifetimeUsage {
+interface LifetimeUsage {
   totalPromptTokens: number;
   totalCompletionTokens: number;
   totalTokens: number;

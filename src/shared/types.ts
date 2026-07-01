@@ -37,7 +37,7 @@ export type Mode = 'chat' | 'plan' | 'agent';
 
 // ---- OpenAI-compatible chat types ----
 
-export interface ChatToolCallFunction {
+interface ChatToolCallFunction {
   name: string;
   arguments: string;
 }
@@ -49,7 +49,7 @@ export interface ChatToolCall {
   thought_signature?: string;
 }
 
-export interface ChatToolFunctionDefinition {
+interface ChatToolFunctionDefinition {
   name: string;
   description?: string;
   parameters?: Record<string, unknown>;
@@ -84,7 +84,7 @@ export interface TokenUsage {
   total_tokens: number;
 }
 
-export interface ChatCompletionChoice {
+interface ChatCompletionChoice {
   index: number;
   message: ChatMessage;
   finish_reason: string | null;

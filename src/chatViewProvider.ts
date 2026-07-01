@@ -38,7 +38,7 @@ const SLASH_PROMPTS: Record<string, string> = {
   doc: 'Write documentation/comments for the following / referenced code:',
 };
 
-export interface ChatDeps {
+interface ChatDeps {
   secrets: SecretStore;
   settings: SettingsStore;
   catalog: Catalog;

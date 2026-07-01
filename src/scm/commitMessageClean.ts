@@ -2,7 +2,7 @@
 // No `vscode` imports so this can be unit-tested standalone in scripts/selftest.ts.
 
 /** Known refusal / preamble prefixes that are never a valid commit message. */
-export const REFUSAL_PREFIXES = /^(i cannot|i'm sorry|im sorry|as an ai|sure[!,.]?\s*|okay[!,.]?\s*|certainly[!,.]?\s*|of course[!,.]?\s*)/i;
+const REFUSAL_PREFIXES = /^(i cannot|i'm sorry|im sorry|as an ai|sure[!,.]?\s*|okay[!,.]?\s*|certainly[!,.]?\s*|of course[!,.]?\s*)/i;
 
 /**
  * Reduce a raw model reply to ONLY the commit message. Strips reasoning

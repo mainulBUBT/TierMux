@@ -1,17 +1,6 @@
 import type { TodoItem } from '../shared/types';
 import { splitReasoning } from '../agent/content';
 
-/** A short relative-time label ("just now", "5m ago", "2h ago", "3d ago"). */
-export function timeAgo(ts: number): string {
-  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (s < 60) return 'just now';
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-}
-
 /**
  * Reduce a model's reply to a clean short title, or '' if it doesn't look like one.
  * Reasoning models often leak chain-of-thought (sometimes truncated mid-thought with

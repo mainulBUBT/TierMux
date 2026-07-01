@@ -90,7 +90,7 @@ export interface CheckpointFile {
   status: 'created' | 'modified' | 'deleted';
 }
 
-export interface IndexInfo {
+interface IndexInfo {
   enabled: boolean;
   built: boolean;
   files: number;
@@ -102,7 +102,7 @@ export interface IndexInfo {
   providerConfigured: boolean;
 }
 
-export interface CacheStatsPayload {
+interface CacheStatsPayload {
   fileCache: { entries: number; sizeKb: number; enabled: boolean };
   searchCache: { entries: number; enabled: boolean };
 }

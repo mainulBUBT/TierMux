@@ -18,7 +18,7 @@ import { pipeline } from 'stream/promises';
 const STABLE_DIR = 'tiermux-opencode-bin';
 const RELEASE_BASE = 'https://github.com/anomalyco/opencode/releases';
 
-export function detectOS(): 'windows' | 'macos' | 'linux' {
+function detectOS(): 'windows' | 'macos' | 'linux' {
   switch (os.platform()) {
     case 'win32': return 'windows';
     case 'darwin': return 'macos';
@@ -27,7 +27,7 @@ export function detectOS(): 'windows' | 'macos' | 'linux' {
   }
 }
 
-export function detectArch(): 'amd64' | 'arm64' {
+function detectArch(): 'amd64' | 'arm64' {
   switch (os.arch()) {
     case 'x64': return 'amd64';
     case 'arm64': return 'arm64';
@@ -44,7 +44,7 @@ function releaseTarget(osType: string, arch: string): string | undefined {
   return undefined;
 }
 
-export interface ResolveOptions {
+interface ResolveOptions {
   /** Writable cache dir (VS Code globalStoragePath) for the downloaded binary. */
   cacheDir?: string;
   /** Progress callback for the first-run download (surfaced in a withProgress notification). */

@@ -13,7 +13,7 @@ export interface EmbeddingConfig {
 }
 
 /** Carries the HTTP status so the retry layer can tell rate limits / server errors from hard failures. */
-export class EmbeddingHttpError extends Error {
+class EmbeddingHttpError extends Error {
   constructor(readonly status: number, readonly retryAfterMs: number | undefined, message: string) {
     super(message);
     this.name = 'EmbeddingHttpError';
@@ -40,7 +40,7 @@ export function getEmbeddingConfig(): EmbeddingConfig {
   return { platform, model };
 }
 
-export function defaultEmbeddingModel(platform: Platform): string {
+function defaultEmbeddingModel(platform: Platform): string {
   switch (platform) {
     case 'google': return 'gemini-embedding-001';
     case 'cohere': return 'embed-english-v3.0';

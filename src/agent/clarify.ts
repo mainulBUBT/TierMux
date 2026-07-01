@@ -7,7 +7,7 @@
 // plan with no regression.
 
 /** One selectable answer: a short title plus an optional one-line description. */
-export interface ClarifyOption {
+interface ClarifyOption {
   title: string;
   description?: string;
 }
@@ -19,7 +19,7 @@ export interface ClarifyingQuestion {
   options: ClarifyOption[];
 }
 
-export interface ParsedClarifying {
+interface ParsedClarifying {
   /** Non-null only when at least one well-formed question (>=2 options) was found. */
   questions: ClarifyingQuestion[] | null;
   /** The original text with any questions block removed, so sentinels never leak. */

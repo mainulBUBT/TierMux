@@ -17,7 +17,7 @@ export class ProviderHttpError extends Error {
 }
 
 /** Parse an HTTP `Retry-After` header (delta-seconds or HTTP-date) into ms. */
-export function parseRetryAfterMs(value: string | null | undefined): number | undefined {
+function parseRetryAfterMs(value: string | null | undefined): number | undefined {
   if (!value) return undefined;
   const trimmed = value.trim();
   if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1000;

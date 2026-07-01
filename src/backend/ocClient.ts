@@ -25,15 +25,15 @@ const PATHS = {
 };
 
 /** A user-message part OC understands ({ type: 'text', text }). */
-export interface TextPart { type: 'text'; text: string }
-export interface PromptBody {
+interface TextPart { type: 'text'; text: string }
+interface PromptBody {
   parts: TextPart[];
   model?: { providerID: string; modelID: string };
   agent?: string;
   variant?: string;
 }
 
-export interface OcSessionInfo { id: string; [k: string]: unknown }
+interface OcSessionInfo { id: string; [k: string]: unknown }
 
 /** OC ServerEvent shape (subset we act on). `properties` is event-specific. */
 export interface OcEvent { type: string; properties: any }

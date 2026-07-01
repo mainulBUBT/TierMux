@@ -6,14 +6,14 @@
 // OC serves in headless `serve` mode — the missing piece needed before the UI rewire.
 import type { OcConnection } from './ocLauncher';
 
-export interface CheckResult {
+interface CheckResult {
   label: string;
   ok: boolean;
   status?: number;
   detail: string;
 }
 
-export interface BridgeHandles {
+interface BridgeHandles {
   routerProxy?: { baseURL: string; close(): void };
   ocConnection?: OcConnection;
 }

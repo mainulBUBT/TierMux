@@ -90,7 +90,7 @@ export function isSupportedAttachmentPath(fsPath: string): boolean {
   return [...EXT_BY_KIND.image, ...EXT_BY_KIND.pdf, ...EXT_BY_KIND.doc, 'txt', 'json'].includes(ext);
 }
 
-export interface FileFilters {
+interface FileFilters {
   [label: string]: string[];
 }
 

@@ -9,7 +9,7 @@ import type { Router } from '../router/router';
 import type { ChatMessage, TodoItem, ReasoningEffort } from '../shared/types';
 import type { OcConnection } from '../backend/ocLauncher';
 import { OcClient } from '../backend/ocClient';
-import { getLastRoutedModel } from '../backend/routerProxy';
+import { getLastRoutedModel, setForcedModel } from '../backend/routerProxy';
 
 // ---- Trace toggle — when true, raw OC SSE frames are logged via the supplied sink. ----
 let traceOcEvents = false;
@@ -63,7 +63,7 @@ export interface AgentOpts {
   onError: (message: string) => void;
 }
 
-export type ToolSet = Record<string, any>;
+type ToolSet = Record<string, any>;
 
 // ---- OpenCode engine state ----
 
@@ -121,13 +121,16 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, escalate = false): Pro
     ocSessionModels.delete(key);
     ocId = undefined;
   }
-  // OC rejects model IDs containing special chars like '::', ':', '/' (500s on session create/prompt).
-  // Base64url-encode any non-virtual model ID so OC sees only safe alphanum chars.
-  // routerProxy decodes the 'tm_' prefix back to the real model before routing.
+  // Always use the virtual profile (fast/smart) for OC session creation so OC never needs
+  // to know about specific model IDs. OC's static model registry is built at launch time
+  // from enabled models — custom endpoint models added or enabled later would cause
+  // createSession to 400. Instead, we pass the real pinned model to routerProxy via
+  // setForcedModel (an in-process channel safe to use because runs are serialized) so the
+  // router forces it on every completion call without OC needing to know about it.
   const VIRTUAL = new Set(['auto', 'fast', 'smart']);
-  const ocModelID = VIRTUAL.has(modelID)
-    ? modelID
-    : 'tm_' + Buffer.from(modelID).toString('base64url');
+  const isVirtual = VIRTUAL.has(modelID);
+  const ocModelID = isVirtual ? modelID : profile;
+  if (!isVirtual) setForcedModel(modelID);
   if (!ocId) {
     try {
       // OC's createSession schema wants `model.id` (NOT `model.modelID`, which the
@@ -143,6 +146,7 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, escalate = false): Pro
       } else {
         console.error(`[tiermux] OC createSession returned no id. raw=`, JSON.stringify(info));
         opts.onError(`TierMux engine could not start a session. Raw response logged to DevTools console.`);
+        setForcedModel(undefined);
         return { text: '' };
       }
       ocSessions.set(key, ocId);
@@ -151,6 +155,7 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, escalate = false): Pro
     } catch (err) {
       console.error(`[tiermux] OC createSession failed:`, err);
       opts.onError(`TierMux engine failed to start a session: ${err instanceof Error ? err.message : err}`);
+      setForcedModel(undefined);
       return { text: '' };
     }
   } else {
@@ -176,6 +181,7 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, escalate = false): Pro
       done = true;
       clearTimeout(watchdog);
       unsub();
+      setForcedModel(undefined); // clear forced model so the next run starts clean
       // Replace the virtual profile ("fast"/"smart") with the concrete provider+model
       // the Router actually resolved this run onto, so the UI shows the real pick (e.g.
       // "chutes / stepfun/step-3.7-flash:free") instead of the generic "tiermux".

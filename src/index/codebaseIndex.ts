@@ -17,7 +17,7 @@ const BATCH = 16;
 interface Chunk { file: string; startLine: number; endLine: number; text: string; vector: number[] }
 interface IndexData { model: string; chunks: Chunk[] }
 
-export interface IndexStats { built: boolean; files: number; chunks: number; model: string; building: boolean; lastError?: string }
+interface IndexStats { built: boolean; files: number; chunks: number; model: string; building: boolean; lastError?: string }
 
 /** Live build progress, pushed to the chat webview so it can show a transient strip. */
 export interface IndexProgress { building: boolean; done: number; total: number; phase: 'scanning' | 'embedding' | 'done' | 'error' }

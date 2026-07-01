@@ -48,7 +48,7 @@ export interface RouteOptions extends CompletionOptions {
   onChunk?: (text: string) => void;
 }
 
-export interface RouteResult {
+interface RouteResult {
   response: ChatCompletionResponse;
   platform: Platform;
   model: string;
