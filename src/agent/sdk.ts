@@ -43,6 +43,15 @@ export function setHotStandby(on: boolean): void {
   hotStandbyEnabled = on;
 }
 
+// ---- Chat hedging toggle — when true, a short first chat turn races `fast` and `smart`
+// concurrently instead of sequentially, taking whichever produces a good answer first.
+// Wires to `tiermux.agent.chatHedging`. ----
+let hedgingEnabled = true;
+/** Setter for `extension.ts` to wire `tiermux.agent.chatHedging` (refreshed on config change). */
+export function setHedging(on: boolean): void {
+  hedgingEnabled = on;
+}
+
 // ---- Public types (frozen — chatViewProvider depends on these) ----
 
 export interface ToolEvent {
@@ -131,7 +140,13 @@ const FALLBACK_CHAIN: Record<'chat' | 'agent' | 'plan', string[]> = {
  * fetches the session messages as a fallback so we always return *something* when OC did
  * produce output.
  */
-async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0, staleOcId?: string): Promise<AgentResult> {
+async function runViaOc(
+  opts: AgentOpts,
+  _retryCount = 0,
+  chainIndex = 0,
+  staleOcId?: string,
+  onSessionId?: (id: string) => void,
+): Promise<AgentResult> {
   if (!ocClient) {
     opts.onError('TierMux engine is not running. Run "npm run fetch:binaries" (or set OPENCODE_BIN), then reload the window.');
     return { text: '' };
@@ -174,7 +189,12 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0, staleO
   // router forces it on every completion call without OC needing to know about it.
   const VIRTUAL = new Set(['auto', 'fast', 'smart']);
   const isVirtual = VIRTUAL.has(modelID);
-  const ocModelID = isVirtual ? modelID : profile;
+  // `profile` is NOT safe to use here when pinned: `chain` collapses to `[pinned]` in that
+  // case, so `profile` is the raw "platform::modelId" pin itself, not a virtual name — OC
+  // 400s on it. Use the mode's own virtual chain position instead so createSession always
+  // gets a name OC recognizes, regardless of whether this run is pinned.
+  const virtualChain = FALLBACK_CHAIN[opts.mode] ?? ['smart'];
+  const ocModelID = isVirtual ? modelID : virtualChain[Math.min(hop, virtualChain.length - 1)];
   if (!isVirtual) setForcedModel(modelID);
 
   const prewarmKey = `${key}:${hop}`;
@@ -254,6 +274,7 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0, staleO
   } else {
     console.log(`[tiermux] reusing OC session id=${ocId} model=${modelID}`);
   }
+  onSessionId?.(ocId); // internal hook (Chat Hedging) — lets a caller track this hop's OC session id
 
   // Send only the latest user message — OC maintains the conversation server-side.
   const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
@@ -797,7 +818,96 @@ function extractLastAssistantText(msgs: unknown): string {
  * codebase and realtime questions; the lean tool set keeps trivial questions to ~one round-trip.)
  */
 export async function runChatStream(_router: Router, opts: AgentOpts): Promise<AgentResult> {
-  return runViaOc({ ...opts, mode: 'chat' });
+  const full: AgentOpts = { ...opts, mode: 'chat' };
+  return isHedgeEligible(full) ? runChatHedged(full) : runViaOc(full);
+}
+
+// ---- Chat-Turn Request Hedging (turn-1-only) --------------------------------------
+// Short heuristic for "cheap enough to double-run" — mirrors the too-short word floors
+// already used for 'chat' in answerQuality.ts, just at the character level since we
+// haven't classified the turn yet at eligibility-check time.
+const HEDGE_MAX_CHARS = 300;
+
+/**
+ * Hedging only applies to the FIRST turn of a brand-new chat session (no existing OC
+ * session for this key yet). A fresh challenger session has no server-side history —
+ * OC scopes history per session id — so racing every turn would require replaying the
+ * whole prior transcript into the challenger, which risks a fluent-but-context-blind
+ * answer "winning" the quality gate despite being wrong. Turn 1 has no such risk: the
+ * latest message IS the whole context, so both legs start on equal footing.
+ */
+function isHedgeEligible(opts: AgentOpts): boolean {
+  if (!hedgingEnabled || opts.mode !== 'chat') return false;
+  if (opts.pinnedModel && opts.pinnedModel !== 'auto') return false; // nothing to race
+  const key = opts.sessionId ?? '__default__';
+  if (ocSessions.has(key)) return false; // only the first turn of a new session
+  const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
+  const text = typeof lastUser?.content === 'string' ? lastUser.content : '';
+  if (!text || text.length > HEDGE_MAX_CHARS) return false;
+  const kind = classifyTask(text);
+  return kind === 'chat' || kind === 'trivial';
+}
+
+/**
+ * Races `fast` and `smart` concurrently for a short first turn, taking whichever
+ * produces a good (quality-gate-passing) answer first. Each leg runs as a PINNED model
+ * (`runViaOc` then treats it as a length-1 chain, `isFinalHop=true`), so neither leg
+ * escalates or pre-warms internally — this function is the only orchestration layer.
+ * Chunks are buffered per leg (never forwarded live) since two concurrent streams can't
+ * be interleaved into one chat bubble without garbling; the winner's buffered text is
+ * flushed in one shot once chosen.
+ */
+async function runChatHedged(opts: AgentOpts): Promise<AgentResult> {
+  const key = opts.sessionId ?? '__default__';
+  const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
+  const userText = typeof lastUser?.content === 'string' ? lastUser.content : '';
+  const taskKind = classifyTask(userText);
+
+  type Profile = 'fast' | 'smart';
+  interface LegState { buffered: string; modelID?: string; runtimeName?: string; platform?: string; ocId?: string; result?: AgentResult; err?: Error }
+  const legs: Record<Profile, LegState> = { fast: { buffered: '' }, smart: { buffered: '' } };
+  let winner: Profile | undefined;
+
+  const flushWinner = (which: Profile): void => {
+    if (winner) return;
+    winner = which;
+    const other: Profile = which === 'fast' ? 'smart' : 'fast';
+    if (legs[which].buffered) opts.onChunk(legs[which].buffered); // one flush — no live token streaming during the race
+    if (legs[which].platform && legs[which].modelID) {
+      opts.onModel(legs[which].platform!, legs[which].modelID!, legs[which].runtimeName);
+    }
+    ocSessions.set(key, legs[which].ocId!);
+    ocSessionModels.set(key, legs[which].modelID ?? which);
+    if (legs[other].ocId) void ocClient?.abort(legs[other].ocId);
+  };
+
+  const runLeg = async (which: Profile): Promise<void> => {
+    const leg = legs[which];
+    const legOpts: AgentOpts = {
+      ...opts,
+      pinnedModel: which,
+      onChunk: (t) => { leg.buffered += t; if (winner === which) opts.onChunk(t); },
+      onModel: (p, m, rt) => { leg.platform = p; leg.modelID = m; leg.runtimeName = rt; if (winner === which) opts.onModel(p, m, rt); },
+      onFailover: () => {}, // a hedge leg is a length-1 chain (isFinalHop) — nothing to escalate to, nothing to report
+    };
+    try {
+      const r = await runViaOc(legOpts, 0, 0, undefined, (id) => { leg.ocId = id; });
+      leg.result = r;
+      const q = assessAnswerQuality(r.text, taskKind);
+      if (!q.weak) flushWinner(which);
+    } catch (err) {
+      leg.err = err as Error;
+    }
+  };
+
+  await Promise.allSettled([runLeg('fast'), runLeg('smart')]);
+  if (!winner) {
+    // Neither leg was clearly good — accept whichever actually finished (prefer smart).
+    const pick: Profile | undefined = legs.smart.result ? 'smart' : legs.fast.result ? 'fast' : undefined;
+    if (pick) { flushWinner(pick); return legs[pick].result!; }
+    throw legs.smart.err ?? legs.fast.err ?? new Error('Both hedge legs failed');
+  }
+  return legs[winner].result!;
 }
 
 /** Agent mode: full tool loop via OC `build` over `tiermux/smart`. */

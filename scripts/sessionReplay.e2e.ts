@@ -11,7 +11,7 @@
 // Run:  npm run test:e2e:replay
 // (bundles to dist/sessionReplay.e2e.cjs — gitignored — and runs it)
 import http from 'http';
-import { setOcEngine, setQualityGate, setHotStandby, runChatStream, type AgentOpts } from '../src/agent/sdk';
+import { setOcEngine, setQualityGate, setHotStandby, setHedging, runChatStream, type AgentOpts } from '../src/agent/sdk';
 import type { ChatMessage } from '../src/shared/types';
 import type { OcConnection } from '../src/backend/ocLauncher';
 
@@ -178,6 +178,7 @@ async function main() {
   setOcEngine(conn);
   setQualityGate(true);
   setHotStandby(false); // isolate this suite from Hot Standby's own prewarm noise except where explicitly tested
+  setHedging(false); // hedging races turn 1, independent of session replay — isolate it here too
 
   // --- Test 1: escalation preserves context ---------------------------------------
   resetAll();

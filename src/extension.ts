@@ -14,7 +14,7 @@ import { EditGate } from './edits/applyEdit';
 import { CommandGate, type CommandApproval } from './edits/commandGate';
 import { registerCheckpointContentProvider } from './edits/checkpoints';
 // (ToolCache was removed in v7 — its no-op stand-in is no longer needed.)
-import { setOcEngine, setOcTrace, setQualityGate, setHotStandby } from './agent/sdk';
+import { setOcEngine, setOcTrace, setQualityGate, setHotStandby, setHedging } from './agent/sdk';
 import { McpManager } from './mcp/mcpManager';
 import { CodebaseIndex } from './index/codebaseIndex';
 import { ChatViewProvider } from './chatViewProvider';
@@ -130,6 +130,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // so escalation is instant. Default on; re-read in the listener below.
   setHotStandby(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('hotStandby', true));
 
+  // Chat hedging: race fast+smart for a short first chat turn. Default on; re-read below.
+  setHedging(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('chatHedging', true));
+
   // One shared checkpoint content provider for every session (VS Code allows one per scheme);
   // each ChatViewProvider session owns its own CheckpointManager data on top of it.
   context.subscriptions.push(registerCheckpointContentProvider());
@@ -231,6 +234,9 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       if (e.affectsConfiguration('tiermux.agent.hotStandby')) {
         setHotStandby(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('hotStandby', true));
+      }
+      if (e.affectsConfiguration('tiermux.agent.chatHedging')) {
+        setHedging(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('chatHedging', true));
       }
       if (e.affectsConfiguration('tiermux.catalog')) {
         void catalog.refresh(

@@ -9,7 +9,7 @@
 // Run:  npm run test:e2e
 // (bundles to dist/qualityGate.e2e.cjs — gitignored — and runs it)
 import http from 'http';
-import { setOcEngine, setQualityGate, setHotStandby, runChatStream, type AgentOpts } from '../src/agent/sdk';
+import { setOcEngine, setQualityGate, setHotStandby, setHedging, runChatStream, type AgentOpts } from '../src/agent/sdk';
 import type { OcConnection } from '../src/backend/ocLauncher';
 
 let failures = 0;
@@ -124,9 +124,11 @@ async function main() {
   const conn: OcConnection = { port, baseURL: `http://127.0.0.1:${port}`, password: 'test' };
   setOcEngine(conn);
   setQualityGate(true);
-  // Hot standby pre-warms the next hop's session independently of the quality gate —
-  // disable it here so session-count assertions below stay scoped to gate behavior.
+  // Hot standby pre-warms the next hop's session, and hedging races fast+smart on turn 1 —
+  // both independent of the quality gate. Disable both so session-count assertions below
+  // stay scoped to gate behavior.
   setHotStandby(false);
+  setHedging(false);
 
   // --- Test 1: weak (refusal) answer on fast → escalates to smart, smart gives good answer
   reset([REFUSAL, GOOD]);

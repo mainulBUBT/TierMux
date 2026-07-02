@@ -8,7 +8,7 @@
 // Run:  npm run test:e2e:prewarm
 // (bundles to dist/hotStandby.e2e.cjs — gitignored — and runs it)
 import http from 'http';
-import { setOcEngine, setQualityGate, setHotStandby, runChatStream, type AgentOpts } from '../src/agent/sdk';
+import { setOcEngine, setQualityGate, setHotStandby, setHedging, runChatStream, type AgentOpts } from '../src/agent/sdk';
 import type { OcConnection } from '../src/backend/ocLauncher';
 
 let failures = 0;
@@ -129,6 +129,9 @@ async function main() {
   setOcEngine(conn);
   setQualityGate(true);
   setHotStandby(true);
+  // Hedging races fast+smart on turn 1, independent of hot standby — disable it so
+  // session-count assertions below stay scoped to prewarm behavior.
+  setHedging(false);
 
   // --- Test 1: weak answer on fast → escalates to smart; hop1 must reuse the
   // pre-warmed session (no lazy createSession at escalation time).

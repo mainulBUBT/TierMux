@@ -310,12 +310,6 @@ function extractLastUserText(messages: unknown[]): string {
  * - Real ids (platform::modelId) are passed through to pin a specific model.
  */
 function mapProfile(model: string | undefined, lastUserText?: string): { model?: string; taskKind?: TaskKind } {
-  // If sdk.ts set a forced model for this run, use it unconditionally — OC's session
-  // was created with a virtual profile (so OC accepts it without a registry entry),
-  // but the router must still force the real pinned model on every completion call.
-  const forced = getForcedModel();
-  if (forced) return { model: forced };
-
   // OC's @ai-sdk/openai-compatible adapter sends the BARE model id ("auto"/"fast"/
   // "smart"), not the provider-prefixed "tiermux/auto" we declare it under. Accept
   // both the bare id and the "tiermux/"-prefixed form so routing works either way.
@@ -323,6 +317,15 @@ function mapProfile(model: string | undefined, lastUserText?: string): { model?:
   // Decode base64url-encoded model IDs (sdk.ts encodes any non-virtual model with 'tm_' prefix
   // because OC rejects special chars like '::', ':', '/' in model IDs and returns 500).
   const decode = (p: string) => p.startsWith('tm_') ? Buffer.from(p.slice(3), 'base64url').toString('utf8') : p;
+
+  // If sdk.ts set a forced model for this run, use it unconditionally — OC's session
+  // was created with a virtual profile (so OC accepts it without a registry entry),
+  // but the router must still force the real pinned model on every completion call.
+  // The forced value is the same tm_-encoded id sdk.ts got from /v1/models, so it needs
+  // the same decode as every other path or the router ends up "routing" to the literal
+  // base64 string instead of the real platform::modelId.
+  const forced = getForcedModel();
+  if (forced) return { model: decode(bare(forced)) };
   const id = decode(bare(model ?? PROFILE_AUTO));
   if (id === bare(PROFILE_AUTO)) {
     return { model: 'auto' };
