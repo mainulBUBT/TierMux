@@ -188,6 +188,23 @@
       "released": "2026-04"
     },
     {
+      "platform": "google",
+      "modelId": "gemini-3.1-flash-lite",
+      "displayName": "Gemini 3.1 Flash-Lite",
+      "intelligenceRank": 3,
+      "speedRank": 1,
+      "sizeLabel": "Large",
+      "contextWindow": 1000000,
+      "rpmLimit": 30,
+      "rpdLimit": 1500,
+      "monthlyTokenBudget": "~free tier",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "released": "2025-09",
+      "insight": "Not available in EU/UK/CH"
+    },
+    {
       "platform": "groq",
       "modelId": "openai/gpt-oss-120b",
       "displayName": "GPT-OSS 120B (Groq)",
