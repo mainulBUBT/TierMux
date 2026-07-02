@@ -3,6 +3,7 @@
 // session-scoped (reset on New chat; not persisted across window reloads).
 import * as vscode from 'vscode';
 import type { CheckpointFile } from '../messages';
+import { captureWorkingTree, changedSince, restoreToTree } from './gitSnapshot';
 
 const SCHEME = 'fla-checkpoint';
 
@@ -43,17 +44,29 @@ export function registerCheckpointContentProvider(): vscode.Disposable {
 let diffTokenSeq = 0;
 
 interface Snapshot { uri: vscode.Uri; rel: string; before: string | null }
-interface Checkpoint { id: string; requestId: string; label: string; ts: number; snaps: Map<string, Snapshot> }
+interface Checkpoint { id: string; requestId: string; label: string; ts: number; snaps: Map<string, Snapshot>; beginTree?: string }
 
 export class CheckpointManager {
   private readonly provider = baselineProvider;
+  private readonly cwd?: string;
   private checkpoints: Checkpoint[] = [];
   private current?: Checkpoint;
   private counter = 0;
 
-  /** Open a checkpoint for a new agent turn. */
-  begin(requestId: string, label: string): void {
-    this.current = { id: `cp${++this.counter}`, requestId, label, ts: Date.now(), snaps: new Map() };
+  constructor(cwd?: string) {
+    this.cwd = cwd;
+  }
+
+  /**
+   * Open a checkpoint for a new agent turn. Captures the working tree as a git snapshot
+   * (non-mutating) so edits the agent applies DIRECTLY to the workspace — bypassing
+   * TierMux's EditGate/record() — are still revertible. Must be awaited before the run
+   * applies edits, so the begin tree is captured first. In a non-git repo beginTree stays
+   * undefined and the record()/snaps fallback path is used instead.
+   */
+  async begin(requestId: string, label: string): Promise<void> {
+    const beginTree = this.cwd ? await captureWorkingTree(this.cwd) : undefined;
+    this.current = { id: `cp${++this.counter}`, requestId, label, ts: Date.now(), snaps: new Map(), beginTree: beginTree ?? undefined };
   }
 
   /** Record a file's pre-edit content the first time it's touched in this turn. */
@@ -65,11 +78,11 @@ export class CheckpointManager {
     cp.snaps.set(key, { uri, rel: vscode.workspace.asRelativePath(uri), before });
   }
 
-  /** Finalize the current checkpoint; keep it only if it captured edits. */
+  /** Finalize the current checkpoint; keep it if it captured edits OR a git begin tree. */
   commit(): string | undefined {
     const cp = this.current;
     this.current = undefined;
-    if (!cp || cp.snaps.size === 0) return undefined;
+    if (!cp || (cp.snaps.size === 0 && !cp.beginTree)) return undefined;
     this.checkpoints.push(cp);
     return cp.id;
   }
@@ -97,8 +110,27 @@ export class CheckpointManager {
     return earliest;
   }
 
-  /** Files that would be reverted by restoring to before this message (by content). */
+  /**
+   * The git working tree captured at the START of checkpoint `id` — i.e. the workspace state
+   * immediately before that turn. Used as the restore target in git mode. Falls back to a
+   * later checkpoint's beginTree if `id`'s capture failed, and ultimately to undefined
+   * (snaps path).
+   */
+  private beginTreeSince(id: string): string | undefined {
+    const start = this.checkpoints.findIndex((c) => c.id === id);
+    if (start < 0) return undefined;
+    for (let i = start; i < this.checkpoints.length; i++) {
+      if (this.checkpoints[i].beginTree) return this.checkpoints[i].beginTree;
+    }
+    return undefined;
+  }
+
+  /** Files that would be reverted by restoring to before this message. */
   async changedFiles(id: string): Promise<CheckpointFile[]> {
+    // Git mode: diff the working tree against the begin tree (sees edits OC applied directly).
+    const beginTree = this.beginTreeSince(id);
+    if (beginTree && this.cwd) return changedSince(this.cwd, beginTree);
+    // Fallback: per-file content snapshots from EditGate.record() (inline-chat / non-git).
     const out: CheckpointFile[] = [];
     for (const s of this.aggregateSince(id).values()) {
       const cur = await this.read(s.uri);
@@ -111,6 +143,10 @@ export class CheckpointManager {
 
   /** Restore the workspace to its state before this message. Returns # restored. */
   async restore(id: string): Promise<number> {
+    // Git mode: restore the working tree to the begin tree (worktree only — never touches index/HEAD).
+    const beginTree = this.beginTreeSince(id);
+    if (beginTree && this.cwd) return restoreToTree(this.cwd, beginTree);
+    // Fallback: replay per-file baselines.
     let n = 0;
     for (const s of this.aggregateSince(id).values()) {
       try {

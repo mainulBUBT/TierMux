@@ -138,17 +138,46 @@ details[open].work-summary > .work-sum-label { opacity: .7; }
    answer streams in (the "Worked for Ns" disclosure then takes over). */
 .agent-status { display: flex; align-items: center; gap: 7px; font-size: 12px; opacity: .85; padding: 2px 2px 4px; }
 .agent-status.hidden { display: none; }
-/* Three-dot "typing" indicator — the standard live-working affordance. */
-.agent-dots { display: inline-flex; gap: 3px; flex: 0 0 auto; align-items: center; }
+/* Single-glyph spinner — Claude-Code-style. Cycles a star via ::before content (Chromium
+   webview supports animating `content`). Calmer than bouncing dots. */
+.agent-spin { flex: 0 0 auto; width: 1.1em; text-align: center; opacity: .85; color: var(--vscode-textLink-foreground, #4daafc); }
+.agent-spin::before { content: '✻'; animation: spin-glyph 1s steps(1) infinite; }
+@keyframes spin-glyph {
+  0%   { content: '✢'; }
+  16%  { content: '✳'; }
+  33%  { content: '✶'; }
+  50%  { content: '✻'; }
+  66%  { content: '✽'; }
+  83%  { content: '✶'; }
+  100% { content: '✢'; }
+}
+/* Three bouncing dots — the classic "is typing" indicator, shown beside the rolling
+   thinking verb. Calmer-weight version: small, slow, staggered. */
+.agent-dots { flex: 0 0 auto; display: inline-flex; gap: 3px; align-items: center; margin-right: 1px; }
 .agent-dots span {
-  width: 5px; height: 5px; border-radius: 50%;
-  background: var(--vscode-progressBar-background, #0a84ff);
-  animation: dot-bounce 1.2s ease-in-out infinite;
+  width: 4px; height: 4px; border-radius: 50%;
+  background: var(--vscode-textLink-foreground, #4daafc);
+  opacity: .5;
+  animation: agent-dot-bounce 1.2s infinite ease-in-out;
 }
 .agent-dots span:nth-child(2) { animation-delay: .15s; }
 .agent-dots span:nth-child(3) { animation-delay: .3s; }
-@keyframes dot-bounce { 0%, 80%, 100% { opacity: .3; transform: scale(.7); } 40% { opacity: 1; transform: scale(1); } }
-.agent-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes agent-dot-bounce {
+  0%, 80%, 100% { transform: translateY(0) scale(.7); opacity: .35; }
+  40%           { transform: translateY(-3px) scale(1);  opacity: 1; }
+}
+/* Blinking block caret that trails the verb while it's being "written" (thinking phase).
+   Toggled via the .hidden class from JS when a tool verb or "Responding…" takes over. */
+.agent-caret {
+  margin-left: 1px; font-weight: 600;
+  color: var(--vscode-textLink-foreground, #4daafc);
+  animation: agent-caret-blink 1s steps(1) infinite;
+}
+.agent-caret.hidden { display: none; }
+@keyframes agent-caret-blink { 50% { opacity: 0; } }
+.agent-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-model { flex: 1 1 auto; min-width: 0; margin-left: 8px; opacity: .55; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-model:empty { display: none; }
 .agent-elapsed { flex: 0 0 auto; opacity: .6; font-variant-numeric: tabular-nums; font-size: 11px; }
 .bubble pre {
   background: var(--vscode-textCodeBlock-background, #1e1e1e);
@@ -201,8 +230,9 @@ details[open].work-summary > .work-sum-label { opacity: .7; }
 .tool-ic { flex: 0 0 14px; font-size: 11px; opacity: .55; text-align: center; }
 .tool-title {
   flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; opacity: .9;
+  font-size: 12px; opacity: .9;
 }
+.tool-title .count { opacity: .55; font-weight: 400; }
 .tool-hint { flex: 0 0 auto; font-size: 10.5px; opacity: .45; white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
 .tool-card .state {
   flex: 0 0 auto; font-size: 11px; line-height: 1;
@@ -262,22 +292,6 @@ details[open].think-block > details > summary::before { content: '▾ '; }
 .think-block[data-live='1'] > details > summary { opacity: .8; }
 @keyframes think-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-/* Blinking cursor at end of streaming text. Walks the "last child" chain down to the
-   innermost leaf (no element children) so it lands on the actual last rendered text —
-   not detached below a container block like a code fence, list, or table. */
-.bubble.streaming > *:last-child:not(:has(*))::after,
-.bubble.streaming > *:last-child > *:last-child:not(:has(*))::after,
-.bubble.streaming > *:last-child > *:last-child > *:last-child:not(:has(*))::after,
-.bubble.streaming > *:last-child > *:last-child > *:last-child > *:last-child:not(:has(*))::after {
-  content: '▋';
-  display: inline;
-  color: var(--vscode-progressBar-background, #0a84ff);
-  animation: cur-blink .65s step-start infinite;
-  font-size: .8em;
-  margin-left: 1px;
-  vertical-align: baseline;
-}
-@keyframes cur-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 .think-ic { flex: 0 0 auto; font-size: 11px; }
 .think-cap { letter-spacing: .01em; }
 .think-body { margin-top: 4px; opacity: .75; font-style: italic; font-size: 11.5px; }
@@ -420,6 +434,13 @@ details[open].think-block > details > summary::before { content: '▾ '; }
 .clarify-meta-count { font-variant-numeric: tabular-nums; }
 .clarify-dismiss { background: none; border: none; padding: 0; cursor: pointer; font-size: 11px; color: var(--vscode-textLink-foreground, #4daafc); }
 .clarify-dismiss:hover { text-decoration: underline; }
+/* Collapsed "submitted / dismissed" recap shown in place of the question form once the
+   user answers, so the card clearly reflects that the input was accepted (not stale). */
+.clarify.done { border-style: dashed; opacity: .92; }
+.clarify-recap { display: flex; flex-direction: column; gap: 3px; margin-top: 2px; }
+.clarify-recap-row { display: flex; gap: 6px; font-size: 12px; line-height: 1.4; }
+.clarify-recap-q { flex: 0 0 auto; opacity: .6; }
+.clarify-recap-a { font-weight: 600; min-width: 0; word-break: break-word; }
 
 /* Plan → Agent handoff */
 .todo-plan-head { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; opacity: .6; margin-bottom: 4px; }

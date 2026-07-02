@@ -799,58 +799,138 @@
     const flow = document.createElement('div'); flow.className = 'flow';
     const statusEl = document.createElement('div');
     statusEl.className = 'agent-status';
-    statusEl.innerHTML = `<span class="agent-dots"><span></span><span></span><span></span></span><span class="agent-label">Working…</span><span class="agent-elapsed"></span>`;
+    statusEl.innerHTML = `<span class="agent-dots"><span></span><span></span><span></span></span><span class="agent-label"></span><span class="agent-caret">▍</span><span class="agent-model"></span><span class="agent-elapsed"></span>`;
     // `bubble` stays AFTER the flow for interactive cards (approvals/plans/clarify) and the
     // non-streamed final answer — keeping those paths untouched.
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    el.appendChild(statusEl);
+    // statusEl sits AFTER the flow so the live "Working." indicator appears at the END of
+    // the activity feed (below tool cards / streaming text), matching Antigravity — not as a
+    // header above. It's hidden on completion by stopStatusTimer(); the flow then collapses
+    // into the "Worked for Ns ▼" summary.
     el.appendChild(flow);
+    el.appendChild(statusEl);
     el.appendChild(bubble);
     (currentTurn || thread).appendChild(el);
     const modelStr = model ? `${platform || ''}/${model}` : '';
-    t = { el, body: bubble, tools: flow, flow, currentText: null, statusEl, statusLabel: statusEl.querySelector('.agent-label'), statusElapsed: statusEl.querySelector('.agent-elapsed'), model: modelStr, requestId };
+    t = { el, body: bubble, tools: flow, flow, currentText: null, statusEl, statusLabel: statusEl.querySelector('.agent-label'), statusCaret: statusEl.querySelector('.agent-caret'), statusModel: statusEl.querySelector('.agent-model'), statusElapsed: statusEl.querySelector('.agent-elapsed'), toolRunning: false, activeTool: null, model: modelStr, requestId };
     targets.set(requestId, t);
     scrollDown();
     return t;
   }
 
-  // ---------- live "agent is working" status header ----------
+  // ---------- live "agent is working" status line ----------
   // Keep the last two segments of a path so absolute workspace paths stay tidy.
   function shortPath(p) {
     const s = String(p || '').replace(/\\/g, '/').replace(/^\.?\//, '');
     const parts = s.split('/').filter(Boolean);
     return parts.length <= 2 ? parts.join('/') : parts.slice(-2).join('/');
   }
-  // Present-tense "what the agent is doing right now" for the live status line.
-  function toolVerb(name, args) {
-    if (name === 'step' && args && typeof args === 'object') {
-      return args.of ? `Step ${args.step}/${args.of}` : 'Working on a step';
-    }
-    const path = shortPath(firstArg(args));
-    const obj = args && typeof args === 'object' ? args : {};
-    const query = String(obj.query || obj.pattern || obj.term || '').trim();
-    const cmd = String(obj.command || obj.cmd || '').trim();
+  // Present-tense "what the agent is doing right now" for the rolling status label.
+  // (The tool CARDS in the feed use the past-tense toolLabel() — "Analyzed/Searched…".
+  //  This is the live verb shown beside the spinner, Claude-Code-style.)
+  function activityFor(name, args) {
+    const ao = args && typeof args === 'object' ? args : {};
+    const a = String(firstArg(args) || '');
+    const path = shortPath(a);
+    const query = String(ao.query || ao.pattern || ao.term || '').trim();
+    const cmd = String(ao.command || ao.cmd || '').trim();
     switch (name) {
       case 'readFile':        return path ? `Reading ${path}` : 'Reading a file';
       case 'listDir':         return path ? `Listing ${path}` : 'Listing files';
-      case 'repoMap':         return 'Mapping the repository';
-      case 'searchWorkspace': return query ? `Searching for “${query}”` : 'Searching the workspace';
-      case 'getDiagnostics':  return 'Checking diagnostics';
-      case 'runCommand': {
-        const c = cmd.split(/\s+/).slice(0, 6).join(' ');
-        return c ? `Running: ${c}` : 'Running a command';
-      }
+      case 'searchWorkspace':
+      case 'grep':            return query ? `Searching “${query}”` : 'Searching';
+      case 'glob':            return query ? `Globbing ${query}` : 'Globbing files';
+      case 'runCommand':      { const c = cmd.split(/\s+/).slice(0, 5).join(' '); return c ? `Running ${c}` : 'Running a command'; }
       case 'writeFile':
       case 'createFile':      return path ? `Writing ${path}` : 'Writing a file';
-      case 'editFile':        return path ? `Editing ${path}` : 'Editing a file';
-      case 'deleteFile':      return path ? `Deleting ${path}` : 'Deleting a file';
+      case 'editFile':        return path ? `Editing ${path}` : 'Editing';
+      case 'deleteFile':      return path ? `Deleting ${path}` : 'Deleting';
+      case 'webSearch':       return query ? `Searching the web for “${query}”` : 'Searching the web';
+      case 'webFetch':        return a ? `Fetching ${shortPath(a)}` : 'Fetching';
+      case 'getDiagnostics':  return 'Checking diagnostics';
+      case 'repoMap':         return 'Mapping the repository';
       default:
-        if (name && name.indexOf('mcp__') === 0) {
-          const seg = name.split('__'); return `Calling ${seg[1] || 'MCP tool'}`;
-        }
-        return name ? (name.charAt(0).toUpperCase() + name.slice(1) + '…') : 'Working…';
+        if (name && name.indexOf('mcp__') === 0) return `Calling ${name.split('__')[1] || 'MCP tool'}`;
+        return name ? (name.charAt(0).toUpperCase() + name.slice(1) + '…') : 'Working.';
     }
+  }
+  // Whimsical rolling verbs for the thinking phase (Claude-Code-style): while the
+  // agent is "working" but no concrete tool verb or streaming response applies, the
+  // spinner cycles through these so the status feels alive instead of a static word.
+  // Whimsical rolling verbs for the thinking phase (Claude-Code-style). Stored as
+  // lowercase bases and capitalized on display so the list is easy to scan/edit.
+  // Mix of "real" thinking words and silly ones to keep it playful.
+  const THINKING_VERBS = [
+    'cogitating', 'pondering', 'mulling', 'ruminating', 'deliberating', 'meditating',
+    'cerebrating', 'contemplating', 'reflecting',
+    'reasoning', 'thinking', 'weighing', 'puzzling', 'untangling', 'deciphering', 'decoding',
+    'parsing', 'calculating', 'computing', 'crunching', 'processing', 'percolating', 'marinating',
+    'simmering', 'stewing', 'steeping', 'brewing', 'distilling', 'fermenting', 'cooking', 'baking',
+    'stitching', 'weaving', 'knitting', 'folding', 'spinning', 'forging', 'crafting', 'shaping',
+    'polishing', 'sanding', 'tinkering', 'fiddling', 'toying', 'wrangling', 'herding', 'juggling',
+    'conjuring', 'summoning', 'divining', 'channeling', 'crystallizing', 'synthesizing',
+    'orchestrating', 'scheming', 'dreaming', 'noodling', 'booping', 'combobulating', 'typing',
+    'writing', 'doodling', 'scribbling', 'sketching',
+  ];
+  // Labels that mean "idle thinking" — when one of these is set, we engage the rolling
+  // verb instead of showing the literal word. Tool verbs and "Responding…" opt out.
+  const IDLE_LABELS = new Set(['Thinking…', 'Working…', 'Working.', 'Reasoning…']);
+  // Random gap between verb rotations, 2–5s, so the rolling word doesn't feel metronomic.
+  function nextRotateDelay() { return 2000 + Math.floor(Math.random() * 3001); }
+  // Pick a whimsical verb different from the previous one (avoids the same word twice
+  // in a row, which reads like a frozen label). `prevDisplay` is the last shown "Verb…".
+  function pickThinkingVerb(prevDisplay) {
+    const prev = String(prevDisplay || '').toLowerCase().replace(/…$/, '');
+    let base = prev, guard = 0;
+    while (base === prev && guard++ < 8) base = THINKING_VERBS[Math.floor(Math.random() * THINKING_VERBS.length)];
+    return base.charAt(0).toUpperCase() + base.slice(1) + '…';
+  }
+  // Type a verb out one character at a time with a trailing cursor, so the live label
+  // reads like the assistant is *writing* the word right now. Cancels any in-flight type
+  // on the same target first. Holds the full word (cursor still blinking via CSS) once done.
+  function typeVerb(requestId, fullVerb) {
+    const t = targets.get(requestId);
+    if (!t || !t.statusLabel) return;
+    if (t._typeTimer) { clearInterval(t._typeTimer); t._typeTimer = null; }
+    const speed = 45; // ms per character — brisk but legible
+    let i = 0;
+    const reveal = () => {
+      i++;
+      t.statusLabel.textContent = fullVerb.slice(0, i);
+      if (i >= fullVerb.length) { clearInterval(t._typeTimer); t._typeTimer = null; }
+    };
+    reveal(); // first char immediately so it never looks empty
+    t._typeTimer = setInterval(reveal, speed);
+  }
+  // Set the rolling status label. While a tool is running, only that tool's own updates
+  // (opts.tool) or a terminal revert (opts.done) may change the label — stray reasoning
+  // deltas / text chunks must NOT clobber the live tool verb. Returns true if it wrote.
+  function setStatusLabel(requestId, text, opts) {
+    const t = targets.get(requestId);
+    if (!t || !t.statusLabel) return false;
+    opts = opts || {};
+    if (t.toolRunning && !opts.force && !opts.tool && !opts.done) return false;
+    if (opts.tool) t.toolRunning = true;
+    if (opts.done) t.toolRunning = false;
+    if (text != null) {
+      if (IDLE_LABELS.has(text)) {
+        // Engage the rolling whimsical verb for the thinking phase; startStatusTimer
+        // rotates it every 2–5s until a tool verb or "Responding…" takes over. The verb
+        // is typed out char-by-char with a blinking caret so it reads like live writing.
+        t.rotating = true;
+        t.rotateWord = pickThinkingVerb(t.rotateWord);
+        t.nextRotateAt = Date.now() + nextRotateDelay();
+        if (t.statusCaret) t.statusCaret.classList.remove('hidden');
+        typeVerb(requestId, t.rotateWord);
+      } else {
+        t.rotating = false;
+        if (t._typeTimer) { clearInterval(t._typeTimer); t._typeTimer = null; }
+        if (t.statusCaret) t.statusCaret.classList.add('hidden');
+        t.statusLabel.textContent = text;
+      }
+    }
+    return true;
   }
   function startStatusTimer(requestId) {
     if (statusTimers.has(requestId)) return; // already ticking
@@ -861,6 +941,14 @@
       const t = targets.get(requestId);
       if (!t || !t.statusElapsed) return;
       t.statusElapsed.textContent = Math.max(0, Math.round((Date.now() - start) / 1000)) + 's';
+      // Roll the whimsical thinking verb on a random 2–5s cadence while in the
+      // thinking phase and no tool is running (a running tool owns the label via
+      // its own activity verb).
+      if (t.rotating && !t.toolRunning && Date.now() >= (t.nextRotateAt || 0)) {
+        t.rotateWord = pickThinkingVerb(t.rotateWord);
+        t.nextRotateAt = Date.now() + nextRotateDelay();
+        typeVerb(requestId, t.rotateWord);
+      }
     };
     update();
     statusTimers.set(requestId, setInterval(update, 500));
@@ -868,8 +956,9 @@
   function stopStatusTimer(requestId, hide) {
     const id = statusTimers.get(requestId);
     if (id) { clearInterval(id); statusTimers.delete(requestId); }
+    const t = targets.get(requestId);
+    if (t?._typeTimer) { clearInterval(t._typeTimer); t._typeTimer = null; }
     if (hide) {
-      const t = targets.get(requestId);
       if (t && t.statusEl) t.statusEl.classList.add('hidden');
     }
   }
@@ -1381,53 +1470,60 @@
     }
     if (name === 'think') {
       const th = String((args && typeof args === 'object' && args.thought) || '');
-      return { icon: '◌', title: 'Thinking' + (th ? ': ' + th.replace(/\s+/g, ' ').trim().slice(0, 80) : '') };
+      return { icon: '◌', title: 'Thought' + (th ? ': ' + th.replace(/\s+/g, ' ').trim().slice(0, 80) : '') };
     }
     const a = String(firstArg(args) || '');
-    // Show first meaningful line of output as inline hint, with line count if > 1
-    const resultLines = detail ? detail.split('\n').filter(Boolean) : [];
-    const lineCount = resultLines.length;
-    const firstLine = (resultLines[0] || '').trim().slice(0, 72);
-    const hint = lineCount === 0 ? '' :
-      lineCount === 1 ? firstLine :
-      firstLine ? `${firstLine}  +${lineCount - 1}` : `${lineCount} lines`;
-    // readFile: show line range if OC provides offset + limit
+    const ao = args && typeof args === 'object' ? args : {};
+    const path = shortPath(a);
+    const query = String(ao.query || ao.pattern || ao.term || a).trim();
+    // Result summary from the tool's output: a count of non-empty lines plus the first line.
+    const lines = detail ? String(detail).split('\n').filter(Boolean) : [];
+    const count = lines.length;
+    const firstLine = (lines[0] || '').trim().slice(0, 80);
+    // "· N results" / "· N entries" suffix when the output clearly is a list of hits.
+    const results = (unit) => count > 0 ? `  · ${count} ${unit}${count !== 1 ? 's' : ''}` : '';
+
+    // readFile: line range from OC's offset+limit (Antigravity-style "#L290–333").
     if (name === 'readFile') {
-      const ao = args && typeof args === 'object' ? args : {};
       const offset = ao.offset ?? ao.startLine ?? ao.start_line;
       const limit  = ao.limit  ?? ao.count;
-      let rtitle = a ? `read  ${a}` : 'read file';
-      if (a && offset != null && limit != null) rtitle = `read  ${a}, lines ${offset}–${offset + limit - 1}`;
-      else if (a && offset != null) rtitle = `read  ${a} from line ${offset}`;
-      return { icon: '⊞', title: rtitle, hint };
+      let title = path ? `Analyzed ${path}` : 'Analyzed a file';
+      if (path && offset != null && limit != null) title += `  #L${offset}–${offset + limit - 1}`;
+      else if (path && offset != null) title += `  #L${offset}+`;
+      return { icon: '⊞', title, hint: '' };
     }
     const M = {
-      readFile:        ['⊞', a ? `read  ${a}` : 'read file'],
-      listDir:         ['⊟', a ? `ls  ${a}` : 'list dir'],
-      repoMap:         ['⊕', 'repo map'],
-      searchWorkspace: ['⌕', a ? `grep  “${a}”` : 'grep workspace'],
-      glob:            ['⊞', a ? `glob  ${a}` : 'glob'],
-      grep:            ['⌕', a ? `grep  “${a}”` : 'grep'],
-      webSearch:       ['⊙', a ? `web  “${a}”` : 'web search'],
-      webFetch:        ['⊙', a ? `fetch  ${a}` : 'fetch URL'],
-      getDiagnostics:  ['⊘', 'diagnostics'],
-      runCommand:      ['▸', a ? `run  ${a}` : 'run command'],
-      writeFile:       ['◈', a ? `write  ${a}` : 'write file'],
-      createFile:      ['◈', a ? `create  ${a}` : 'create file'],
-      editFile:        ['◈', a ? `edit  ${a}` : 'edit file'],
-      deleteFile:      ['◉', a ? `delete  ${a}` : 'delete file'],
-      impactAnalysis:  ['⊕', 'impact analysis'],
-      buildGraph:      ['⊕', 'build graph'],
-      getSymbolGraph:  ['⊕', 'symbol graph'],
-      askUser:         ['◎', 'asking…'],
-      skill:           ['◎', a ? `skill  ${a}` : 'skill'],
+      readFile:        ['⊞', path ? `Analyzed ${path}` : 'Analyzed a file'],
+      listDir:         ['⊟', `Explored ${path || 'files'}${results('entry')}`],
+      repoMap:         ['⊕', 'Mapped the repository'],
+      searchWorkspace: ['⌕', `Searched “${query}”${results('result')}`],
+      glob:            ['⊞', `Matched ${query || 'pattern'}${results('match')}`],
+      grep:            ['⌕', `Searched “${query}”${results('result')}`],
+      webSearch:       ['⊙', `Searched the web “${query}”${results('result')}`],
+      webFetch:        ['⊙', a ? `Fetched ${shortPath(a)}` : 'Fetched a URL'],
+      getDiagnostics:  ['⊘', 'Checked diagnostics'],
+      runCommand:      ['▸', a ? `Ran ${a.split(/\s+/).slice(0, 6).join(' ')}` : 'Ran a command'],
+      writeFile:       ['◈', path ? `Wrote ${path}` : 'Wrote a file'],
+      createFile:      ['◈', path ? `Created ${path}` : 'Created a file'],
+      editFile:        ['◈', path ? `Edited ${path}` : 'Edited a file'],
+      deleteFile:      ['◉', path ? `Deleted ${path}` : 'Deleted a file'],
+      impactAnalysis:  ['⊕', 'Analyzed impact'],
+      buildGraph:      ['⊕', 'Built the call graph'],
+      getSymbolGraph:  ['⊕', 'Indexed symbols'],
+      askUser:         ['◎', 'Asking…'],
+      skill:           ['◎', a ? `Ran skill ${shortPath(a)}` : 'Ran a skill'],
     };
-    if (M[name]) return { icon: M[name][0], title: M[name][1], hint };
+    if (M[name]) {
+      // For commands / diagnostics, the first output line is useful context not in the title.
+      const hint = (name === 'runCommand' || name === 'getDiagnostics') && firstLine ? firstLine : '';
+      return { icon: M[name][0], title: M[name][1], hint };
+    }
     if (name && name.indexOf('mcp__') === 0) {
       const p = name.split('__');
-      return { icon: '⊛', title: `${p[1] || 'mcp'}  ${p.slice(2).join(' ') || 'tool'}`, hint };
+      return { icon: '⊛', title: `Called ${p[1] || 'MCP'}${p[2] ? ' ' + p.slice(2).join(' ') : ''}`, hint: firstLine };
     }
-    return { icon: '◎', title: name || 'tool', hint };
+    const cap = name ? (name.charAt(0).toUpperCase() + name.slice(1)) : 'Working';
+    return { icon: '◎', title: cap, hint: firstLine };
   }
   const STATE_ICON = { running: null, done: '✓', error: '✗' };
   function upsertTool(t, msg) {
@@ -1692,12 +1788,11 @@
     usageClear.textContent = 'Clear usage data';
     usageClear.title = 'Reset the lifetime token and $ saved counters. This cannot be undone.';
     usageClear.addEventListener('click', () => {
-      const ok = window.confirm('Clear all lifetime usage data? This will reset the persistent token and est. $ saved counters. This cannot be undone.');
-      if (ok) {
-        usageClear.disabled = true;
-        usageClear.textContent = 'Clearing…';
-        vscode.postMessage({ type: 'clearUsage' });
-      }
+      // Confirmation happens on the extension host (see the clearUsage handler) —
+      // window.confirm() is blocked inside VS Code webviews, so it must NOT be used here.
+      usageClear.disabled = true;
+      usageClear.textContent = 'Clearing…';
+      vscode.postMessage({ type: 'clearUsage' });
     });
     usageWrap.append(usageTitle, usageDesc, usageStats, usageClear);
     settingsContentEl.appendChild(usageWrap);
@@ -2754,24 +2849,21 @@
         // carries no model) — set it now so the footer shows the model that
         // actually produced the answer, not a blank.
         if (msg.model) t.model = `${msg.platform || ''}/${msg.model}`;
-        // Show the resolved model name in the live status area so the user knows
-        // which model is running (especially useful when Auto routing picks one).
-        if (msg.model && t.statusLabel) {
+        // The model shows as a DIM SUBTITLE (friendly name from the picker, never the raw
+        // provider key). The label itself is the rolling activity verb (Thinking…/Reading…/…).
+        if (msg.model && t.statusModel) {
           const item = modelList.querySelector(`.model-item[data-value="${CSS.escape(`${msg.platform}::${msg.model}`)}"]`);
-          const label = item?.querySelector('.mi-label')?.textContent || msg.model;
-          t.statusLabel.textContent = label;
+          const label = item?.querySelector('.mi-label')?.textContent;
+          t.statusModel.textContent = label || '';
         }
-        // NOTE: a forced (non-Auto) model pick is honored EXACTLY by the router — it never
-        // failovers to another model (router.ts candidates() returns only the forced entry).
-        // So we must NOT rewrite the picker here: doing so would silently override and persist
-        // a model the user never chose. The per-message status label above already shows which
-        // model produced THIS answer; the picker stays on the user's explicit selection.
+        setStatusLabel(msg.requestId, 'Thinking…', { force: true });
         startStatusTimer(msg.requestId);
         break;
       }
       case 'agentStep': {
         const t = ensureTarget(msg.requestId);
-        if (t.statusLabel) t.statusLabel.textContent = msg.label;
+        // An explicit OC status message wins; otherwise leave the current activity label.
+        if (msg.label) setStatusLabel(msg.requestId, msg.label, { force: true });
         startStatusTimer(msg.requestId);
         scrollDown();
         break;
@@ -2783,7 +2875,16 @@
       }
       case 'toolStatus': {
         const t = ensureTarget(msg.requestId);
-        if (msg.state === 'running' && t.statusLabel) t.statusLabel.textContent = toolVerb(msg.name, msg.args);
+        if (msg.state === 'running') {
+          // Rolling status verb for the live tool (Reading X / Searching "q" / Running cmd…).
+          t.activeTool = msg.toolCallId;
+          setStatusLabel(msg.requestId, activityFor(msg.name, msg.args), { tool: true });
+        } else if (msg.toolCallId && msg.toolCallId === t.activeTool) {
+          // The running tool itself finished — release the lock and drop back to synthesizing.
+          // (Reasoning/other 'done' events carry different ids and must not clobber a running tool.)
+          t.activeTool = null;
+          setStatusLabel(msg.requestId, t._wasStreamed ? 'Responding…' : 'Thinking…', { done: true });
+        }
         // A NEW card closes the current text segment so following text appears after it.
         // (Updates to an existing card — same toolCallId — must NOT, or streaming text
         // mid-tool would fragment.) build/upsert handles the DOM; we only flip the flag.
@@ -3082,20 +3183,38 @@
           updateNav();
           scrollDown();
         }
+        // Collapse the question form into a compact recap so it's obvious the input was
+        // accepted — otherwise the disabled form sits there looking stale/unsubmitted.
+        function markClarifyDone(title, answers) {
+          card.classList.add('done');
+          card.innerHTML = '';
+          const h = document.createElement('div'); h.className = 'clarify-intro'; h.textContent = title;
+          card.appendChild(h);
+          if (answers) {
+            const recap = document.createElement('div'); recap.className = 'clarify-recap';
+            qs.forEach((q, qi) => {
+              const row = document.createElement('div'); row.className = 'clarify-recap-row';
+              const ql = document.createElement('span'); ql.className = 'clarify-recap-q'; ql.textContent = (q.label || `Q${qi + 1}`) + ':';
+              const al = document.createElement('span'); al.className = 'clarify-recap-a'; al.textContent = answers[qi];
+              row.appendChild(ql); row.appendChild(al);
+              recap.appendChild(row);
+            });
+            card.appendChild(recap);
+          }
+          scrollDown();
+        }
         back.addEventListener('click', () => { if (cur > 0) { cur--; renderStep(); } });
         next.addEventListener('click', () => {
           if (!isLast()) { if (answered(cur)) { cur++; renderStep(); } return; }
           if (!allAnswered()) return;
-          card.querySelectorAll('button, input').forEach((b) => { b.disabled = true; });
           const answers = qs.map((q, qi) => selected[qi] === CUSTOM(qi) ? custom[qi].trim() : q.options[selected[qi]].title);
+          markClarifyDone('✓ Answers submitted — resuming…', answers);
           vscode.postMessage({ type: 'answerClarifying', requestId: msg.requestId, answers });
         });
         dismiss.addEventListener('click', () => {
-          card.querySelectorAll('button, input').forEach((b) => { b.disabled = true; });
-          const note = document.createElement('div'); note.className = 'clarify-counter'; note.textContent = '✗ Dismissed — planning with sensible defaults.';
-          card.appendChild(note);
           // Let the planner proceed on its own best judgment for every question.
           const answers = qs.map(() => '(no preference — use your best judgment)');
+          markClarifyDone('✗ Dismissed — proceeding with sensible defaults.', null);
           vscode.postMessage({ type: 'answerClarifying', requestId: msg.requestId, answers });
         });
 
@@ -3110,6 +3229,9 @@
         // cause layout thrash on every token. The buffer is flushed fully on assistantMessage.
         const t = ensureTarget(msg.requestId);
         t._wasStreamed = true;
+        // The model is now synthesizing the answer. Cheap, idempotent write; the guard inside
+        // setStatusLabel keeps a running tool's verb from being clobbered mid-tool.
+        setStatusLabel(msg.requestId, 'Responding…');
         // Append into the CURRENT text segment of the flow. A tool/reasoning card between
         // text closes the segment (sets currentText=null), so the next token opens a new
         // segment AFTER that card — yielding text → tool → text interleaving in order.

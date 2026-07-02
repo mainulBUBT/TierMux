@@ -93,9 +93,33 @@ export interface AgentOpts {
   onTodos: (todos: TodoItem[]) => void;
   onAskUser: (question: string, options?: string[]) => Promise<string>;
   onError: (message: string) => void;
+  /** Soft, non-blocking notice (e.g. "stream ended early") — used when a run produced a
+   *  usable answer despite a mid-stream error, instead of a hard red error. */
+  onWarning?: (message: string) => void;
 }
 
 type ToolSet = Record<string, any>;
+
+/**
+ * Pull a human-readable message out of an OC `session.error` / `error` event payload. OC's
+ * error shape varies by build and upstream provider — the message can sit at `error.message`,
+ * `error.error.message`, `message`, or be a bare string. Without this we'd fall back to the
+ * useless "OC session error" and never learn why runs fail. Returns '' when nothing parsed.
+ */
+function extractOcError(p: any): string {
+  const e = p?.error;
+  if (typeof e === 'string' && e.trim()) return e.trim();
+  const obj = e && typeof e === 'object' ? e : {};
+  const msg = obj.message ?? obj.error?.message ?? obj.msg ?? p?.message ?? p?.msg ?? '';
+  const code = obj.code ?? obj.error?.code ?? p?.code ?? '';
+  const type = obj.type ?? obj.error?.type ?? '';
+  const parts = [String(msg || code || '').trim(), String(type || '').trim()].filter((s) => s && s.toLowerCase() !== 'error');
+  return parts.join(' — ');
+}
+
+/** Errors that won't be fixed by retrying on the same model (so we skip the one-shot retry and
+ *  go straight to escalation): context-length/overflow, auth/key, and provider-side rejections. */
+const NON_RETRYABLE = /context\s*length|token\s*limit|maximum\s*context|too\s+(long|large|many\s*tokens)|rate\s*limit|quota|unauthorized|invalid\s+api\s?key|forbidden|\b401\b|\b403\b/i;
 
 // ---- OpenCode engine state ----
 
@@ -290,8 +314,17 @@ async function runViaOc(
   let out = '';
   const platform = 'tiermux';
   const model = modelID;
+  // Tracks whether we've already announced the "now answering" phase. Emitted once on
+  // the first real text token so the live status reads Thinking… → Responding…, and so
+  // `s.lastStepLabel` / buffered (non-streaming) providers land on the right phase too.
+  let responded = false;
+  const announceResponding = () => {
+    if (responded) return;
+    responded = true;
+    opts.onStep('synthesizing', 'Responding…');
+  };
   opts.onModel(platform, model);
-  opts.onStep('thinking', 'Working…');
+  opts.onStep('thinking', 'Thinking…');
 
   return new Promise<AgentResult>((resolve, reject) => {
     let done = false;
@@ -524,6 +557,7 @@ async function runViaOc(
           if (textChannel === 'updated') return; // updated channel owns text — avoid double emit
           textChannel = 'delta';
           out += delta;
+          announceResponding();
           opts.onChunk(delta);
         }
         return;
@@ -591,6 +625,7 @@ async function runViaOc(
           if (part.text.length > prev.length && part.text.startsWith(prev)) {
             const delta = part.text.slice(prev.length);
             out += delta;
+            announceResponding();
             opts.onChunk(delta);
           }
           lastTextByPart.set(partId, part.text);
@@ -640,14 +675,35 @@ async function runViaOc(
 
       // ---- Errors ----
       if (t === 'session.error' || t === 'error') {
-        const errMsg = typeof p.error === 'string'
-          ? p.error
-          : p.error?.message ?? p.message ?? 'OC session error';
+        const errMsg = extractOcError(p) || 'OC session error';
         // Resolve the run NOW — otherwise the promise hangs until the 90s hard timeout,
-        // leaving "Working…" and any in-flight todos stuck on screen after a failure.
-        // If we got no text, first try to take over on a stronger model (once). Escalate
-        // BEFORE surfacing the error: otherwise a run that recovers (or fails and retries)
-        // shows a redundant red error — the failover notice already explains the takeover.
+        // leaving the status + in-flight todos stuck on screen after a failure.
+        console.log(`[tiermux] OC session.error: ${errMsg} (outLen=${out.trim().length} model=${modelID} hop=${hop})`);
+
+        // 1) We already streamed a usable answer — deliver it. A mid-stream error (upstream
+        //    timeout, dropped SSE, a tool failing late) shouldn't throw away 1.6k of good
+        //    output. Soft non-blocking notice instead of a hard red error; the answer shows.
+        if (out.trim()) {
+          opts.onWarning?.(`Answer may be incomplete — ${errMsg}`);
+          finish({ text: out, platform, model, taskKind: opts.taskKind });
+          return;
+        }
+
+        // 2) No output yet — recover if we can. Transient errors get one fresh-session retry
+        //    (mirrors the 5xx/network path in prompt().catch). Non-retryable errors (context
+        //    overflow, auth/quota) skip straight to escalation — a bigger model can carry the
+        //    context that overflowed, and retrying the same input would just fail again.
+        if (_retryCount === 0 && !NON_RETRYABLE.test(errMsg)) {
+          console.log(`[tiermux] OC session.error (no output, transient) — dropping session ${ocId}, retrying`);
+          ocSessions.delete(key);
+          ocSessionModels.delete(key);
+          unsub();
+          clearTimeout(watchdog);
+          void runViaOc(opts, 1, chainIndex, ocId).then(finish, fail);
+          return;
+        }
+
+        // 3) Retry spent or non-retryable — hand off to a stronger model before giving up.
         if (tryEscalate()) return;
         opts.onError(errMsg);
         finish({ text: out, platform, model, taskKind: opts.taskKind });
@@ -688,7 +744,17 @@ async function runViaOc(
     // resolve until the whole turn finishes, since SSE/session.idle drives completion,
     // not the HTTP response).
     prewarmNextHop();
-    void client.prompt(ocId, { parts: [{ type: 'text', text: promptText }], agent, model: { providerID: 'tiermux', modelID: ocModelID } }, opts.abortSignal)
+    const promptP = client.prompt(ocId, { parts: [{ type: 'text', text: promptText }], agent, model: { providerID: 'tiermux', modelID: ocModelID } }, opts.abortSignal);
+    // The router resolves the concrete model synchronously while issuing the POST
+    // (candidate selection happens before the fetch awaits). Announce it now so an
+    // Auto-routed (virtual-profile) run shows the real model in the live status
+    // subtitle right away, instead of waiting for finish() (by which point the
+    // status is already hidden).
+    const routedNow = getLastRoutedModel();
+    if (routedNow?.model && routedNow.model !== model) {
+      opts.onModel(routedNow.runtimeName ?? routedNow.platform, routedNow.model, routedNow.runtimeName);
+    }
+    void promptP
       .catch((e: unknown) => {
         // User-cancel aborts the POST too — that's expected, not an error to surface.
         if (opts.abortSignal?.aborted) { finish({ text: out, platform, model }); return; }
@@ -720,6 +786,12 @@ async function runViaOc(
         // logged by the router; the recommendation only checks instanceof.
         if (/→\s*503/.test(msg)) {
           fail(new AllModelsFailedError([]));
+          return;
+        }
+        // Already streamed a usable answer → deliver it with a soft notice (see session.error).
+        if (out.trim()) {
+          opts.onWarning?.(`Answer may be incomplete — ${msg}`);
+          finish({ text: out, platform, model });
           return;
         }
         opts.onError(msg);

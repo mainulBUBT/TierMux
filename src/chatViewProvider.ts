@@ -246,7 +246,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       voteCtx: new Map(),
       cards: [],
       pendingAskUser: new Map(),
-      checkpoints: new CheckpointManager(),
+      checkpoints: new CheckpointManager(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath),
       lastWindow: 0,
       liveSteps: new Map(),
       model: undefined,
@@ -269,7 +269,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       voteCtx: new Map(),
       cards: [],
       pendingAskUser: new Map(),
-      checkpoints: new CheckpointManager(),
+      checkpoints: new CheckpointManager(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath),
       lastWindow: 0,
       liveSteps: new Map(),
       createdAt: s.ts ?? Date.now(),
@@ -768,11 +768,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.post({ type: 'mcpRegistryResults', queryId: m.queryId, items: [], error: e instanceof Error ? e.message : String(e) });
         }
         break;
-      case 'clearUsage':
+      case 'clearUsage': {
+        // Confirm on the host: window.confirm() is unavailable inside the webview iframe.
+        const clearChoice = await vscode.window.showWarningMessage(
+          'Clear all lifetime usage data? This resets the persistent token and est. $ saved counters. This cannot be undone.',
+          { modal: true },
+          'Clear',
+        );
+        // Re-arm the button regardless (the webview left it on "Clearing…").
+        this.post({ type: 'usageTotals', totals: this.currentUsageTotals(this.current()) });
+        if (clearChoice !== 'Clear') break;
         await this.deps.usageStore.clear();
-        await this.sendConfig();
-        this.post({ type: 'notice', sessionId: this.viewedSessionId, text: '🧹 Lifetime usage data cleared.' });
+        this.deps.usage.reset();
+        // Reflect the zeroed totals IMMEDIATELY. sendConfig() does network work (MCP
+        // registry fetch, key/endpoint probes) before posting; if that is slow or
+        // throws, the card never refreshed and the button sat on "Clearing…" — looking
+        // broken even though the store was already cleared. This lightweight post is
+        // independent of sendConfig so the UI always updates right away.
+        this.post({ type: 'usageTotals', totals: this.currentUsageTotals(this.current()) });
+        void this.sendConfig();
+        this.post({ type: 'notice', sessionId: this.viewedSessionId, text: '🧹 Usage data cleared.' });
         break;
+      }
       case 'restoreCheckpoint':
         await this.handleRestoreCheckpoint(this.current(), m.id);
         break;
@@ -1238,7 +1255,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.post({ type: 'busy', sessionId: s.id, busy: true });
     const before = this.deps.usage.get();
-    s.checkpoints.begin(m.requestId, prompt.slice(0, 60));
+    await s.checkpoints.begin(m.requestId, prompt.slice(0, 60));
     const sentAt = Date.now();
 
     try {
@@ -1520,7 +1537,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const seeded = planStepsToTodos(m.steps);
     if (seeded.length) this.post({ type: 'todos', sessionId: s.id, requestId: m.requestId, todos: seeded, followingPlan: true });
     const before = this.deps.usage.get();
-    s.checkpoints.begin(m.requestId, 'Plan execution');
+    await s.checkpoints.begin(m.requestId, 'Plan execution');
     const sentAt = Date.now();
     try {
       const cbk3 = this.agentCallbacks(s, m.requestId, 'agent');
@@ -1713,6 +1730,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!live()) return;
         this.post({ type: 'error', sessionId: s.id, requestId, message });
       },
+      onWarning: (message) => {
+        // Soft, non-blocking notice — used when the run delivered a usable answer despite a
+        // mid-stream error, instead of a scary red error that hides the answer.
+        if (!live()) return;
+        this.post({ type: 'notice', sessionId: s.id, text: message });
+      },
     };
   }
 
@@ -1755,7 +1778,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
     this.post({ type: 'busy', sessionId: s.id, busy: true });
     const before = this.deps.usage.get();
-    s.checkpoints.begin(m.requestId, 'Continue');
+    await s.checkpoints.begin(m.requestId, 'Continue');
     const sentAt = Date.now();
     try {
       const cbk4 = this.agentCallbacks(s, m.requestId, 'agent');
@@ -1797,6 +1820,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const s = this.current();
     const ctx = (s.pendingClarify && s.pendingClarify.requestId === m.requestId) ? s.pendingClarify : undefined;
     s.pendingClarify = undefined;
+    // Drop the card from the cache so switching sessions away and back can't re-render a
+    // stale question form after the user already answered.
+    this.removeCards(s, (c) => c.type === 'clarifyingQuestions' && c.requestId === m.requestId);
     if (!ctx) return;
 
     const qa = ctx.questions
@@ -1821,7 +1847,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const release = await this.acquireRunSlot(s.id);
     if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
     this.post({ type: 'busy', sessionId: s.id, busy: true });
-    s.checkpoints.begin(m.requestId, 'Plan (clarified)');
+    await s.checkpoints.begin(m.requestId, 'Plan (clarified)');
     try {
       const cbk5 = this.agentCallbacks(s, m.requestId, 'plan');
       const result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});
