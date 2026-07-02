@@ -6,6 +6,7 @@
 // models (auto/fast/smart) backed by the router proxy. Failover, rate-limit
 // cooldowns, and cost tracking all happen inside the proxy/router — OC just
 // thinks it has one reliable provider.
+import type { McpServerConfig } from '../mcp/mcpClient';
 
 export interface OcConfigOptions {
   /** Router proxy base URL, e.g. http://127.0.0.1:4321/v1 */
@@ -24,6 +25,9 @@ export interface OcConfigOptions {
    * require a reload to pick up.
    */
   extraModelIds?: string[];
+  /** `tiermux.mcpServers` setting, keyed by server name — mapped onto OC's native
+   *  `mcp` config block so OC discovers and calls their tools itself. */
+  mcpServers?: Record<string, McpServerConfig>;
 }
 
 /**
@@ -44,6 +48,32 @@ export function buildOcConfig(opts: OcConfigOptions): string {
   // OC recognises it at createSession + prompt without choking on '::' or '/'.
   for (const id of opts.extraModelIds ?? []) {
     models[id] = { name: id, limit: { context: 128000, output: 8192 } };
+  }
+
+  // `tiermux.mcpServers` entries already match OC's native McpLocalConfig/McpRemoteConfig
+  // shape field-for-field (see mcpClient.ts), so this is a near-direct passthrough — just
+  // dropping explicitly-disabled entries. Once present in OC's own config, OC discovers
+  // and calls these tools itself.
+  const mcp: Record<string, object> = {};
+  for (const [name, sc] of Object.entries(opts.mcpServers ?? {})) {
+    if (sc.enabled === false) continue;
+    mcp[name] = sc.type === 'local'
+      ? {
+          type: 'local',
+          command: sc.command,
+          ...(sc.environment ? { environment: sc.environment } : {}),
+          ...(sc.cwd ? { cwd: sc.cwd } : {}),
+          ...(sc.timeout ? { timeout: sc.timeout } : {}),
+          enabled: true,
+        }
+      : {
+          type: 'remote',
+          url: sc.url,
+          ...(sc.headers ? { headers: sc.headers } : {}),
+          ...(sc.oauth !== undefined ? { oauth: sc.oauth } : {}),
+          ...(sc.timeout ? { timeout: sc.timeout } : {}),
+          enabled: true,
+        };
   }
 
   const cfg = {
@@ -116,6 +146,7 @@ export function buildOcConfig(opts: OcConfigOptions): string {
     // Append our identity/behavior instructions to every agent's system prompt so the
     // assistant presents as TierMux (not "opencode") and acts on the task directly.
     ...(opts.instructionsPaths?.length ? { instructions: opts.instructionsPaths } : {}),
+    ...(Object.keys(mcp).length ? { mcp } : {}),
   };
   return JSON.stringify(cfg);
 }

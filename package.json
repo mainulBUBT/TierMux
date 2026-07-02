@@ -82,12 +82,6 @@
         "icon": "$(gear)"
       },
       {
-        "command": "tiermux.manageSearchProviders",
-        "title": "Manage Web Search Providers",
-        "category": "TierMux",
-        "icon": "$(search)"
-      },
-      {
         "command": "tiermux.setApiKey",
         "title": "Set API Key",
         "category": "TierMux"
@@ -140,16 +134,6 @@
       {
         "command": "tiermux.reconnectMcp",
         "title": "Reconnect MCP Servers",
-        "category": "TierMux"
-      },
-      {
-        "command": "tiermux.buildIndex",
-        "title": "Build Codebase Index",
-        "category": "TierMux"
-      },
-      {
-        "command": "tiermux.clearIndex",
-        "title": "Clear Codebase Index",
         "category": "TierMux"
       },
       {
@@ -394,45 +378,6 @@
           "default": false,
           "description": "Enable the structural code graph (imports, exports, call edges, entrypoints). Provides cross-file context to the agent and enables getSymbolGraph, impactAnalysis, and onboarding tour tools. Off by default — opt in for refactor-heavy work (the regex-based graph can be imprecise on large codebases)."
         },
-        "tiermux.tools.web": {
-          "type": "boolean",
-          "default": true,
-          "description": "Give the agent webSearch and webFetch tools so it can look things up instead of guessing. On by default — adds the tool specs (and tokens) to every agent request."
-        },
-        "tiermux.tools.searchEndpoint": {
-          "type": "string",
-          "default": "",
-          "description": "Optional web-search endpoint URL for the webSearch tool. Blank = a best-effort free endpoint (fragile). Set to a reliable search API/SearchXNG URL for stable results; requires \"tiermux.tools.web\" to be on."
-        },
-        "tiermux.tools.exaApiKey": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Exa AI API key for semantic web search (free tier: 1,000 searches/month). Get one at [exa.ai](https://exa.ai). Exa returns clean, structured content optimized for AI agents. Requires `tiermux.tools.web` to be on."
-        },
-        "tiermux.tools.braveApiKey": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Brave Search API key (free tier: 2,000 queries/month). Get one at [brave.com/search/api](https://brave.com/search/api/). Provides reliable web search with no rate-limit issues. Requires `tiermux.tools.web` to be on."
-        },
-        "tiermux.tools.searchProviderPriority": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "exa",
-            "brave",
-            "custom",
-            "duckduckgo"
-          ],
-          "enumDescriptions": [
-            "Auto = use the first provider that has a key configured (Exa → Brave → custom endpoint → free DuckDuckGo). Recommended.",
-            "Exa AI only (requires tiermux.tools.exaApiKey).",
-            "Brave Search only (requires tiermux.tools.braveApiKey).",
-            "Custom endpoint only (requires tiermux.tools.searchEndpoint).",
-            "Free DuckDuckGo via duck-duck-scrape (no key needed, but often rate-limited)."
-          ],
-          "default": "auto",
-          "description": "Which web search provider to use. 'auto' tries Exa → Brave → custom endpoint → free DuckDuckGo in order, picking the first with a key configured."
-        },
         "tiermux.context.includeOpenEditors": {
           "type": "boolean",
           "default": true,
@@ -473,11 +418,6 @@
           "type": "string",
           "default": ".tiermux/plans",
           "description": "Workspace-relative folder where plan files are written (one markdown file per plan)."
-        },
-        "tiermux.embeddings.rerank": {
-          "type": "boolean",
-          "default": true,
-          "description": "Rerank semantic-search candidates for higher precision (uses Cohere /rerank when a Cohere key is set, otherwise a lexical blend)."
         },
         "tiermux.requestTimeoutMs": {
           "type": "number",
@@ -521,46 +461,6 @@
           "default": 350,
           "description": "Debounce (ms) before requesting an inline completion."
         },
-        "tiermux.embeddings.enabled": {
-          "type": "boolean",
-          "default": false,
-          "description": "Enable the optional local codebase embeddings index (adds a semantic 'codebaseSearch' tool for the agent). Build it from the ⚙ Models panel."
-        },
-        "tiermux.embeddings.provider": {
-          "type": "string",
-          "enum": [
-            "google",
-            "cohere",
-            "mistral",
-            "openrouter",
-            "github",
-            "nvidia"
-          ],
-          "default": "google",
-          "description": "Provider used to embed code chunks (uses that provider's API key). Google text-embedding-004 and Cohere embed have generous free tiers."
-        },
-        "tiermux.embeddings.model": {
-          "type": "string",
-          "default": "",
-          "description": "Embedding model id (blank = provider default, e.g. gemini-embedding-001 for Google)."
-        },
-        "tiermux.embeddings.autoContext": {
-          "type": "boolean",
-          "default": true,
-          "description": "When the index is built, automatically inject the top matching code chunks for your message into each turn (so the agent gets relevant context without calling codebaseSearch)."
-        },
-        "tiermux.embeddings.batchSize": {
-          "type": "number",
-          "default": 16,
-          "minimum": 1,
-          "description": "How many chunks to embed per request while indexing. Larger = fewer requests (helps with per-minute rate limits) but bigger payloads; lower it if the provider rejects large batches."
-        },
-        "tiermux.embeddings.requestDelayMs": {
-          "type": "number",
-          "default": 150,
-          "minimum": 0,
-          "description": "Pause between embedding requests while indexing. Raise this (e.g. 500–1000) if your embedding provider keeps rate-limiting the index build."
-        },
         "tiermux.useOpenCodeEngine": {
           "type": "boolean",
           "default": true,
@@ -570,27 +470,6 @@
           "type": "boolean",
           "default": false,
           "description": "Log every raw TierMux engine event to the 'TierMux Engine' output channel. Use this to debug chat issues — turn on, send a chat, then check View → Output → TierMux Engine."
-        },
-        "tiermux.cache.fileEnabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Cache file reads by mtime so the agent doesn't re-read the same file multiple times in one run. Saves input tokens and rate-limit quota on free LLMs."
-        },
-        "tiermux.cache.searchEnabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Cache grep and workspace-search results for 30 seconds so duplicate searches within a run return instantly."
-        },
-        "tiermux.cache.searchTtlMs": {
-          "type": "number",
-          "default": 30000,
-          "minimum": 5000,
-          "description": "How long (ms) grep/search results are cached. After this window, or when a file is written, the cache is cleared."
-        },
-        "tiermux.cache.researchEnabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Run a lightweight pre-research step (grep, semantic search, diagnostics) before the first model call. Typically saves 2–3 agent iterations on code tasks."
         },
         "tiermux.catalog.url": {
           "type": "string",

@@ -10,6 +10,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { resolveOcBinary } from './ocBinary';
 import { buildOcConfig } from './ocConfig';
+import type { McpServerConfig } from '../mcp/mcpClient';
 
 /**
  * Load agent prompt files from `.tiermux/agent/` in the extension directory.
@@ -79,6 +80,9 @@ export interface OcLaunchOptions {
    * session creation. See buildOcConfig / ocConfig.ts.
    */
   enabledModelIds?: string[];
+  /** `tiermux.mcpServers` setting — forwarded to buildOcConfig() so OC natively
+   *  discovers and calls these servers' tools itself. */
+  mcpServers?: Record<string, McpServerConfig>;
   /** Progress callback for the first-run download. */
   onProgress?: (message: string) => void;
   /** Optional logger that mirrors progress + diagnostics into the "TierMux Engine"
@@ -117,6 +121,7 @@ export async function launchOpenCode(opts: OcLaunchOptions): Promise<OcConnectio
     apiKey: 'local',
     instructionsPaths: instructionsFile ? [instructionsFile] : undefined,
     extraModelIds: opts.enabledModelIds,
+    mcpServers: opts.mcpServers,
   });
   const cwd = opts.workspaceRoot ?? process.cwd();
 

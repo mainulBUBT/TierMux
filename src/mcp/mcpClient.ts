@@ -1,16 +1,72 @@
 // Minimal MCP stdio client: spawns a server process and speaks newline-delimited
 // JSON-RPC 2.0 (the MCP stdio transport). No external dependency.
+//
+// The config shape below mirrors OpenCode's own native MCP config (McpLocalConfig /
+// McpRemoteConfig, verified against its live OpenAPI spec) field-for-field, so a
+// `tiermux.mcpServers` entry needs no lossy translation on its way into buildOcConfig().
 import { spawn, type ChildProcess } from 'child_process';
 
-export interface McpServerConfig {
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
+export interface McpLocalServerConfig {
+  type: 'local';
+  /** Full argv: [executable, ...args] — exact OpenCode wire format. */
+  command: string[];
+  environment?: Record<string, string>;
   cwd?: string;
-  disabled?: boolean;
-  /** Remote (streamable-HTTP) server. */
-  url?: string;
+  timeout?: number;
+  enabled?: boolean;
+}
+
+/** Matches OpenCode's McpOAuthConfig exactly. */
+export interface McpOAuthConfig {
+  clientId?: string;
+  clientSecret?: string;
+  redirectUri?: string;
+  scope?: string;
+  callbackPort?: number;
+}
+
+export interface McpRemoteServerConfig {
+  type: 'remote';
+  url: string;
   headers?: Record<string, string>;
+  /** `false` disables OpenCode's OAuth auto-detection for this server. */
+  oauth?: McpOAuthConfig | false;
+  timeout?: number;
+  enabled?: boolean;
+}
+
+export type McpServerConfig = McpLocalServerConfig | McpRemoteServerConfig;
+
+/**
+ * Upgrades a legacy (pre-native-schema) `tiermux.mcpServers` entry — which had no
+ * `type` discriminator, a bare `command` string, `env`/`disabled` instead of
+ * `environment`/`enabled` — into the current schema. Already-current entries
+ * (`type` present) pass through unchanged. Returns undefined for an entry that has
+ * neither `command` nor `url` (nothing to migrate).
+ */
+export function normalizeMcpServerConfig(raw: unknown): McpServerConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  if (r.type === 'local' || r.type === 'remote') return r as unknown as McpServerConfig;
+  if (typeof r.url === 'string') {
+    return {
+      type: 'remote',
+      url: r.url,
+      headers: r.headers as Record<string, string> | undefined,
+      enabled: !r.disabled,
+    };
+  }
+  if (typeof r.command === 'string' || Array.isArray(r.command)) {
+    const command = Array.isArray(r.command) ? r.command as string[] : [r.command as string, ...((r.args as string[] | undefined) ?? [])];
+    return {
+      type: 'local',
+      command,
+      environment: (r.environment ?? r.env) as Record<string, string> | undefined,
+      cwd: r.cwd as string | undefined,
+      enabled: !r.disabled,
+    };
+  }
+  return undefined;
 }
 
 export interface McpTool {
@@ -43,11 +99,12 @@ export class McpStdioClient {
   private alive = false;
   tools: McpTool[] = [];
 
-  constructor(readonly name: string, private readonly cfg: McpServerConfig) {}
+  constructor(readonly name: string, private readonly cfg: McpLocalServerConfig) {}
 
   async start(timeoutMs = 20000): Promise<void> {
-    this.proc = spawn(this.cfg.command ?? '', this.cfg.args ?? [], {
-      env: { ...process.env, ...(this.cfg.env ?? {}) },
+    const [command, ...args] = this.cfg.command;
+    this.proc = spawn(command ?? '', args, {
+      env: { ...process.env, ...(this.cfg.environment ?? {}) },
       cwd: this.cfg.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: process.platform === 'win32', // resolve .cmd shims (npx) on Windows
@@ -132,7 +189,7 @@ export class McpHttpClient implements McpClient {
   private nextId = 1;
   tools: McpTool[] = [];
 
-  constructor(readonly name: string, private readonly cfg: { url: string; headers?: Record<string, string> }) {}
+  constructor(readonly name: string, private readonly cfg: Pick<McpRemoteServerConfig, 'url' | 'headers'>) {}
 
   private headers(): Record<string, string> {
     return {

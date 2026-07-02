@@ -12,12 +12,12 @@ import { PRODUCT_NAME } from './shared/branding';
 import type { Router } from './router/router';
 import { AllModelsFailedError } from './router/router';
 import type { McpManager } from './mcp/mcpManager';
-import type { CodebaseIndex } from './index/codebaseIndex';
 import { CheckpointManager } from './edits/checkpoints';
 import type { ModelStatsStore, Vote } from './config/modelStats';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
-import type { McpRegistryItem } from './messages';
+import type { McpRegistryItem, McpServerConfig } from './messages';
 import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, SessionStatus, TranscriptMessage, TranscriptStep, UsagePayload } from './messages';
+import { normalizeMcpServerConfig } from './mcp/mcpClient';
 import { getNonce } from './util/nonce';
 import { getPlatformInfo } from './providers';
 import { parseSlash, resolveMentions, searchMentions } from './context/mentions';
@@ -46,7 +46,6 @@ interface ChatDeps {
   usageStore: UsageStore;
   router: Router;
   mcp: McpManager;
-  index: CodebaseIndex;
   modelStats: ModelStatsStore;
   workspaceState: vscode.Memento;
   generateCommitMessage: () => Promise<void>;
@@ -522,12 +521,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     void this.sendConfig();
   }
 
-  /** Forward live index-build progress to the webview (shown only while building). */
-  onIndexProgress(p: { building: boolean; done: number; total: number; phase: 'scanning' | 'embedding' | 'done' | 'error' }): void {
-    this.post({ type: 'indexProgress', building: p.building, done: p.done, total: p.total, phase: p.phase });
-    if (!p.building) void this.sendConfig(); // refresh the Context tab once the build settles
-  }
-
   /** Open the Models/settings panel (from the native title-bar gear). */
   async toggleSettingsPanel(): Promise<void> {
     await vscode.commands.executeCommand('tiermux.chat.focus');
@@ -761,6 +754,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'removeMcpServer':
         await this.removeMcpServer(m.name);
         break;
+      case 'saveMcpServer':
+        await this.saveMcpServer(m.name, m.config, m.originalName);
+        break;
+      case 'setMcpServerEnabled':
+        await this.setMcpServerEnabled(m.name, m.enabled);
+        break;
       case 'searchMcpRegistry':
         try {
           const items = await searchRemoteMcp(m.query);
@@ -769,35 +768,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.post({ type: 'mcpRegistryResults', queryId: m.queryId, items: [], error: e instanceof Error ? e.message : String(e) });
         }
         break;
-      case 'buildIndex':
-        await this.deps.index.build();
-        await this.sendConfig();
-        break;
-      case 'clearIndex':
-        await this.deps.index.clear();
-        await this.sendConfig();
-        break;
-      case 'clearFileCache':
-        await this.sendConfig();
-        break;
-      case 'clearSearchCache':
-        await this.sendConfig();
-        break;
-      case 'clearAllCaches':
-        await this.sendConfig();
-        break;
       case 'clearUsage':
         await this.deps.usageStore.clear();
         await this.sendConfig();
         this.post({ type: 'notice', sessionId: this.viewedSessionId, text: '🧹 Lifetime usage data cleared.' });
-        break;
-      case 'setCacheEnabled':
-        if (m.key === 'file') {
-          await vscode.workspace.getConfiguration('tiermux.cache').update('fileEnabled', m.enabled, vscode.ConfigurationTarget.Global);
-        } else {
-          await vscode.workspace.getConfiguration('tiermux.cache').update('searchEnabled', m.enabled, vscode.ConfigurationTarget.Global);
-        }
-        await this.sendConfig();
         break;
       case 'restoreCheckpoint':
         await this.handleRestoreCheckpoint(this.current(), m.id);
@@ -811,40 +785,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'copyText':
         await vscode.env.clipboard.writeText(m.text);
         break;
-      case 'setEmbeddingsEnabled':
-        await vscode.workspace.getConfiguration('tiermux.embeddings').update('enabled', m.enabled, vscode.ConfigurationTarget.Global);
-        await this.sendConfig();
-        break;
-      case 'setEmbeddingsProvider':
-        await vscode.workspace.getConfiguration('tiermux.embeddings').update('provider', m.provider, vscode.ConfigurationTarget.Global);
-        await this.sendConfig();
-        break;
       case 'setUtilityModel':
         await vscode.workspace.getConfiguration('tiermux').update('utilityModel', m.model, vscode.ConfigurationTarget.Global);
-        await this.sendConfig();
-        break;
-      case 'setSearchKey': {
-        const keyTarget = m.provider === 'exa' ? 'exaApiKey' : m.provider === 'brave' ? 'braveApiKey' : null;
-        let key = m.key;
-        if (key === undefined) {
-          const info = this.searchProviderStatuses().find((s) => s.id === m.provider);
-          key = await vscode.window.showInputBox({
-            prompt: `${info?.hasKey ? 'Update' : 'Set'} API key for ${info?.name ?? m.provider} (leave empty to clear)`,
-            password: true,
-            ignoreFocusOut: true,
-          });
-          if (key === undefined) break;
-        }
-        if (keyTarget) {
-          await vscode.workspace.getConfiguration('tiermux.tools').update(keyTarget, key || undefined, vscode.ConfigurationTarget.Global);
-        } else if (m.provider === 'custom') {
-          await vscode.workspace.getConfiguration('tiermux.tools').update('searchEndpoint', key || undefined, vscode.ConfigurationTarget.Global);
-        }
-        await this.sendConfig();
-        break;
-      }
-      case 'setSearchPriority':
-        await vscode.workspace.getConfiguration('tiermux.tools').update('searchProviderPriority', m.priority, vscode.ConfigurationTarget.Global);
         await this.sendConfig();
         break;
       case 'setAutoApprove':
@@ -1124,9 +1066,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         if (value) headers[h.name] = value;
       }
-      entry = { url: item.url, ...(Object.keys(headers).length ? { headers } : {}) };
+      entry = { type: 'remote', url: item.url, enabled: true, ...(Object.keys(headers).length ? { headers } : {}) };
     } else {
-      const env: Record<string, string> = {};
+      const environment: Record<string, string> = {};
       for (const e of item.env ?? []) {
         // Only secret vars are masked and treated as required; everything else
         // is optional and can be skipped with a blank entry. This is why a
@@ -1139,9 +1081,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           ignoreFocusOut: true,
         });
         if (val === undefined) return; // cancelled (Esc)
-        if (val) env[e.key] = val;
+        if (val) environment[e.key] = val;
       }
-      entry = { command: item.command, args: item.args, ...(Object.keys(env).length ? { env } : {}) };
+      entry = { type: 'local', command: [item.command, ...(item.args ?? [])], enabled: true, ...(Object.keys(environment).length ? { environment } : {}) };
     }
 
     const cfg = vscode.workspace.getConfiguration('tiermux');
@@ -1168,6 +1110,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.deps.mcp.disconnect(name);
     await this.sendConfig();
     void vscode.window.showInformationMessage(`Removed MCP server "${name}".`);
+  }
+
+  /** Unified Add/Edit save from the MCP form — writes OpenCode's native schema directly. */
+  private async saveMcpServer(name: string, config: McpServerConfig, originalName?: string): Promise<void> {
+    if (!name || !config) return;
+    const cfg = vscode.workspace.getConfiguration('tiermux');
+    const servers: Record<string, unknown> = { ...(cfg.get<Record<string, unknown>>('mcpServers') ?? {}) };
+    if (originalName && originalName !== name) delete servers[originalName];
+    servers[name] = config;
+    await cfg.update('mcpServers', servers, vscode.ConfigurationTarget.Global);
+    await this.deps.mcp.reconnect();
+    await this.sendConfig();
+  }
+
+  /** Quick enable/disable toggle from a server card, without opening the full form. */
+  private async setMcpServerEnabled(name: string, enabled: boolean): Promise<void> {
+    if (!name) return;
+    const cfg = vscode.workspace.getConfiguration('tiermux');
+    const servers: Record<string, unknown> = { ...(cfg.get<Record<string, unknown>>('mcpServers') ?? {}) };
+    const existing = normalizeMcpServerConfig(servers[name]);
+    if (!existing) return;
+    servers[name] = { ...existing, enabled };
+    await cfg.update('mcpServers', servers, vscode.ConfigurationTarget.Global);
+    await this.deps.mcp.reconnect();
+    await this.sendConfig();
   }
 
   private async registry(): Promise<McpRegistryItem[]> {
@@ -1884,18 +1851,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Build the web search provider status list for the settings panel. */
-  private searchProviderStatuses(): import('./messages').SearchProviderStatus[] {
-    const cfg = vscode.workspace.getConfiguration('tiermux.tools');
-    const exaKey = cfg.get<string>('exaApiKey', '').trim();
-    const braveKey = cfg.get<string>('braveApiKey', '').trim();
-    const endpoint = cfg.get<string>('searchEndpoint', '').trim();
-    return [
-      { id: 'exa', name: 'Exa AI', hasKey: !!exaKey, freeTier: '1,000 searches/month', signupUrl: 'https://exa.ai' },
-      { id: 'brave', name: 'Brave Search', hasKey: !!braveKey, freeTier: '2,000 queries/month', signupUrl: 'https://brave.com/search/api/' },
-      { id: 'custom', name: 'Custom endpoint', hasKey: !!endpoint, freeTier: 'Bring your own (SearXNG, etc.)' },
-      { id: 'duckduckgo', name: 'DuckDuckGo (free)', hasKey: true, freeTier: 'Unlimited (often rate-limited)' },
-    ];
+  /** Reads `tiermux.mcpServers`, upgrading any legacy (pre-native-schema) entries on the fly. */
+  private readMcpServersConfig(): Record<string, McpServerConfig> {
+    const raw = vscode.workspace.getConfiguration('tiermux').get<Record<string, unknown>>('mcpServers', {}) ?? {};
+    const out: Record<string, McpServerConfig> = {};
+    for (const [name, entry] of Object.entries(raw)) {
+      const normalized = normalizeMcpServerConfig(entry);
+      if (normalized) out[name] = normalized;
+    }
+    return out;
   }
 
   private async sendConfig(): Promise<void> {
@@ -1921,25 +1885,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       };
     });
     if (this.deps.mcp.hasServers()) { try { await this.deps.mcp.ensureStarted(); } catch { /* MCP optional */ } }
-    await this.deps.index.load();
-    const s = this.deps.index.stats();
-    const embProvider = vscode.workspace.getConfiguration('tiermux.embeddings').get<string>('provider', 'google') as Platform;
-    const embConfigured = !!getPlatformInfo(embProvider)?.keyless || !!(await this.deps.secrets.get(embProvider));
     const config: ConfigPayload = {
       catalog: this.deps.catalog.all(),
       fallback: this.deps.settings.getFallback(),
       platforms,
       mcp: this.deps.mcp.servers(),
+      mcpServers: this.readMcpServersConfig(),
       mcpRegistry: await this.registry(),
-      index: { enabled: this.deps.index.isEnabled(), built: s.built, files: s.files, chunks: s.chunks, model: s.model, building: s.building, lastError: s.lastError, provider: embProvider, providerConfigured: embConfigured },
       deprecated: this.deps.secrets.deprecatedKeys(),
       modelKeys: await this.deps.secrets.modelKeySnapshot(this.deps.catalog.all()),
       utilityModel: vscode.workspace.getConfiguration('tiermux').get<string>('utilityModel', 'auto'),
       autoApprove: this.autoApprove,
-      searchProviders: this.searchProviderStatuses(),
-      searchPriority: vscode.workspace.getConfiguration('tiermux.tools').get<string>('searchProviderPriority', 'auto'),
       disabledProviders: this.deps.settings.getDisabledProviders(),
-      cacheStats: { fileCache: { entries: 0, sizeKb: 0, enabled: true }, searchCache: { entries: 0, enabled: true } },
       customEndpoints: (await Promise.all(this.deps.settings.getCustomEndpoints().map(async (ep) => ({
         id: ep.id,
         name: ep.name,

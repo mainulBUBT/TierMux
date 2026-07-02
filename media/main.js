@@ -810,7 +810,6 @@
       case 'listDir':         return path ? `Listing ${path}` : 'Listing files';
       case 'repoMap':         return 'Mapping the repository';
       case 'searchWorkspace': return query ? `Searching for “${query}”` : 'Searching the workspace';
-      case 'codebaseSearch':  return query ? `Semantic search for “${query}”` : 'Running semantic search';
       case 'getDiagnostics':  return 'Checking diagnostics';
       case 'runCommand': {
         const c = cmd.split(/\s+/).slice(0, 6).join(' ');
@@ -1307,7 +1306,9 @@
     items.forEach((it, i) => {
       const row = document.createElement('div');
       row.className = 'ac-item' + (i === 0 ? ' active' : '');
-      const icon = it.kind === 'folder' ? '📁' : it.kind === 'symbol' ? '◈' : it.kind === 'slash' ? '/' : '📄';
+      // Slash items' own label already starts with '/' (e.g. "/explain") — no separate icon,
+      // or it renders as a redundant double slash ("/ /explain").
+      const icon = it.kind === 'folder' ? '📁' : it.kind === 'symbol' ? '◈' : it.kind === 'slash' ? '' : '📄';
       row.innerHTML = `<span class="ac-icon">${icon}</span><span class="ac-label"></span><span class="ac-detail muted"></span>`;
       row.querySelector('.ac-label').textContent = it.label;
       row.querySelector('.ac-detail').textContent = it.detail || '';
@@ -1379,7 +1380,6 @@
       listDir:         ['⊟', a ? `ls  ${a}` : 'list dir'],
       repoMap:         ['⊕', 'repo map'],
       searchWorkspace: ['⌕', a ? `grep  “${a}”` : 'grep workspace'],
-      codebaseSearch:  ['⌕', a ? `search  “${a}”` : 'semantic search'],
       glob:            ['⊞', a ? `glob  ${a}` : 'glob'],
       grep:            ['⌕', a ? `grep  “${a}”` : 'grep'],
       webSearch:       ['⊙', a ? `web  “${a}”` : 'web search'],
@@ -1515,6 +1515,8 @@
   let mcpResultsEl = null;
   let mcpSearchId = 0;
   let mcpSearchTimer;
+  // MCP Add/Edit form state: null = closed, '' = new server, or the name being edited.
+  let mcpFormOpenFor = null;
   function renderSettings() {
     settingsEl.innerHTML = '';
     const bar = document.createElement('div');
@@ -1532,7 +1534,7 @@
     search.type = 'text';
     search.className = 'settings-search';
     search.placeholder = settingsTab === 'mcp' ? 'Search MCP servers…' : 'Search providers & models…';
-    if (settingsTab === 'context' || settingsTab === 'others' || settingsTab === 'search') search.style.display = 'none';
+    if (settingsTab === 'others') search.style.display = 'none';
     search.addEventListener('input', () => {
       const q = search.value.trim().toLowerCase();
       settingsContentEl.querySelectorAll('.provider-card, .registry-row').forEach((el) => {
@@ -1545,7 +1547,7 @@
     layout.className = 'settings-layout';
     const nav = document.createElement('div');
     nav.className = 'settings-nav';
-    [['providers', 'Providers'], ['search', 'webSearch'], ['mcp', 'MCP'], ['context', 'Context'], ['others', 'Others']].forEach((pair) => {
+    [['providers', 'Providers'], ['mcp', 'MCP'], ['others', 'Others']].forEach((pair) => {
       const b = document.createElement('button');
       b.className = 'nav-item' + (settingsTab === pair[0] ? ' active' : '');
       b.textContent = pair[1];
@@ -1559,87 +1561,8 @@
     settingsEl.append(layout);
 
     if (settingsTab === 'providers') renderProviders();
-    else if (settingsTab === 'search') renderSearchSection();
     else if (settingsTab === 'mcp') renderMcpSection();
-    else if (settingsTab === 'others') renderOthersSection();
-    else renderIndexSection();
-  }
-
-  // "Search" tab: pick a web search provider, set API keys, choose priority order.
-  function renderSearchSection() {
-    const wrap = document.createElement('div');
-    wrap.className = 'others-section';
-    const h = document.createElement('div'); h.className = 'others-title'; h.textContent = 'Web search';
-    const desc = document.createElement('div'); desc.className = 'others-desc';
-    desc.textContent = 'The agent uses webSearch to answer time-sensitive questions. Set a provider API key below — free tiers cover plenty. “Auto” tries Exa → Brave → custom → DuckDuckGo in order.';
-    wrap.appendChild(h); wrap.appendChild(desc);
-
-    // Priority picker
-    const priorityRow = document.createElement('div'); priorityRow.className = 'search-priority-row';
-    const pl = document.createElement('span'); pl.className = 'search-priority-label'; pl.textContent = 'Priority';
-    const sel = document.createElement('select'); sel.className = 'search-priority-select';
-    const opts = [
-      ['auto', 'Auto (try all in order)'],
-      ['exa', 'Exa first'],
-      ['brave', 'Brave first'],
-      ['custom', 'Custom endpoint first'],
-      ['duckduckgo', 'DuckDuckGo only'],
-    ];
-    const currentPriority = state.searchPriority || 'auto';
-    opts.forEach(([v, lbl]) => {
-      const o = document.createElement('option'); o.value = v; o.textContent = lbl;
-      if (v === currentPriority) o.selected = true;
-      sel.appendChild(o);
-    });
-    sel.addEventListener('change', () => vscode.postMessage({ type: 'setSearchPriority', priority: sel.value }));
-    priorityRow.appendChild(pl); priorityRow.appendChild(sel);
-    wrap.appendChild(priorityRow);
-
-    const list = document.createElement('div'); list.className = 'search-list';
-    wrap.appendChild(list);
-
-    const providers = state.searchProviders || [];
-    providers.forEach((p) => {
-      const row = document.createElement('div');
-      row.className = 'search-prov-row' + (p.hasKey ? ' configured' : '');
-      const left = document.createElement('div'); left.className = 'sp-left';
-      const name = document.createElement('div'); name.className = 'sp-name';
-      name.innerHTML = `<span>${escapeHtml(p.name)}</span>${p.hasKey ? '<span class="sp-badge">ready</span>' : ''}`;
-      const meta = document.createElement('div'); meta.className = 'sp-meta';
-      meta.textContent = p.freeTier + (p.signupUrl ? ` · ${p.signupUrl}` : '');
-      left.appendChild(name); left.appendChild(meta);
-      const actions = document.createElement('div'); actions.className = 'sp-actions';
-      if (p.id === 'custom') {
-        const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'sp-input'; inp.placeholder = 'https://your-searxng.example/search?q='; inp.value = '';
-        const save = document.createElement('button'); save.className = 'secondary'; save.textContent = 'Save URL';
-        save.addEventListener('click', () => vscode.postMessage({ type: 'setSearchKey', provider: 'custom', key: inp.value.trim() }));
-        actions.appendChild(inp); actions.appendChild(save);
-      } else if (p.id === 'duckduckgo') {
-        const note = document.createElement('span'); note.className = 'sp-note'; note.textContent = 'No key needed';
-        actions.appendChild(note);
-      } else {
-        const btn = document.createElement('button'); btn.className = 'secondary';
-        btn.textContent = p.hasKey ? 'Update key' : 'Set key';
-        btn.addEventListener('click', () => {
-          vscode.postMessage({ type: 'setSearchKey', provider: p.id });
-        });
-        actions.appendChild(btn);
-        if (p.hasKey) {
-          const clear = document.createElement('button'); clear.className = 'icon-btn'; clear.textContent = 'Clear';
-          clear.addEventListener('click', () => vscode.postMessage({ type: 'setSearchKey', provider: p.id, key: '' }));
-          actions.appendChild(clear);
-        }
-        if (p.signupUrl) {
-          const link = document.createElement('a'); link.className = 'sp-signup'; link.textContent = 'Get key'; link.href = '#';
-          link.addEventListener('click', (ev) => { ev.preventDefault(); vscode.postMessage({ type: 'copyText', text: p.signupUrl }); });
-          actions.appendChild(link);
-        }
-      }
-      row.appendChild(left); row.appendChild(actions);
-      list.appendChild(row);
-    });
-
-    settingsContentEl.appendChild(wrap);
+    else renderOthersSection();
   }
 
   // "Others" tab: pick the model used for chat titles + commit messages — an inline
@@ -2351,159 +2274,6 @@
     }
   }
 
-  function renderIndexSection() {
-    const idx = state.index || {};
-    const title = document.createElement('div');
-    title.className = 'section-title';
-    title.textContent = 'Codebase Index (semantic search)';
-    settingsContentEl.appendChild(title);
-    const hint = document.createElement('div');
-    hint.className = 'muted';
-    hint.textContent = 'Embeds your code so the agent can search by meaning and auto-inject relevant snippets each turn. Builds automatically once enabled with a provider key — progress shows above the chat box.';
-    settingsContentEl.appendChild(hint);
-
-    // Enable toggle
-    const enableRow = document.createElement('label');
-    enableRow.className = 'pm-row';
-    const enableCb = document.createElement('input');
-    enableCb.type = 'checkbox';
-    enableCb.checked = !!idx.enabled;
-    enableCb.addEventListener('change', () => vscode.postMessage({ type: 'setEmbeddingsEnabled', enabled: enableCb.checked }));
-    const enLbl = document.createElement('span');
-    enLbl.textContent = 'Enable codebase index';
-    enableRow.appendChild(enableCb);
-    enableRow.appendChild(enLbl);
-    settingsContentEl.appendChild(enableRow);
-
-    // Embedding provider + key
-    const provRow = document.createElement('div');
-    provRow.className = 'row-actions';
-    provRow.style.margin = '6px 0';
-    const provLabel = document.createElement('span');
-    provLabel.className = 'muted';
-    provLabel.textContent = 'Embeddings via';
-    const provSel = document.createElement('select');
-    provSel.className = 'pill';
-    ['google', 'cohere', 'mistral', 'openrouter', 'github', 'nvidia'].forEach((p) => {
-      const o = document.createElement('option');
-      o.value = p; o.textContent = p;
-      if (p === idx.provider) o.selected = true;
-      provSel.appendChild(o);
-    });
-    provSel.addEventListener('change', () => vscode.postMessage({ type: 'setEmbeddingsProvider', provider: provSel.value }));
-    const keyDot = document.createElement('span');
-    keyDot.className = 'status-dot status-' + (idx.providerConfigured ? 'healthy' : 'missing');
-    const keyBtn = document.createElement('button');
-    keyBtn.className = 'secondary';
-    keyBtn.textContent = idx.providerConfigured ? 'Key set' : 'Set key';
-    keyBtn.addEventListener('click', () => vscode.postMessage({ type: 'setKey', platform: idx.provider }));
-    provRow.appendChild(provLabel);
-    provRow.appendChild(provSel);
-    provRow.appendChild(keyDot);
-    provRow.appendChild(keyBtn);
-    settingsContentEl.appendChild(provRow);
-
-    const status = document.createElement('div');
-    status.className = 'muted';
-    status.style.margin = '4px 0';
-    status.textContent = idx.building ? 'Indexing…'
-      : idx.built ? `Indexed: ${idx.chunks} chunks · ${idx.files} files · ${escapeHtml(idx.model || '')}`
-      : 'Not built yet.';
-    settingsContentEl.appendChild(status);
-    if (idx.lastError) { const e = document.createElement('div'); e.className = 'error'; e.textContent = idx.lastError; settingsContentEl.appendChild(e); }
-    if (idx.enabled && !idx.providerConfigured) {
-      const warn = document.createElement('div');
-      warn.className = 'muted';
-      warn.textContent = `Set an API key for "${idx.provider}" to build the index.`;
-      settingsContentEl.appendChild(warn);
-    }
-
-    const actions = document.createElement('div');
-    actions.className = 'row-actions';
-    const build = document.createElement('button');
-    build.className = 'secondary';
-    build.textContent = idx.built ? 'Rebuild index' : 'Build index';
-    build.disabled = !idx.enabled || !idx.providerConfigured || !!idx.building;
-    build.addEventListener('click', () => vscode.postMessage({ type: 'buildIndex' }));
-    const clear = document.createElement('button');
-    clear.className = 'icon-btn';
-    clear.textContent = 'Clear';
-    clear.addEventListener('click', () => vscode.postMessage({ type: 'clearIndex' }));
-    actions.appendChild(build);
-    actions.appendChild(clear);
-    settingsContentEl.appendChild(actions);
-
-    // ---- Performance Cache subsection ----
-    const cacheStats = state.cacheStats || { fileCache: { entries: 0, sizeKb: 0, enabled: true }, searchCache: { entries: 0, enabled: true } };
-    const cacheTitle = document.createElement('div');
-    cacheTitle.className = 'section-title';
-    cacheTitle.style.marginTop = '18px';
-    cacheTitle.textContent = 'Performance Cache';
-    settingsContentEl.appendChild(cacheTitle);
-    const cacheHint = document.createElement('div');
-    cacheHint.className = 'muted';
-    cacheHint.textContent = 'In-memory caches that prevent re-reading files and re-running searches during an agent run. Saves rate-limit quota on free LLMs.';
-    settingsContentEl.appendChild(cacheHint);
-
-    // File cache row
-    const fileRow = document.createElement('div');
-    fileRow.className = 'row-actions';
-    fileRow.style.marginTop = '8px';
-    const fileLbl = document.createElement('span');
-    fileLbl.style.flex = '1';
-    fileLbl.innerHTML = '<strong>File cache</strong> <span class="muted">' +
-      (cacheStats.fileCache.entries > 0 ? `${cacheStats.fileCache.entries} files · ${cacheStats.fileCache.sizeKb} KB` : 'empty') + '</span>';
-    const fileToggle = document.createElement('input');
-    fileToggle.type = 'checkbox';
-    fileToggle.checked = !!cacheStats.fileCache.enabled;
-    fileToggle.title = 'Enable file read cache';
-    fileToggle.addEventListener('change', () => vscode.postMessage({ type: 'setCacheEnabled', key: 'file', enabled: fileToggle.checked }));
-    const fileClear = document.createElement('button');
-    fileClear.className = 'icon-btn';
-    fileClear.textContent = 'Clear';
-    fileClear.disabled = cacheStats.fileCache.entries === 0;
-    fileClear.addEventListener('click', () => vscode.postMessage({ type: 'clearFileCache' }));
-    fileRow.appendChild(fileLbl);
-    fileRow.appendChild(fileToggle);
-    fileRow.appendChild(fileClear);
-    settingsContentEl.appendChild(fileRow);
-
-    // Search cache row
-    const searchRow = document.createElement('div');
-    searchRow.className = 'row-actions';
-    searchRow.style.marginTop = '4px';
-    const searchLbl = document.createElement('span');
-    searchLbl.style.flex = '1';
-    searchLbl.innerHTML = '<strong>Search cache</strong> <span class="muted">' +
-      (cacheStats.searchCache.entries > 0 ? `${cacheStats.searchCache.entries} queries cached` : 'empty') + ' · 30 s TTL</span>';
-    const searchToggle = document.createElement('input');
-    searchToggle.type = 'checkbox';
-    searchToggle.checked = !!cacheStats.searchCache.enabled;
-    searchToggle.title = 'Enable grep / search cache';
-    searchToggle.addEventListener('change', () => vscode.postMessage({ type: 'setCacheEnabled', key: 'search', enabled: searchToggle.checked }));
-    const searchClear = document.createElement('button');
-    searchClear.className = 'icon-btn';
-    searchClear.textContent = 'Clear';
-    searchClear.disabled = cacheStats.searchCache.entries === 0;
-    searchClear.addEventListener('click', () => vscode.postMessage({ type: 'clearSearchCache' }));
-    searchRow.appendChild(searchLbl);
-    searchRow.appendChild(searchToggle);
-    searchRow.appendChild(searchClear);
-    settingsContentEl.appendChild(searchRow);
-
-    // Clear all button
-    const cacheActions = document.createElement('div');
-    cacheActions.className = 'row-actions';
-    cacheActions.style.marginTop = '6px';
-    const clearAll = document.createElement('button');
-    clearAll.className = 'icon-btn';
-    clearAll.textContent = 'Clear all caches';
-    clearAll.disabled = cacheStats.fileCache.entries === 0 && cacheStats.searchCache.entries === 0;
-    clearAll.addEventListener('click', () => vscode.postMessage({ type: 'clearAllCaches' }));
-    cacheActions.appendChild(clearAll);
-    settingsContentEl.appendChild(cacheActions);
-  }
-
   function renderMcpSection() {
     const title = document.createElement('div');
     title.className = 'section-title';
@@ -2511,48 +2281,74 @@
     settingsContentEl.appendChild(title);
     const hint = document.createElement('div');
     hint.className = 'muted';
-    hint.textContent = 'Tools from configured MCP servers are available to the agent. Edit in settings.json (tiermux.mcpServers).';
+    hint.textContent = 'Tools from configured MCP servers are available to the agent (OpenCode connects to them directly).';
     settingsContentEl.appendChild(hint);
 
     const actions = document.createElement('div');
     actions.className = 'row-actions';
     actions.style.margin = '6px 0';
+    const addBtn = document.createElement('button');
+    addBtn.className = 'secondary';
+    addBtn.textContent = '+ Add server';
+    addBtn.addEventListener('click', () => { mcpFormOpenFor = ''; renderSettings(); });
     const editBtn = document.createElement('button');
-    editBtn.className = 'secondary';
-    editBtn.textContent = 'Edit servers (settings.json)';
+    editBtn.className = 'icon-btn';
+    editBtn.textContent = 'Edit in settings.json';
     editBtn.addEventListener('click', () => vscode.postMessage({ type: 'editMcp' }));
     const reBtn = document.createElement('button');
     reBtn.className = 'icon-btn';
     reBtn.textContent = '⟳ Reconnect';
     reBtn.addEventListener('click', () => vscode.postMessage({ type: 'reconnectMcp' }));
+    actions.appendChild(addBtn);
     actions.appendChild(editBtn);
     actions.appendChild(reBtn);
     settingsContentEl.appendChild(actions);
 
+    if (mcpFormOpenFor === '') renderMcpForm(null);
+
     const servers = state.mcp || [];
-    if (!servers.length) {
+    if (!servers.length && mcpFormOpenFor === null) {
       const none = document.createElement('div');
       none.className = 'muted';
       none.textContent = 'No MCP servers configured yet — add one below.';
       settingsContentEl.appendChild(none);
     }
     servers.forEach((s) => {
+      const raw = (state.mcpServers || {})[s.name];
+      if (mcpFormOpenFor === s.name) { renderMcpForm(s.name); return; }
       const card = document.createElement('div');
       card.className = 'provider-card';
-      const dot = s.status === 'connected' ? 'healthy' : s.status === 'error' ? 'invalid' : 'missing';
+      const enabled = !raw || raw.enabled !== false;
+      const dot = !enabled ? 'missing' : s.status === 'connected' ? 'healthy' : s.status === 'error' ? 'invalid' : 'missing';
       const head = document.createElement('div');
       head.className = 'provider-head';
-      head.innerHTML = `<span class="status-dot status-${dot}"></span><span class="provider-name">${escapeHtml(s.name)}</span><span class="muted prov-status">${s.status === 'connected' ? s.toolCount + ' tools' : escapeHtml(s.status)}</span>`;
+      const typeLabel = raw ? (raw.type === 'remote' ? 'remote' : 'local') : '';
+      head.innerHTML = `<span class="status-dot status-${dot}"></span><span class="provider-name">${escapeHtml(s.name)}</span><span class="muted prov-status">${typeLabel}${typeLabel ? ' · ' : ''}${!enabled ? 'disabled' : s.status === 'connected' ? s.toolCount + ' tools' : escapeHtml(s.status)}</span>`;
+      const enableCb = document.createElement('input');
+      enableCb.type = 'checkbox';
+      enableCb.title = 'Enabled';
+      enableCb.checked = enabled;
+      enableCb.style.marginLeft = 'auto';
+      enableCb.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        vscode.postMessage({ type: 'setMcpServerEnabled', name: s.name, enabled: enableCb.checked });
+      });
+      head.appendChild(enableCb);
+      const editSrvBtn = document.createElement('button');
+      editSrvBtn.className = 'icon-btn';
+      editSrvBtn.textContent = '✎';
+      editSrvBtn.title = 'Edit server';
+      editSrvBtn.addEventListener('click', (ev) => { ev.stopPropagation(); mcpFormOpenFor = s.name; renderSettings(); });
+      head.appendChild(editSrvBtn);
       const rm = document.createElement('button');
       rm.className = 'icon-btn';
       rm.textContent = '✕';
       rm.title = 'Remove server';
-      rm.style.marginLeft = 'auto'; // group the controls at the right edge
       rm.addEventListener('click', (ev) => { ev.stopPropagation(); vscode.postMessage({ type: 'removeMcpServer', name: s.name }); });
       head.appendChild(rm);
       const chev = document.createElement('span');
       chev.className = 'chev';
-      chev.style.marginLeft = '0'; // the remove button already claims the gap
+      chev.style.marginLeft = '0'; // the buttons already claim the gap
       chev.textContent = '▸';
       head.appendChild(chev);
       const body = document.createElement('div');
@@ -2573,7 +2369,7 @@
     // Marketplace: browse curated + search the remote registry.
     const mt = document.createElement('div');
     mt.className = 'section-title';
-    mt.textContent = 'Add a server';
+    mt.textContent = 'Add from registry';
     settingsContentEl.appendChild(mt);
 
     const rsearch = document.createElement('input');
@@ -2594,6 +2390,240 @@
       clearTimeout(mcpSearchTimer);
       mcpSearchTimer = setTimeout(() => vscode.postMessage({ type: 'searchMcpRegistry', queryId: id, query: q }), 350);
     });
+  }
+
+  // Parses one KEY=VALUE (env) or Key: Value (headers) pair per non-empty line.
+  function parsePairLines(text, sep) {
+    const out = {};
+    (text || '').split('\n').forEach((line) => {
+      const t = line.trim();
+      if (!t) return;
+      const i = t.indexOf(sep);
+      if (i <= 0) return;
+      const k = t.slice(0, i).trim();
+      const v = t.slice(i + sep.length).trim();
+      if (k) out[k] = v;
+    });
+    return out;
+  }
+  function pairsToLines(obj, sep) {
+    return Object.entries(obj || {}).map(([k, v]) => `${k}${sep}${v}`).join('\n');
+  }
+
+  /** Add/Edit form for a native-schema MCP server. `existingName` is null for a new
+   *  server, or the name of the server being edited (config pre-filled from
+   *  `state.mcpServers[existingName]`). Local vs Remote maps 1:1 to OpenCode's own
+   *  McpLocalConfig / McpRemoteConfig — no TierMux-specific fields are added. */
+  function renderMcpForm(existingName) {
+    const raw = existingName ? (state.mcpServers || {})[existingName] : null;
+    const isRemote = raw ? raw.type === 'remote' : false;
+
+    const card = document.createElement('div');
+    card.className = 'provider-card mcp-form';
+    const title = document.createElement('div');
+    title.className = 'others-title';
+    title.textContent = existingName ? `Edit "${existingName}"` : 'New MCP server';
+    card.appendChild(title);
+
+    const err = document.createElement('div');
+    err.className = 'error hidden';
+    card.appendChild(err);
+
+    const field = (labelText, input) => {
+      const row = document.createElement('div');
+      row.className = 'pm-row';
+      row.style.flexDirection = 'column';
+      row.style.alignItems = 'stretch';
+      const lbl = document.createElement('label');
+      lbl.className = 'muted';
+      lbl.textContent = labelText;
+      row.appendChild(lbl);
+      row.appendChild(input);
+      card.appendChild(row);
+      return input;
+    };
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.value = existingName || '';
+    nameInput.placeholder = 'e.g. filesystem';
+    field('Name', nameInput);
+
+    // Type selector
+    const typeRow = document.createElement('div');
+    typeRow.className = 'pm-row';
+    const localLabel = document.createElement('label');
+    const localRadio = document.createElement('input');
+    localRadio.type = 'radio'; localRadio.name = 'mcp-type'; localRadio.checked = !isRemote;
+    localLabel.appendChild(localRadio); localLabel.append(' Local (stdio)');
+    const remoteLabel = document.createElement('label');
+    const remoteRadio = document.createElement('input');
+    remoteRadio.type = 'radio'; remoteRadio.name = 'mcp-type'; remoteRadio.checked = isRemote;
+    remoteLabel.appendChild(remoteRadio); remoteLabel.append(' Remote');
+    remoteLabel.style.marginLeft = '16px';
+    typeRow.appendChild(localLabel);
+    typeRow.appendChild(remoteLabel);
+    card.appendChild(typeRow);
+
+    // ---- Local fields ----
+    const localBox = document.createElement('div');
+    const commandInput = document.createElement('input');
+    commandInput.type = 'text';
+    commandInput.placeholder = 'npx';
+    commandInput.value = !isRemote && raw && raw.command ? raw.command[0] || '' : '';
+    const mkField = (parent, labelText, input) => {
+      const row = document.createElement('div');
+      row.className = 'pm-row';
+      row.style.flexDirection = 'column';
+      row.style.alignItems = 'stretch';
+      const lbl = document.createElement('label');
+      lbl.className = 'muted';
+      lbl.textContent = labelText;
+      row.appendChild(lbl);
+      row.appendChild(input);
+      parent.appendChild(row);
+      return input;
+    };
+    mkField(localBox, 'Command (executable)', commandInput);
+    const argsInput = document.createElement('textarea');
+    argsInput.rows = 3;
+    argsInput.placeholder = 'one argument per line';
+    argsInput.value = !isRemote && raw && raw.command ? raw.command.slice(1).join('\n') : '';
+    mkField(localBox, 'Arguments', argsInput);
+    const envInput = document.createElement('textarea');
+    envInput.rows = 3;
+    envInput.placeholder = 'KEY=value (one per line)';
+    envInput.value = !isRemote && raw ? pairsToLines(raw.environment, '=') : '';
+    mkField(localBox, 'Environment variables', envInput);
+    const cwdInput = document.createElement('input');
+    cwdInput.type = 'text';
+    cwdInput.placeholder = 'defaults to the workspace root';
+    cwdInput.value = (!isRemote && raw && raw.cwd) || '';
+    mkField(localBox, 'Working directory (optional)', cwdInput);
+    card.appendChild(localBox);
+
+    // ---- Remote fields ----
+    const remoteBox = document.createElement('div');
+    const urlInput = document.createElement('input');
+    urlInput.type = 'text';
+    urlInput.placeholder = 'https://example.com/mcp';
+    urlInput.value = (isRemote && raw && raw.url) || '';
+    mkField(remoteBox, 'URL', urlInput);
+    const headersInput = document.createElement('textarea');
+    headersInput.rows = 3;
+    headersInput.placeholder = 'Header-Name: value (one per line)';
+    headersInput.value = isRemote && raw ? pairsToLines(raw.headers, ': ') : '';
+    mkField(remoteBox, 'Headers', headersInput);
+
+    const oauthSel = document.createElement('select');
+    [['auto', 'Auto-detect (default)'], ['disabled', 'Disabled'], ['custom', 'Custom…']].forEach(([v, lbl]) => {
+      const o = document.createElement('option'); o.value = v; o.textContent = lbl; oauthSel.appendChild(o);
+    });
+    const existingOauth = isRemote && raw ? raw.oauth : undefined;
+    oauthSel.value = existingOauth === false ? 'disabled' : existingOauth && typeof existingOauth === 'object' ? 'custom' : 'auto';
+    mkField(remoteBox, 'OAuth configuration', oauthSel);
+    const oauthBox = document.createElement('div');
+    const oc = existingOauth && typeof existingOauth === 'object' ? existingOauth : {};
+    const oClientId = document.createElement('input'); oClientId.type = 'text'; oClientId.value = oc.clientId || '';
+    const oClientSecret = document.createElement('input'); oClientSecret.type = 'password'; oClientSecret.value = oc.clientSecret || '';
+    const oRedirect = document.createElement('input'); oRedirect.type = 'text'; oRedirect.value = oc.redirectUri || '';
+    const oScope = document.createElement('input'); oScope.type = 'text'; oScope.value = oc.scope || '';
+    const oPort = document.createElement('input'); oPort.type = 'number'; oPort.value = oc.callbackPort || '';
+    mkField(oauthBox, 'Client ID', oClientId);
+    mkField(oauthBox, 'Client secret', oClientSecret);
+    mkField(oauthBox, 'Redirect URI', oRedirect);
+    mkField(oauthBox, 'Scope', oScope);
+    mkField(oauthBox, 'Callback port', oPort);
+    remoteBox.appendChild(oauthBox);
+    card.appendChild(remoteBox);
+
+    const syncType = () => {
+      localBox.classList.toggle('hidden', remoteRadio.checked);
+      remoteBox.classList.toggle('hidden', !remoteRadio.checked);
+      oauthBox.classList.toggle('hidden', oauthSel.value !== 'custom');
+    };
+    localRadio.addEventListener('change', syncType);
+    remoteRadio.addEventListener('change', syncType);
+    oauthSel.addEventListener('change', syncType);
+    syncType();
+
+    // ---- Common fields ----
+    const timeoutInput = document.createElement('input');
+    timeoutInput.type = 'number';
+    timeoutInput.placeholder = 'ms — blank uses OpenCode\'s default';
+    timeoutInput.value = (raw && raw.timeout) || '';
+    field('Timeout (ms, optional)', timeoutInput);
+
+    const enabledRow = document.createElement('label');
+    enabledRow.className = 'pm-row';
+    const enabledCb = document.createElement('input');
+    enabledCb.type = 'checkbox';
+    enabledCb.checked = !raw || raw.enabled !== false;
+    enabledRow.appendChild(enabledCb);
+    enabledRow.append(' Enabled');
+    card.appendChild(enabledRow);
+
+    // ---- Save / Cancel ----
+    const btnRow = document.createElement('div');
+    btnRow.className = 'row-actions';
+    btnRow.style.marginTop = '8px';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'secondary';
+    saveBtn.textContent = 'Save';
+    saveBtn.addEventListener('click', () => {
+      const name = nameInput.value.trim();
+      err.classList.add('hidden');
+      const fail = (msg) => { err.textContent = msg; err.classList.remove('hidden'); };
+      if (!name) return fail('Name is required.');
+      let config;
+      if (remoteRadio.checked) {
+        const url = urlInput.value.trim();
+        if (!url) return fail('URL is required for a remote server.');
+        config = {
+          type: 'remote',
+          url,
+          enabled: enabledCb.checked,
+        };
+        const headers = parsePairLines(headersInput.value, ':');
+        if (Object.keys(headers).length) config.headers = headers;
+        if (oauthSel.value === 'disabled') config.oauth = false;
+        else if (oauthSel.value === 'custom') {
+          const oauth = {};
+          if (oClientId.value.trim()) oauth.clientId = oClientId.value.trim();
+          if (oClientSecret.value.trim()) oauth.clientSecret = oClientSecret.value.trim();
+          if (oRedirect.value.trim()) oauth.redirectUri = oRedirect.value.trim();
+          if (oScope.value.trim()) oauth.scope = oScope.value.trim();
+          if (oPort.value.trim()) oauth.callbackPort = Number(oPort.value.trim());
+          config.oauth = oauth;
+        }
+      } else {
+        const command = commandInput.value.trim();
+        if (!command) return fail('Command is required for a local server.');
+        const args = argsInput.value.split('\n').map((l) => l.trim()).filter(Boolean);
+        config = {
+          type: 'local',
+          command: [command, ...args],
+          enabled: enabledCb.checked,
+        };
+        const environment = parsePairLines(envInput.value, '=');
+        if (Object.keys(environment).length) config.environment = environment;
+        if (cwdInput.value.trim()) config.cwd = cwdInput.value.trim();
+      }
+      const timeout = timeoutInput.value.trim();
+      if (timeout) config.timeout = Number(timeout);
+      vscode.postMessage({ type: 'saveMcpServer', name, originalName: existingName || undefined, config });
+      mcpFormOpenFor = null;
+      renderSettings();
+    });
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'icon-btn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => { mcpFormOpenFor = null; renderSettings(); });
+    btnRow.appendChild(saveBtn);
+    btnRow.appendChild(cancelBtn);
+    card.appendChild(btnRow);
+
+    settingsContentEl.appendChild(card);
   }
 
   function renderMcpItems(items) {
@@ -2636,7 +2666,6 @@
         rebuildModelPicker();
         updateFooter(msg.usageTotals);
         renderUsageStatsCard(msg.usageTotals && msg.usageTotals.lifetime, msg.usageTotals && msg.usageTotals.retrieval);
-        renderIndexStatus(state.index && state.index.building ? { building: true, done: 0, total: 0, phase: 'embedding' } : { building: false });
         if (settingsOpen) renderSettings();
         break;
       case 'customEndpointModels':
@@ -3127,9 +3156,6 @@
         updateFooter(msg.totals);
         renderUsageStatsCard(msg.totals && msg.totals.lifetime, msg.totals && msg.totals.retrieval);
         break;
-      case 'indexProgress':
-        renderIndexStatus(msg);
-        break;
       case 'checkpoint':
         renderCheckpoint(msg);
         break;
@@ -3371,21 +3397,6 @@
     });
     bar.appendChild(head); bar.appendChild(list);
     bar.classList.remove('hidden');
-  }
-
-  // Transient codebase-index status: shown only while building, hidden when full.
-  function renderIndexStatus(p) {
-    const el = $('#index-status');
-    if (!el) return;
-    if (!p || !p.building) { el.classList.add('hidden'); el.innerHTML = ''; return; }
-    const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
-    const label = p.phase === 'scanning'
-      ? 'Scanning workspace…'
-      : `Indexing codebase… ${p.done}/${p.total} (${pct}%)`;
-    el.classList.remove('hidden');
-    el.innerHTML = '<span class="idx-spinner"></span><span class="idx-label"></span><span class="idx-bar"><span class="idx-fill"></span></span>';
-    el.querySelector('.idx-label').textContent = label;
-    el.querySelector('.idx-fill').style.width = pct + '%';
   }
 
   function updateFooter(totals) {

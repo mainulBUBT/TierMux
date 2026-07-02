@@ -3,7 +3,7 @@
 import * as vscode from 'vscode';
 import type { ChatToolDefinition } from '../shared/types';
 import type { McpServerInfo } from '../messages';
-import { McpStdioClient, McpHttpClient, type McpClient, type McpServerConfig } from './mcpClient';
+import { McpStdioClient, McpHttpClient, normalizeMcpServerConfig, type McpClient, type McpServerConfig } from './mcpClient';
 
 const PREFIX = 'mcp__';
 const sanitize = (s: string): string => s.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -15,7 +15,13 @@ export class McpManager {
   private starting?: Promise<void>;
 
   private readConfig(): Record<string, McpServerConfig> {
-    return vscode.workspace.getConfiguration('tiermux').get<Record<string, McpServerConfig>>('mcpServers', {}) ?? {};
+    const raw = vscode.workspace.getConfiguration('tiermux').get<Record<string, unknown>>('mcpServers', {}) ?? {};
+    const out: Record<string, McpServerConfig> = {};
+    for (const [name, entry] of Object.entries(raw)) {
+      const normalized = normalizeMcpServerConfig(entry);
+      if (normalized) out[name] = normalized;
+    }
+    return out;
   }
 
   hasServers(): boolean {
@@ -59,10 +65,10 @@ export class McpManager {
     const toolMap = new Map<string, { server: string; tool: string }>();
     const infos: McpServerInfo[] = [];
     await Promise.all(Object.entries(cfg).map(async ([name, sc]) => {
-      if (sc.disabled) { infos.push({ name, status: 'disabled', toolCount: 0, tools: [] }); return; }
-      const client: McpClient = sc.url
+      if (sc.enabled === false) { infos.push({ name, status: 'disabled', toolCount: 0, tools: [] }); return; }
+      const client: McpClient = sc.type === 'remote'
         ? new McpHttpClient(name, { url: sc.url, headers: sc.headers })
-        : new McpStdioClient(name, { command: sc.command ?? '', args: sc.args, env: sc.env, cwd: sc.cwd ?? wsCwd });
+        : new McpStdioClient(name, { ...sc, cwd: sc.cwd ?? wsCwd });
       try {
         await client.start();
         clients.set(name, client);

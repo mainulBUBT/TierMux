@@ -1,6 +1,8 @@
 // Wire protocol between the extension host and the chat webview.
 import type { CatalogModel, FallbackEntry, KeyStatus, Platform, ReasoningEffort, TodoItem } from './shared/types';
 import type { ClarifyingQuestion } from './agent/clarify';
+import type { McpServerConfig } from './mcp/mcpClient';
+export type { McpServerConfig, McpLocalServerConfig, McpRemoteServerConfig, McpOAuthConfig } from './mcp/mcpClient';
 
 /**
  * Anything a user attaches to a message. Three sending modes:
@@ -70,6 +72,7 @@ export interface McpServerInfo {
   error?: string;
 }
 
+
 export interface McpRegistryItem {
   id: string;
   name: string;
@@ -90,30 +93,15 @@ export interface CheckpointFile {
   status: 'created' | 'modified' | 'deleted';
 }
 
-interface IndexInfo {
-  enabled: boolean;
-  built: boolean;
-  files: number;
-  chunks: number;
-  model: string;
-  building: boolean;
-  lastError?: string;
-  provider: string;
-  providerConfigured: boolean;
-}
-
-interface CacheStatsPayload {
-  fileCache: { entries: number; sizeKb: number; enabled: boolean };
-  searchCache: { entries: number; enabled: boolean };
-}
-
 export interface ConfigPayload {
   catalog: CatalogModel[];
   fallback: FallbackEntry[];
   platforms: KeyStatusInfo[];
   mcp: McpServerInfo[];
+  /** Raw persisted config per server (from `tiermux.mcpServers`, already-migrated shape) —
+   *  used to pre-fill the Edit form; connection status/tools live in `mcp` above. */
+  mcpServers: Record<string, McpServerConfig>;
   mcpRegistry: McpRegistryItem[];
-  index: IndexInfo;
   /** `platform::modelId` keys a provider has 404'd this session — flagged as deprecated in the picker. */
   deprecated: string[];
   /** `platform::modelId` keys currently set as a per-model override of the platform key. */
@@ -122,13 +110,8 @@ export interface ConfigPayload {
   utilityModel: string;
   /** Session toggle: when true, the agent runs commands and applies edits without asking (dangerous commands still confirm). */
   autoApprove: boolean;
-  /** Web search provider status — which keys are set and which provider is tried first. */
-  searchProviders: SearchProviderStatus[];
-  searchPriority: string;
   /** Providers toggled off at the platform level — models excluded from routing and pickers without losing their enabled flags. */
   disabledProviders: Platform[];
-  /** Performance cache statistics for the Settings → Context tab. */
-  cacheStats: CacheStatsPayload;
   /** User-defined custom OpenAI-compatible endpoints (summary — the webview reads fallback chain for enabled models). */
   customEndpoints: Array<{
     id: string;
@@ -140,13 +123,6 @@ export interface ConfigPayload {
   }>;
 }
 
-export interface SearchProviderStatus {
-  id: 'exa' | 'brave' | 'custom' | 'duckduckgo';
-  name: string;
-  hasKey: boolean;
-  freeTier: string;
-  signupUrl?: string;
-}
 
 export interface MentionItem {
   label: string;
@@ -189,26 +165,20 @@ export type InMessage =
   | { type: 'reconnectMcp' }
   | { type: 'addMcpServer'; item: McpRegistryItem }
   | { type: 'removeMcpServer'; name: string }
+  /** Unified Add/Edit save from the MCP form. `originalName` set (and different from
+   *  `name`) means a rename — the old key is removed and the new one added. */
+  | { type: 'saveMcpServer'; name: string; originalName?: string; config: McpServerConfig }
+  | { type: 'setMcpServerEnabled'; name: string; enabled: boolean }
   | { type: 'searchMcpRegistry'; queryId: number; query: string }
-  | { type: 'buildIndex' }
-  | { type: 'clearIndex' }
   | { type: 'restoreCheckpoint'; id: string }
   | { type: 'diffCheckpointFile'; id: string; uri: string }
   | { type: 'revertTo'; requestId: string }
   | { type: 'copyText'; text: string }
-  | { type: 'setEmbeddingsEnabled'; enabled: boolean }
-  | { type: 'setEmbeddingsProvider'; provider: string }
   | { type: 'setUtilityModel'; model: string }
-  | { type: 'setSearchKey'; provider: string; key?: string }
-  | { type: 'setSearchPriority'; priority: string }
   | { type: 'setAutoApprove'; enabled: boolean }
   | { type: 'resume'; requestId: string }
   | { type: 'newChat' }
   | { type: 'askUserResponse'; requestId: string; callId: string; answer: string; cancelled?: boolean; sessionId?: string }
-  | { type: 'clearFileCache' }
-  | { type: 'clearSearchCache' }
-  | { type: 'clearAllCaches' }
-  | { type: 'setCacheEnabled'; key: 'file' | 'search'; enabled: boolean }
   | { type: 'clearUsage' }
   // Custom OpenAI-compatible endpoints
   | { type: 'addCustomEndpoint'; name: string; baseUrl: string }
@@ -270,7 +240,6 @@ export type OutMessage =
   | { type: 'assistantMessage'; sessionId: string; requestId: string; text: string; reasoning?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean }
   | { type: 'assistantChunk'; sessionId: string; requestId: string; text: string }
   | { type: 'usageTotals'; totals: UsageTotals }
-  | { type: 'indexProgress'; building: boolean; done: number; total: number; phase: 'scanning' | 'embedding' | 'done' | 'error' }
   | { type: 'checkpoint'; sessionId: string; requestId: string; id: string; files: CheckpointFile[] }
   | { type: 'toolStatus'; sessionId: string; requestId: string; toolCallId: string; name: string; args: unknown; state: 'running' | 'done' | 'error'; detail?: string }
   | { type: 'changedFiles'; sessionId: string; id: string; files: CheckpointFile[] }

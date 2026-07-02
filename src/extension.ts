@@ -16,7 +16,7 @@ import { registerCheckpointContentProvider } from './edits/checkpoints';
 // (ToolCache was removed in v7 — its no-op stand-in is no longer needed.)
 import { setOcEngine, setOcTrace, setQualityGate, setHotStandby, setHedging } from './agent/sdk';
 import { McpManager } from './mcp/mcpManager';
-import { CodebaseIndex } from './index/codebaseIndex';
+import { normalizeMcpServerConfig, type McpServerConfig } from './mcp/mcpClient';
 import { ChatViewProvider } from './chatViewProvider';
 import { allPlatformInfo, getPlatformInfo } from './providers';
 import { registerEditorCommands } from './editor/commands';
@@ -41,6 +41,17 @@ let ocConnection: OcConnection | undefined;
 let engineLog: vscode.OutputChannel | undefined;
 const ts = () => new Date().toISOString().slice(11, 23);
 
+/** Reads `tiermux.mcpServers`, upgrading any legacy (pre-native-schema) entries on the fly. */
+function readMcpServers(): Record<string, McpServerConfig> {
+  const raw = vscode.workspace.getConfiguration('tiermux').get<Record<string, unknown>>('mcpServers', {}) ?? {};
+  const out: Record<string, McpServerConfig> = {};
+  for (const [name, entry] of Object.entries(raw)) {
+    const normalized = normalizeMcpServerConfig(entry);
+    if (normalized) out[name] = normalized;
+  }
+  return out;
+}
+
 /**
  * Start the OC engine pointed at the router proxy. Logs the outcome; never throws
  * — a missing binary just means the integration stays off and the built-in agent runs.
@@ -50,6 +61,7 @@ async function startOpenCodeEngine(
   routerProxyBaseURL: string,
   cacheDir: string,
   enabledModelIds: string[],
+  mcpServers: Record<string, McpServerConfig>,
 ): Promise<void> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!engineLog) engineLog = vscode.window.createOutputChannel('TierMux Engine');
@@ -65,6 +77,7 @@ async function startOpenCodeEngine(
         workspaceRoot,
         cacheDir,
         enabledModelIds,
+        mcpServers,
         onProgress: (msg) => progress.report({ message: msg }),
         log,
       }),
@@ -110,7 +123,8 @@ export function activate(context: vscode.ExtensionContext): void {
         const enabledModelIds = settings.enabledByPriority().map(
           (e) => 'tm_' + Buffer.from(`${e.platform}::${e.modelId}`).toString('base64url'),
         );
-        void startOpenCodeEngine(context.extensionUri.fsPath, srv.baseURL, context.globalStorageUri.fsPath, enabledModelIds);
+        const mcpServers = readMcpServers();
+        void startOpenCodeEngine(context.extensionUri.fsPath, srv.baseURL, context.globalStorageUri.fsPath, enabledModelIds, mcpServers);
       } else {
         console.warn('[tiermux] OpenCode engine disabled (tiermux.useOpenCodeEngine = false). Chat and agent runs will not work — re-enable the engine to use TierMux.');
       }
@@ -144,7 +158,6 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   const mcp = new McpManager();
   context.subscriptions.push({ dispose: () => mcp.dispose() });
-  const index = new CodebaseIndex(context.globalStorageUri, secrets);
 
   const chat = new ChatViewProvider(context.extensionUri, {
     secrets,
@@ -154,7 +167,6 @@ export function activate(context: vscode.ExtensionContext): void {
     usageStore,
     router,
     mcp,
-    index,
     modelStats,
     workspaceState: context.workspaceState,
     generateCommitMessage: () => generateCommitMessage(router),
@@ -168,9 +180,6 @@ export function activate(context: vscode.ExtensionContext): void {
   // Session Auto-approve toggle (composer): both gates read it live to skip prompts.
   commandGate.setAutoApprove(() => chat.autoApprove);
   editGate.setAutoApprove(() => chat.autoApprove);
-
-  // Stream index-build progress into the chat webview (transient "Indexing…" strip).
-  index.onProgress((p) => chat.onIndexProgress(p));
 
   // Pre-research removed — OpenCode handles code intelligence via LSP/grep/glob.
 
@@ -205,24 +214,10 @@ export function activate(context: vscode.ExtensionContext): void {
     telemetryBar.show();
   }) });
 
-  // File-watcher for the embeddings index (still used by Agent fallback path).
-  context.subscriptions.push(
-    vscode.workspace.onDidSaveTextDocument((doc) => {
-      void index.updateFile(doc.uri);
-    }),
-    // onDidDeleteFiles / onDidRenameFiles no longer touch the removed inverted index.
-  );
-
-  // Reconnect MCP servers when their configuration changes; refresh the panel
-  // when embeddings/context settings change — and auto-build the index when it's
-  // turned on (Cursor-style: no manual click needed once a provider key is set).
+  // Reconnect MCP servers when their configuration changes.
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('tiermux.mcpServers')) void mcp.reconnect().then(() => chat.refresh());
-      if (e.affectsConfiguration('tiermux.embeddings') || e.affectsConfiguration('tiermux.context')) {
-        chat.refresh();
-        void index.maybeAutoBuild();
-      }
       if (e.affectsConfiguration('tiermux.engine.traceOcEvents')) {
         const on = vscode.workspace.getConfiguration('tiermux.engine').get<boolean>('traceOcEvents', false);
         if (!engineLog) engineLog = vscode.window.createOutputChannel('TierMux Engine');
@@ -247,32 +242,6 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  // Auto-build once a relevant API key is added (e.g. the embedding provider's).
-  context.subscriptions.push(secrets.onDidChange(() => { void index.maybeAutoBuild(); }));
-
-  // Kick off an automatic build on startup when already enabled + configured.
-  void index.maybeAutoBuild();
-
-  // One-time prompt: if embeddings is disabled and the user has a workspace open,
-  // ask once whether they want to enable the semantic index for faster code search.
-  void (async () => {
-    const ASKED_KEY = 'tiermux.indexPromptShown';
-    if (context.globalState.get<boolean>(ASKED_KEY)) return;
-    if (index.isEnabled()) return;
-    if (!vscode.workspace.workspaceFolders?.length) return;
-    // Small delay so it doesn't fire immediately on first install.
-    await new Promise(r => setTimeout(r, 4000));
-    const pick = await vscode.window.showInformationMessage(
-      'TierMux: Enable semantic codebase indexing for faster, smarter code search?',
-      'Enable & Build', 'Not Now',
-    );
-    await context.globalState.update(ASKED_KEY, true);
-    if (pick === 'Enable & Build') {
-      await vscode.workspace.getConfiguration('tiermux.embeddings').update('enabled', true, vscode.ConfigurationTarget.Workspace);
-      void index.build();
-    }
-  })();
-
   // Model catalog: fetch the published list in the background on every startup;
   // when it changes, refresh the chat view. Cached + bundled lists keep it
   // working offline (see Catalog).
@@ -296,10 +265,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('tiermux.openModelSettings', () => chat.toggleSettingsPanel()),
     vscode.commands.registerCommand('tiermux.setApiKey', (platformArg?: Platform) => setApiKey(secrets, platformArg)),
     vscode.commands.registerCommand('tiermux.clearApiKey', () => clearApiKey(secrets)),
-    vscode.commands.registerCommand('tiermux.manageSearchProviders', () => manageSearchProviders()),
     vscode.commands.registerCommand('tiermux.addSelectionToChat', () => chat.addSelectionToChat()),
     vscode.commands.registerCommand('tiermux.reconnectMcp', async () => { await mcp.reconnect(); void vscode.window.showInformationMessage('Reconnected MCP servers.'); }),
-    vscode.commands.registerCommand('tiermux.clearIndex', async () => { await index.clear(); void vscode.window.showInformationMessage('Cleared codebase index.'); }),
     vscode.commands.registerCommand('tiermux.refreshModels', async () => {
       await catalog.refresh(
         vscode.workspace.getConfiguration('tiermux').get<string>('catalog.url', ''),
@@ -333,7 +300,8 @@ export function activate(context: vscode.ExtensionContext): void {
           const retryModelIds = settings.enabledByPriority().map(
             (e) => 'tm_' + Buffer.from(`${e.platform}::${e.modelId}`).toString('base64url'),
           );
-          await startOpenCodeEngine(context.extensionUri.fsPath, routerProxy?.baseURL ?? '', cacheDir, retryModelIds);
+          const retryMcpServers = readMcpServers();
+          await startOpenCodeEngine(context.extensionUri.fsPath, routerProxy?.baseURL ?? '', cacheDir, retryModelIds, retryMcpServers);
         }
       }
       const results = await runBridgeDiagnostic({ routerProxy, ocConnection });
@@ -425,120 +393,3 @@ async function clearApiKey(secrets: SecretStore): Promise<void> {
   void vscode.window.showInformationMessage(`Cleared API key for ${picked.label}.`);
 }
 
-// ---- Web search provider management (Exa, Brave, custom endpoint) ----
-
-interface SearchProviderInfo {
-  id: 'exa' | 'brave' | 'custom' | 'duckduckgo';
-  name: string;
-  keySetting: string;
-  keyless?: boolean;
-  freeTier?: string;
-  signupUrl?: string;
-}
-
-const SEARCH_PROVIDERS: SearchProviderInfo[] = [
-  {
-    id: 'exa',
-    name: 'Exa AI',
-    keySetting: 'tiermux.tools.exaApiKey',
-    freeTier: '1,000 searches/month',
-    signupUrl: 'https://exa.ai',
-  },
-  {
-    id: 'brave',
-    name: 'Brave Search',
-    keySetting: 'tiermux.tools.braveApiKey',
-    freeTier: '2,000 queries/month',
-    signupUrl: 'https://brave.com/search/api/',
-  },
-  {
-    id: 'custom',
-    name: 'Custom endpoint',
-    keySetting: 'tiermux.tools.searchEndpoint',
-    freeTier: 'Bring your own (SearXNG, etc.)',
-  },
-  {
-    id: 'duckduckgo',
-    name: 'DuckDuckGo (free)',
-    keySetting: '',
-    keyless: true,
-    freeTier: 'Unlimited (but often rate-limited)',
-  },
-];
-
-/** Show a quick-pick of web search providers with their current key status. */
-async function manageSearchProviders(): Promise<void> {
-  const cfg = vscode.workspace.getConfiguration('tiermux.tools');
-  const priority = cfg.get<string>('searchProviderPriority', 'auto');
-
-  const items = SEARCH_PROVIDERS.map((p) => {
-    const hasKey = p.keyless || !!cfg.get<string>(p.keySetting.split('.').pop() ?? '', '').trim();
-    const status = p.keyless ? '✓ Always available' : hasKey ? '✓ Key configured' : '✗ No key';
-    const detail = p.keyless
-      ? p.freeTier
-      : `${p.freeTier} — ${hasKey ? 'key set' : 'click to set key'}`;
-    return {
-      label: `${status}  $(search)  ${p.name}`,
-      description: priority === 'auto' ? '' : `[priority: ${p.id}]`,
-      detail,
-      provider: p,
-      action: hasKey ? 'clear' : 'set',
-    };
-  });
-
-  // Priority selector as the first item.
-  const priorityOptions: Array<{ label: string; description: string; id: string }> = [
-    { label: '$(rocket) Auto', description: 'Try Exa → Brave → custom → DuckDuckGo in order', id: 'auto' },
-    { label: '$(search) Exa only', description: 'Requires tiermux.tools.exaApiKey', id: 'exa' },
-    { label: '$(search) Brave only', description: 'Requires tiermux.tools.braveApiKey', id: 'brave' },
-    { label: '$(search) Custom only', description: 'Requires tiermux.tools.searchEndpoint', id: 'custom' },
-    { label: '$(search) DuckDuckGo only', description: 'Free, no key, often rate-limited', id: 'duckduckgo' },
-  ];
-  const priorityItem = {
-    label: `$(settings) Priority: ${priority}`,
-    description: 'Click to change which provider(s) are tried',
-    providers: priorityOptions,
-  };
-
-  const picked = await vscode.window.showQuickPick(
-    [{ label: '--- Providers ---', kind: -1 } as any, priorityItem as any, ...items as any],
-    { placeHolder: 'Manage web search providers', title: 'TierMux — Web Search' },
-  );
-  if (!picked) return;
-
-  // Priority selector
-  if ((picked as any).providers) {
-    const newPriority = await vscode.window.showQuickPick<{ label: string; description: string; id: string }>(
-      (picked as any).providers,
-      { placeHolder: 'Select search provider priority' },
-    );
-    if (newPriority) {
-      await cfg.update('searchProviderPriority', newPriority.id, vscode.ConfigurationTarget.Global);
-      void vscode.window.showInformationMessage(`TierMux: search priority set to "${newPriority.id}".`);
-    }
-    return;
-  }
-
-  // Set or clear a key
-  const provider = (picked as any).provider as SearchProviderInfo;
-  if (provider.keyless) {
-    void vscode.window.showInformationMessage(`${provider.name} is keyless — no setup needed.`);
-    return;
-  }
-
-  if ((picked as any).action === 'clear') {
-    await cfg.update(provider.keySetting.split('.').pop() ?? '', '', vscode.ConfigurationTarget.Global);
-    void vscode.window.showInformationMessage(`Cleared ${provider.name} key.`);
-  } else {
-    const key = await vscode.window.showInputBox({
-      prompt: `Enter API key for ${provider.name} (${provider.freeTier})`,
-      placeHolder: provider.signupUrl ? `Get one at ${provider.signupUrl}` : 'paste your key',
-      password: true,
-      ignoreFocusOut: true,
-    });
-    if (key && key.trim()) {
-      await cfg.update(provider.keySetting.split('.').pop() ?? '', key.trim(), vscode.ConfigurationTarget.Global);
-      void vscode.window.showInformationMessage(`Saved ${provider.name} key.`);
-    }
-  }
-}
