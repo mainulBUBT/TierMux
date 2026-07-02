@@ -826,6 +826,22 @@
     const parts = s.split('/').filter(Boolean);
     return parts.length <= 2 ? parts.join('/') : parts.slice(-2).join('/');
   }
+  // Strip the clarifying-questions sentinel block (and any stray sentinels) from text
+  // BEFORE rendering, so `???QUESTIONS???` / `???END???` never flash in the chat while
+  // the plan streams. The parsed questions surface as an interactive card at turn end.
+  // Tolerant of `??? QUESTIONS ???`, wrong case, or missing ? — matches the host parser.
+  // While the block is still streaming (QUESTIONS seen, END not yet), hides everything
+  // from the QUESTIONS sentinel onward so the raw question text doesn't show either.
+  function stripClarifyBlock(s) {
+    const sm = /\?{2,}\s*QUESTIONS\s*\?{2,}/i.exec(s);
+    if (sm) {
+      const rest = s.slice(sm.index + sm[0].length);
+      const em = /\?{2,}\s*END\s*\?{2,}/i.exec(rest);
+      const tail = em ? rest.slice(em.index + em[0].length) : '';
+      s = s.slice(0, sm.index) + tail;
+    }
+    return s.replace(/\?{2,}\s*(?:QUESTIONS|END)\s*\?{2,}/gi, '');
+  }
   // Present-tense "what the agent is doing right now" for the rolling status label.
   // (The tool CARDS in the feed use the past-tense toolLabel() — "Analyzed/Searched…".
   //  This is the live verb shown beside the spinner, Claude-Code-style.)
@@ -3248,7 +3264,7 @@
           requestAnimationFrame(() => {
             seg._pending = false;
             seg.innerHTML = '';
-            seg.appendChild(renderMarkdown(seg._buf));
+            seg.appendChild(renderMarkdown(stripClarifyBlock(seg._buf)));
             scrollDown();
           });
         }
@@ -3262,7 +3278,7 @@
         // Flush any pending streamed text segment immediately (a queued rAF may not have run).
         if (t.currentText && t.currentText._buf != null) {
           t.currentText.innerHTML = '';
-          t.currentText.appendChild(renderMarkdown(t.currentText._buf));
+          t.currentText.appendChild(renderMarkdown(stripClarifyBlock(t.currentText._buf)));
         }
         // Fold-up 💭 Reasoning disclosure only when no live 🧠 Thinking block already
         // captured it inline — otherwise the same reasoning would show twice. Placed at the
@@ -3279,7 +3295,7 @@
         // / non-streaming providers): append the full answer as a final flow segment.
         if (!t._wasStreamed) {
           const seg = document.createElement('div'); seg.className = 'flow-text bubble';
-          seg.appendChild(renderMarkdown(msg.text));
+          seg.appendChild(renderMarkdown(stripClarifyBlock(msg.text)));
           t.flow.appendChild(seg);
         }
         t._wasStreamed = false;

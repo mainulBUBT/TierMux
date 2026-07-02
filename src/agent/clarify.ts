@@ -26,8 +26,16 @@ interface ParsedClarifying {
   text: string;
 }
 
-const START = '???QUESTIONS???';
-const END = '???END???';
+// Tolerant sentinel matchers — weak free-tier models sometimes emit `??? QUESTIONS ???`
+// (inner spaces), `???Questions???` (wrong case), or `?? QUESTIONS ??` (missing a ?).
+// Match any run of 2+ `?`, optional whitespace, the word, optional whitespace, 2+ `?`.
+const START_RE = /\?{2,}\s*QUESTIONS\s*\?{2,}/i;
+const END_RE = /\?{2,}\s*END\s*\?{2,}/i;
+/** Scrub any leftover sentinel tokens so `???QUESTIONS???` / `???END???` never leak into
+ *  displayed text. Requires the QUESTIONS/END word, so a bare `???` in a code block is safe. */
+function scrubSentinels(s: string): string {
+  return s.replace(/\?{2,}\s*(?:QUESTIONS|END)\s*\?{2,}/gi, '');
+}
 
 /**
  * Extract an optional clarifying-questions block from Plan mode output.
@@ -46,13 +54,16 @@ const END = '???END???';
  * partial block stripped, so the normal plan still renders cleanly.
  */
 export function parseClarifying(input: string): ParsedClarifying {
-  const start = input.indexOf(START);
-  if (start === -1) return { questions: null, text: input };
+  const sm = START_RE.exec(input);
+  if (!sm) return { questions: null, text: scrubSentinels(input) };
 
-  const end = input.indexOf(END, start + START.length);
-  const block = input.slice(start + START.length, end === -1 ? input.length : end);
+  const start = sm.index;
+  const afterStart = start + sm[0].length;
+  const em = END_RE.exec(input.slice(afterStart));
+  const endRel = em ? em.index : -1;
+  const block = endRel === -1 ? input.slice(afterStart) : input.slice(afterStart, afterStart + endRel);
   // Strip the block (and its sentinels) from the text we'd show as a plan.
-  const text = (input.slice(0, start) + (end === -1 ? '' : input.slice(end + END.length))).trim();
+  const text = (input.slice(0, start) + (endRel === -1 ? '' : input.slice(afterStart + endRel + (em ? em[0].length : 0)))).trim();
 
   const questions: ClarifyingQuestion[] = [];
   let current: ClarifyingQuestion | null = null;
@@ -85,5 +96,5 @@ export function parseClarifying(input: string): ParsedClarifying {
   }
   if (current) questions.push(current);
 
-  return { questions: questions.length ? questions : null, text };
+  return { questions: questions.length ? questions : null, text: scrubSentinels(text) };
 }
