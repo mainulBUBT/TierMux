@@ -125,13 +125,17 @@ export class Router {
   private rateTracker = new RateTracker();
   private latencyTracker = new LatencyTracker();
   /**
-   * Per-model health cache. `ok` = ping succeeded recently, `bad` = ping
-   * failed recently (skip without trying). Entries self-expire after
-   * `HEALTH_TTL_MS` so a transient blip doesn't permanently sideline a model,
-   * and a transient success doesn't lock a model in after it goes down.
+   * Per-model health cache — a circuit breaker with three effective states.
+   * `ok` = closed (healthy). `bad` within its cooldown = open (skip without
+   * trying). `bad` past its cooldown with no trial in flight = half-open
+   * (computed, not stored — the next caller gets exactly one probe).
+   * `failureStreak` grows the cooldown exponentially on repeated failures
+   * (capped at `HEALTH_MAX_TTL_MS`) so a persistently broken model isn't
+   * re-probed on every single call, while a single success resets it.
    */
-  private health = new Map<string, { state: 'ok' | 'bad'; at: number; reason?: string }>();
-  private static readonly HEALTH_TTL_MS = 60_000;
+  private health = new Map<string, { state: 'ok' | 'bad'; at: number; reason?: string; failureStreak: number; probing?: boolean }>();
+  private static readonly HEALTH_BASE_TTL_MS = 60_000;
+  private static readonly HEALTH_MAX_TTL_MS = 10 * 60_000;
   private static readonly PING_TIMEOUT_MS = 2000;
 
   constructor(
@@ -315,15 +319,23 @@ export class Router {
     return Math.max(this.timeoutMs(), floor);
   }
 
-  /** Per-model pre-flight health cache, used to skip a model we already know is down. */
-  private healthOf(platform: Platform, modelId: string): 'ok' | 'bad' | undefined {
+  /** Exponential cooldown for a given consecutive-failure streak, capped at `HEALTH_MAX_TTL_MS`. */
+  private cooldownFor(failureStreak: number): number {
+    return Math.min(Router.HEALTH_BASE_TTL_MS * 2 ** Math.max(0, failureStreak - 1), Router.HEALTH_MAX_TTL_MS);
+  }
+
+  /**
+   * Per-model pre-flight health cache, used to skip a model we already know is down.
+   * `'ok'` = closed. `'bad'` = open (skip). `'half-open'` = the failure cooldown has
+   * elapsed and no trial is in flight yet — the caller may attempt exactly one probe.
+   */
+  private healthOf(platform: Platform, modelId: string): 'ok' | 'bad' | 'half-open' | undefined {
     const e = this.health.get(`${platform}::${modelId}`);
     if (!e) return undefined;
-    if (Date.now() - e.at > Router.HEALTH_TTL_MS) {
-      this.health.delete(`${platform}::${modelId}`);
-      return undefined;
-    }
-    return e.state;
+    if (e.state === 'ok') return 'ok';
+    if (Date.now() - e.at <= this.cooldownFor(e.failureStreak)) return 'bad';
+    if (e.probing) return 'bad'; // a trial is already in flight elsewhere — stay closed
+    return 'half-open';
   }
 
   /** The cached probe reason for a model (auth/timeout/network/...), if any. */
@@ -332,15 +344,28 @@ export class Router {
   }
 
   private markHealth(platform: Platform, modelId: string, state: 'ok' | 'bad', reason?: string): void {
-    this.health.set(`${platform}::${modelId}`, { state, at: Date.now(), reason });
+    const key = `${platform}::${modelId}`;
+    if (state === 'ok') {
+      this.health.set(key, { state: 'ok', at: Date.now(), failureStreak: 0 });
+      return;
+    }
+    const prevStreak = this.health.get(key)?.failureStreak ?? 0;
+    this.health.set(key, { state: 'bad', at: Date.now(), reason, failureStreak: prevStreak + 1 });
+  }
+
+  /** Claims the half-open trial for a model so concurrent route() calls don't pile on. */
+  private markProbing(platform: Platform, modelId: string): void {
+    const e = this.health.get(`${platform}::${modelId}`);
+    if (e) e.probing = true;
   }
 
   /**
    * Tiny pre-flight: a 1-token `chat/completions` with a 5s timeout, used to
    * confirm the API key works and the model exists before sending the real
    * (potentially long) request. Succeeds fast on a healthy model, fails
-   * fast on a dead one so failover feels instant. Result is cached for
-   * `HEALTH_TTL_MS`. Only runs the first time we try a model in this window.
+   * fast on a dead one so failover feels instant. Result is cached with a
+   * cooldown from `cooldownFor()`. Only runs the first time we try a model
+   * in this window.
    */
   private async preflightPing(provider: ReturnType<typeof resolveProvider>, apiKey: string, platform: Platform, modelId: string): Promise<{ ok: boolean; reason?: string }> {
     if (!provider) return { ok: false, reason: 'no_provider' };
@@ -443,7 +468,10 @@ export class Router {
           if (!forced) opts.onFailover?.({ from: entry, reason });
           continue;
         }
-        if (cached === undefined && !provider.skipPreflight) {
+        if (cached === 'half-open' && !provider.skipPreflight) {
+          this.markProbing(entry.platform, entry.modelId); // claim the trial before probing
+        }
+        if ((cached === undefined || cached === 'half-open') && !provider.skipPreflight) {
           const probe = await this.preflightPing(provider, apiKey, entry.platform, entry.modelId);
           if (!probe.ok) {
             failures.push({ platform: entry.platform, model: entry.modelId, reason: probe.reason ?? 'preflight_failed' });

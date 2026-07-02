@@ -32,6 +32,16 @@ export function setQualityGate(on: boolean): void {
   qualityGateEnabled = on;
 }
 
+// ---- Hot-standby toggle — when true, the NEXT chain hop's OC session is created in the
+// background while the current hop is still running, so escalation (quality gate / no-answer
+// / network retry) doesn't pay session-creation latency on top of the failure. Wires to
+// `tiermux.agent.hotStandby`. ----
+let hotStandbyEnabled = true;
+/** Setter for `extension.ts` to wire `tiermux.agent.hotStandby` (refreshed on config change). */
+export function setHotStandby(on: boolean): void {
+  hotStandbyEnabled = on;
+}
+
 // ---- Public types (frozen — chatViewProvider depends on these) ----
 
 export interface ToolEvent {
@@ -84,11 +94,14 @@ let ocClient: OcClient | undefined;
 const ocSessions = new Map<string, string>();
 /** TierMux session id → model id the OC session was created with (to detect model changes). */
 const ocSessionModels = new Map<string, string>();
+/** `${sessionId}:${hop}` → OC session id, created ahead of time while the prior hop is still
+ *  running so escalation can reuse it instead of blocking on a fresh createSession(). */
+const prewarmedSessions = new Map<string, string>();
 
 /** Called by extension.ts once the OC backend is up (or undefined when it's gone). */
 export function setOcEngine(conn: OcConnection | undefined): void {
   ocClient = conn ? new OcClient(conn) : undefined;
-  if (!ocClient) { ocSessions.clear(); ocSessionModels.clear(); }
+  if (!ocClient) { ocSessions.clear(); ocSessionModels.clear(); prewarmedSessions.clear(); }
 }
 
 /**
@@ -157,6 +170,18 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
   const isVirtual = VIRTUAL.has(modelID);
   const ocModelID = isVirtual ? modelID : profile;
   if (!isVirtual) setForcedModel(modelID);
+
+  const prewarmKey = `${key}:${hop}`;
+  if (!ocId) {
+    const prewarmed = prewarmedSessions.get(prewarmKey);
+    if (prewarmed) {
+      ocId = prewarmed;
+      prewarmedSessions.delete(prewarmKey);
+      ocSessions.set(key, ocId);
+      ocSessionModels.set(key, modelID);
+      console.log(`[tiermux] using pre-warmed OC session id=${ocId} for hop=${hop} model=${modelID}`);
+    }
+  }
   if (!ocId) {
     try {
       // OC's createSession schema wants `model.id` (NOT `model.modelID`, which the
@@ -208,6 +233,9 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
       clearTimeout(watchdog);
       unsub();
       setForcedModel(undefined); // clear forced model so the next run starts clean
+      // Drop any pre-warmed session for a hop this run never escalated into — it would
+      // otherwise leak (OC has no delete API; this just stops us tracking/reusing it).
+      for (const k of [...prewarmedSessions.keys()]) if (k.startsWith(`${key}:`)) prewarmedSessions.delete(k);
       // Replace the virtual profile ("fast"/"smart") with the concrete provider+model
       // the Router actually resolved this run onto, so the UI shows the real pick (e.g.
       // "chutes / stepfun/step-3.7-flash:free") instead of the generic "tiermux".
@@ -230,6 +258,7 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
       clearTimeout(watchdog);
       unsub();
       setForcedModel(undefined);
+      for (const k of [...prewarmedSessions.keys()]) if (k.startsWith(`${key}:`)) prewarmedSessions.delete(k);
       reject(err);
     };
 
@@ -283,6 +312,28 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
       const escalated = tryEscalate(false, { primary: q.primary });
       console.log(`[tiermux][DBG] quality-gate RESULT: escalated=${escalated}`);
       return escalated;
+    };
+
+    // Hot standby: create the NEXT hop's OC session in the background while THIS hop is
+    // still generating, so tryEscalate() can reuse it instead of blocking on createSession().
+    // Deliberately does NOT touch setForcedModel — that stays deferred until the pre-warmed
+    // session is actually swapped in for a real run, so it can't race the active hop's
+    // forced model (setForcedModel is a single global, safe only when calls stay serialized).
+    const prewarmNextHop = (): void => {
+      if (!hotStandbyEnabled || isFinalHop) return;
+      const nextHop = hop + 1;
+      const nextProfile = chain[nextHop];
+      const pKey = `${key}:${nextHop}`;
+      if (prewarmedSessions.has(pKey)) return;
+      void client.createSession({ agent, model: { providerID: 'tiermux', id: nextProfile } })
+        .then((info) => {
+          const id = (info as any)?.id ?? (info as any)?.sessionID ?? (info as any)?.sessionId ?? (info as any)?.ID;
+          if (typeof id === 'string' && id.length > 0) {
+            prewarmedSessions.set(pKey, id);
+            console.log(`[tiermux] pre-warmed OC session id=${id} for hop=${nextHop} profile=${nextProfile}`);
+          }
+        })
+        .catch((err) => console.log(`[tiermux] pre-warm failed (non-fatal): ${err instanceof Error ? err.message : err}`));
     };
 
     // Track the latest text we saw per part id, so `message.part.updated` (which carries
@@ -541,6 +592,10 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
       }
     }, opts.abortSignal, onRaw);
 
+    // Fire pre-warm alongside the prompt POST (not after it resolves — prompt() may not
+    // resolve until the whole turn finishes, since SSE/session.idle drives completion,
+    // not the HTTP response).
+    prewarmNextHop();
     void client.prompt(ocId, { parts: [{ type: 'text', text: userText }], agent, model: { providerID: 'tiermux', modelID: ocModelID } }, opts.abortSignal)
       .catch((e: unknown) => {
         // User-cancel aborts the POST too — that's expected, not an error to surface.

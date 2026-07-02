@@ -341,6 +341,11 @@
           "default": true,
           "description": "Escalate to the next model when an answer is weak (refusal, repetition, truncation, or too-short-for-task) instead of accepting it. Only fires when the fallback chain has another hop (never for a pinned model)."
         },
+        "tiermux.agent.hotStandby": {
+          "type": "boolean",
+          "default": true,
+          "description": "Pre-create the next fallback model's session in the background while the current one is running, so escalation (quality gate, no-answer, network retry) is instant instead of waiting on a fresh session."
+        },
         "tiermux.agent.commandApproval": {
           "type": "string",
           "enum": [
@@ -652,6 +657,8 @@
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
     "test:e2e": "esbuild scripts/qualityGate.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/qualityGate.e2e.cjs && node dist/qualityGate.e2e.cjs",
+    "test:e2e:prewarm": "esbuild scripts/hotStandby.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/hotStandby.e2e.cjs && node dist/hotStandby.e2e.cjs",
+    "test:e2e:circuit": "esbuild scripts/circuitBreaker.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/circuitBreaker.e2e.cjs && node dist/circuitBreaker.e2e.cjs",
     "package": "vsce package --no-dependencies",
     "fetch:binaries": "node scripts/fetch-opencode.mjs",
     "package:full": "npm run fetch:binaries && npm run build && vsce package --no-dependencies"
