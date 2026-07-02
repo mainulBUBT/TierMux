@@ -799,7 +799,7 @@
     const flow = document.createElement('div'); flow.className = 'flow';
     const statusEl = document.createElement('div');
     statusEl.className = 'agent-status';
-    statusEl.innerHTML = `<span class="agent-dots"><span></span><span></span><span></span></span><span class="agent-label"></span><span class="agent-caret">▍</span><span class="agent-model"></span><span class="agent-elapsed"></span>`;
+    statusEl.innerHTML = `<span class="agent-dots"><span></span><span></span><span></span></span><span class="agent-label"></span><span class="agent-caret">▍</span><span class="agent-elapsed"></span>`;
     // `bubble` stays AFTER the flow for interactive cards (approvals/plans/clarify) and the
     // non-streamed final answer — keeping those paths untouched.
     const bubble = document.createElement('div');
@@ -813,7 +813,7 @@
     el.appendChild(bubble);
     (currentTurn || thread).appendChild(el);
     const modelStr = model ? `${platform || ''}/${model}` : '';
-    t = { el, body: bubble, tools: flow, flow, currentText: null, statusEl, statusLabel: statusEl.querySelector('.agent-label'), statusCaret: statusEl.querySelector('.agent-caret'), statusModel: statusEl.querySelector('.agent-model'), statusElapsed: statusEl.querySelector('.agent-elapsed'), toolRunning: false, activeTool: null, model: modelStr, requestId };
+    t = { el, body: bubble, tools: flow, flow, currentText: null, statusEl, statusLabel: statusEl.querySelector('.agent-label'), statusCaret: statusEl.querySelector('.agent-caret'), statusElapsed: statusEl.querySelector('.agent-elapsed'), toolRunning: false, activeTool: null, model: modelStr, requestId };
     targets.set(requestId, t);
     scrollDown();
     return t;
@@ -2867,11 +2867,6 @@
         if (msg.model) t.model = `${msg.platform || ''}/${msg.model}`;
         // The model shows as a DIM SUBTITLE (friendly name from the picker, never the raw
         // provider key). The label itself is the rolling activity verb (Thinking…/Reading…/…).
-        if (msg.model && t.statusModel) {
-          const item = modelList.querySelector(`.model-item[data-value="${CSS.escape(`${msg.platform}::${msg.model}`)}"]`);
-          const label = item?.querySelector('.mi-label')?.textContent;
-          t.statusModel.textContent = label || '';
-        }
         setStatusLabel(msg.requestId, 'Thinking…', { force: true });
         startStatusTimer(msg.requestId);
         break;

@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Updated catalog \u2014 126 models from 22 providers. Openference aggregator expanded with 8 models (June 2026).",
+  "note": "Updated catalog — 126 models from 22 providers. Openference aggregator expanded with 8 models (June 2026).",
   "models": [
     {
       "platform": "sambanova",
@@ -153,23 +153,6 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "released": "2025-06",
-      "insight": "Not available in EU/UK/CH"
-    },
-    {
-      "platform": "google",
-      "modelId": "gemini-3.1-flash-lite",
-      "displayName": "Gemini 3.1 Flash-Lite",
-      "intelligenceRank": 3,
-      "speedRank": 1,
-      "sizeLabel": "Large",
-      "contextWindow": 1000000,
-      "rpmLimit": 30,
-      "rpdLimit": 1500,
-      "monthlyTokenBudget": "~free tier",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "released": "2025-09",
       "insight": "Not available in EU/UK/CH"
     },
     {

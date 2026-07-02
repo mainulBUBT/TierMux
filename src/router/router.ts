@@ -174,7 +174,6 @@ export class Router {
     // 2. Curated strong keyed models, if the user added a key.
     const keyed = await pick([
       'google::gemini-2.5-flash',
-      'google::gemini-3.1-flash-lite',
       'groq::openai/gpt-oss-120b',
       'cerebras::gpt-oss-120b',
       'openrouter::deepseek/deepseek-chat-v3.1:free',
