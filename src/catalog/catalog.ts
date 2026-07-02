@@ -179,6 +179,8 @@ function parseCsvCatalog(text: string): CatalogModel[] {
       supportsReasoning: bool(get('supportsReasoning'), false),
       tags: tagsRaw ? tagsRaw.split(/[·|,]/).map((t) => t.trim()).filter(Boolean) : undefined,
       insight: (get('insight') ?? '').trim() || undefined,
+      origInputPricePer1M: num(get('origInputPricePer1M_USD')) ?? undefined,
+      origOutputPricePer1M: num(get('origOutputPricePer1M_USD')) ?? undefined,
     });
   }
   return out;

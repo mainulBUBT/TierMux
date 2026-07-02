@@ -141,6 +141,10 @@ export interface CatalogModel {
   tags?: string[];
   /** Optional short editorial note shown beside the model (e.g. "Crowd favorite"). */
   insight?: string;
+  /** Original (non-free) provider's per-1M-token input price, USD. Undefined if unpublished. */
+  origInputPricePer1M?: number;
+  /** Original (non-free) provider's per-1M-token output price, USD. Undefined if unpublished. */
+  origOutputPricePer1M?: number;
 }
 
 /** One entry in the agent's live task list (TodoWrite-style progress tracking). */

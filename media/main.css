@@ -747,8 +747,21 @@ button.primary { background: var(--vscode-button-background); color: var(--vscod
 button.primary:hover { background: var(--vscode-button-hoverBackground); }
 button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: none; cursor: pointer; border-radius: 4px; padding: 4px 10px; }
 .footer { font-size: 11px; opacity: .65; padding: 2px 2px 0; }
-.usage-data-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--vscode-panel-border); }
-.usage-stats { display: flex; flex-direction: column; gap: 3px; margin: 6px 0 10px; padding: 8px 10px; background: var(--vscode-editorWidgetBackground, var(--vscode-input-background)); border: 1px solid var(--vscode-panel-border); border-radius: 4px; }
+.footer-clickable { cursor: pointer; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.footer-clickable:hover, .footer-clickable:focus-visible { opacity: 1; color: var(--vscode-textLink-foreground, #4daafc); }
+.footer-clickable:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.usage-data-section { margin-top: 4px; }
+.usage-stats { display: flex; flex-direction: column; gap: 3px; margin: 6px 0 10px; }
+.usage-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 8px; margin-bottom: 6px; }
+.usage-tile {
+  display: flex; flex-direction: column; gap: 3px; padding: 12px 12px 10px;
+  background: var(--vscode-editorWidgetBackground, var(--vscode-input-background));
+  border: 1px solid var(--vscode-panel-border); border-radius: 8px;
+}
+.usage-tile-icon { font-size: 13px; opacity: .5; }
+.usage-tile-value { font-size: 19px; font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.usage-tile-label { font-size: 11px; opacity: .65; }
+.usage-since { font-size: 11px; opacity: .5; margin: 0 0 12px; }
 .usage-stat-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; gap: 4px; }
 .usage-stat-label { opacity: .75; flex: 1; }
 .usage-stat-value { font-variant-numeric: tabular-nums; font-weight: 500; }

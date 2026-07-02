@@ -134,6 +134,14 @@
     if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
     return String(n);
   }
+  // Compact K/M/B formatter (capitalized suffix) for the footer summary.
+  function fmtCompact(n) {
+    n = Math.max(0, Math.round(n || 0));
+    if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+    return String(n);
+  }
   // Friendly per-message usage, e.g. "4.3k in · 67 out".
   function fmtUsage(u) {
     if (!u) return '';
@@ -144,10 +152,7 @@
   // sub-cent amounts show as "$0.00" so the line never reads like a precise bill.
   function fmtUsd(n) {
     if (typeof n !== 'number' || !isFinite(n) || n <= 0) return '$0.00';
-    if (n < 0.01) return '<$0.01';
-    if (n < 1) return '$' + n.toFixed(2);
-    if (n < 100) return '$' + n.toFixed(2);
-    return '$' + n.toFixed(1);
+    return '$' + n.toFixed(2);
   }
 
   // ---------- layout ----------
@@ -203,7 +208,7 @@
           </div>
         </div>
       </div>
-      <div class="footer" id="footer">No tokens used yet.</div>
+      <div class="footer footer-clickable" id="footer" role="button" tabindex="0" title="Open Usage settings">No usage yet</div>
     </div>
     </div>`;
 
@@ -214,6 +219,27 @@
   const historyList = $('#history-list');
   const settingsEl = $('#settings');
   const composer = $('#composer');
+  const footerEl = $('#footer');
+  // Footer summary → Settings ▸ Usage. Opens settings (if closed) and switches
+  // tab without reloading/recreating the webview, then scrolls the
+  // already-rendered usage card into view.
+  function goToUsageSettings() {
+    settingsTab = 'usage';
+    if (!settingsOpen) {
+      settingsOpen = true;
+      settingsEl.classList.add('active');
+      thread.classList.add('hidden');
+      composer.classList.add('hidden');
+    }
+    renderSettings();
+    requestAnimationFrame(() => {
+      document.getElementById('usage-data-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+  footerEl.addEventListener('click', goToUsageSettings);
+  footerEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goToUsageSettings(); }
+  });
   const input = $('#input');
   const reasoningSel = $('#reasoning');
   const chipsEl = $('#chips');
@@ -1534,7 +1560,7 @@
     search.type = 'text';
     search.className = 'settings-search';
     search.placeholder = settingsTab === 'mcp' ? 'Search MCP servers…' : 'Search providers & models…';
-    if (settingsTab === 'others') search.style.display = 'none';
+    if (settingsTab === 'others' || settingsTab === 'usage') search.style.display = 'none';
     search.addEventListener('input', () => {
       const q = search.value.trim().toLowerCase();
       settingsContentEl.querySelectorAll('.provider-card, .registry-row').forEach((el) => {
@@ -1547,7 +1573,7 @@
     layout.className = 'settings-layout';
     const nav = document.createElement('div');
     nav.className = 'settings-nav';
-    [['providers', 'Providers'], ['mcp', 'MCP'], ['others', 'Others']].forEach((pair) => {
+    [['providers', 'Providers'], ['mcp', 'MCP'], ['usage', 'Usage'], ['others', 'Others']].forEach((pair) => {
       const b = document.createElement('button');
       b.className = 'nav-item' + (settingsTab === pair[0] ? ' active' : '');
       b.textContent = pair[1];
@@ -1562,6 +1588,7 @@
 
     if (settingsTab === 'providers') renderProviders();
     else if (settingsTab === 'mcp') renderMcpSection();
+    else if (settingsTab === 'usage') renderUsageSection();
     else renderOthersSection();
   }
 
@@ -1640,10 +1667,16 @@
       list.querySelectorAll('.model-item').forEach((it) => { it.style.display = !q || it.dataset.search.includes(q) ? '' : 'none'; });
       list.querySelectorAll('.model-group').forEach((g) => { g.style.display = q ? 'none' : ''; });
     });
+  }
 
-    // Usage data: persistent lifetime totals + a button to clear them.
+  // "Usage" tab: lifetime token/request/savings totals (persisted across
+  // reloads) plus retrieval-quality diagnostics. Its own top-level nav tab so
+  // it's reachable directly from the settings nav and from the footer's
+  // click-through (see goToUsageSettings).
+  function renderUsageSection() {
     const usageWrap = document.createElement('div');
     usageWrap.className = 'usage-data-section';
+    usageWrap.id = 'usage-data-section';
     const usageTitle = document.createElement('div');
     usageTitle.className = 'others-title';
     usageTitle.textContent = 'Usage data';
@@ -3401,22 +3434,22 @@
 
   function updateFooter(totals) {
     if (!totals) return;
-    const session = totals.requests
-      ? `Session: ${totals.requests} req · ${fmtTokens(totals.totalTokens)} tokens`
-      : 'No tokens used yet.';
-    let ctx = '';
+    const parts = [];
+    const lt = totals.lifetime;
+    const hasUsage = lt && (lt.totalTokens > 0 || lt.totalRequests > 0 || lt.estimatedSavingsUsd > 0);
+    if (hasUsage) {
+      parts.push(`<strong>Lifetime:</strong> ${fmtCompact(lt.totalTokens)} tokens`);
+      parts.push(`<strong>Requests:</strong> ${fmtCompact(lt.totalRequests)}`);
+      parts.push(`<strong>Saved:</strong> ${fmtUsd(lt.estimatedSavingsUsd)}`);
+    } else {
+      parts.push('<strong>No usage yet</strong>');
+    }
     if (totals.context && totals.context.window) {
       const t = totals.context.tokens, w = totals.context.window;
       const pct = Math.min(100, Math.round((t / w) * 100));
-      const kw = w >= 1000 ? Math.round(w / 1000) + 'k' : w;
-      ctx = `  ·  ctx ~${t}/${kw} (${pct}%)`;
+      parts.push(`<strong>Ctx:</strong> ${fmtCompact(t)} / ${fmtCompact(w)} (${pct}%)`);
     }
-    let lifetime = '';
-    if (totals.lifetime && (totals.lifetime.totalTokens > 0 || totals.lifetime.estimatedSavingsUsd > 0)) {
-      const lt = totals.lifetime;
-      lifetime = `  ·  Lifetime: ${fmtTokens(lt.totalTokens)} tokens · est. ${fmtUsd(lt.estimatedSavingsUsd)} saved`;
-    }
-    $('#footer').textContent = session + ctx + lifetime;
+    $('#footer').innerHTML = parts.join(' &middot; ');
   }
 
   // Render the "Usage data" card inside the Others tab. Safe to call before
@@ -3430,6 +3463,30 @@
     if (!el) return;
     const lt = lastLifetime;
     el.innerHTML = '';
+
+    // Headline totals as three tiles instead of a plain list — the numbers
+    // people actually scan for (tokens, requests, $ saved) get visual weight.
+    const tiles = document.createElement('div');
+    tiles.className = 'usage-tiles';
+    const tile = (icon, value, label) => {
+      const t = document.createElement('div'); t.className = 'usage-tile';
+      const i = document.createElement('div'); i.className = 'usage-tile-icon'; i.textContent = icon;
+      const v = document.createElement('div'); v.className = 'usage-tile-value'; v.textContent = value;
+      const l = document.createElement('div'); l.className = 'usage-tile-label'; l.textContent = label;
+      t.append(i, v, l);
+      tiles.appendChild(t);
+    };
+    tile('◆', fmtTokens(lt.totalTokens || 0), 'Total tokens');
+    tile('↻', String(lt.totalRequests || 0), 'Total requests');
+    tile('$', fmtUsd(lt.estimatedSavingsUsd || 0), 'Est. saved');
+    el.appendChild(tiles);
+
+    if (lt.firstRecordedAt) {
+      const since = document.createElement('div'); since.className = 'usage-since';
+      since.textContent = `Tracking since ${new Date(lt.firstRecordedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`;
+      el.appendChild(since);
+    }
+
     const row = (label, value, badge) => {
       const r = document.createElement('div'); r.className = 'usage-stat-row';
       const l = document.createElement('span'); l.className = 'usage-stat-label'; l.textContent = label;
@@ -3443,9 +3500,6 @@
       }
       el.appendChild(r);
     };
-    row('Total tokens', fmtTokens(lt.totalTokens || 0));
-    row('Total requests', String(lt.totalRequests || 0));
-    row('Est. $ saved', fmtUsd(lt.estimatedSavingsUsd || 0));
 
     // Retrieval quality section — only shown after ≥3 agent requests
     if (lastRetrieval && lastRetrieval.totalRequests >= 3) {

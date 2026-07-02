@@ -1926,7 +1926,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  numbers can never drift between call sites. */
   private currentUsageTotals(s: Session) {
     const sessionTotals = this.deps.usage.get();
-    const lifetime = this.deps.usageStore.getLifetime();
+    const lifetime = this.deps.usageStore.getLifetime(this.deps.catalog);
     const retrieval = getRetrievalSnapshot();
     return {
       ...sessionTotals,

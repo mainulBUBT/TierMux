@@ -574,7 +574,7 @@ export class Router {
 
           this.latencyTracker.record(entry.platform, entry.modelId, Date.now() - t0);
           this.usage.add(response.usage);
-          this.usageStore?.addRequest(response.usage?.prompt_tokens || 0, response.usage?.completion_tokens || 0);
+          this.usageStore?.addRequest(entry.platform, entry.modelId, response.usage?.prompt_tokens || 0, response.usage?.completion_tokens || 0);
           this.secrets.setStatus(entry.platform, 'healthy');
           this.markHealth(entry.platform, entry.modelId, 'ok');
           // Remember the winner so the next same-kind task starts here, not at the top of the cascade.
