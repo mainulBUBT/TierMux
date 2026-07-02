@@ -19,6 +19,7 @@ const PATHS = {
   sessionAbort: (id: string) => `/session/${id}/abort`,
   // OC 1.x: GET messages is `/session/{id}/message` (singular) — the plural 404s.
   sessionMessages: (id: string) => `/session/${id}/message`,
+  sessionFork: (id: string) => `/session/${id}/fork`,
   agents: '/app/agents',
   models: '/config/providers',
   events: '/global/event',
@@ -146,6 +147,24 @@ export class OcClient {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * Fork a session, replaying its history into a brand-new session. Verified against
+   * OC 1.17.11: forking at a USER message's id returns everything STRICTLY BEFORE it —
+   * that message's own turn (and any reply) is excluded. Passing no `messageId` forks
+   * the session's current full history as-is.
+   */
+  async fork(sessionId: string, messageId?: string): Promise<OcSessionInfo> {
+    const body = JSON.stringify(messageId ? { messageID: messageId } : {});
+    console.log(`[tiermux] OC POST ${PATHS.sessionFork(sessionId)} body=${body}`);
+    const result = await this.request<OcSessionInfo>(PATHS.sessionFork(sessionId), {
+      method: 'POST',
+      headers: this.headers(true),
+      body,
+    });
+    console.log(`[tiermux] OC fork() returned:`, JSON.stringify(result));
+    return result;
   }
 
   /**

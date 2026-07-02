@@ -13,6 +13,7 @@ import { OcClient } from '../backend/ocClient';
 import { getLastRoutedModel, setForcedModel } from '../backend/routerProxy';
 import { classifyTask } from './routing';
 import { assessAnswerQuality } from './answerQuality';
+import { findReplayBoundary, formatTranscriptForReplay } from './sessionReplay';
 
 // ---- Trace toggle — when true, raw OC SSE frames are logged via the supplied sink. ----
 let traceOcEvents = false;
@@ -130,7 +131,7 @@ const FALLBACK_CHAIN: Record<'chat' | 'agent' | 'plan', string[]> = {
  * fetches the session messages as a fallback so we always return *something* when OC did
  * produce output.
  */
-async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promise<AgentResult> {
+async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0, staleOcId?: string): Promise<AgentResult> {
   if (!ocClient) {
     opts.onError('TierMux engine is not running. Run "npm run fetch:binaries" (or set OPENCODE_BIN), then reload the window.');
     return { text: '' };
@@ -152,10 +153,15 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
   const modelID = pinned ?? profile;
 
   let ocId = ocSessions.get(key);
+  // Source session to replay history FROM when we're about to create a brand-new OC
+  // session mid-conversation (escalation/retry pass their old ocId in via `staleOcId`;
+  // a same-call model switch captures its own `ocId` right here, before nulling it).
+  let forkSourceOcId = staleOcId;
   // If the user changed the model since the last run, the existing OC session was created
   // with the old model. OC doesn't switch models mid-session, so we start a fresh one.
   if (ocId && ocSessionModels.get(key) !== modelID) {
     console.log(`[tiermux] model changed (${ocSessionModels.get(key)} → ${modelID}), resetting OC session`);
+    forkSourceOcId = ocId;
     ocSessions.delete(key);
     ocSessionModels.delete(key);
     ocId = undefined;
@@ -180,6 +186,42 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
       ocSessions.set(key, ocId);
       ocSessionModels.set(key, modelID);
       console.log(`[tiermux] using pre-warmed OC session id=${ocId} for hop=${hop} model=${modelID}`);
+    }
+  }
+  // Replay text for the FIRST prompt only (transcript-fallback path) — undefined means
+  // "send userText as normal," exactly like every reused session today.
+  let firstPromptOverride: string | undefined;
+  // A brand-new OC session mid-conversation starts with zero memory of prior turns (OC
+  // scopes history per session id). Before falling back to a blank session, try to fork
+  // the old one so the new session inherits everything already settled. No-ops (returns
+  // undefined) when there's no prior history (a session's true first turn) or no source
+  // to fork from — those cases fall straight through to today's exact createSession path.
+  const priorUserTurnCount = opts.messages.filter((m) => m.role === 'user').length - 1;
+  if (!ocId && forkSourceOcId && priorUserTurnCount > 0) {
+    try {
+      const oldMessages = await client.messages(forkSourceOcId);
+      // `client.messages()` silently swallows any fetch error to `[]` — indistinguishable
+      // from a real (impossible) empty session. Since we only ever reach here when the old
+      // session is known to have had activity, an empty result means the fetch failed, not
+      // that there's nothing to exclude. Forking with an unresolved boundary in that case
+      // would ask OC for the session's CURRENT live state — which, for escalation/retry,
+      // already contains the very turn we're trying to discard. Bail to the transcript
+      // fallback instead of risking that leak.
+      if (oldMessages.length === 0) throw new Error('messages() returned no history — refusing an unbounded fork');
+      const boundary = findReplayBoundary(oldMessages as any, priorUserTurnCount);
+      const forked = await client.fork(forkSourceOcId, boundary);
+      const forkedId = (forked as any)?.id ?? (forked as any)?.sessionID ?? (forked as any)?.sessionId ?? (forked as any)?.ID;
+      if (typeof forkedId === 'string' && forkedId.length > 0) {
+        ocId = forkedId;
+        ocSessions.set(key, ocId);
+        ocSessionModels.set(key, modelID);
+        console.log(`[tiermux] forked OC session id=${ocId} (history replay) for model=${modelID}`);
+      } else {
+        throw new Error('fork returned no session id');
+      }
+    } catch (err) {
+      console.log(`[tiermux] session fork failed, falling back to transcript replay: ${err instanceof Error ? err.message : err}`);
+      firstPromptOverride = formatTranscriptForReplay(opts.messages);
     }
   }
   if (!ocId) {
@@ -218,6 +260,11 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
   const userText = typeof lastUser?.content === 'string'
     ? lastUser.content
     : lastUser?.content == null ? '' : JSON.stringify(lastUser.content);
+  // What actually goes out over the wire: `userText`, UNLESS `firstPromptOverride` (set
+  // only on the transcript-fallback path above) replaces it ONCE for a freshly recreated
+  // session. `userText` itself stays the real latest question — used for quality-gate
+  // classification/logging regardless of which text was actually sent to OC.
+  const promptText = firstPromptOverride ?? userText;
 
   let out = '';
   const platform = 'tiermux';
@@ -289,7 +336,7 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
       clearTimeout(watchdog);
       // hop+1 carries _retryCount unchanged: an OC-session drop shouldn't burn the prompt()
       // retry budget — that's for transient 5xx on a single hop, not a profile escalation.
-      void runViaOc(opts, _retryCount, hop + 1).then(finish, fail);
+      void runViaOc(opts, _retryCount, hop + 1, ocId).then(finish, fail);
       return true;
     };
 
@@ -325,10 +372,34 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
       const nextProfile = chain[nextHop];
       const pKey = `${key}:${nextHop}`;
       if (prewarmedSessions.has(pKey)) return;
-      void client.createSession({ agent, model: { providerID: 'tiermux', id: nextProfile } })
+      const extractId = (info: unknown): string | undefined => {
+        const id = (info as any)?.id ?? (info as any)?.sessionID ?? (info as any)?.sessionId ?? (info as any)?.ID;
+        return typeof id === 'string' && id.length > 0 ? id : undefined;
+      };
+      // Prior history exists: fork THIS (currently running) session ahead of time so the
+      // prewarmed session is correctly warm (has context), not just available. Falls back
+      // to a blank session (today's behavior) on any failure — the escalation path's own
+      // fork-then-transcript-fallback logic still covers it if this prewarm didn't land.
+      const create = priorUserTurnCount > 0
+        ? client.messages(ocId!).then((oldMessages) => {
+            const boundary = findReplayBoundary(oldMessages as any, priorUserTurnCount);
+            // `undefined` here is AMBIGUOUS, not "safe to fork as-is": it can mean the
+            // current turn's own message hasn't landed on the old session yet — but by
+            // the time this fork() call actually reaches OC, the concurrently in-flight
+            // prompt() may have appended it (a real race, since prewarm deliberately runs
+            // while the current turn is still being processed). Forking with no boundary
+            // in that case would silently pull in a dangling/incomplete current turn. Since
+            // we can't be sure, skip prewarming this turn rather than risk it — the
+            // escalation path's own fork (run only AFTER the current turn fully settles,
+            // so it's never ambiguous) still covers correctness if this hop is needed.
+            if (boundary === undefined) throw new Error('prewarm boundary ambiguous — current turn may already be in flight');
+            return client.fork(ocId!, boundary);
+          })
+        : client.createSession({ agent, model: { providerID: 'tiermux', id: nextProfile } });
+      void create
         .then((info) => {
-          const id = (info as any)?.id ?? (info as any)?.sessionID ?? (info as any)?.sessionId ?? (info as any)?.ID;
-          if (typeof id === 'string' && id.length > 0) {
+          const id = extractId(info);
+          if (id) {
             prewarmedSessions.set(pKey, id);
             console.log(`[tiermux] pre-warmed OC session id=${id} for hop=${nextHop} profile=${nextProfile}`);
           }
@@ -596,7 +667,7 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
     // resolve until the whole turn finishes, since SSE/session.idle drives completion,
     // not the HTTP response).
     prewarmNextHop();
-    void client.prompt(ocId, { parts: [{ type: 'text', text: userText }], agent, model: { providerID: 'tiermux', modelID: ocModelID } }, opts.abortSignal)
+    void client.prompt(ocId, { parts: [{ type: 'text', text: promptText }], agent, model: { providerID: 'tiermux', modelID: ocModelID } }, opts.abortSignal)
       .catch((e: unknown) => {
         // User-cancel aborts the POST too — that's expected, not an error to surface.
         if (opts.abortSignal?.aborted) { finish({ text: out, platform, model }); return; }
@@ -616,7 +687,7 @@ async function runViaOc(opts: AgentOpts, _retryCount = 0, chainIndex = 0): Promi
           unsub();
           clearTimeout(watchdog);
           // Retry the full run on the SAME hop (will create a new OC session on the way in).
-          void runViaOc(opts, 1, chainIndex).then(finish, fail);
+          void runViaOc(opts, 1, chainIndex, ocId).then(finish, fail);
           return;
         }
         // Retry budget spent (or this was a repeat). Before surfacing the error, try a fresh hop —
