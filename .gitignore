@@ -24,3 +24,6 @@ extensionPath/
 .claude/
 .benchmarks/
 .puku/
+
+# Webview TS incremental build cache
+.cache/

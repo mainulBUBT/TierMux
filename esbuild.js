@@ -1,5 +1,6 @@
 // Build script for the free-llm-agent extension.
 // - Bundles src/extension.ts -> dist/extension.js (node/cjs, vscode external).
+// - Bundles media/src/main.ts -> media/main.js (browser/iife, the webview UI).
 // - Copies the webview vendor assets (marked + highlight.js) into media/vendor/.
 const esbuild = require('esbuild');
 const fs = require('fs');
@@ -14,7 +15,7 @@ function copy(from, to) {
   fs.copyFileSync(from, to);
 }
 
-/** Copy the offline webview vendor assets from node_modules into media/vendor. */
+/** Copy the offline webview vendor assets from node_modules into media/vendor/. */
 function copyVendor() {
   const vendorDir = path.join(__dirname, 'media', 'vendor');
   fs.mkdirSync(vendorDir, { recursive: true });
@@ -74,20 +75,73 @@ function copyVendor() {
   }
 }
 
-// Emits begin/end markers so VS Code's background problemMatcher (in tasks.json)
-// knows when a watch rebuild starts/finishes — this is what lets F5 launch the dev host.
-const watchLogPlugin = {
-  name: 'watch-log',
-  setup(build) {
-    build.onStart(() => console.log('[watch] build started'));
-    build.onEnd((result) => console.log(`[watch] build finished with ${result.errors.length} error(s)`));
-  },
-};
+// Emits begin/end markers per build so VS Code's background problemMatcher (in
+// tasks.json) knows when a watch rebuild starts/finishes — this is what lets
+// F5 launch the dev host. Each context gets its own labeled status so it's
+// clear which build (extension vs webview) succeeded or failed.
+function watchLogPlugin(label) {
+  return {
+    name: `watch-log-${label}`,
+    setup(build) {
+      build.onStart(() => console.log(`[${label}] build started`));
+      build.onEnd((result) => console.log(`[${label}] build finished with ${result.errors.length} error(s)`));
+    },
+  };
+}
+
+// Browser import boundary for the webview bundle. The webview runs in a
+// browser, so it may ONLY import from its own media/src/** tree and from
+// src/shared/** (type-only). Anything else under src/ (router, providers,
+// agent, …) is Node/vscode-coupled and must never enter the browser bundle.
+// Enforced at BUILD time — a violation fails the build with a clear message,
+// so it can't slip through to the bundle. (Cheaper than a separate lint step
+// and has zero new dependencies.)
+const ALLOWED_PREFIXES = ['media/src/', 'src/shared/', 'node_modules/'];
+function boundaryPlugin() {
+  return {
+    name: 'webview-import-boundary',
+    setup(build) {
+      // `onResolve` fires for every import the bundler follows. `importer` is
+      // the file doing the import; we only police imports originating inside
+      // media/src so the rule can't false-positive on the extension build.
+      build.onResolve({ filter: /.*/ }, (args) => {
+        const importer = args.importer || '';
+        if (!importer.replace(/\\/g, '/').includes('media/src/')) return null;
+        const path = (args.path || '').replace(/\\/g, '/');
+        // Relative imports resolve within media/src naturally — only flag paths
+        // that reach OUT of media/src into the rest of src/.
+        if (!path.startsWith('../') && !path.startsWith('/')) return null;
+        // Resolve what it actually points to, then check the allow-list.
+        // Bare specifiers (node_modules / vendor globals) are allowed.
+        if (ALLOWED_PREFIXES.some((p) => path.includes(`/${p}`) || path.includes(`\\${p}`))) return null;
+        return {
+          errors: [{
+            text: `Webview import boundary violation: media/src/** may only import from media/src/** or src/shared/** (type-only). Saw import of "${args.path}" from ${importer}.`,
+          }],
+        };
+      });
+    },
+  };
+}
+
+// Banner injected into the generated webview bundle so the built file is
+// self-documenting — it is a generated artifact, not a hand-edited source.
+const WEBVIEW_BANNER = `/**
+ * AUTO-GENERATED — DO NOT EDIT.
+ * Generated from media/src/main.ts
+ */`;
+
+async function buildOnce(ctx) {
+  const result = await ctx.rebuild();
+  await ctx.dispose();
+  return result;
+}
 
 async function main() {
   copyVendor();
 
-  const ctx = await esbuild.context({
+  // Extension host (Node/CJS, vscode external).
+  const extensionCtx = await esbuild.context({
     entryPoints: ['src/extension.ts'],
     bundle: true,
     format: 'cjs',
@@ -98,15 +152,45 @@ async function main() {
     sourcemap: !production,
     minify: production,
     logLevel: 'info',
-    plugins: watch ? [watchLogPlugin] : [],
+    plugins: watch ? [watchLogPlugin('extension')] : [],
+  });
+
+  // Webview UI (browser IIFE). Bundles media/src/main.ts and its imports into
+  // the single media/main.js the webview loads. Inline sourcemaps in dev for
+  // browser DevTools debugging (the webview has no Node debugger); off in prod.
+  // `__DEV__` is the dev flag the webview branches on (cleaner than process.env
+  // in a browser bundle).
+  const webviewCtx = await esbuild.context({
+    entryPoints: ['media/src/main.ts'],
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'es2022',
+    outfile: 'media/main.js',
+    sourcemap: production ? false : 'inline',
+    minify: production,
+    logLevel: 'info',
+    banner: { js: WEBVIEW_BANNER },
+    define: { __DEV__: JSON.stringify(!production) },
+    plugins: [boundaryPlugin(), ...(watch ? [watchLogPlugin('webview')] : [])],
   });
 
   if (watch) {
-    await ctx.watch();
+    await extensionCtx.watch();
+    await webviewCtx.watch();
     console.log('[esbuild] watching…');
   } else {
-    await ctx.rebuild();
-    await ctx.dispose();
+    // One-shot: both must succeed. An initial build failure must fail the whole
+    // build (non-zero exit) even if the other built fine, so a broken artifact
+    // can't ship. (In watch mode above, a failure does NOT exit — the watch
+    // process stays alive and the labeled status line surfaces the error count,
+    // so a transient error doesn't kill the dev loop.)
+    let failed = false;
+    for (const ctx of [extensionCtx, webviewCtx]) {
+      const result = await buildOnce(ctx);
+      if (result.errors.length > 0) failed = true;
+    }
+    if (failed) process.exit(1);
   }
 }
 

@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    // Override the base tsconfig's rootDir:"src" — it excludes media/ entirely,
+    // which silently made tsc skip every webview file. noEmit means rootDir is
+    // irrelevant to output anyway.
+    "rootDir": ".",
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "incremental": true,
+    "tsBuildInfoFile": ".cache/webview.tsbuildinfo"
+  },
+  "include": ["media/src", "src/shared/**/*.ts"],
+  // Override the base tsconfig's `exclude:["media"]` — inherited, it would
+  // strip every webview file right back out of the program despite `include`.
+  "exclude": ["node_modules", "dist", ".cache"]
+}
