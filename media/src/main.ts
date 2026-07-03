@@ -11,6 +11,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
 import { send } from './bridge';
 import type { RxMessage } from './bridge';
 import { $, escapeHtml, showToast } from './dom';
+import { renderMarkdown } from './markdown';
 
 (function () {
   let state = { catalog: [], fallback: [], platforms: [] };
@@ -31,92 +32,9 @@ import { $, escapeHtml, showToast } from './dom';
   let currentTurn = null;
 
   // ---------- markdown ----------
-  // Configure marked ONCE: render embedded raw HTML as escaped TEXT instead of live DOM, so a
-  // chat message containing an HTML form/snippet shows as readable, searchable source — and
-  // can't inject widgets or handlers into the webview. Only raw `html` tokens are escaped;
-  // markdown-generated elements (incl. GFM task-list checkboxes) render normally.
-  let markedReady = false;
-  function configureMarked() {
-    if (markedReady || !window.marked) return;
-    markedReady = true;
-    try {
-      window.marked.use({
-        renderer: {
-          html(token) {
-            const raw = typeof token === 'string' ? token : (token && token.raw != null ? token.raw : (token && token.text) || '');
-            return escapeHtml(raw);
-          },
-        },
-      });
-    } catch (_) {}
-  }
-
-  function renderMarkdown(md) {
-    try {
-      if (window.marked) {
-        configureMarked();
-        const html = window.marked.parse(md, { breaks: true, gfm: true });
-        const div = document.createElement('div');
-        div.innerHTML = html;
-        div.querySelectorAll('script').forEach((s) => s.remove());
-        // Neutralize script-y URLs that markdown links/images can still carry (marked v12
-        // does not sanitize URLs) — same render sink, cheap defense-in-depth.
-        div.querySelectorAll('a[href]').forEach((a) => { if (/^\s*(javascript|data|vbscript):/i.test(a.getAttribute('href') || '')) a.removeAttribute('href'); });
-        if (window.hljs) div.querySelectorAll('pre code').forEach((b) => { try { window.hljs.highlightElement(b); } catch (_) {} });
-        // Render diff blocks with diff2html instead of plain syntax highlighting
-        if (window.Diff2Html) {
-          div.querySelectorAll('pre code.language-diff').forEach((b) => {
-            try {
-              const diffHtml = window.Diff2Html.html(b.textContent || '', {
-                drawFileList: false,
-                matching: 'lines',
-                outputFormat: 'line-by-line',
-              });
-              const wrapper = document.createElement('div');
-              wrapper.className = 'd2h-wrapper';
-              wrapper.innerHTML = diffHtml;
-              b.closest('pre')?.replaceWith(wrapper);
-            } catch (_) {}
-          });
-        }
-        return div;
-      }
-    } catch (_) {}
-    const pre = document.createElement('div');
-    pre.textContent = md;
-    return pre;
-  }
-
-  function typeInto(container, fullText) {
-    container.innerHTML = '';
-    const words = fullText.split(/(\s+)/); // preserve whitespace tokens
-    if (words.length < 6) {
-      const node = renderMarkdown(fullText);
-      node.style.animation = 'fadeSlideIn 0.2s ease';
-      container.appendChild(node);
-      scrollDown();
-      return;
-    }
-    // Reveal words progressively to mimic streaming. Batch size grows with length
-    // so short replies feel snappy and long ones don't drag.
-    const batch = Math.max(3, Math.floor(words.length / 60));
-    let i = 0;
-    function tick() {
-      i += batch;
-      const slice = words.slice(0, i).join('');
-      container.innerHTML = '';
-      container.appendChild(renderMarkdown(slice));
-      scrollDown();
-      if (i < words.length) requestAnimationFrame(tick);
-      else {
-        // Final render — ensure exact text with no truncation artifacts.
-        container.innerHTML = '';
-        container.appendChild(renderMarkdown(fullText));
-        scrollDown();
-      }
-    }
-    requestAnimationFrame(tick);
-  }
+  // renderMarkdown + configureMarked live in ./markdown (strict-checked).
+  // (The legacy typeInto() was removed: it had zero callers — dead code carried
+  // over from the original main.js.)
 
   // ---------- icons + formatting helpers ----------
   // ICON and the fmt* helpers live in ./icons and ./format (stateless modules).
