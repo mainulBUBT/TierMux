@@ -10,10 +10,9 @@ import { ICON } from './icons';
 import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from './format';
 import { send } from './bridge';
 import type { RxMessage } from './bridge';
+import { $, escapeHtml, showToast } from './dom';
 
 (function () {
-  const $ = (sel: string, root?: ParentNode | null) => (root || document).querySelector(sel);
-
   let state = { catalog: [], fallback: [], platforms: [] };
   let pendingAttachments = [];
   let busy = false;
@@ -315,24 +314,7 @@ import type { RxMessage } from './bridge';
 
   function scrollDown() { thread.scrollTop = thread.scrollHeight; }
 
-  // Transient toast (e.g. "Copied", "Liked") shown right at the clicked element so the
-  // feedback appears where the user acted, not at the bottom of the panel.
-  function showToast(text, anchor) {
-    const t = document.createElement('div'); t.className = 'toast'; t.textContent = text;
-    document.body.appendChild(t);
-    const r = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
-    if (r) {
-      const tw = t.offsetWidth, th = t.offsetHeight;
-      let left = Math.max(6, Math.min(r.left + r.width / 2 - tw / 2, window.innerWidth - tw - 6));
-      let top = r.top - th - 6;            // prefer just above the button
-      if (top < 6) top = r.bottom + 6;     // flip below if there's no room above
-      t.style.left = left + 'px'; t.style.top = top + 'px';
-    } else {
-      t.style.left = '50%'; t.style.bottom = '64px'; t.style.transform = 'translateX(-50%)';
-    }
-    requestAnimationFrame(() => t.classList.add('show'));
-    setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 200); }, 1400);
-  }
+  // showToast lives in ./dom (stateless, strict-checked).
 
   // ---------- session history dropdown ----------
   const STATUS_DOT = { idle: '●', queued: '⏳', running: '⟳', needsApproval: '!', finished: '✓' };
@@ -1202,7 +1184,7 @@ import type { RxMessage } from './bridge';
     updateSendEnabled();
   }
 
-  function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+  // escapeHtml lives in ./dom (stateless, strict-checked).
 
   // Inline modal dialog. VS Code webviews run in a sandboxed iframe without
   // allow-modals, so window.prompt/confirm/alert are silently blocked (prompt
