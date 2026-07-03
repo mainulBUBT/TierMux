@@ -8,9 +8,10 @@
 /* TierMux — webview controller (vanilla TS, bundled by esbuild). */
 import { ICON } from './icons';
 import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from './format';
+import { send } from './bridge';
+import type { RxMessage } from './bridge';
 
 (function () {
-  const vscode = acquireVsCodeApi();
   const $ = (sel: string, root?: ParentNode | null) => (root || document).querySelector(sel);
 
   let state = { catalog: [], fallback: [], platforms: [] };
@@ -261,7 +262,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
   autoBtn.addEventListener('click', () => {
     autoApprove = !autoApprove;
     renderAutoApprove();
-    vscode.postMessage({ type: 'setAutoApprove', enabled: autoApprove });
+    send({ type: 'setAutoApprove', enabled: autoApprove });
   });
 
   // Chat header: brand + editable session title (rename inline, Enter to save).
@@ -269,7 +270,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
   let lastTitle = '';
   function commitTitle() {
     const v = (titleInput.value || '').trim();
-    if (v && v !== lastTitle) { lastTitle = v; vscode.postMessage({ type: 'renameSession', title: v }); }
+    if (v && v !== lastTitle) { lastTitle = v; send({ type: 'renameSession', title: v }); }
     else { titleInput.value = lastTitle; }
     titleInput.blur();
   }
@@ -392,7 +393,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
           empty.textContent = 'No sessions yet';
           historyList.appendChild(empty);
         }
-        vscode.postMessage({ type: 'deleteSessionById', sessionId: sid });
+        send({ type: 'deleteSessionById', sessionId: sid });
       }
       return;
     }
@@ -400,7 +401,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
     const row = target.closest('[data-session-id]');
     if (row) {
       const sid = row.dataset.sessionId;
-      if (sid && sid !== viewedSessionId) vscode.postMessage({ type: 'switchSession', sessionId: sid });
+      if (sid && sid !== viewedSessionId) send({ type: 'switchSession', sessionId: sid });
       toggleHistory(false);
     }
   });
@@ -492,7 +493,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
 
     el.querySelectorAll('.empty-recent-card').forEach(card => {
       card.addEventListener('click', () => {
-        vscode.postMessage({ type: 'switchSession', sessionId: card.dataset.id });
+        send({ type: 'switchSession', sessionId: card.dataset.id });
       });
     });
     const viewAllBtn = el.querySelector('#empty-view-all-btn');
@@ -521,7 +522,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
   }
   function copyBtn(el) {
     const b = iconBtn(ICON.copy, 'Copy message', () => {
-      vscode.postMessage({ type: 'copyText', text: el._copyText || '' });
+      send({ type: 'copyText', text: el._copyText || '' });
       b.classList.add('ok');
       setTimeout(() => b.classList.remove('ok'), 1000);
       showToast('Copied', b);
@@ -534,7 +535,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
       const el = which === 'up' ? up : down, other = which === 'up' ? down : up;
       const now = el.classList.contains('on') ? 'none' : which; // second click un-votes
       el.classList.toggle('on', now === which); other.classList.remove('on');
-      if (requestId) vscode.postMessage({ type: 'vote', requestId, vote: now });
+      if (requestId) send({ type: 'vote', requestId, vote: now });
       showToast(now === 'up' ? '👍 Liked — prefer this model' : now === 'down' ? '👎 Disliked — avoid this model' : 'Feedback removed', el);
     };
     const up = iconBtn(ICON.up, 'Good response — prefer this model for similar tasks', () => set('up'));
@@ -577,7 +578,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
     const time = document.createElement('span'); time.className = 'ts'; time.textContent = fmtTime(ts);
     meta.appendChild(time);
     meta.appendChild(copyBtn(el));
-    if (requestId) meta.appendChild(iconBtn(ICON.revert, 'Revert to here (restore workspace + chat to before this message)', () => vscode.postMessage({ type: 'revertTo', requestId })));
+    if (requestId) meta.appendChild(iconBtn(ICON.revert, 'Revert to here (restore workspace + chat to before this message)', () => send({ type: 'revertTo', requestId })));
     bubble.appendChild(body); bubble.appendChild(meta);
     el.appendChild(bubble);
     // Start a new turn group: the command plus whatever replies/follow below it.
@@ -983,8 +984,8 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
     scrollDown();
   }
 
-  function send() {
-    if (busy) { vscode.postMessage({ type: 'cancel', requestId: 'current', sessionId: viewedSessionId }); return; }
+  function submitChat() {
+    if (busy) { send({ type: 'cancel', requestId: 'current', sessionId: viewedSessionId }); return; }
     const text = input.value.trim();
     if (!text && pendingAttachments.length === 0) return;
     const requestId = newId();
@@ -994,7 +995,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
       .filter((a) => a.kind === 'image' && a.dataUrl)
       .map((a) => ({ kind: 'image', name: a.name, dataUrl: a.dataUrl }));
     addUserBubble(text, requestId, Date.now(), pendingAttachments.map((a) => ({ kind: a.kind, name: a.name, dataUrl: a.dataUrl })));
-    vscode.postMessage({
+    send({
       type: 'sendMessage', requestId, text,
       mode: currentMode, model: currentModel, reasoningEffort: reasoningSel.value,
       attachments: pendingAttachments,
@@ -1007,7 +1008,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
     updateSendEnabled();
   }
 
-  $('#btn-send').addEventListener('click', send);
+  $('#btn-send').addEventListener('click', submitChat);
   input.addEventListener('keydown', (e) => {
     if (!acPop.classList.contains('hidden')) {
       if (e.key === 'ArrowDown') { e.preventDefault(); moveAc(1); return; }
@@ -1015,7 +1016,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
       if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); acceptAc(); return; }
       if (e.key === 'Escape') { e.preventDefault(); closeAc(); return; }
     }
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submitChat(); }
   });
   input.addEventListener('input', () => { autoGrow(); updateAutocomplete(); updateSendEnabled(); });
   input.addEventListener('click', updateAutocomplete);
@@ -1060,8 +1061,8 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
   // Persist the draft as the user types, so a background switch never loses it.
   input.addEventListener('input', () => { if (viewedSessionId) saveComposer(viewedSessionId); });
 
-  $('#btn-attach').addEventListener('click', () => vscode.postMessage({ type: 'attachFromWorkspace' }));
-  $('#btn-selection').addEventListener('click', () => vscode.postMessage({ type: 'addSelection' }));
+  $('#btn-attach').addEventListener('click', () => send({ type: 'attachFromWorkspace' }));
+  $('#btn-selection').addEventListener('click', () => send({ type: 'addSelection' }));
   // Close transient popups when the view loses focus or is hidden (e.g. switching tabs).
   window.addEventListener('blur', () => { closeModelPop(); closeModePop(); closeAc(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) { closeModelPop(); closeModePop(); closeAc(); } });
@@ -1139,7 +1140,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result;
-      vscode.postMessage({ type: 'attachFromDataUrl', name: file.name, mime: file.type || mime, dataUrl, source });
+      send({ type: 'attachFromDataUrl', name: file.name, mime: file.type || mime, dataUrl, source });
       showComposerStatus(`Extracting ${file.name}…`);
     };
     reader.onerror = () => showComposerStatus(`Could not read ${file.name}`);
@@ -1382,7 +1383,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
       const q = text.slice(at + 1);
       const id = ++acQueryId;
       clearTimeout(acDebounce);
-      acDebounce = setTimeout(() => vscode.postMessage({ type: 'mentionQuery', queryId: id, query: q }), 150);
+      acDebounce = setTimeout(() => send({ type: 'mentionQuery', queryId: id, query: q }), 150);
       return;
     }
     closeAc();
@@ -1683,7 +1684,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
       item.dataset.search = searchText.toLowerCase();
       const lbl = document.createElement('span'); lbl.className = 'mi-label'; lbl.textContent = label;
       item.appendChild(lbl);
-      item.addEventListener('click', () => vscode.postMessage({ type: 'setUtilityModel', model: value }));
+      item.addEventListener('click', () => send({ type: 'setUtilityModel', model: value }));
       list.appendChild(item);
     };
     addItem('auto', 'Auto (prefers keyless)', 'auto keyless default');
@@ -1765,7 +1766,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
       // window.confirm() is blocked inside VS Code webviews, so it must NOT be used here.
       usageClear.disabled = true;
       usageClear.textContent = 'Clearing…';
-      vscode.postMessage({ type: 'clearUsage' });
+      send({ type: 'clearUsage' });
     });
     usageWrap.append(usageTitle, usageDesc, usageStats, usageClear);
     settingsContentEl.appendChild(usageWrap);
@@ -1791,7 +1792,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
     // Changing routing config while an agent is mid-run can strand it on a disabled
     // model/provider — so any toggle here cancels the active turn first.
     const stopIfBusy = () => {
-      if (busy) vscode.postMessage({ type: 'cancel', requestId: 'current', sessionId: viewedSessionId });
+      if (busy) send({ type: 'cancel', requestId: 'current', sessionId: viewedSessionId });
     };
 
     // Global master toggle — flip every provider's on/off switch at once (same
@@ -1826,7 +1827,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
     allCb.addEventListener('change', () => {
       const on = allCb.checked;
       toggleablePlatforms.forEach((p) => {
-        vscode.postMessage({ type: 'setProviderEnabled', platform: p.platform, enabled: on });
+        send({ type: 'setProviderEnabled', platform: p.platform, enabled: on });
       });
       stopIfBusy();
     });
@@ -1886,7 +1887,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
       head.insertBefore(sw, head.firstChild);
       sw.addEventListener('click', (ev) => ev.stopPropagation());
       swCb.addEventListener('change', () => {
-        vscode.postMessage({ type: 'setProviderEnabled', platform: p.platform, enabled: swCb.checked });
+        send({ type: 'setProviderEnabled', platform: p.platform, enabled: swCb.checked });
         stopIfBusy();
       });
 
@@ -1905,7 +1906,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
         provKeyBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
           if (p.keyless) return;
-          vscode.postMessage(keyCount > 0 ? { type: 'addKey', platform: p.platform } : { type: 'setKey', platform: p.platform });
+          send(keyCount > 0 ? { type: 'addKey', platform: p.platform } : { type: 'setKey', platform: p.platform });
         });
       }
 
@@ -1926,12 +1927,12 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
         const url = epInput.value.trim();
         if (url && !/^https?:\/\/.+/i.test(url)) { card.classList.add('invalid'); return; }
         card.classList.remove('invalid');
-        vscode.postMessage({ type: 'setEndpoint', platform: p.platform, url });
+        send({ type: 'setEndpoint', platform: p.platform, url });
       });
       const resetEp = document.createElement('button');
       resetEp.className = 'icon-btn';
       resetEp.textContent = 'Reset';
-      resetEp.addEventListener('click', () => { epInput.value = ''; vscode.postMessage({ type: 'resetEndpoint', platform: p.platform }); });
+      resetEp.addEventListener('click', () => { epInput.value = ''; send({ type: 'resetEndpoint', platform: p.platform }); });
       epRow.appendChild(saveEp);
       epRow.appendChild(resetEp);
       body.appendChild(epRow);
@@ -1985,7 +1986,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
                 });
                 chip.appendChild(cancelBtn);
               } else {
-                vscode.postMessage({ type: 'removeKeyAt', platform: p.platform, index: idx });
+                send({ type: 'removeKeyAt', platform: p.platform, index: idx });
               }
             });
             chip.appendChild(span);
@@ -2019,7 +2020,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
           const on = allModelCb.checked;
           models.forEach((e, i) => { e.enabled = on; if (modelCbs[i]) modelCbs[i].checked = on; });
           allModelCb.indeterminate = false;
-          vscode.postMessage({ type: 'setFallbackConfig', entries });
+          send({ type: 'setFallbackConfig', entries });
           stopIfBusy();
         });
         mt.appendChild(allModelCb);
@@ -2043,7 +2044,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
         cb.checked = !!e.enabled;
         cb.addEventListener('change', () => {
           e.enabled = cb.checked;
-          vscode.postMessage({ type: 'setFallbackConfig', entries });
+          send({ type: 'setFallbackConfig', entries });
           // Keep the bulk toggle in sync with the individual rows.
           if (allModelCb) {
             allModelCb.checked = models.every((x) => x.enabled);
@@ -2097,7 +2098,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
         const name = (res[0] || '').trim();
         const url = (res[1] || '').trim();
         if (!name || !url) return;
-        vscode.postMessage({ type: 'addCustomEndpoint', name, baseUrl: url });
+        send({ type: 'addCustomEndpoint', name, baseUrl: url });
       });
       settingsContentEl.appendChild(addBtn);
 
@@ -2142,7 +2143,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
           });
           const newName = res ? (res[0] || '').trim() : '';
           if (newName && newName !== ep.name) {
-            vscode.postMessage({ type: 'updateCustomEndpoint', id: ep.id, name: newName });
+            send({ type: 'updateCustomEndpoint', id: ep.id, name: newName });
           }
         });
         nameRow.appendChild(editNameBtn);
@@ -2167,7 +2168,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
             void inlineDialog({ title: 'Invalid base URL', message: 'Base URL must start with http:// or https://', okLabel: 'OK' });
             return;
           }
-          vscode.postMessage({ type: 'updateCustomEndpoint', id: ep.id, baseUrl: url });
+          send({ type: 'updateCustomEndpoint', id: ep.id, baseUrl: url });
         });
         const resetEp = document.createElement('button');
         resetEp.className = 'icon-btn';
@@ -2194,7 +2195,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
             okLabel: action,
           });
           if (res !== null) {
-            vscode.postMessage({ type: 'setCustomEndpointKey', id: ep.id, key: (res[0] || '').trim() });
+            send({ type: 'setCustomEndpointKey', id: ep.id, key: (res[0] || '').trim() });
           }
         });
         keyRow.appendChild(keyBtn);
@@ -2205,7 +2206,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
           clearKeyBtn.style.marginLeft = '4px';
           clearKeyBtn.addEventListener('click', (ev) => {
             ev.stopPropagation();
-            vscode.postMessage({ type: 'setCustomEndpointKey', id: ep.id, key: null });
+            send({ type: 'setCustomEndpointKey', id: ep.id, key: null });
           });
           keyRow.appendChild(clearKeyBtn);
         }
@@ -2236,7 +2237,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
           const cb = document.createElement('input');
           cb.type = 'checkbox';
           cb.checked = !!e.enabled;
-          cb.addEventListener('change', () => { entries[idx].enabled = cb.checked; vscode.postMessage({ type: 'setFallbackConfig', entries }); });
+          cb.addEventListener('change', () => { entries[idx].enabled = cb.checked; send({ type: 'setFallbackConfig', entries }); });
           const info = document.createElement('div');
           info.className = 'pm-info';
           info.innerHTML = `<div class="pm-name">${escapeHtml(upstreamId)}</div>`;
@@ -2247,7 +2248,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
           delBtn.addEventListener('click', async (ev) => {
             ev.stopPropagation();
             if (await inlineDialog({ title: 'Remove model?', message: `Remove "${upstreamId}" from this endpoint?`, okLabel: 'Remove', danger: true })) {
-              vscode.postMessage({ type: 'removeCustomModel', endpointId: ep.id, modelId: upstreamId });
+              send({ type: 'removeCustomModel', endpointId: ep.id, modelId: upstreamId });
             }
           });
           row.appendChild(cb);
@@ -2271,7 +2272,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
           });
           const modelId = res ? (res[0] || '').trim() : '';
           if (!modelId) return;
-          vscode.postMessage({ type: 'addCustomModel', endpointId: ep.id, modelId });
+          send({ type: 'addCustomModel', endpointId: ep.id, modelId });
         });
         addModelRow.appendChild(addModelBtn);
 
@@ -2286,7 +2287,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
         fetchBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
           fetchedEndpointModels.set(ep.id, { loading: true });
-          vscode.postMessage({ type: 'fetchCustomEndpointModels', id: ep.id });
+          send({ type: 'fetchCustomEndpointModels', id: ep.id });
           renderSettings();
         });
         addModelRow.appendChild(fetchBtn);
@@ -2327,7 +2328,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
                 chip.title = 'Add ' + id;
                 chip.addEventListener('click', (ev) => {
                   ev.stopPropagation();
-                  vscode.postMessage({ type: 'addCustomModel', endpointId: ep.id, modelId: id });
+                  send({ type: 'addCustomModel', endpointId: ep.id, modelId: id });
                   chip.disabled = true;
                   chip.textContent = '✓ ' + id;
                 });
@@ -2341,7 +2342,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
                 addAll.textContent = 'Add all ' + fresh.length;
                 addAll.addEventListener('click', (ev) => {
                   ev.stopPropagation();
-                  fresh.forEach((id) => vscode.postMessage({ type: 'addCustomModel', endpointId: ep.id, modelId: id }));
+                  fresh.forEach((id) => send({ type: 'addCustomModel', endpointId: ep.id, modelId: id }));
                   addAll.disabled = true;
                   addAll.textContent = '✓ Added';
                 });
@@ -2362,7 +2363,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
         removeBtn.addEventListener('click', async (ev) => {
           ev.stopPropagation();
           if (await inlineDialog({ title: 'Remove endpoint?', message: `Remove "${ep.name}"? This removes all its models and keys.`, okLabel: 'Remove', danger: true })) {
-            vscode.postMessage({ type: 'removeCustomEndpoint', id: ep.id });
+            send({ type: 'removeCustomEndpoint', id: ep.id });
           }
         });
         removeRow.appendChild(removeBtn);
@@ -2395,11 +2396,11 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
     const editBtn = document.createElement('button');
     editBtn.className = 'icon-btn';
     editBtn.textContent = 'Edit in settings.json';
-    editBtn.addEventListener('click', () => vscode.postMessage({ type: 'editMcp' }));
+    editBtn.addEventListener('click', () => send({ type: 'editMcp' }));
     const reBtn = document.createElement('button');
     reBtn.className = 'icon-btn';
     reBtn.textContent = '⟳ Reconnect';
-    reBtn.addEventListener('click', () => vscode.postMessage({ type: 'reconnectMcp' }));
+    reBtn.addEventListener('click', () => send({ type: 'reconnectMcp' }));
     actions.appendChild(addBtn);
     actions.appendChild(editBtn);
     actions.appendChild(reBtn);
@@ -2432,7 +2433,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
       enableCb.style.marginLeft = 'auto';
       enableCb.addEventListener('click', (ev) => {
         ev.stopPropagation();
-        vscode.postMessage({ type: 'setMcpServerEnabled', name: s.name, enabled: enableCb.checked });
+        send({ type: 'setMcpServerEnabled', name: s.name, enabled: enableCb.checked });
       });
       head.appendChild(enableCb);
       const editSrvBtn = document.createElement('button');
@@ -2445,7 +2446,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
       rm.className = 'icon-btn';
       rm.textContent = '✕';
       rm.title = 'Remove server';
-      rm.addEventListener('click', (ev) => { ev.stopPropagation(); vscode.postMessage({ type: 'removeMcpServer', name: s.name }); });
+      rm.addEventListener('click', (ev) => { ev.stopPropagation(); send({ type: 'removeMcpServer', name: s.name }); });
       head.appendChild(rm);
       const chev = document.createElement('span');
       chev.className = 'chev';
@@ -2489,7 +2490,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
       const id = ++mcpSearchId;
       mcpResultsEl.innerHTML = '<div class="muted">Searching the registry…</div>';
       clearTimeout(mcpSearchTimer);
-      mcpSearchTimer = setTimeout(() => vscode.postMessage({ type: 'searchMcpRegistry', queryId: id, query: q }), 350);
+      mcpSearchTimer = setTimeout(() => send({ type: 'searchMcpRegistry', queryId: id, query: q }), 350);
     });
   }
 
@@ -2712,7 +2713,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
       }
       const timeout = timeoutInput.value.trim();
       if (timeout) config.timeout = Number(timeout);
-      vscode.postMessage({ type: 'saveMcpServer', name, originalName: existingName || undefined, config });
+      send({ type: 'saveMcpServer', name, originalName: existingName || undefined, config });
       mcpFormOpenFor = null;
       renderSettings();
     });
@@ -2743,7 +2744,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
       add.className = 'secondary';
       add.textContent = already ? 'Added' : 'Add';
       add.disabled = already;
-      add.addEventListener('click', () => vscode.postMessage({ type: 'addMcpServer', item }));
+      add.addEventListener('click', () => send({ type: 'addMcpServer', item }));
       row.appendChild(info);
       row.appendChild(add);
       mcpResultsEl.appendChild(row);
@@ -2752,7 +2753,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
 
   // ---------- inbound messages ----------
   window.addEventListener('message', (event) => {
-    const msg = event.data;
+    const msg: RxMessage = event.data;
     // This webview renders one session at a time. Render messages for a different
     // (background) session are ignored here — the host caches their state and replays it
     // when we switch to them (see switchSession). switchSession/sessionList carry their own
@@ -2915,7 +2916,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
           note.className = 'cmd-approval-note';
           note.textContent = approved ? '✓ Approved' : '✗ Skipped';
           card.appendChild(note);
-          vscode.postMessage({ type: 'commandApprovalResponse', id: msg.id, approved, sessionId: msg.sessionId });
+          send({ type: 'commandApprovalResponse', id: msg.id, approved, sessionId: msg.sessionId });
         };
         run.addEventListener('click', () => decide(true));
         skip.addEventListener('click', () => decide(false));
@@ -2946,7 +2947,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
           note.className = 'cmd-approval-note';
           note.textContent = approved ? (del ? '✓ Deleted' : '✓ Applied') : (del ? '✗ Kept' : '✗ Rejected');
           card.appendChild(note);
-          vscode.postMessage({ type: 'editApprovalResponse', id: msg.id, approved, sessionId: msg.sessionId });
+          send({ type: 'editApprovalResponse', id: msg.id, approved, sessionId: msg.sessionId });
         };
         ok.addEventListener('click', () => decide(true));
         no.addEventListener('click', () => decide(false));
@@ -2975,14 +2976,14 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
         const approve = document.createElement('button'); approve.className = 'primary plan-run'; approve.textContent = '▶  Run plan';
         const discuss = document.createElement('button'); discuss.className = 'plan-discuss'; discuss.textContent = 'Discuss';
         const reject = document.createElement('button'); reject.className = 'plan-reject'; reject.textContent = 'Discard';
-        approve.addEventListener('click', () => { actions.remove(); vscode.postMessage({ type: 'approvePlan', requestId: newId(), approved: true, steps: collect() }); });
-        reject.addEventListener('click', () => { actions.remove(); vscode.postMessage({ type: 'approvePlan', requestId: newId(), approved: false, steps: collect() }); });
+        approve.addEventListener('click', () => { actions.remove(); send({ type: 'approvePlan', requestId: newId(), approved: true, steps: collect() }); });
+        reject.addEventListener('click', () => { actions.remove(); send({ type: 'approvePlan', requestId: newId(), approved: false, steps: collect() }); });
         discuss.addEventListener('click', () => {
           discuss.remove(); reject.remove();
           const note = document.createElement('div'); note.className = 'plan-note';
           note.textContent = 'Kept for discussion — edit steps above or the saved plan, then Run when ready.';
           t.body.appendChild(note);
-          vscode.postMessage({ type: 'deferPlan', requestId: msg.requestId, steps: collect() });
+          send({ type: 'deferPlan', requestId: msg.requestId, steps: collect() });
         });
         actions.appendChild(approve); actions.appendChild(discuss); actions.appendChild(reject);
         t.body.appendChild(actions);
@@ -3043,7 +3044,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
           const note = document.createElement('div'); note.className = 'ask-answer';
           note.textContent = '✓ ' + answer;
           card.appendChild(note);
-          vscode.postMessage({ type: 'askUserResponse', requestId: msg.requestId, callId: msg.callId, answer });
+          send({ type: 'askUserResponse', requestId: msg.requestId, callId: msg.callId, answer });
         };
         t.body.appendChild(card);
         scrollDown();
@@ -3177,13 +3178,13 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
           if (!allAnswered()) return;
           const answers = qs.map((q, qi) => selected[qi] === CUSTOM(qi) ? custom[qi].trim() : q.options[selected[qi]].title);
           markClarifyDone('✓ Answers submitted — resuming…', answers);
-          vscode.postMessage({ type: 'answerClarifying', requestId: msg.requestId, answers });
+          send({ type: 'answerClarifying', requestId: msg.requestId, answers });
         });
         dismiss.addEventListener('click', () => {
           // Let the planner proceed on its own best judgment for every question.
           const answers = qs.map(() => '(no preference — use your best judgment)');
           markClarifyDone('✗ Dismissed — proceeding with sensible defaults.', null);
-          vscode.postMessage({ type: 'answerClarifying', requestId: msg.requestId, answers });
+          send({ type: 'answerClarifying', requestId: msg.requestId, answers });
         });
 
         renderStep();
@@ -3268,7 +3269,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
           const resume = document.createElement('div'); resume.className = 'resume-actions';
           const btn = document.createElement('button'); btn.className = 'primary'; btn.textContent = 'Continue';
           btn.title = 'Resume from where the agent stopped — keeps everything it has done so far';
-          btn.addEventListener('click', () => { resume.remove(); vscode.postMessage({ type: 'resume', requestId: newId() }); });
+          btn.addEventListener('click', () => { resume.remove(); send({ type: 'resume', requestId: newId() }); });
           resume.appendChild(btn);
           t.el.appendChild(resume);
         }
@@ -3374,7 +3375,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
       const name = document.createElement('span'); name.className = 'cp-name'; name.textContent = f.rel;
       row.appendChild(badge); row.appendChild(name);
       row.title = 'Open diff (before this message ↔ current)';
-      row.addEventListener('click', () => vscode.postMessage({ type: 'diffCheckpointFile', id: msg.id, uri: f.uri }));
+      row.addEventListener('click', () => send({ type: 'diffCheckpointFile', id: msg.id, uri: f.uri }));
       list.appendChild(row);
     });
     head.appendChild(list);
@@ -3501,7 +3502,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
     title.addEventListener('click', toggle); title.style.cursor = 'pointer';
     const undo = document.createElement('button'); undo.className = 'cb-action';
     undo.textContent = 'Undo all'; undo.title = 'Restore all changed files to before this session’s edits';
-    undo.addEventListener('click', () => vscode.postMessage({ type: 'restoreCheckpoint', id: msg.id }));
+    undo.addEventListener('click', () => send({ type: 'restoreCheckpoint', id: msg.id }));
     const close = document.createElement('button'); close.className = 'cb-close'; close.textContent = '×';
     close.title = 'Hide (reappears on the next change)';
     close.addEventListener('click', () => { bar.classList.add('hidden'); });
@@ -3515,7 +3516,7 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
       name.textContent = f.rel.split('/').pop();
       chip.title = `${f.rel} — open diff`;
       chip.appendChild(badge); chip.appendChild(name);
-      chip.addEventListener('click', () => vscode.postMessage({ type: 'diffCheckpointFile', id: msg.id, uri: f.uri }));
+      chip.addEventListener('click', () => send({ type: 'diffCheckpointFile', id: msg.id, uri: f.uri }));
       list.appendChild(chip);
     });
     bar.appendChild(head); bar.appendChild(list);
@@ -3614,5 +3615,5 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from
   }
 
   renderEmpty();
-  vscode.postMessage({ type: 'ready' });
+  send({ type: 'ready' });
 })();
