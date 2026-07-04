@@ -14,6 +14,7 @@ import { $, escapeHtml, showToast } from './dom';
 import { renderMarkdown } from './markdown';
 import { buildReasoningBlock, buildToolCard, toolLabel, activityFor } from './toolRendering';
 import { handleTodos } from './handlers/todos';
+import { handleAssistantStart } from './handlers/assistantStart';
 
 (function () {
   let state = { catalog: [], fallback: [], platforms: [] };
@@ -2548,17 +2549,6 @@ import { handleTodos } from './handlers/todos';
   }
 
   // Message handler functions (Phase D2: typed boundaries)
-  function handleAssistantStart(ctx: HandlerContext, msg: AssistantStartMessage): void {
-    const t = ctx.ensureTarget(msg.requestId, msg.platform, msg.model);
-    // The target may have been created earlier by a failover notice (which
-    // carries no model) — set it now so the footer shows the model that
-    // actually produced the answer, not a blank.
-    if (msg.model) t.model = `${msg.platform || ''}/${msg.model}`;
-    // The model shows as a DIM SUBTITLE (friendly name from the picker, never the raw
-    // provider key). The label itself is the rolling activity verb (Thinking…/Reading…/…).
-    ctx.setStatusLabel(msg.requestId, 'Thinking…', { force: true });
-    ctx.startStatusTimer(msg.requestId);
-  }
 
   function handleAgentStep(ctx: HandlerContext, msg: AgentStepMessage): void {
     const t = ctx.ensureTarget(msg.requestId);
