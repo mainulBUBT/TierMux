@@ -16,6 +16,7 @@ import { buildReasoningBlock, buildToolCard, toolLabel, activityFor } from './to
 import { handleTodos } from './handlers/todos';
 import { handleAssistantStart } from './handlers/assistantStart';
 import { handleAgentStep } from './handlers/agentStep';
+import { handleToolStatus } from './handlers/toolStatus';
 
 (function () {
   let state = { catalog: [], fallback: [], platforms: [] };
@@ -2550,26 +2551,6 @@ import { handleAgentStep } from './handlers/agentStep';
   }
 
   // Message handler functions (Phase D2: typed boundaries)
-
-  function handleToolStatus(ctx: HandlerContext, msg: ToolStatusMessage): void {
-    const t = ctx.ensureTarget(msg.requestId);
-    if (msg.state === 'running') {
-      // Rolling status verb for the live tool (Reading X / Searching "q" / Running cmd…).
-      t.activeTool = msg.toolCallId;
-      ctx.setStatusLabel(msg.requestId, ctx.activityFor(msg.name, msg.args), { tool: true });
-    } else if (msg.toolCallId && msg.toolCallId === t.activeTool) {
-      // The running tool itself finished — release the lock and drop back to synthesizing.
-      // (Reasoning/other 'done' events carry different ids and must not clobber a running tool.)
-      t.activeTool = null;
-      ctx.setStatusLabel(msg.requestId, t._wasStreamed ? 'Responding…' : 'Thinking…', { done: true });
-    }
-    // A NEW card closes the current text segment so following text appears after it.
-    // (Updates to an existing card — same toolCallId — must NOT, or streaming text
-    // mid-tool would fragment.) build/upsert handles the DOM; we only flip the flag.
-    const isNew = !t.flow.querySelector(`[data-tc="${msg.toolCallId}"]`);
-    ctx.upsertTool(t, msg);
-    if (isNew) t.currentText = null;
-  }
 
   // ---------- inbound messages ----------
   window.addEventListener('message', (event) => {
