@@ -12,6 +12,7 @@ import { send } from './bridge';
 import type { RxMessage } from './bridge';
 import { $, escapeHtml, showToast } from './dom';
 import { renderMarkdown } from './markdown';
+import { buildReasoningBlock, buildToolCard, toolLabel, activityFor } from './toolRendering';
 
 (function () {
   let state = { catalog: [], fallback: [], platforms: [] };
@@ -519,78 +520,6 @@ import { renderMarkdown } from './markdown';
     return foot;
   }
 
-  // Build a single tool-step card from a persisted step (mirrors upsertTool, but static).
-  // A visible "thinking" block — the model's per-step reasoning, shown before that step's
-  // tool runs (think → act, like Claude Code / Kilo Code). Rides the same step list as tool
-  // cards (step.name === 'reasoning', text in step.detail) so it persists across re-renders.
-  function buildReasoningBlock(text, tc) {
-    const block = document.createElement('div');
-    block.className = 'think-block';
-    block.dataset.live = '1';
-    if (tc) block.dataset.tc = tc;
-    const det = document.createElement('details');
-    const sum = document.createElement('summary');
-    sum.innerHTML = `<span class="think-ic">◌</span><span class="think-cap">Thinking</span>`;
-    const body = document.createElement('div');
-    body.className = 'think-body';
-    body.appendChild(renderMarkdown(text || ''));
-    det.appendChild(sum);
-    det.appendChild(body);
-    block.appendChild(det);
-    return block;
-  }
-
-  function buildToolCard(step) {
-    if (step.name === 'reasoning') {
-      const block = buildReasoningBlock(step.detail || '', step.toolCallId);
-      // Static re-render: reasoning is done, show as collapsed "Thought"
-      block.dataset.live = '0';
-      const cap = block.querySelector('.think-cap'); if (cap) cap.textContent = 'Thought';
-      const ic  = block.querySelector('.think-ic');  if (ic)  ic.textContent  = '◉';
-      return block;
-    }
-    const state = step.state || 'done';
-    const card = document.createElement('div');
-    card.className = 'tool-card state-' + state;
-    if (step.toolCallId) card.dataset.tc = step.toolCallId;
-    card.innerHTML = `<div class="tool-head"><span class="tool-ic"></span><span class="tool-title"></span><span class="tool-hint"></span><span class="state"></span></div><details class="tool-more hidden"><summary>output</summary><pre></pre></details>`;
-    const { icon, title, hint } = toolLabel(step.name, step.args, step.detail);
-    card.querySelector('.tool-ic').textContent = icon;
-    card.querySelector('.tool-title').textContent = title;
-    const hintEl = card.querySelector('.tool-hint');
-    if (hintEl) hintEl.textContent = hint || '';
-    const st = card.querySelector('.state');
-    st.className = 'state ' + state;
-    const icon2 = STATE_ICON[state];
-    st.textContent = (icon2 === null || icon2 === undefined) ? '' : icon2;
-    const isValidationStatic = step.name === 'runCommand' && /\b(tsc|eslint|prettier|lint|typecheck|check|jest|vitest|mocha|pytest|go\s+test|cargo\s+(check|test)|npm\s+test|yarn\s+test|pnpm\s+test)\b/.test(
-      String(step.args && typeof step.args === 'object' ? (step.args.command ?? JSON.stringify(step.args)) : step.args || '')
-    );
-    if (isValidationStatic) { card.className += ' validation'; }
-    const more = card.querySelector('.tool-more');
-    const pre = more.querySelector('pre');
-    const isEditStatic = step.name === 'editFile' || step.name === 'writeFile' || step.name === 'createFile';
-    const editArgsStatic = isEditStatic && step.args && typeof step.args === 'object' ? step.args : null;
-    if (editArgsStatic && editArgsStatic.old_string != null && editArgsStatic.new_string != null) {
-      pre.className = 'diff-view';
-      pre.appendChild(buildInlineDiff(editArgsStatic.old_string, editArgsStatic.new_string));
-      more.classList.remove('hidden');
-      more.open = true;
-    } else {
-      const argStr = (step.args && typeof step.args === 'object') ? JSON.stringify(step.args, null, 2) : String(step.args || '');
-      const parts = [];
-      if (argStr && argStr !== '{}') parts.push(argStr);
-      if (step.detail) parts.push(step.detail);
-      const body = parts.join('\n\n');
-      if (body.trim()) {
-        pre.textContent = body;
-        more.classList.remove('hidden');
-        more.open = true;
-      }
-    }
-    return card;
-  }
-
   // Rebuild a finished assistant message from the transcript. Mirrors the live render so a
   // re-render (e.g. after "Revert to here" or a session switch) keeps the "Reasoning" and
   // "Worked for Ns" disclosures plus the model/usage/secs footer — instead of dropping them.
@@ -679,11 +608,6 @@ import { renderMarkdown } from './markdown';
 
   // ---------- live "agent is working" status line ----------
   // Keep the last two segments of a path so absolute workspace paths stay tidy.
-  function shortPath(p) {
-    const s = String(p || '').replace(/\\/g, '/').replace(/^\.?\//, '');
-    const parts = s.split('/').filter(Boolean);
-    return parts.length <= 2 ? parts.join('/') : parts.slice(-2).join('/');
-  }
   // Strip the clarifying-questions sentinel block (and any stray sentinels) from text
   // BEFORE rendering, so `???QUESTIONS???` / `???END???` never flash in the chat while
   // the plan streams. The parsed questions surface as an interactive card at turn end.
@@ -703,32 +627,6 @@ import { renderMarkdown } from './markdown';
   // Present-tense "what the agent is doing right now" for the rolling status label.
   // (The tool CARDS in the feed use the past-tense toolLabel() — "Analyzed/Searched…".
   //  This is the live verb shown beside the spinner, Claude-Code-style.)
-  function activityFor(name, args) {
-    const ao = args && typeof args === 'object' ? args : {};
-    const a = String(firstArg(args) || '');
-    const path = shortPath(a);
-    const query = String(ao.query || ao.pattern || ao.term || '').trim();
-    const cmd = String(ao.command || ao.cmd || '').trim();
-    switch (name) {
-      case 'readFile':        return path ? `Reading ${path}` : 'Reading a file';
-      case 'listDir':         return path ? `Listing ${path}` : 'Listing files';
-      case 'searchWorkspace':
-      case 'grep':            return query ? `Searching “${query}”` : 'Searching';
-      case 'glob':            return query ? `Globbing ${query}` : 'Globbing files';
-      case 'runCommand':      { const c = cmd.split(/\s+/).slice(0, 5).join(' '); return c ? `Running ${c}` : 'Running a command'; }
-      case 'writeFile':
-      case 'createFile':      return path ? `Writing ${path}` : 'Writing a file';
-      case 'editFile':        return path ? `Editing ${path}` : 'Editing';
-      case 'deleteFile':      return path ? `Deleting ${path}` : 'Deleting';
-      case 'webSearch':       return query ? `Searching the web for “${query}”` : 'Searching the web';
-      case 'webFetch':        return a ? `Fetching ${shortPath(a)}` : 'Fetching';
-      case 'getDiagnostics':  return 'Checking diagnostics';
-      case 'repoMap':         return 'Mapping the repository';
-      default:
-        if (name && name.indexOf('mcp__') === 0) return `Calling ${name.split('__')[1] || 'MCP tool'}`;
-        return name ? (name.charAt(0).toUpperCase() + name.slice(1) + '…') : 'Working.';
-    }
-  }
   // Whimsical rolling verbs for the thinking phase (Claude-Code-style): while the
   // agent is "working" but no concrete tool verb or streaming response applies, the
   // spinner cycles through these so the status feels alive instead of a static word.
@@ -1334,72 +1232,6 @@ import { renderMarkdown } from './markdown';
 
   // ---------- tool cards / notices ----------
   // Turn raw tool calls into a human-readable "what the agent is doing" line.
-  function firstArg(a) {
-    if (!a || typeof a !== 'object') return '';
-    return a.path || a.file || a.filePath || a.filename || a.relativePath || a.query || a.pattern || a.dir || a.directory || a.term || a.command || '';
-  }
-  function toolLabel(name, args, detail) {
-    if (name === 'step' && args && typeof args === 'object') {
-      return { icon: '↳', title: `Step ${args.step}/${args.of}${args.task ? ': ' + args.task : ''}` };
-    }
-    if (name === 'think') {
-      const th = String((args && typeof args === 'object' && args.thought) || '');
-      return { icon: '◌', title: 'Thought' + (th ? ': ' + th.replace(/\s+/g, ' ').trim().slice(0, 80) : '') };
-    }
-    const a = String(firstArg(args) || '');
-    const ao = args && typeof args === 'object' ? args : {};
-    const path = shortPath(a);
-    const query = String(ao.query || ao.pattern || ao.term || a).trim();
-    // Result summary from the tool's output: a count of non-empty lines plus the first line.
-    const lines = detail ? String(detail).split('\n').filter(Boolean) : [];
-    const count = lines.length;
-    const firstLine = (lines[0] || '').trim().slice(0, 80);
-    // "· N results" / "· N entries" suffix when the output clearly is a list of hits.
-    const results = (unit) => count > 0 ? `  · ${count} ${unit}${count !== 1 ? 's' : ''}` : '';
-
-    // readFile: line range from OC's offset+limit (Antigravity-style "#L290–333").
-    if (name === 'readFile') {
-      const offset = ao.offset ?? ao.startLine ?? ao.start_line;
-      const limit  = ao.limit  ?? ao.count;
-      let title = path ? `Analyzed ${path}` : 'Analyzed a file';
-      if (path && offset != null && limit != null) title += `  #L${offset}–${offset + limit - 1}`;
-      else if (path && offset != null) title += `  #L${offset}+`;
-      return { icon: '⊞', title, hint: '' };
-    }
-    const M = {
-      readFile:        ['⊞', path ? `Analyzed ${path}` : 'Analyzed a file'],
-      listDir:         ['⊟', `Explored ${path || 'files'}${results('entry')}`],
-      repoMap:         ['⊕', 'Mapped the repository'],
-      searchWorkspace: ['⌕', `Searched “${query}”${results('result')}`],
-      glob:            ['⊞', `Matched ${query || 'pattern'}${results('match')}`],
-      grep:            ['⌕', `Searched “${query}”${results('result')}`],
-      webSearch:       ['⊙', `Searched the web “${query}”${results('result')}`],
-      webFetch:        ['⊙', a ? `Fetched ${shortPath(a)}` : 'Fetched a URL'],
-      getDiagnostics:  ['⊘', 'Checked diagnostics'],
-      runCommand:      ['▸', a ? `Ran ${a.split(/\s+/).slice(0, 6).join(' ')}` : 'Ran a command'],
-      writeFile:       ['◈', path ? `Wrote ${path}` : 'Wrote a file'],
-      createFile:      ['◈', path ? `Created ${path}` : 'Created a file'],
-      editFile:        ['◈', path ? `Edited ${path}` : 'Edited a file'],
-      deleteFile:      ['◉', path ? `Deleted ${path}` : 'Deleted a file'],
-      impactAnalysis:  ['⊕', 'Analyzed impact'],
-      buildGraph:      ['⊕', 'Built the call graph'],
-      getSymbolGraph:  ['⊕', 'Indexed symbols'],
-      askUser:         ['◎', 'Asking…'],
-      skill:           ['◎', a ? `Ran skill ${shortPath(a)}` : 'Ran a skill'],
-    };
-    if (M[name]) {
-      // For commands / diagnostics, the first output line is useful context not in the title.
-      const hint = (name === 'runCommand' || name === 'getDiagnostics') && firstLine ? firstLine : '';
-      return { icon: M[name][0], title: M[name][1], hint };
-    }
-    if (name && name.indexOf('mcp__') === 0) {
-      const p = name.split('__');
-      return { icon: '⊛', title: `Called ${p[1] || 'MCP'}${p[2] ? ' ' + p.slice(2).join(' ') : ''}`, hint: firstLine };
-    }
-    const cap = name ? (name.charAt(0).toUpperCase() + name.slice(1)) : 'Working';
-    return { icon: '◎', title: cap, hint: firstLine };
-  }
-  const STATE_ICON = { running: null, done: '✓', error: '✗' };
   function upsertTool(t, msg) {
     if (msg.name === 'reasoning') {
       let block = t.tools.querySelector(`[data-tc="${msg.toolCallId}"]`);
@@ -1476,17 +1308,6 @@ import { renderMarkdown } from './markdown';
   }
 
   /** Build a simple before/after diff fragment for inline edit display. */
-  function buildInlineDiff(oldStr, newStr) {
-    const frag = document.createDocumentFragment();
-    String(oldStr).split('\n').forEach((l) => {
-      const row = document.createElement('div'); row.className = 'diff-del'; row.textContent = '− ' + l; frag.appendChild(row);
-    });
-    String(newStr).split('\n').forEach((l) => {
-      const row = document.createElement('div'); row.className = 'diff-add'; row.textContent = '+ ' + l; frag.appendChild(row);
-    });
-    return frag;
-  }
-
   // ---------- settings panel ----------
   let settingsOpen = false;
   // Custom-endpoint model discovery: epId -> { loading?, models?: string[], error?: string }.
