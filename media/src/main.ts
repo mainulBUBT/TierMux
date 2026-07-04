@@ -2472,6 +2472,126 @@ import { buildReasoningBlock, buildToolCard, toolLabel, activityFor } from './to
     });
   }
 
+  // ---------- handler context (Phase D2: introduce typed boundaries) ----------
+  // Message type definitions for handler functions
+  interface AssistantStartMessage {
+    type: 'assistantStart';
+    requestId: string;
+    platform?: string;
+    model?: string;
+  }
+
+  interface AgentStepMessage {
+    type: 'agentStep';
+    requestId: string;
+    label?: string;
+  }
+
+  interface ToolStatusMessage {
+    type: 'toolStatus';
+    requestId: string;
+    state: 'running' | 'done' | 'error';
+    name: string;
+    args: unknown;
+    detail?: string;
+    toolCallId?: string;
+  }
+
+  interface TodosMessage {
+    type: 'todos';
+    requestId: string;
+    todos: Todo[];
+    followingPlan?: boolean;
+  }
+
+  interface HandlerContext {
+    // State maps
+    targets: Map<string, Target>;
+    startTimes: Map<string, number>;
+    statusTimers: Map<string, number>;
+    userTargets: Map<string, HTMLElement>;
+    currentTurn: HTMLElement | null;
+    currentMode: 'chat' | 'plan' | 'agent';
+    viewedSessionId: string | null;
+    // DOM elements
+    thread: HTMLElement;
+    // Helper functions
+    ensureTarget(requestId: string, platform?: string, model?: string): Target;
+    setStatusLabel(requestId: string, text: string, opts?: { force?: boolean; tool?: boolean; done?: boolean }): boolean;
+    startStatusTimer(requestId: string): void;
+    scrollDown(): void;
+    activityFor(name: string, args: unknown): string;
+    upsertTool(t: Target, msg: unknown): void;
+    renderTodos(t: Target, todos: Todo[], followingPlan: boolean): void;
+  }
+
+  function createHandlerContext(): HandlerContext {
+    return {
+      targets,
+      startTimes,
+      statusTimers,
+      userTargets,
+      currentTurn,
+      currentMode,
+      viewedSessionId,
+      thread,
+      // Helper functions
+      ensureTarget,
+      setStatusLabel,
+      startStatusTimer,
+      scrollDown,
+      activityFor,
+      upsertTool,
+      renderTodos,
+    };
+  }
+
+  // Message handler functions (Phase D2: typed boundaries)
+  function handleAssistantStart(ctx: HandlerContext, msg: AssistantStartMessage): void {
+    const t = ctx.ensureTarget(msg.requestId, msg.platform, msg.model);
+    // The target may have been created earlier by a failover notice (which
+    // carries no model) — set it now so the footer shows the model that
+    // actually produced the answer, not a blank.
+    if (msg.model) t.model = `${msg.platform || ''}/${msg.model}`;
+    // The model shows as a DIM SUBTITLE (friendly name from the picker, never the raw
+    // provider key). The label itself is the rolling activity verb (Thinking…/Reading…/…).
+    ctx.setStatusLabel(msg.requestId, 'Thinking…', { force: true });
+    ctx.startStatusTimer(msg.requestId);
+  }
+
+  function handleAgentStep(ctx: HandlerContext, msg: AgentStepMessage): void {
+    const t = ctx.ensureTarget(msg.requestId);
+    // An explicit OC status message wins; otherwise leave the current activity label.
+    if (msg.label) ctx.setStatusLabel(msg.requestId, msg.label, { force: true });
+    ctx.startStatusTimer(msg.requestId);
+    ctx.scrollDown();
+  }
+
+  function handleToolStatus(ctx: HandlerContext, msg: ToolStatusMessage): void {
+    const t = ctx.ensureTarget(msg.requestId);
+    if (msg.state === 'running') {
+      // Rolling status verb for the live tool (Reading X / Searching "q" / Running cmd…).
+      t.activeTool = msg.toolCallId;
+      ctx.setStatusLabel(msg.requestId, ctx.activityFor(msg.name, msg.args), { tool: true });
+    } else if (msg.toolCallId && msg.toolCallId === t.activeTool) {
+      // The running tool itself finished — release the lock and drop back to synthesizing.
+      // (Reasoning/other 'done' events carry different ids and must not clobber a running tool.)
+      t.activeTool = null;
+      ctx.setStatusLabel(msg.requestId, t._wasStreamed ? 'Responding…' : 'Thinking…', { done: true });
+    }
+    // A NEW card closes the current text segment so following text appears after it.
+    // (Updates to an existing card — same toolCallId — must NOT, or streaming text
+    // mid-tool would fragment.) build/upsert handles the DOM; we only flip the flag.
+    const isNew = !t.flow.querySelector(`[data-tc="${msg.toolCallId}"]`);
+    ctx.upsertTool(t, msg);
+    if (isNew) t.currentText = null;
+  }
+
+  function handleTodos(ctx: HandlerContext, msg: TodosMessage): void {
+    const t = ctx.ensureTarget(msg.requestId);
+    ctx.renderTodos(t, msg.todos || [], !!msg.followingPlan);
+  }
+
   // ---------- inbound messages ----------
   window.addEventListener('message', (event) => {
     const msg: RxMessage = event.data;
@@ -2539,48 +2659,23 @@ import { buildReasoningBlock, buildToolCard, toolLabel, activityFor } from './to
         toggleHistory();
         break;
       case 'assistantStart': {
-        const t = ensureTarget(msg.requestId, msg.platform, msg.model);
-        // The target may have been created earlier by a failover notice (which
-        // carries no model) — set it now so the footer shows the model that
-        // actually produced the answer, not a blank.
-        if (msg.model) t.model = `${msg.platform || ''}/${msg.model}`;
-        // The model shows as a DIM SUBTITLE (friendly name from the picker, never the raw
-        // provider key). The label itself is the rolling activity verb (Thinking…/Reading…/…).
-        setStatusLabel(msg.requestId, 'Thinking…', { force: true });
-        startStatusTimer(msg.requestId);
+        const ctx = createHandlerContext();
+        handleAssistantStart(ctx, msg);
         break;
       }
       case 'agentStep': {
-        const t = ensureTarget(msg.requestId);
-        // An explicit OC status message wins; otherwise leave the current activity label.
-        if (msg.label) setStatusLabel(msg.requestId, msg.label, { force: true });
-        startStatusTimer(msg.requestId);
-        scrollDown();
+        const ctx = createHandlerContext();
+        handleAgentStep(ctx, msg);
         break;
       }
       case 'todos': {
-        const t = ensureTarget(msg.requestId);
-        renderTodos(t, msg.todos || [], !!msg.followingPlan);
+        const ctx = createHandlerContext();
+        handleTodos(ctx, msg);
         break;
       }
       case 'toolStatus': {
-        const t = ensureTarget(msg.requestId);
-        if (msg.state === 'running') {
-          // Rolling status verb for the live tool (Reading X / Searching "q" / Running cmd…).
-          t.activeTool = msg.toolCallId;
-          setStatusLabel(msg.requestId, activityFor(msg.name, msg.args), { tool: true });
-        } else if (msg.toolCallId && msg.toolCallId === t.activeTool) {
-          // The running tool itself finished — release the lock and drop back to synthesizing.
-          // (Reasoning/other 'done' events carry different ids and must not clobber a running tool.)
-          t.activeTool = null;
-          setStatusLabel(msg.requestId, t._wasStreamed ? 'Responding…' : 'Thinking…', { done: true });
-        }
-        // A NEW card closes the current text segment so following text appears after it.
-        // (Updates to an existing card — same toolCallId — must NOT, or streaming text
-        // mid-tool would fragment.) build/upsert handles the DOM; we only flip the flag.
-        const isNew = !t.flow.querySelector(`[data-tc="${msg.toolCallId}"]`);
-        upsertTool(t, msg);
-        if (isNew) t.currentText = null;
+        const ctx = createHandlerContext();
+        handleToolStatus(ctx, msg);
         break;
       }
       case 'failoverNotice': {
