@@ -68,22 +68,31 @@ OC একমাত্র agent engine (Vercel AI SDK সরানো হয়�
 
 ## বাস্তব gaps (high-ROI কাজের candidate)
 
-| # | Gap | Effort | Value |
-|---|-----|--------|-------|
-| ১ | **Benchmark harness** — profiler আছে কিন্তু automated runner নেই | মাঝারি | উচ্চ — routing পরিবর্তনে regression ধরবে |
-| ২ | **`@ts-nocheck` সরানো** main.ts থেকে | বড় | উচ্চ — কিন্তু Preact-এর সাথে একসাথে করলে সস্তা |
-| ৩ | **Preact migration** | বড় (সপ্তাহ) | উচ্চ — rendering layer পরিষ্কার হবে, @ts-nocheck ও সরবে |
-| ৪ | বাকি inline handlers extract (force-extract নিষেধ — feature-driven হবে) | — | কম |
+| Priority | Gap | Effort | Value |
+|----------|-----|--------|-------|
+| 🥇 | **Benchmark harness** — profiler আছে কিন্তু automated runner নেই | মাঝারি | উচ্চ — routing পরিবর্তনে regression ধরবে |
+| 🥈 | **Preact spike** — একটা ছোট panel (যেমন ProfilerPanel) দিয়ে validate | মাঝারি | উচ্চ — approach যে কাজ করে তা প্রমাণ |
+| 🥉 | **Gradual Preact migration** + @ts-nocheck naturally কমবে | বড় | উচ্চ — component-by-component |
+| ✅ | ~~Handler extraction~~ | — | **Closed** — feature-demand না হলে আর নয় |
 
 ---
 
-## সিদ্ধান্তের ভিত্তি
+## Priority rationale
 
-Phase D2 (handler extraction) শেষ। Features সব আছে। এখন **"কী refactor করব"** নয়, বরং **"কোন বড় কাজটা next"** —
-১. **Benchmark harness** করলে routing/perf পরিমাপযোগ্য হবে (ছোট-মাঝারি effort, high value, Preact-independent)।
-২. **Preact migration** করলে rendering + type-safety একসাথে ঠিক হবে (বড় effort)।
+১. **Benchmark harness আগে** — ROI সবচেয়ে বেশি। profiler + routing + providers + ৫০-query dataset সব আছে, শুধু runner নেই। হলে ভবিষ্যতের সব কাজ measurable:
+   - Router change → latency +X%
+   - Prompt change → tool calls +Y%
+   - New provider → quality compare
+   - Preact migration → rendering impact
 
-বাকি handler-extract process-driven, feature নয় — skip।
+২. **Preact spike, পুরো rewrite নয়** — component-by-component:
+   ```
+   PR1: <ProfilerPanel /> → PR2: <StatusBar /> → PR3: <ToolCard /> → PR4: <Message />
+   ```
+
+৩. **`@ts-nocheck` আলাদা project নয়** — Preact-এ প্রতিটা component strict TS, naturally @ts-nocheck shrink করবে।
+
+৪. **Handler extraction officially closed** — feature-demand না হলে আর force-extract নয়।
 
 ---
 
