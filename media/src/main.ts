@@ -15,6 +15,7 @@ import { renderMarkdown } from './markdown';
 import { buildReasoningBlock, buildToolCard, toolLabel, activityFor } from './toolRendering';
 import { handleTodos } from './handlers/todos';
 import { handleAssistantStart } from './handlers/assistantStart';
+import { handleAgentStep } from './handlers/agentStep';
 
 (function () {
   let state = { catalog: [], fallback: [], platforms: [] };
@@ -2549,14 +2550,6 @@ import { handleAssistantStart } from './handlers/assistantStart';
   }
 
   // Message handler functions (Phase D2: typed boundaries)
-
-  function handleAgentStep(ctx: HandlerContext, msg: AgentStepMessage): void {
-    const t = ctx.ensureTarget(msg.requestId);
-    // An explicit OC status message wins; otherwise leave the current activity label.
-    if (msg.label) ctx.setStatusLabel(msg.requestId, msg.label, { force: true });
-    ctx.startStatusTimer(msg.requestId);
-    ctx.scrollDown();
-  }
 
   function handleToolStatus(ctx: HandlerContext, msg: ToolStatusMessage): void {
     const t = ctx.ensureTarget(msg.requestId);
