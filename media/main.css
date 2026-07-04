@@ -557,6 +557,9 @@ details[open].think-block > details > summary::before { content: '▾ '; }
   margin-top: 4px; max-height: 320px; overflow-y: auto;
   border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 4px;
 }
+.setting-row:hover { background: var(--vscode-list-hoverBackground); }
+.setting-row select:focus,
+.setting-row input:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 
 /* Settings → Search tab */
 .search-priority-row { display: flex; align-items: center; gap: 8px; margin: 6px 0 2px; }

@@ -1387,81 +1387,211 @@ import { handleToolStatus } from './handlers/toolStatus';
     else renderOthersSection();
   }
 
-  // "Others" tab: pick the model used for chat titles + commit messages — an inline
-  // searchable model list, same look/behavior as the chat-view model picker.
-  function renderOthersSection() {
-    const wrap = document.createElement('div');
-    wrap.className = 'others-section';
-    const h = document.createElement('div'); h.className = 'others-title'; h.textContent = 'Titles & commit messages';
-    const desc = document.createElement('div'); desc.className = 'others-desc';
-    desc.textContent = 'Model used for short utility tasks (chat titles, commit messages). "Auto" prefers a strong keyless model, so it works with no API key.';
-    const search = document.createElement('input');
-    search.type = 'text'; search.className = 'others-search'; search.placeholder = 'Search models…';
-    const list = document.createElement('div'); list.className = 'others-list';
-    wrap.appendChild(h); wrap.appendChild(desc); wrap.appendChild(search); wrap.appendChild(list);
-    settingsContentEl.appendChild(wrap);
+  // Settings metadata: key, label, type, description, and optional enum/min/max.
+  const SETTINGS_META = [
+    // -- Agent --
+    { key: 'agent.requireWriteConfirmation', label: 'Require write confirmation', type: 'boolean',
+      desc: 'Show a diff and ask for confirmation before the agent writes/creates/deletes a file.' },
+    { key: 'agent.qualityGate', label: 'Quality gate', type: 'boolean',
+      desc: 'Escalate to the next model when an answer is weak (refusal, repetition, truncation) instead of accepting it.' },
+    { key: 'agent.hotStandby', label: 'Hot standby', type: 'boolean',
+      desc: 'Pre-create the next fallback model\'s session in the background so escalation starts faster.' },
+    { key: 'agent.chatHedging', label: 'Chat hedging', type: 'boolean',
+      desc: 'Race the fast and smart models simultaneously on the first chat turn and take whichever answers first.' },
+    { key: 'agent.autoContinue', label: 'Auto-continue', type: 'boolean',
+      desc: 'Automatically resume paused agent runs (up to 3 continuations) without waiting for input.' },
+    { key: 'agent.commandApproval', label: 'Command approval mode', type: 'enum', enum: ['always', 'allowlist', 'never'],
+      desc: 'How the agent\'s runCommand tool is gated before running shell commands.' },
+    { key: 'agent.maxIterations', label: 'Max iterations', type: 'number', min: 1, max: 100,
+      desc: 'Maximum tool-call iterations per agent task before pausing.' },
+    { key: 'agent.maxConcurrentRuns', label: 'Max concurrent runs', type: 'number', min: 1, max: 10,
+      desc: 'Maximum number of chat sessions that run their agent at the same time.' },
+    { key: 'agent.commandTimeoutMs', label: 'Command timeout (ms)', type: 'number', min: 1000, max: 300000,
+      desc: 'Maximum time (ms) a single agent command may run before it is killed.' },
+    { key: 'agent.autoCompactThreshold', label: 'Auto-compact threshold', type: 'number', min: 0, max: 1, step: 0.05,
+      desc: 'Automatically compact the conversation when it exceeds this fraction of the context window. 0 disables.' },
+    // -- Completions --
+    { key: 'completions.enabled', label: 'Inline completions', type: 'boolean',
+      desc: 'Enable Copilot-style inline (ghost-text) completions.' },
+    { key: 'completions.model', label: 'Completions model', type: 'string',
+      desc: 'Model ID used for inline completions, or "auto" to use a fast enabled model.' },
+    { key: 'completions.debounceMs', label: 'Completions debounce (ms)', type: 'number', min: 0, max: 5000,
+      desc: 'Debounce delay before requesting an inline completion.' },
+    // -- Context --
+    { key: 'context.includeOpenEditors', label: 'Include open editors', type: 'boolean',
+      desc: 'Automatically include the active file and open tab names as context each turn.' },
+    { key: 'context.ambientSliceRadius', label: 'Ambient slice radius', type: 'number', min: 0, max: 100,
+      desc: 'Lines of context on each side of the cursor to include with the active file.' },
+    { key: 'context.ambientMaxChars', label: 'Ambient max chars', type: 'number', min: 0, max: 50000,
+      desc: 'Hard cap (chars) on the active-file slice injected per turn.' },
+    { key: 'context.ambientMaxTabs', label: 'Ambient max tabs', type: 'number', min: 0, max: 50,
+      desc: 'Maximum number of open tab names to include in ambient context.' },
+    // -- Chat --
+    { key: 'chat.typingSpeedMs', label: 'Typing speed (ms)', type: 'number', min: 0, max: 100,
+      desc: 'Delay between chunks of the simulated typing animation. 0 disables animation.' },
+    // -- Memory --
+    { key: 'memory.autoLearn', label: 'Auto-learn code style', type: 'boolean',
+      desc: 'After edits, infer basic code-style signals and record them in .tiermux/memory.md.' },
+    // -- Graph --
+    { key: 'graph.enabled', label: 'Code graph', type: 'boolean',
+      desc: 'Enable the structural code graph for cross-file context.' },
+    // -- Plan --
+    { key: 'plan.saveToFile', label: 'Save plans to file', type: 'boolean',
+      desc: 'Save actionable plans as markdown checklist files.' },
+    { key: 'plan.folder', label: 'Plans folder', type: 'string',
+      desc: 'Workspace-relative folder where plan files are written.' },
+    // -- Profiler --
+    { key: 'profiler.enabled', label: 'Profiler', type: 'boolean',
+      desc: 'Collect per-turn performance traces (latency, tokens, fallbacks).' },
+    { key: 'profiler.ringSize', label: 'Profiler ring size', type: 'number', min: 10, max: 10000,
+      desc: 'Maximum number of recent turns to keep in the profiler\'s ring buffer.' },
+    // -- Engine --
+    { key: 'engine.traceOcEvents', label: 'Trace OC events', type: 'boolean',
+      desc: 'Log every raw TierMux engine event to the output channel.' },
+    // -- Usage --
+    { key: 'usage.referencePriceInPer1M', label: 'Reference price (in/1M tokens)', type: 'number', min: 0,
+      desc: 'Reference price per 1M input tokens for estimated savings.' },
+    { key: 'usage.referencePriceOutPer1M', label: 'Reference price (out/1M tokens)', type: 'number', min: 0,
+      desc: 'Reference price per 1M output tokens for estimated savings.' },
+    // -- Other --
+    { key: 'useOpenCodeEngine', label: 'Use OpenCode engine', type: 'boolean',
+      desc: 'Use the bundled TierMux engine instead of the legacy built-in agent.' },
+    { key: 'utilityModel', label: 'Utility model', type: 'string',
+      desc: 'Model used for short utility tasks (chat titles, commit messages). \'auto\' prefers a strong keyless model.' },
+    { key: 'requestTimeoutMs', label: 'Request timeout (ms)', type: 'number', min: 1000, max: 300000,
+      desc: 'Per-provider request timeout before failing over to the next model.' },
+    { key: 'rateLimitCooldownMs', label: 'Rate-limit cooldown (ms)', type: 'number', min: 0, max: 600000,
+      desc: 'How long to skip a rate-limited provider before trying it again.' },
+  ];
 
-    const current = state.utilityModel || 'auto';
-    const KEYLESS = ['ovh', 'pollinations', 'kilo'];
-    const addItem = (value, label, searchText) => {
-      const item = document.createElement('div');
-      item.className = 'model-item' + (value === current ? ' selected' : '');
-      item.dataset.search = searchText.toLowerCase();
-      const lbl = document.createElement('span'); lbl.className = 'mi-label'; lbl.textContent = label;
-      item.appendChild(lbl);
-      item.addEventListener('click', () => send({ type: 'setUtilityModel', model: value }));
-      list.appendChild(item);
-    };
-    addItem('auto', 'Auto (prefers keyless)', 'auto keyless default');
-    let lastPlatform = null;
-    // Only show models from ACTIVE (key-set / keyless) AND checked providers —
-    // same set the chat-view picker shows, and same set Auto routes over.
-    const _disabledProviders = new Set(state.disabledProviders || []);
-    const activePlatforms = new Set((state.platforms || []).filter((p) => p.configured && !_disabledProviders.has(p.platform)).map((p) => p.platform));
-    const enabled = new Set(
-      (state.fallback || [])
-        .filter((e) => e.enabled && activePlatforms.has(e.platform))
-        .map((e) => `${e.platform}::${e.modelId}`),
-    );
-    (state.catalog || []).forEach((m) => {
-      if (!enabled.has(`${m.platform}::${m.modelId}`)) return;
-      if (m.platform !== lastPlatform) {
-        lastPlatform = m.platform;
-        const g = document.createElement('div'); g.className = 'model-group';
-        g.textContent = platformDisplayName(m.platform, m.modelId);
-        list.appendChild(g);
+  /** Full settings browser — "Others" tab. */
+  function renderOthersSection() {
+    const wrap = el('div', 'others-section');
+    const header = el('div', 'others-title');
+    header.textContent = 'All extension settings';
+    const desc = el('div', 'others-desc');
+    desc.textContent = 'Configure TierMux extension settings. Changes take effect immediately.';
+    wrap.append(header, desc);
+
+    const settings = state.settings || {};
+    let lastSection = '';
+    for (const meta of SETTINGS_META) {
+      const section = meta.key.split('.')[0];
+      if (section !== lastSection) {
+        lastSection = section;
+        const sg = el('div', 'setting-group');
+        sg.textContent = section.charAt(0).toUpperCase() + section.slice(1);
+        sg.style.cssText = 'font-size:11px;font-weight:600;text-transform:uppercase;opacity:.6;margin:12px 0 4px;letter-spacing:.5px;';
+        wrap.append(sg);
       }
-      const keyless = KEYLESS.includes(m.platform);
-      const name = m.displayName + (keyless ? ' (keyless)' : '');
-      const platName = platformDisplayName(m.platform, m.modelId);
-      addItem(`${m.platform}::${m.modelId}`, name, `${name} ${platName}`);
-    });
-    // Custom endpoints: add enabled models (grouped by endpoint)
-    const customModels = (state.fallback || []).filter((e) => e.platform === 'custom' && e.enabled);
-    if (customModels.length > 0) {
-      const byEndpoint = new Map();
-      customModels.forEach((e) => {
-        const epId = e.modelId.split('::')[0];
-        if (!byEndpoint.has(epId)) byEndpoint.set(epId, []);
-        byEndpoint.get(epId).push(e);
-      });
-      byEndpoint.forEach((models, epId) => {
-        const ep = (state.customEndpoints || []).find((e) => e.id === epId);
-        const g = document.createElement('div'); g.className = 'model-group';
-        g.textContent = ep ? ep.name : 'Custom';
-        list.appendChild(g);
-        models.forEach((e) => {
-          const upstreamId = e.modelId.split('::').slice(1).join('::');
-          const name = upstreamId + (ep?.configured ? '' : ' (no key)');
-          addItem(`custom::${e.modelId}`, name, `${name} ${ep ? ep.name : 'Custom'}`);
+      const value = settings[meta.key] !== undefined ? settings[meta.key] : defaultFor(meta);
+      const row = el('div', 'setting-row');
+      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 4px;border-radius:4px;';
+      row.addEventListener('mouseenter', () => { row.style.background = 'var(--vscode-list-hoverBackground)'; });
+      row.addEventListener('mouseleave', () => { row.style.background = ''; });
+
+      const left = el('div');
+      left.style.cssText = 'flex:1;min-width:0;';
+      const lbl = el('div');
+      lbl.style.cssText = 'font-size:12px;font-weight:500;';
+      lbl.textContent = meta.label;
+      const dsc = el('div');
+      dsc.style.cssText = 'font-size:11px;opacity:.6;line-height:1.3;margin-top:2px;';
+      dsc.textContent = meta.desc;
+      left.append(lbl, dsc);
+      row.append(left);
+
+      if (meta.type === 'boolean') {
+        const sw = renderToggle(value, (checked) => {
+          send({ type: 'setExtensionSetting', key: meta.key, value: checked });
         });
-      });
+        row.append(sw);
+      } else if (meta.type === 'enum') {
+        const sel = document.createElement('select');
+        sel.style.cssText = 'font-size:12px;padding:3px 6px;border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));';
+        (meta.enum || []).forEach((opt) => {
+          const o = document.createElement('option');
+          o.value = opt; o.textContent = opt;
+          if (opt === value) o.selected = true;
+          sel.appendChild(o);
+        });
+        sel.addEventListener('change', () => {
+          send({ type: 'setExtensionSetting', key: meta.key, value: sel.value });
+        });
+        row.append(sel);
+      } else if (meta.type === 'number') {
+        const inp = document.createElement('input');
+        inp.type = 'number';
+        inp.value = String(value ?? 0);
+        inp.style.cssText = 'width:90px;font-size:12px;padding:3px 6px;border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));text-align:right;';
+        if (meta.min !== undefined) inp.min = String(meta.min);
+        if (meta.max !== undefined) inp.max = String(meta.max);
+        if (meta.step !== undefined) inp.step = String(meta.step);
+        // Debounced save on blur + immediate preview on input
+        let saveTimer;
+        inp.addEventListener('input', () => {
+          clearTimeout(saveTimer);
+          saveTimer = setTimeout(() => {
+            const v = inp.value === '' ? 0 : Number(inp.value);
+            send({ type: 'setExtensionSetting', key: meta.key, value: v });
+          }, 400);
+        });
+        inp.addEventListener('blur', () => {
+          clearTimeout(saveTimer);
+          const v = inp.value === '' ? 0 : Number(inp.value);
+          send({ type: 'setExtensionSetting', key: meta.key, value: v });
+        });
+        row.append(inp);
+      } else { // string
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.value = String(value ?? '');
+        inp.style.cssText = 'width:140px;font-size:12px;padding:3px 6px;border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));';
+        let saveTimer;
+        inp.addEventListener('input', () => {
+          clearTimeout(saveTimer);
+          saveTimer = setTimeout(() => {
+            send({ type: 'setExtensionSetting', key: meta.key, value: inp.value });
+          }, 400);
+        });
+        inp.addEventListener('blur', () => {
+          clearTimeout(saveTimer);
+          send({ type: 'setExtensionSetting', key: meta.key, value: inp.value });
+        });
+        row.append(inp);
+      }
+      wrap.append(row);
     }
-    search.addEventListener('input', () => {
-      const q = search.value.trim().toLowerCase();
-      list.querySelectorAll('.model-item').forEach((it) => { it.style.display = !q || it.dataset.search.includes(q) ? '' : 'none'; });
-      list.querySelectorAll('.model-group').forEach((g) => { g.style.display = q ? 'none' : ''; });
-    });
+    settingsContentEl.appendChild(wrap);
+  }
+
+  function el(tag, cls) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    return e;
+  }
+
+  function defaultFor(meta) {
+    if (meta.type === 'boolean') return false;
+    if (meta.type === 'number') return 0;
+    return '';
+  }
+
+  function renderToggle(checked, onChange) {
+    const label = document.createElement('label');
+    label.className = 'prov-switch';
+    label.style.marginLeft = '8px';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!checked;
+    cb.addEventListener('change', () => onChange(cb.checked));
+    const track = document.createElement('span');
+    track.className = 'sw-track';
+    const thumb = document.createElement('span');
+    thumb.className = 'sw-thumb';
+    track.appendChild(thumb);
+    label.append(cb, track);
+    return label;
   }
 
   // "Usage" tab: lifetime token/request/savings totals (persisted across
