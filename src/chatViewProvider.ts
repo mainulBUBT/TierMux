@@ -49,6 +49,7 @@ interface ChatDeps {
   modelStats: ModelStatsStore;
   workspaceState: vscode.Memento;
   generateCommitMessage: () => Promise<void>;
+  profiler?: import('./profiler/profilerService').IProfilerService;
 }
 
 function tokenToAbortSignal(token: import('vscode').CancellationToken): AbortSignal {
@@ -1659,6 +1660,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       pinnedModel,
       sessionId: s.id,
       abortSignal: s.cancel ? tokenToAbortSignal(s.cancel.token) : undefined,
+      profiler: this.deps.profiler,
       ...callbacks,
     };
   }

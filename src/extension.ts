@@ -30,6 +30,9 @@ import { openMemoryForEdit } from './context/userMemory';
 // `tiermux.useOpenCodeEngine` is true (the default). The file-watcher handlers
 // that used to keep the inverted index in sync are no-ops now.
 import { formatTelemetryReport, resetTelemetry, getSnapshot, onTelemetryUpdate } from './context/telemetry';
+import { createProfiler, type IProfilerService } from './profiler/profilerService';
+import { render as renderProfilerReport } from './profiler/outputRenderer';
+import { toExportData as exportProfilerData } from './profiler/export';
 
 // OpenAI-compatible router proxy handle; closed on deactivation.
 let routerProxy: { baseURL: string; close(): void } | undefined;
@@ -80,8 +83,8 @@ async function startOpenCodeEngine(
         mcpServers,
         onProgress: (msg) => progress.report({ message: msg }),
         log,
-      }),
-    );
+    }),
+  );
     setOcEngine(ocConnection); // flip sdk.ts onto the OC path
     // Wire the OC SSE trace toggle (sink passed directly — no global indirection).
     const traceSink = (raw: string) => engineLog?.appendLine(`[${ts()}] [oc-event] ${raw}`);
@@ -107,6 +110,23 @@ export function activate(context: vscode.ExtensionContext): void {
   const usageStore = new UsageStore(context.globalState);
   const modelStats = new ModelStatsStore(context.globalState);
   const router = new Router(secrets, settings, catalog, usage, modelStats, usageStore);
+
+  // Profiler — collects per-turn performance traces for diagnostics.
+  // Enabled/disabled via tiermux.profiler.enabled (default: false → NoopProfiler, zero overhead).
+  let profiler: IProfilerService = createProfiler(
+    vscode.workspace.getConfiguration('tiermux.profiler').get<boolean>('enabled', false),
+    vscode.workspace.getConfiguration('tiermux.profiler').get<number>('ringSize', 200),
+  );
+  // Re-create profiler when the setting changes
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('tiermux.profiler.enabled') || e.affectsConfiguration('tiermux.profiler.ringSize')) {
+        const enabled = vscode.workspace.getConfiguration('tiermux.profiler').get<boolean>('enabled', false);
+        const ring = vscode.workspace.getConfiguration('tiermux.profiler').get<number>('ringSize', 200);
+        profiler = createProfiler(enabled, ring);
+      }
+    }),
+  );
 
   // OpenAI-compatible router proxy. OC (the agent engine) is pointed at this URL
   // as a custom provider, so every model call it makes is routed across TierMux's
@@ -170,6 +190,7 @@ export function activate(context: vscode.ExtensionContext): void {
     modelStats,
     workspaceState: context.workspaceState,
     generateCommitMessage: () => generateCommitMessage(router),
+    profiler,
   });
 
   // File edits that don't come from a chat run (e.g. inline editor chat, which has no
@@ -330,6 +351,38 @@ export function activate(context: vscode.ExtensionContext): void {
       engineLog.appendLine(`[${ts()}] OC event trace ${next ? 'ENABLED' : 'DISABLED'}`);
       engineLog.show(true);
       void vscode.window.showInformationMessage(`TierMux: OC event trace ${next ? 'enabled' : 'disabled'}.`);
+    }),
+    // Profiler commands
+    vscode.commands.registerCommand('tiermux.showProfiler', () => {
+      const channel = vscode.window.createOutputChannel('TierMux Profiler');
+      channel.clear();
+      channel.appendLine(renderProfilerReport(profiler.getReportData()));
+      channel.show(true);
+    }),
+    vscode.commands.registerCommand('tiermux.copyProfilerSummary', () => {
+      void vscode.env.clipboard.writeText(profiler.getSummary());
+      void vscode.window.showInformationMessage('TierMux Profiler: summary copied to clipboard.');
+    }),
+    vscode.commands.registerCommand('tiermux.exportProfiler', async () => {
+      const uri = await vscode.window.showSaveDialog({
+        filters: { 'JSON Files': ['json'] },
+        defaultUri: vscode.Uri.file('tiermux-profiler-trace.json'),
+      });
+      if (uri) {
+        const fs = await import('fs');
+        fs.writeFileSync(uri.fsPath, JSON.stringify(exportProfilerData(profiler), null, 2), 'utf8');
+        void vscode.window.showInformationMessage(`TierMux Profiler: exported to ${uri.fsPath}`);
+      }
+    }),
+    vscode.commands.registerCommand('tiermux.resetProfiler', async () => {
+      const confirm = await vscode.window.showWarningMessage(
+        'Reset all profiler traces and statistics?', { modal: true },
+        'Reset',
+      );
+      if (confirm === 'Reset') {
+        profiler.reset();
+        void vscode.window.showInformationMessage('TierMux Profiler: all traces cleared.');
+      }
     }),
   );
   console.log('[tiermux-bench-debug] activate() COMPLETED — all commands registered');

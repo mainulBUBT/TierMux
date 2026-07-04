@@ -46,6 +46,8 @@ export interface RouteOptions extends CompletionOptions {
    * raw JSON fragments is not useful and confuses the UI.
    */
   onChunk?: (text: string) => void;
+  /** Profiler: notified per provider attempt (ok or fail). Not emitted for preflight skips. */
+  onProviderAttempt?: (info: { platform: string; model: string; status: 'ok' | 'fail'; latencyMs: number; errorType?: string; reason?: string }) => void;
 }
 
 interface RouteResult {
@@ -438,6 +440,7 @@ export class Router {
       const provider = resolveProvider(entry.platform, entry.modelId, this.settings.getCustomEndpoints());
       if (!provider) {
         failures.push({ platform: entry.platform, model: entry.modelId, reason: 'no_provider' });
+        opts.onProviderAttempt?.({ platform: entry.platform, model: entry.modelId, status: 'fail', latencyMs: 0, errorType: 'not_found', reason: 'no_provider' });
         continue;
       }
       // Resolve the API key (check model-specific key first, then platform key)
@@ -510,6 +513,7 @@ export class Router {
       for (;;) {
         // Trim the conversation to fit this model's context window.
         const fitted = fitMessages(messages, inputBudget(model?.contextWindow, maxOut, reserved)).messages;
+        const t0 = Date.now();
         try {
           let response: ChatCompletionResponse;
           // Stream when: caller wants live chunks AND this is a text-answer turn (no tools).
@@ -519,7 +523,6 @@ export class Router {
           // Record this attempt in the rate tracker BEFORE the HTTP call so the
           // window stays accurate even if the request errors.
           this.rateTracker.record(entry.platform, entry.modelId);
-          const t0 = Date.now();
 
           const wantsStream = !!(opts.onChunk && !opts.tools?.length);
           if (wantsStream) {
@@ -578,6 +581,7 @@ export class Router {
           this.markHealth(entry.platform, entry.modelId, 'ok');
           // Remember the winner so the next same-kind task starts here, not at the top of the cascade.
           if (opts.taskKind) this.lastGood.set(opts.taskKind, `${entry.platform}::${entry.modelId}`);
+          opts.onProviderAttempt?.({ platform: entry.platform, model: entry.modelId, status: 'ok', latencyMs: Date.now() - t0 });
           return { response, platform: entry.platform, model: entry.modelId, runtimeName: (provider as any).runtimeName };
         } catch (err) {
           const { reason, failoverable, retryAfterMs, detail } = classify(err);
@@ -639,6 +643,7 @@ export class Router {
           triedModels.set(modelKey, retryCount + 1);
 
           failures.push({ platform: entry.platform, model: entry.modelId, reason, detail });
+          opts.onProviderAttempt?.({ platform: entry.platform, model: entry.modelId, status: 'fail', latencyMs: Date.now() - t0, errorType: reason, reason: detail });
           // Only signal failover when in Auto mode — forced models shouldn't show
           // "Routing to the best available model" since there's no actual routing.
           if (!forced) opts.onFailover?.({ from: entry, reason });

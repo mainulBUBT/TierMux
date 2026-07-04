@@ -8,11 +8,13 @@
 import type { Router } from '../router/router';
 import { AllModelsFailedError } from '../router/router';
 import type { ChatMessage, TodoItem, ReasoningEffort } from '../shared/types';
+import type { IProfilerService } from '../profiler/profilerService';
 import type { OcConnection } from '../backend/ocLauncher';
 import { OcClient } from '../backend/ocClient';
 import { getLastRoutedModel, setForcedModel } from '../backend/routerProxy';
 import { classifyTask } from './routing';
 import { assessAnswerQuality } from './answerQuality';
+import { contentToString } from './content';
 import { findReplayBoundary, formatTranscriptForReplay } from './sessionReplay';
 
 // ---- Trace toggle — when true, raw OC SSE frames are logged via the supplied sink. ----
@@ -96,6 +98,8 @@ export interface AgentOpts {
   /** Soft, non-blocking notice (e.g. "stream ended early") — used when a run produced a
    *  usable answer despite a mid-stream error, instead of a hard red error. */
   onWarning?: (message: string) => void;
+  /** Profiler service — always called (NoopProfiler when disabled). */
+  profiler?: IProfilerService;
 }
 
 type ToolSet = Record<string, any>;
@@ -110,10 +114,25 @@ function extractOcError(p: any): string {
   const e = p?.error;
   if (typeof e === 'string' && e.trim()) return e.trim();
   const obj = e && typeof e === 'object' ? e : {};
-  const msg = obj.message ?? obj.error?.message ?? obj.msg ?? p?.message ?? p?.msg ?? '';
-  const code = obj.code ?? obj.error?.code ?? p?.code ?? '';
-  const type = obj.type ?? obj.error?.type ?? '';
-  const parts = [String(msg || code || '').trim(), String(type || '').trim()].filter((s) => s && s.toLowerCase() !== 'error');
+  // First non-empty string value wins. OC error payloads vary by build and upstream
+  // provider — message can sit at error.message, error.error.message, message, msg,
+  // or (commonly) the less-obvious details/detail/reason/data/cause fields. Cast a
+  // wide net so the real cause surfaces instead of the useless "OC session error".
+  const pick = (...vals: any[]): string => {
+    const v = vals.find((v) => typeof v === 'string' && v.trim());
+    return v ? v.trim() : '';
+  };
+  const msg = pick(
+    obj.message, obj.error?.message, obj.msg,
+    obj.details, obj.detail, obj.reason,
+    obj.data?.message, obj.data?.error,
+    typeof obj.cause === 'string' ? obj.cause : obj.cause?.message,
+    p?.message, p?.msg, p?.detail, p?.reason,
+  );
+  const code = pick(obj.code, obj.error?.code, p?.code);
+  const type = pick(obj.type, obj.error?.type, p?.type);
+  const parts = [msg || code, type].map((s) => String(s).trim())
+    .filter((s) => s && s.toLowerCase() !== 'error');
   return parts.join(' — ');
 }
 
@@ -221,8 +240,27 @@ async function runViaOc(
   const ocModelID = isVirtual ? modelID : virtualChain[Math.min(hop, virtualChain.length - 1)];
   if (!isVirtual) setForcedModel(modelID);
 
+  const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
+  const userText = typeof lastUser?.content === 'string'
+    ? lastUser.content
+    : lastUser?.content == null ? '' : JSON.stringify(lastUser.content);
+
+  const profiler = opts.profiler;
+  const turnId = profiler?.beginTurn({
+    sessionId: key,
+    mode: opts.mode,
+    promptLength: userText.length,
+    taskKind: classifyTask(userText),
+    containsMentions: /@\w/.test(userText),
+    containsAttachments: opts.messages.some(
+      (m) => Array.isArray(m.content) && m.content.some((p: any) => p?.type === 'image_url'),
+    ),
+  });
+  if (turnId) profiler?.setModel(turnId, modelID, hop);
+
   const prewarmKey = `${key}:${hop}`;
   if (!ocId) {
+    if (turnId) profiler?.timerStart(turnId, 'SessionSetup');
     const prewarmed = prewarmedSessions.get(prewarmKey);
     if (prewarmed) {
       ocId = prewarmed;
@@ -295,16 +333,12 @@ async function runViaOc(
       setForcedModel(undefined);
       return { text: '' };
     }
+    if (turnId) profiler?.timerEnd(turnId, 'SessionSetup');
   } else {
     console.log(`[tiermux] reusing OC session id=${ocId} model=${modelID}`);
   }
   onSessionId?.(ocId); // internal hook (Chat Hedging) — lets a caller track this hop's OC session id
 
-  // Send only the latest user message — OC maintains the conversation server-side.
-  const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
-  const userText = typeof lastUser?.content === 'string'
-    ? lastUser.content
-    : lastUser?.content == null ? '' : JSON.stringify(lastUser.content);
   // What actually goes out over the wire: `userText`, UNLESS `firstPromptOverride` (set
   // only on the transcript-fallback path above) replaces it ONCE for a freshly recreated
   // session. `userText` itself stays the real latest question — used for quality-gate
@@ -318,6 +352,8 @@ async function runViaOc(
   // the first real text token so the live status reads Thinking… → Responding…, and so
   // `s.lastStepLabel` / buffered (non-streaming) providers land on the right phase too.
   let responded = false;
+  let firstChunkReceived = false;
+  let promptSentAt = 0;
   const announceResponding = () => {
     if (responded) return;
     responded = true;
@@ -331,6 +367,15 @@ async function runViaOc(
     const finish = (r: AgentResult) => {
       if (done) return;
       done = true;
+      if (turnId) {
+        const routedNowFor = getLastRoutedModel();
+        const estTokens = Math.ceil(r.text.length / 4);
+        profiler?.endTurn(turnId, {
+          model: routedNowFor?.model ?? model,
+          hop,
+          tokens: { prompt: 0, completion: estTokens, total: estTokens },
+        });
+      }
       clearTimeout(watchdog);
       unsub();
       setForcedModel(undefined); // clear forced model so the next run starts clean
@@ -384,6 +429,7 @@ async function runViaOc(
       const detail = weak?.primary ? `weak_answer:${weak.primary}` : reason;
       console.log(`[tiermux] OC run ${detail} on ${modelID} — handing off to ${nextProfile}`);
       opts.onFailover(`tiermux/${profile}`, `${detail} → escalating to ${nextProfile}`);
+      if (turnId) profiler?.addFallback(turnId, `tiermux/${profile}`, detail);
       ocSessions.delete(key);
       ocSessionModels.delete(key);
       unsub();
@@ -408,6 +454,7 @@ async function runViaOc(
       }
       const q = assessAnswerQuality(out, classifyTask(userText));
       const tail = JSON.stringify(out.slice(-60));
+      if (q.weak && turnId) profiler?.setQualityGate(turnId, q.signals, q.score);
       console.log(`[tiermux][DBG] quality-gate DECIDE: len=${len} score=${q.score} signals=[${q.signals.join(',')}] primary=${q.primary ?? '-'} weak=${q.weak} model=${modelID} tail=${tail}`);
       if (!q.weak) return false;
       const escalated = tryEscalate(false, { primary: q.primary });
@@ -558,6 +605,10 @@ async function runViaOc(
           textChannel = 'delta';
           out += delta;
           announceResponding();
+          if (!firstChunkReceived && promptSentAt && turnId) {
+            firstChunkReceived = true;
+            profiler?.recordTTFT(turnId, Date.now() - promptSentAt);
+          }
           opts.onChunk(delta);
         }
         return;
@@ -602,6 +653,15 @@ async function runViaOc(
               state: mapToolStatus(status),
               detail: stObj?.output ?? stObj?.title ?? part.output ?? undefined,
             });
+            if (turnId) {
+              profiler?.addToolCall(turnId, normalizeToolName(part.tool ?? part.name ?? 'tool'));
+              profiler?.timerStart(turnId, 'Tool');
+              profiler?.timerEnd(turnId, 'Tool');
+              if (!firstChunkReceived && promptSentAt) {
+                firstChunkReceived = true;
+                profiler?.recordTTFT(turnId, Date.now() - promptSentAt);
+              }
+            }
             return;
           } else {
             partKind.set(partId, 'other');
@@ -626,6 +686,10 @@ async function runViaOc(
             const delta = part.text.slice(prev.length);
             out += delta;
             announceResponding();
+            if (!firstChunkReceived && promptSentAt && turnId) {
+              firstChunkReceived = true;
+              profiler?.recordTTFT(turnId, Date.now() - promptSentAt);
+            }
             opts.onChunk(delta);
           }
           lastTextByPart.set(partId, part.text);
@@ -655,6 +719,15 @@ async function runViaOc(
           state: mapToolStatus(status),
           detail: stObj?.output ?? p.detail,
         });
+        if (turnId) {
+          profiler?.addToolCall(turnId, normalizeToolName(p.name ?? p.tool ?? 'tool'));
+          profiler?.timerStart(turnId, 'Tool');
+          profiler?.timerEnd(turnId, 'Tool');
+          if (!firstChunkReceived && promptSentAt) {
+            firstChunkReceived = true;
+            profiler?.recordTTFT(turnId, Date.now() - promptSentAt);
+          }
+        }
         return;
       }
 
@@ -675,7 +748,17 @@ async function runViaOc(
 
       // ---- Errors ----
       if (t === 'session.error' || t === 'error') {
-        const errMsg = extractOcError(p) || 'OC session error';
+        const extracted = extractOcError(p);
+        let errMsg = extracted;
+        if (!extracted) {
+          // Payload shape unrecognized — capture the raw body so we can teach extractOcError
+          // the missing field, instead of silently falling back to "OC session error".
+          const keys = p && typeof p === 'object' ? Object.keys(p) : [];
+          console.warn('[tiermux] Unparsed session.error payload:', p);
+          errMsg = keys.length
+            ? `OC session error (unparsed payload; keys: ${keys.join(',')})`
+            : 'OC session error';
+        }
         // Resolve the run NOW — otherwise the promise hangs until the 90s hard timeout,
         // leaving the status + in-flight todos stuck on screen after a failure.
         console.log(`[tiermux] OC session.error: ${errMsg} (outLen=${out.trim().length} model=${modelID} hop=${hop})`);
@@ -744,6 +827,7 @@ async function runViaOc(
     // resolve until the whole turn finishes, since SSE/session.idle drives completion,
     // not the HTTP response).
     prewarmNextHop();
+    promptSentAt = Date.now();
     const promptP = client.prompt(ocId, { parts: [{ type: 'text', text: promptText }], agent, model: { providerID: 'tiermux', modelID: ocModelID } }, opts.abortSignal);
     // The router resolves the concrete model synchronously while issuing the POST
     // (candidate selection happens before the fetch awaits). Announce it now so an
@@ -889,8 +973,69 @@ function extractLastAssistantText(msgs: unknown): string {
  * could neither see the project nor reach the web. Routed through OC now so chat can answer
  * codebase and realtime questions; the lean tool set keeps trivial questions to ~one round-trip.)
  */
-export async function runChatStream(_router: Router, opts: AgentOpts): Promise<AgentResult> {
+export async function runChatStream(router: Router, opts: AgentOpts): Promise<AgentResult> {
   const full: AgentOpts = { ...opts, mode: 'chat' };
+
+  const lastUser = [...full.messages].reverse().find((m) => m.role === 'user');
+  const userText = typeof lastUser?.content === 'string'
+    ? lastUser.content
+    : lastUser?.content == null ? '' : JSON.stringify(lastUser.content);
+  const taskKind = classifyTask(userText);
+
+  // Direct router path for simple Q&A — bypass OC entirely.
+  // Profiler confirmed chat mode previously did 60 useless readFile calls.
+  if ((taskKind === 'chat' || taskKind === 'trivial') && full.messages.length > 0) {
+    const profiler = opts.profiler;
+    const turnId = profiler?.beginTurn({
+      sessionId: opts.sessionId ?? '__default__', mode: 'chat',
+      promptLength: userText.length, taskKind,
+      containsMentions: /@\w/.test(userText),
+      containsAttachments: opts.messages.some(
+        (m) => Array.isArray(m.content) && m.content.some((p: any) => p?.type === 'image_url'),
+      ),
+    });
+    if (turnId) profiler?.setModel(turnId, 'direct', 0);
+    opts.onStep('thinking', 'Thinking…');
+    profiler?.timerStart(turnId!, 'Provider');
+    let firstChunkMs = 0;
+    const routeStartMs = Date.now();
+    let responded = false;
+    let buffer = '';
+    try {
+      const result = await router.route(full.messages, {
+        model: 'auto', taskKind, temperature: 0.2, max_tokens: 4096,
+        onChunk: (text) => {
+          if (!firstChunkMs) {
+            firstChunkMs = Date.now();
+            profiler?.recordTTFT(turnId!, Math.round(firstChunkMs - routeStartMs));
+          }
+          if (!responded) {
+            responded = true;
+            opts.onStep('synthesizing', 'Responding…');
+          }
+          buffer += text;
+          opts.onChunk(text);
+        },
+      });
+      opts.onModel(result.platform, result.model);
+      const text = buffer || contentToString(result.response.choices[0]?.message.content) || '';
+      profiler?.timerEnd(turnId!, 'Provider');
+      profiler?.endTurn(turnId!, {
+        model: `${result.platform}::${result.model}`, hop: 0,
+        tokens: {
+          prompt: result.response.usage?.prompt_tokens ?? Math.ceil(userText.length / 4),
+          completion: result.response.usage?.completion_tokens ?? Math.ceil(text.length / 4),
+          total: result.response.usage?.total_tokens ?? Math.ceil((userText.length + text.length) / 4),
+        },
+      });
+      return { text, platform: result.platform, model: result.model, taskKind };
+    } catch (err) {
+      profiler?.timerEnd(turnId!, 'Provider');
+      profiler?.endTurn(turnId!, { model: 'error', hop: 0, tokens: { prompt: 0, completion: 0, total: 0 } });
+      throw err;
+    }
+  }
+
   return isHedgeEligible(full) ? runChatHedged(full) : runViaOc(full);
 }
 

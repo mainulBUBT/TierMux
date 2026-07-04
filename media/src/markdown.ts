@@ -57,12 +57,23 @@ export function renderMarkdown(md: string): HTMLElement {
       const d2h = window.Diff2Html;
       if (d2h) {
         div.querySelectorAll('pre code.language-diff').forEach((b) => {
+          // Diff2Html expects a proper UNIFIED diff (file headers / @@ hunks).
+          // A bare -/+ block (commonly used as pseudo-diff in chat) isn't one —
+          // Diff2Html returns empty for it, and replacing the <pre> with an
+          // empty .d2h-wrapper would swallow the content entirely. Only hand
+          // off to Diff2Html when the content actually looks like a real diff;
+          // otherwise leave the code block as-is (hljs handles the rest).
+          const src = b.textContent || '';
+          const looksLikeDiff = /^(@@|diff --git |diff --cc |Index: |--- |\+\+\+ )/m.test(src);
+          if (!looksLikeDiff) return;
           try {
-            const diffHtml = d2h.html(b.textContent || '', {
+            const diffHtml = d2h.html(src, {
               drawFileList: false,
               matching: 'lines',
               outputFormat: 'line-by-line',
             });
+            // Defense-in-depth: if Diff2Html produced nothing, keep the original.
+            if (!diffHtml || !diffHtml.trim()) return;
             const wrapper = document.createElement('div');
             wrapper.className = 'd2h-wrapper';
             wrapper.innerHTML = diffHtml;

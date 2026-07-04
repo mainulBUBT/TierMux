@@ -104,10 +104,13 @@ export function buildOcConfig(opts: OcConfigOptions): string {
       chat: {
         mode: 'primary',
         description: 'Read-only Q&A: searches the project and the web, cannot modify files or run commands.',
-        prompt: 'Answer the user. Use read/list/glob/grep to inspect the project and web_fetch/web_search for '
-          + 'current information. You CANNOT edit, write, move, or remove files, and cannot run commands or '
-          + 'subagents — if an action is required, say so and suggest the user switch to Agent mode. '
-          + 'Cite file paths and URLs.',
+        prompt: 'Answer the user directly. ONLY use read/list/glob/grep when the question '
+          + 'specifically asks about code, files, or project structure. For general knowledge '
+          + 'questions, explanations, or conceptual questions — answer from your training data '
+          + 'without any tool calls. '
+          + 'You CANNOT edit, write, move, or remove files, and cannot run commands or '
+          + 'subagents. Use web_fetch/web_search only for current information the user asks about. '
+          + 'Cite file paths and URLs when you do use tools.',
         permission: {
           read: 'allow', list: 'allow', glob: 'allow', grep: 'allow',
           web_fetch: 'allow', web_search: 'allow',

@@ -215,6 +215,27 @@
         "command": "tiermux.toggleOcTrace",
         "title": "Toggle OC Trace",
         "category": "TierMux"
+      },
+      {
+        "command": "tiermux.showProfiler",
+        "title": "Show Profiler",
+        "category": "TierMux",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "tiermux.copyProfilerSummary",
+        "title": "Copy Profiler Summary",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.exportProfiler",
+        "title": "Export Profiler Trace",
+        "category": "TierMux"
+      },
+      {
+        "command": "tiermux.resetProfiler",
+        "title": "Reset Profiler",
+        "category": "TierMux"
       }
     ],
     "menus": {
@@ -529,8 +550,20 @@
               "disabled": {
                 "type": "boolean",
                 "description": "Skip this server."
-              }
-            }
+        },
+        "tiermux.profiler.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Collect per-turn performance traces for diagnostics. Shows model latency, tool calls, TTFT, fallback rate, and quality gate triggers. Use 'TierMux: Show Profiler' to view."
+        },
+        "tiermux.profiler.ringSize": {
+          "type": "number",
+          "default": 200,
+          "minimum": 10,
+          "maximum": 2000,
+          "description": "Number of recent turns to keep in the profiler ring buffer."
+        }
+      }
           }
         }
       }
