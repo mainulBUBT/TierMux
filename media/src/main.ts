@@ -13,6 +13,7 @@ import type { RxMessage } from './bridge';
 import { $, escapeHtml, showToast } from './dom';
 import { renderMarkdown } from './markdown';
 import { buildReasoningBlock, buildToolCard, toolLabel, activityFor } from './toolRendering';
+import { handleTodos } from './handlers/todos';
 
 (function () {
   let state = { catalog: [], fallback: [], platforms: [] };
@@ -2585,11 +2586,6 @@ import { buildReasoningBlock, buildToolCard, toolLabel, activityFor } from './to
     const isNew = !t.flow.querySelector(`[data-tc="${msg.toolCallId}"]`);
     ctx.upsertTool(t, msg);
     if (isNew) t.currentText = null;
-  }
-
-  function handleTodos(ctx: HandlerContext, msg: TodosMessage): void {
-    const t = ctx.ensureTarget(msg.requestId);
-    ctx.renderTodos(t, msg.todos || [], !!msg.followingPlan);
   }
 
   // ---------- inbound messages ----------
