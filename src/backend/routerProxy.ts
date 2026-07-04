@@ -6,7 +6,7 @@
 //
 // Implements only protocol translation. No session state, no retry logic (the
 // Router owns failover), no streaming-state machine — those are OC's job on the
-// other side of this wire. See ARCHITECTURE.md → "Router Proxy".
+// other side of this wire. See docs/ARCHITECTURE.md → "Router Proxy".
 //
 //   GET  /v1/models            → catalog models + virtual routing profiles
 //   POST /v1/chat/completions  → Router.route(), streamed or buffered

@@ -80,7 +80,7 @@ how much you've saved so the "free" part is visible.
 
 ## Getting started
 
-1. Install the extension (or run it from source — see [DEVELOPMENT.md](DEVELOPMENT.md)).
+1. Install the extension (or run it from source — see [DEVELOPMENT.md](docs/DEVELOPMENT.md)).
 2. Open the **TierMux** view in the Activity Bar.
 3. Click **⚙ Manage Models & Keys** and **Set key** for at least one provider — or pick a
    **keyless** one (OVH / Pollinations / Kilo).
