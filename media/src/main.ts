@@ -2529,6 +2529,11 @@ import { handleToolStatus } from './handlers/toolStatus';
     renderTodos(t: Target, todos: Todo[], followingPlan: boolean): void;
   }
 
+  // NOTE(Phase D2): ensureTarget is used by every extracted handler (todos,
+  // assistantStart, agentStep, toolStatus) and is the first candidate for a
+  // future shared abstraction (e.g. a TargetManager). Do NOT extract it yet —
+  // wait until a concrete second responsibility justifies it, to avoid
+  // premature abstraction.
   function createHandlerContext(): HandlerContext {
     return {
       targets,
