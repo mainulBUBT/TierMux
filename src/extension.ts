@@ -10,6 +10,7 @@ import { Router } from './router/router';
 import { startRouterProxy } from './backend/routerProxy';
 import { launchOpenCode, stopOpenCode, type OcConnection } from './backend/ocLauncher';
 import { runBridgeDiagnostic, formatReport } from './backend/ocDiagnostics';
+import { verifyGrounding, renderVerifyReport } from './backend/groundingVerify';
 import { EditGate } from './edits/applyEdit';
 import { CommandGate, type CommandApproval } from './edits/commandGate';
 import { registerCheckpointContentProvider } from './edits/checkpoints';
@@ -333,6 +334,15 @@ export function activate(context: vscode.ExtensionContext): void {
       channel.appendLine(report);
       const pass = results.filter((r) => r.ok).length;
       void vscode.window.showInformationMessage(`TierMux OC bridge: ${pass}/${results.length} checks passed (see output).`);
+    }),
+    vscode.commands.registerCommand('tiermux.verifyGrounding', async () => {
+      const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!wsRoot) { void vscode.window.showErrorMessage('No workspace folder open.'); return; }
+      const report = await verifyGrounding(router, wsRoot);
+      const channel = vscode.window.createOutputChannel('TierMux Grounding Verify');
+      channel.show(true);
+      channel.appendLine(renderVerifyReport(report));
+      void vscode.window.showInformationMessage(`Grounding verify: ${report.ok ? 'PASS' : 'FAIL'} (${report.checks.filter(c=>c.pass).length}/${report.checks.length} checks pass)`);
     }),
     // Reveal the "TierMux Engine" output channel so the user can see proxy URL,
     // first-run download progress, OC stdout/stderr, and any startup error.
