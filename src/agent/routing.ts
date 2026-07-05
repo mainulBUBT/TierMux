@@ -124,7 +124,7 @@ export function orderForTask(
 
   const cmp: Record<TaskKind, (a: CatalogModel, b: CatalogModel) => number> = {
     trivial: (a, b) => speed(a, b) || recency(a, b) || intel(a, b),                 // cheapest/fastest; smarts irrelevant
-    chat: (a, b) => speed(a, b) || recency(a, b) || intel(a, b),                    // snappy but capable, newest among equals
+    chat: (a, b) => tools(a, b) || balanced(a, b) || recency(a, b) || intel(a, b),        // tool-capable, then fast+capable, newest among equals
     coding: (a, b) => codingTag(a, b) || tools(a, b) || balanced(a, b) || recency(a, b), // coder-tagged, then tools, fast+capable
     agent: (a, b) => tools(a, b) || codingTag(a, b) || balanced(a, b) || recency(a, b),  // tools, then coder-tagged, fast+capable
     debug: (a, b) => tools(a, b) || codingTag(a, b) || balanced(a, b) || reason(a, b) || recency(a, b),

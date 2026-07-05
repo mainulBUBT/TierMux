@@ -179,6 +179,11 @@
         "category": "TierMux"
       },
       {
+        "command": "tiermux.verifyGrounding",
+        "title": "Verify Grounding",
+        "category": "TierMux"
+      },
+      {
         "command": "tiermux.generateOnboardingTour",
         "title": "Generate Onboarding Tour",
         "category": "TierMux",
@@ -578,7 +583,6 @@
     "test:e2e:circuit": "esbuild scripts/circuitBreaker.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/circuitBreaker.e2e.cjs && node dist/circuitBreaker.e2e.cjs",
     "test:e2e:replay": "esbuild scripts/sessionReplay.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/sessionReplay.e2e.cjs && node dist/sessionReplay.e2e.cjs",
     "test:e2e:hedge": "esbuild scripts/chatHedging.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/chatHedging.e2e.cjs && node dist/chatHedging.e2e.cjs",
-    "test:e2e:pinned": "esbuild scripts/pinnedModel.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/pinnedModel.e2e.cjs && node dist/pinnedModel.e2e.cjs",
     "bench": "esbuild scripts/bench/runBench.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bench.cjs && node dist/bench.cjs",
     "bench:compare": "esbuild scripts/bench/compare.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/benchCompare.cjs && node dist/benchCompare.cjs",
     "bench:dataset": "esbuild scripts/bench/dataset.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/benchDataset.cjs && node dist/benchDataset.cjs",

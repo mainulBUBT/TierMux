@@ -341,8 +341,10 @@ export function activate(context: vscode.ExtensionContext): void {
       const report = await verifyGrounding(router, wsRoot);
       const channel = vscode.window.createOutputChannel('TierMux Grounding Verify');
       channel.show(true);
+      channel.appendLine(`Workspace: ${wsRoot}`);
+      channel.appendLine('');
       channel.appendLine(renderVerifyReport(report));
-      void vscode.window.showInformationMessage(`Grounding verify: ${report.ok ? 'PASS' : 'FAIL'} (${report.checks.filter(c=>c.pass).length}/${report.checks.length} checks pass)`);
+      void vscode.window.showInformationMessage(`Grounding verify: ${report.ok ? 'PASS' : 'FAIL'} (${report.passed}/${report.total} questions passed)`);
     }),
     // Reveal the "TierMux Engine" output channel so the user can see proxy URL,
     // first-run download progress, OC stdout/stderr, and any startup error.

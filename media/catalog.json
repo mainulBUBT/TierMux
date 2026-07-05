@@ -198,7 +198,7 @@
       "rpmLimit": 30,
       "rpdLimit": 1500,
       "monthlyTokenBudget": "~free tier",
-      "supportsTools": true,
+      "supportsTools": false,
       "supportsVision": true,
       "supportsReasoning": false,
       "released": "2025-09",

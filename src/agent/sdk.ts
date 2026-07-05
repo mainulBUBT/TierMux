@@ -158,18 +158,6 @@ export function setOcEngine(conn: OcConnection | undefined): void {
 }
 
 /**
- * Normalize a user-supplied pinned-model value into either a concrete model id or
- * `undefined` (= use the auto routing chain). Accepts null/undefined/''/'  '/'auto' as
- * "no pin" so a stray empty/whitespace value from the webview can never accidentally
- * force a (likely nonexistent) model. Mirrors the defensive `.trim()` guard in
- * routerProxy.ts:mapProfile — keep both in sync.
- */
-function normalizePinnedModel(raw: string | undefined | null): string | undefined {
-  const v = raw?.trim();
-  return v && v !== 'auto' ? v : undefined;
-}
-
-/**
  * Ordered routing profiles (virtual models the router proxy exposes) per TierMux mode.
  * `runViaOc` walks this chain left-to-right on empty-answer failures — chat starts on the
  * free/fast tier and hands off to `smart` once; agent/plan already start on `smart` so
@@ -215,7 +203,7 @@ async function runViaOc(
   // Honor the user's explicitly-selected model; fall back to the routing chain only when on auto.
   // An explicit user pin means there's nothing to fall back to — treat it as a length-1 chain so
   // `tryEscalate` below never tries to hand off away from the model the user chose.
-  const pinned = normalizePinnedModel(opts.pinnedModel);
+  const pinned = opts.pinnedModel && opts.pinnedModel !== 'auto' ? opts.pinnedModel : undefined;
   const chain = pinned ? [pinned] : (FALLBACK_CHAIN[opts.mode] ?? ['smart']);
   const hop = Math.min(chainIndex, chain.length - 1);
   const isFinalHop = hop >= chain.length - 1;
@@ -994,9 +982,9 @@ export async function runChatStream(router: Router, opts: AgentOpts): Promise<Ag
     : lastUser?.content == null ? '' : JSON.stringify(lastUser.content);
   const taskKind = classifyTask(userText);
 
-  // Direct router path for trivial greetings only — bypass OC entirely.
-  // Actual questions route through OC so the model can inspect the project.
-  if (taskKind === 'trivial' && full.messages.length > 0) {
+  // Direct router path for simple Q&A — bypass OC entirely.
+  // Profiler confirmed chat mode previously did 60 useless readFile calls.
+  if ((taskKind === 'chat' || taskKind === 'trivial') && full.messages.length > 0) {
     const profiler = opts.profiler;
     const turnId = profiler?.beginTurn({
       sessionId: opts.sessionId ?? '__default__', mode: 'chat',
@@ -1015,7 +1003,7 @@ export async function runChatStream(router: Router, opts: AgentOpts): Promise<Ag
     let buffer = '';
     try {
       const result = await router.route(full.messages, {
-        model: normalizePinnedModel(opts.pinnedModel) ?? 'auto', taskKind, temperature: 0.2, max_tokens: 4096,
+        model: opts.pinnedModel ?? 'auto', taskKind, temperature: 0.2, max_tokens: 4096,
         onChunk: (text) => {
           if (!firstChunkMs) {
             firstChunkMs = Date.now();
@@ -1067,7 +1055,7 @@ const HEDGE_MAX_CHARS = 300;
  */
 function isHedgeEligible(opts: AgentOpts): boolean {
   if (!hedgingEnabled || opts.mode !== 'chat') return false;
-  if (normalizePinnedModel(opts.pinnedModel)) return false; // a concrete pin: nothing to race
+  if (opts.pinnedModel && opts.pinnedModel !== 'auto') return false; // nothing to race
   const key = opts.sessionId ?? '__default__';
   if (ocSessions.has(key)) return false; // only the first turn of a new session
   const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');

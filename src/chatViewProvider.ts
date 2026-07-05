@@ -21,8 +21,6 @@ import { normalizeMcpServerConfig } from './mcp/mcpClient';
 import { getNonce } from './util/nonce';
 import { getPlatformInfo } from './providers';
 import { parseSlash, resolveMentions, searchMentions } from './context/mentions';
-import { loadProjectRules } from './context/projectRules';
-import { loadUserMemory } from './context/userMemory';
 import { contentToString } from './agent/content';
 import { getSnapshot as getRetrievalSnapshot } from './context/telemetry';
 import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSupportedAttachmentPath, kindForPath as kindFromName, mimeForPath as mimeForName } from './util/extractAttachments';
@@ -1196,80 +1194,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Gather ambient context: project rules, user memory, active file slice, open tabs,
-   *  and project root structure — injected automatically before each user turn. */
-  private async gatherAmbientContext(): Promise<string> {
-    const config = vscode.workspace.getConfiguration('tiermux.context');
-    const includeOpenEditors = config.get<boolean>('includeOpenEditors', true);
-    const sliceRadius = config.get<number>('ambientSliceRadius', 15);
-    const maxChars = config.get<number>('ambientMaxChars', 2000);
-    const maxTabs = config.get<number>('ambientMaxTabs', 12);
-
-    const blocks: string[] = [];
-
-    // 1. Project rules (AGENTS.md, CLAUDE.md, etc.)
-    const rules = await loadProjectRules();
-    if (rules) blocks.push(rules);
-
-    // 2. User memory (.tiermux/memory.md)
-    const memory = await loadUserMemory();
-    if (memory) blocks.push(memory);
-
-    // 3. Active editor file slice + open tabs (when enabled)
-    if (includeOpenEditors) {
-      const editor = vscode.window.activeTextEditor;
-      if (editor && editor.document.uri.scheme === 'file') {
-        const doc = editor.document;
-        const pos = editor.selection.active;
-        const startLine = Math.max(0, pos.line - sliceRadius);
-        const endLine = Math.min(doc.lineCount - 1, pos.line + sliceRadius);
-        let slice = '';
-        for (let i = startLine; i <= endLine; i++) {
-          const lineText = doc.lineAt(i).text;
-          const marker = i === pos.line ? ' ← cursor' : '';
-          slice += `${i + 1}: ${lineText}${marker}\n`;
-        }
-        if (slice.length > maxChars) slice = slice.slice(0, maxChars) + '\n… (truncated)';
-        const relPath = vscode.workspace.asRelativePath(doc.uri);
-        blocks.push(`Active file \`${relPath}\` (cursor at line ${pos.line + 1}):\n\`\`\`\n${slice}\`\`\``);
-      }
-
-      // Open tab names
-      const tabs: string[] = [];
-      for (const tab of vscode.window.tabGroups.all.flatMap((g) => g.tabs)) {
-        const input = tab.input;
-        if (input && typeof input === 'object' && 'uri' in (input as any)) {
-          const uri = (input as { uri: vscode.Uri }).uri;
-          if (uri.scheme === 'file') {
-            tabs.push(vscode.workspace.asRelativePath(uri));
-            if (tabs.length >= maxTabs) break;
-          }
-        }
-      }
-      if (tabs.length > 0) {
-        blocks.push(`Open tabs:\n\`\`\`\n${tabs.join('\n')}\n\`\`\``);
-      }
-    }
-
-    // 4. Project root structure (top-level files/folders)
-    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
-    if (root) {
-      try {
-        const entries = await vscode.workspace.fs.readDirectory(root);
-        const listing = entries
-          .filter(([name]) => !name.startsWith('.') && name !== 'node_modules')
-          .map(([name, type]) => (type === vscode.FileType.Directory ? `${name}/` : name))
-          .join('\n');
-        if (listing) {
-          blocks.push(`Project root structure:\n\`\`\`\n${listing}\n\`\`\``);
-        }
-      } catch { /* ignore */ }
-    }
-
-    const result = blocks.join('\n\n');
-    return result.length > 8000 ? result.slice(0, 8000) + '\n… (ambient context truncated)' : result;
-  }
-
   private buildUserContent(text: string, contextText: string, attachments: Attachment[] | undefined): ChatContent {
     const list = attachments ?? [];
     const fileBlocks = list
@@ -1311,12 +1235,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const s = this.current();
     s.model = m.model;
     s.reasoningEffort = m.reasoningEffort;
-    const [contextText, ambientText] = await Promise.all([
-      resolveMentions(prompt).catch(() => ''),
-      this.gatherAmbientContext().catch(() => ''),
-    ]);
-    const combinedContext = [contextText, ambientText].filter(Boolean).join('\n\n');
-    const userContent = this.buildUserContent(prompt, combinedContext, m.attachments);
+    const contextText = await resolveMentions(prompt).catch(() => '');
+    const userContent = this.buildUserContent(prompt, contextText, m.attachments);
     s.history.push({ role: 'user', content: userContent });
     s.transcript.push({ role: 'user', text: prompt, requestId: m.requestId, ts: Date.now(), historyLen: s.history.length - 1 });
     s.updatedAt = Date.now();
