@@ -325,7 +325,7 @@ function mapProfile(model: string | undefined, lastUserText?: string): { model?:
   // the same decode as every other path or the router ends up "routing" to the literal
   // base64 string instead of the real platform::modelId.
   const forced = getForcedModel();
-  if (forced) return { model: decode(bare(forced)) };
+  if (forced && forced.trim()) return { model: decode(bare(forced)) };
   const id = decode(bare(model ?? PROFILE_AUTO));
   if (id === bare(PROFILE_AUTO)) {
     return { model: 'auto' };
