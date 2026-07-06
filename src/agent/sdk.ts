@@ -982,9 +982,12 @@ export async function runChatStream(router: Router, opts: AgentOpts): Promise<Ag
     : lastUser?.content == null ? '' : JSON.stringify(lastUser.content);
   const taskKind = classifyTask(userText);
 
-  // Direct router path for simple Q&A — bypass OC entirely.
-  // Profiler confirmed chat mode previously did 60 useless readFile calls.
-  if ((taskKind === 'chat' || taskKind === 'trivial') && full.messages.length > 0) {
+  // Direct router path for trivial greetings only — bypass OC entirely.
+  // Actual questions route through OC so the model can inspect the project
+  // (grounding rules live in ocConfig.ts's agent prompts, which this bypass
+  // skips entirely — 'chat' must NOT be added back here without also fixing
+  // where broad Q&A gets its grounding from).
+  if (taskKind === 'trivial' && full.messages.length > 0) {
     const profiler = opts.profiler;
     const turnId = profiler?.beginTurn({
       sessionId: opts.sessionId ?? '__default__', mode: 'chat',
