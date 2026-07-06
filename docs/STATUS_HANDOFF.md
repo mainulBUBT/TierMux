@@ -92,11 +92,41 @@ project files) — but exposed a **separate, pre-existing** problem:
 `f9debaf`'s RESEARCH BUDGET prose instructions aren't holding under real
 free-tier model behavior (observed on `Mistral codestral-2501`). Prose alone
 ("use at most 8 tools") isn't a guarantee — different models follow
-instructions with very different reliability. Next step is likely deterministic
-enforcement in the agent loop rather than more prompt tuning: track tool-call
-count per turn, tell the model its remaining budget, reject/stop past the cap;
-similarly validate citations post-hoc (repair pass or retry) rather than
-trusting the prompt alone.
+instructions with very different reliability.
+
+**Update 2026-07-06 — deterministic mid-turn enforcement investigated and
+closed as not viable.** A full investigation (spike → design → live-tested
+implementation, see the closed plan for detail) confirmed a mechanism using
+OC's session-permission API (`PATCH /session/:id`) to gate research tools once
+a per-turn counter crosses budget. Root cause, confirmed in OC's own source
+(`session/prompt.ts:1085`): OC fetches the session record **once** before a
+turn's multi-step tool-calling loop begins and reuses that same in-memory
+object for every step — a mid-turn `PATCH` updates the database but the
+already-running turn never re-reads it, so it can only affect the *next*
+turn, never the one that tripped the budget. Not fixable by sending the PATCH
+faster; the target turn structurally cannot observe the change. Live evidence:
+tool `#9` correctly triggered `PATCH → ask`, PATCH returned success, and tools
+`#10`-`#21+` still executed as plain `allow` with zero `permission.asked`
+events for the rest of that turn.
+
+Also learned along the way: `deny` removes a tool from the model's schema
+entirely, silently repaired to an `invalid`-tool result by the AI SDK — this
+**never** reaches OC's real `ctx.ask()`/`RejectedError`/`shouldBreak` path, so
+the loop never actually halts (33-210 tool calls observed — worse than no
+budget). `ask` + auto-reject does reach the real halt path (confirmed:
+exactly 1 tool call, genuine stop) but can leave the turn with a completely
+empty answer (confirmed via raw message history, not a UI/collector artifact).
+
+`ocClient.updatePermission()` (commit `739cbd5`) is real, working, live-
+verified API — kept in the codebase for any future *pre-turn* permission need,
+just not sufficient alone for mid-turn enforcement.
+
+**Next, if this is still wanted** (explicit decision needed, not a given): a
+fresh, separate experiment using `client.abort(ocId)` to hard-stop the turn
+outright once budget is hit, rather than a permission mutation. Not attempted;
+would need its own verification (does abort preserve partial text, does the
+session stay usable afterward). Treat as a new investigation, not a
+continuation of the PATCH-based one.
 
 **Do NOT reintroduce the chat-mode bypass to "fix" the call count** — that
 regresses grounding to zero for every broad question, which is strictly worse

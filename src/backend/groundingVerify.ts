@@ -143,6 +143,7 @@ export function renderVerifyReport(r: VerifyResult): string {
     for (const c of sr.checks) lines.push(`  ${c.pass ? '✓' : '✗'} ${c.label} — ${c.detail}`);
     lines.push(`Answer preview: ${sr.text.slice(0, 300) || '(empty)'}${sr.text.length > 300 ? '…' : ''}`);
     lines.push(`Debug: platform=${sr.debug.platform ?? '?'} model=${sr.debug.model ?? '?'} errors=${sr.debug.errors.length}`);
+    for (const e of sr.debug.errors) lines.push(`  error: ${e}`);
     lines.push('');
   }
 
