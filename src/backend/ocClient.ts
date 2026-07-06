@@ -20,6 +20,11 @@ const PATHS = {
   // OC 1.x: GET messages is `/session/{id}/message` (singular) — the plural 404s.
   sessionMessages: (id: string) => `/session/${id}/message`,
   sessionFork: (id: string) => `/session/${id}/fork`,
+  // Generic session PATCH — used today only to mutate the live permission ruleset
+  // (see updatePermission()). OC merges the given `permission` array into the
+  // session's existing ruleset (session/session.ts:setPermission), re-evaluated
+  // fresh on every subsequent tool call — no session restart needed.
+  sessionUpdate: (id: string) => `/session/${id}`,
   agents: '/app/agents',
   models: '/config/providers',
   events: '/global/event',
@@ -35,6 +40,13 @@ interface PromptBody {
 }
 
 interface OcSessionInfo { id: string; [k: string]: unknown }
+
+/** OC's PermissionV1.Rule shape (packages/schema/src/v1/permission.ts). */
+export interface OcPermissionRule {
+  permission: string;
+  pattern: string;
+  action: 'allow' | 'deny' | 'ask';
+}
 
 /** OC ServerEvent shape (subset we act on). `properties` is event-specific. */
 export interface OcEvent { type: string; properties: any }
@@ -130,6 +142,26 @@ export class OcClient {
       console.error(`[tiermux] OC prompt() failed:`, err);
       throw err;
     }
+  }
+
+  /**
+   * Merge rules into a session's live permission ruleset (PATCH /session/{id}).
+   * OC re-evaluates permissions fresh on every tool call (session/tools.ts:
+   * `Permission.merge(agent.permission, session.permission)`), so this takes
+   * effect on the NEXT tool call — no session restart, no SSE round-trip for
+   * an 'allow'/'deny' rule (only 'ask' rules pause and wait for a reply).
+   * Callers should treat this as best-effort: catch failures, log, and let the
+   * turn continue — this is a backstop on top of prompt-level guidance, not
+   * something the turn should depend on to complete.
+   */
+  async updatePermission(sessionId: string, rules: OcPermissionRule[]): Promise<void> {
+    const body = JSON.stringify({ permission: rules });
+    console.log(`[tiermux] OC PATCH ${PATHS.sessionUpdate(sessionId)} body=${body}`);
+    await this.request(PATHS.sessionUpdate(sessionId), {
+      method: 'PATCH',
+      headers: this.headers(true),
+      body,
+    });
   }
 
   /** Abort the running prompt for a session. */
