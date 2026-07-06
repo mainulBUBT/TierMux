@@ -74,6 +74,34 @@ main.ts-এ line ~2532-এ note আছে: `ensureTarget` প্রথম shared
 - [ ] **toolStatus smoke test** (manual) — Phase D2 officially close করতে।
   - Extension reload → tool চলে এমন prompt → tool card দেখুন, running→done transition, timer, auto-scroll, console error নেই।
 
+### 🐛 Follow-up: Ask mode research budget and citation compliance (2026-07-06)
+Context: `sdk.ts`'s `runChatStream` had a direct-router bypass (skips OC entirely)
+that had been widened from `taskKind === 'trivial'` to `'chat'||'trivial'` —
+since `classifyTask` maps nearly every real question to `'chat'`, this silently
+defeated `ocConfig.ts`'s `GROUNDED` preamble for all broad Ask-mode questions.
+Reverted in `cdff185` (`fix(oc): restore chat-mode OC routing for real
+questions, not just trivial greetings`).
+
+Live `tiermux.verifyGrounding` run after the revert confirms broad questions now
+correctly reach OC (real grep/glob/readFile calls, grounded answer citing real
+project files) — but exposed a **separate, pre-existing** problem:
+- ❌ 38 tool calls for one broad question (budget target: 8)
+- ❌ Required `[path:line]` citations missing despite the prompt mandating them
+- A couple of `invalid` tool-call entries in the trace (worth root-causing)
+
+`f9debaf`'s RESEARCH BUDGET prose instructions aren't holding under real
+free-tier model behavior (observed on `Mistral codestral-2501`). Prose alone
+("use at most 8 tools") isn't a guarantee — different models follow
+instructions with very different reliability. Next step is likely deterministic
+enforcement in the agent loop rather than more prompt tuning: track tool-call
+count per turn, tell the model its remaining budget, reject/stop past the cap;
+similarly validate citations post-hoc (repair pass or retry) rather than
+trusting the prompt alone.
+
+**Do NOT reintroduce the chat-mode bypass to "fix" the call count** — that
+regresses grounding to zero for every broad question, which is strictly worse
+than "grounded but over-budget."
+
 ### 🔄 বড় কাজ (ভবিষ্যতের phase)
 
 #### A. Preact rendering migration — **শুরু নয়**
