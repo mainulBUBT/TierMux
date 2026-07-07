@@ -285,13 +285,19 @@ import { handleToolStatus } from './handlers/toolStatus';
   }
 
   const acPop = $('#ac-pop');
-  const SLASH_COMMANDS = [
+  // Fallback shown before the host's 'config' message arrives (or if it omits skills).
+  // The host is the source of truth once connected: it sends the live skill index
+  // (name + one-line description) built from .tiermux/skills/*.md — see ConfigPayload.
+  const FALLBACK_SLASH_COMMANDS = [
     { name: 'explain', detail: 'Explain the referenced code' },
     { name: 'fix', detail: 'Find and fix problems' },
     { name: 'tests', detail: 'Write unit tests' },
     { name: 'doc', detail: 'Add documentation/comments' },
     { name: 'commit', detail: 'Generate a commit message from staged changes' },
   ];
+  function getSlashCommands() {
+    return (state.skills && state.skills.length) ? state.skills : FALLBACK_SLASH_COMMANDS;
+  }
   // Autocomplete state.
   let acMode = null;       // 'slash' | 'mention' | null
   let acStart = -1;        // index of the trigger char in the textarea
@@ -1345,7 +1351,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     if (slashMatch) {
       acMode = 'slash'; acStart = 0;
       const q = slashMatch[1].toLowerCase();
-      const items = SLASH_COMMANDS.filter((c) => c.name.startsWith(q))
+      const items = getSlashCommands().filter((c) => c.name.startsWith(q))
         .map((c) => ({ label: '/' + c.name, insert: '/' + c.name + ' ', detail: c.detail, kind: 'slash' }));
       items.length ? renderAc(items) : closeAc();
       return;

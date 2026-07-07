@@ -141,6 +141,11 @@ export interface ConfigPayload {
     configured: boolean;
     modelCount: number;
   }>;
+  /** Slash-command skill index (name + one-line description) loaded from
+   *  .tiermux/skills/*.md — the webview's `/` autocomplete renders this list.
+   *  Full skill body text is never sent here; only the matched skill's prompt
+   *  is substituted server-side when the user actually sends `/name`. */
+  skills: Array<{ name: string; detail: string }>;
 }
 
 

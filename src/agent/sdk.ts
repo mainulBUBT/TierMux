@@ -140,6 +140,11 @@ function extractOcError(p: any): string {
  *  go straight to escalation): context-length/overflow, auth/key, and provider-side rejections. */
 const NON_RETRYABLE = /context\s*length|token\s*limit|maximum\s*context|too\s+(long|large|many\s*tokens)|rate\s*limit|quota|unauthorized|invalid\s+api\s?key|forbidden|\b401\b|\b403\b/i;
 
+/** Bare "aborted" errors that arrive after the stream already delivered a full answer (OC/undici
+ *  closing the connection post-completion, not a real mid-stream failure). Surfacing "Answer may
+ *  be incomplete" for these is a false alarm — the answer is complete, so stay silent instead. */
+const ABORT_LIKE = /^aborted$|abort\s*error|operation was aborted/i;
+
 // ---- OpenCode engine state ----
 
 let ocClient: OcClient | undefined;
@@ -767,7 +772,7 @@ async function runViaOc(
         //    timeout, dropped SSE, a tool failing late) shouldn't throw away 1.6k of good
         //    output. Soft non-blocking notice instead of a hard red error; the answer shows.
         if (out.trim()) {
-          opts.onWarning?.(`Answer may be incomplete — ${errMsg}`);
+          if (!ABORT_LIKE.test(errMsg)) opts.onWarning?.(`Answer may be incomplete — ${errMsg}`);
           finish({ text: out, platform, model, taskKind: opts.taskKind });
           return;
         }
@@ -874,7 +879,7 @@ async function runViaOc(
         }
         // Already streamed a usable answer → deliver it with a soft notice (see session.error).
         if (out.trim()) {
-          opts.onWarning?.(`Answer may be incomplete — ${msg}`);
+          if (!ABORT_LIKE.test(msg)) opts.onWarning?.(`Answer may be incomplete — ${msg}`);
           finish({ text: out, platform, model });
           return;
         }

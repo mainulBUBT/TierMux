@@ -33,12 +33,7 @@ import { recommendFreeStrong } from './catalog/recommend';
 import { parseClarifying, type ClarifyingQuestion } from './agent/clarify';
 import { deriveTitleFrom, looksLikeActionablePlan, planStepsToTodos, sanitizeTitle } from './session/titles';
 
-const SLASH_PROMPTS: Record<string, string> = {
-  explain: 'Explain the following / the referenced code clearly:',
-  fix: 'Find and fix problems in the following / referenced code:',
-  tests: 'Write unit tests for the following / referenced code:',
-  doc: 'Write documentation/comments for the following / referenced code:',
-};
+import { loadSkills } from './context/skills';
 
 interface ChatDeps {
   secrets: SecretStore;
@@ -233,6 +228,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.viewedSessionId = viewed ?? this.createSession().id;
     deps.secrets.onDidChange(() => void this.sendConfig());
     deps.settings.onDidChange(() => void this.sendConfig());
+  }
+
+  /**
+   * Slash-command skills loaded from `.tiermux/skills/*.md` (bundled defaults, overridable
+   * per-workspace). Re-read on every call rather than cached: it's a handful of small files,
+   * and this lets an edited skill file take effect on the very next `/name` without a reload.
+   */
+  private skills() {
+    return loadSkills(this.extensionUri.fsPath, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
   }
 
   // ---------- session model ----------
@@ -1256,7 +1260,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     let prompt = m.text;
-    if (slash && SLASH_PROMPTS[slash.name]) prompt = `${SLASH_PROMPTS[slash.name]}\n\n${slash.rest}`;
+    const skill = slash && this.skills().get(slash.name);
+    if (slash && skill) prompt = `${skill.prompt}\n\n${slash.rest}`;
 
     const s = this.current();
     s.model = m.model;
@@ -1984,6 +1989,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         SETTINGS_META.map((meta) => [meta.key, vscode.workspace.getConfiguration('tiermux').get(meta.key, defaultForSetting(meta))]),
       ),
       autoApprove: this.autoApprove,
+      skills: Array.from(this.skills().values(), (sk) => ({ name: sk.name, detail: sk.description })),
       disabledProviders: this.deps.settings.getDisabledProviders(),
       customEndpoints: (await Promise.all(this.deps.settings.getCustomEndpoints().map(async (ep) => ({
         id: ep.id,

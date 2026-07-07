@@ -4,6 +4,8 @@ node_modules/**
 .kilo/**
 .kilocode/**
 .tiermux/**
+!.tiermux/agent/**
+!.tiermux/skills/**
 .claude/**
 scripts/**
 **/*.ts

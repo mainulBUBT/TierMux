@@ -5,7 +5,9 @@
 //
 // Only `renderMarkdown` is public. `configureMarked` + the `markedReady` flag
 // are module-private (called only from renderMarkdown).
-import { escapeHtml } from './dom';
+import { escapeHtml, showToast } from './dom';
+import { send } from './bridge';
+import { ICON } from './icons';
 
 // Configure marked ONCE: render embedded raw HTML as escaped TEXT instead of
 // live DOM, so a chat message containing an HTML form/snippet shows as readable,
@@ -81,10 +83,36 @@ export function renderMarkdown(md: string): HTMLElement {
           } catch { /* diff2html optional */ }
         });
       }
+      addCodeCopyButtons(div);
       return div;
     }
   } catch { /* fall through to plain text */ }
   const pre = document.createElement('div');
   pre.textContent = md;
   return pre;
+}
+
+// Give every remaining fenced code block (anything diff2html didn't already replace)
+// a per-block copy button, wrapped so it can be absolutely positioned in the corner.
+function addCodeCopyButtons(div: HTMLElement): void {
+  div.querySelectorAll('pre').forEach((pre) => {
+    if (pre.parentElement?.classList.contains('code-block-wrap')) return;
+    const code = pre.textContent || '';
+    const wrap = document.createElement('div');
+    wrap.className = 'code-block-wrap';
+    pre.replaceWith(wrap);
+    wrap.appendChild(pre);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'code-copy-btn';
+    btn.title = 'Copy code';
+    btn.innerHTML = ICON.copy;
+    btn.addEventListener('click', () => {
+      send({ type: 'copyText', text: code });
+      btn.classList.add('ok');
+      setTimeout(() => btn.classList.remove('ok'), 1000);
+      showToast('Copied', btn);
+    });
+    wrap.appendChild(btn);
+  });
 }
