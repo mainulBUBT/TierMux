@@ -3,11 +3,16 @@
 import * as vscode from 'vscode';
 import type { FallbackEntry, Platform, CustomEndpoint } from '../shared/types';
 import type { Catalog } from '../catalog/catalog';
+import { allPlatformInfo } from '../providers';
 
 const FALLBACK_KEY = 'tiermux.fallback';
 const ENDPOINTS_KEY = 'tiermux.endpoints';
 const DISABLED_PROVIDERS_KEY = 'tiermux.disabledProviders';
 const CUSTOM_ENDPOINTS_KEY = 'tiermux.customEndpoints';
+
+/** Platform left enabled by default — a keyless gateway that works with zero setup.
+ *  Every other provider starts off until the user opts in (usually by adding a key). */
+const DEFAULT_ENABLED_PLATFORM: Platform = 'kilo';
 
 export class SettingsStore {
   private readonly _onChange = new vscode.EventEmitter<void>();
@@ -65,7 +70,14 @@ export class SettingsStore {
   // ---- provider-level on/off (preserves individual model enabled flags) ----
 
   getDisabledProviders(): Platform[] {
-    return this.state.get<Platform[]>(DISABLED_PROVIDERS_KEY) ?? [];
+    const stored = this.state.get<Platform[]>(DISABLED_PROVIDERS_KEY);
+    if (stored) return stored;
+    // First run / never touched: only DEFAULT_ENABLED_PLATFORM starts on.
+    const def = allPlatformInfo()
+      .map((p) => p.platform)
+      .filter((p) => p !== DEFAULT_ENABLED_PLATFORM);
+    void this.state.update(DISABLED_PROVIDERS_KEY, def);
+    return def;
   }
 
   isProviderDisabled(platform: Platform): boolean {
