@@ -3,7 +3,7 @@
 // session-scoped (reset on New chat; not persisted across window reloads).
 import * as vscode from 'vscode';
 import type { CheckpointFile } from '../messages';
-import { captureWorkingTree, changedSince, restoreToTree } from './gitSnapshot';
+import { captureWorkingTree, changedSince, restoreToTree, readFileAtTree } from './gitSnapshot';
 
 const SCHEME = 'fla-checkpoint';
 
@@ -164,15 +164,28 @@ export class CheckpointManager {
   /** Open a diff of a file's pre-message baseline against its current content. */
   async openDiff(id: string, uriStr: string): Promise<void> {
     const snap = this.aggregateSince(id).get(uriStr);
-    if (!snap) return;
     const fileUri = vscode.Uri.parse(uriStr);
+    let rel: string;
+    let before: string | null;
+    if (snap) {
+      rel = snap.rel;
+      before = snap.before;
+    } else {
+      // Git mode: the bar's file list comes from a tree-to-tree diff, not EditGate.record(),
+      // so edits the agent applied directly (bypassing the gate) have no snap here. Read the
+      // pre-turn content straight from the begin tree instead of bailing out silently.
+      const beginTree = this.beginTreeSince(id);
+      if (!beginTree || !this.cwd) return;
+      rel = vscode.workspace.asRelativePath(fileUri);
+      before = await readFileAtTree(this.cwd, beginTree, rel);
+    }
     const tk = ++diffTokenSeq;
-    const left = this.provider.set(`base-${tk}/${snap.rel}`, snap.before ?? '');
-    const title = `${snap.rel} (checkpoint ↔ current)`;
+    const left = this.provider.set(`base-${tk}/${rel}`, before ?? '');
+    const title = `${rel} (checkpoint ↔ current)`;
     if (await this.exists(fileUri)) {
       await vscode.commands.executeCommand('vscode.diff', left, fileUri, title);
     } else {
-      const right = this.provider.set(`cur-${tk}/${snap.rel}`, '');
+      const right = this.provider.set(`cur-${tk}/${rel}`, '');
       await vscode.commands.executeCommand('vscode.diff', left, right, title);
     }
   }

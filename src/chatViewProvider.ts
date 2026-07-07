@@ -1380,6 +1380,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /**
+   * A real git commit landed — the working-tree edits the pinned bar was tracking are now
+   * history, not something "Undo all" should touch. Drop every session's checkpoints and
+   * refresh the bar (hides it) rather than trying to reconcile which files got committed.
+   */
+  async clearAllCheckpoints(): Promise<void> {
+    for (const s of this.sessions.values()) {
+      s.checkpoints.clear();
+      if (s.id === this.viewedSessionId) await this.postCheckpoints(s);
+    }
+  }
+
   /** Commit the turn's checkpoint, then refresh the restore bar on every command. */
   private async finishCheckpoint(s: Session, _requestId: string): Promise<void> {
     s.checkpoints.commit();

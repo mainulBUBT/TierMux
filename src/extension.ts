@@ -26,6 +26,7 @@ import { registerCodeActions } from './editor/codeActions';
 import { registerInlineChat } from './editor/inlineChat';
 import { registerInlineCompletions } from './completions/inlineCompletion';
 import { registerCommitMessage, generateCommitMessage } from './scm/commitMessage';
+import { watchGitCommits } from './scm/gitWatch';
 import { openMemoryForEdit } from './context/userMemory';
 // Pre-research modules (symbolIndex, invertedIndex, bundleCache, structuralGraph, repoMap)
 // removed in v7.0 — superseded by OpenCode's `grep`/`glob`/LSP tools when
@@ -205,6 +206,13 @@ export function activate(context: vscode.ExtensionContext): void {
   // Session Auto-approve toggle (composer): both gates read it live to skip prompts.
   commandGate.setAutoApprove(() => chat.autoApprove);
   editGate.setAutoApprove(() => chat.autoApprove);
+
+  // Once the user actually commits, the pinned "changed files / undo" bar's working-tree
+  // diff is moot — those edits are history now, not something "Undo all" should revert.
+  // The Git API has no dedicated commit event, so watch each repo's HEAD commit sha and
+  // treat any change as a commit boundary (a checkout/pull invalidates the same way: the
+  // begin-tree snapshot no longer describes "before this session's edits" either).
+  context.subscriptions.push(watchGitCommits(() => { void chat.clearAllCheckpoints(); }));
 
   // Pre-research removed — OpenCode handles code intelligence via LSP/grep/glob.
 

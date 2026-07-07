@@ -93,6 +93,14 @@ export async function changedSince(cwd: string, beginTree: string): Promise<Chec
   return out;
 }
 
+/** A file's content at `tree`, or null if it didn't exist there (created-since-begin case). */
+export async function readFileAtTree(cwd: string, tree: string, rel: string): Promise<string | null> {
+  const out = await execFile('git', ['show', `${tree}:${rel}`], { cwd, maxBuffer: 50 * 1024 * 1024, timeout: TIMEOUT_MS })
+    .then((r) => r.stdout.toString())
+    .catch(() => null);
+  return out;
+}
+
 /** Restore the working tree to `beginTree` for every path changed since then. Returns # touched. */
 export async function restoreToTree(cwd: string, beginTree: string): Promise<number> {
   const changed = await changedSince(cwd, beginTree);
