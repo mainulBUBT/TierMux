@@ -12,7 +12,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import { pipeline } from 'stream/promises';
 
 const STABLE_DIR = 'tiermux-opencode-bin';
@@ -47,8 +47,10 @@ function releaseTarget(osType: string, arch: string): string | undefined {
 interface ResolveOptions {
   /** Writable cache dir (VS Code globalStoragePath) for the downloaded binary. */
   cacheDir?: string;
-  /** Progress callback for the first-run download (surfaced in a withProgress notification). */
-  onProgress?: (message: string) => void;
+  /** Progress callback for the first-run download (surfaced in a withProgress notification
+   *  and, on first run only, the webview onboarding bar). `percent` is only present while
+   *  actively downloading and the server reported a Content-Length. */
+  onProgress?: (message: string, percent?: number) => void;
   /** Optional logger that mirrors resolution + download diagnostics into the
    *  "TierMux Engine" Output channel. */
   log?: (message: string) => void;
@@ -56,10 +58,12 @@ interface ResolveOptions {
 
 /**
  * Resolve the OpenCode binary path. Steps 1–3 are instant; step 4 (first-run download)
- * only runs once and is then cached. Never throws — returns undefined only when no
- * release exists for this platform.
+ * only runs once and is then cached. Step 5 only returns a path if `opencode` is
+ * actually found on PATH — it does not guess. Throws with a specific, user-facing
+ * reason (the actual download/lookup failure) when no binary can be resolved at all,
+ * so the caller can surface something more useful than "engine not found".
  */
-export async function resolveOcBinary(extensionPath: string, opts: ResolveOptions = {}): Promise<string | undefined> {
+export async function resolveOcBinary(extensionPath: string, opts: ResolveOptions = {}): Promise<string> {
   const log = opts.log ?? (() => undefined);
   const osType = detectOS();
   const arch = detectArch();
@@ -86,6 +90,7 @@ export async function resolveOcBinary(extensionPath: string, opts: ResolveOption
   }
 
   // 3 + 4. Cached download, or fetch on first run.
+  let downloadError: string | undefined;
   if (opts.cacheDir) {
     const cached = path.join(opts.cacheDir, 'bin', binaryName);
     if (fs.existsSync(cached)) { log(`using cached binary: ${cached}`); return cached; }
@@ -93,17 +98,37 @@ export async function resolveOcBinary(extensionPath: string, opts: ResolveOption
       const downloaded = await downloadBinary(opts.cacheDir, osType, arch, binaryName, opts.onProgress, log);
       if (downloaded) return downloaded;
     } catch (err) {
-      log(`download failed: ${err instanceof Error ? err.message : err}`);
-      console.warn('[tiermux] OC binary download failed, falling back to PATH:', err);
-      opts.onProgress?.(`TierMux engine download failed: ${err instanceof Error ? err.message : err}`);
+      downloadError = err instanceof Error ? err.message : String(err);
+      log(`download failed: ${downloadError}`);
+      console.warn('[tiermux] OC binary download failed:', err);
+      opts.onProgress?.(`TierMux engine download failed: ${downloadError}`);
     }
   } else {
     log(`no cacheDir provided — skipping download`);
   }
 
-  // 5. System opencode on PATH. (Verified lazily by the launcher's spawn.)
-  log(`falling back to 'opencode' on PATH (may not exist)`);
-  return 'opencode';
+  // 5. System opencode on PATH — only if it's actually there.
+  const onPath = findOnPath(binaryName);
+  if (onPath) { log(`found 'opencode' on PATH: ${onPath}`); return onPath; }
+  log(`'opencode' not found on PATH`);
+
+  throw new Error(
+    downloadError
+      ? `Could not get the TierMux engine (OpenCode): ${downloadError}`
+      : `Could not find or download the TierMux engine (OpenCode) for ${osType}/${arch}.`,
+  );
+}
+
+/** Check whether `name` resolves on PATH, returning the resolved path or undefined. */
+function findOnPath(name: string): string | undefined {
+  try {
+    const cmd = os.platform() === 'win32' ? 'where' : 'which';
+    const out = execFileSync(cmd, [name], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    const first = out.split(/\r?\n/)[0]?.trim();
+    return first || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Copy the bundled binary to a stable temp dir + chmod, so re-extraction is idempotent. */
@@ -126,7 +151,7 @@ async function downloadBinary(
   osType: string,
   arch: string,
   binaryName: string,
-  onProgress?: (m: string) => void,
+  onProgress?: (m: string, percent?: number) => void,
   log?: (m: string) => void,
 ): Promise<string | undefined> {
   const target = releaseTarget(osType, arch);
@@ -143,9 +168,11 @@ async function downloadBinary(
   const binDir = path.join(cacheDir, 'bin');
   await fs.promises.mkdir(cacheDir, { recursive: true });
 
-  onProgress?.(`Downloading TierMux engine (${target})…`);
+  onProgress?.(`Downloading TierMux engine (${target})…`, 0);
   log?.(`GET ${url} → ${archive}`);
-  await download(url, archive, (mb) => onProgress?.(`Downloading TierMux engine (${target})… ${mb} MB`));
+  await download(url, archive, (mb, percent) =>
+    onProgress?.(`Downloading TierMux engine (${target})… ${mb} MB${percent != null ? ` (${percent}%)` : ''}`, percent),
+  );
   log?.(`download complete: ${archive}`);
 
   // `tar -xf` extracts both .zip and .tar.gz on macOS/Linux/Win10+.
@@ -173,9 +200,9 @@ async function downloadBinary(
  *  almost certainly means the network is dead and the user should know. */
 const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 
-/** Stream a URL to disk, reporting downloaded MB via onProgress. Aborts after
- *  DOWNLOAD_TIMEOUT_MS so a hung network doesn't sit forever. */
-async function download(url: string, dest: string, onProgress?: (mb: number) => void): Promise<void> {
+/** Stream a URL to disk, reporting downloaded MB (+ percent, if Content-Length is known)
+ *  via onProgress. Aborts after DOWNLOAD_TIMEOUT_MS so a hung network doesn't sit forever. */
+async function download(url: string, dest: string, onProgress?: (mb: number, percent?: number) => void): Promise<void> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), DOWNLOAD_TIMEOUT_MS);
   let res: Response;
@@ -192,12 +219,18 @@ async function download(url: string, dest: string, onProgress?: (mb: number) => 
     clearTimeout(timer);
     throw new Error(`Download failed (${res.status}): ${url}`);
   }
+  const totalBytes = Number(res.headers.get('content-length') ?? '');
+  const total = Number.isFinite(totalBytes) && totalBytes > 0 ? totalBytes : undefined;
   let received = 0;
   let lastReport = 0;
   const onChunk = (chunk: Uint8Array) => {
     received += chunk.length;
     const mb = Math.floor(received / 1_000_000);
-    if (onProgress && mb >= lastReport + 1) { lastReport = mb; onProgress(mb); }
+    if (onProgress && mb >= lastReport + 1) {
+      lastReport = mb;
+      const percent = total ? Math.min(100, Math.round((received / total) * 100)) : undefined;
+      onProgress(mb, percent);
+    }
   };
   // Tee the stream so we can report progress without buffering the whole body.
   const reportStream = new TransformStream({

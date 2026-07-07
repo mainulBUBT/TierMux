@@ -45,7 +45,58 @@ let ocConnection: OcConnection | undefined;
 // progress, OC stdout/stderr, and any startup error. Visible via View → Output
 // → TierMux Engine (or `tiermux.showEngineLog`).
 let engineLog: vscode.OutputChannel | undefined;
+// Set once ChatViewProvider is constructed in activate() — used by startOpenCodeEngine
+// (a free function, no closure over activate()'s locals) to post onboarding progress.
+// ChatViewProvider.post() queues messages until the webview is actually open, so it's
+// safe to call before the user has ever looked at the panel.
+let chatProviderRef: ChatViewProvider | undefined;
 const ts = () => new Date().toISOString().slice(11, 23);
+
+/** Global-state key: set once the engine has been confirmed working (download + a real
+ *  chat round-trip succeeded). Onboarding progress/verification only runs before this is
+ *  true — returning users get the old silent background startup. */
+const ONBOARDED_KEY = 'tiermux.onboardedEngine';
+
+/** One-shot safety net: if a fresh-install onboarding attempt fails and the user hasn't
+ *  clicked Retry, try again automatically after a delay instead of leaving the engine
+ *  dead until they notice. Only fires once per activation — a genuinely offline machine
+ *  shouldn't get hammered with retries. */
+let autoRetryScheduled = false;
+
+/** Turn an ocBinary.ts/ocLauncher.ts onProgress(message, percent) call into an
+ *  engineStatus post, inferring state from the message shape. */
+function forwardEngineProgress(message: string, percent?: number): void {
+  const state = /failed/i.test(message) ? 'error' : percent != null ? 'downloading' : 'starting';
+  chatProviderRef?.postEngineStatus({ state, message, percent });
+}
+
+/** Lightweight end-to-end smoke test: does the router proxy actually route a completion
+ *  through an enabled model? Used only during first-run onboarding to confirm chat/agent
+ *  will really work, not just that the OC server process came up. */
+async function verifyEngineWorks(routerProxyBaseURL: string): Promise<{ ok: boolean; detail?: string }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const res = await fetch(`${routerProxyBaseURL.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'tiermux/fast',
+        stream: false,
+        max_tokens: 8,
+        messages: [{ role: 'user', content: 'Reply with the single word: ok' }],
+      }),
+      signal: ctrl.signal,
+    });
+    if (res.ok) return { ok: true };
+    const text = await res.text().catch(() => '');
+    return { ok: false, detail: text || `HTTP ${res.status}` };
+  } catch (err) {
+    return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Reads `tiermux.mcpServers`, upgrading any legacy (pre-native-schema) entries on the fly. */
 function readMcpServers(): Record<string, McpServerConfig> {
@@ -61,18 +112,30 @@ function readMcpServers(): Record<string, McpServerConfig> {
 /**
  * Start the OC engine pointed at the router proxy. Logs the outcome; never throws
  * — a missing binary just means the integration stays off and the built-in agent runs.
+ *
+ * `globalState` is passed through only to read/write the ONBOARDED_KEY flag — before it's
+ * set, progress/verification is also mirrored into the webview's onboarding bar; once set,
+ * startup goes back to the old silent background behavior.
  */
+let engineStartInFlight = false;
+
 async function startOpenCodeEngine(
   extensionPath: string,
   routerProxyBaseURL: string,
   cacheDir: string,
   enabledModelIds: string[],
   mcpServers: Record<string, McpServerConfig>,
+  globalState: vscode.Memento,
 ): Promise<void> {
+  // Guard against overlapping attempts (manual Retry click racing the auto-retry timer,
+  // or a double-click) — a second concurrent launch would race the same cache dir/port.
+  if (engineStartInFlight) return;
+  engineStartInFlight = true;
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!engineLog) engineLog = vscode.window.createOutputChannel('TierMux Engine');
   const log = (msg: string) => engineLog?.appendLine(`[${ts()}] ${msg}`);
   log(`startOpenCodeEngine: proxy=${routerProxyBaseURL} cacheDir=${cacheDir}`);
+  const onboarding = !globalState.get<boolean>(ONBOARDED_KEY, false);
   try {
     // withProgress makes the first-run binary download visible; later boots are instant (cached).
     ocConnection = await vscode.window.withProgress(
@@ -84,7 +147,10 @@ async function startOpenCodeEngine(
         cacheDir,
         enabledModelIds,
         mcpServers,
-        onProgress: (msg) => progress.report({ message: msg }),
+        onProgress: (msg, percent) => {
+          progress.report({ message: msg });
+          if (onboarding) forwardEngineProgress(msg, percent);
+        },
         log,
     }),
   );
@@ -94,12 +160,54 @@ async function startOpenCodeEngine(
     setOcTrace(vscode.workspace.getConfiguration('tiermux.engine').get<boolean>('traceOcEvents', false), traceSink);
     log(`OpenCode engine UP at ${ocConnection.baseURL} (routing via ${routerProxyBaseURL})`);
     console.log(`[tiermux] OpenCode engine up at ${ocConnection.baseURL} (routing via ${routerProxyBaseURL})`);
+
+    if (onboarding) {
+      // Onboarding only vouches for the ENGINE — a brand-new install has zero configured
+      // models/keys by definition, so a chat round-trip would always fail here and trap
+      // the user behind an unfixable "Retry" (retrying doesn't add an API key). Only run
+      // the real round-trip check when the user already has a model enabled; otherwise
+      // the engine coming up at all is success — model setup is a separate later step.
+      if (enabledModelIds.length === 0) {
+        await globalState.update(ONBOARDED_KEY, true);
+        chatProviderRef?.postEngineStatus({ state: 'ready' });
+      } else {
+        chatProviderRef?.postEngineStatus({ state: 'verifying', message: 'Verifying chat works…' });
+        const check = await verifyEngineWorks(routerProxyBaseURL);
+        if (check.ok) {
+          await globalState.update(ONBOARDED_KEY, true);
+          chatProviderRef?.postEngineStatus({ state: 'ready' });
+        } else {
+          log(`onboarding verify FAILED: ${check.detail}`);
+          chatProviderRef?.postEngineStatus({
+            state: 'error',
+            message: `Engine started, but no model responded (${check.detail}). Check your API key(s) in Settings, then retry.`,
+          });
+        }
+      }
+    }
   } catch (err) {
     setOcEngine(undefined); // ensure sdk.ts reports "engine not running" instead of a silent hang
     const msg = err instanceof Error ? err.message : String(err);
     log(`OpenCode engine UNAVAILABLE: ${msg}`);
     engineLog?.show(true);
     console.warn(`[tiermux] OpenCode engine unavailable. (${msg})`);
+    if (onboarding) chatProviderRef?.postEngineStatus({ state: 'error', message: msg });
+    void vscode.window.showErrorMessage(`TierMux engine failed to start: ${msg}`, 'Show Log', 'Retry').then((choice) => {
+      if (choice === 'Show Log') engineLog?.show(true);
+      else if (choice === 'Retry') void startOpenCodeEngine(extensionPath, routerProxyBaseURL, cacheDir, enabledModelIds, mcpServers, globalState);
+    });
+    // Safety net: a transient blip (rate-limited download, momentary DNS failure) shouldn't
+    // require the user to notice and click Retry. Try once more, unattended, after a delay —
+    // but only during onboarding, and only once per activation.
+    if (onboarding && !autoRetryScheduled) {
+      autoRetryScheduled = true;
+      log(`scheduling one automatic retry in 30s`);
+      setTimeout(() => {
+        void startOpenCodeEngine(extensionPath, routerProxyBaseURL, cacheDir, enabledModelIds, mcpServers, globalState);
+      }, 30_000);
+    }
+  } finally {
+    engineStartInFlight = false;
   }
 }
 
@@ -148,7 +256,7 @@ export function activate(context: vscode.ExtensionContext): void {
           (e) => 'tm_' + Buffer.from(`${e.platform}::${e.modelId}`).toString('base64url'),
         );
         const mcpServers = readMcpServers();
-        void startOpenCodeEngine(context.extensionUri.fsPath, srv.baseURL, context.globalStorageUri.fsPath, enabledModelIds, mcpServers);
+        void startOpenCodeEngine(context.extensionUri.fsPath, srv.baseURL, context.globalStorageUri.fsPath, enabledModelIds, mcpServers, context.globalState);
       } else {
         console.warn('[tiermux] OpenCode engine disabled (tiermux.useOpenCodeEngine = false). Chat and agent runs will not work — re-enable the engine to use TierMux.');
       }
@@ -196,7 +304,15 @@ export function activate(context: vscode.ExtensionContext): void {
     workspaceState: context.workspaceState,
     generateCommitMessage: () => generateCommitMessage(router),
     profiler,
+    retryEngine: () => {
+      if (!routerProxy) return;
+      const enabledModelIds = settings.enabledByPriority().map(
+        (e) => 'tm_' + Buffer.from(`${e.platform}::${e.modelId}`).toString('base64url'),
+      );
+      void startOpenCodeEngine(context.extensionUri.fsPath, routerProxy.baseURL, context.globalStorageUri.fsPath, enabledModelIds, readMcpServers(), context.globalState);
+    },
   });
+  chatProviderRef = chat;
 
   // File edits that don't come from a chat run (e.g. inline editor chat, which has no
   // session) fall back to a native Apply/Reject modal — the 1-arg overload returns
@@ -334,7 +450,7 @@ export function activate(context: vscode.ExtensionContext): void {
             (e) => 'tm_' + Buffer.from(`${e.platform}::${e.modelId}`).toString('base64url'),
           );
           const retryMcpServers = readMcpServers();
-          await startOpenCodeEngine(context.extensionUri.fsPath, routerProxy?.baseURL ?? '', cacheDir, retryModelIds, retryMcpServers);
+          await startOpenCodeEngine(context.extensionUri.fsPath, routerProxy?.baseURL ?? '', cacheDir, retryModelIds, retryMcpServers, context.globalState);
         }
       }
       const results = await runBridgeDiagnostic({ routerProxy, ocConnection });
@@ -362,6 +478,33 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('tiermux.showEngineLog', () => {
       if (!engineLog) engineLog = vscode.window.createOutputChannel('TierMux Engine');
       engineLog.show(true);
+    }),
+    // Dev/QA helper: clear the "engine onboarded" flag and re-run engine startup so the
+    // first-run onboarding overlay (download progress → verify → ready/error) can be
+    // exercised again without a fresh VS Code profile.
+    vscode.commands.registerCommand('tiermux.resetEngineOnboarding', async () => {
+      const deleteCache = await vscode.window.showWarningMessage(
+        'Reset TierMux engine onboarding? This restarts the engine and shows the first-run overlay again.',
+        { modal: true },
+        'Reset', 'Reset + delete cached binary (full fresh-install simulation)',
+      );
+      if (!deleteCache) return;
+      await context.globalState.update(ONBOARDED_KEY, false);
+      stopOpenCode(ocConnection);
+      ocConnection = undefined;
+      setOcEngine(undefined);
+      const cacheDir = context.globalStorageUri.fsPath;
+      if (deleteCache.startsWith('Reset +')) {
+        const fs = await import('fs');
+        await fs.promises.rm(`${cacheDir}/bin`, { recursive: true, force: true }).catch(() => undefined);
+        engineLog?.appendLine(`[${ts()}] resetEngineOnboarding: deleted cached binary at ${cacheDir}/bin`);
+      }
+      void vscode.window.showInformationMessage('TierMux: onboarding flag cleared. Restarting engine…');
+      if (!routerProxy) return;
+      const enabledModelIds = settings.enabledByPriority().map(
+        (e) => 'tm_' + Buffer.from(`${e.platform}::${e.modelId}`).toString('base64url'),
+      );
+      void startOpenCodeEngine(context.extensionUri.fsPath, routerProxy.baseURL, cacheDir, enabledModelIds, readMcpServers(), context.globalState);
     }),
     // Toggle the OC SSE event trace on/off (writes raw frames to the engine channel).
     vscode.commands.registerCommand('tiermux.toggleOcTrace', async () => {

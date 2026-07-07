@@ -1116,3 +1116,70 @@ body.vscode-light .empty-recent-card { background: var(--vscode-editorWidget-bac
 }
 .dlg-field input:focus { border-color: var(--vscode-focusBorder); }
 .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* First-run engine onboarding overlay (binary download → verify → ready/error).
+   Covers the whole panel until the engine is confirmed working; never shown again
+   after that (see ONBOARDED_KEY in extension.ts). */
+.engine-onboard {
+  position: absolute;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  transition: opacity 0.4s ease;
+}
+.engine-onboard.hidden { display: none; }
+.engine-onboard.engine-onboard-done { opacity: 0; pointer-events: none; }
+.engine-onboard-card {
+  width: min(320px, 88%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: center;
+}
+.engine-onboard-title { font-size: 13px; font-weight: 600; color: var(--vscode-foreground); }
+.engine-onboard.engine-onboard-error .engine-onboard-title { color: var(--vscode-errorForeground); }
+.engine-onboard-bar-track {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--vscode-input-background);
+  overflow: hidden;
+}
+.engine-onboard-bar-fill {
+  height: 100%;
+  background: var(--vscode-progressBar-background, var(--vscode-focusBorder));
+  transition: width 0.25s ease;
+}
+.engine-onboard.engine-onboard-error .engine-onboard-bar-fill { background: var(--vscode-errorForeground); }
+.engine-onboard-message {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.engine-onboard-actions { display: flex; align-items: center; justify-content: center; gap: 10px; }
+.engine-onboard-actions.hidden { display: none; }
+.engine-onboard-retry {
+  padding: 4px 14px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+  font: inherit;
+}
+.engine-onboard-retry:hover { background: var(--vscode-button-hoverBackground); }
+.engine-onboard-skip {
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+.engine-onboard-skip:hover { color: var(--vscode-foreground); }

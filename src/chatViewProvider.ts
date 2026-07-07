@@ -48,6 +48,9 @@ interface ChatDeps {
   workspaceState: vscode.Memento;
   generateCommitMessage: () => Promise<void>;
   profiler?: import('./profiler/profilerService').IProfilerService;
+  /** Re-attempt the OC engine startup (binary resolve/download + launch). Wired from
+   *  extension.ts; invoked by the webview's onboarding "Retry" button. */
+  retryEngine?: () => void;
 }
 
 function tokenToAbortSignal(token: import('vscode').CancellationToken): AbortSignal {
@@ -377,6 +380,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.updateViewTitle();
   }
 
+  /** First-run engine onboarding progress (download %, verify, ready/error) — see
+   *  the 'engineStatus' OutMessage variant. Queues like any other post() if the
+   *  webview isn't open yet. */
+  postEngineStatus(status: { state: 'downloading' | 'starting' | 'verifying' | 'ready' | 'error'; message?: string; percent?: number }): void {
+    this.post({ type: 'engineStatus', ...status });
+  }
+
   private post(msg: OutMessage): void {
     if (!this.view || !this.ready) { this.outQueue.push(msg); return; }
     void this.view.webview.postMessage(msg);
@@ -642,6 +652,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'requestConfig':
         await this.sendConfig();
+        break;
+      case 'retryEngine':
+        this.deps.retryEngine?.();
         break;
       case 'sendMessage':
         await this.handleSend(m);

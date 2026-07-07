@@ -89,7 +89,7 @@ export interface OcLaunchOptions {
    *  discovers and calls these servers' tools itself. */
   mcpServers?: Record<string, McpServerConfig>;
   /** Progress callback for the first-run download. */
-  onProgress?: (message: string) => void;
+  onProgress?: (message: string, percent?: number) => void;
   /** Optional logger that mirrors progress + diagnostics into the "TierMux Engine"
    *  Output channel. Kept separate from `onProgress` so progress can keep flowing
    *  into the withProgress notification while logs land in the channel. */
@@ -114,9 +114,6 @@ export async function launchOpenCode(opts: OcLaunchOptions): Promise<OcConnectio
     onProgress: opts.onProgress,
     log,
   });
-  if (!binary) {
-    throw new Error('TierMux engine binary not found (set OPENCODE_BIN, install opencode, or bundle it).');
-  }
   log(`binary resolved: ${binary}`);
 
   const password = newPassword();

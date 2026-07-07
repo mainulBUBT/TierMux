@@ -55,6 +55,19 @@ import { handleToolStatus } from './handlers/toolStatus';
   const app = $('#app');
   app.innerHTML = `
     <div class="chat-layout" id="chat-layout">
+      <div class="engine-onboard hidden" id="engine-onboard">
+        <div class="engine-onboard-card">
+          <div class="engine-onboard-title" id="engine-onboard-title">Setting up TierMux…</div>
+          <div class="engine-onboard-bar-track">
+            <div class="engine-onboard-bar-fill" id="engine-onboard-bar" style="width: 0%"></div>
+          </div>
+          <div class="engine-onboard-message" id="engine-onboard-message"></div>
+          <div class="engine-onboard-actions hidden" id="engine-onboard-actions">
+            <button type="button" class="engine-onboard-retry" id="engine-onboard-retry">Retry</button>
+            <button type="button" class="engine-onboard-skip" id="engine-onboard-skip">Skip for now</button>
+          </div>
+        </div>
+      </div>
       <div class="history-dropdown hidden" id="history-dropdown">
         <div class="history-dropdown-header">
           <input type="text" id="history-search" class="history-search" placeholder="Search sessions…" autocomplete="off" />
@@ -164,6 +177,51 @@ import { handleToolStatus } from './handlers/toolStatus';
     panes.forEach((p) => { if (p.id !== id) p.el.classList.add('hidden'); });
     const p = panes.get(id);
     if (p) p.el.classList.remove('hidden');
+  }
+
+  // ---------- first-run engine onboarding overlay ----------
+  const engineOnboard = $('#engine-onboard');
+  const engineOnboardTitle = $('#engine-onboard-title');
+  const engineOnboardBar = $('#engine-onboard-bar');
+  const engineOnboardMessage = $('#engine-onboard-message');
+  const engineOnboardActions = $('#engine-onboard-actions');
+  const engineOnboardRetry = $('#engine-onboard-retry');
+  const engineOnboardSkip = $('#engine-onboard-skip');
+  engineOnboardRetry.addEventListener('click', () => {
+    engineOnboardActions.classList.add('hidden');
+    engineOnboardTitle.textContent = 'Setting up TierMux…';
+    engineOnboardMessage.textContent = '';
+    engineOnboardBar.style.width = '0%';
+    engineOnboard.classList.remove('engine-onboard-error');
+    send({ type: 'retryEngine' });
+  });
+  // Escape hatch: an error (e.g. bad API key) shouldn't trap the user behind an overlay
+  // with no path to Settings — Retry can't fix a config problem. Skip just hides the
+  // overlay for this session; it reappears next reload until the engine actually verifies
+  // (see ONBOARDED_KEY on the host side), so it's a dismiss, not a "never ask again".
+  engineOnboardSkip.addEventListener('click', () => {
+    engineOnboard.classList.add('hidden');
+  });
+  function handleEngineStatus(msg) {
+    if (msg.state === 'ready') {
+      engineOnboard.classList.add('engine-onboard-done');
+      setTimeout(() => engineOnboard.classList.add('hidden'), 600);
+      return;
+    }
+    engineOnboard.classList.remove('hidden');
+    engineOnboard.classList.remove('engine-onboard-done');
+    engineOnboard.classList.toggle('engine-onboard-error', msg.state === 'error');
+    engineOnboardActions.classList.toggle('hidden', msg.state !== 'error');
+    if (msg.state === 'error') {
+      engineOnboardTitle.textContent = 'TierMux engine setup failed';
+      engineOnboardBar.style.width = '100%';
+    } else {
+      engineOnboardTitle.textContent = msg.state === 'downloading' ? 'Downloading TierMux engine…'
+        : msg.state === 'verifying' ? 'Verifying chat works…'
+        : 'Starting TierMux engine…';
+      if (typeof msg.percent === 'number') engineOnboardBar.style.width = `${Math.max(0, Math.min(100, msg.percent))}%`;
+    }
+    engineOnboardMessage.textContent = msg.message || '';
   }
 
   const railEl = null; // replaced by history dropdown
@@ -2844,6 +2902,9 @@ import { handleToolStatus } from './handlers/toolStatus';
     let paneCtx = null;
     if (msg.sessionId && PANE_SCOPED.has(msg.type)) paneCtx = activatePane(msg.sessionId);
     switch (msg.type) {
+      case 'engineStatus':
+        handleEngineStatus(msg);
+        break;
       case 'config':
         state = msg.config;
         autoApprove = !!state.autoApprove;
@@ -2862,10 +2923,17 @@ import { handleToolStatus } from './handlers/toolStatus';
         addUserBubble(msg.text, msg.requestId);
         break;
       case 'switchSession': {
-        // Pure visibility toggle now — no DOM wipe. A pane that already exists (this session
-        // has been streaming in the background) is just shown as-is: its tool cards, live
-        // text-so-far, and status timer are already there. Only a BRAND NEW pane needs the
-        // persisted transcript replayed into it so it isn't blank.
+        // Pure visibility toggle in the common case — no DOM wipe. A pane that already exists
+        // (this session has been streaming in the background) is just shown as-is: its tool
+        // cards, live text-so-far, and status timer are already there. Only a BRAND NEW pane
+        // needs the persisted transcript replayed into it so it isn't blank.
+        //
+        // Exception: the host also pushes switchSession to the CURRENTLY viewed session (never
+        // requested by the webview itself, see the `sid !== viewedSessionId` guards on send)
+        // to force a clean rebuild after truncating that session's transcript in place — e.g.
+        // "Revert to here" or stopRun's abandoned-turn cleanup. That case must wipe the pane
+        // before replaying, or the stale (now-removed) messages keep showing.
+        const rebuildInPlace = msg.sessionId === viewedSessionId;
         saveComposer(viewedSessionId); // stash the leaving session's draft/settings
         viewedSessionId = msg.sessionId;
         if (settingsOpen) toggleSettings();
@@ -2875,7 +2943,16 @@ import { handleToolStatus } from './handlers/toolStatus';
         if (!openTabIds.includes(viewedSessionId)) openTabIds.push(viewedSessionId);
         renderSessionTabs(); // move the active-tab highlight now, don't wait for the next sessionList broadcast
         renderChangedBar({ files: [] }); // reset; the host re-sends this session's own bar via postCheckpoints
-        if (!paneCtx.existed) {
+        if (rebuildInPlace) {
+          activeThreadEl.innerHTML = '';
+          currentTurn = null;
+          targets.clear();
+          userTargets.clear();
+          startTimes.clear();
+          statusTimers.forEach((id) => clearInterval(id));
+          statusTimers.clear();
+        }
+        if (!paneCtx.existed || rebuildInPlace) {
           (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts) : renderAssistantStatic(mm.text, mm.model, mm.ts, mm.secs, { reasoning: mm.reasoning, steps: mm.steps, usage: mm.usage }));
           if (!(msg.messages || []).length) renderEmpty();
         }

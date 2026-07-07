@@ -217,6 +217,11 @@
         "category": "TierMux"
       },
       {
+        "command": "tiermux.resetEngineOnboarding",
+        "title": "Reset Engine Onboarding (dev)",
+        "category": "TierMux"
+      },
+      {
         "command": "tiermux.toggleOcTrace",
         "title": "Toggle OC Trace",
         "category": "TierMux"

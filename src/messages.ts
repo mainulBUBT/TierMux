@@ -214,7 +214,9 @@ export type InMessage =
   | { type: 'addCustomModel'; endpointId: string; modelId: string; displayName?: string }
   | { type: 'removeCustomModel'; endpointId: string; modelId: string }
   /** Ask the host to GET <baseUrl>/models for an endpoint and stream back the model IDs (Kilo/Cline-style auto-discovery). */
-  | { type: 'fetchCustomEndpointModels'; id: string };
+  | { type: 'fetchCustomEndpointModels'; id: string }
+  /** Onboarding "Retry" button — re-attempt the OC engine startup. */
+  | { type: 'retryEngine' };
 
 /** A single tool step shown inside a turn's "Worked for Ns" disclosure. Mirrors the live
  *  `toolStatus` event so a re-rendered (e.g. post-revert) message can rebuild its step list. */
@@ -285,4 +287,8 @@ export type OutMessage =
   | { type: 'toggleHistory' }
   | { type: 'notice'; sessionId: string; text: string }
   | { type: 'error'; sessionId?: string; requestId?: string; message: string }
-  | { type: 'busy'; sessionId: string; busy: boolean };
+  | { type: 'busy'; sessionId: string; busy: boolean }
+  /** First-run engine onboarding: binary download progress → verify → ready/error.
+   *  Only sent while the engine hasn't been successfully onboarded before (see
+   *  `tiermux.onboardedEngine` global state) — returning users never see this. */
+  | { type: 'engineStatus'; state: 'downloading' | 'starting' | 'verifying' | 'ready' | 'error'; message?: string; percent?: number };

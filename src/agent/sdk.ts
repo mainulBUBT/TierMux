@@ -191,8 +191,10 @@ async function runViaOc(
   onSessionId?: (id: string) => void,
 ): Promise<AgentResult> {
   if (!ocClient) {
-    opts.onError('TierMux engine is not running. Run "npm run fetch:binaries" (or set OPENCODE_BIN), then reload the window.');
-    return { text: '' };
+    // Must throw, not return — a normal return makes callers post a blank assistant
+    // message with a zeroed "0 in · 0 out" usage footer, hiding the real error behind
+    // what looks like a completed (empty) turn.
+    throw new Error('TierMux engine is not running. Check the "TierMux Engine" output channel for details, then reload the window to retry.');
   }
   const client = ocClient;
 
@@ -307,32 +309,34 @@ async function runViaOc(
     }
   }
   if (!ocId) {
+    let info: unknown;
     try {
       // OC's createSession schema wants `model.id` (NOT `model.modelID`, which the
       // prompt endpoint uses). Sending modelID here 400s and the agent never starts.
-      const info = await client.createSession({ agent, model: { providerID: 'tiermux', id: ocModelID } });
-      // Defensive: handle response shapes where the id field is named differently
-      // or the entire body IS the id.
-      const id = (info as any)?.id ?? (info as any)?.sessionID ?? (info as any)?.sessionId ?? (info as any)?.ID;
-      if (typeof id === 'string' && id.length > 0) {
-        ocId = id;
-      } else if (typeof info === 'string' && (info as string).length > 0) {
-        ocId = info as string;
-      } else {
-        console.error(`[tiermux] OC createSession returned no id. raw=`, JSON.stringify(info));
-        opts.onError(`TierMux engine could not start a session. Raw response logged to DevTools console.`);
-        setForcedModel(undefined);
-        return { text: '' };
-      }
-      ocSessions.set(key, ocId);
-      ocSessionModels.set(key, modelID);
-      console.log(`[tiermux] OC session created id=${ocId} agent=${agent} model=tiermux/${modelID}`);
+      info = await client.createSession({ agent, model: { providerID: 'tiermux', id: ocModelID } });
     } catch (err) {
       console.error(`[tiermux] OC createSession failed:`, err);
-      opts.onError(`TierMux engine failed to start a session: ${err instanceof Error ? err.message : err}`);
       setForcedModel(undefined);
-      return { text: '' };
+      // Must throw, not return — a normal return here makes callers post a blank assistant
+      // message with a zeroed "0 in · 0 out" usage footer, hiding the real error behind
+      // what looks like a completed (empty) turn.
+      throw new Error(`TierMux engine failed to start a session: ${err instanceof Error ? err.message : err}`);
     }
+    // Defensive: handle response shapes where the id field is named differently
+    // or the entire body IS the id.
+    const id = (info as any)?.id ?? (info as any)?.sessionID ?? (info as any)?.sessionId ?? (info as any)?.ID;
+    if (typeof id === 'string' && id.length > 0) {
+      ocId = id;
+    } else if (typeof info === 'string' && (info as string).length > 0) {
+      ocId = info as string;
+    } else {
+      console.error(`[tiermux] OC createSession returned no id. raw=`, JSON.stringify(info));
+      setForcedModel(undefined);
+      throw new Error('TierMux engine could not start a session. Raw response logged to DevTools console.');
+    }
+    ocSessions.set(key, ocId);
+    ocSessionModels.set(key, modelID);
+    console.log(`[tiermux] OC session created id=${ocId} agent=${agent} model=tiermux/${modelID}`);
     if (turnId) profiler?.timerEnd(turnId, 'SessionSetup');
   } else {
     console.log(`[tiermux] reusing OC session id=${ocId} model=${modelID}`);
@@ -788,8 +792,9 @@ async function runViaOc(
 
         // 3) Retry spent or non-retryable — hand off to a stronger model before giving up.
         if (tryEscalate()) return;
-        opts.onError(errMsg);
-        finish({ text: out, platform, model, taskKind: opts.taskKind });
+        // No output to salvage — reject so the caller surfaces a real error instead of a
+        // blank assistant message with a zeroed "0 in · 0 out" usage footer.
+        fail(new Error(errMsg));
         return;
       }
 
@@ -877,8 +882,9 @@ async function runViaOc(
           finish({ text: out, platform, model });
           return;
         }
-        opts.onError(msg);
-        finish({ text: out, platform, model });
+        // No partial output to salvage — reject so the caller surfaces a real error
+        // instead of a blank assistant message with a zeroed "0 in · 0 out" usage footer.
+        fail(new Error(msg));
       });
 
     opts.abortSignal?.addEventListener('abort', () => { void client.abort(ocId!); finish({ text: out, platform, model }); }, { once: true });
