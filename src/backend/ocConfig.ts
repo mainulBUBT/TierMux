@@ -176,8 +176,14 @@ export function buildOcConfig(opts: OcConfigOptions): string {
           + '- Make the smallest correct change. Re-use existing patterns and helpers over new code.\n'
           + '- After editing: verify — grep for other call sites that the change might break; run '
           + 'typecheck/tests when feasible.\n'
-          + '- If the task is ambiguous or the relevant code can\'t be found, use the '
-          + 'clarifying-questions block instead of guessing.',
+          + '- If the task is ambiguous or the relevant code can\'t be found, FIRST emit a '
+          + 'clarifying-questions block in EXACTLY this format and then stop (no edits yet):\n'
+          + '???QUESTIONS???\n'
+          + 'Q[Short Label]: the question?\n'
+          + '- Option A :: optional one-line description\n'
+          + '- Option B :: optional one-line description\n'
+          + '???END???\n'
+          + 'Otherwise skip the block and proceed with the task.',
         permission: {
           read: 'allow', list: 'allow', glob: 'allow', grep: 'allow',
           web_fetch: 'allow', web_search: 'allow',

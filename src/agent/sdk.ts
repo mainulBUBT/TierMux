@@ -243,9 +243,12 @@ async function runViaOc(
   if (!isVirtual) setForcedModel(modelID);
 
   const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
-  const userText = typeof lastUser?.content === 'string'
-    ? lastUser.content
-    : lastUser?.content == null ? '' : JSON.stringify(lastUser.content);
+  // NOT JSON.stringify: array content (image/PDF attachments) has a `{type:'text',...}`
+  // block holding the actual question/file-text, plus binary image_url/file blocks OC's
+  // single text part can't carry. Dumping the raw array as JSON sent the base64 payload
+  // as literal prompt text — unreadable to the model and easily mistaken for the turn
+  // "forgetting" its attachment once that garbage replaced the real question.
+  const userText = contentToString(lastUser?.content);
 
   const profiler = opts.profiler;
   const turnId = profiler?.beginTurn({
@@ -307,6 +310,13 @@ async function runViaOc(
       console.log(`[tiermux] session fork failed, falling back to transcript replay: ${err instanceof Error ? err.message : err}`);
       firstPromptOverride = formatTranscriptForReplay(opts.messages);
     }
+  } else if (!ocId && priorUserTurnCount > 0) {
+    // No fork source (e.g. the extension host restarted and lost the in-memory OC
+    // session map, but chatViewProvider's persisted history survived). We still have
+    // full ground truth in `opts.messages` — replay it rather than starting the new
+    // session with zero memory of settled turns.
+    console.log(`[tiermux] no OC session found for an existing conversation — replaying transcript from history`);
+    firstPromptOverride = formatTranscriptForReplay(opts.messages);
   }
   if (!ocId) {
     let info: unknown;
