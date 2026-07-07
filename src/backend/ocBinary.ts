@@ -213,7 +213,12 @@ async function download(url: string, dest: string, onProgress?: (mb: number, per
     if (err instanceof Error && err.name === 'AbortError') {
       throw new Error(`Download timed out after ${DOWNLOAD_TIMEOUT_MS / 1000}s: ${url}`);
     }
-    throw err;
+    // Node's fetch (undici) wraps the real cause (ECONNREFUSED, ENOTFOUND, self-signed
+    // cert, proxy refusal, ...) in a generic "TypeError: fetch failed" — surface it so
+    // download failures are actually diagnosable instead of a dead end.
+    const cause = err instanceof Error && err.cause instanceof Error ? `: ${err.cause.message}` : '';
+    const base = err instanceof Error ? err.message : String(err);
+    throw new Error(`${base}${cause} (${url})`);
   }
   if (!res.ok || !res.body) {
     clearTimeout(timer);
