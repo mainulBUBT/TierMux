@@ -28,10 +28,17 @@ import { handleToolStatus } from './handlers/toolStatus';
   // bleeding together in this single webview.
   let viewedSessionId = null;
   let sessionList = [];
-  const targets = new Map(); // requestId -> { el, body, tools }
-  const userTargets = new Map(); // requestId -> user message element (for the restore bar)
-  const startTimes = new Map(); // requestId -> send time, for "Worked for Ns"
-  const statusTimers = new Map(); // requestId -> interval id, drives the live "Thinking… Ns" header
+  // Per-session render state used to live here as single module-level singletons. Now every
+  // open session gets its own persistent DOM pane (mounted for as long as the tab exists, not
+  // just while viewed) plus its own copy of these maps — see `panes` / `activatePane()` below.
+  // These `let` bindings still exist because every render helper in this file (ensureTarget,
+  // addUserBubble, upsertTool, setStatusLabel, scrollDown, ...) closes over them directly; on
+  // each inbound message we repoint them at the target session's pane instead of threading a
+  // context object through every function signature.
+  let targets = new Map(); // requestId -> { el, body, tools }
+  let userTargets = new Map(); // requestId -> user message element (for the restore bar)
+  let startTimes = new Map(); // requestId -> send time, for "Worked for Ns"
+  let statusTimers = new Map(); // requestId -> interval id, drives the live "Thinking… Ns" header
   // The .turn wrapping the current user command + its reply. Bounding each turn is what
   // lets the sticky command pin only while you scroll its own answer (see .turn in CSS).
   let currentTurn = null;
@@ -54,6 +61,7 @@ import { handleToolStatus } from './handlers/toolStatus';
         </div>
         <div class="history-list" id="history-list"></div>
       </div>
+      <div class="session-tabs" id="session-tabs"></div>
       <div class="chat-header">
         <input id="chat-title" class="chat-title" type="text" placeholder="New chat" autocomplete="off" spellcheck="false" />
       </div>
@@ -101,11 +109,68 @@ import { handleToolStatus } from './handlers/toolStatus';
     </div>
     </div>`;
 
-  const thread = $('#thread');
+  const thread = $('#thread'); // scroll container — holds every session's pane at once
+  // `thread` no longer holds a single session's messages: it holds one `.session-pane` div per
+  // open session (all mounted simultaneously), and only the viewed one is shown (display:none
+  // on the rest via CSS — see .session-pane.hidden in main.css). This is what lets a background
+  // session keep streaming tool cards / answer text into its own DOM while another tab is in
+  // view, instead of that state being silently dropped (the old single-`thread` design).
+  const panes = new Map(); // sessionId -> { id, el, targets, userTargets, startTimes, statusTimers, currentTurn }
+  let activeThreadEl = thread; // the pane element render helpers append into; falls back to
+                                // `thread` itself before the first pane exists (initial empty state)
+  let activePaneObj = null; // the pane object `targets`/`userTargets`/etc are currently bound to
+
+  function createPaneObj(id) {
+    // First pane ever created: drop any stray content appended directly to `thread` before
+    // panes existed (the initial renderEmpty() welcome screen render at boot).
+    if (!panes.size) {
+      Array.from(thread.children).forEach((c) => { if (!c.classList.contains('session-pane')) c.remove(); });
+    }
+    const el = document.createElement('div');
+    el.className = 'session-pane hidden';
+    el.dataset.sessionId = id;
+    thread.appendChild(el);
+    const p = { id, el, targets: new Map(), userTargets: new Map(), startTimes: new Map(), statusTimers: new Map(), currentTurn: null };
+    panes.set(id, p);
+    return p;
+  }
+
+  /** Point every render helper's module-level state at session `id`'s own pane, creating that
+   *  pane (empty) if this is the first message ever seen for it. Returns `{ pane, existed }` so
+   *  callers (e.g. switchSession) can tell a brand-new pane from one that's already live. */
+  function activatePane(id) {
+    const existed = panes.has(id);
+    const p = panes.get(id) || createPaneObj(id);
+    targets = p.targets;
+    userTargets = p.userTargets;
+    startTimes = p.startTimes;
+    statusTimers = p.statusTimers;
+    currentTurn = p.currentTurn;
+    activeThreadEl = p.el;
+    activePaneObj = p;
+    return { pane: p, existed };
+  }
+
+  /** `currentTurn` is a plain reference (not a Map), so — unlike targets/userTargets/startTimes/
+   *  statusTimers, which mutate the same object activatePane() already pointed at — it needs an
+   *  explicit write-back onto the pane after handling a message that may have changed it. */
+  function deactivatePane() {
+    if (activePaneObj) activePaneObj.currentTurn = currentTurn;
+  }
+
+  /** Pure visibility toggle — no DOM rebuild. Everything else (transcript, live tool cards,
+   *  in-flight streamed text) already lives in each pane's persistent subtree. */
+  function showPane(id) {
+    panes.forEach((p) => { if (p.id !== id) p.el.classList.add('hidden'); });
+    const p = panes.get(id);
+    if (p) p.el.classList.remove('hidden');
+  }
+
   const railEl = null; // replaced by history dropdown
   const historyDropdown = $('#history-dropdown');
   const historySearch = $('#history-search');
   const historyList = $('#history-list');
+  const sessionTabsEl = $('#session-tabs');
   const settingsEl = $('#settings');
   const composer = $('#composer');
   const footerEl = $('#footer');
@@ -235,7 +300,14 @@ import { handleToolStatus } from './handlers/toolStatus';
   let acQueryId = 0;       // latest mention query id (to ignore stale results)
   let acDebounce;
 
-  function scrollDown() { thread.scrollTop = thread.scrollHeight; }
+  function scrollDown() {
+    // Guard against a background pane's update yanking the viewed pane's scroll position.
+    // Only matters for work that outlives the synchronous message-handling tick that activated
+    // a pane (rAF-throttled streaming text, mainly) — everything else runs while activePaneObj
+    // still correctly points at the session the caller is rendering for.
+    if (activePaneObj && viewedSessionId && activePaneObj.id !== viewedSessionId) return;
+    thread.scrollTop = thread.scrollHeight;
+  }
 
   // showToast lives in ./dom (stateless, strict-checked).
 
@@ -341,6 +413,15 @@ import { handleToolStatus } from './handlers/toolStatus';
       lbl.textContent = s.title || 'New session';
       left.appendChild(dot);
       left.appendChild(lbl);
+      // Live "what's it doing" badge — only meaningful while the session actually has a run
+      // going (host clears `activity` once status leaves running/queued); the topic title
+      // above never changes because of it.
+      if (s.activity && (s.status === 'running' || s.status === 'queued')) {
+        const act = document.createElement('span');
+        act.className = 'history-activity';
+        act.textContent = s.activity;
+        left.appendChild(act);
+      }
       const ts = document.createElement('span');
       ts.className = 'history-ts';
       ts.textContent = fmtSessionDate(s.updatedAt || s.createdAt);
@@ -357,10 +438,87 @@ import { handleToolStatus } from './handlers/toolStatus';
     });
   }
 
+  // ---------- always-visible session tab strip ----------
+  // This is a "working set" of tabs — NOT the full history (that's what the history dropdown
+  // is for, opened on demand and listing every persisted session). A session only becomes a
+  // tab once you've actually visited it this run: switching to it (from history, "+", or a
+  // click) adds its id here; closing a tab (×) just drops it from this set, it does NOT
+  // delete the underlying session — reopen it any time from the history dropdown.
+  let openTabIds = [];
+
+  function renderSessionTabs() {
+    sessionTabsEl.innerHTML = '';
+    // Order is "when you opened it this run", not recency — a strip that reorders itself
+    // under you as background sessions update would be disorienting to click on.
+    const tabs = openTabIds.map((id) => sessionList.find((s) => s.id === id)).filter(Boolean);
+    if (tabs.length < 2) { sessionTabsEl.classList.add('hidden'); return; }
+    sessionTabsEl.classList.remove('hidden');
+    tabs.forEach((s) => {
+      const tab = document.createElement('div');
+      tab.className = 'session-tab' + (s.id === viewedSessionId ? ' active' : '') + (' status-' + (s.status || 'idle'));
+      tab.dataset.sessionId = s.id;
+      tab.title = s.title || 'New session';
+      const dot = document.createElement('span');
+      dot.className = 'session-tab-dot';
+      dot.textContent = STATUS_DOT[s.status || 'idle'] || '●';
+      const lbl = document.createElement('span');
+      lbl.className = 'session-tab-label';
+      lbl.textContent = s.title || 'New chat';
+      const close = document.createElement('span');
+      close.className = 'session-tab-close';
+      close.setAttribute('role', 'button');
+      close.title = 'Close tab';
+      close.dataset.closeId = s.id;
+      close.textContent = '×';
+      tab.append(dot, lbl, close);
+      sessionTabsEl.appendChild(tab);
+    });
+    const add = document.createElement('div');
+    add.className = 'session-tab-add';
+    add.setAttribute('role', 'button');
+    add.title = 'New chat';
+    add.textContent = '+';
+    sessionTabsEl.appendChild(add);
+  }
+
+  /** Remove `id` from the open-tab working set (does not touch the session itself). If it was
+   *  the active tab, hands the view to a neighboring open tab so closing never leaves you on
+   *  a tab that's no longer in the strip. */
+  function closeTab(id) {
+    const i = openTabIds.indexOf(id);
+    if (i < 0) return;
+    openTabIds.splice(i, 1);
+    if (id === viewedSessionId && openTabIds.length) {
+      const next = openTabIds[Math.min(i, openTabIds.length - 1)];
+      send({ type: 'switchSession', sessionId: next });
+    }
+    renderSessionTabs();
+  }
+
+  sessionTabsEl.addEventListener('click', (e) => {
+    const closeEl = e.target.closest('[data-close-id]');
+    if (closeEl) { closeTab(closeEl.dataset.closeId); return; }
+    if (e.target.closest('.session-tab-add')) { send({ type: 'newChat' }); return; }
+    const tabEl = e.target.closest('[data-session-id]');
+    if (tabEl) {
+      const sid = tabEl.dataset.sessionId;
+      if (sid && sid !== viewedSessionId) send({ type: 'switchSession', sessionId: sid });
+    }
+  });
+  // The strip only scrolls horizontally, but most mice/trackpads emit vertical wheel
+  // deltas by default — redirect those into horizontal scroll so wheeling over the tabs
+  // works without needing Shift held down.
+  sessionTabsEl.addEventListener('wheel', (e) => {
+    if (sessionTabsEl.scrollWidth <= sessionTabsEl.clientWidth) return;
+    if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return; // already a horizontal gesture
+    e.preventDefault();
+    sessionTabsEl.scrollLeft += e.deltaY;
+  }, { passive: false });
+
   // ---------- empty / welcome state ----------
-  function clearEmpty() { const e = thread.querySelector('.empty'); if (e) e.remove(); }
+  function clearEmpty() { const e = activeThreadEl.querySelector('.empty'); if (e) e.remove(); }
   function renderEmpty() {
-    if (thread.querySelector('.msg')) return;
+    if (activeThreadEl.querySelector('.msg')) return;
     clearEmpty();
     const el = document.createElement('div');
     el.className = 'empty';
@@ -403,7 +561,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     });
     const viewAllBtn = el.querySelector('#empty-view-all-btn');
     if (viewAllBtn) viewAllBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleHistory(true); });
-    thread.appendChild(el);
+    activeThreadEl.appendChild(el);
   }
 
   function fmtTs(ts) {
@@ -490,7 +648,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     currentTurn = document.createElement('div');
     currentTurn.className = 'turn';
     currentTurn.appendChild(el);
-    thread.appendChild(currentTurn);
+    activeThreadEl.appendChild(currentTurn);
     clampUserText(body, textBody); // collapse long questions with a See more / See less toggle
     if (requestId) userTargets.set(requestId, el);
     if (requestId) startTimes.set(requestId, ts || Date.now());
@@ -574,7 +732,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     if (details.usage) footStr += `  ·  ${fmtUsage(details.usage)}`;
     if (secs != null) footStr += `  ·  ${secs}s`;
     el.appendChild(assistantFooter(el, footStr, ts));
-    (currentTurn || thread).appendChild(el);
+    (currentTurn || activeThreadEl).appendChild(el);
   }
 
   function ensureTarget(requestId, platform, model) {
@@ -602,7 +760,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     el.appendChild(flow);
     el.appendChild(statusEl);
     el.appendChild(bubble);
-    (currentTurn || thread).appendChild(el);
+    (currentTurn || activeThreadEl).appendChild(el);
     const modelStr = model ? `${platform || ''}/${model}` : '';
     t = { el, body: bubble, tools: flow, flow, currentText: null, statusEl, statusLabel: statusEl.querySelector('.agent-label'), statusCaret: statusEl.querySelector('.agent-caret'), statusElapsed: statusEl.querySelector('.agent-elapsed'), toolRunning: false, activeTool: null, model: modelStr, requestId };
     targets.set(requestId, t);
@@ -665,8 +823,12 @@ import { handleToolStatus } from './handlers/toolStatus';
   // Type a verb out one character at a time with a trailing cursor, so the live label
   // reads like the assistant is *writing* the word right now. Cancels any in-flight type
   // on the same target first. Holds the full word (cursor still blinking via CSS) once done.
-  function typeVerb(requestId, fullVerb) {
-    const t = targets.get(requestId);
+  // Takes the Target object directly (not a requestId to look up) — its only two callers
+  // (setStatusLabel, and startStatusTimer's own `update` tick) already have `t` in hand, and a
+  // fresh `targets.get(requestId)` lookup here would read whatever pane's Map the module-level
+  // `targets` binding happens to point at when a background pane's setInterval tick fires,
+  // which drifts to a DIFFERENT session's map as soon as any other message gets processed.
+  function typeVerb(t, fullVerb) {
     if (!t || !t.statusLabel) return;
     if (t._typeTimer) { clearInterval(t._typeTimer); t._typeTimer = null; }
     const speed = 45; // ms per character — brisk but legible
@@ -698,7 +860,7 @@ import { handleToolStatus } from './handlers/toolStatus';
         t.rotateWord = pickThinkingVerb(t.rotateWord);
         t.nextRotateAt = Date.now() + nextRotateDelay();
         if (t.statusCaret) t.statusCaret.classList.remove('hidden');
-        typeVerb(requestId, t.rotateWord);
+        typeVerb(t, t.rotateWord);
       } else {
         t.rotating = false;
         if (t._typeTimer) { clearInterval(t._typeTimer); t._typeTimer = null; }
@@ -710,11 +872,18 @@ import { handleToolStatus } from './handlers/toolStatus';
   }
   function startStatusTimer(requestId) {
     if (statusTimers.has(requestId)) return; // already ticking
+    // Snapshot THIS pane's targets/statusTimers Map objects now, synchronously, while they're
+    // correctly bound — `update` below runs on a 500ms setInterval that outlives this tick, by
+    // which point the module-level `targets`/`statusTimers` bindings may well have been
+    // repointed at a different (background) session's pane. Maps are reference types, so the
+    // snapshot keeps ticking against the RIGHT pane's data regardless of what's currently active.
+    const targetsRef = targets;
+    const statusTimersRef = statusTimers;
     const start = startTimes.get(requestId) || Date.now();
-    const tgt = targets.get(requestId);
+    const tgt = targetsRef.get(requestId);
     if (tgt) tgt.startedAt = start; // remember the epoch so finalizeWork can compute "Worked for Ns"
     const update = () => {
-      const t = targets.get(requestId);
+      const t = targetsRef.get(requestId);
       if (!t || !t.statusElapsed) return;
       t.statusElapsed.textContent = Math.max(0, Math.round((Date.now() - start) / 1000)) + 's';
       // Roll the whimsical thinking verb on a random 2–5s cadence while in the
@@ -723,11 +892,11 @@ import { handleToolStatus } from './handlers/toolStatus';
       if (t.rotating && !t.toolRunning && Date.now() >= (t.nextRotateAt || 0)) {
         t.rotateWord = pickThinkingVerb(t.rotateWord);
         t.nextRotateAt = Date.now() + nextRotateDelay();
-        typeVerb(requestId, t.rotateWord);
+        typeVerb(t, t.rotateWord);
       }
     };
     update();
-    statusTimers.set(requestId, setInterval(update, 500));
+    statusTimersRef.set(requestId, setInterval(update, 500));
   }
   function stopStatusTimer(requestId, hide) {
     const id = statusTimers.get(requestId);
@@ -796,7 +965,12 @@ import { handleToolStatus } from './handlers/toolStatus';
     const previews = pendingAttachments
       .filter((a) => a.kind === 'image' && a.dataUrl)
       .map((a) => ({ kind: 'image', name: a.name, dataUrl: a.dataUrl }));
+    // A background session's live updates may have last repointed targets/currentTurn/etc at
+    // ITS pane — explicitly (re)activate the viewed session's own pane before rendering the
+    // just-typed message, since this call happens outside the message-dispatch activation.
+    activatePane(viewedSessionId);
     addUserBubble(text, requestId, Date.now(), pendingAttachments.map((a) => ({ kind: a.kind, name: a.name, dataUrl: a.dataUrl })));
+    deactivatePane();
     send({
       type: 'sendMessage', requestId, text,
       mode: currentMode, model: currentModel, reasoningEffort: reasoningSel.value,
@@ -1074,7 +1248,8 @@ import { handleToolStatus } from './handlers/toolStatus';
   function addModelItem(value, label, m) {
     const item = document.createElement('div');
     const deprecated = (state.deprecated || []).includes(value);
-    item.className = 'model-item' + (value === currentModel ? ' selected' : '') + (deprecated ? ' deprecated' : '');
+    const slow = !deprecated && (state.slow || []).includes(value);
+    item.className = 'model-item' + (value === currentModel ? ' selected' : '') + (deprecated ? ' deprecated' : '') + (slow ? ' slow' : '');
     item.dataset.value = value;
     const lbl = document.createElement('span');
     lbl.className = 'mi-label';
@@ -1085,6 +1260,12 @@ import { handleToolStatus } from './handlers/toolStatus';
       tag.className = 'mi-deprecated';
       tag.textContent = 'unavailable';
       tag.title = 'The provider returned “not found” for this model — it looks deprecated or removed. Auto skips it.';
+      item.appendChild(tag);
+    } else if (slow) {
+      const tag = document.createElement('span');
+      tag.className = 'mi-slow';
+      tag.textContent = 'slow';
+      tag.title = 'A recent response took 8s or longer. Auto deprioritizes this model for 30 minutes — you can still select it directly.';
       item.appendChild(tag);
     }
     const caps = [];
@@ -1098,13 +1279,13 @@ import { handleToolStatus } from './handlers/toolStatus';
     item.addEventListener('click', () => setModel(value, label));
     modelList.appendChild(item);
   }
-  function rebuildModelPicker() {
-    modelList.innerHTML = '';
-    addModelItem('auto', 'Auto (smart routing)');
-    let lastPlatform = null;
-    let selectedLabel = null;
-    // Only ACTIVE providers appear in the picker — i.e. the user has set a key for the
-    // platform (or it's keyless) AND has checked the model. Same set Auto routes over.
+  /** Every model the picker (and any other model dropdown) should offer: enabled on an
+   *  active platform, or an enabled custom-endpoint model. Single source of truth so the
+   *  chat-input picker and the "Others" tab utility-model selector never drift apart. */
+  function getEnabledModelOptions() {
+    const options = [];
+    // Only ACTIVE providers count — i.e. the user has set a key for the platform (or
+    // it's keyless) AND has checked the model. Same set Auto routes over.
     const _disabledProviders = new Set(state.disabledProviders || []);
     const activePlatforms = new Set((state.platforms || []).filter((p) => p.configured && !_disabledProviders.has(p.platform)).map((p) => p.platform));
     const enabled = new Set(
@@ -1112,50 +1293,42 @@ import { handleToolStatus } from './handlers/toolStatus';
         .filter((e) => e.enabled && activePlatforms.has(e.platform))
         .map((e) => `${e.platform}::${e.modelId}`),
     );
-    state.catalog.forEach((m) => {
+    (state.catalog || []).forEach((m) => {
       const value = `${m.platform}::${m.modelId}`;
       if (!enabled.has(value)) return;
-      if (m.platform !== lastPlatform) {
-        lastPlatform = m.platform;
+      options.push({ value, label: m.displayName, group: platformDisplayName(m.platform, m.modelId), model: m });
+    });
+    // Custom endpoints: enabled models, grouped by endpoint.
+    const customModels = (state.fallback || []).filter((e) => e.platform === 'custom' && e.enabled);
+    customModels.forEach((e) => {
+      const epId = e.modelId.split('::')[0];
+      const ep = (state.customEndpoints || []).find((x) => x.id === epId);
+      const upstreamId = e.modelId.split('::').slice(1).join('::');
+      options.push({ value: `custom::${e.modelId}`, label: upstreamId, group: ep ? ep.name : 'Custom', model: { supportsReasoning: false } });
+    });
+    return options;
+  }
+
+  function rebuildModelPicker() {
+    modelList.innerHTML = '';
+    addModelItem('auto', 'Auto (smart routing)');
+    const options = getEnabledModelOptions();
+    let lastGroup = null;
+    let selectedLabel = null;
+    options.forEach((opt) => {
+      if (opt.group !== lastGroup) {
+        lastGroup = opt.group;
         const h = document.createElement('div');
         h.className = 'model-group';
-        h.textContent = platformDisplayName(m.platform, m.modelId);
+        h.textContent = opt.group;
         modelList.appendChild(h);
       }
-      addModelItem(value, m.displayName, m);
-      if (value === currentModel) selectedLabel = m.displayName;
+      addModelItem(opt.value, opt.label, opt.model);
+      if (opt.value === currentModel) selectedLabel = opt.label;
     });
-    // Custom endpoints: add enabled models (grouped by endpoint)
-    const customModels = (state.fallback || []).filter((e) => e.platform === 'custom' && e.enabled);
-    if (customModels.length > 0) {
-      const byEndpoint = new Map();
-      customModels.forEach((e) => {
-        const epId = e.modelId.split('::')[0];
-        if (!byEndpoint.has(epId)) byEndpoint.set(epId, []);
-        byEndpoint.get(epId).push(e);
-      });
-      byEndpoint.forEach((models, epId) => {
-        const ep = (state.customEndpoints || []).find((e) => e.id === epId);
-        const h = document.createElement('div');
-        h.className = 'model-group';
-        h.textContent = ep ? ep.name : 'Custom';
-        modelList.appendChild(h);
-        models.forEach((e) => {
-          const upstreamId = e.modelId.split('::').slice(1).join('::');
-          const value = `custom::${e.modelId}`;
-          addModelItem(value, upstreamId, { supportsReasoning: false });
-          if (value === currentModel) selectedLabel = upstreamId;
-        });
-      });
-    }
-    // Custom endpoint models use platform='custom' which may not be in activePlatforms,
-    // so they won't appear in `enabled`. Build a separate set so a user's custom-endpoint
-    // selection isn't silently wiped on every config refresh.
-    const customEnabled = new Set(
-      (state.fallback || []).filter((e) => e.platform === 'custom' && e.enabled).map((e) => `custom::${e.modelId}`)
-    );
     // If the selected model was unchecked/removed, fall back to Auto.
-    if (currentModel !== 'auto' && !enabled.has(currentModel) && !customEnabled.has(currentModel)) currentModel = 'auto';
+    const enabledValues = new Set(options.map((opt) => opt.value));
+    if (currentModel !== 'auto' && !enabledValues.has(currentModel)) currentModel = 'auto';
     // Keep the button label in sync with the current selection.
     if (currentModel === 'auto') { modelBtnLabel.textContent = 'Auto'; modelBtn.title = 'Auto (smart routing)'; }
     else if (selectedLabel) { modelBtnLabel.textContent = selectedLabel; modelBtn.title = selectedLabel; }
@@ -1387,82 +1560,40 @@ import { handleToolStatus } from './handlers/toolStatus';
     else renderOthersSection();
   }
 
-  // Settings metadata: key, label, type, description, and optional enum/min/max.
-  const SETTINGS_META = [
-    // -- Agent --
-    { key: 'agent.requireWriteConfirmation', label: 'Require write confirmation', type: 'boolean',
-      desc: 'Show a diff and ask for confirmation before the agent writes/creates/deletes a file.' },
-    { key: 'agent.qualityGate', label: 'Quality gate', type: 'boolean',
-      desc: 'Escalate to the next model when an answer is weak (refusal, repetition, truncation) instead of accepting it.' },
-    { key: 'agent.hotStandby', label: 'Hot standby', type: 'boolean',
-      desc: 'Pre-create the next fallback model\'s session in the background so escalation starts faster.' },
-    { key: 'agent.chatHedging', label: 'Chat hedging', type: 'boolean',
-      desc: 'Race the fast and smart models simultaneously on the first chat turn and take whichever answers first.' },
-    { key: 'agent.autoContinue', label: 'Auto-continue', type: 'boolean',
-      desc: 'Automatically resume paused agent runs (up to 3 continuations) without waiting for input.' },
-    { key: 'agent.commandApproval', label: 'Command approval mode', type: 'enum', enum: ['always', 'allowlist', 'never'],
-      desc: 'How the agent\'s runCommand tool is gated before running shell commands.' },
-    { key: 'agent.maxIterations', label: 'Max iterations', type: 'number', min: 1, max: 100,
-      desc: 'Maximum tool-call iterations per agent task before pausing.' },
-    { key: 'agent.maxConcurrentRuns', label: 'Max concurrent runs', type: 'number', min: 1, max: 10,
-      desc: 'Maximum number of chat sessions that run their agent at the same time.' },
-    { key: 'agent.commandTimeoutMs', label: 'Command timeout (ms)', type: 'number', min: 1000, max: 300000,
-      desc: 'Maximum time (ms) a single agent command may run before it is killed.' },
-    { key: 'agent.autoCompactThreshold', label: 'Auto-compact threshold', type: 'number', min: 0, max: 1, step: 0.05,
-      desc: 'Automatically compact the conversation when it exceeds this fraction of the context window. 0 disables.' },
-    // -- Completions --
-    { key: 'completions.enabled', label: 'Inline completions', type: 'boolean',
-      desc: 'Enable Copilot-style inline (ghost-text) completions.' },
-    { key: 'completions.model', label: 'Completions model', type: 'string',
-      desc: 'Model ID used for inline completions, or "auto" to use a fast enabled model.' },
-    { key: 'completions.debounceMs', label: 'Completions debounce (ms)', type: 'number', min: 0, max: 5000,
-      desc: 'Debounce delay before requesting an inline completion.' },
-    // -- Context --
-    { key: 'context.includeOpenEditors', label: 'Include open editors', type: 'boolean',
-      desc: 'Automatically include the active file and open tab names as context each turn.' },
-    { key: 'context.ambientSliceRadius', label: 'Ambient slice radius', type: 'number', min: 0, max: 100,
-      desc: 'Lines of context on each side of the cursor to include with the active file.' },
-    { key: 'context.ambientMaxChars', label: 'Ambient max chars', type: 'number', min: 0, max: 50000,
-      desc: 'Hard cap (chars) on the active-file slice injected per turn.' },
-    { key: 'context.ambientMaxTabs', label: 'Ambient max tabs', type: 'number', min: 0, max: 50,
-      desc: 'Maximum number of open tab names to include in ambient context.' },
-    // -- Chat --
-    { key: 'chat.typingSpeedMs', label: 'Typing speed (ms)', type: 'number', min: 0, max: 100,
-      desc: 'Delay between chunks of the simulated typing animation. 0 disables animation.' },
-    // -- Memory --
-    { key: 'memory.autoLearn', label: 'Auto-learn code style', type: 'boolean',
-      desc: 'After edits, infer basic code-style signals and record them in .tiermux/memory.md.' },
-    // -- Graph --
-    { key: 'graph.enabled', label: 'Code graph', type: 'boolean',
-      desc: 'Enable the structural code graph for cross-file context.' },
-    // -- Plan --
-    { key: 'plan.saveToFile', label: 'Save plans to file', type: 'boolean',
-      desc: 'Save actionable plans as markdown checklist files.' },
-    { key: 'plan.folder', label: 'Plans folder', type: 'string',
-      desc: 'Workspace-relative folder where plan files are written.' },
-    // -- Profiler --
-    { key: 'profiler.enabled', label: 'Profiler', type: 'boolean',
-      desc: 'Collect per-turn performance traces (latency, tokens, fallbacks).' },
-    { key: 'profiler.ringSize', label: 'Profiler ring size', type: 'number', min: 10, max: 10000,
-      desc: 'Maximum number of recent turns to keep in the profiler\'s ring buffer.' },
-    // -- Engine --
-    { key: 'engine.traceOcEvents', label: 'Trace OC events', type: 'boolean',
-      desc: 'Log every raw TierMux engine event to the output channel.' },
-    // -- Usage --
-    { key: 'usage.referencePriceInPer1M', label: 'Reference price (in/1M tokens)', type: 'number', min: 0,
-      desc: 'Reference price per 1M input tokens for estimated savings.' },
-    { key: 'usage.referencePriceOutPer1M', label: 'Reference price (out/1M tokens)', type: 'number', min: 0,
-      desc: 'Reference price per 1M output tokens for estimated savings.' },
-    // -- Other --
-    { key: 'useOpenCodeEngine', label: 'Use OpenCode engine', type: 'boolean',
-      desc: 'Use the bundled TierMux engine instead of the legacy built-in agent.' },
-    { key: 'utilityModel', label: 'Utility model', type: 'string',
-      desc: 'Model used for short utility tasks (chat titles, commit messages). \'auto\' prefers a strong keyless model.' },
-    { key: 'requestTimeoutMs', label: 'Request timeout (ms)', type: 'number', min: 1000, max: 300000,
-      desc: 'Per-provider request timeout before failing over to the next model.' },
-    { key: 'rateLimitCooldownMs', label: 'Rate-limit cooldown (ms)', type: 'number', min: 0, max: 600000,
-      desc: 'How long to skip a rate-limited provider before trying it again.' },
-  ];
+  /** A settings row whose value is a model picked from `getEnabledModelOptions()` (plus Auto),
+   *  used for settings backed by a live model dropdown rather than a generic text field. */
+  function buildModelSelectRow(label, desc, currentValue, onChange) {
+    const row = el('div', 'setting-row');
+    const left = el('div', 'setting-left');
+    const lbl = el('div', 'setting-label');
+    lbl.textContent = label;
+    const dsc = el('div', 'setting-desc');
+    dsc.textContent = desc;
+    left.append(lbl, dsc);
+    row.append(left);
+
+    const sel = document.createElement('select');
+    const autoOpt = document.createElement('option');
+    autoOpt.value = 'auto'; autoOpt.textContent = 'Auto';
+    sel.appendChild(autoOpt);
+    let lastGroup = null;
+    getEnabledModelOptions().forEach((opt) => {
+      if (opt.group !== lastGroup) {
+        lastGroup = opt.group;
+        const g = document.createElement('optgroup');
+        g.label = opt.group;
+        g.dataset.group = opt.group;
+        sel.appendChild(g);
+      }
+      const o = document.createElement('option');
+      o.value = opt.value; o.textContent = opt.label;
+      sel.querySelector(`optgroup[data-group="${CSS.escape(opt.group)}"]`).appendChild(o);
+    });
+    sel.value = currentValue || 'auto';
+    sel.addEventListener('change', () => onChange(sel.value));
+    row.append(sel);
+    return row;
+  }
 
   /** Full settings browser — "Others" tab. */
   function renderOthersSection() {
@@ -1473,30 +1604,39 @@ import { handleToolStatus } from './handlers/toolStatus';
     desc.textContent = 'Configure TierMux extension settings. Changes take effect immediately.';
     wrap.append(header, desc);
 
+    // Utility model + Completions model: dedicated rows (not part of SETTINGS_META) because
+    // they need a live dropdown of enabled models, not a text box.
+    wrap.append(buildModelSelectRow(
+      'Utility model',
+      'Model used for short utility tasks: chat titles and commit-message generation. Auto prefers a strong keyless model.',
+      state.utilityModel,
+      (value) => send({ type: 'setUtilityModel', model: value }),
+    ));
+    wrap.append(buildModelSelectRow(
+      'Completions model',
+      'Model used for inline (ghost-text) completions. Auto uses a fast enabled model.',
+      (state.settings || {})['completions.model'],
+      (value) => send({ type: 'setExtensionSetting', key: 'completions.model', value }),
+    ));
+
     const settings = state.settings || {};
+    const settingsMeta = state.settingsMeta || [];
     let lastSection = '';
-    for (const meta of SETTINGS_META) {
+    for (const meta of settingsMeta) {
       const section = meta.key.split('.')[0];
       if (section !== lastSection) {
         lastSection = section;
         const sg = el('div', 'setting-group');
         sg.textContent = section.charAt(0).toUpperCase() + section.slice(1);
-        sg.style.cssText = 'font-size:11px;font-weight:600;text-transform:uppercase;opacity:.6;margin:12px 0 4px;letter-spacing:.5px;';
         wrap.append(sg);
       }
       const value = settings[meta.key] !== undefined ? settings[meta.key] : defaultFor(meta);
       const row = el('div', 'setting-row');
-      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 4px;border-radius:4px;';
-      row.addEventListener('mouseenter', () => { row.style.background = 'var(--vscode-list-hoverBackground)'; });
-      row.addEventListener('mouseleave', () => { row.style.background = ''; });
 
-      const left = el('div');
-      left.style.cssText = 'flex:1;min-width:0;';
-      const lbl = el('div');
-      lbl.style.cssText = 'font-size:12px;font-weight:500;';
+      const left = el('div', 'setting-left');
+      const lbl = el('div', 'setting-label');
       lbl.textContent = meta.label;
-      const dsc = el('div');
-      dsc.style.cssText = 'font-size:11px;opacity:.6;line-height:1.3;margin-top:2px;';
+      const dsc = el('div', 'setting-desc');
       dsc.textContent = meta.desc;
       left.append(lbl, dsc);
       row.append(left);
@@ -1508,7 +1648,6 @@ import { handleToolStatus } from './handlers/toolStatus';
         row.append(sw);
       } else if (meta.type === 'enum') {
         const sel = document.createElement('select');
-        sel.style.cssText = 'font-size:12px;padding:3px 6px;border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));';
         (meta.enum || []).forEach((opt) => {
           const o = document.createElement('option');
           o.value = opt; o.textContent = opt;
@@ -1523,7 +1662,6 @@ import { handleToolStatus } from './handlers/toolStatus';
         const inp = document.createElement('input');
         inp.type = 'number';
         inp.value = String(value ?? 0);
-        inp.style.cssText = 'width:90px;font-size:12px;padding:3px 6px;border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));text-align:right;';
         if (meta.min !== undefined) inp.min = String(meta.min);
         if (meta.max !== undefined) inp.max = String(meta.max);
         if (meta.step !== undefined) inp.step = String(meta.step);
@@ -1546,7 +1684,6 @@ import { handleToolStatus } from './handlers/toolStatus';
         const inp = document.createElement('input');
         inp.type = 'text';
         inp.value = String(value ?? '');
-        inp.style.cssText = 'width:140px;font-size:12px;padding:3px 6px;border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));';
         let saveTimer;
         inp.addEventListener('input', () => {
           clearTimeout(saveTimer);
@@ -2687,15 +2824,19 @@ import { handleToolStatus } from './handlers/toolStatus';
 
   // Message handler functions (Phase D2: typed boundaries)
 
+  // Message types that belong to one specific session's persistent pane. For every one of
+  // these that carries a sessionId, we repoint targets/userTargets/startTimes/statusTimers/
+  // currentTurn/activeThreadEl at that session's pane BEFORE running its case body — so the
+  // (otherwise unchanged) render logic below writes into the right session's DOM regardless of
+  // which session is currently being viewed. 'switchSession' is included so its case body can
+  // use the returned `existed` flag to tell a brand-new pane from an already-live one.
+  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'checkpoint', 'notice', 'error', 'busy']);
+
   // ---------- inbound messages ----------
   window.addEventListener('message', (event) => {
     const msg: RxMessage = event.data;
-    // This webview renders one session at a time. Render messages for a different
-    // (background) session are ignored here — the host caches their state and replays it
-    // when we switch to them (see switchSession). switchSession/sessionList carry their own
-    // sessionId semantics and are handled below, so they're excluded from this filter.
-    const PER_SESSION = new Set(['userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'checkpoint', 'changedFiles', 'busy', 'notice', 'error']);
-    if (PER_SESSION.has(msg.type) && msg.sessionId && viewedSessionId && msg.sessionId !== viewedSessionId) return;
+    let paneCtx = null;
+    if (msg.sessionId && PANE_SCOPED.has(msg.type)) paneCtx = activatePane(msg.sessionId);
     switch (msg.type) {
       case 'config':
         state = msg.config;
@@ -2714,30 +2855,39 @@ import { handleToolStatus } from './handlers/toolStatus';
       case 'userEcho':
         addUserBubble(msg.text, msg.requestId);
         break;
-      case 'switchSession':
-        // Rebuild this single-session view for the session we're now viewing. Its full
-        // transcript is replayed, then the host re-emits any cached live/cards state.
+      case 'switchSession': {
+        // Pure visibility toggle now — no DOM wipe. A pane that already exists (this session
+        // has been streaming in the background) is just shown as-is: its tool cards, live
+        // text-so-far, and status timer are already there. Only a BRAND NEW pane needs the
+        // persisted transcript replayed into it so it isn't blank.
         saveComposer(viewedSessionId); // stash the leaving session's draft/settings
         viewedSessionId = msg.sessionId;
         if (settingsOpen) toggleSettings();
-        thread.innerHTML = '';
-        targets.clear();
-        userTargets.clear();
-        startTimes.clear();
-        statusTimers.forEach((id) => clearInterval(id));
-        statusTimers.clear();
-        currentTurn = null;
-        renderChangedBar({ files: [] });
-        (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts) : renderAssistantStatic(mm.text, mm.model, mm.ts, mm.secs, { reasoning: mm.reasoning, steps: mm.steps, usage: mm.usage }));
-        if (!(msg.messages || []).length) renderEmpty();
+        showPane(viewedSessionId);
+        // Visiting a session — whether via "+", the history dropdown, or a tab click — is what
+        // earns it a spot in the tab strip's working set (see openTabIds above).
+        if (!openTabIds.includes(viewedSessionId)) openTabIds.push(viewedSessionId);
+        renderSessionTabs(); // move the active-tab highlight now, don't wait for the next sessionList broadcast
+        renderChangedBar({ files: [] }); // reset; the host re-sends this session's own bar via postCheckpoints
+        if (!paneCtx.existed) {
+          (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts) : renderAssistantStatic(mm.text, mm.model, mm.ts, mm.secs, { reasoning: mm.reasoning, steps: mm.steps, usage: mm.usage }));
+          if (!(msg.messages || []).length) renderEmpty();
+        }
         loadComposer(viewedSessionId); // restore the entering session's draft/settings
         scrollDown();
         break;
-      case 'sessionList':
+      }
+      case 'sessionList': {
         sessionList = msg.sessions || [];
+        // Drop any tab whose session was permanently deleted (e.g. via the history
+        // dropdown's trash icon) so the working set can't accumulate dead ids.
+        openTabIds = openTabIds.filter((id) => sessionList.some((s) => s.id === id));
         renderTabs();
-        if (thread.querySelector('.empty')) renderEmpty();
+        renderSessionTabs();
+        const vp = panes.get(viewedSessionId);
+        if (vp && vp.el.querySelector('.empty')) { activatePane(viewedSessionId); renderEmpty(); deactivatePane(); }
         break;
+      }
       case 'setInput':
         input.value = msg.text || '';
         input.focus();
@@ -2964,7 +3114,7 @@ import { handleToolStatus } from './handlers/toolStatus';
       case 'askUserDismissed': {
         // The host drained this in-flight askUser (e.g. user cancelled or started a new turn).
         // Find the matching card in the DOM and disable it so it can't be submitted.
-        thread.querySelectorAll('.ask-card').forEach((card) => {
+        activeThreadEl.querySelectorAll('.ask-card').forEach((card) => {
           if (card.dataset.callId === msg.callId) {
             card.querySelectorAll('button, textarea').forEach((el) => { el.disabled = true; });
             const note = document.createElement('div'); note.className = 'ask-answer';
@@ -3125,11 +3275,15 @@ import { handleToolStatus } from './handlers/toolStatus';
         seg._buf += msg.text;
         if (!seg._pending) {
           seg._pending = true;
+          // Captured now (not read from module state when the rAF fires) — a background
+          // session streams continuously, so by the time this callback runs, some OTHER
+          // session's message may have repointed activePaneObj/viewedSessionId already.
+          const sid = msg.sessionId;
           requestAnimationFrame(() => {
             seg._pending = false;
             seg.innerHTML = '';
             seg.appendChild(renderMarkdown(stripClarifyBlock(seg._buf)));
-            scrollDown();
+            if (!sid || sid === viewedSessionId) scrollDown();
           });
         }
         break;
@@ -3195,7 +3349,11 @@ import { handleToolStatus } from './handlers/toolStatus';
         renderCheckpoint(msg);
         break;
       case 'changedFiles':
-        renderChangedBar(msg);
+        // The pinned "changed files" bar lives in the composer, outside any pane — it only
+        // ever reflects the currently VIEWED session (composer/settings intentionally stay
+        // singular; see the task notes). Background sessions' changed-file state is re-sent
+        // via postCheckpoints() when you switch to them.
+        if (!msg.sessionId || msg.sessionId === viewedSessionId) renderChangedBar(msg);
         break;
       case 'attachmentAdded':
         pendingAttachments.push(msg.attachment);
@@ -3217,7 +3375,7 @@ import { handleToolStatus } from './handlers/toolStatus';
         const d = document.createElement('div');
         d.className = 'compact-divider';
         d.textContent = msg.text;
-        (currentTurn || thread).appendChild(d);
+        (currentTurn || activeThreadEl).appendChild(d);
         scrollDown();
         break;
       }
@@ -3227,7 +3385,7 @@ import { handleToolStatus } from './handlers/toolStatus';
         if (msg.requestId) finalizeWork(msg.requestId);
         // Append into the flow (same layer as response text) so it appears directly
         // after the work summary — not nested inside the outer t.body bubble.
-        const dest = t ? t.flow ?? t.body : (currentTurn || thread);
+        const dest = t ? t.flow ?? t.body : (currentTurn || activeThreadEl);
         // Replace any prior error notice for this turn so a failed retry (e.g. an
         // escalated takeover that also errors) can't stack two identical red marks.
         dest.querySelectorAll('.error-notice').forEach((e) => e.remove());
@@ -3238,20 +3396,28 @@ import { handleToolStatus } from './handlers/toolStatus';
         break;
       }
       case 'busy': {
-        busy = msg.busy;
-        const sb = $('#btn-send');
-        sb.innerHTML = busy ? ICON.stop : ICON.send;
-        sb.title = busy ? 'Stop' : 'Send (Enter)';
-        sb.classList.toggle('stopping', busy);
-        updateSendEnabled();
-        // Backstop: any run that ended without a terminal message (e.g. plan mode's
-        // early return) still flips busy off — clear any lingering live status then.
-        if (!busy) for (const id of statusTimers.keys()) stopStatusTimer(id, true);
+        // The composer's Send/Stop button is singular (one composer for the viewed session)
+        // — a background session's busy flip must not touch it.
+        if (!msg.sessionId || msg.sessionId === viewedSessionId) {
+          busy = msg.busy;
+          const sb = $('#btn-send');
+          sb.innerHTML = busy ? ICON.stop : ICON.send;
+          sb.title = busy ? 'Stop' : 'Send (Enter)';
+          sb.classList.toggle('stopping', busy);
+          updateSendEnabled();
+        }
+        // Backstop: any run that ended without a terminal message (e.g. plan mode's early
+        // return) still flips busy off — clear any lingering live status in THIS message's
+        // own session's pane ('busy' is pane-scoped, so `statusTimers` here is that pane's map).
+        if (!msg.busy) for (const id of statusTimers.keys()) stopStatusTimer(id, true);
         break;
       }
-      case 'clear':
+      case 'clear': {
+        // Legacy/no sessionId — clears whichever pane is currently viewed. (Not sent by the
+        // host today; kept for bridge.ts compatibility.)
         if (settingsOpen) toggleSettings();
-        thread.innerHTML = '';
+        if (viewedSessionId) activatePane(viewedSessionId);
+        activeThreadEl.innerHTML = '';
         currentTurn = null;
         targets.clear();
         userTargets.clear();
@@ -3259,8 +3425,11 @@ import { handleToolStatus } from './handlers/toolStatus';
         statusTimers.clear();
         renderChangedBar({ files: [] }); // drop the review bar with the cleared session
         renderEmpty();
+        if (viewedSessionId) deactivatePane();
         break;
+      }
     }
+    if (paneCtx) deactivatePane();
   });
 
   // Changed-files review under a command: lists what the agent edited since this

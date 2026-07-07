@@ -29,6 +29,48 @@ body {
 .icon-btn:hover svg { opacity: 1; }
 .send-btn svg { display: block; }
 
+/* Session tab strip — one tab per open chat, always visible once there's more than one.
+   Unlike the history dropdown (recency-sorted, opened on demand), this stays in creation
+   order and in view, so switching between concurrently-running agents is a single click. */
+.session-tabs {
+  display: flex; align-items: stretch; gap: 2px; padding: 4px 6px 0;
+  overflow-x: auto; overflow-y: hidden; flex: 0 0 auto; white-space: nowrap;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  scrollbar-width: thin; /* Firefox */
+}
+.session-tabs.hidden { display: none; }
+.session-tabs::-webkit-scrollbar { height: 4px; }
+.session-tabs::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); border-radius: 2px; }
+.session-tabs::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
+.session-tabs::-webkit-scrollbar-track { background: transparent; }
+.session-tab {
+  display: flex; align-items: center; gap: 5px; flex: 0 0 auto; max-width: 160px;
+  padding: 5px 8px; border-radius: 6px 6px 0 0; cursor: pointer; user-select: none;
+  background: transparent; opacity: .7;
+}
+.session-tab:hover { background: var(--vscode-list-hoverBackground); opacity: 1; }
+.session-tab.active {
+  background: var(--vscode-editor-background); opacity: 1; font-weight: 600;
+  box-shadow: inset 0 -2px var(--vscode-focusBorder);
+}
+.session-tab-dot { flex: 0 0 auto; font-size: 8px; line-height: 1; opacity: .8; }
+.session-tab.status-running .session-tab-dot { color: var(--vscode-charts-blue, #3794ff); animation: tabspin 1s linear infinite; }
+.session-tab.status-queued .session-tab-dot { color: var(--vscode-charts-yellow, #e2c08d); }
+.session-tab.status-needsApproval .session-tab-dot { color: var(--vscode-charts-orange, #d18616); font-weight: 700; }
+.session-tab.status-finished .session-tab-dot { color: var(--vscode-charts-green, #89d185); }
+.session-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; min-width: 0; }
+.session-tab-close {
+  flex: 0 0 auto; font-size: 13px; line-height: 1; opacity: 0; width: 14px; height: 14px;
+  display: flex; align-items: center; justify-content: center; border-radius: 3px;
+}
+.session-tab:hover .session-tab-close, .session-tab.active .session-tab-close { opacity: .6; }
+.session-tab-close:hover { opacity: 1 !important; background: var(--vscode-toolbar-hoverBackground); }
+.session-tab-add {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+  width: 24px; padding: 5px 0; cursor: pointer; opacity: .6; font-size: 14px;
+}
+.session-tab-add:hover { opacity: 1; background: var(--vscode-list-hoverBackground); border-radius: 4px; }
+
 /* Chat header: brand + editable session title */
 .chat-header {
   display: flex; align-items: center; gap: 8px;
@@ -46,6 +88,13 @@ body {
 
 /* Thread */
 .thread { flex: 1; overflow-y: auto; padding: var(--gap); display: flex; flex-direction: column; gap: 6px; }
+/* One persistent pane per open session, all mounted at once inside .thread — only the
+   viewed session's pane is shown. This is what lets a background agent keep streaming tool
+   cards / answer text into its own DOM while another tab is in view, instead of that state
+   being thrown away on every switch. Each pane reproduces .thread's own flex layout so its
+   .turn children stack exactly as they did when .turn was a direct child of .thread. */
+.session-pane { display: flex; flex-direction: column; gap: 6px; }
+.session-pane.hidden { display: none; }
 /* Each turn groups a user command with its reply/replies. Bounding the turn is what
    makes the sticky .msg.user below actually work: a command pins at top only while you
    scroll THIS turn, then scrolls away so the next command takes over — instead of every
@@ -557,9 +606,35 @@ details[open].think-block > details > summary::before { content: '▾ '; }
   margin-top: 4px; max-height: 320px; overflow-y: auto;
   border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 4px;
 }
+.setting-group {
+  font-size: 11px; font-weight: 600; text-transform: uppercase; opacity: .6;
+  margin: 14px 0 4px; letter-spacing: .5px;
+}
+.setting-group:first-child { margin-top: 4px; }
+.setting-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 6px; border-radius: 4px; border-bottom: 1px solid var(--vscode-panel-border);
+}
+.setting-row:last-child { border-bottom: none; }
 .setting-row:hover { background: var(--vscode-list-hoverBackground); }
+.setting-left { flex: 1 1 auto; min-width: 0; }
+.setting-label { font-size: 12px; font-weight: 600; }
+.setting-desc { font-size: 11px; opacity: .65; line-height: 1.4; margin-top: 2px; }
+.setting-row select,
+.setting-row input[type="text"],
+.setting-row input[type="number"] {
+  flex: 0 0 auto; font-size: 12px; padding: 4px 8px; border-radius: 4px;
+  background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+}
+.setting-row input[type="text"] { width: 200px; max-width: 45%; }
+.setting-row input[type="number"] { width: 90px; text-align: right; }
+.setting-row select { min-width: 0; max-width: 45%; }
 .setting-row select:focus,
-.setting-row input:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.setting-row input:focus {
+  outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px;
+  border-color: var(--vscode-focusBorder);
+}
 
 /* Settings → Search tab */
 .search-priority-row { display: flex; align-items: center; gap: 8px; margin: 6px 0 2px; }
@@ -733,6 +808,11 @@ button#mode-btn .mode-label { overflow: hidden; text-overflow: ellipsis; white-s
 .model-item .mi-deprecated {
   flex: 0 0 auto; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
   padding: 1px 5px; border-radius: 3px; color: #fff; background: var(--vscode-errorForeground, #c33);
+}
+.model-item.slow .mi-label { opacity: .7; }
+.model-item .mi-slow {
+  flex: 0 0 auto; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+  padding: 1px 5px; border-radius: 3px; color: #fff; background: var(--vscode-editorWarning-foreground, #d18616);
 }
 
 /* Disabled pill (e.g. reasoning control on a non-reasoning model) */
@@ -944,7 +1024,11 @@ body.vscode-light .empty-recent-card { background: var(--vscode-editorWidget-bac
 .history-item:hover { background: var(--vscode-list-hoverBackground); }
 .history-item.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); font-weight: 600; }
 .history-item-left { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; }
-.history-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; }
+.history-activity {
+  flex: 0 0 auto; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 8px;
+  background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); opacity: .85;
+}
 .history-ts { flex: 0 0 auto; font-size: 10px; opacity: .5; white-space: nowrap; }
 .history-dot { flex: 0 0 auto; font-size: 9px; line-height: 1; opacity: .8; }
 .history-item.status-running .history-dot { color: var(--vscode-charts-blue, #3794ff); animation: tabspin 1s linear infinite; }

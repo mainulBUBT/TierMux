@@ -9,11 +9,13 @@ import type { Mode } from './shared/types';
 import { runChatStream, runAgentStream, runPlanStream, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
 import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
+import { SETTINGS_META, defaultForSetting } from './settingsMeta';
 import type { Router } from './router/router';
 import { AllModelsFailedError } from './router/router';
 import type { McpManager } from './mcp/mcpManager';
 import { CheckpointManager } from './edits/checkpoints';
 import type { ModelStatsStore, Vote } from './config/modelStats';
+import type { SlowModelStore } from './config/slowModel';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem, McpServerConfig } from './messages';
 import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, SessionStatus, TranscriptMessage, TranscriptStep, UsagePayload } from './messages';
@@ -47,6 +49,7 @@ interface ChatDeps {
   router: Router;
   mcp: McpManager;
   modelStats: ModelStatsStore;
+  slowModels: SlowModelStore;
   workspaceState: vscode.Memento;
   generateCommitMessage: () => Promise<void>;
   profiler?: import('./profiler/profilerService').IProfilerService;
@@ -63,6 +66,8 @@ const SESSIONS_KEY = 'tiermux.sessions';
 const CURRENT_KEY = 'tiermux.currentSession';
 const AUTO_APPROVE_KEY = 'tiermux.autoApprove';
 const MAX_SESSIONS = 50;
+/** Tool calls that count as "Modifications" for a session's tab activity badge (see `Session.liveActivity`). */
+const WRITE_TOOL_NAMES = new Set(['writeFile', 'createFile', 'editFile', 'deleteFile', 'runCommand']);
 
 /**
  * One chat session's full state — both the persisted conversation (history/transcript/title)
@@ -104,6 +109,11 @@ interface Session {
   liveRuntimeName?: string;
   lastStepLabel?: string;
   lastTodos?: TodoItem[];
+  /** Coarse "what's it doing right now" label shown next to this session's title in the tab
+   *  list — 'Text change' while the model is streaming an answer, 'Modifications' while it's
+   *  writing/editing/deleting a file or running a command. Cleared (via setStatus) once the
+   *  run leaves 'running'/'queued', so a finished/idle session shows no activity badge. */
+  liveActivity?: string;
   /** Tool steps accumulated per active requestId, attached to the assistant transcript entry at
    *  turn completion so a re-rendered message (e.g. after "Revert to here") keeps its step list. */
   liveSteps: Map<string, TranscriptStep[]>;
@@ -325,6 +335,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private setStatus(sessionId: string, status: SessionStatus): void {
     this.statusOf.set(sessionId, status);
+    // The activity badge only makes sense while a run is actually live — clear it the moment
+    // the session leaves running/queued so a finished/idle tab doesn't show a stale "Modifications".
+    if (status !== 'running' && status !== 'queued') {
+      const s = this.sessions.get(sessionId);
+      if (s) s.liveActivity = undefined;
+    }
     this.postSessionList();
   }
 
@@ -335,6 +351,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         id: s.id,
         title: s.title?.trim() || this.deriveTitle(s) || 'New session',
         status: this.statusOf.get(s.id) ?? 'idle',
+        activity: s.liveActivity,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
       }));
@@ -575,8 +592,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.postSessionList();
     this.post({ type: 'switchSession', sessionId: id, messages: s.transcript });
     this.post({ type: 'busy', sessionId: id, busy: !!s.activeRequestId });
-    // Re-emit a running session's cached live status so switching back mid-run shows its
-    // current step/todos immediately, then any interactive cards it's blocked on.
+    // Live signals now stream into every open session's own persistent pane regardless of
+    // view (see agentCallbacks), so a pane that's already been created for this session is
+    // already showing current step/todos/text — this re-emit only matters the FIRST time the
+    // webview creates a pane for `id` (e.g. right after a reload, before any live event for it
+    // has arrived). It's a harmless no-op resend of already-current state otherwise.
     if (s.activeRequestId) {
       const rid = s.activeRequestId;
       this.post({ type: 'assistantStart', sessionId: s.id, requestId: rid, platform: s.livePlatform ?? '', model: s.liveModel ?? '' });
@@ -807,6 +827,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await vscode.workspace.getConfiguration('tiermux').update('utilityModel', m.model, vscode.ConfigurationTarget.Global);
         await this.sendConfig();
         break;
+      case 'setExtensionSetting': {
+        if (!SETTINGS_META.some((meta) => meta.key === m.key)) break;
+        await vscode.workspace.getConfiguration('tiermux').update(m.key, m.value, vscode.ConfigurationTarget.Global);
+        await this.sendConfig();
+        break;
+      }
       case 'setAutoApprove':
         this.autoApprove = m.enabled;
         await this.deps.workspaceState.update(AUTO_APPROVE_KEY, m.enabled);
@@ -1675,11 +1701,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private agentCallbacks(s: Session, requestId: string, _mode: Mode): Omit<AgentOpts, 'messages' | 'mode' | 'effort' | 'abortSignal' | 'pinnedModel' | 'taskKind'> {
     const live = (): boolean => this.isActiveRun(s, requestId);
-    // The webview shows one session at a time and rebuilds on switch, so we CACHE the live
-    // status on the session (always, while the run is live) and only PUSH to the webview when
-    // this session is the viewed one. openSession re-emits the cache so switching back to a
-    // running agent shows its current step/todos immediately.
-    const viewed = (): boolean => this.viewedSessionId === s.id;
+    // The webview keeps a persistent DOM pane per session (not just the viewed one), so every
+    // live signal below posts unconditionally once the run is live — the pane it belongs to
+    // renders it whether or not that session is currently in view. `s.live*`/`s.last*` caches
+    // are still kept (openSession reads them to seed a pane the very first time it's created,
+    // e.g. after a reload) but are no longer the ONLY way a background run's progress reaches
+    // the webview.
     return {
       onModel: (platform, model, runtimeName) => {
         if (!live()) return;
@@ -1687,7 +1714,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.livePlatform = platform;
         s.liveModel = pinned;
         s.liveRuntimeName = runtimeName;
-        if (viewed()) this.post({ type: 'assistantStart', sessionId: s.id, requestId, platform: runtimeName ?? platform, model: pinned });
+        this.post({ type: 'assistantStart', sessionId: s.id, requestId, platform: runtimeName ?? platform, model: pinned });
       },
       onTool: (e: ToolEvent) => {
         if (!live()) return;
@@ -1699,7 +1726,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const entry: TranscriptStep = { toolCallId: e.toolCallId, name: e.name, args: e.args, state: mappedState, detail: e.detail };
         if (i >= 0) steps[i] = entry; else steps.push(entry);
         s.liveSteps.set(requestId, steps);
-        if (viewed()) this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: mappedState, detail: e.detail });
+        if (WRITE_TOOL_NAMES.has(e.name) && s.liveActivity !== 'Modifications') {
+          s.liveActivity = 'Modifications';
+          this.postSessionList();
+        }
+        this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: mappedState, detail: e.detail });
       },
       onReasoning: (text) => {
         if (!live()) return;
@@ -1711,11 +1742,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const id = `reason-${steps.length}`;
         steps.push({ toolCallId: id, name: 'reasoning', state: 'done', detail: t });
         s.liveSteps.set(requestId, steps);
-        if (viewed()) this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: id, name: 'reasoning', args: undefined, state: 'done', detail: t });
+        this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: id, name: 'reasoning', args: undefined, state: 'done', detail: t });
       },
-      onStep: (phase, label) => { if (!live()) return; s.lastStepLabel = label; if (viewed()) this.post({ type: 'agentStep', sessionId: s.id, requestId, phase: phase as 'thinking' | 'synthesizing' | 'done', label }); },
-      onTodos: (todos) => { if (!live()) return; s.lastTodos = todos; if (viewed()) this.post({ type: 'todos', sessionId: s.id, requestId, todos, followingPlan: !!s.executingPlan }); },
-      onChunk: (text) => { if (!live() || !viewed()) return; this.post({ type: 'assistantChunk', sessionId: s.id, requestId, text }); },
+      onStep: (phase, label) => { if (!live()) return; s.lastStepLabel = label; this.post({ type: 'agentStep', sessionId: s.id, requestId, phase: phase as 'thinking' | 'synthesizing' | 'done', label }); },
+      onTodos: (todos) => { if (!live()) return; s.lastTodos = todos; this.post({ type: 'todos', sessionId: s.id, requestId, todos, followingPlan: !!s.executingPlan }); },
+      onChunk: (text) => {
+        if (!live()) return;
+        if (s.liveActivity !== 'Text change') { s.liveActivity = 'Text change'; this.postSessionList(); }
+        this.post({ type: 'assistantChunk', sessionId: s.id, requestId, text });
+      },
       onAskUser: async (question, options) => {
         if (!live()) return '';
         // Mint a unique callId per prompt so the webview's response correlates back to the
@@ -1929,8 +1964,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       mcpServers: this.readMcpServersConfig(),
       mcpRegistry: await this.registry(),
       deprecated: this.deps.secrets.deprecatedKeys(),
+      slow: this.deps.slowModels.slowKeys(),
       modelKeys: await this.deps.secrets.modelKeySnapshot(this.deps.catalog.all()),
       utilityModel: vscode.workspace.getConfiguration('tiermux').get<string>('utilityModel', 'auto'),
+      settingsMeta: SETTINGS_META,
+      settings: Object.fromEntries(
+        SETTINGS_META.map((meta) => [meta.key, vscode.workspace.getConfiguration('tiermux').get(meta.key, defaultForSetting(meta))]),
+      ),
       autoApprove: this.autoApprove,
       disabledProviders: this.deps.settings.getDisabledProviders(),
       customEndpoints: (await Promise.all(this.deps.settings.getCustomEndpoints().map(async (ep) => ({

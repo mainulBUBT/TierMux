@@ -18,6 +18,7 @@ export type {
   InMessage,
   OutMessage,
   ConfigPayload,
+  SettingMeta,
   TranscriptMessage,
   TranscriptStep,
   SessionStatus,

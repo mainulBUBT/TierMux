@@ -93,6 +93,20 @@ export interface CheckpointFile {
   status: 'created' | 'modified' | 'deleted';
 }
 
+/** Describes one row in the "Others" settings tab. The array itself lives in
+ *  `src/settingsMeta.ts` (host-only, sent over the wire) so the webview never
+ *  keeps its own copy of the key list. */
+export interface SettingMeta {
+  key: string;
+  label: string;
+  desc: string;
+  type: 'boolean' | 'enum' | 'number' | 'string';
+  enum?: string[];
+  min?: number;
+  max?: number;
+  step?: number;
+}
+
 export interface ConfigPayload {
   catalog: CatalogModel[];
   fallback: FallbackEntry[];
@@ -104,10 +118,16 @@ export interface ConfigPayload {
   mcpRegistry: McpRegistryItem[];
   /** `platform::modelId` keys a provider has 404'd this session — flagged as deprecated in the picker. */
   deprecated: string[];
+  /** `platform::modelId` keys currently labeled slow (a recent request was ≥8s) — deprioritized in Auto for 30 min, flagged in the picker. */
+  slow: string[];
   /** `platform::modelId` keys currently set as a per-model override of the platform key. */
   modelKeys: string[];
   /** Selected model for utility tasks (titles, commit messages); 'auto' = keyless-preferred. */
   utilityModel: string;
+  /** Row definitions for the "Others" tab generic settings editor. */
+  settingsMeta: SettingMeta[];
+  /** Current value of every key in `settingsMeta`, read live from `tiermux.*` config. */
+  settings: Record<string, boolean | number | string>;
   /** Session toggle: when true, the agent runs commands and applies edits without asking (dangerous commands still confirm). */
   autoApprove: boolean;
   /** Providers toggled off at the platform level — models excluded from routing and pickers without losing their enabled flags. */
@@ -175,6 +195,7 @@ export type InMessage =
   | { type: 'revertTo'; requestId: string }
   | { type: 'copyText'; text: string }
   | { type: 'setUtilityModel'; model: string }
+  | { type: 'setExtensionSetting'; key: string; value: boolean | number | string }
   | { type: 'setAutoApprove'; enabled: boolean }
   | { type: 'resume'; requestId: string }
   | { type: 'newChat' }
@@ -227,7 +248,7 @@ export type SessionStatus = 'idle' | 'queued' | 'running' | 'needsApproval' | 'f
 // Extension -> Webview
 export type OutMessage =
   | { type: 'config'; config: ConfigPayload; usageTotals: UsageTotals }
-  | { type: 'sessionList'; sessions: Array<{ id: string; title: string; status: SessionStatus; createdAt?: number; updatedAt?: number }> }
+  | { type: 'sessionList'; sessions: Array<{ id: string; title: string; status: SessionStatus; activity?: string; createdAt?: number; updatedAt?: number }> }
   | { type: 'switchSession'; sessionId: string; messages: TranscriptMessage[] }
   | { type: 'userEcho'; sessionId: string; requestId: string; text: string }
   | { type: 'assistantStart'; sessionId: string; requestId: string; platform: string; model: string }

@@ -6,6 +6,7 @@ import { SettingsStore } from './config/settingsStore';
 import { UsageTracker } from './config/usage';
 import { UsageStore } from './config/usageStore';
 import { ModelStatsStore } from './config/modelStats';
+import { SlowModelStore } from './config/slowModel';
 import { Router } from './router/router';
 import { startRouterProxy } from './backend/routerProxy';
 import { launchOpenCode, stopOpenCode, type OcConnection } from './backend/ocLauncher';
@@ -110,7 +111,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const usage = new UsageTracker();
   const usageStore = new UsageStore(context.globalState);
   const modelStats = new ModelStatsStore(context.globalState);
-  const router = new Router(secrets, settings, catalog, usage, modelStats, usageStore);
+  const slowModels = new SlowModelStore(context.globalState);
+  const router = new Router(secrets, settings, catalog, usage, modelStats, usageStore, slowModels);
 
   // Profiler — collects per-turn performance traces for diagnostics.
   // Enabled/disabled via tiermux.profiler.enabled (default: false → NoopProfiler, zero overhead).
@@ -189,6 +191,7 @@ export function activate(context: vscode.ExtensionContext): void {
     router,
     mcp,
     modelStats,
+    slowModels,
     workspaceState: context.workspaceState,
     generateCommitMessage: () => generateCommitMessage(router),
     profiler,

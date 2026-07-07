@@ -6,112 +6,114 @@
 
 ---
 
-**TierMux** is a free, agentic AI coding assistant for VS Code. It routes every request to the best
-free model across **22 providers**, fails over automatically when one is rate-limited, and tracks
-how much you've saved so the "free" part is visible.
+**TierMux** is a free AI coding assistant for VS Code. Instead of locking you into one model, it
+routes each message to the best **free** model out of 22 providers, automatically switches to
+another one if a provider is slow or rate-limited, and shows you how much money that's saving you.
 
-> The name: **Tier** (free provider tiers) + **Mux** (a multiplexer that routes across them).
-
----
-
-## Why TierMux
-
-- **22 free providers, one model picker.** Gemini, Groq, Cerebras, OpenRouter, Mistral, NVIDIA,
-  GitHub Models, Cohere, Cloudflare, Zhipu, Ollama, Kilo, Pollinations, LLM7, HuggingFace,
-  OpenCode Zen, OVH, Agnes, SambaNova, SiliconFlow, ZenMux, OpenInference — plus any
-  custom OpenAI-compatible endpoint. More added over time.
-- **Auto-routing.** Send a message; the router classifies intent in milliseconds and picks a fast
-  tiny model for "hi" or a smart tool-capable one for refactors. Auto learns what worked, so
-  repeat tasks skip the failover cascade.
-- **Resilient.** Per-provider rate-limit cooldowns, key rotation, automatic failover. One provider
-  hiccup doesn't stop you.
-- **Yours.** API keys live in VS Code SecretStorage. No backend, no telemetry, no opt-in to
-  upload anything. Lifetime usage is stored locally and clearable.
+> The name: **Tier** (free provider tiers) + **Mux** (a multiplexer that switches between them).
 
 ---
 
-## Features
+## Why use TierMux
 
-### Three modes, one button
+- **No API bills.** Works entirely on free tiers across 22 providers — Gemini, Groq, Cerebras,
+  OpenRouter, Mistral, NVIDIA, GitHub Models, Cohere, Cloudflare, Zhipu, Ollama, Kilo,
+  Pollinations, LLM7, HuggingFace, OpenCode Zen, OVH, Agnes, SambaNova, SiliconFlow, ZenMux,
+  and OpenInference. You can also plug in your own OpenAI-compatible endpoint.
+- **Just works — no picking a model.** Leave it on `Auto` and TierMux figures out per message
+  whether you need a quick answer or a serious coding model, and which provider to send it to.
+- **Doesn't get stuck.** If a provider is rate-limited, down, or just slow, TierMux quietly
+  retries with the next best option. You keep typing; it handles the rest.
+- **Private by design.** There's no backend server. Your API keys stay in VS Code's built-in
+  secret storage, and nothing you type is sent anywhere except directly to the model provider.
+
+---
+
+## What it can do
+
+### Three modes
 
 | Mode | What it does |
 |---|---|
-| **Ask** | Read-only Q&A. Explains code, answers questions, never edits files. |
-| **Plan** | Researches the code, proposes a numbered plan, then edits only after you approve. |
-| **Agent** | Full agent loop — reads, edits, runs commands, tracks a live task list. |
+| **Ask** | Answers questions and explains code. Read-only — it never touches your files. |
+| **Plan** | Looks at your code, writes a step-by-step plan, and waits for your OK before doing anything. |
+| **Agent** | Does the work end to end — reads files, edits them, runs commands, and tracks progress as it goes. |
 
-`Auto` (default) classifies each message and routes it to the best mode + model automatically.
+If you're not sure which one to use, leave it on **Auto** — TierMux reads your message and picks
+the right mode and model for you.
 
-### Agent capabilities
+### What the agent can do
 
-- **Pre-agent research.** Before the first model call, the agent greps the workspace, walks the
-  symbol index, and collects diagnostics so it starts with context, not cold.
-- **Tools.** Read / list / search the workspace, run diagnostics, create / write / edit / delete
-  files (every edit shown as a **diff for approval**), and run terminal commands (gated by an
-  approval policy).
-- **Checkpoints.** Every turn is snapshotted; restore the workspace to before any message.
-- **Quality-based escalation.** If a model returns empty, refuses, or loops on a tool call, the
-  router retries with a smarter model automatically.
+- Looks around your project first (greps, checks types, reads diagnostics) so it's not guessing.
+- Reads, writes, edits, and deletes files — every change shows up as a diff you approve first.
+- Runs terminal commands, with a safety setting for how much confirmation you want.
+- Saves a checkpoint every turn, so you can undo back to before any message.
+- If a model gives a bad answer (empty, refuses, gets stuck), TierMux tries again with a smarter one.
+- Multiple chat tabs can run their own agent at the same time — switching tabs never stops or
+  hides what a background agent is doing, up to a configurable concurrency limit.
 
-### Editor integration
+### Right in your editor
 
-- Right-click **Explain / Fix / Refactor / Generate Tests / Generate Docs** on any selection.
-- **Fix with AI** on diagnostics, **inline chat** (`Ctrl/Cmd+I`).
-- **AI commit messages** in the Source Control toolbar.
-- Optional **ghost-text completions** (off by default — high request volume against free tiers).
+- Right-click any selection for **Explain / Fix / Refactor / Generate Tests / Generate Docs**.
+- **Fix with AI** on red squiggly errors, or **Ctrl/Cmd+I** for inline chat anywhere.
+- Writes your **git commit messages** for you.
+- Optional inline autocomplete (off by default, since free tiers have limited quota).
 
-### Feedback and memory
+### Learns your style
 
-- **👍 / 👎** each reply. The router learns which model answers *your* tasks best (stored locally).
-- **Style memory.** TierMux infers your indent / quote / semicolon style and stays consistent.
+- Thumbs up / down on any reply — TierMux remembers which models actually work well for you.
+- Picks up on how you write code (indentation, quotes, semicolons) and matches it.
 
-### Extensibility
+### Extra tools
 
-- **Custom OpenAI-compatible endpoints** — vLLM, LiteLLM, Azure OpenAI, Cloudflare AI Gateway, etc.
-- **MCP** — connect Model Context Protocol servers for extra tools.
+- Bring your own OpenAI-compatible server — vLLM, LiteLLM, Azure OpenAI, Cloudflare AI Gateway, etc.
+- Connect **MCP** servers to give the agent more tools.
 
-### Usage tracking
+### Keeping track of usage
 
-- **Session + lifetime tokens** in the chat footer.
-- **Estimated $ saved** — reference prices are configurable; set them to `0` to hide the line.
-- **Usage data card** in Settings → Others with a one-click reset.
+- See how many tokens you've used this session and in total, right in the chat footer.
+- An estimate of how much money you've saved by not paying for those tokens.
+- A full usage breakdown (and a reset button) under Settings → Others.
 
 ---
 
 ## Getting started
 
-1. Install the extension (or run it from source — see [DEVELOPMENT.md](docs/DEVELOPMENT.md)).
-2. Open the **TierMux** view in the Activity Bar.
-3. Click **⚙ Manage Models & Keys** and **Set key** for at least one provider — or pick a
-   **keyless** one (OVH / Pollinations / Kilo).
-4. Leave **Mode: Auto** and **Model: Auto**, and just type.
+1. Install the extension (or build it from source — see [DEVELOPMENT.md](docs/DEVELOPMENT.md)).
+2. Open the **TierMux** icon in the Activity Bar.
+3. Click **⚙ Manage Models & Keys** and add a key for at least one provider — or skip this and
+   use a **keyless** one like OVH, Pollinations, or Kilo.
+4. Leave everything on **Auto** and start typing.
 
 ---
 
-## Configuration
+## Settings
 
-Settings live under **TierMux** in VS Code settings. The most useful ones:
+Most day-to-day settings — which providers/models are enabled, their priority, custom endpoints —
+live in **⚙ Manage Models & Keys**, right in the TierMux panel.
+
+Everything else (agent behavior, completions, context, memory, timeouts, etc.) can be changed
+from the **Others** tab in the same panel — no need to dig through VS Code's `settings.json`.
+A few of the more useful ones:
 
 | Setting | Default | What it does |
 |---|---|---|
-| `tiermux.agent.maxIterations` | `25` | Max agent tool steps before pausing to check in. |
-| `tiermux.agent.requireWriteConfirmation` | `true` | Show a diff and confirm before file writes. |
-| `tiermux.agent.commandApproval` | `always` | `always` / `allowlist` / `never` for `runCommand`. |
-| `tiermux.requestTimeoutMs` | `60000` | Per-provider request timeout before failover. |
-| `tiermux.rateLimitCooldownMs` | `60000` | How long to skip a rate-limited provider. |
-| `tiermux.usage.referencePriceInPer1M` | `5` | Reference price per 1M input tokens (USD) for the "est. $ saved" line. `0` hides it. |
-| `tiermux.usage.referencePriceOutPer1M` | `15` | Reference price per 1M output tokens (USD). `0` hides it. |
-
-Model enable/priority, per-provider endpoint overrides, and custom OpenAI-compatible endpoints
-are all managed in **⚙ Manage Models & Keys**.
+| Max iterations | `25` | How many steps the agent can take before checking in with you. |
+| Max concurrent runs | `3` | How many chat tabs can have an agent running at the same time. |
+| Require write confirmation | `on` | Show a diff and ask before the agent writes to a file. |
+| Command approval | `always` | How careful the agent is before running a terminal command. |
+| Request timeout | `60s` | How long to wait on a provider before trying the next one. |
+| Rate-limit cooldown | `60s` | How long to skip a provider after it rate-limits you. |
+| Reference price (in / out per 1M tokens) | `$5 / $15` | Used to estimate your savings. Set to `0` to hide it. |
 
 ---
 
 ## Your data
 
-- **API keys** → VS Code SecretStorage (encrypted by the OS).
-- **👍 / 👎 stats and lifetime token counter** → local extension storage.
-- **No backend.** TierMux has no server. Nothing leaves your machine.
+- **API keys** stay in VS Code's encrypted secret storage — never in a config file.
+- **Feedback and usage stats** are stored locally on your machine only.
+- **No backend.** TierMux doesn't have a server. Nothing you do here leaves your computer,
+  except requests going straight to whichever model provider you're using.
 
 ## License
 

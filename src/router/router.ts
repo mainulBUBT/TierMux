@@ -20,6 +20,8 @@ import type { Catalog } from '../catalog/catalog';
 import type { UsageTracker } from '../config/usage';
 import type { UsageStore } from '../config/usageStore';
 import type { ModelStatsStore } from '../config/modelStats';
+import type { SlowModelStore } from '../config/slowModel';
+import { SLOW_LATENCY_MS } from '../config/slowModel';
 import { RateTracker } from './rateTracker';
 import { LatencyTracker } from './latencyTracker';
 
@@ -147,6 +149,7 @@ export class Router {
     private readonly usage: UsageTracker,
     private readonly stats?: ModelStatsStore,
     private readonly usageStore?: UsageStore,
+    private readonly slowModels?: SlowModelStore,
   ) {}
 
   /**
@@ -425,6 +428,15 @@ export class Router {
           return la - lb;
         });
       }
+
+      // Models labeled slow (a recent request took ≥ SLOW_LATENCY_MS) are pushed to
+      // the bottom of Auto's cascade for the label's lifetime — still triable if
+      // every faster candidate fails, and still directly selectable by the user.
+      if (this.slowModels) {
+        const notSlow = cands.filter((e) => !this.slowModels!.isSlow(e.platform, e.modelId));
+        const slow = cands.filter((e) => this.slowModels!.isSlow(e.platform, e.modelId));
+        if (slow.length > 0 && notSlow.length > 0) cands = [...notSlow, ...slow];
+      }
     }
 
     candidates: for (const entry of cands) {
@@ -574,7 +586,9 @@ export class Router {
             continue candidates;
           }
 
-          this.latencyTracker.record(entry.platform, entry.modelId, Date.now() - t0);
+          const elapsedMs = Date.now() - t0;
+          this.latencyTracker.record(entry.platform, entry.modelId, elapsedMs);
+          if (elapsedMs >= SLOW_LATENCY_MS) this.slowModels?.markSlow(entry.platform, entry.modelId);
           this.usage.add(response.usage);
           this.usageStore?.addRequest(entry.platform, entry.modelId, response.usage?.prompt_tokens || 0, response.usage?.completion_tokens || 0);
           this.secrets.setStatus(entry.platform, 'healthy');
@@ -641,6 +655,8 @@ export class Router {
 
           // Increment the retry count for this model
           triedModels.set(modelKey, retryCount + 1);
+
+          if (Date.now() - t0 >= SLOW_LATENCY_MS) this.slowModels?.markSlow(entry.platform, entry.modelId);
 
           failures.push({ platform: entry.platform, model: entry.modelId, reason, detail });
           opts.onProviderAttempt?.({ platform: entry.platform, model: entry.modelId, status: 'fail', latencyMs: Date.now() - t0, errorType: reason, reason: detail });
