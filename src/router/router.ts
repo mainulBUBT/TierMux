@@ -25,6 +25,91 @@ import { SLOW_LATENCY_MS } from '../config/slowModel';
 import { RateTracker } from './rateTracker';
 import { LatencyTracker } from './latencyTracker';
 
+/**
+ * Streaming `<think>…</think>` stripper. Buffers incoming deltas and emits only
+ * the non-reasoning text. Handles tags that span multiple chunks, dangling
+ * opening tags (incomplete at stream end), and nested/multiple think blocks.
+ *
+ * Some models (Qwen3, DeepSeek-R1, etc.) emit reasoning inside `<think>` tags
+ * directly in the content stream. Without stripping, the client sees the raw
+ * reasoning markup alongside the actual answer.
+ */
+export class ThinkStripper {
+  private buf = '';
+  private insideThink = false;
+
+  feed(delta: string): string {
+    this.buf += delta;
+    let out = '';
+
+    while (this.buf.length > 0) {
+      if (this.insideThink) {
+        const closeIdx = this.buf.toLowerCase().indexOf('</think>');
+        if (closeIdx === -1) {
+          // Still inside `<think>`, haven't seen closing tag yet — hold everything
+          // in case the close tag arrives in the next chunk.
+          break;
+        }
+        // Found closing tag — discard everything up to and including it.
+        this.buf = this.buf.slice(closeIdx + '</think>'.length);
+        this.insideThink = false;
+        continue;
+      }
+
+      const openIdx = this.buf.toLowerCase().indexOf('<think>');
+      if (openIdx === -1) {
+        // No opening tag — but we must hold back the tail in case a partial
+        // `<think>` is split across chunks. The longest prefix of `<think>` is
+        // 6 chars (`<think`), so hold back up to 6 chars.
+        const holdBack = Math.min(6, this.buf.length);
+        // Check if the tail could be a partial `<think>` prefix.
+        const prefix = '<think>';
+        let safeUpTo = this.buf.length;
+        for (let i = this.buf.length - holdBack + 1; i <= this.buf.length; i++) {
+          const tail = this.buf.slice(i - 1).toLowerCase();
+          if (prefix.startsWith(tail)) {
+            safeUpTo = Math.min(safeUpTo, i - 1);
+          }
+        }
+        out += this.buf.slice(0, safeUpTo);
+        this.buf = this.buf.slice(safeUpTo);
+        break;
+      }
+
+      // Found opening tag — emit everything before it, then enter think mode.
+      out += this.buf.slice(0, openIdx);
+      this.buf = this.buf.slice(openIdx + '<think>'.length);
+      this.insideThink = true;
+    }
+
+    return out;
+  }
+
+  /** Flush any remaining buffer at stream end. If we're still inside a `<think>`,
+   *  the tag was dangling — discard the buffered reasoning. Otherwise emit
+   *  any held-back text. */
+  flush(): string {
+    if (this.insideThink) {
+      this.buf = '';
+      this.insideThink = false;
+      return '';
+    }
+    const remaining = this.buf;
+    this.buf = '';
+    return remaining;
+  }
+}
+
+/** Strip `<think>…</think>` from a complete (non-streamed) response string. */
+export function stripThinkTags(text: string): string {
+  let result = text;
+  // Remove complete `<think>…</think>` blocks.
+  result = result.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  // Remove dangling `<think>…` (no closing tag — model cut off mid-reasoning).
+  result = result.replace(/<think>[\s\S]*$/i, '');
+  return result.trim();
+}
+
 export interface RouteOptions extends CompletionOptions {
   /** Force a specific model (platform::modelId or 'auto'). */
   model?: string;
@@ -94,6 +179,23 @@ export class AllModelsFailedError extends Error {
       }
     }
     return `All ${failures.length} model(s) failed: ` + failures.map((f) => `${f.platform}/${f.model} (${f.reason})`).join(', ');
+  }
+}
+
+/**
+ * Thrown when a message carries a visual attachment (an image, or a PDF whose
+ * text couldn't be extracted) but no enabled model is vision-capable. Better to
+ * stop here with an actionable message than to send a turn a text-only model can
+ * never fulfill — the model would just refuse ("I can't read this PDF") after
+ * burning a request. See candidates(): the vision filter keys off taskKind==='vision'.
+ */
+export class NoVisionModelError extends Error {
+  constructor() {
+    super(
+      'This message has an image or PDF attachment, but none of your enabled models can read attachments. ' +
+      'Open "Manage Models & Keys" and enable a vision-capable model (e.g. Gemini, GPT-4o, Claude) to read it.',
+    );
+    this.name = 'NoVisionModelError';
   }
 }
 
@@ -268,6 +370,18 @@ export class Router {
     // the attempt surface a real error rather than silently doing nothing.
     const live = list.filter((e) => !this.secrets.isDeprecated(e.platform, e.modelId));
     if (live.length > 0) list = live;
+    // Vision attachment (an image, or a PDF with no extractable text — only those
+    // emit a visual block, so taskKind==='vision' implies "the model must see the
+    // bytes"): filter to vision-capable models instead of merely preferring them.
+    // Without this, a text-only model can win the turn on tools/speed and then
+    // honestly refuse ("I can't read this PDF"). A forced model pick returned
+    // above, so this only reshuffles Auto routing. If nothing vision-capable is
+    // enabled, throw a clear error rather than sending a turn that can't succeed.
+    if (opts.taskKind === 'vision') {
+      const visionCapable = list.filter((e) => this.catalog.find(e.platform, e.modelId)?.supportsVision);
+      if (visionCapable.length === 0) throw new NoVisionModelError();
+      list = visionCapable;
+    }
     // Quality-based escalation (Auto only): drop models that already underperformed, and any
     // weaker than the floor, so a flaky weak model is replaced by a stronger one. If nothing
     // is left, route() surfaces AllModelsFailedError — the caller then recommends a free model.
@@ -540,16 +654,21 @@ export class Router {
           if (wantsStream) {
             const chunks: string[] = [];
             let toolCalls: import('../shared/types').ChatToolCall[] | undefined;
+            const thinkStrip = new ThinkStripper();
             for await (const chunk of provider.streamChatCompletion(apiKey, fitted, entry.modelId, completionOpts)) {
               const delta = chunk.choices?.[0]?.delta;
               if (!delta) continue;
               if (delta.content) {
                 chunks.push(delta.content);
-                opts.onChunk!(delta.content);
+                const clean = thinkStrip.feed(delta.content);
+                if (clean) opts.onChunk!(clean);
               }
               if (delta.tool_calls?.length) toolCalls = delta.tool_calls;
             }
-            const fullText = chunks.join('');
+            const tail = thinkStrip.flush();
+            if (tail) chunks.push(tail);
+            let fullText = chunks.join('');
+            fullText = stripThinkTags(fullText);
             // Most providers don't emit `usage` in their SSE chunks (would need
             // `stream_options.include_usage` set on the request, which the OpenAI
             // stream spec supports but not every free provider honors). Until the
@@ -571,6 +690,11 @@ export class Router {
             };
           } else {
             response = await provider.chatCompletion(apiKey, fitted, entry.modelId, completionOpts);
+          }
+
+          // Strip `<think>` tags from response content (models like Qwen3, DeepSeek-R1 emit reasoning inline)
+          if (response.choices?.[0]?.message?.content && typeof response.choices[0].message.content === 'string') {
+            response.choices[0].message.content = stripThinkTags(response.choices[0].message.content);
           }
 
           // Empty response (no text, no tool calls): treat as failure and failover.

@@ -11,7 +11,7 @@ import type { ChatMessage, TodoItem, ReasoningEffort } from '../shared/types';
 import type { IProfilerService } from '../profiler/profilerService';
 import type { OcConnection } from '../backend/ocLauncher';
 import { OcClient, toOcParts } from '../backend/ocClient';
-import { getLastRoutedModel, setForcedModel } from '../backend/routerProxy';
+import { getLastRoutedModel, setForcedModel, setForcedTaskKind } from '../backend/routerProxy';
 import { classifyTask, attachmentKindsFromContent, type TaskKind } from './routing';
 import { assessAnswerQuality } from './answerQuality';
 import { contentToString } from './content';
@@ -257,6 +257,12 @@ async function runViaOc(
   // Classified once (hop 0) and reused on every escalation hop — see the `taskKindHint`
   // param doc above.
   const taskKind: TaskKind = taskKindHint ?? classifyTask(userText, { attachmentKinds: attachmentKindsFromContent(lastUser?.content ?? '') });
+  // Push the run's true task kind to the router for every OC completion call. The
+  // router otherwise reclassifies from each request's last-user content, which OC
+  // may forward without the image/file blocks — so a visual attachment would be
+  // missed and the turn routed to a text-only model. Only 'vision' needs forcing
+  // (text-bearing content survives OC intact); set unconditionally, cleared at exit.
+  setForcedTaskKind(taskKind === 'vision' ? 'vision' : undefined);
 
   const profiler = opts.profiler;
   const turnId = profiler?.beginTurn({
@@ -335,6 +341,7 @@ async function runViaOc(
     } catch (err) {
       console.error(`[tiermux] OC createSession failed:`, err);
       setForcedModel(undefined);
+      setForcedTaskKind(undefined);
       // Must throw, not return — a normal return here makes callers post a blank assistant
       // message with a zeroed "0 in · 0 out" usage footer, hiding the real error behind
       // what looks like a completed (empty) turn.
@@ -350,6 +357,7 @@ async function runViaOc(
     } else {
       console.error(`[tiermux] OC createSession returned no id. raw=`, JSON.stringify(info));
       setForcedModel(undefined);
+      setForcedTaskKind(undefined);
       throw new Error('TierMux engine could not start a session. Raw response logged to DevTools console.');
     }
     ocSessions.set(key, ocId);
@@ -401,6 +409,7 @@ async function runViaOc(
       clearTimeout(watchdog);
       unsub();
       setForcedModel(undefined); // clear forced model so the next run starts clean
+      setForcedTaskKind(undefined);
       // Drop any pre-warmed session for a hop this run never escalated into — it would
       // otherwise leak (OC has no delete API; this just stops us tracking/reusing it).
       for (const k of [...prewarmedSessions.keys()]) if (k.startsWith(`${key}:`)) prewarmedSessions.delete(k);
@@ -426,6 +435,7 @@ async function runViaOc(
       clearTimeout(watchdog);
       unsub();
       setForcedModel(undefined);
+      setForcedTaskKind(undefined);
       for (const k of [...prewarmedSessions.keys()]) if (k.startsWith(`${key}:`)) prewarmedSessions.delete(k);
       reject(err);
     };

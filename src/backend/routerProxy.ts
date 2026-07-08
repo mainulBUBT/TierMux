@@ -19,7 +19,7 @@ import type {
   ChatToolChoice,
   ReasoningEffort,
 } from '../shared/types';
-import { AllModelsFailedError } from '../router/router';
+import { AllModelsFailedError, NoVisionModelError } from '../router/router';
 import { classifyTask, attachmentKindsFromContent, type TaskKind } from '../agent/routing';
 
 /** Virtual models OC can request to select a routing profile (vs. a real model). */
@@ -49,6 +49,22 @@ export function getLastRoutedModel(): RoutedModel | undefined {
 let forcedModelForRun: string | undefined;
 export function setForcedModel(m: string | undefined): void { forcedModelForRun = m; }
 export function getForcedModel(): string | undefined { return forcedModelForRun; }
+
+/**
+ * Forces the Router's task-kind classification for every completion call in the
+ * current OC run. Why this exists: agent-mode routing happens per-call inside
+ * mapProfile, which redetects vision from the request's last-user content. But
+ * OC doesn't always forward image/file blocks in its completion requests, so the
+ * redetection can miss a visual attachment and hand the turn to a text-only model
+ * ("I can't read this PDF"). sdk.ts has the REAL user content and computes the
+ * true taskKind up front (sdk.ts:259); it pushes 'vision' through here so the
+ * whole agent run uses a vision-capable model regardless of what OC forwards.
+ * Cleared at every run exit, alongside setForcedModel. Single global — safe only
+ * because agent runs are serialized (same reason setForcedModel is).
+ */
+let forcedTaskKindForRun: TaskKind | undefined;
+export function setForcedTaskKind(k: TaskKind | undefined): void { forcedTaskKindForRun = k; }
+export function getForcedTaskKind(): TaskKind | undefined { return forcedTaskKindForRun; }
 
 export interface RouterProxyServer {
   port: number;
@@ -343,10 +359,15 @@ function mapProfile(model: string | undefined, lastUserText?: string, lastUserCo
     // debug → reasoning models, coding → coder-tagged, trivial → speed-first, an
     // image/PDF attachment → vision-capable models preferred, etc. Falls back to
     // 'agent' when there's no user text (e.g. health-check probes).
-    const kind: TaskKind = lastUserText
+    //
+    // forcedTaskKindForRun overrides this when sdk.ts already classified the run
+    // from the real user content — see setForcedTaskKind. Critical for vision:
+    // OC may not forward attachment blocks per-call, so redetection here would
+    // miss the attachment and drop the 'vision' kind entirely.
+    const classified: TaskKind = lastUserText
       ? classifyTask(lastUserText, { attachmentKinds: attachmentKindsFromContent(lastUserContent ?? '') })
       : 'agent';
-    return { model: 'auto', taskKind: kind };
+    return { model: 'auto', taskKind: forcedTaskKindForRun ?? classified };
   }
   // A real tm_-encoded platform::modelId — pass the decoded id.
   return { model: id };
@@ -454,7 +475,10 @@ function describeError(err: unknown): string {
 }
 
 function statusFor(err: unknown): number {
-  // All models failed = no upstream available → 503. Anything else = 500.
+  // No suitable upstream available → 503. Anything else = 500.
   if (err instanceof AllModelsFailedError) return 503;
+  // No vision-capable model enabled for an attachment → 422: the request is
+  // well-formed but can't be fulfilled with the current model set (user action needed).
+  if (err instanceof NoVisionModelError) return 422;
   return 500;
 }
