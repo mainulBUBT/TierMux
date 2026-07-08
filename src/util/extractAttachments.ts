@@ -54,6 +54,11 @@ function ensureBrowserGlobals(): void {
 const MAX_EXTRACTED_CHARS = 120_000;
 /** Hard cap on a single image's data URL (bytes). 8 MB matches the Gemini cap. */
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+/** Hard cap on a single PDF's data URL (bytes), sent to OC as a real FilePart —
+ *  20 MB matches Gemini's practical inline-file cap (MAX_INLINE_BYTES in providers/google.ts).
+ *  Enforced here, at attach-time, rather than downstream where it's already too late to
+ *  give the user a clear error instead of a silently oversized HTTP request. */
+const MAX_PDF_BYTES = 20 * 1024 * 1024;
 
 const EXT_BY_KIND: Record<Exclude<AttachmentKind, 'file'>, string[]> = {
   image: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'],
@@ -120,6 +125,9 @@ export async function buildAttachmentFromUri(uri: vscode.Uri, source: Attachment
     return att;
   }
   if (kind === 'pdf') {
+    if (bytes.byteLength > MAX_PDF_BYTES) {
+      throw new Error(`PDF is too large to attach (${(bytes.byteLength / 1024 / 1024).toFixed(1)} MB; max ${MAX_PDF_BYTES / 1024 / 1024} MB).`);
+    }
     att.dataUrl = `data:application/pdf;base64,${Buffer.from(bytes).toString('base64')}`;
     att.text = (await extractPdfText(Buffer.from(bytes))).slice(0, MAX_EXTRACTED_CHARS);
     return att;
@@ -148,7 +156,12 @@ export async function extractPdfText(buf: Buffer): Promise<string> {
     const mod = await import('pdf-parse');
     // biome-ignore lint/suspicious/noExplicitAny: pdf-parse has varied export shapes across versions
     const lib = (mod as any).PDFParse ?? (mod as any).default;
-    if (lib && typeof lib.getText === 'function') {
+    // `getText` lives on the CLASS's prototype (instance method), not as a static property
+    // on `lib` itself — `lib.getText` is always undefined for the class form, which used to
+    // silently fall through to the "plain function" branch below and throw ("Class
+    // constructor PDFParse cannot be invoked without 'new'"), caught by the outer try and
+    // turned into a silent empty-string result. Check the prototype instead.
+    if (lib && typeof lib === 'function' && typeof lib.prototype?.getText === 'function') {
       // Class form: new PDFParse({ data }).getText()
       const parser = new lib({ data: new Uint8Array(buf) });
       try {

@@ -36,14 +36,39 @@ function loadDir(dir: string, into: Map<string, Skill>): void {
   }
 }
 
+// Cache keyed by (extensionPath, workspaceRoot) — invalidated by fs.watch on the
+// source directories so an edited skill file still takes effect on the next call,
+// without re-reading every .md file on every message send.
+const cache = new Map<string, Map<string, Skill>>();
+const watched = new Set<string>();
+
+function watchDir(dir: string, cacheKey: string): void {
+  if (watched.has(dir)) return;
+  watched.add(dir);
+  try {
+    fs.watch(dir, () => cache.delete(cacheKey));
+  } catch { /* directory may not exist yet; next loadSkills() call will retry */ }
+}
+
 /**
  * Load skills from the extension's bundled `.tiermux/skills/` (ships with TierMux)
  * and, if present, the workspace's own `.tiermux/skills/` — a workspace file of the
  * same name overrides the bundled default so users/teams can customize a skill.
  */
 export function loadSkills(extensionPath: string, workspaceRoot?: string): Map<string, Skill> {
+  const cacheKey = `${extensionPath}|${workspaceRoot ?? ''}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
   const skills = new Map<string, Skill>();
-  loadDir(path.join(extensionPath, '.tiermux', 'skills'), skills);
-  if (workspaceRoot) loadDir(path.join(workspaceRoot, '.tiermux', 'skills'), skills);
+  const bundledDir = path.join(extensionPath, '.tiermux', 'skills');
+  loadDir(bundledDir, skills);
+  watchDir(bundledDir, cacheKey);
+  if (workspaceRoot) {
+    const workspaceDir = path.join(workspaceRoot, '.tiermux', 'skills');
+    loadDir(workspaceDir, skills);
+    watchDir(workspaceDir, cacheKey);
+  }
+  cache.set(cacheKey, skills);
   return skills;
 }

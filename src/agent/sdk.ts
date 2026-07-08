@@ -10,9 +10,9 @@ import { AllModelsFailedError } from '../router/router';
 import type { ChatMessage, TodoItem, ReasoningEffort } from '../shared/types';
 import type { IProfilerService } from '../profiler/profilerService';
 import type { OcConnection } from '../backend/ocLauncher';
-import { OcClient } from '../backend/ocClient';
+import { OcClient, toOcParts } from '../backend/ocClient';
 import { getLastRoutedModel, setForcedModel } from '../backend/routerProxy';
-import { classifyTask } from './routing';
+import { classifyTask, attachmentKindsFromContent, type TaskKind } from './routing';
 import { assessAnswerQuality } from './answerQuality';
 import { contentToString } from './content';
 import { findReplayBoundary, formatTranscriptForReplay } from './sessionReplay';
@@ -189,6 +189,11 @@ async function runViaOc(
   chainIndex = 0,
   staleOcId?: string,
   onSessionId?: (id: string) => void,
+  // Classified ONCE at hop 0 and threaded through every recursive escalation call —
+  // `opts.messages` never changes turn-to-turn within a single user turn, so
+  // recomputing per hop was redundant and (per review) makes the escalation decision
+  // deterministic-by-construction rather than deterministic-by-luck.
+  taskKindHint?: TaskKind,
 ): Promise<AgentResult> {
   if (!ocClient) {
     // Must throw, not return — a normal return makes callers post a blank assistant
@@ -249,13 +254,16 @@ async function runViaOc(
   // as literal prompt text — unreadable to the model and easily mistaken for the turn
   // "forgetting" its attachment once that garbage replaced the real question.
   const userText = contentToString(lastUser?.content);
+  // Classified once (hop 0) and reused on every escalation hop — see the `taskKindHint`
+  // param doc above.
+  const taskKind: TaskKind = taskKindHint ?? classifyTask(userText, { attachmentKinds: attachmentKindsFromContent(lastUser?.content ?? '') });
 
   const profiler = opts.profiler;
   const turnId = profiler?.beginTurn({
     sessionId: key,
     mode: opts.mode,
     promptLength: userText.length,
-    taskKind: classifyTask(userText),
+    taskKind,
     containsMentions: /@\w/.test(userText),
     containsAttachments: opts.messages.some(
       (m) => Array.isArray(m.content) && m.content.some((p: any) => p?.type === 'image_url'),
@@ -353,11 +361,11 @@ async function runViaOc(
   }
   onSessionId?.(ocId); // internal hook (Chat Hedging) — lets a caller track this hop's OC session id
 
-  // What actually goes out over the wire: `userText`, UNLESS `firstPromptOverride` (set
-  // only on the transcript-fallback path above) replaces it ONCE for a freshly recreated
-  // session. `userText` itself stays the real latest question — used for quality-gate
-  // classification/logging regardless of which text was actually sent to OC.
-  const promptText = firstPromptOverride ?? userText;
+  // What actually goes out over the wire: `toOcParts(lastUser.content)` (text + attachments,
+  // in original order), UNLESS `firstPromptOverride` (set only on the transcript-fallback path
+  // above) replaces it ONCE for a freshly recreated session — see the `parts` build below.
+  // `userText` itself stays the real latest question — used for quality-gate
+  // classification/logging regardless of which content was actually sent to OC.
 
   let out = '';
   const platform = 'tiermux';
@@ -450,7 +458,7 @@ async function runViaOc(
       clearTimeout(watchdog);
       // hop+1 carries _retryCount unchanged: an OC-session drop shouldn't burn the prompt()
       // retry budget — that's for transient 5xx on a single hop, not a profile escalation.
-      void runViaOc(opts, _retryCount, hop + 1, ocId).then(finish, fail);
+      void runViaOc(opts, _retryCount, hop + 1, ocId, undefined, taskKind).then(finish, fail);
       return true;
     };
 
@@ -466,7 +474,7 @@ async function runViaOc(
         console.log(`[tiermux][DBG] quality-gate SKIP: len=${len} isFinalHop=${isFinalHop} enabled=${qualityGateEnabled} model=${modelID}`);
         return false;
       }
-      const q = assessAnswerQuality(out, classifyTask(userText));
+      const q = assessAnswerQuality(out, taskKind);
       const tail = JSON.stringify(out.slice(-60));
       if (q.weak && turnId) profiler?.setQualityGate(turnId, q.signals, q.score);
       console.log(`[tiermux][DBG] quality-gate DECIDE: len=${len} score=${q.score} signals=[${q.signals.join(',')}] primary=${q.primary ?? '-'} weak=${q.weak} model=${modelID} tail=${tail}`);
@@ -585,16 +593,25 @@ async function runViaOc(
     resetWatchdog();
 
     const unsub = client.subscribe((ev) => {
-      resetWatchdog(); // any event = OC is alive; keep the run going
-
       // OC wraps the event envelope inside a top-level `payload` field:
       //   { payload: { type: "session.idle", properties: { ... } } }
       // Older OC builds sent { type, properties } directly. Handle both.
       const payload = (ev as any).payload ?? ev;
       const p = (payload as any).properties ?? {};
-      // sessionID filter: only handle events for our session
+      // sessionID filter: `client.subscribe()` is ONE global SSE stream shared by every
+      // concurrently-running session (see ocClient.ts) — each `runViaOc` call opens its
+      // own listener against that same stream, so every listener sees every session's
+      // events. Fail CLOSED, not open: an event with no `sessionID` (or one that doesn't
+      // match) is NOT ours and must be dropped, never processed on the assumption it's
+      // "probably fine" — the old `evSession && ocId && evSession !== ocId` check let
+      // sessionID-less frames sail through into every listener at once, which is exactly
+      // how one session's streamed text/tool calls leaked into another's chat bubble
+      // under concurrency. A dropped event we DID own just falls back to the existing
+      // idle-fetch recovery (client.messages() below) instead of silently mis-delivering.
       const evSession = p.sessionID ?? p.sessionId;
-      if (evSession && ocId && evSession !== ocId) return;
+      if (evSession !== ocId) return;
+
+      resetWatchdog(); // an event confirmed as OURS = this run is alive; keep it going
 
       const t = (payload as any).type ?? (ev as any).type ?? '';
 
@@ -796,7 +813,7 @@ async function runViaOc(
           ocSessionModels.delete(key);
           unsub();
           clearTimeout(watchdog);
-          void runViaOc(opts, 1, chainIndex, ocId).then(finish, fail);
+          void runViaOc(opts, 1, chainIndex, ocId, undefined, taskKind).then(finish, fail);
           return;
         }
 
@@ -843,7 +860,11 @@ async function runViaOc(
     // not the HTTP response).
     prewarmNextHop();
     promptSentAt = Date.now();
-    const promptP = client.prompt(ocId, { parts: [{ type: 'text', text: promptText }], agent, model: { providerID: 'tiermux', modelID: ocModelID } }, opts.abortSignal);
+    // Attachments (image/PDF FileParts) only travel on the normal path — the transcript-replay
+    // fallback (firstPromptOverride) rebuilds the prompt as plain text, so degrade to text-only
+    // there rather than trying to recover binary content from a synthesized replay string.
+    const parts = firstPromptOverride ? [{ type: 'text' as const, text: firstPromptOverride }] : toOcParts(lastUser?.content ?? '');
+    const promptP = client.prompt(ocId, { parts, agent, model: { providerID: 'tiermux', modelID: ocModelID } }, opts.abortSignal);
     // The router resolves the concrete model synchronously while issuing the POST
     // (candidate selection happens before the fetch awaits). Announce it now so an
     // Auto-routed (virtual-profile) run shows the real model in the live status
@@ -873,7 +894,7 @@ async function runViaOc(
           unsub();
           clearTimeout(watchdog);
           // Retry the full run on the SAME hop (will create a new OC session on the way in).
-          void runViaOc(opts, 1, chainIndex, ocId).then(finish, fail);
+          void runViaOc(opts, 1, chainIndex, ocId, undefined, taskKind).then(finish, fail);
           return;
         }
         // Retry budget spent (or this was a repeat). Before surfacing the error, try a fresh hop —
@@ -992,10 +1013,8 @@ export async function runChatStream(router: Router, opts: AgentOpts): Promise<Ag
   const full: AgentOpts = { ...opts, mode: 'chat' };
 
   const lastUser = [...full.messages].reverse().find((m) => m.role === 'user');
-  const userText = typeof lastUser?.content === 'string'
-    ? lastUser.content
-    : lastUser?.content == null ? '' : JSON.stringify(lastUser.content);
-  const taskKind = classifyTask(userText);
+  const userText = contentToString(lastUser?.content);
+  const taskKind = classifyTask(userText, { attachmentKinds: attachmentKindsFromContent(lastUser?.content ?? '') });
 
   // Direct router path for trivial greetings only — bypass OC entirely.
   // Actual questions route through OC so the model can inspect the project
@@ -1077,9 +1096,9 @@ function isHedgeEligible(opts: AgentOpts): boolean {
   const key = opts.sessionId ?? '__default__';
   if (ocSessions.has(key)) return false; // only the first turn of a new session
   const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
-  const text = typeof lastUser?.content === 'string' ? lastUser.content : '';
+  const text = contentToString(lastUser?.content);
   if (!text || text.length > HEDGE_MAX_CHARS) return false;
-  const kind = classifyTask(text);
+  const kind = classifyTask(text, { attachmentKinds: attachmentKindsFromContent(lastUser?.content ?? '') });
   return kind === 'chat' || kind === 'trivial';
 }
 
@@ -1095,8 +1114,8 @@ function isHedgeEligible(opts: AgentOpts): boolean {
 async function runChatHedged(opts: AgentOpts): Promise<AgentResult> {
   const key = opts.sessionId ?? '__default__';
   const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
-  const userText = typeof lastUser?.content === 'string' ? lastUser.content : '';
-  const taskKind = classifyTask(userText);
+  const userText = contentToString(lastUser?.content);
+  const taskKind = classifyTask(userText, { attachmentKinds: attachmentKindsFromContent(lastUser?.content ?? '') });
 
   type Profile = 'fast' | 'smart';
   interface LegState { buffered: string; modelID?: string; runtimeName?: string; platform?: string; ocId?: string; result?: AgentResult; err?: Error }

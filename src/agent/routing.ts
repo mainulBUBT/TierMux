@@ -1,5 +1,6 @@
-import type { CatalogModel, FallbackEntry } from '../shared/types';
+import type { CatalogModel, FallbackEntry, ChatContent } from '../shared/types';
 import type { Catalog } from '../catalog/catalog';
+import { normalizeAttachmentBlocks } from './content';
 
 export type TaskKind = 'trivial' | 'chat' | 'agent' | 'coding' | 'debug' | 'longContext' | 'plan' | 'vision';
 
@@ -33,6 +34,22 @@ export interface ClassifySignals {
   attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'>;
   /** True when the user forced Auto mode (lets the router pick vision naturally). */
   auto?: boolean;
+}
+
+/**
+ * Derive `ClassifySignals.attachmentKinds` straight from a message's content —
+ * by MIME, not by block type (`image_url` vs `file`), so adding a non-PDF document
+ * kind later (.docx/.csv/...) doesn't silently mis-route as `'pdf'`. Only PDFs
+ * genuinely need vision as a last resort (a scanned page with no text layer); other
+ * docs always have extracted text and don't force the vision branch on their own,
+ * but are still reported here for completeness/future use.
+ */
+export function attachmentKindsFromContent(content: ChatContent): NonNullable<ClassifySignals['attachmentKinds']> {
+  return normalizeAttachmentBlocks(content).map((a): 'image' | 'pdf' | 'doc' => {
+    if (a.mime.startsWith('image/')) return 'image';
+    if (a.mime === 'application/pdf') return 'pdf';
+    return 'doc';
+  });
 }
 
 /**

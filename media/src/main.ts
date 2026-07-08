@@ -1213,6 +1213,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     reader.onload = () => {
       pendingAttachments.push({ kind: 'image', name: file.name || 'image', mime: file.type, dataUrl: reader.result, source });
       renderChips();
+      warnIfImageUnsupported('image');
     };
     reader.readAsDataURL(file);
   }
@@ -1292,6 +1293,27 @@ import { handleToolStatus } from './handlers/toolStatus';
       document.body.appendChild(overlay);
       if (inputs.length) setTimeout(() => inputs[0].focus(), 0);
     });
+  }
+
+  /** True unless a specific (non-Auto) model is pinned and its catalog entry says it
+   *  can't see images — Auto always reads as capable since the router may still land
+   *  on a vision model per attachment (routing.ts's vision task-kind override). PDFs/
+   *  docs are NOT gated by this — their extracted text reaches any model regardless of
+   *  vision support, so this check is only ever used for image attachments. */
+  function currentModelSupportsVision() {
+    if (currentModel === 'auto') return true;
+    const [p, ...rest] = currentModel.split('::');
+    const m = state.catalog.find((x) => x.platform === p && x.modelId === rest.join('::'));
+    return !!(m && m.supportsVision);
+  }
+
+  /** Warn (don't block) when an image was just attached but the pinned model can't see
+   *  images — the FilePart still gets sent, the model just can't use it, so tell the
+   *  user before they wonder why the model "didn't see" their screenshot. */
+  function warnIfImageUnsupported(kind) {
+    if (kind === 'image' && !currentModelSupportsVision()) {
+      showComposerStatus(`${currentModel.split('::').pop()} can't see images — attach a PDF/doc instead, or switch to a vision model.`);
+    }
   }
 
   function updateReasoningAvailability() {
@@ -2953,7 +2975,7 @@ import { handleToolStatus } from './handlers/toolStatus';
           statusTimers.clear();
         }
         if (!paneCtx.existed || rebuildInPlace) {
-          (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts) : renderAssistantStatic(mm.text, mm.model, mm.ts, mm.secs, { reasoning: mm.reasoning, steps: mm.steps, usage: mm.usage }));
+          (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts, mm.attachments) : renderAssistantStatic(mm.text, mm.model, mm.ts, mm.secs, { reasoning: mm.reasoning, steps: mm.steps, usage: mm.usage }));
           if (!(msg.messages || []).length) renderEmpty();
         }
         loadComposer(viewedSessionId); // restore the entering session's draft/settings
@@ -2973,6 +2995,11 @@ import { handleToolStatus } from './handlers/toolStatus';
       }
       case 'setInput':
         input.value = msg.text || '';
+        // "Revert to here" restores the reverted turn's attachments too — otherwise the
+        // file just vanishes (its extracted text was only ever embedded into the MODEL's
+        // history, never into this composer text, so there was nothing left to show).
+        pendingAttachments = msg.attachments ? msg.attachments.slice() : [];
+        renderChips();
         input.focus();
         autoGrow();
         // Programmatic value assignment doesn't fire the 'input' event, so recompute
@@ -3441,6 +3468,7 @@ import { handleToolStatus } from './handlers/toolStatus';
       case 'attachmentAdded':
         pendingAttachments.push(msg.attachment);
         renderChips();
+        warnIfImageUnsupported(msg.attachment.kind);
         break;
       case 'mentionResults':
         if (acMode === 'mention' && msg.queryId === acQueryId) {

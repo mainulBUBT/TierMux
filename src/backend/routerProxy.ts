@@ -20,7 +20,7 @@ import type {
   ReasoningEffort,
 } from '../shared/types';
 import { AllModelsFailedError } from '../router/router';
-import { classifyTask, type TaskKind } from '../agent/routing';
+import { classifyTask, attachmentKindsFromContent, type TaskKind } from '../agent/routing';
 
 /** Virtual models OC can request to select a routing profile (vs. a real model). */
 const PROFILE_FAST = 'tiermux/fast';
@@ -184,10 +184,14 @@ async function handleChatCompletion(
   const messages = body.messages.map(toTierMuxMessage);
   const stream = body.stream === true;
   const lastUserText = extractLastUserText(body.messages);
+  // Already-normalized TierMux content (image_url/file blocks pass through toTierMuxMessage
+  // unchanged) — reused here so mapProfile's vision routing sees real attachment signals
+  // instead of only the flattened text.
+  const lastUserContent = [...messages].reverse().find((m) => m.role === 'user')?.content ?? '';
   console.log(`[tiermux][DBG] completion-request: model=${body.model ?? '-'} max_tokens=${body.max_tokens ?? 'UNSET'} stream=${stream} msgs=${messages.length} tools=${(body.tools ?? []).length}`);
 
   const routeOpts: RouteOptions = {
-    ...mapProfile(body.model, lastUserText),
+    ...mapProfile(body.model, lastUserText, lastUserContent),
     tools: body.tools,
     tool_choice: body.tool_choice,
     parallel_tool_calls: body.parallel_tool_calls,
@@ -309,7 +313,7 @@ function extractLastUserText(messages: unknown[]): string {
  * - Virtual profiles (tiermux/fast|smart|auto) select a routing profile.
  * - Real ids (platform::modelId) are passed through to pin a specific model.
  */
-function mapProfile(model: string | undefined, lastUserText?: string): { model?: string; taskKind?: TaskKind } {
+function mapProfile(model: string | undefined, lastUserText?: string, lastUserContent?: ChatMessage['content']): { model?: string; taskKind?: TaskKind } {
   // OC's @ai-sdk/openai-compatible adapter sends the BARE model id ("auto"/"fast"/
   // "smart"), not the provider-prefixed "tiermux/auto" we declare it under. Accept
   // both the bare id and the "tiermux/"-prefixed form so routing works either way.
@@ -336,9 +340,12 @@ function mapProfile(model: string | undefined, lastUserText?: string): { model?:
   }
   if (id === bare(PROFILE_SMART)) {
     // Classify the actual user message so the right model comparator fires:
-    // debug → reasoning models, coding → coder-tagged, trivial → speed-first, etc.
-    // Falls back to 'agent' when there's no user text (e.g. health-check probes).
-    const kind: TaskKind = lastUserText ? classifyTask(lastUserText) : 'agent';
+    // debug → reasoning models, coding → coder-tagged, trivial → speed-first, an
+    // image/PDF attachment → vision-capable models preferred, etc. Falls back to
+    // 'agent' when there's no user text (e.g. health-check probes).
+    const kind: TaskKind = lastUserText
+      ? classifyTask(lastUserText, { attachmentKinds: attachmentKindsFromContent(lastUserContent ?? '') })
+      : 'agent';
     return { model: 'auto', taskKind: kind };
   }
   // A real tm_-encoded platform::modelId — pass the decoded id.

@@ -235,8 +235,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * Slash-command skills loaded from `.tiermux/skills/*.md` (bundled defaults, overridable
-   * per-workspace). Re-read on every call rather than cached: it's a handful of small files,
-   * and this lets an edited skill file take effect on the very next `/name` without a reload.
+   * per-workspace). loadSkills() caches in-memory and invalidates via fs.watch, so an edited
+   * skill file still takes effect on the next `/name` without paying disk I/O on every call.
    */
   private skills() {
     return loadSkills(this.extensionUri.fsPath, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
@@ -1245,15 +1245,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .join('\n\n');
     const textParts = [text, contextText, fileBlocks].filter((s) => s && s.trim().length > 0).join('\n\n');
 
-    // Visual blocks: images always, and PDFs (for Gemini / any provider that accepts
-    // file parts). The OpenAI-compat path passes the same block through unchanged;
-    // the Google provider rewrites it to native inlineData including PDFs.
+    // Visual blocks: images ALWAYS (no text fallback exists for them — this is the only
+    // channel a model has to see one). PDFs are DIFFERENT: extracted text already carries
+    // the content to every model via `fileBlocks` above, universally, so the raw file part
+    // is only worth the risk when there's no text to fall back on (a scanned PDF with no
+    // extractable text layer). Observed in practice: some models (e.g. Gemini's lighter
+    // tiers) don't support a PDF-typed file part and refuse the WHOLE turn on seeing one —
+    // "I cannot process PDF file input" — even though the same message also carried a
+    // perfectly good extracted-text answer. Sending it unconditionally made working PDFs
+    // (successful extraction) WORSE, not better, for exactly the models that can't use it.
     const visualBlocks: ChatContentBlock[] = [];
     for (const a of list) {
       if (a.kind === 'image' && a.dataUrl) {
-        visualBlocks.push({ type: 'image_url', image_url: { url: a.dataUrl } });
-      } else if (a.kind === 'pdf' && a.dataUrl) {
-        visualBlocks.push({ type: 'file', file: { filename: a.name, file_data: a.dataUrl } });
+        visualBlocks.push({ type: 'image_url', image_url: { url: a.dataUrl, mime: a.mime, filename: a.name } });
+      } else if (a.kind === 'pdf' && a.dataUrl && !a.text) {
+        visualBlocks.push({ type: 'file', file: { filename: a.name, file_data: a.dataUrl, mime: a.mime } });
       }
     }
     if (visualBlocks.length === 0) return textParts;
@@ -1282,7 +1288,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const contextText = await resolveMentions(prompt).catch(() => '');
     const userContent = this.buildUserContent(prompt, contextText, m.attachments);
     s.history.push({ role: 'user', content: userContent });
-    s.transcript.push({ role: 'user', text: prompt, requestId: m.requestId, ts: Date.now(), historyLen: s.history.length - 1 });
+    s.transcript.push({ role: 'user', text: prompt, requestId: m.requestId, ts: Date.now(), historyLen: s.history.length - 1, attachments: m.attachments });
     s.updatedAt = Date.now();
     void this.maybeGenerateTitle(s); // title from the user's message right away (e.g. "hi" -> "Greetings")
 
@@ -1450,6 +1456,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const idx = s.transcript.findIndex((t) => t.role === 'user' && t.requestId === requestId);
     if (idx < 0) return;
     const removedText = s.transcript[idx].text;
+    const removedAttachments = s.transcript[idx].attachments;
     const removedIds = s.transcript.slice(idx).filter((t) => t.role === 'user' && t.requestId).map((t) => t.requestId!);
     // The earliest checkpoint among removed turns reverts everything from here onward.
     let firstCpId: string | undefined;
@@ -1482,7 +1489,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.post({ type: 'switchSession', sessionId: s.id, messages: s.transcript });
     await this.postCheckpoints(s);
-    this.post({ type: 'setInput', text: removedText });
+    this.post({ type: 'setInput', text: removedText, attachments: removedAttachments });
     if (fileCount) this.post({ type: 'notice', sessionId: s.id, text: `⟲ Reverted ${fileCount} file${fileCount !== 1 ? 's' : ''} to this point.` });
     this.persist(s.id);
   }

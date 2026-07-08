@@ -7,6 +7,8 @@
 // run "TierMux: Test OC Bridge" — it probes these endpoints and reports which are live —
 // then adjust the constants below. All paths are centralized here for that reason.
 import type { OcConnection } from './ocLauncher';
+import type { ChatContent } from '../shared/types';
+import { normalizeAttachmentBlocks } from '../agent/content';
 
 // ---- Centralized route paths (single place to fix after the bridge diagnostic) ----
 const PATHS = {
@@ -32,11 +34,54 @@ const PATHS = {
 
 /** A user-message part OC understands ({ type: 'text', text }). */
 interface TextPart { type: 'text'; text: string }
+
+/** OC's FilePart (packages/schema/src/v1/session.ts:171-178, 413-421 upstream) — a
+ *  file/image attachment carried as a `data:` URI. `source` mirrors OC's own
+ *  FilePartSource union (unused by TierMux today, kept type-compatible so a future
+ *  OC upgrade that starts populating it costs nothing here). */
+interface FileSource { type: 'file'; path: string }
+interface SymbolSource { type: 'symbol'; path: string; name: string }
+interface ResourceSource { type: 'resource'; clientName: string; uri: string }
+type FilePartSource = FileSource | SymbolSource | ResourceSource;
+interface FilePart { type: 'file'; mime: string; filename?: string; url: string; source?: FilePartSource }
+
 interface PromptBody {
-  parts: TextPart[];
+  parts: Array<TextPart | FilePart>;
   model?: { providerID: string; modelID: string };
   agent?: string;
   variant?: string;
+}
+
+/**
+ * Build OC's `parts` array from a user message's `ChatContent`, walking the
+ * original blocks in order — a text block becomes a `TextPart`, an `image_url`/
+ * `file` attachment block becomes a `FilePart`, each at its original position
+ * (no regrouping by type: models are sensitive to attachment position, not just
+ * presence). Pure mapper: every block produces exactly one part; it never drops
+ * or rejects — an oversized attachment is a bug to catch at attach-time
+ * (extractAttachments.ts), not something this function silently papers over.
+ */
+export function toOcParts(content: ChatContent): Array<TextPart | FilePart> {
+  if (typeof content === 'string') return content ? [{ type: 'text', text: content }] : [];
+  if (content == null) return [];
+  const parts: Array<TextPart | FilePart> = [];
+  for (const block of content) {
+    if (typeof block === 'string') {
+      if (block) parts.push({ type: 'text', text: block });
+      continue;
+    }
+    const b = block as { type?: string; text?: unknown };
+    if ((b.type === 'text' || b.type === undefined) && typeof b.text === 'string') {
+      if (b.text) parts.push({ type: 'text', text: b.text });
+      continue;
+    }
+    if (b.type === 'image_url' || b.type === 'file') {
+      const [attachment] = normalizeAttachmentBlocks([block]);
+      if (attachment) parts.push({ type: 'file', mime: attachment.mime, filename: attachment.filename, url: attachment.url });
+    }
+  }
+  console.assert(parts.length > 0 || (Array.isArray(content) && content.length === 0), '[tiermux] toOcParts produced zero parts from non-empty content');
+  return parts;
 }
 
 interface OcSessionInfo { id: string; [k: string]: unknown }

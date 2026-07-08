@@ -247,6 +247,9 @@ export interface TranscriptMessage {
   usage?: { promptTokens: number; completionTokens: number };
   /** Tool steps for the "Worked for Ns" disclosure — replayed on re-render. */
   steps?: TranscriptStep[];
+  /** Present on user turns that had one — replayed as attachment chips on re-render
+   *  (session switch/reload) and restored to the composer by "Revert to here". */
+  attachments?: Attachment[];
 }
 
 /** Live status of a session, shown as a dot on its tab. */
@@ -282,7 +285,7 @@ export type OutMessage =
   | { type: 'attachmentAdded'; attachment: Attachment }
   | { type: 'mentionResults'; queryId: number; items: MentionItem[] }
   | { type: 'mcpRegistryResults'; queryId: number; items: McpRegistryItem[]; error?: string }
-  | { type: 'setInput'; text: string }
+  | { type: 'setInput'; text: string; attachments?: Attachment[] }
   | { type: 'toggleSettings' }
   | { type: 'toggleHistory' }
   | { type: 'notice'; sessionId: string; text: string }
