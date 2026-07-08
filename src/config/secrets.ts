@@ -8,6 +8,7 @@ const KEYS_PREFIX = 'tiermux.keys.';
 const MODEL_KEY_PREFIX = 'tiermux.modelKey.';
 const CUSTOM_KEY_PREFIX = 'tiermux.key.custom.';
 const CUSTOM_MODEL_KEY_PREFIX = 'tiermux.modelKey.custom.';
+const CLOUDFLARE_ACCOUNT_PREFIX = 'tiermux.key.cloudflare.accountId';
 
 function modelKeyId(platform: Platform, modelId: string): string {
   return `${platform}::${modelId}`;
@@ -170,6 +171,32 @@ export class SecretStore {
     await this.secrets.delete(CUSTOM_MODEL_KEY_PREFIX + id + '::' + upstreamModelId);
   }
 
+  // ---- Cloudflare account ID (separate from the API token) ----
+
+  async getCloudflareAccountId(): Promise<string | undefined> {
+    return this.secrets.get(CLOUDFLARE_ACCOUNT_PREFIX);
+  }
+
+  async setCloudflareAccountId(accountId: string): Promise<void> {
+    const trimmed = accountId.trim();
+    if (!trimmed) return;
+    await this.secrets.store(CLOUDFLARE_ACCOUNT_PREFIX, trimmed);
+    this._onChange.fire();
+  }
+
+  async clearCloudflareAccountId(): Promise<void> {
+    await this.secrets.delete(CLOUDFLARE_ACCOUNT_PREFIX);
+    this._onChange.fire();
+  }
+
+  /** Masked display hint for the Cloudflare account ID (safe for webview). */
+  async getCloudflareAccountIdHint(): Promise<string | undefined> {
+    const id = await this.secrets.get(CLOUDFLARE_ACCOUNT_PREFIX);
+    if (!id) return undefined;
+    if (id.length <= 8) return '••••' + id.slice(-4);
+    return id.slice(0, 4) + '••••' + id.slice(-4);
+  }
+
   /** Snapshot of `platform::modelId` keys that are currently set, restricted to
    *  the supplied catalog. Pass the catalog so we don't scan the secret store
    *  for unknown / removed models. */
@@ -237,12 +264,13 @@ export class SecretStore {
   }
 
   /** A snapshot of which platforms are configured (key present or keyless) + status. */
-  async snapshot(): Promise<Array<{ platform: Platform; configured: boolean; keyless: boolean; status: KeyStatus; keyCount: number; keyHints: string[] }>> {
-    const out: Array<{ platform: Platform; configured: boolean; keyless: boolean; status: KeyStatus; keyCount: number; keyHints: string[] }> = [];
+  async snapshot(): Promise<Array<{ platform: Platform; configured: boolean; keyless: boolean; status: KeyStatus; keyCount: number; keyHints: string[]; cloudflareAccountId?: string }>> {
+    const out: Array<{ platform: Platform; configured: boolean; keyless: boolean; status: KeyStatus; keyCount: number; keyHints: string[]; cloudflareAccountId?: string }> = [];
+    const cfAccountId = await this.getCloudflareAccountIdHint();
     for (const info of allPlatformInfo()) {
       if (info.platform === 'custom') continue;
       const keys = await this.getKeys(info.platform);
-      const configured = info.keyless || keys.length > 0;
+      const configured = info.keyless || keys.length > 0 || (info.platform === 'cloudflare' && !!cfAccountId);
       const hints = keys.map((k) => k.length <= 8 ? '••••' + k.slice(-4) : k.slice(0, 4) + '••••' + k.slice(-4));
       out.push({
         platform: info.platform,
@@ -251,6 +279,7 @@ export class SecretStore {
         status: this.statuses.get(info.platform) ?? (configured ? 'unknown' : 'missing'),
         keyCount: keys.length,
         keyHints: hints,
+        ...(info.platform === 'cloudflare' ? { cloudflareAccountId: cfAccountId } : {}),
       });
     }
     return out;
@@ -274,10 +303,23 @@ export class SecretStore {
     const info = getPlatformInfo(platform);
     if (info?.keyless) return '';
     const next = await this.getNextAvailableKey(platform);
-    if (next !== undefined) return next;
-    // All keys cooled — return first key so caller surfaces the cooldown error
-    // rather than treating it as "no key configured".
-    const keys = await this.getKeys(platform);
-    return keys[0];
+    let key = next;
+    if (key === undefined) {
+      // All keys cooled — return first key so caller surfaces the cooldown error
+      // rather than treating it as "no key configured".
+      const keys = await this.getKeys(platform);
+      key = keys[0];
+    }
+    if (key === undefined) return undefined;
+    // Cloudflare: prepend stored account ID to the token if available.
+    // The token may already be in "account_id:api_token" format for backward
+    // compatibility; if so we don't need to prepend again.
+    if (platform === 'cloudflare') {
+      const accountId = await this.getCloudflareAccountId();
+      if (accountId && !key.startsWith(accountId + ':')) {
+        key = accountId + ':' + key;
+      }
+    }
+    return key;
   }
 }

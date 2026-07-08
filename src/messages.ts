@@ -62,6 +62,8 @@ export interface KeyStatusInfo {
   keyCount: number;
   /** Masked key hints for display, e.g. `["sk-ab••••7890", "sk-xy••••1234"]`. */
   keyHints: string[];
+  /** Cloudflare account ID (masked hint), when set separately from the API token. */
+  cloudflareAccountId?: string;
 }
 
 export interface McpServerInfo {
@@ -178,6 +180,8 @@ export type InMessage =
   | { type: 'setKey'; platform: Platform }
   | { type: 'addKey'; platform: Platform }
   | { type: 'removeKeyAt'; platform: Platform; index: number }
+  | { type: 'setCloudflareAccountId'; accountId: string }
+  | { type: 'clearCloudflareAccountId' }
   | { type: 'setProviderEnabled'; platform: Platform; enabled: boolean }
   | { type: 'setModelKey'; platform: Platform; modelId: string; key: string }
   | { type: 'clearModelKey'; platform: Platform; modelId: string }

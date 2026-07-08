@@ -2015,6 +2015,59 @@ import { handleToolStatus } from './handlers/toolStatus';
       epRow.appendChild(resetEp);
       body.appendChild(epRow);
 
+      // Cloudflare: Account ID (separate from API token)
+      if (p.platform === 'cloudflare') {
+        const cfSection = document.createElement('div');
+        cfSection.className = 'key-chips';
+        cfSection.style.marginTop = '8px';
+        const cfLabel = document.createElement('span');
+        cfLabel.className = 'muted';
+        cfLabel.textContent = 'Account ID';
+        cfLabel.style.paddingRight = '8px';
+        cfSection.appendChild(cfLabel);
+
+        const cfChip = document.createElement('div');
+        cfChip.className = 'key-chip';
+        const cfSpan = document.createElement('span');
+        cfSpan.className = 'key-hint';
+        if (p.cloudflareAccountId) {
+          cfSpan.textContent = p.cloudflareAccountId;
+        } else {
+          cfSpan.textContent = 'Not set';
+          cfSpan.style.opacity = '0.5';
+        }
+        cfChip.appendChild(cfSpan);
+
+        if (p.cloudflareAccountId) {
+          const cfClearBtn = document.createElement('button');
+          cfClearBtn.className = 'key-del icon-btn';
+          cfClearBtn.title = 'Clear Account ID';
+          cfClearBtn.textContent = '✕';
+          cfClearBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            send({ type: 'clearCloudflareAccountId' });
+          });
+          cfChip.appendChild(cfClearBtn);
+        }
+        cfSection.appendChild(cfChip);
+
+        const cfSetBtn = document.createElement('button');
+        cfSetBtn.className = 'secondary';
+        cfSetBtn.textContent = p.cloudflareAccountId ? 'Change' : 'Set';
+        cfSetBtn.style.marginLeft = '8px';
+        cfSetBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const id = prompt('Cloudflare Account ID:', '');
+          if (id !== null && id.trim()) {
+            send({ type: 'setCloudflareAccountId', accountId: id.trim() });
+          } else if (id !== null && id.trim() === '' && p.cloudflareAccountId) {
+            send({ type: 'clearCloudflareAccountId' });
+          }
+        });
+        cfSection.appendChild(cfSetBtn);
+        body.appendChild(cfSection);
+      }
+
       // Key pool management (only for keyed, non-custom providers)
       if (!p.keyless) {
         const keyHints = p.keyHints || [];

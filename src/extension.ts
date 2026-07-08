@@ -581,9 +581,42 @@ async function setApiKey(secrets: SecretStore, platformArg?: Platform): Promise<
   const info = getPlatformInfo(platform);
   if (info?.keyless) { void vscode.window.showInformationMessage(`${info.name} is keyless — no API key needed.`); return; }
   const existing = await secrets.getKeys(platform);
-  const basePrompt = platform === 'cloudflare'
-    ? 'Cloudflare key as "account_id:api_token"'
-    : `API key for ${info?.name ?? platform}`;
+
+  // Cloudflare: collect Account ID and API Token separately.
+  if (platform === 'cloudflare') {
+    const existingAccountId = await secrets.getCloudflareAccountId();
+    const accountPrompt = existingAccountId
+      ? `Cloudflare Account ID (current: ${existingAccountId.slice(0, 8)}… — leave blank to keep, type to replace)`
+      : 'Cloudflare Account ID';
+    const accountId = await vscode.window.showInputBox({ prompt: accountPrompt, password: false, ignoreFocusOut: true, placeHolder: 'e.g. 1a2b3c4d5e6f7g8h9i0j' });
+    if (accountId === undefined) return; // cancelled
+    if (accountId.trim()) {
+      await secrets.setCloudflareAccountId(accountId.trim());
+    } else if (!existingAccountId) {
+      void vscode.window.showWarningMessage('Cloudflare Account ID is required.');
+      return;
+    }
+    // Now collect the API token.
+    const tokenPrompt = existing.length
+      ? 'Replace Cloudflare API Token (blank = clear all keys)'
+      : 'Set Cloudflare API Token (blank = cancel)';
+    const token = await vscode.window.showInputBox({ prompt: tokenPrompt, password: true, ignoreFocusOut: true, placeHolder: 'Paste API token here' });
+    if (token === undefined) return; // cancelled
+    if (token.trim() === '') {
+      if (existing.length) {
+        await secrets.clear(platform);
+        void vscode.window.showInformationMessage('Cleared Cloudflare API token(s).');
+      }
+      return;
+    }
+    const keys = token.split(/[\n,]+/).map((k) => k.trim()).filter(Boolean);
+    await secrets.setKeys(platform, keys);
+    const label = keys.length > 1 ? `${keys.length} tokens` : 'API token';
+    void vscode.window.showInformationMessage(`Saved ${label} for Cloudflare Workers AI.`);
+    return;
+  }
+
+  const basePrompt = `API key for ${info?.name ?? platform}`;
   const multiHint = 'Separate multiple keys with a comma or newline for automatic rotation on rate-limit.';
   const prompt = `${existing.length ? 'Replace' : 'Set'} ${basePrompt} (blank = clear). ${multiHint}`;
   const key = await vscode.window.showInputBox({ prompt, password: true, ignoreFocusOut: true });
@@ -609,6 +642,7 @@ async function clearApiKey(secrets: SecretStore): Promise<void> {
   const picked = await vscode.window.showQuickPick(options, { placeHolder: 'Select a provider to clear its API key' });
   if (!picked) return;
   await secrets.clear(picked.platform);
+  if (picked.platform === 'cloudflare') await secrets.clearCloudflareAccountId();
   void vscode.window.showInformationMessage(`Cleared API key for ${picked.label}.`);
 }
 

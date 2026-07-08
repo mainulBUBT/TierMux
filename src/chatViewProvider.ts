@@ -764,6 +764,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         void this.sendConfig();
         break;
       }
+      case 'setCloudflareAccountId': {
+        await this.deps.secrets.setCloudflareAccountId(m.accountId);
+        void this.sendConfig();
+        break;
+      }
+      case 'clearCloudflareAccountId': {
+        await this.deps.secrets.clearCloudflareAccountId();
+        void this.sendConfig();
+        break;
+      }
       case 'attachFromWorkspace':
         await this.attachFromWorkspace();
         break;
@@ -1990,6 +2000,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         endpoint: endpoints[s.platform],
         keyCount: s.keyCount,
         keyHints: s.keyHints,
+        cloudflareAccountId: s.cloudflareAccountId,
       };
     });
     if (this.deps.mcp.hasServers()) { try { await this.deps.mcp.ensureStarted(); } catch { /* MCP optional */ } }
