@@ -49,7 +49,6 @@ TierMux connects to **22+ AI providers** out of the box. Each one is pre-configu
 | **ZenMux** | ✅ Free API key |
 | **Agnes AI** | ✅ Free API key |
 | **Kilo Gateway** | ⚡ Keyless |
-| **Openference** | ✅ Free API key |
 | **HuggingFace Router** | ✅ HF token |
 | **SiliconFlow** | ✅ Free API key |
 

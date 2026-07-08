@@ -29,10 +29,6 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'sambanova', name: 'SambaNova', baseUrl: 'https://api.sambanova.ai/v1', keyUrl: 'https://cloud.sambanova.ai/apis' },
   { platform: 'siliconflow', name: 'SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', keyUrl: 'https://cloud.siliconflow.cn/account/ak' },
   { platform: 'zenmux', name: 'ZenMux', baseUrl: 'https://zenmux.ai/api/v1', timeoutMs: 30000, skipPreflight: true, reasoningStyle: 'openrouter', extraHeaders: { 'HTTP-Referer': 'https://github.com/tashfeenahmed/freellmapi', 'X-Title': 'tiermux' }, keyUrl: 'https://zenmux.ai/dashboard/keys' },
-  // Openference requires a whitelisted coding-agent User-Agent; cline is accepted.
-  // Long-term: contact Openference support to add tiermux to their allowlist.
-  // skipPreflight: models are slow to cold-start; ping wastes time and tokens.
-  { platform: 'openference', name: 'Openference', baseUrl: 'https://api.openference.com/v1', extraHeaders: { 'User-Agent': 'cline/3.18.0 VSCode/1.99.0' }, skipPreflight: true, keyUrl: 'https://openference.com' },
 ];
 
 const providers = new Map<Platform, BaseProvider>();

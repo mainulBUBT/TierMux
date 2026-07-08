@@ -27,7 +27,7 @@
 Keyless:  kilo · pollinations · ovh   (default fallback chain)
 Keyed:    groq · cerebras · nvidia · mistral · openrouter · github ·
           zhipu · huggingface · ollama · llm7 · opencode · agnes ·
-          sambanova · siliconflow · zenmux · openference · cohere
+          sambanova · siliconflow · zenmux · cohere
 Native:   google (AI Studio) · cloudflare (Workers AI)
 Custom:   user-defined OpenAI-compatible endpoints
 ```
