@@ -2,7 +2,7 @@
   "name": "tiermux",
   "displayName": "TierMux",
   "description": "Agentic AI coding assistant powered by the free tiers of 18+ LLM providers (and growing), with automatic failover and smart per-task model routing. Bring your own keys.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "mainul-islam",
   "license": "MIT",
   "repository": {
