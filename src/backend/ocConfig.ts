@@ -216,6 +216,7 @@ export function buildOcConfig(opts: OcConfigOptions): string {
           read: 'allow', list: 'allow', glob: 'allow', grep: 'allow',
           web_fetch: 'allow', web_search: 'allow',
           write: 'allow', edit: 'allow', bash: 'allow',
+          move: 'allow', remove: 'allow', task: 'allow', todowrite: 'allow',
         },
       },
       // Plan mode. OC's BUILT-IN `plan` writes to .opencode/plans/*.md then `plan_exit`s into
