@@ -27,14 +27,16 @@ interface ParsedClarifying {
 }
 
 // Tolerant sentinel matchers — weak free-tier models sometimes emit `??? QUESTIONS ???`
-// (inner spaces), `???Questions???` (wrong case), or `?? QUESTIONS ??` (missing a ?).
-// Match any run of 2+ `?`, optional whitespace, the word, optional whitespace, 2+ `?`.
-const START_RE = /\?{2,}\s*QUESTIONS\s*\?{2,}/i;
-const END_RE = /\?{2,}\s*END\s*\?{2,}/i;
+// (inner spaces), `???Questions???` (wrong case), `?? QUESTIONS ??` (missing a ?), or wrap
+// the whole sentinel in markdown bold (`**???QUESTIONS???**`) despite being told not to.
+// Match any run of 2+ `?`, optional whitespace, the word, optional whitespace, 2+ `?`,
+// with optional flanking `**`.
+const START_RE = /\*{0,2}\?{2,}\s*QUESTIONS\s*\?{2,}\*{0,2}/i;
+const END_RE = /\*{0,2}\?{2,}\s*END\s*\?{2,}\*{0,2}/i;
 /** Scrub any leftover sentinel tokens so `???QUESTIONS???` / `???END???` never leak into
  *  displayed text. Requires the QUESTIONS/END word, so a bare `???` in a code block is safe. */
 function scrubSentinels(s: string): string {
-  return s.replace(/\?{2,}\s*(?:QUESTIONS|END)\s*\?{2,}/gi, '');
+  return s.replace(/\*{0,2}\?{2,}\s*(?:QUESTIONS|END)\s*\?{2,}\*{0,2}/gi, '');
 }
 
 /**
@@ -68,7 +70,9 @@ export function parseClarifying(input: string): ParsedClarifying {
   const questions: ClarifyingQuestion[] = [];
   let current: ClarifyingQuestion | null = null;
   for (const raw of block.split('\n')) {
-    const line = raw.trim();
+    // Strip markdown bold/heading markers weaker models sometimes wrap Q/option lines in
+    // (e.g. `**Q[Label]:**`, `## Q: ...`) — a single `-`/`*` bullet prefix is untouched.
+    const line = raw.replace(/\*\*/g, '').replace(/^#+\s*/, '').trim();
     if (!line) continue;
     // `Q[Short Label]: question` — label and question text are both optional independently.
     // Lenient: `Q[Label]` alone (no text), `Q: question` (no label), or `Q[Label]: question`.

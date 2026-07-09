@@ -7,11 +7,11 @@
 // rather than silently falling back to a second engine.
 import type { Router } from '../router/router';
 import { AllModelsFailedError } from '../router/router';
-import type { ChatMessage, TodoItem, ReasoningEffort } from '../shared/types';
+import type { ChatContentBlock, ChatMessage, TodoItem, ReasoningEffort } from '../shared/types';
 import type { IProfilerService } from '../profiler/profilerService';
 import type { OcConnection } from '../backend/ocLauncher';
 import { OcClient, toOcParts } from '../backend/ocClient';
-import { getLastRoutedModel, setForcedModel, setForcedTaskKind } from '../backend/routerProxy';
+import { getLastRoutedModel, setForcedModel, setForcedTaskKind, setForcedAttachments } from '../backend/routerProxy';
 import { classifyTask, attachmentKindsFromContent, type TaskKind } from './routing';
 import { assessAnswerQuality } from './answerQuality';
 import { contentToString } from './content';
@@ -150,6 +150,14 @@ const ocSessionModels = new Map<string, string>();
 /** `${sessionId}:${hop}` → OC session id, created ahead of time while the prior hop is still
  *  running so escalation can reuse it instead of blocking on a fresh createSession(). */
 const prewarmedSessions = new Map<string, string>();
+/** OC session ids we deliberately called `client.abort()` on (chat hedging's losing leg —
+ *  see runChatHedged's flushWinner). OC reports that as a `session.error: "Aborted"` event,
+ *  indistinguishable on the wire from a genuine transient failure — without this set, the
+ *  session.error handler's "no output yet, retry once" path would resurrect the leg we just
+ *  intentionally killed: a whole new session + full tool-calling loop running to completion
+ *  in the background after the hedge already picked a winner, silently burning a free-tier
+ *  request quota and re-triggering onStep/onTool UI updates on the already-finalized turn. */
+const intentionallyAbortedOcIds = new Set<string>();
 
 /** Called by extension.ts once the OC backend is up (or undefined when it's gone). */
 export function setOcEngine(conn: OcConnection | undefined): void {
@@ -263,6 +271,16 @@ async function runViaOc(
   // missed and the turn routed to a text-only model. Only 'vision' needs forcing
   // (text-bearing content survives OC intact); set unconditionally, cleared at exit.
   setForcedTaskKind(taskKind === 'vision' ? 'vision' : undefined);
+  // Also push the actual image_url/file blocks so the router proxy can splice them
+  // back into OC's completion request if OC's own re-serialization dropped them —
+  // see setForcedAttachments. Only needed alongside the vision forcing above.
+  const attachmentBlocks = Array.isArray(lastUser?.content)
+    ? (lastUser.content as ChatContentBlock[]).filter((b) => {
+      const type = typeof b === 'object' && b !== null ? (b as { type?: string }).type : undefined;
+      return type === 'image_url' || type === 'file';
+    })
+    : [];
+  setForcedAttachments(taskKind === 'vision' ? attachmentBlocks : undefined);
 
   const profiler = opts.profiler;
   const turnId = profiler?.beginTurn({
@@ -342,6 +360,7 @@ async function runViaOc(
       console.error(`[tiermux] OC createSession failed:`, err);
       setForcedModel(undefined);
       setForcedTaskKind(undefined);
+      setForcedAttachments(undefined);
       // Must throw, not return — a normal return here makes callers post a blank assistant
       // message with a zeroed "0 in · 0 out" usage footer, hiding the real error behind
       // what looks like a completed (empty) turn.
@@ -358,6 +377,7 @@ async function runViaOc(
       console.error(`[tiermux] OC createSession returned no id. raw=`, JSON.stringify(info));
       setForcedModel(undefined);
       setForcedTaskKind(undefined);
+      setForcedAttachments(undefined);
       throw new Error('TierMux engine could not start a session. Raw response logged to DevTools console.');
     }
     ocSessions.set(key, ocId);
@@ -410,6 +430,12 @@ async function runViaOc(
       unsub();
       setForcedModel(undefined); // clear forced model so the next run starts clean
       setForcedTaskKind(undefined);
+      setForcedAttachments(undefined);
+      // Every terminal path funnels through finish()/fail() exactly once (guarded by
+      // `done`) — the single choke point to reclaim intentionallyAbortedOcIds, instead of
+      // relying on the session.error handler catching every abort (the watchdog timeout
+      // and the prompt().catch() path both settle the run without ever seeing that event).
+      intentionallyAbortedOcIds.delete(ocId);
       // Drop any pre-warmed session for a hop this run never escalated into — it would
       // otherwise leak (OC has no delete API; this just stops us tracking/reusing it).
       for (const k of [...prewarmedSessions.keys()]) if (k.startsWith(`${key}:`)) prewarmedSessions.delete(k);
@@ -436,6 +462,8 @@ async function runViaOc(
       unsub();
       setForcedModel(undefined);
       setForcedTaskKind(undefined);
+      setForcedAttachments(undefined);
+      intentionallyAbortedOcIds.delete(ocId);
       for (const k of [...prewarmedSessions.keys()]) if (k.startsWith(`${key}:`)) prewarmedSessions.delete(k);
       reject(err);
     };
@@ -804,6 +832,19 @@ async function runViaOc(
         // leaving the status + in-flight todos stuck on screen after a failure.
         console.log(`[tiermux] OC session.error: ${errMsg} (outLen=${out.trim().length} model=${modelID} hop=${hop})`);
 
+        // We deliberately aborted THIS exact session ourselves (chat hedging's losing leg,
+        // once the other leg won — see flushWinner) — OC reports that as a generic "Aborted"
+        // session.error, indistinguishable on the wire from a real transient failure. Retrying
+        // it here would resurrect a leg we just killed: a whole new session + tool-calling
+        // loop running to completion in the background after the outcome is already decided.
+        // Settle immediately instead of falling through to the transient-retry path below.
+        if (ocId && intentionallyAbortedOcIds.delete(ocId)) {
+          unsub();
+          clearTimeout(watchdog);
+          fail(new Error('Session intentionally aborted (superseded by the winning hedge leg)'));
+          return;
+        }
+
         // 1) We already streamed a usable answer — deliver it. A mid-stream error (upstream
         //    timeout, dropped SSE, a tool failing late) shouldn't throw away 1.6k of good
         //    output, and a "may be incomplete" notice is more often wrong (stream closing
@@ -870,10 +911,16 @@ async function runViaOc(
     // not the HTTP response).
     prewarmNextHop();
     promptSentAt = Date.now();
-    // Attachments (image/PDF FileParts) only travel on the normal path — the transcript-replay
-    // fallback (firstPromptOverride) rebuilds the prompt as plain text, so degrade to text-only
-    // there rather than trying to recover binary content from a synthesized replay string.
-    const parts = firstPromptOverride ? [{ type: 'text' as const, text: firstPromptOverride }] : toOcParts(lastUser?.content ?? '');
+    // The transcript-replay fallback (firstPromptOverride) rebuilds PRIOR turns as flattened
+    // text (formatTranscriptForReplay drops attachment blocks — a synthesized replay string
+    // can't carry binary content). But the CURRENT turn's own attachments are real ChatContent
+    // blocks straight from opts.messages, not part of that synthesized string — silently
+    // dropping them here left a freshly-recreated session with no idea a file was attached,
+    // so it would keep talking about whatever task was flattened into the replay text instead.
+    // Re-append them as real FileParts alongside the flattened text.
+    const parts = firstPromptOverride
+      ? [{ type: 'text' as const, text: firstPromptOverride }, ...toOcParts(lastUser?.content ?? '').filter((p) => p.type === 'file')]
+      : toOcParts(lastUser?.content ?? '');
     const promptP = client.prompt(ocId, { parts, agent, model: { providerID: 'tiermux', modelID: ocModelID } }, opts.abortSignal);
     // The router resolves the concrete model synchronously while issuing the POST
     // (candidate selection happens before the fetch awaits). Announce it now so an
@@ -1142,20 +1189,48 @@ async function runChatHedged(opts: AgentOpts): Promise<AgentResult> {
     }
     ocSessions.set(key, legs[which].ocId!);
     ocSessionModels.set(key, legs[which].modelID ?? which);
-    if (legs[other].ocId) void ocClient?.abort(legs[other].ocId);
+    if (legs[other].ocId) {
+      intentionallyAbortedOcIds.add(legs[other].ocId);
+      void ocClient?.abort(legs[other].ocId);
+    }
   };
 
   const runLeg = async (which: Profile): Promise<void> => {
     const leg = legs[which];
+    // Live UI updates (status/tool/reasoning/etc.) are allowed through while the race is
+    // still undecided (both legs' progress is worth showing) or once THIS leg is confirmed
+    // the winner — but suppressed once the OTHER leg has won, so a straggler (an orphaned
+    // retry, a slow abort, anything still emitting events after the outcome is decided)
+    // can't keep mutating the already-finalized turn's bubble in the background.
+    const decidedAgainst = (): boolean => !!winner && winner !== which;
     const legOpts: AgentOpts = {
       ...opts,
       pinnedModel: which,
       onChunk: (t) => { leg.buffered += t; if (winner === which) opts.onChunk(t); },
       onModel: (p, m, rt) => { leg.platform = p; leg.modelID = m; leg.runtimeName = rt; if (winner === which) opts.onModel(p, m, rt); },
       onFailover: () => {}, // a hedge leg is a length-1 chain (isFinalHop) — nothing to escalate to, nothing to report
+      onStep: (phase, label) => { if (!decidedAgainst()) opts.onStep(phase, label); },
+      onTool: (e) => { if (!decidedAgainst()) opts.onTool(e); },
+      onReasoning: (t) => { if (!decidedAgainst()) opts.onReasoning(t); },
+      onTodos: (todos) => { if (!decidedAgainst()) opts.onTodos(todos); },
+      onKeyRotated: (info) => { if (!decidedAgainst()) opts.onKeyRotated?.(info); },
+      onError: (message) => { if (!decidedAgainst()) opts.onError(message); },
+      onWarning: (message) => { if (!decidedAgainst()) opts.onWarning?.(message); },
+      onAskUser: async (question, options) => (decidedAgainst() ? '' : opts.onAskUser(question, options)),
     };
     try {
-      const r = await runViaOc(legOpts, 0, 0, undefined, (id) => { leg.ocId = id; });
+      const r = await runViaOc(legOpts, 0, 0, undefined, (id) => {
+        leg.ocId = id;
+        // flushWinner may have already run and decided against this leg while its
+        // createSession() was still in flight — at that moment legs[other].ocId was
+        // undefined, so the abort() call there was skipped (see flushWinner's guard).
+        // Catch up now that the id is finally known, instead of letting this leg run
+        // its whole generation (and any tool-calling loop) to completion unaborted.
+        if (winner && winner !== which) {
+          intentionallyAbortedOcIds.add(id);
+          void ocClient?.abort(id);
+        }
+      });
       leg.result = r;
       const q = assessAnswerQuality(r.text, taskKind);
       if (!q.weak) flushWinner(which);

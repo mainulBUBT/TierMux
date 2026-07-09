@@ -136,6 +136,11 @@ export interface CatalogModel {
   supportsTools: boolean;
   supportsVision: boolean;
   supportsReasoning: boolean;
+  /** True when this model refuses a whole turn on seeing a raw PDF `file` part (observed
+   *  with gemini-2.5-flash: "I cannot process PDF file input") even though `supportsVision`
+   *  is true — it can see images, just not PDF-typed file blocks. Routing avoids picking it
+   *  for a turn whose PDF had no extractable text (so a raw file part is the only option). */
+  rejectsRawPdf?: boolean;
   /** Optional free-form labels from the remote catalog (e.g. ["frontier","coding"]). */
   tags?: string[];
   /** Optional short editorial note shown beside the model (e.g. "Crowd favorite"). */

@@ -840,15 +840,26 @@ import { handleToolStatus } from './handlers/toolStatus';
   // Tolerant of `??? QUESTIONS ???`, wrong case, or missing ? — matches the host parser.
   // While the block is still streaming (QUESTIONS seen, END not yet), hides everything
   // from the QUESTIONS sentinel onward so the raw question text doesn't show either.
-  function stripClarifyBlock(s) {
-    const sm = /\?{2,}\s*QUESTIONS\s*\?{2,}/i.exec(s);
+  // `final=false` (mid-stream, the default): hide from the start sentinel to the end of the
+  // buffer-so-far even with no closing marker yet — it may still be mid-type, and flashing
+  // raw `???QUESTIONS???` text while it streams in looks broken.
+  // `final=true` (turn complete, no more tokens coming): a start sentinel with no matching
+  // `???END???` by now was never a well-formed block — some incidental/malformed fragment,
+  // not a real clarify attempt (the server's own parseClarifying already reached the same
+  // conclusion and left this text alone). Deleting to end-of-string here would silently
+  // truncate a real answer to nothing, which is exactly what used to happen.
+  function stripClarifyBlock(s, final) {
+    const sm = /\*{0,2}\?{2,}\s*QUESTIONS\s*\?{2,}\*{0,2}/i.exec(s);
     if (sm) {
       const rest = s.slice(sm.index + sm[0].length);
-      const em = /\?{2,}\s*END\s*\?{2,}/i.exec(rest);
-      const tail = em ? rest.slice(em.index + em[0].length) : '';
-      s = s.slice(0, sm.index) + tail;
+      const em = /\*{0,2}\?{2,}\s*END\s*\?{2,}\*{0,2}/i.exec(rest);
+      if (em) {
+        s = s.slice(0, sm.index) + rest.slice(em.index + em[0].length);
+      } else if (!final) {
+        s = s.slice(0, sm.index);
+      }
     }
-    return s.replace(/\?{2,}\s*(?:QUESTIONS|END)\s*\?{2,}/gi, '');
+    return s.replace(/\*{0,2}\?{2,}\s*(?:QUESTIONS|END)\s*\?{2,}\*{0,2}/gi, '');
   }
   // Present-tense "what the agent is doing right now" for the rolling status label.
   // (The tool CARDS in the feed use the past-tense toolLabel() — "Analyzed/Searched…".
@@ -3291,6 +3302,13 @@ import { handleToolStatus } from './handlers/toolStatus';
         const t = ensureTarget(msg.requestId);
         stopStatusTimer(msg.requestId, true);
         finalizeWork(msg.requestId);
+        // t.flow (streamed text segments + tool cards) and t.body (the "bubble", where this
+        // card renders) are SEPARATE sibling elements — clearing only t.body left any text the
+        // model streamed before the fenced ???QUESTIONS??? block (a leading "let me ask..."
+        // explanation, or a full prose restatement of the same questions some models add
+        // despite being told not to) sitting there unmodified, duplicating the interactive
+        // card that's about to replace it as this turn's canonical representation.
+        t.flow.innerHTML = '';
         t.body.innerHTML = '';
         const qs = msg.questions;
         const selected = qs.map(() => null); // chosen option index per question; q.options.length === "type your own"
@@ -3459,7 +3477,7 @@ import { handleToolStatus } from './handlers/toolStatus';
         // Flush any pending streamed text segment immediately (a queued rAF may not have run).
         if (t.currentText && t.currentText._buf != null) {
           t.currentText.innerHTML = '';
-          t.currentText.appendChild(renderMarkdown(stripClarifyBlock(t.currentText._buf)));
+          t.currentText.appendChild(renderMarkdown(stripClarifyBlock(t.currentText._buf, true)));
         }
         // Fold-up 💭 Reasoning disclosure only when no live 🧠 Thinking block already
         // captured it inline — otherwise the same reasoning would show twice. Placed at the
@@ -3476,7 +3494,7 @@ import { handleToolStatus } from './handlers/toolStatus';
         // / non-streaming providers): append the full answer as a final flow segment.
         if (!t._wasStreamed) {
           const seg = document.createElement('div'); seg.className = 'flow-text bubble';
-          seg.appendChild(renderMarkdown(stripClarifyBlock(msg.text)));
+          seg.appendChild(renderMarkdown(stripClarifyBlock(msg.text, true)));
           t.flow.appendChild(seg);
         }
         t._wasStreamed = false;
@@ -3485,12 +3503,17 @@ import { handleToolStatus } from './handlers/toolStatus';
         // the source of truth so the footer never blanks (e.g. when a forced model
         // failed over before assistantStart could set t.model).
         if (msg.model) t.model = `${msg.platform || ''}/${msg.model}`;
-        let usageStr = '';
-        if (msg.usage) usageStr = `  ·  ${fmtUsage(msg.usage)}`;
-        const startedAt = t.startedAt ?? startTimes.get(msg.requestId);
-        const secs = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
-        const durStr = secs != null ? `  ·  ${secs}s` : '';
-        t.el.appendChild(assistantFooter(t.el, (t.model || '') + usageStr + durStr, Date.now(), msg.requestId));
+        // A clarifyingQuestions card follows this same message — the task isn't done yet
+        // (still waiting on the user's answer), so defer the footer to the eventual final
+        // answer bubble (a new requestId once they respond) instead of showing it here.
+        if (!msg.noFooter) {
+          let usageStr = '';
+          if (msg.usage) usageStr = `  ·  ${fmtUsage(msg.usage)}`;
+          const startedAt = t.startedAt ?? startTimes.get(msg.requestId);
+          const secs = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
+          const durStr = secs != null ? `  ·  ${secs}s` : '';
+          t.el.appendChild(assistantFooter(t.el, (t.model || '') + usageStr + durStr, Date.now(), msg.requestId));
+        }
         // The run stopped before finishing (step cap or a model dropping out). Offer a
         // one-click resume — it picks up with full memory, so no work is repeated.
         if (msg.paused) {

@@ -152,6 +152,7 @@
       "supportsTools": true,
       "supportsVision": true,
       "supportsReasoning": true,
+      "rejectsRawPdf": true,
       "released": "2025-06",
       "insight": "Not available in EU/UK/CH"
     },

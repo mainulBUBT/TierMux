@@ -117,6 +117,10 @@ export interface RouteOptions extends CompletionOptions {
   requireTools?: boolean;
   /** When the model is "Auto", order candidates by what this task needs. */
   taskKind?: TaskKind;
+  /** True when the turn carries a raw PDF `file` block (extraction produced no text, so
+   *  the raw bytes are the only way a model can read it) — steers Auto away from models
+   *  the catalog marks `rejectsRawPdf`. See CatalogModel.rejectsRawPdf. */
+  hasRawPdfPart?: boolean;
   /** Notified each time the router fails over to the next model. */
   onFailover?: (info: { from: FallbackEntry; reason: string }) => void;
   /** Notified when a 429 triggers a key rotation (same model, next key in pool). */
@@ -381,6 +385,14 @@ export class Router {
       const visionCapable = list.filter((e) => this.catalog.find(e.platform, e.modelId)?.supportsVision);
       if (visionCapable.length === 0) throw new NoVisionModelError();
       list = visionCapable;
+      // A raw PDF file part (no extracted text to fall back on): some vision models
+      // otherwise refuse the WHOLE turn on seeing it (see CatalogModel.rejectsRawPdf).
+      // Prefer models known to accept it; only fall back to the full vision-capable
+      // list if that would leave nothing to try.
+      if (opts.hasRawPdfPart) {
+        const acceptsRawPdf = list.filter((e) => !this.catalog.find(e.platform, e.modelId)?.rejectsRawPdf);
+        if (acceptsRawPdf.length > 0) list = acceptsRawPdf;
+      }
     }
     // Quality-based escalation (Auto only): drop models that already underperformed, and any
     // weaker than the floor, so a flaky weak model is replaced by a stronger one. If nothing
@@ -659,16 +671,20 @@ export class Router {
               const delta = chunk.choices?.[0]?.delta;
               if (!delta) continue;
               if (delta.content) {
-                chunks.push(delta.content);
                 const clean = thinkStrip.feed(delta.content);
-                if (clean) opts.onChunk!(clean);
+                if (clean) {
+                  chunks.push(clean);
+                  opts.onChunk!(clean);
+                }
               }
               if (delta.tool_calls?.length) toolCalls = delta.tool_calls;
             }
             const tail = thinkStrip.flush();
-            if (tail) chunks.push(tail);
-            let fullText = chunks.join('');
-            fullText = stripThinkTags(fullText);
+            if (tail) {
+              chunks.push(tail);
+              opts.onChunk!(tail);
+            }
+            const fullText = chunks.join('');
             // Most providers don't emit `usage` in their SSE chunks (would need
             // `stream_options.include_usage` set on the request, which the OpenAI
             // stream spec supports but not every free provider honors). Until the

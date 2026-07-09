@@ -93,7 +93,7 @@ interface Session {
   pendingPlanUser?: ChatContent;
   /** URI of the plan MD file saved at proposal time — updated if the user edits steps before approving. */
   pendingPlanFile?: { uri: vscode.Uri; title: string };
-  pendingClarify?: { requestId: string; userContent: ChatContent; prompt: string; questions: ClarifyingQuestion[]; mode: 'plan' | 'agent' };
+  pendingClarify?: { requestId: string; userContent: ChatContent; prompt: string; questions: ClarifyingQuestion[]; mode: 'plan' | 'agent' | 'chat' };
   /** In-flight `askUser` tool calls, keyed by OpenAI tool_call_id, awaiting a webview answer. */
   pendingAskUser: Map<string, (answer: string) => void>;
   /** True while an approved plan is being executed in Agent mode — drives the "Following the approved plan" header. */
@@ -1047,9 +1047,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         const attachment = await buildAttachmentFromUri(uri, 'pick');
         this.post({ type: 'attachmentAdded', attachment });
+        this.warnIfPdfTextExtractionFailed(attachment);
       } catch (e) {
         this.post({ type: 'error', sessionId: this.viewedSessionId, message: `Could not read ${uri.fsPath}: ${e instanceof Error ? e.message : e}` });
       }
+    }
+  }
+
+  /** PDF text extraction fails silently (extractPdfText swallows parse errors) — surface it
+   *  so the user isn't left guessing why the model later refuses or answers from nothing. */
+  private warnIfPdfTextExtractionFailed(attachment: Attachment): void {
+    if (attachment.kind === 'pdf' && !attachment.text) {
+      this.post({
+        type: 'notice',
+        sessionId: this.viewedSessionId,
+        text: `Couldn't extract text from "${attachment.name}" (likely a scanned PDF with no text layer) — sending the raw file instead. Not all models can read raw PDFs.`,
+      });
     }
   }
 
@@ -1109,6 +1122,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await vscode.workspace.fs.writeFile(fileUri, bytes);
       const attachment = await buildAttachmentFromUri(fileUri, m.source ?? 'drop');
       this.post({ type: 'attachmentAdded', attachment });
+      this.warnIfPdfTextExtractionFailed(attachment);
     } catch (e) {
       this.post({ type: 'error', sessionId: this.viewedSessionId, message: `Could not attach ${m.name}: ${e instanceof Error ? e.message : e}` });
     }
@@ -1372,23 +1386,41 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       const after = this.deps.usage.get();
       const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
-      this.persistAgentTurn(s, result);
-      this.pushAssistantTurn(s, m.requestId, result, sentAt, usage);
+      // Check for a ???QUESTIONS??? block in the response (agent asked for user input).
+      // Strip it from the displayed text and show the structured Q&A card instead.
+      // All modes can ask, including Chat — a genuinely ambiguous question pauses with
+      // a card instead of the model guessing or flatly refusing.
+      const agentClar = !result.paused ? parseClarifying(result.text) : { questions: null, text: result.text };
+      // parseClarifying's `text` is ALWAYS already sentinel-scrubbed, whether or not it found
+      // well-formed questions — using `result.text` (raw) in the no-questions case left any
+      // incidental/malformed `???QUESTIONS???` fragment (a model half-attempting the format,
+      // or just echoing it) in what got sent to the webview, which the client's OWN blunter
+      // stripper (stripClarifyBlock in main.ts) then deleted from the sentinel to the end of
+      // the message with no validity check — silently truncating a real answer to nothing.
+      const displayText = agentClar.text;
+      // Persist the SCRUBBED text, not raw result.text — persistAgentTurn/pushAssistantTurn
+      // feed s.history (conversation context) and s.transcript (rebuilt on session switch /
+      // window reload via renderAssistantStatic, which never re-runs parseClarifying). Persisting
+      // the raw sentinel-laden text left every re-render from persisted history showing the
+      // literal ???QUESTIONS???/Q[Label]:/???END??? markup instead of the clean answer the
+      // live view showed the first time.
+      const persistedResult: AgentResult = displayText !== result.text ? { ...result, text: displayText } : result;
+      this.persistAgentTurn(s, persistedResult);
+      this.pushAssistantTurn(s, m.requestId, persistedResult, sentAt, usage);
       this.rememberWindow(s, result.platform, result.model);
       // Remember which (task kind, model) produced this reply so 👍/👎 can teach the router.
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      // Check for a ???QUESTIONS??? block in the response (agent asked for user input).
-      // Strip it from the displayed text and show the structured Q&A card instead.
-      const agentClar = m.mode !== 'chat' && !result.paused ? parseClarifying(result.text) : { questions: null, text: result.text };
-      const displayText = agentClar.questions ? agentClar.text : result.text;
       const pinned = (s.model && s.model !== 'auto') ? s.model : result.model;
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: pinned, paused: result.paused });
+      const hasQuestions = !!(agentClar.questions && agentClar.questions.length);
+      // Defer the footer to the eventual final-answer bubble (a new requestId, once the user
+      // answers) rather than showing it on the question-asking turn — the task isn't done yet.
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: pinned, paused: result.paused, noFooter: hasQuestions });
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
-      if (agentClar.questions && agentClar.questions.length) {
-        s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: agentClar.questions, mode: m.mode as 'plan' | 'agent' };
-        this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: agentClar.questions });
+      if (hasQuestions) {
+        s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: agentClar.questions!, mode: m.mode as 'plan' | 'agent' | 'chat' };
+        this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: agentClar.questions! });
       }
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned run — don't surface its error
@@ -1921,10 +1953,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .map((q, i) => `Q: ${q.text}\nA: ${m.answers[i] ?? '(no answer)'}`)
       .join('\n');
 
-    // Agent/plan end-of-turn: send answers as a new user message to continue the OC session.
-    if (ctx.mode === 'agent') {
+    // Agent/chat end-of-turn: send answers as a new user message to continue the OC session.
+    if (ctx.mode === 'agent' || ctx.mode === 'chat') {
       const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      await this.handleSend({ type: 'sendMessage', requestId, text: qa, mode: 'agent', model: s.model ?? 'auto', reasoningEffort: s.reasoningEffort ?? 'medium' });
+      await this.handleSend({ type: 'sendMessage', requestId, text: qa, mode: ctx.mode, model: s.model ?? 'auto', reasoningEffort: s.reasoningEffort ?? 'medium' });
       return;
     }
 

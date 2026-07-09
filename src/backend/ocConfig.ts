@@ -75,11 +75,44 @@ export function buildOcConfig(opts: OcConfigOptions): string {
     + '- If you cannot find X in the codebase, say "I couldn\'t find X in the codebase" — do NOT '
     + 'give a generic explanation.\n\n';
 
+  // Shared clarifying-questions block format, reused by chat/build/planx. Weaker free-tier
+  // models tend to drift from a described format into a conversational paraphrase (a
+  // preamble sentence, markdown-bold "**Q[Label]:**", no literal sentinel) — spelled out
+  // this explicitly/repetitively because that drift is exactly what breaks the parser
+  // (clarify.ts) that turns this block into an interactive card. `${stopClause}` slots in
+  // what NOT to do yet, since it differs per agent (no answer / no edits / no plan).
+  const clarifyFormat = (stopClause: string): string =>
+    'If the request is genuinely ambiguous (answering requires guessing between materially '
+    + `different interpretations), FIRST emit a clarifying-questions block and STOP (${stopClause} yet) `
+    + '— do not answer/act AND ask in the same turn. Most requests are NOT ambiguous; don\'t ask just to be safe.\n'
+    + 'Format rules — follow EXACTLY, the block is machine-parsed:\n'
+    + '- Line 1 must be the literal text ???QUESTIONS??? and NOTHING else on that line — no preamble '
+    + 'sentence before it, no markdown, no bold.\n'
+    + '- Each question is its own line: `Q[Short Label]: the question?` — plain text, no markdown '
+    + 'bold/headings around it.\n'
+    + '- Each option is its own line directly under its question: `- Option title :: optional one-line '
+    + 'description`.\n'
+    + '- The last line must be the literal text ???END??? and NOTHING else on that line.\n'
+    + '- Nothing else in the whole reply: no text before ???QUESTIONS???, no text after ???END???.\n'
+    + 'Example:\n'
+    + '???QUESTIONS???\n'
+    + 'Q[Short Label]: the question?\n'
+    + '- Option A :: optional one-line description\n'
+    + '- Option B :: optional one-line description\n'
+    + '???END???\n';
+
   // Virtual routing profiles — always present so OC's default model (tiermux/auto)
   // is valid and the three "speeds" the UI exposes map to the router's task-kind logic.
+  // `attachment: false` used to be set on `fast` (chat mode's default hop) on the
+  // assumption fast-tier models are text-only. It isn't — the router dynamically picks
+  // the real underlying model per turn (including vision-capable ones when an
+  // image/PDF is attached), but OC honors this flag client-side and was stripping the
+  // attachment before the request ever reached the router, no matter what taskKind the
+  // router would have routed to. Chat mode was the one mode that couldn't read
+  // attachments as a result. See mapProfile's PROFILE_FAST branch in routerProxy.ts.
   const models: Record<string, object> = {
     auto:  { name: 'Auto',  limit: { context: 128000, output: 8192 } },
-    fast:  { name: 'Fast',  limit: { context: 128000, output: 8192 }, attachment: false },
+    fast:  { name: 'Fast',  limit: { context: 128000, output: 8192 } },
     smart: { name: 'Smart', limit: { context: 200000, output: 8192 } },
   };
 
@@ -156,6 +189,7 @@ export function buildOcConfig(opts: OcConfigOptions): string {
           + '- ONLY pure general-knowledge questions (language syntax, theory unrelated to this repo) '
           + 'may be answered from knowledge — and even then, say it\'s from memory.\n'
           + '- If search doesn\'t surface the answer, STOP and say you couldn\'t find it. Do not guess.\n'
+          + clarifyFormat('no answer')
           + 'You CANNOT edit/write/move/remove files, run commands, or spawn subagents.',
         permission: {
           read: 'allow', list: 'allow', glob: 'allow', grep: 'allow',
@@ -176,13 +210,7 @@ export function buildOcConfig(opts: OcConfigOptions): string {
           + '- Make the smallest correct change. Re-use existing patterns and helpers over new code.\n'
           + '- After editing: verify — grep for other call sites that the change might break; run '
           + 'typecheck/tests when feasible.\n'
-          + '- If the task is ambiguous or the relevant code can\'t be found, FIRST emit a '
-          + 'clarifying-questions block in EXACTLY this format and then stop (no edits yet):\n'
-          + '???QUESTIONS???\n'
-          + 'Q[Short Label]: the question?\n'
-          + '- Option A :: optional one-line description\n'
-          + '- Option B :: optional one-line description\n'
-          + '???END???\n'
+          + clarifyFormat('no edits')
           + 'Otherwise skip the block and proceed with the task.',
         permission: {
           read: 'allow', list: 'allow', glob: 'allow', grep: 'allow',
@@ -205,13 +233,7 @@ export function buildOcConfig(opts: OcConfigOptions): string {
           + 'Reply with a concise, actionable plan as TEXT: numbered steps, each naming the file/symbol '
           + 'it touches and what to do. Do NOT edit/write/move/remove files and do NOT run commands — '
           + 'planning only.\n'
-          + 'If the request is ambiguous, or you cannot find the relevant code, FIRST emit a '
-          + 'clarifying-questions block in EXACTLY this format and then stop (no plan yet):\n'
-          + '???QUESTIONS???\n'
-          + 'Q[Short Label]: the question?\n'
-          + '- Option A :: optional one-line description\n'
-          + '- Option B :: optional one-line description\n'
-          + '???END???\n'
+          + clarifyFormat('no plan')
           + 'Otherwise skip the block and output only the plan. Keep it tight and skimmable.',
         permission: {
           read: 'allow', list: 'allow', glob: 'allow', grep: 'allow',

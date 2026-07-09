@@ -272,7 +272,10 @@ export type OutMessage =
   | { type: 'editApproval'; sessionId: string; requestId: string; id: string; path: string; title: string; kind: 'write' | 'delete' }
   | { type: 'clarifyingQuestions'; sessionId: string; requestId: string; questions: ClarifyingQuestion[] }
   | { type: 'sessionTitle'; sessionId: string; title: string }
-  | { type: 'assistantMessage'; sessionId: string; requestId: string; text: string; reasoning?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean }
+  // `noFooter`: true when a clarifyingQuestions card immediately follows this message for the
+  // SAME requestId — the model/usage footer is deferred to the eventual final answer bubble
+  // (a new requestId, once the user answers) instead of showing on the question-asking turn.
+  | { type: 'assistantMessage'; sessionId: string; requestId: string; text: string; reasoning?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean; noFooter?: boolean }
   | { type: 'assistantChunk'; sessionId: string; requestId: string; text: string }
   | { type: 'usageTotals'; totals: UsageTotals }
   | { type: 'checkpoint'; sessionId: string; requestId: string; id: string; files: CheckpointFile[] }

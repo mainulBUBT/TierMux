@@ -14,6 +14,8 @@ import * as http from 'http';
 import type { Router } from '../router/router';
 import type { RouteOptions } from '../router/router';
 import type {
+  ChatContent,
+  ChatContentBlock,
   ChatMessage,
   ChatToolDefinition,
   ChatToolChoice,
@@ -65,6 +67,22 @@ export function getForcedModel(): string | undefined { return forcedModelForRun;
 let forcedTaskKindForRun: TaskKind | undefined;
 export function setForcedTaskKind(k: TaskKind | undefined): void { forcedTaskKindForRun = k; }
 export function getForcedTaskKind(): TaskKind | undefined { return forcedTaskKindForRun; }
+
+/**
+ * The real `image_url`/`file` content blocks from the run's true user turn, captured
+ * directly by sdk.ts (same source as setForcedTaskKind — sdk.ts:259). Why this exists:
+ * OC doesn't reliably forward attachment blocks when it re-serializes a turn into the
+ * completion request it POSTs back here (see setForcedTaskKind's comment) — so a vision
+ * model gets correctly picked but then receives a request with the image/PDF silently
+ * missing, and answers from empty context with no visible error. handleChatCompletion
+ * splices these back into the last user message whenever OC's own request arrived
+ * without any attachment block. Cleared at every run exit, alongside setForcedTaskKind.
+ */
+let forcedAttachmentsForRun: ChatContentBlock[] | undefined;
+export function setForcedAttachments(blocks: ChatContentBlock[] | undefined): void {
+  forcedAttachmentsForRun = blocks?.length ? blocks : undefined;
+}
+export function getForcedAttachments(): ChatContentBlock[] | undefined { return forcedAttachmentsForRun; }
 
 export interface RouterProxyServer {
   port: number;
@@ -198,12 +216,22 @@ async function handleChatCompletion(
   }
 
   const messages = body.messages.map(toTierMuxMessage);
+  if (forcedTaskKindForRun === 'vision' && forcedAttachmentsForRun) {
+    reinjectMissingAttachments(messages, forcedAttachmentsForRun);
+  }
   const stream = body.stream === true;
   const lastUserText = extractLastUserText(body.messages);
   // Already-normalized TierMux content (image_url/file blocks pass through toTierMuxMessage
   // unchanged) — reused here so mapProfile's vision routing sees real attachment signals
   // instead of only the flattened text.
   const lastUserContent = [...messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+  // A raw PDF `file` block (vs. `image_url`) means text extraction produced nothing —
+  // the bytes are the only way a model can read it. Some vision models refuse the whole
+  // turn on seeing this (CatalogModel.rejectsRawPdf) — see Router.candidates().
+  const hasRawPdfPart = Array.isArray(lastUserContent) && lastUserContent.some((b) => {
+    if (!b || typeof b !== 'object') return false;
+    return (b as { type?: string }).type === 'file';
+  });
   console.log(`[tiermux][DBG] completion-request: model=${body.model ?? '-'} max_tokens=${body.max_tokens ?? 'UNSET'} stream=${stream} msgs=${messages.length} tools=${(body.tools ?? []).length}`);
 
   const routeOpts: RouteOptions = {
@@ -218,6 +246,7 @@ async function handleChatCompletion(
     // Agent turns (tools present) must land on tool-capable models; OC always
     // sends tools for plan/build, so this keeps routing honest.
     requireTools: !!(body.tools && body.tools.length),
+    hasRawPdfPart,
   };
 
   if (stream) {
@@ -351,8 +380,16 @@ function mapProfile(model: string | undefined, lastUserText?: string, lastUserCo
     return { model: 'auto' };
   }
   if (id === bare(PROFILE_FAST)) {
-    // Speed-first ordering — chat mode is always read-only Q&A, so fast wins.
-    return { model: 'auto', taskKind: 'chat' };
+    // Speed-first ordering for plain read-only Q&A — but a visual attachment (image, or
+    // a PDF with no extractable text) still needs a vision-capable model regardless of
+    // hop. Previously hardcoded taskKind: 'chat' unconditionally, which meant an
+    // attachment sent on chat mode's default hop 0 ('fast') never triggered vision
+    // routing — the turn could land on a text-only model with no way to read it. Same
+    // forcedTaskKindForRun override as PROFILE_SMART below — see setForcedTaskKind.
+    const classified: TaskKind = lastUserText
+      ? classifyTask(lastUserText, { attachmentKinds: attachmentKindsFromContent(lastUserContent ?? '') })
+      : 'chat';
+    return { model: 'auto', taskKind: forcedTaskKindForRun ?? classified };
   }
   if (id === bare(PROFILE_SMART)) {
     // Classify the actual user message so the right model comparator fires:
@@ -377,6 +414,34 @@ function mapProfile(model: string | undefined, lastUserText?: string, lastUserCo
 // Message mapping (OpenAI → TierMux). The shapes are already near-identical;
 // we normalize the bits that differ (array content, tool role).
 // ---------------------------------------------------------------------------
+
+function hasAttachmentBlocks(content: ChatContent): boolean {
+  return Array.isArray(content) && content.some((b) => {
+    if (!b || typeof b !== 'object') return false;
+    const type = (b as { type?: string }).type;
+    return type === 'image_url' || type === 'file';
+  });
+}
+
+/**
+ * Splices the run's real attachment blocks (see setForcedAttachments) into the last
+ * user message when OC's own completion request arrived without any — OC's re-
+ * serialization of a turn doesn't reliably carry image/file blocks through. Only
+ * touches the LAST user message so a multi-turn conversation doesn't get the same
+ * attachment re-injected into every earlier turn on each escalation hop.
+ */
+function reinjectMissingAttachments(messages: ChatMessage[], blocks: ChatContentBlock[]): void {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== 'user') continue;
+    if (hasAttachmentBlocks(messages[i].content)) return;
+    const existing = messages[i].content;
+    const textBlocks: ChatContentBlock[] = typeof existing === 'string'
+      ? (existing ? [{ type: 'text', text: existing }] : [])
+      : (existing ?? []);
+    messages[i].content = [...textBlocks, ...blocks];
+    return;
+  }
+}
 
 function toTierMuxMessage(raw: unknown): ChatMessage {
   const m = raw as Record<string, unknown>;
