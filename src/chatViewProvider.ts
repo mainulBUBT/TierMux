@@ -30,7 +30,6 @@ import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSu
 import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense } from './agent/condense';
-import { recommendFreeStrong } from './catalog/recommend';
 import { parseClarifying, type ClarifyingQuestion } from './agent/clarify';
 import { deriveTitleFrom, looksLikeActionablePlan, planStepsToTodos, sanitizeTitle } from './session/titles';
 
@@ -1926,17 +1925,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * When a run fails because every configured model was exhausted (escalation couldn't find a
-   * stronger one either), point the user at specific powerful FREE models they could enable —
-   * a concrete fix instead of a cryptic error. No-op for any other error kind.
+   * stronger one either), show a plain notice and offer to manage models. No-op for any other
+   * error kind.
    */
   private async maybeRecommendModels(e: unknown): Promise<void> {
     if (!(e instanceof AllModelsFailedError)) return;
-    const enabled = new Set(this.deps.settings.enabledByPriority().map((en) => `${en.platform}::${en.modelId}`));
-    const recs = recommendFreeStrong(this.deps.catalog, enabled, 3);
-    if (!recs.length) return;
-    const list = recs.map((r) => `• ${r.display}`).join('\n');
+    const enabledCount = this.deps.settings.enabledByPriority().length;
+    const failedLine = enabledCount <= 1
+      ? 'Your enabled model could not handle this request.'
+      : `${enabledCount} enabled models failed to handle this request.`;
     const choice = await vscode.window.showInformationMessage(
-      `No enabled model could handle this. These powerful FREE models aren't enabled yet:\n${list}`,
+      failedLine,
       'Manage Models',
     );
     if (choice === 'Manage Models') void vscode.commands.executeCommand('tiermux.openModelSettings');

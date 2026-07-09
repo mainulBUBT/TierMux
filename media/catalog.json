@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Updated catalog — 120 models from 21 providers.",
+  "note": "Updated catalog — 121 models from 22 providers.",
   "models": [
     {
       "platform": "sambanova",
@@ -1888,6 +1888,29 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "released": "2025-12"
+    },
+    {
+      "platform": "llmgateway",
+      "modelId": "claude-haiku-4-5-free",
+      "displayName": "Claude Haiku 4.5 (Free)",
+      "intelligenceRank": 3,
+      "speedRank": 1,
+      "sizeLabel": "Haiku",
+      "contextWindow": 200000,
+      "monthlyTokenBudget": "~free",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "released": "2025-10",
+      "tags": [
+        "reasoning",
+        "vision",
+        "tool-use",
+        "json",
+        "streaming",
+        "free"
+      ],
+      "insight": "Fast, efficient Claude model for high-volume, low-latency applications with vision, tool calling, JSON output, and 200K context."
     }
   ]
 }

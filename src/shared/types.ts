@@ -25,6 +25,8 @@ export type Platform =
   | 'sambanova'
   | 'siliconflow'
   | 'zenmux'
+  | 'kenari'
+  | 'llmgateway'
   | 'custom';
 
 // 'xhigh' ("Very High") is our own extra tier; the OpenAI-wire reasoning_effort

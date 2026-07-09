@@ -329,7 +329,9 @@ import { handleToolStatus } from './handlers/toolStatus';
     google: 'Google', groq: 'Groq', cerebras: 'Cerebras', nvidia: 'NVIDIA', mistral: 'Mistral',
     openrouter: 'OpenRouter', github: 'GitHub Models', cohere: 'Cohere', cloudflare: 'Cloudflare',
     zhipu: 'Zhipu', ollama: 'Ollama', kilo: 'Kilo', pollinations: 'Pollinations', llm7: 'LLM7',
-    huggingface: 'HuggingFace', opencode: 'OpenCode', ovh: 'OVH', agnes: 'Agnes', custom: 'Custom',
+    huggingface: 'HuggingFace', opencode: 'OpenCode', ovh: 'OVH', agnes: 'Agnes', zenmux: 'ZenMux',
+    llmgateway: 'LLM Gateway',
+    custom: 'Custom',
   };
 
   // Helper to resolve platform display name (including custom endpoints)
