@@ -9,6 +9,7 @@ const FALLBACK_KEY = 'tiermux.fallback';
 const ENDPOINTS_KEY = 'tiermux.endpoints';
 const DISABLED_PROVIDERS_KEY = 'tiermux.disabledProviders';
 const CUSTOM_ENDPOINTS_KEY = 'tiermux.customEndpoints';
+const NOTIFIED_MODELS_KEY = 'tiermux.notifiedModels';
 
 /** Platform left enabled by default — a keyless gateway that works with zero setup.
  *  Every other provider starts off until the user opts in (usually by adding a key). */
@@ -51,6 +52,26 @@ export class SettingsStore {
       if (!known.has(k)) kept.push({ platform: m.platform, modelId: m.modelId, enabled: false, priority: nextPriority++ });
     }
     return kept.sort((a, b) => a.priority - b.priority);
+  }
+
+  /** Entries newly appended to the fallback chain since the last check, i.e. models
+   *  the user hasn't been told about yet. Marks them as notified as a side effect. */
+  checkForNewModels(): FallbackEntry[] {
+    const fallback = this.getFallback(); // runs reconcile(), which appends new catalog models
+    const notified = new Set(this.state.get<string[]>(NOTIFIED_MODELS_KEY, []));
+    const fresh = fallback.filter((e) => !notified.has(`${e.platform}::${e.modelId}`));
+    if (fresh.length) {
+      void this.state.update(NOTIFIED_MODELS_KEY, [...notified, ...fresh.map((e) => `${e.platform}::${e.modelId}`)]);
+    }
+    return fresh;
+  }
+
+  /** Silently mark every currently-known model as notified, without firing any
+   *  notification. Used once, the first time this feature runs on an install, so
+   *  existing users don't get flooded with "N new models!" for their whole catalog. */
+  seedNotifiedModels(): void {
+    const keys = this.getFallback().map((e) => `${e.platform}::${e.modelId}`);
+    void this.state.update(NOTIFIED_MODELS_KEY, keys);
   }
 
   async setFallback(entries: FallbackEntry[]): Promise<void> {

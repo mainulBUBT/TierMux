@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { Platform } from './shared/types';
+import type { Platform, FallbackEntry } from './shared/types';
 import { Catalog } from './catalog/catalog';
 import { SecretStore } from './config/secrets';
 import { SettingsStore } from './config/settingsStore';
@@ -96,6 +96,21 @@ async function verifyEngineWorks(routerProxyBaseURL: string): Promise<{ ok: bool
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Shows a one-time notification for newly-discovered catalog models, grouped by
+ *  provider, with a button that jumps straight to the model-enable settings panel. */
+function notifyNewModels(entries: FallbackEntry[]): void {
+  const byPlatform = new Map<Platform, number>();
+  for (const e of entries) byPlatform.set(e.platform, (byPlatform.get(e.platform) ?? 0) + 1);
+  const providerList = [...byPlatform.keys()].map((p) => getPlatformInfo(p)?.name ?? p);
+
+  const message = entries.length === 1
+    ? `${providerList[0]} added a new model: ${entries[0].modelId}. Go to Settings to enable it.`
+    : `${entries.length} new models added (${providerList.join(', ')}). Go to Settings to enable them.`;
+
+  void vscode.window.showInformationMessage(message, 'Manage Models')
+    .then((choice) => { if (choice === 'Manage Models') void vscode.commands.executeCommand('tiermux.openModelSettings'); });
 }
 
 /** Reads `tiermux.mcpServers`, upgrading any legacy (pre-native-schema) entries on the fly. */
@@ -217,6 +232,15 @@ export function activate(context: vscode.ExtensionContext): void {
   catalog.loadCached(context.globalState);
   const secrets = new SecretStore(context.secrets);
   const settings = new SettingsStore(context.globalState, catalog);
+  if (context.globalState.get('tiermux.notifiedModels') === undefined) {
+    settings.seedNotifiedModels(); // first run of this feature: don't notify about the whole existing catalog
+  }
+  context.subscriptions.push(
+    catalog.onDidChange(() => {
+      const fresh = settings.checkForNewModels();
+      if (fresh.length) notifyNewModels(fresh);
+    }),
+  );
   const usage = new UsageTracker();
   const usageStore = new UsageStore(context.globalState);
   const modelStats = new ModelStatsStore(context.globalState);
