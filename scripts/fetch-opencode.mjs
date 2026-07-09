@@ -20,6 +20,12 @@
 // bridge: enable `tiermux.engine.traceOcEvents`, send a chat, confirm the
 // engine log shows `OC session created` + `[oc-event] …` frames + token
 // counters populate.
+//
+// MUST stay in sync with package.json's "@opencode-ai/sdk" dependency version —
+// src/backend/ocClient.ts wraps that SDK, and its generated types/behavior are
+// specific to this exact server version. `npm run check:oc-version` (also runs
+// automatically before `npm run typecheck`) fails loudly if these drift apart.
+// See scripts/check-oc-sdk-version.mjs for the full upgrade procedure.
 const PINNED_OC_VERSION = '1.17.11';
 import { createWriteStream, existsSync, mkdirSync, rmSync, chmodSync, readdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';

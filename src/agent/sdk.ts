@@ -94,6 +94,10 @@ export interface AgentOpts {
   onStep: (phase: string, label: string) => void;
   onTodos: (todos: TodoItem[]) => void;
   onAskUser: (question: string, options?: string[]) => Promise<string>;
+  /** OC paused a tool call on an `ask` permission rule (e.g. `bash: 'ask'` in ocConfig.ts) and
+   *  is waiting for a decision before it proceeds. `title` is OC's own human-readable
+   *  description of what it wants to do (e.g. the shell command). */
+  onPermissionAsk?: (info: { title: string; pattern?: string | string[] }) => Promise<'once' | 'always' | 'reject'>;
   onError: (message: string) => void;
   /** Soft, non-blocking notice (e.g. "stream ended early") — used when a run produced a
    *  usable answer despite a mid-stream error, instead of a hard red error. */
@@ -163,6 +167,14 @@ const intentionallyAbortedOcIds = new Set<string>();
 export function setOcEngine(conn: OcConnection | undefined): void {
   ocClient = conn ? new OcClient(conn) : undefined;
   if (!ocClient) { ocSessions.clear(); ocSessionModels.clear(); prewarmedSessions.clear(); }
+}
+
+/** OC's own aggregate diff for a TierMux chat session's OC-backed conversation, if one
+ *  exists yet (a session with no OC turns yet has no OC session id — returns []). */
+export async function getOcSessionDiff(sessionId: string): Promise<Array<{ file: string; before: string; after: string; additions: number; deletions: number }>> {
+  const ocId = ocSessions.get(sessionId);
+  if (!ocId || !ocClient) return [];
+  return ocClient.diff(ocId);
 }
 
 /**
@@ -809,6 +821,29 @@ async function runViaOc(
         return;
       }
 
+      // ---- Permission ask (OC paused a tool call on an `ask` permission rule) ----
+      // Real wire event is `permission.asked`, NOT the SDK-documented `permission.updated` —
+      // verified against a live trace (tiermux.engine.traceOcEvents). Payload also lacks the
+      // documented `title`/`pattern` fields; real shape is
+      // { id, sessionID, permission: "bash", patterns: string[], metadata: {command}, always, tool }.
+      // Keep `permission.updated` as a harmless fallback alias in case a future OC build renames it.
+      if (t === 'permission.asked' || t === 'permission.updated') {
+        const permissionID: string = p.id ?? '';
+        const patterns: string[] | undefined = p.patterns ?? (p.pattern ? (Array.isArray(p.pattern) ? p.pattern : [p.pattern]) : undefined);
+        const command: string | undefined = p.metadata?.command;
+        const title: string = p.title ?? (command ? `Run: ${command}` : patterns ? `${p.permission ?? 'tool'}: ${patterns.join(', ')}` : `OC wants to use ${p.permission ?? 'a tool'}`);
+        if (!permissionID) return;
+        void (async () => {
+          const response = opts.onPermissionAsk
+            ? await opts.onPermissionAsk({ title, pattern: patterns }).catch(() => 'reject' as const)
+            : 'reject' as const; // no handler wired (e.g. hedging/title-gen runs) → safe default is deny, not hang
+          await client.replyPermission(ocId!, permissionID, response).catch((err) => {
+            console.error(`[tiermux] replyPermission failed:`, err);
+          });
+        })();
+        return;
+      }
+
       // ---- Status updates ----
       if (t === 'session.status' || t === 'status') {
         opts.onStep('working', p?.status?.message ?? p?.message ?? 'Working…');
@@ -993,6 +1028,7 @@ const OC_TOOL_NAMES: Record<string, string> = {
   websearch: 'webSearch',
   web_search: 'webSearch',
   task: 'skill',
+  lsp: 'lspCheck',
 };
 function normalizeToolName(name: string): string {
   return OC_TOOL_NAMES[name?.toLowerCase?.()] ?? name;

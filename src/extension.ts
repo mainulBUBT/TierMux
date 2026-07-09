@@ -15,6 +15,7 @@ import { verifyGrounding, renderVerifyReport } from './backend/groundingVerify';
 import { EditGate } from './edits/applyEdit';
 import { CommandGate, type CommandApproval } from './edits/commandGate';
 import { registerCheckpointContentProvider } from './edits/checkpoints';
+import { registerOcSessionDiffContentProvider } from './edits/ocSessionDiff';
 // (ToolCache was removed in v7 — its no-op stand-in is no longer needed.)
 import { setOcEngine, setOcTrace, setQualityGate, setHotStandby, setHedging } from './agent/sdk';
 import { McpManager } from './mcp/mcpManager';
@@ -306,6 +307,10 @@ export function activate(context: vscode.ExtensionContext): void {
   // One shared checkpoint content provider for every session (VS Code allows one per scheme);
   // each ChatViewProvider session owns its own CheckpointManager data on top of it.
   context.subscriptions.push(registerCheckpointContentProvider());
+
+  // Read-only OC session-diff content provider — separate scheme/store from checkpoints
+  // (see ocSessionDiff.ts header for why the two must not share a store).
+  context.subscriptions.push(registerOcSessionDiffContentProvider());
 
   const commandGate = new CommandGate(
     () => vscode.workspace.getConfiguration('tiermux.agent').get<CommandApproval>('commandApproval', 'always'),

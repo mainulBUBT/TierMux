@@ -6,7 +6,7 @@ import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
 import type { UsageStore } from './config/usageStore';
 import type { Mode } from './shared/types';
-import { runChatStream, runAgentStream, runPlanStream, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
+import { runChatStream, runAgentStream, runPlanStream, getOcSessionDiff, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
 import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
 import { SETTINGS_META, defaultForSetting } from './settingsMeta';
@@ -14,6 +14,7 @@ import type { Router } from './router/router';
 import { AllModelsFailedError } from './router/router';
 import type { McpManager } from './mcp/mcpManager';
 import { CheckpointManager } from './edits/checkpoints';
+import { openOcFileDiff } from './edits/ocSessionDiff';
 import type { ModelStatsStore, Vote } from './config/modelStats';
 import type { SlowModelStore } from './config/slowModel';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
@@ -85,6 +86,7 @@ interface Session {
   activeRequestId?: string;
   cancel?: vscode.CancellationTokenSource;
   pendingApprovals: Map<string, (approved: boolean) => void>;
+  pendingPermissions: Map<string, (response: 'once' | 'always' | 'reject') => void>;
   approvalSeq: number;
   /** Ephemeral interactive cards (approvals / plan / clarifying) awaiting a click, cached so
    *  they re-render when the user switches back to a session whose run is blocked on them. */
@@ -260,6 +262,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       createdAt: now,
       updatedAt: now,
       pendingApprovals: new Map(),
+      pendingPermissions: new Map(),
       approvalSeq: 0,
       voteCtx: new Map(),
       cards: [],
@@ -283,6 +286,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       title: s.title,
       titleGenerated: !!s.title || (s.transcript?.some((t) => t.role === 'user') ?? false),
       pendingApprovals: new Map(),
+      pendingPermissions: new Map(),
       approvalSeq: 0,
       voteCtx: new Map(),
       cards: [],
@@ -444,6 +448,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  /**
+   * Ask the user to approve/deny an OC tool call paused on an `ask` permission rule
+   * (e.g. `bash: 'ask'` in ocConfig.ts) inline in the chat view, in the run's OWN session.
+   * Mirrors requestCommandApproval/requestEditApproval's map+card+resolve pattern, but
+   * carries OC's own three-way response (`once`/`always`/`reject`) instead of a boolean.
+   */
+  requestPermissionAsk(sessionId: string, requestId: string, title: string, pattern?: string | string[]): Promise<'once' | 'always' | 'reject'> {
+    const s = this.sessions.get(sessionId);
+    if (!this.view || !s) return Promise.resolve('reject'); // nowhere to ask → deny rather than hang
+    try { this.view.show?.(true); } catch { /* reveal is best-effort */ }
+    const id = `perm-${++this.approvalSeqGlobal}`;
+    return new Promise<'once' | 'always' | 'reject'>((resolve) => {
+      s.pendingPermissions.set(id, resolve);
+      this.postCard(s, { type: 'permissionAsk', sessionId, requestId, id, title, pattern });
+      this.maybeNotifyApproval(sessionId, requestId, s);
+    });
+  }
+
   /** One background-approval notification per run, plus flipping the tab to "needs approval". */
   private maybeNotifyApproval(sessionId: string, requestId: string, s: Session): void {
     if (sessionId === this.viewedSessionId) return;
@@ -460,6 +482,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private settlePendingApprovals(s: Session, approved: boolean): void {
     for (const resolve of s.pendingApprovals.values()) resolve(approved);
     s.pendingApprovals.clear();
+    // Permission-ask prompts don't take a boolean — always settle with 'reject' on cancel/stop
+    // (same reasoning as approvals: never leave the OC-side tool call hanging).
+    for (const resolve of s.pendingPermissions.values()) resolve('reject');
+    s.pendingPermissions.clear();
   }
 
   /** Resolve every in-flight in-chat `askUser` prompt with '' so the agent loop never hangs.
@@ -704,6 +730,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.approvalNotified.delete(`${s.id}:${s.activeRequestId ?? ''}`);
           if (s.activeRequestId) this.setStatus(s.id, 'running');
         }
+        break;
+      }
+      case 'permissionAskResponse': {
+        const s = this.sessions.get(m.sessionId ?? this.viewedSessionId);
+        const resolve = s?.pendingPermissions.get(m.id);
+        if (s && resolve) {
+          s.pendingPermissions.delete(m.id);
+          this.removeCards(s, (c) => c.type === 'permissionAsk' && c.id === m.id);
+          resolve(m.response);
+          this.approvalNotified.delete(`${s.id}:${s.activeRequestId ?? ''}`);
+          if (s.activeRequestId) this.setStatus(s.id, 'running');
+        }
+        break;
+      }
+      case 'openOcDiff': {
+        const files = await getOcSessionDiff(m.sessionId);
+        const f = files.find((x) => x.file === m.file);
+        if (f) await openOcFileDiff(f.file, f.before, f.after);
         break;
       }
       case 'vote': {
@@ -1302,6 +1346,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: 'Generated a commit message in the Source Control input.' });
       return;
     }
+    if (slash?.name === 'ocdiff') {
+      const s = this.current();
+      const files = await getOcSessionDiff(s.id);
+      if (!files.length) {
+        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: 'No OC-tracked changes in this session yet.' });
+      } else {
+        this.post({
+          type: 'ocSessionDiffList', sessionId: s.id, requestId: m.requestId,
+          files: files.map((f) => ({ file: f.file, additions: f.additions, deletions: f.deletions })),
+        });
+      }
+      return;
+    }
     let prompt = m.text;
     const skill = slash && this.skills().get(slash.name);
     if (slash && skill) prompt = `${skill.prompt}\n\n${slash.rest}`;
@@ -1837,6 +1894,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // in-flight at a time per session — the callId is purely for response routing.
         const callId = `ask-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         return this.requestAskUser(s, requestId, callId, question, options);
+      },
+      onPermissionAsk: async (info) => {
+        if (!live()) return 'reject';
+        return this.requestPermissionAsk(s.id, requestId, info.title, info.pattern);
       },
       onFailover: (from, reason) => {
         if (!live()) return;

@@ -352,6 +352,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     { name: 'tests', detail: 'Write unit tests' },
     { name: 'doc', detail: 'Add documentation/comments' },
     { name: 'commit', detail: 'Generate a commit message from staged changes' },
+    { name: 'ocdiff', detail: 'List files OC changed this session, with diffs' },
   ];
   function getSlashCommands() {
     return (state.skills && state.skills.length) ? state.skills : FALLBACK_SLASH_COMMANDS;
@@ -2980,7 +2981,7 @@ import { handleToolStatus } from './handlers/toolStatus';
   // (otherwise unchanged) render logic below writes into the right session's DOM regardless of
   // which session is currently being viewed. 'switchSession' is included so its case body can
   // use the returned `existed` flag to tell a brand-new pane from an already-live one.
-  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'checkpoint', 'notice', 'error', 'busy']);
+  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'ocSessionDiffList', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'checkpoint', 'notice', 'error', 'busy']);
 
   // ---------- inbound messages ----------
   window.addEventListener('message', (event) => {
@@ -3188,6 +3189,61 @@ import { handleToolStatus } from './handlers/toolStatus';
         no.addEventListener('click', () => decide(false));
         actions.appendChild(ok); actions.appendChild(no);
         card.appendChild(actions);
+        t.tools.appendChild(card);
+        scrollDown();
+        break;
+      }
+      case 'permissionAsk': {
+        const t = ensureTarget(msg.requestId);
+        const card = document.createElement('div'); card.className = 'cmd-approval';
+        const head = document.createElement('div'); head.className = 'cmd-approval-head';
+        head.textContent = msg.title || 'OC wants to run a tool';
+        card.appendChild(head);
+        if (msg.pattern) {
+          const pre = document.createElement('pre'); pre.className = 'cmd-approval-cmd';
+          const code = document.createElement('code');
+          code.textContent = Array.isArray(msg.pattern) ? msg.pattern.join(', ') : msg.pattern;
+          pre.appendChild(code);
+          card.appendChild(pre);
+        }
+        const actions = document.createElement('div'); actions.className = 'cmd-approval-actions';
+        const once = document.createElement('button'); once.className = 'primary'; once.textContent = 'Once';
+        const always = document.createElement('button'); always.className = 'secondary'; always.textContent = 'Always';
+        const reject = document.createElement('button'); reject.className = 'secondary'; reject.textContent = 'Reject';
+        const decide = (response) => {
+          once.disabled = always.disabled = reject.disabled = true;
+          actions.remove();
+          const note = document.createElement('div');
+          note.className = 'cmd-approval-note';
+          note.textContent = response === 'reject' ? '✗ Rejected' : response === 'always' ? '✓ Allowed (always)' : '✓ Allowed (once)';
+          card.appendChild(note);
+          send({ type: 'permissionAskResponse', id: msg.id, response, sessionId: msg.sessionId });
+        };
+        once.addEventListener('click', () => decide('once'));
+        always.addEventListener('click', () => decide('always'));
+        reject.addEventListener('click', () => decide('reject'));
+        actions.appendChild(once); actions.appendChild(always); actions.appendChild(reject);
+        card.appendChild(actions);
+        t.tools.appendChild(card);
+        scrollDown();
+        break;
+      }
+      case 'ocSessionDiffList': {
+        const t = ensureTarget(msg.requestId);
+        const card = document.createElement('div'); card.className = 'cmd-approval';
+        const head = document.createElement('div'); head.className = 'cmd-approval-head';
+        head.textContent = `${msg.files.length} file${msg.files.length === 1 ? '' : 's'} changed this session`;
+        card.appendChild(head);
+        const list = document.createElement('div'); list.className = 'cmd-approval-actions';
+        list.style.flexDirection = 'column'; list.style.alignItems = 'stretch';
+        for (const f of msg.files) {
+          const row = document.createElement('button');
+          row.className = 'secondary';
+          row.textContent = `${f.file}  +${f.additions} -${f.deletions}`;
+          row.addEventListener('click', () => send({ type: 'openOcDiff', sessionId: msg.sessionId, file: f.file }));
+          list.appendChild(row);
+        }
+        card.appendChild(list);
         t.tools.appendChild(card);
         scrollDown();
         break;

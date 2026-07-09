@@ -1,44 +1,25 @@
 // OpenCode HTTP/SSE client — drives the bundled `opencode serve` engine from TierMux's
-// sdk.ts seam. Raw fetch (no @opencode-ai/sdk dependency) over loopback with Basic auth.
+// sdk.ts seam. Wraps the official `@opencode-ai/sdk` client (pinned to the same version
+// as the vendored binary in scripts/fetch-opencode.mjs) instead of hand-rolled fetch/SSE
+// parsing, so the request/response shapes and SSE event union track the real server API.
 //
-// NOTE on paths: OC serves its REST API at the ROOT in headless `serve` mode
-// (e.g. POST /session/{id}/prompt, GET /global/event). These match the source route
-// mounting and the webgui's /global/event usage. If a path differs in your OC build,
-// run "TierMux: Test OC Bridge" — it probes these endpoints and reports which are live —
-// then adjust the constants below. All paths are centralized here for that reason.
+// Two fields the SDK's generated OpenAPI types don't declare — `agent`/`model` on
+// POST /session and `permission` on PATCH /session/{id} — are real and accepted by the
+// live server (verified empirically against the vendored 1.17.11 binary: the server
+// echoes them back applied). The generated schema just lags the server here, so those
+// two call sites cast the body past the declared type rather than dropping the fields.
+import { createOpencodeClient, type OpencodeClient } from '@opencode-ai/sdk';
 import type { OcConnection } from './ocLauncher';
 import type { ChatContent } from '../shared/types';
 import { normalizeAttachmentBlocks } from '../agent/content';
 
-// ---- Centralized route paths (single place to fix after the bridge diagnostic) ----
-const PATHS = {
-  sessionList: '/session',
-  sessionCreate: '/session',
-  // OC 1.x: prompt endpoint is `POST /session/{id}/message` (NOT `/prompt`).
-  // `/prompt` returns the webgui HTML — that's how we discovered the rename.
-  sessionPrompt: (id: string) => `/session/${id}/message`,
-  sessionCommand: (id: string) => `/session/${id}/command`,
-  sessionAbort: (id: string) => `/session/${id}/abort`,
-  // OC 1.x: GET messages is `/session/{id}/message` (singular) — the plural 404s.
-  sessionMessages: (id: string) => `/session/${id}/message`,
-  sessionFork: (id: string) => `/session/${id}/fork`,
-  // Generic session PATCH — used today only to mutate the live permission ruleset
-  // (see updatePermission()). OC merges the given `permission` array into the
-  // session's existing ruleset (session/session.ts:setPermission), re-evaluated
-  // fresh on every subsequent tool call — no session restart needed.
-  sessionUpdate: (id: string) => `/session/${id}`,
-  agents: '/app/agents',
-  models: '/config/providers',
-  events: '/global/event',
-};
-
 /** A user-message part OC understands ({ type: 'text', text }). */
 interface TextPart { type: 'text'; text: string }
 
-/** OC's FilePart (packages/schema/src/v1/session.ts:171-178, 413-421 upstream) — a
- *  file/image attachment carried as a `data:` URI. `source` mirrors OC's own
- *  FilePartSource union (unused by TierMux today, kept type-compatible so a future
- *  OC upgrade that starts populating it costs nothing here). */
+/** OC's FilePart input (packages/schema/src/v1/session.ts upstream) — a file/image
+ *  attachment carried as a `data:` URI. `source` mirrors OC's own FilePartSource union
+ *  (unused by TierMux today — toOcParts() never populates it — kept type-compatible so a
+ *  future OC upgrade that starts populating it costs nothing here). */
 interface FileSource { type: 'file'; path: string }
 interface SymbolSource { type: 'symbol'; path: string; name: string }
 interface ResourceSource { type: 'resource'; clientName: string; uri: string }
@@ -86,7 +67,9 @@ export function toOcParts(content: ChatContent): Array<TextPart | FilePart> {
 
 interface OcSessionInfo { id: string; [k: string]: unknown }
 
-/** OC's PermissionV1.Rule shape (packages/schema/src/v1/permission.ts). */
+/** OC's PermissionV1.Rule shape (packages/schema/src/v1/permission.ts). Verified
+ *  empirically against the live server: PATCH /session/{id} body `{ permission: rules }`
+ *  requires exactly this array-of-rules shape — a flat `{tool: action}` map is rejected. */
 export interface OcPermissionRule {
   permission: string;
   pattern: string;
@@ -97,52 +80,24 @@ export interface OcPermissionRule {
 export interface OcEvent { type: string; properties: any }
 
 export class OcClient {
-  private readonly base: string;
-  private readonly auth: string;
+  private readonly client: OpencodeClient;
 
   constructor(conn: OcConnection) {
-    this.base = conn.baseURL.replace(/\/$/, '');
-    this.auth = `Basic ${Buffer.from(`opencode:${conn.password}`).toString('base64')}`;
-  }
-
-  private headers(json = false): Record<string, string> {
-    const h: Record<string, string> = { Authorization: this.auth };
-    if (json) h['Content-Type'] = 'application/json';
-    return h;
-  }
-
-  private async request<T>(path: string, init?: RequestInit, timeoutMs = 15000, extraSignal?: AbortSignal): Promise<T> {
-    const ctrl = new AbortController();
-    // timeoutMs <= 0 → no timeout (caller relies on `extraSignal` / SSE to end the call).
-    const timer = timeoutMs > 0 ? setTimeout(() => ctrl.abort(), timeoutMs) : undefined;
-    const onExtraAbort = () => ctrl.abort();
-    extraSignal?.addEventListener('abort', onExtraAbort, { once: true });
-    if (extraSignal?.aborted) ctrl.abort();
-    try {
-      const res = await fetch(`${this.base}${path}`, { ...init, signal: ctrl.signal });
-      const text = await res.text().catch(() => '');
-      if (!res.ok) {
-        console.error(`[tiermux] OC ${init?.method ?? 'GET'} ${path} → ${res.status}: body=${text.slice(0, 500)}`);
-        throw new Error(`OC ${init?.method ?? 'GET'} ${path} → ${res.status}: ${text.slice(0, 300)}`);
-      }
-      if (!text) return undefined as T;
-      try {
-        return JSON.parse(text) as T;
-      } catch (parseErr) {
-        console.error(`[tiermux] OC ${init?.method ?? 'GET'} ${path} returned non-JSON body: ${text.slice(0, 500)}`);
-        throw parseErr;
-      }
-    } finally {
-      if (timer) clearTimeout(timer);
-      extraSignal?.removeEventListener('abort', onExtraAbort);
-    }
+    const auth = `Basic ${Buffer.from(`opencode:${conn.password}`).toString('base64')}`;
+    this.client = createOpencodeClient({
+      baseUrl: conn.baseURL.replace(/\/$/, ''),
+      headers: { Authorization: auth },
+      // Preserve the old hand-rolled client's throw-on-!res.ok behavior so every
+      // call site here can keep assuming a rejected promise means a non-2xx response.
+      throwOnError: true,
+    });
   }
 
   /** List available agents (build, plan, …). Used to pick the plan companion agent id. */
   async listAgents(): Promise<any[]> {
     try {
-      const data = await this.request<any>(PATHS.agents);
-      return Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : [];
+      const { data } = await this.client.app.agents();
+      return Array.isArray(data) ? data : [];
     } catch {
       return [];
     }
@@ -156,15 +111,12 @@ export class OcClient {
    * `modelID` here returns 400 BadRequest and the whole run dies at session creation.
    */
   async createSession(opts?: { agent?: string; model?: { providerID: string; id: string }; title?: string }): Promise<OcSessionInfo> {
-    const body = JSON.stringify(opts ?? {});
-    console.log(`[tiermux] OC POST ${PATHS.sessionCreate} body=${body}`);
-    const result = await this.request<OcSessionInfo>(PATHS.sessionCreate, {
-      method: 'POST',
-      headers: this.headers(true),
-      body,
-    });
-    console.log(`[tiermux] OC createSession returned:`, JSON.stringify(result));
-    return result;
+    console.log(`[tiermux] OC session.create body=${JSON.stringify(opts ?? {})}`);
+    // `agent`/`model` aren't in the SDK's declared SessionCreateData body type (only
+    // parentID/title are) but the live server accepts and applies them — see file header.
+    const { data } = await this.client.session.create({ body: (opts ?? {}) as any });
+    console.log(`[tiermux] OC createSession returned:`, JSON.stringify(data));
+    return data as OcSessionInfo;
   }
 
   /**
@@ -174,14 +126,13 @@ export class OcClient {
    * completion. The optional `signal` (the run's cancel token) aborts it on user-stop.
    */
   async prompt(sessionId: string, body: PromptBody, signal?: AbortSignal): Promise<void> {
-    const bodyStr = JSON.stringify(body);
-    console.log(`[tiermux] OC POST ${PATHS.sessionPrompt(sessionId)} body=${bodyStr}`);
+    console.log(`[tiermux] OC session.prompt(${sessionId}) body=${JSON.stringify(body)}`);
     try {
-      await this.request(PATHS.sessionPrompt(sessionId), {
-        method: 'POST',
-        headers: this.headers(true),
-        body: bodyStr,
-      }, 0, signal); // no fixed timeout — SSE drives the result; user cancel aborts via `signal`
+      await this.client.session.prompt({
+        path: { id: sessionId },
+        body: body as any,
+        signal,
+      });
       console.log(`[tiermux] OC prompt() returned 2xx`);
     } catch (err) {
       console.error(`[tiermux] OC prompt() failed:`, err);
@@ -200,27 +151,58 @@ export class OcClient {
    * something the turn should depend on to complete.
    */
   async updatePermission(sessionId: string, rules: OcPermissionRule[]): Promise<void> {
-    const body = JSON.stringify({ permission: rules });
-    console.log(`[tiermux] OC PATCH ${PATHS.sessionUpdate(sessionId)} body=${body}`);
-    await this.request(PATHS.sessionUpdate(sessionId), {
-      method: 'PATCH',
-      headers: this.headers(true),
-      body,
+    console.log(`[tiermux] OC session.update(${sessionId}) permission=${JSON.stringify(rules)}`);
+    // `permission` isn't in the SDK's declared SessionUpdateData body type (only `title`
+    // is) but the live server accepts this exact array-of-rules shape — see file header.
+    await this.client.session.update({ path: { id: sessionId }, body: { permission: rules } as any });
+  }
+
+  /**
+   * Reply to a pending `ask` permission request (POST /session/{id}/permissions/{permissionID}).
+   * `once` allows just this call, `always` allows this pattern for the rest of the session,
+   * `reject` denies it. Verified against the real SDK types (`PostSessionIdPermissionsPermissionIdData`).
+   */
+  async replyPermission(sessionId: string, permissionID: string, response: 'once' | 'always' | 'reject'): Promise<void> {
+    console.log(`[tiermux] OC session.permissions(${sessionId}, ${permissionID}) response=${response}`);
+    await this.client.postSessionIdPermissionsPermissionId({
+      path: { id: sessionId, permissionID },
+      body: { response },
     });
+  }
+
+  /**
+   * Fetch the whole session's aggregate file diff (before/after per changed file). Best-effort —
+   * used for a read-only "what did this session change" view, not something a run depends on.
+   *
+   * KNOWN LIMITATION (verified against the vendored 1.17.11 binary): OC's server-side
+   * `Session.diff` is currently a hardcoded stub — `function*(q){return[]}` — that always
+   * returns an empty array regardless of what actually changed. This isn't a TierMux bug;
+   * there's nothing to fix here. `/ocdiff` (chatViewProvider.ts) will start returning real
+   * data automatically the moment a future OC version implements this for real — no client
+   * changes needed then. Re-verify this comment (grep the binary for `"Session.diff")(function*`)
+   * before assuming a future empty result means "no changes" rather than "still unimplemented".
+   */
+  async diff(sessionId: string): Promise<Array<{ file: string; before: string; after: string; additions: number; deletions: number }>> {
+    try {
+      const { data } = await this.client.session.diff({ path: { id: sessionId } });
+      return Array.isArray(data) ? data : [];
+    } catch {
+      return [];
+    }
   }
 
   /** Abort the running prompt for a session. */
   async abort(sessionId: string): Promise<void> {
     try {
-      await this.request(PATHS.sessionAbort(sessionId), { method: 'POST', headers: this.headers(true), body: '{}' });
+      await this.client.session.abort({ path: { id: sessionId } });
     } catch { /* abort is best-effort */ }
   }
 
   /** Fetch the assembled messages of a session (for persistence/fallback). */
   async messages(sessionId: string): Promise<any[]> {
     try {
-      const data = await this.request<any>(PATHS.sessionMessages(sessionId));
-      return Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : [];
+      const { data } = await this.client.session.messages({ path: { id: sessionId } });
+      return Array.isArray(data) ? data : [];
     } catch {
       return [];
     }
@@ -233,26 +215,23 @@ export class OcClient {
    * the session's current full history as-is.
    */
   async fork(sessionId: string, messageId?: string): Promise<OcSessionInfo> {
-    const body = JSON.stringify(messageId ? { messageID: messageId } : {});
-    console.log(`[tiermux] OC POST ${PATHS.sessionFork(sessionId)} body=${body}`);
-    const result = await this.request<OcSessionInfo>(PATHS.sessionFork(sessionId), {
-      method: 'POST',
-      headers: this.headers(true),
-      body,
-    });
-    console.log(`[tiermux] OC fork() returned:`, JSON.stringify(result));
-    return result;
+    const body = messageId ? { messageID: messageId } : {};
+    console.log(`[tiermux] OC session.fork(${sessionId}) body=${JSON.stringify(body)}`);
+    const { data } = await this.client.session.fork({ path: { id: sessionId }, body });
+    console.log(`[tiermux] OC fork() returned:`, JSON.stringify(data));
+    return data as OcSessionInfo;
   }
 
   /**
-   * Subscribe to the global SSE event stream. Calls `onEvent` for each parsed ServerEvent.
-   * Returns an unsubscribe that closes the connection. Reconnects on transient errors.
+   * Subscribe to the global SSE event stream (GET /global/event, matching the webgui's
+   * own usage — confirmed against the SDK's `client.global.event()`, which hits the same
+   * path). Calls `onEvent` for each streamed event. Returns an unsubscribe that closes
+   * the connection. Reconnects on transient errors with the same 1.5s backoff the old
+   * hand-rolled reader used (the SDK's own built-in SSE retry targets a different code
+   * path — `sse()` helper methods — not the plain `global.event()` method used here).
    *
-   * Optional `onRaw` receives the raw JSON string before parsing — used by the trace toggle
-   * to dump every frame to the TierMux Engine output channel.
-   *
-   * In Node, fetch + ReadableStream gives us the raw SSE body; we split on `\n\n` frames
-   * and parse `data:` lines (ignoring keepalive `:` comments).
+   * Optional `onRaw` receives the raw event object (JSON-stringified) before dispatch —
+   * used by the trace toggle to dump every frame to the TierMux Engine output channel.
    */
   subscribe(onEvent: (e: OcEvent) => void, signal?: AbortSignal, onRaw?: (raw: string) => void): () => void {
     let stopped = false;
@@ -264,19 +243,21 @@ export class OcClient {
         const onAbort = () => controller?.abort();
         signal?.addEventListener('abort', onAbort, { once: true });
         try {
-          console.log(`[tiermux] OC SSE connecting to ${this.base}${PATHS.events}`);
-          const res = await fetch(`${this.base}${PATHS.events}`, {
-            headers: { Authorization: this.auth, Accept: 'text/event-stream' },
-            signal: controller.signal,
-          });
-          console.log(`[tiermux] OC SSE connected: status=${res.status} content-type=${res.headers.get('content-type')}`);
-          if (!res.ok || !res.body) throw new Error(`OC events → ${res.status}`);
-          await this.readSSE(res.body, onEvent, onRaw);
+          console.log(`[tiermux] OC SSE connecting (global.event)`);
+          const result = await this.client.global.event({ signal: controller.signal });
+          console.log(`[tiermux] OC SSE connected`);
+          // `global.event()` streams `{ directory, payload: Event }` — unwrap to the
+          // actual ServerEvent (`{ type, properties }`) callers expect.
+          for await (const ev of result.stream) {
+            const payload = (ev as { payload?: unknown }).payload ?? ev;
+            const raw = JSON.stringify(payload);
+            onRaw?.(raw);
+            onEvent(payload as OcEvent);
+          }
           console.log(`[tiermux] OC SSE stream ended (done)`);
         } catch (err) {
           if (stopped || signal?.aborted) break;
           console.warn(`[tiermux] OC SSE error, reconnecting in 1.5s:`, err instanceof Error ? err.message : err);
-          // transient — backoff and reconnect
           await new Promise((r) => setTimeout(r, 1500));
         } finally {
           signal?.removeEventListener('abort', onAbort);
@@ -285,28 +266,5 @@ export class OcClient {
     };
     void loop();
     return () => { stopped = true; controller?.abort(); };
-  }
-
-  private async readSSE(body: ReadableStream<Uint8Array>, onEvent: (e: OcEvent) => void, onRaw?: (raw: string) => void): Promise<void> {
-    const reader = body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let idx: number;
-      while ((idx = buffer.indexOf('\n\n')) !== -1) {
-        const frame = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        for (const line of frame.split('\n')) {
-          if (!line.startsWith('data:')) continue;
-          const payload = line.slice(5).trim();
-          if (!payload || payload === '[DONE]') continue;
-          onRaw?.(payload);
-          try { onEvent(JSON.parse(payload) as OcEvent); } catch { /* skip malformed */ }
-        }
-      }
-    }
   }
 }

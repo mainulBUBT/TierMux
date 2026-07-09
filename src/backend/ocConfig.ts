@@ -210,12 +210,17 @@ export function buildOcConfig(opts: OcConfigOptions): string {
           + '- Make the smallest correct change. Re-use existing patterns and helpers over new code.\n'
           + '- After editing: verify — grep for other call sites that the change might break; run '
           + 'typecheck/tests when feasible.\n'
+          + 'PLAN FIRST WHEN IT MATTERS: if the task is non-trivial (touches multiple files, involves '
+          + 'an architectural/design choice, or the right approach isn\'t obvious), read enough to '
+          + 'understand the task, then reply with a short numbered plan as TEXT and STOP — do not edit '
+          + 'yet. Wait for the user to confirm before acting. Skip this for small/obvious asks (a typo, '
+          + 'a one-line fix, an explicitly detailed instruction) — just do those directly.\n'
           + clarifyFormat('no edits')
           + 'Otherwise skip the block and proceed with the task.',
         permission: {
           read: 'allow', list: 'allow', glob: 'allow', grep: 'allow',
           web_fetch: 'allow', web_search: 'allow',
-          write: 'allow', edit: 'allow', bash: 'allow',
+          write: 'allow', edit: 'allow', bash: 'ask',
           move: 'allow', remove: 'allow', task: 'allow', todowrite: 'allow',
         },
       },

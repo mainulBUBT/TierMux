@@ -172,6 +172,8 @@ export type InMessage =
   | { type: 'cancel'; requestId: string; sessionId?: string }
   | { type: 'commandApprovalResponse'; id: string; approved: boolean; sessionId?: string }
   | { type: 'editApprovalResponse'; id: string; approved: boolean; sessionId?: string }
+  | { type: 'permissionAskResponse'; id: string; response: 'once' | 'always' | 'reject'; sessionId?: string }
+  | { type: 'openOcDiff'; sessionId: string; file: string }
   | { type: 'switchSession'; sessionId: string }
   | { type: 'requestConfig' }
   | { type: 'setFallbackConfig'; entries: FallbackEntry[] }
@@ -270,6 +272,8 @@ export type OutMessage =
   | { type: 'planDiscarded'; sessionId: string; requestId: string }
   | { type: 'commandApproval'; sessionId: string; requestId: string; id: string; command: string; cwd?: string }
   | { type: 'editApproval'; sessionId: string; requestId: string; id: string; path: string; title: string; kind: 'write' | 'delete' }
+  | { type: 'permissionAsk'; sessionId: string; requestId: string; id: string; title: string; pattern?: string | string[] }
+  | { type: 'ocSessionDiffList'; sessionId: string; requestId: string; files: Array<{ file: string; additions: number; deletions: number }> }
   | { type: 'clarifyingQuestions'; sessionId: string; requestId: string; questions: ClarifyingQuestion[] }
   | { type: 'sessionTitle'; sessionId: string; title: string }
   // `noFooter`: true when a clarifyingQuestions card immediately follows this message for the

@@ -180,7 +180,8 @@ export function toolLabel(name: string, args: unknown, detail?: string): ToolLab
     buildGraph: ['⊕', 'Built the call graph'],
     getSymbolGraph: ['⊕', 'Indexed symbols'],
     askUser: ['◎', 'Asking…'],
-    skill: ['◎', argFirst ? `Ran skill ${shortPath(argFirst)}` : 'Ran a skill'],
+    skill: ['◎', argFirst ? `Delegated to ${shortPath(argFirst)}` : 'Delegated to a sub-agent'],
+    lspCheck: ['⊘', path ? `Checked ${path}` : 'Checked language diagnostics'],
   };
 
   if (M[name]) {
@@ -232,6 +233,8 @@ export function activityFor(name: string, args: unknown): string {
     case 'webFetch': return argFirst ? `Fetching ${shortPath(argFirst)}` : 'Fetching';
     case 'getDiagnostics': return 'Checking diagnostics';
     case 'repoMap': return 'Mapping the repository';
+    case 'skill': return argFirst ? `Delegating to ${shortPath(argFirst)}` : 'Delegating to a sub-agent';
+    case 'lspCheck': return path ? `Checking ${path}` : 'Checking language diagnostics';
     default:
       if (name && name.indexOf('mcp__') === 0) return `Calling ${name.split('__')[1] || 'MCP tool'}`;
       return name ? (name.charAt(0).toUpperCase() + name.slice(1) + '…') : 'Working.';

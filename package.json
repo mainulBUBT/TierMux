@@ -560,20 +560,20 @@
               "disabled": {
                 "type": "boolean",
                 "description": "Skip this server."
-        },
-        "tiermux.profiler.enabled": {
-          "type": "boolean",
-          "default": false,
-          "description": "Collect per-turn performance traces for diagnostics. Shows model latency, tool calls, TTFT, fallback rate, and quality gate triggers. Use 'TierMux: Show Profiler' to view."
-        },
-        "tiermux.profiler.ringSize": {
-          "type": "number",
-          "default": 200,
-          "minimum": 10,
-          "maximum": 2000,
-          "description": "Number of recent turns to keep in the profiler ring buffer."
-        }
-      }
+              },
+              "tiermux.profiler.enabled": {
+                "type": "boolean",
+                "default": false,
+                "description": "Collect per-turn performance traces for diagnostics. Shows model latency, tool calls, TTFT, fallback rate, and quality gate triggers. Use 'TierMux: Show Profiler' to view."
+              },
+              "tiermux.profiler.ringSize": {
+                "type": "number",
+                "default": 200,
+                "minimum": 10,
+                "maximum": 2000,
+                "description": "Number of recent turns to keep in the profiler ring buffer."
+              }
+            }
           }
         }
       }
@@ -582,6 +582,8 @@
   "scripts": {
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
+    "check:oc-version": "node scripts/check-oc-sdk-version.mjs",
+    "pretypecheck": "npm run check:oc-version",
     "typecheck": "tsc --noEmit",
     "test:e2e": "esbuild scripts/qualityGate.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/qualityGate.e2e.cjs && node dist/qualityGate.e2e.cjs",
     "test:e2e:prewarm": "esbuild scripts/hotStandby.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/hotStandby.e2e.cjs && node dist/hotStandby.e2e.cjs",
@@ -608,6 +610,7 @@
     "typescript": "^5.5.4"
   },
   "dependencies": {
+    "@opencode-ai/sdk": "1.17.11",
     "diff2html": "^3.4.56",
     "duck-duck-scrape": "^2.2.7",
     "mammoth": "^1.12.0",
