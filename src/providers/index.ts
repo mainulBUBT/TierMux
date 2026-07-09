@@ -1,6 +1,3 @@
-// Provider registry. Base URLs/headers/keyless flags ported from freellmapi's
-// server/src/providers/index.ts (MIT). The `custom` platform builds a provider
-// bound to a user-supplied base URL.
 import type { Platform, PlatformInfo, CustomEndpoint } from '../shared/types';
 import type { BaseProvider } from './base';
 import { GoogleProvider } from './google';
