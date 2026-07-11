@@ -291,6 +291,11 @@ export type OutMessage =
   | { type: 'customEndpointModels'; id: string; models: string[]; error?: string }
   | { type: 'askUserPrompt'; sessionId: string; requestId: string; callId: string; question: string; options?: string[] }
   | { type: 'askUserDismissed'; sessionId: string; requestId: string; callId: string }
+  // The host force-settled a commandApproval/editApproval/permissionAsk card without a user
+  // click (e.g. the run ended/was cancelled first) — `id` is globally unique across all three
+  // card kinds (cmd-/edit-/perm- prefixes), so the webview can match it against whichever kind
+  // is actually rendered without needing to know which.
+  | { type: 'approvalDismissed'; sessionId: string; id: string }
   | { type: 'todos'; sessionId: string; requestId: string; todos: TodoItem[]; followingPlan?: boolean }
   | { type: 'failoverNotice'; sessionId: string; requestId: string; from: string; reason: string }
   | { type: 'keyRotated'; sessionId: string; requestId: string; platform: string; platformName: string; keyIndex: number; keyTotal: number }

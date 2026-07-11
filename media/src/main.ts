@@ -3004,7 +3004,7 @@ import { handleToolStatus } from './handlers/toolStatus';
   // (otherwise unchanged) render logic below writes into the right session's DOM regardless of
   // which session is currently being viewed. 'switchSession' is included so its case body can
   // use the returned `existed` flag to tell a brand-new pane from an already-live one.
-  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'ocSessionDiffList', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'checkpoint', 'notice', 'error', 'busy']);
+  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'ocSessionDiffList', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
 
   // ---------- inbound messages ----------
   window.addEventListener('message', (event) => {
@@ -3161,7 +3161,7 @@ import { handleToolStatus } from './handlers/toolStatus';
       }
       case 'commandApproval': {
         const t = ensureTarget(msg.requestId);
-        const card = document.createElement('div'); card.className = 'cmd-approval';
+        const card = document.createElement('div'); card.className = 'cmd-approval'; card.dataset.id = msg.id;
         const head = document.createElement('div'); head.className = 'cmd-approval-head';
         head.textContent = 'Run this command?';
         const pre = document.createElement('pre'); pre.className = 'cmd-approval-cmd';
@@ -3191,7 +3191,7 @@ import { handleToolStatus } from './handlers/toolStatus';
       case 'editApproval': {
         const t = ensureTarget(msg.requestId);
         const del = msg.kind === 'delete';
-        const card = document.createElement('div'); card.className = 'cmd-approval';
+        const card = document.createElement('div'); card.className = 'cmd-approval'; card.dataset.id = msg.id;
         const head = document.createElement('div'); head.className = 'cmd-approval-head';
         head.textContent = msg.title || (del ? 'Delete this file?' : 'Apply these changes?');
         const pre = document.createElement('pre'); pre.className = 'cmd-approval-cmd';
@@ -3221,7 +3221,7 @@ import { handleToolStatus } from './handlers/toolStatus';
       }
       case 'permissionAsk': {
         const t = ensureTarget(msg.requestId);
-        const card = document.createElement('div'); card.className = 'cmd-approval';
+        const card = document.createElement('div'); card.className = 'cmd-approval'; card.dataset.id = msg.id;
         const head = document.createElement('div'); head.className = 'cmd-approval-head';
         head.textContent = msg.title || 'OC wants to run a tool';
         card.appendChild(head);
@@ -3375,6 +3375,22 @@ import { handleToolStatus } from './handlers/toolStatus';
             card.querySelectorAll('button, textarea').forEach((el) => { el.disabled = true; });
             const note = document.createElement('div'); note.className = 'ask-answer';
             note.textContent = '— skipped —';
+            card.appendChild(note);
+          }
+        });
+        break;
+      }
+      case 'approvalDismissed': {
+        // The host force-settled a commandApproval/editApproval/permissionAsk card without a
+        // click (e.g. the run already ended) — disable it so a stale click is visibly a no-op
+        // instead of silently doing nothing.
+        activeThreadEl.querySelectorAll('.cmd-approval').forEach((card) => {
+          if (card.dataset.id === msg.id) {
+            const actions = card.querySelector('.cmd-approval-actions');
+            if (actions) actions.remove();
+            const note = document.createElement('div');
+            note.className = 'cmd-approval-note';
+            note.textContent = '— run ended —';
             card.appendChild(note);
           }
         });

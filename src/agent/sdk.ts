@@ -870,6 +870,13 @@ async function runViaOc(
         const command: string | undefined = p.metadata?.command;
         const title: string = p.title ?? (command ? `Run: ${command}` : patterns ? `${p.permission ?? 'tool'}: ${patterns.join(', ')}` : `OC wants to use ${p.permission ?? 'a tool'}`);
         if (!permissionID) return;
+        // Human decision time is unbounded and unrelated to "OC went silent" — no SSE event
+        // arrives while we wait on the approval card, so resetWatchdog() never re-fires during
+        // it. Without this, a slow click past the (as short as 45s) window let the watchdog
+        // treat a legitimately-paused tool as a hang: it force-finished the run and tore down
+        // this listener (unsub in finish()) out from under the still-pending permission, so the
+        // user's eventual click landed on a promise nothing was listening to anymore.
+        clearTimeout(watchdog);
         void (async () => {
           const response = opts.onPermissionAsk
             ? await opts.onPermissionAsk({ title, pattern: patterns, command }).catch(() => 'reject' as const)
@@ -877,6 +884,7 @@ async function runViaOc(
           await client.replyPermission(ocId!, permissionID, response).catch((err) => {
             console.error(`[tiermux] replyPermission failed:`, err);
           });
+          resetWatchdog(); // resume normal inactivity detection now that OC can proceed
         })();
         return;
       }
@@ -1009,9 +1017,17 @@ async function runViaOc(
         // User-cancel aborts the POST too — that's expected, not an error to surface.
         if (opts.abortSignal?.aborted) { finish({ text: out, platform, model }); return; }
         const msg = e instanceof Error ? e.message : String(e);
+        // OC's SDK (wrapClientError, error-interceptor.js) prefers the response BODY's own
+        // `message`/`data.message`/`name` field over its own "METHOD url → status" description —
+        // so any server that returns an error body shaped like `{ message: "..." }` (a very
+        // common NamedError shape) produces an Error.message with NO status text in it at all,
+        // and the old text-only regex below silently never matched. The real status code still
+        // survives on `error.cause.status` (set unconditionally by wrapClientError) — check that
+        // FIRST; the regex stays only as a fallback for errors that don't carry a `.cause`.
+        const status = (e as { cause?: { status?: number } } | undefined)?.cause?.status;
         // 5xx means the OC session is broken (server-side crash, stale session after restart, etc.).
         // Drop it from the cache so the next attempt gets a fresh session, then retry once automatically.
-        const is5xx = /→\s*5\d\d/.test(msg);
+        const is5xx = (typeof status === 'number' && status >= 500 && status < 600) || /→\s*5\d\d/.test(msg);
         // Network-layer failures (OC bridge ↔ router connection lost) surface as Node undici's
         // `TypeError: fetch failed` or one of its underlying causes. The router already treats these
         // as failoverable; here at the OC layer we must too, or the agent dead-ends on a dropped
@@ -1035,7 +1051,7 @@ async function runViaOc(
         // so the chatViewProvider catch fires maybeRecommendModels() — surfacing a concrete "enable
         // these free models" prompt rather than a bare 503. Empty failures: the detail was already
         // logged by the router; the recommendation only checks instanceof.
-        if (/→\s*503/.test(msg)) {
+        if (status === 503 || /→\s*503/.test(msg)) {
           fail(new AllModelsFailedError([]));
           return;
         }

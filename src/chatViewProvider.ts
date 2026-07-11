@@ -496,14 +496,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .then((choice) => { if (choice === 'Switch to it') this.openSession(sessionId); });
   }
 
-  /** Resolve every outstanding approval in a session (e.g. on cancel / stop) so the agent never hangs. */
+  /**
+   * Resolve every outstanding approval in a session (e.g. on cancel / stop / a watchdog-forced
+   * finish) so the agent never hangs. Must also pull the card off the webview here — otherwise
+   * it stays rendered as a live, clickable Allow/Reject button whose backing promise is already
+   * gone, so a later click on it silently does nothing (the id is no longer in the map) and the
+   * user has no idea the run already ended.
+   */
   private settlePendingApprovals(s: Session, approved: boolean): void {
+    const approvalIds = new Set(s.pendingApprovals.keys());
     for (const resolve of s.pendingApprovals.values()) resolve(approved);
     s.pendingApprovals.clear();
     // Permission-ask prompts don't take a boolean — always settle with 'reject' on cancel/stop
     // (same reasoning as approvals: never leave the OC-side tool call hanging).
+    const permissionIds = new Set(s.pendingPermissions.keys());
     for (const resolve of s.pendingPermissions.values()) resolve('reject');
     s.pendingPermissions.clear();
+    if (approvalIds.size) {
+      this.removeCards(s, (c) => (c.type === 'commandApproval' || c.type === 'editApproval') && approvalIds.has(c.id));
+    }
+    if (permissionIds.size) {
+      this.removeCards(s, (c) => c.type === 'permissionAsk' && permissionIds.has(c.id));
+    }
+    for (const id of approvalIds) this.post({ type: 'approvalDismissed', sessionId: s.id, id });
+    for (const id of permissionIds) this.post({ type: 'approvalDismissed', sessionId: s.id, id });
   }
 
   /** Resolve every in-flight in-chat `askUser` prompt with '' so the agent loop never hangs.
