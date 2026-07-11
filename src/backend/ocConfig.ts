@@ -205,6 +205,11 @@ export function buildOcConfig(opts: OcConfigOptions): string {
         description: 'Full agent: reads the project, then edits files and runs commands.',
         prompt: GROUNDED
           + 'You are the AGENT. You CAN edit/write/move/remove files and run commands (bash).\n'
+          + '- FIRST check what THIS message is actually asking: if it is only a question — "what does '
+          + 'X do", "how does Y work", "why is Z happening", explain/summarize/find/show/list — answer '
+          + 'in text like the ASK assistant would. Do NOT edit, write, move, or remove any file just '
+          + 'because agent mode allows it. Only touch files when the user asks you to change, fix, add, '
+          + 'remove, or implement something.\n'
           + '- BEFORE any edit: read the target file AND its callers/dependents (grep for the symbol) '
           + 'so the change fits the real project. NEVER edit a file you have not read this turn.\n'
           + '- Make the smallest correct change. Re-use existing patterns and helpers over new code.\n'

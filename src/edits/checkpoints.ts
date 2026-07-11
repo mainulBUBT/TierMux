@@ -125,12 +125,10 @@ export class CheckpointManager {
     return undefined;
   }
 
-  /** Files that would be reverted by restoring to before this message. */
-  async changedFiles(id: string): Promise<CheckpointFile[]> {
-    // Git mode: diff the working tree against the begin tree (sees edits OC applied directly).
-    const beginTree = this.beginTreeSince(id);
-    if (beginTree && this.cwd) return changedSince(this.cwd, beginTree);
-    // Fallback: per-file content snapshots from EditGate.record() (inline-chat / non-git).
+  /** Per-file content snapshots (EditGate.record() / the onTool pre-write hook), diffed
+   *  against current disk content. This is the ONLY source of truth for files a git-tree
+   *  diff can't see — gitignored files, or any workspace that isn't a git repo at all. */
+  private async changedFilesFromSnaps(id: string): Promise<CheckpointFile[]> {
     const out: CheckpointFile[] = [];
     for (const s of this.aggregateSince(id).values()) {
       const cur = await this.read(s.uri);
@@ -141,20 +139,41 @@ export class CheckpointManager {
     return out;
   }
 
+  /**
+   * Files that would be reverted by restoring to before this message. Git mode (beginTree
+   * present) covers everything `git add -A` can see, i.e. tracked + non-ignored untracked
+   * files. It CANNOT see gitignored files (.env, generated configs, ...) since `add -A`
+   * skips them — so snap-based results are always merged in on top, not treated as a
+   * mutually-exclusive fallback, to cover exactly those files.
+   */
+  async changedFiles(id: string): Promise<CheckpointFile[]> {
+    const beginTree = this.beginTreeSince(id);
+    const snapFiles = await this.changedFilesFromSnaps(id);
+    if (!beginTree || !this.cwd) return snapFiles;
+    const gitFiles = await changedSince(this.cwd, beginTree);
+    const seen = new Set(gitFiles.map((f) => f.rel));
+    for (const f of snapFiles) if (!seen.has(f.rel)) gitFiles.push(f);
+    return gitFiles;
+  }
+
   /** Restore the workspace to its state before this message. Returns # restored. */
   async restore(id: string): Promise<number> {
-    // Git mode: restore the working tree to the begin tree (worktree only — never touches index/HEAD).
     const beginTree = this.beginTreeSince(id);
-    if (beginTree && this.cwd) return restoreToTree(this.cwd, beginTree);
-    // Fallback: replay per-file baselines.
     let n = 0;
+    const gitRel = new Set<string>();
+    if (beginTree && this.cwd) {
+      n += await restoreToTree(this.cwd, beginTree);
+      for (const f of await changedSince(this.cwd, beginTree)) gitRel.add(f.rel);
+    }
+    // Snap-tracked files the git restore couldn't see (gitignored, or no git at all).
     for (const s of this.aggregateSince(id).values()) {
+      if (gitRel.has(s.rel)) continue; // already restored above
       try {
         if (s.before === null) {
           if (await this.exists(s.uri)) { await vscode.workspace.fs.delete(s.uri, { useTrash: true }); n++; }
         } else {
-          await vscode.workspace.fs.writeFile(s.uri, new TextEncoder().encode(s.before));
-          n++;
+          const cur = await this.read(s.uri);
+          if (cur !== s.before) { await vscode.workspace.fs.writeFile(s.uri, new TextEncoder().encode(s.before)); n++; }
         }
       } catch { /* skip files we can't restore */ }
     }

@@ -66,6 +66,18 @@ const AUTO_APPROVE_KEY = 'tiermux.autoApprove';
 const MAX_SESSIONS = 50;
 /** Tool calls that count as "Modifications" for a session's tab activity badge (see `Session.liveActivity`). */
 const WRITE_TOOL_NAMES = new Set(['writeFile', 'createFile', 'editFile', 'deleteFile', 'runCommand']);
+/** Of those, the ones that touch a single identifiable file path (excludes runCommand). */
+const FILE_WRITE_TOOL_NAMES = new Set(['writeFile', 'createFile', 'editFile', 'deleteFile']);
+
+/** Pull a file path out of a write/edit/create/delete tool call's args, tolerant of the
+ *  several key names OC's tools have used (see media/src/toolRendering.ts's own copy of
+ *  this same tolerance for rendering tool-card titles). */
+function extractToolFilePath(args: unknown): string | undefined {
+  if (!args || typeof args !== 'object') return undefined;
+  const a = args as Record<string, unknown>;
+  const v = a.path ?? a.file ?? a.filePath ?? a.filename ?? a.relativePath;
+  return typeof v === 'string' && v ? v : undefined;
+}
 
 /**
  * One chat session's full state — both the persisted conversation (history/transcript/title)
@@ -648,8 +660,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.updateViewTitle();
   }
 
-  private deleteSession(id: string): void {
+  /**
+   * Deleting a chat also discards any code it changed that was never committed — same as
+   * Cursor/Claude Code. "Not committed" here means no real git commit has landed since (a
+   * real commit already clears every session's checkpoints via clearAllCheckpoints(), so if
+   * commits happened, `list()` is empty and this is a no-op). Confirms first since this is
+   * destructive; the webview has already optimistically removed the row, so a decline needs
+   * `postSessionList()` to bring it back.
+   */
+  private async deleteSession(id: string): Promise<void> {
     const wasViewed = id === this.viewedSessionId;
+    const s = this.sessions.get(id);
+    if (s) {
+      const cps = s.checkpoints.list();
+      if (cps.length) {
+        const files = await s.checkpoints.changedFiles(cps[0].id);
+        if (files.length) {
+          const plural = files.length > 1;
+          const choice = await vscode.window.showWarningMessage(
+            `Delete this chat? ${files.length} uncommitted file change${plural ? 's' : ''} it made will also be reverted.`,
+            { modal: true },
+            'Delete && Revert',
+          );
+          if (choice !== 'Delete && Revert') { this.postSessionList(); return; }
+          await s.checkpoints.restore(cps[0].id);
+        }
+      }
+    }
     this.stopRun(id, false); // cancel only this session's run (no rebuild — we switch away next)
     this.sessions.delete(id);
     this.statusOf.delete(id);
@@ -713,7 +750,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (m.sessionId && m.title) this.renameSession(m.sessionId, m.title);
         break;
       case 'deleteSessionById':
-        if (m.sessionId) this.deleteSession(m.sessionId);
+        if (m.sessionId) await this.deleteSession(m.sessionId);
         break;
       case 'cancel':
         this.stopRun(m.sessionId ?? this.viewedSessionId);
@@ -1859,6 +1896,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const i = steps.findIndex((st) => st.toolCallId === e.toolCallId);
         const mappedState = e.state === 'queued' ? 'running' : e.state as 'running' | 'done' | 'error';
         const entry: TranscriptStep = { toolCallId: e.toolCallId, name: e.name, args: e.args, state: mappedState, detail: e.detail };
+        if (i < 0 && FILE_WRITE_TOOL_NAMES.has(e.name)) {
+          // OC (the agent engine) applies Agent/Plan-mode edits directly to the workspace,
+          // bypassing TierMux's own EditGate — so record()-based checkpoints normally see
+          // nothing for these edits (the git-tree snapshot in gitSnapshot.ts covers most of
+          // it, but can't see gitignored files). Best-effort close that gap: on the FIRST
+          // event we see for a given tool call (ideally its 'running'/'queued' state, before
+          // OC has actually written anything), read the file's current on-disk content and
+          // record it as this turn's baseline. record() itself dedupes by file, so later/
+          // duplicate events for the same path are harmless no-ops.
+          const rel = extractToolFilePath(e.args);
+          const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+          if (rel && root) {
+            const uri = vscode.Uri.joinPath(root, rel);
+            void vscode.workspace.fs.readFile(uri).then(
+              (buf) => s.checkpoints.record(uri, new TextDecoder().decode(buf)),
+              () => s.checkpoints.record(uri, null), // doesn't exist yet — this is a create
+            );
+          }
+        }
         if (i >= 0) steps[i] = entry; else steps.push(entry);
         s.liveSteps.set(requestId, steps);
         if (WRITE_TOOL_NAMES.has(e.name) && s.liveActivity !== 'Modifications') {

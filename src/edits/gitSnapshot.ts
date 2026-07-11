@@ -41,12 +41,12 @@ export async function isGitRepo(cwd: string): Promise<boolean> {
 /**
  * Write the full current working tree (tracked + untracked, non-ignored) to a tree object via
  * a THROWAWAY index file, returning the tree SHA. Does NOT mutate HEAD, the real index, or the
- * working tree. Returns null if `cwd` isn't a git repo or has no commits.
+ * working tree. Returns null only if `cwd` isn't a git repo at all — a repo with zero commits
+ * still works: `read-tree HEAD` simply no-ops (caught by `git()`) and `add -A` builds the tree
+ * from a fresh empty index, which captures the same "everything currently present" snapshot.
  */
 export async function captureWorkingTree(cwd: string): Promise<string | null> {
   if (!(await isGitRepo(cwd))) return null;
-  const head = (await git(cwd, ['rev-parse', '--verify', 'HEAD'])).trim();
-  if (!head) return null; // no commits yet — nothing meaningful to snapshot against
   return writeWorkTree(cwd);
 }
 
