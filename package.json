@@ -162,6 +162,12 @@
         "icon": "$(notebook)"
       },
       {
+        "command": "tiermux.addSkill",
+        "title": "Add Skill from GitHub",
+        "category": "TierMux",
+        "icon": "$(cloud-download)"
+      },
+      {
         "command": "tiermux.showTelemetry",
         "title": "Show Telemetry",
         "category": "TierMux",

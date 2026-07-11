@@ -11,16 +11,20 @@ import * as path from 'path';
 import { resolveOcBinary } from './ocBinary';
 import { buildOcConfig } from './ocConfig';
 import { loadUserMemory } from '../context/userMemory';
+import { loadProjectRules } from '../context/projectRules';
+import { skillIndexPrompt } from '../context/skills';
 import type { McpServerConfig } from '../mcp/mcpClient';
 
 /**
  * Load agent prompt files from `.tiermux/agent/` in the extension directory, plus the
- * workspace's `.tiermux/memory.md` (user style/standing instructions) if present.
- * Files are sorted alphabetically and concatenated so the order is predictable
- * (identity.md → behavior.md → ask-format.md → any future additions), with memory last.
- * Falls back to a minimal inline string if the directory is missing or unreadable.
+ * workspace's project rule files (AGENTS.md, CLAUDE.md, .cursorrules, ... — see
+ * projectRules.ts), `.tiermux/memory.md` (user style/standing instructions), and the
+ * installed-skills index, if present. Files are sorted alphabetically and concatenated
+ * so the order is predictable (identity.md → behavior.md → ask-format.md → any future
+ * additions), with rules/memory/skills appended last. Falls back to a minimal inline
+ * string if the directory is missing or unreadable.
  */
-export async function loadAgentInstructions(extensionPath: string, log: (m: string) => void): Promise<string> {
+export async function loadAgentInstructions(extensionPath: string, log: (m: string) => void, workspaceRoot?: string): Promise<string> {
   const agentDir = path.join(extensionPath, '.tiermux', 'agent');
   let base: string;
   try {
@@ -40,13 +44,15 @@ export async function loadAgentInstructions(extensionPath: string, log: (m: stri
     base = '# Identity\nYou are TierMux, an AI coding assistant. Never identify as "opencode".';
   }
   const memory = await loadUserMemory().catch(() => '');
-  return memory ? `${base}\n\n${memory}` : base;
+  const rules = await loadProjectRules().catch(() => '');
+  const skills = skillIndexPrompt(extensionPath, workspaceRoot);
+  return [base, rules, memory, skills].filter(Boolean).join('\n\n');
 }
 
 /** Write the assembled agent instructions to a temp file so OC can load them via --instructions. */
-async function writeInstructionsFile(extensionPath: string, cacheDir: string | undefined, log: (m: string) => void): Promise<string | undefined> {
+async function writeInstructionsFile(extensionPath: string, cacheDir: string | undefined, workspaceRoot: string | undefined, log: (m: string) => void): Promise<string | undefined> {
   try {
-    const content = await loadAgentInstructions(extensionPath, log);
+    const content = await loadAgentInstructions(extensionPath, log, workspaceRoot);
     const dir = cacheDir ?? os.tmpdir();
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, 'tiermux-instructions.md');
@@ -117,7 +123,7 @@ export async function launchOpenCode(opts: OcLaunchOptions): Promise<OcConnectio
   log(`binary resolved: ${binary}`);
 
   const password = newPassword();
-  const instructionsFile = await writeInstructionsFile(opts.extensionPath, opts.cacheDir, log);
+  const instructionsFile = await writeInstructionsFile(opts.extensionPath, opts.cacheDir, opts.workspaceRoot, log);
   const configContent = buildOcConfig({
     routerProxyBaseURL: opts.routerProxyBaseURL,
     apiKey: 'local',

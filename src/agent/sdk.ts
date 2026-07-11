@@ -11,7 +11,7 @@ import type { ChatContentBlock, ChatMessage, TodoItem, ReasoningEffort } from '.
 import type { IProfilerService } from '../profiler/profilerService';
 import type { OcConnection } from '../backend/ocLauncher';
 import { OcClient, toOcParts } from '../backend/ocClient';
-import { getLastRoutedModel, setForcedModel, setForcedTaskKind, setForcedAttachments } from '../backend/routerProxy';
+import { getLastRoutedModel, setForcedModel, setForcedTaskKind, setForcedAttachments, setForcedReasoningEffort } from '../backend/routerProxy';
 import { classifyTask, attachmentKindsFromContent, type TaskKind } from './routing';
 import { assessAnswerQuality } from './answerQuality';
 import { contentToString } from './content';
@@ -97,7 +97,7 @@ export interface AgentOpts {
   /** OC paused a tool call on an `ask` permission rule (e.g. `bash: 'ask'` in ocConfig.ts) and
    *  is waiting for a decision before it proceeds. `title` is OC's own human-readable
    *  description of what it wants to do (e.g. the shell command). */
-  onPermissionAsk?: (info: { title: string; pattern?: string | string[] }) => Promise<'once' | 'always' | 'reject'>;
+  onPermissionAsk?: (info: { title: string; pattern?: string | string[]; command?: string }) => Promise<'once' | 'always' | 'reject'>;
   onError: (message: string) => void;
   /** Soft, non-blocking notice (e.g. "stream ended early") — used when a run produced a
    *  usable answer despite a mid-stream error, instead of a hard red error. */
@@ -151,6 +151,9 @@ let ocClient: OcClient | undefined;
 const ocSessions = new Map<string, string>();
 /** TierMux session id → model id the OC session was created with (to detect model changes). */
 const ocSessionModels = new Map<string, string>();
+/** TierMux session id → OC agent ('chat'/'planx'/'build') the OC session was created with
+ *  (to detect a Ask/Plan/Agent mode switch mid-tab — see the reset check in runViaOc). */
+const ocSessionAgents = new Map<string, string>();
 /** `${sessionId}:${hop}` → OC session id, created ahead of time while the prior hop is still
  *  running so escalation can reuse it instead of blocking on a fresh createSession(). */
 const prewarmedSessions = new Map<string, string>();
@@ -166,7 +169,7 @@ const intentionallyAbortedOcIds = new Set<string>();
 /** Called by extension.ts once the OC backend is up (or undefined when it's gone). */
 export function setOcEngine(conn: OcConnection | undefined): void {
   ocClient = conn ? new OcClient(conn) : undefined;
-  if (!ocClient) { ocSessions.clear(); ocSessionModels.clear(); prewarmedSessions.clear(); }
+  if (!ocClient) { ocSessions.clear(); ocSessionModels.clear(); ocSessionAgents.clear(); prewarmedSessions.clear(); }
 }
 
 /** OC's own aggregate diff for a TierMux chat session's OC-backed conversation, if one
@@ -249,6 +252,29 @@ async function runViaOc(
     forkSourceOcId = ocId;
     ocSessions.delete(key);
     ocSessionModels.delete(key);
+    ocSessionAgents.delete(key);
+    ocId = undefined;
+  }
+  // If the user switched mode (Ask/Plan/Agent) since the last run in this tab, the existing
+  // OC session was created bound to the OLD agent (chat/planx/build) — OC fixes an agent's
+  // system prompt, tool permissions, and read-only-ness at session creation and does not
+  // switch it mid-session, even though the per-prompt `agent` field is accepted on the wire.
+  // Without this reset, e.g. Ask → Agent kept running the read-only `chat` agent under the
+  // hood: it can't edit/run commands, so it either answers as if still read-only or produces
+  // no usable output — surfacing as a hallucinated "ask mode" answer with a 0 in / 0 out
+  // usage footer.
+  // Deliberately NOT set as a fork source (unlike the model-change reset above): OC's
+  // `/session/fork` endpoint takes no agent override, so a forked session likely inherits
+  // the OLD agent binding too — defeating the whole point of this reset. Leaving
+  // `forkSourceOcId` untouched falls through to the transcript-replay path below instead,
+  // which calls `createSession({ agent, ... })` directly with the CORRECT new agent and
+  // replays prior turns as formatted text — guaranteed correct agent, at the cost of OC
+  // re-reading history as text rather than its own structured memory.
+  if (ocId && ocSessionAgents.get(key) !== undefined && ocSessionAgents.get(key) !== agent) {
+    console.log(`[tiermux] mode changed (${ocSessionAgents.get(key)} → ${agent}), resetting OC session`);
+    ocSessions.delete(key);
+    ocSessionModels.delete(key);
+    ocSessionAgents.delete(key);
     ocId = undefined;
   }
   // Always use the virtual profile (fast/smart) for OC session creation so OC never needs
@@ -293,6 +319,9 @@ async function runViaOc(
     })
     : [];
   setForcedAttachments(taskKind === 'vision' ? attachmentBlocks : undefined);
+  // Push the composer's chosen reasoning effort — OC's own re-serialized completion
+  // request has no channel for it, so without this the effort picker had no effect.
+  setForcedReasoningEffort(opts.effort);
 
   const profiler = opts.profiler;
   const turnId = profiler?.beginTurn({
@@ -316,6 +345,7 @@ async function runViaOc(
       prewarmedSessions.delete(prewarmKey);
       ocSessions.set(key, ocId);
       ocSessionModels.set(key, modelID);
+      ocSessionAgents.set(key, agent);
       console.log(`[tiermux] using pre-warmed OC session id=${ocId} for hop=${hop} model=${modelID}`);
     }
   }
@@ -346,6 +376,7 @@ async function runViaOc(
         ocId = forkedId;
         ocSessions.set(key, ocId);
         ocSessionModels.set(key, modelID);
+        ocSessionAgents.set(key, agent);
         console.log(`[tiermux] forked OC session id=${ocId} (history replay) for model=${modelID}`);
       } else {
         throw new Error('fork returned no session id');
@@ -373,6 +404,7 @@ async function runViaOc(
       setForcedModel(undefined);
       setForcedTaskKind(undefined);
       setForcedAttachments(undefined);
+      setForcedReasoningEffort(undefined);
       // Must throw, not return — a normal return here makes callers post a blank assistant
       // message with a zeroed "0 in · 0 out" usage footer, hiding the real error behind
       // what looks like a completed (empty) turn.
@@ -390,10 +422,12 @@ async function runViaOc(
       setForcedModel(undefined);
       setForcedTaskKind(undefined);
       setForcedAttachments(undefined);
+      setForcedReasoningEffort(undefined);
       throw new Error('TierMux engine could not start a session. Raw response logged to DevTools console.');
     }
     ocSessions.set(key, ocId);
     ocSessionModels.set(key, modelID);
+    ocSessionAgents.set(key, agent);
     console.log(`[tiermux] OC session created id=${ocId} agent=${agent} model=tiermux/${modelID}`);
     if (turnId) profiler?.timerEnd(turnId, 'SessionSetup');
   } else {
@@ -443,6 +477,7 @@ async function runViaOc(
       setForcedModel(undefined); // clear forced model so the next run starts clean
       setForcedTaskKind(undefined);
       setForcedAttachments(undefined);
+      setForcedReasoningEffort(undefined);
       // Every terminal path funnels through finish()/fail() exactly once (guarded by
       // `done`) — the single choke point to reclaim intentionallyAbortedOcIds, instead of
       // relying on the session.error handler catching every abort (the watchdog timeout
@@ -475,6 +510,7 @@ async function runViaOc(
       setForcedModel(undefined);
       setForcedTaskKind(undefined);
       setForcedAttachments(undefined);
+      setForcedReasoningEffort(undefined);
       intentionallyAbortedOcIds.delete(ocId);
       for (const k of [...prewarmedSessions.keys()]) if (k.startsWith(`${key}:`)) prewarmedSessions.delete(k);
       reject(err);
@@ -504,6 +540,7 @@ async function runViaOc(
       if (turnId) profiler?.addFallback(turnId, `tiermux/${profile}`, detail);
       ocSessions.delete(key);
       ocSessionModels.delete(key);
+      ocSessionAgents.delete(key);
       unsub();
       clearTimeout(watchdog);
       // hop+1 carries _retryCount unchanged: an OC-session drop shouldn't burn the prompt()
@@ -835,7 +872,7 @@ async function runViaOc(
         if (!permissionID) return;
         void (async () => {
           const response = opts.onPermissionAsk
-            ? await opts.onPermissionAsk({ title, pattern: patterns }).catch(() => 'reject' as const)
+            ? await opts.onPermissionAsk({ title, pattern: patterns, command }).catch(() => 'reject' as const)
             : 'reject' as const; // no handler wired (e.g. hedging/title-gen runs) → safe default is deny, not hang
           await client.replyPermission(ocId!, permissionID, response).catch((err) => {
             console.error(`[tiermux] replyPermission failed:`, err);
@@ -897,6 +934,7 @@ async function runViaOc(
           console.log(`[tiermux] OC session.error (no output, transient) — dropping session ${ocId}, retrying`);
           ocSessions.delete(key);
           ocSessionModels.delete(key);
+          ocSessionAgents.delete(key);
           unsub();
           clearTimeout(watchdog);
           void runViaOc(opts, 1, chainIndex, ocId, undefined, taskKind).then(finish, fail);
@@ -983,6 +1021,7 @@ async function runViaOc(
           console.log(`[tiermux] OC prompt() ${is5xx ? '5xx' : 'network error'} — dropping session ${ocId}, retrying with a fresh session`);
           ocSessions.delete(key);
           ocSessionModels.delete(key);
+          ocSessionAgents.delete(key);
           unsub();
           clearTimeout(watchdog);
           // Retry the full run on the SAME hop (will create a new OC session on the way in).
@@ -1225,6 +1264,7 @@ async function runChatHedged(opts: AgentOpts): Promise<AgentResult> {
     }
     ocSessions.set(key, legs[which].ocId!);
     ocSessionModels.set(key, legs[which].modelID ?? which);
+    ocSessionAgents.set(key, 'chat'); // hedging only ever races chat-mode legs (fast/smart)
     if (legs[other].ocId) {
       intentionallyAbortedOcIds.add(legs[other].ocId);
       void ocClient?.abort(legs[other].ocId);

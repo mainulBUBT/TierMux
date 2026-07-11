@@ -42,7 +42,7 @@ const DANGEROUS = [
 ];
 
 /** True for commands too destructive to run unattended; these always ask, even in Auto-approve. */
-function isDangerous(command: string): boolean {
+export function isDangerous(command: string): boolean {
   return DANGEROUS.some((re) => re.test(command));
 }
 

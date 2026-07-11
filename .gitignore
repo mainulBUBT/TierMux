@@ -3,6 +3,8 @@ dist/
 media/vendor/
 *.vsix
 .DS_Store
+# Local editor settings (may contain personal API keys per device)
+.vscode/settings.json
 # OpenCode bundled binary (downloaded at runtime)
 bin/
 # Test extension path artifacts (created during dev)

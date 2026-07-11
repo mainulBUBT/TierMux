@@ -14,6 +14,7 @@ import type { Router } from './router/router';
 import { AllModelsFailedError } from './router/router';
 import type { McpManager } from './mcp/mcpManager';
 import { CheckpointManager } from './edits/checkpoints';
+import { isDangerous } from './edits/commandGate';
 import { openOcFileDiff } from './edits/ocSessionDiff';
 import type { ModelStatsStore, Vote } from './config/modelStats';
 import type { SlowModelStore } from './config/slowModel';
@@ -1632,10 +1633,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       : s.transcript.map((t) => ({ role: t.role, content: t.text }));
 
     this.post({ type: 'switchSession', sessionId: s.id, messages: s.transcript });
-    await this.postCheckpoints(s);
     this.post({ type: 'setInput', text: removedText, attachments: removedAttachments });
     if (fileCount) this.post({ type: 'notice', sessionId: s.id, text: `⟲ Reverted ${fileCount} file${fileCount !== 1 ? 's' : ''} to this point.` });
     this.persist(s.id);
+    // Checkpoint bar refresh involves several git subprocess calls per remaining
+    // checkpoint — run it after the input/transcript are already back on screen so
+    // the composer doesn't wait behind it.
+    await this.postCheckpoints(s);
   }
 
   private async handleRestoreCheckpoint(s: Session, id: string): Promise<void> {
@@ -1961,6 +1965,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       onPermissionAsk: async (info) => {
         if (!live()) return 'reject';
+        // Session Auto-approve: reply through OC's own permission channel instead of
+        // showing the inline card, mirroring commandGate's non-dangerous-only carve-out
+        // so destructive commands (rm -rf, force push, sudo…) still always ask.
+        if (this.autoApprove && !(info.command && isDangerous(info.command))) return 'once';
         return this.requestPermissionAsk(s.id, requestId, info.title, info.pattern);
       },
       onFailover: (from, reason) => {

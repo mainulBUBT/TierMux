@@ -84,6 +84,20 @@ export function setForcedAttachments(blocks: ChatContentBlock[] | undefined): vo
 }
 export function getForcedAttachments(): ChatContentBlock[] | undefined { return forcedAttachmentsForRun; }
 
+/**
+ * The user's composer-selected reasoning effort for the current OC run. Same channel as
+ * setForcedTaskKind/setForcedAttachments and for the same reason: OC's own re-serialized
+ * completion request has no way to carry it (it's a TierMux composer setting, not part of
+ * OC's PromptBody or its static ocConfig.ts model registry), so without this the effort
+ * picker had zero effect on the actual request. Cleared at every run exit, alongside the
+ * other forced-* channels.
+ */
+let forcedReasoningEffortForRun: ReasoningEffort | undefined;
+export function setForcedReasoningEffort(e: ReasoningEffort | undefined): void {
+  forcedReasoningEffortForRun = e && e !== 'off' ? e : undefined;
+}
+export function getForcedReasoningEffort(): ReasoningEffort | undefined { return forcedReasoningEffortForRun; }
+
 export interface RouterProxyServer {
   port: number;
   baseURL: string;
@@ -242,7 +256,7 @@ async function handleChatCompletion(
     temperature: body.temperature,
     max_tokens: body.max_tokens,
     top_p: body.top_p,
-    reasoningEffort: body.reasoning_effort ?? body.reasoning?.effort,
+    reasoningEffort: forcedReasoningEffortForRun ?? body.reasoning_effort ?? body.reasoning?.effort,
     // Agent turns (tools present) must land on tool-capable models; OC always
     // sends tools for plan/build, so this keeps routing honest.
     requireTools: !!(body.tools && body.tools.length),

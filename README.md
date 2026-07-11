@@ -171,6 +171,8 @@ All settings live inside the TierMux panel — no need to open VS Code's `settin
 
 > You are always in control of which providers are active, which models are used, and how your keys are stored. TierMux is a routing layer — not a service.
 
+Contributing from a fork or clone? See [PUBLISHING.md](PUBLISHING.md) before pushing — it's a checklist for keeping local secrets/config out of the public repo.
+
 ---
 
 ## About TierMux

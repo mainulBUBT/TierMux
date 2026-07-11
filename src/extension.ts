@@ -29,6 +29,8 @@ import { registerInlineCompletions } from './completions/inlineCompletion';
 import { registerCommitMessage, generateCommitMessage } from './scm/commitMessage';
 import { watchGitCommits } from './scm/gitWatch';
 import { openMemoryForEdit } from './context/userMemory';
+import { invalidateSkillsCache } from './context/skills';
+import { installSkillPackage, checkNpxAvailable } from './context/skillInstaller';
 // Pre-research modules (symbolIndex, invertedIndex, bundleCache, structuralGraph, repoMap)
 // removed in v7.0 — superseded by OpenCode's `grep`/`glob`/LSP tools when
 // `tiermux.useOpenCodeEngine` is true (the default). The file-watcher handlers
@@ -455,6 +457,45 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showInformationMessage('TierMux: model catalog refreshed.');
     }),
     vscode.commands.registerCommand('tiermux.editMemory', () => openMemoryForEdit()),
+    vscode.commands.registerCommand('tiermux.addSkill', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!root) { void vscode.window.showErrorMessage('TierMux: open a workspace folder first.'); return; }
+      if (!(await checkNpxAvailable())) {
+        void vscode.window.showErrorMessage(
+          'TierMux: skill packages need Node.js (npx) on PATH. Install Node.js, then try again.',
+          'Install Node.js',
+        ).then((choice) => { if (choice === 'Install Node.js') void vscode.env.openExternal(vscode.Uri.parse('https://nodejs.org/')); });
+        return;
+      }
+      const source = await vscode.window.showInputBox({
+        title: 'Add Skill from GitHub',
+        prompt: 'Repo to install from (owner/repo or a full GitHub URL)',
+        placeHolder: 'e.g. obra/superpowers',
+      });
+      if (!source) return;
+      const skill = await vscode.window.showInputBox({
+        title: 'Add Skill from GitHub',
+        prompt: 'Specific skill name (leave blank to install all skills in the repo)',
+        placeHolder: 'e.g. writing-plans',
+      });
+      const channel = vscode.window.createOutputChannel('TierMux Skills');
+      channel.show(true);
+      channel.appendLine(`$ npx skills add ${source}${skill ? ` --skill ${skill}` : ''} -y`);
+      const result = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'TierMux: installing skill…' },
+        () => installSkillPackage(root, source, skill || undefined, (chunk) => channel.append(chunk)),
+      );
+      if (result.ok) {
+        invalidateSkillsCache(context.extensionUri.fsPath, root);
+        const choice = await vscode.window.showInformationMessage(
+          'TierMux: skill installed. Reload the window so the agent picks it up.',
+          'Reload Window',
+        );
+        if (choice === 'Reload Window') void vscode.commands.executeCommand('workbench.action.reloadWindow');
+      } else {
+        void vscode.window.showErrorMessage('TierMux: skill install failed — see "TierMux Skills" output for details.');
+      }
+    }),
     vscode.commands.registerCommand('tiermux.showTelemetry', () => {
       const channel = vscode.window.createOutputChannel('TierMux Telemetry');
       channel.clear();
