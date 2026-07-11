@@ -1,5 +1,4 @@
 
-
 import * as http from 'http';
 import type { Router } from '../router/router';
 import type { RouteOptions } from '../router/router';
@@ -199,6 +198,12 @@ async function handleChatCompletion(
   if (forcedTaskKindForRun === 'vision' && forcedAttachmentsForRun) {
     reinjectMissingAttachments(messages, forcedAttachmentsForRun);
   }
+
+  // NOTE: web_fetch / web_search are provided natively by OC (permission: 'allow'
+  // in ocConfig.ts), so OC sends them in body.tools and executes them itself in its
+  // agent loop. We must NOT inject or intercept web_fetch here — doing so hijacks
+  // OC's tool_call (OC never sees it) and replaces its fetch with a worse one.
+
   const stream = body.stream === true;
   const lastUserText = extractLastUserText(body.messages);
 
@@ -208,7 +213,8 @@ async function handleChatCompletion(
     if (!b || typeof b !== 'object') return false;
     return (b as { type?: string }).type === 'file';
   });
-  console.log(`[tiermux][DBG] completion-request: model=${body.model ?? '-'} max_tokens=${body.max_tokens ?? 'UNSET'} stream=${stream} msgs=${messages.length} tools=${(body.tools ?? []).length}`);
+  const toolNames = (body.tools ?? []).map((t: ChatToolDefinition) => t.function?.name).filter(Boolean).join(',');
+  console.log(`[tiermux][DBG] completion-request: model=${body.model ?? '-'} stream=${stream} msgs=${messages.length} tools=[${toolNames}]`);
 
   const routeOpts: RouteOptions = {
     ...mapProfile(body.model, lastUserText, lastUserContent),
@@ -244,9 +250,13 @@ async function handleChatCompletion(
       lastRouted = { platform: result.platform, model: result.model, runtimeName: result.runtimeName };
       buffered = chunks.join('');
       const choice = result.response.choices?.[0];
+      const msg = choice?.message;
 
+      // If the upstream provider didn't stream (onChunk never fired), emit its
+      // non-streamed content/tool_calls now so OC sees them. Tool calls (including
+      // OC's native web_fetch/web_search) pass straight through to OC — OC executes
+      // them in its own agent loop and sends the next request.
       if (!chunks.length) {
-        const msg = choice?.message;
         const content = typeof msg?.content === 'string' ? msg.content : '';
         if (content || msg?.tool_calls?.length) {
           sendSSE(res, makeChunk(body.model ?? 'tiermux', {
@@ -256,8 +266,7 @@ async function handleChatCompletion(
         }
       }
 
-      const toolMsg = choice?.message;
-      const hasTools = !!toolMsg?.tool_calls?.length;
+      const hasTools = !!msg?.tool_calls?.length;
       const upstreamReason = choice?.finish_reason;
       const finishReason: string = hasTools
         ? 'tool_calls'
