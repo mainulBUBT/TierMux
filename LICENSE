@@ -1,10 +1,6 @@
 MIT License
 
-Copyright (c) 2026 free-llm-agent contributors
-
-Portions adapted from freellmapi (https://github.com/tashfeenahmed/freellmapi),
-also MIT licensed: the provider adapters (base/openai-compat/google/cohere/
-cloudflare), tool-argument repair, content flattening, and the model catalog.
+Copyright (c) 2026 tiermux contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

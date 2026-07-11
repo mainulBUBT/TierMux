@@ -1,5 +1,4 @@
-// Generic OpenAI-compatible provider. Adapted from freellmapi's
-// server/src/providers/openai-compat.ts (MIT). Covers Groq, Cerebras, NVIDIA,
+// Generic OpenAI-compatible provider. Covers Groq, Cerebras, NVIDIA,
 // Mistral, OpenRouter, GitHub Models, Zhipu, HuggingFace router, Ollama, Kilo,
 // Pollinations, LLM7, OpenCode Zen, OVH, Agnes, and user `custom` endpoints.
 import type {

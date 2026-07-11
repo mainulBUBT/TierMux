@@ -274,7 +274,7 @@
         {
           "submenu": "tiermux.editorSubmenu",
           "when": "editorHasSelection",
-          "group": "1_freellmagent"
+          "group": "1_tiermux"
         }
       ],
       "tiermux.editorSubmenu": [

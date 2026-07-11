@@ -1,7 +1,6 @@
-// Google Gemini provider. Adapted from freellmapi's server/src/providers/google.ts
-// (MIT): translates the neutral OpenAI shape to Gemini's generateContent API,
-// including function-calling and image inlineData, and maps reasoning effort to
-// generationConfig.thinkingConfig.
+// Google Gemini provider. Translates the neutral OpenAI shape to Gemini's
+// generateContent API, including function-calling and image inlineData, and
+// maps reasoning effort to generationConfig.thinkingConfig.
 import type {
   ChatCompletionChunk,
   ChatCompletionResponse,

@@ -1,6 +1,4 @@
-// Shared types for tiermux. Ported/adapted from freellmapi's
-// shared/types.ts (MIT, https://github.com/tashfeenahmed/freellmapi) and
-// trimmed to what the extension needs. OpenAI-compatible chat shapes are the
+// Shared types for tiermux. OpenAI-compatible chat shapes are the
 // neutral wire format; the Gemini adapter translates to/from this.
 
 export type Platform =

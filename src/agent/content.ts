@@ -1,4 +1,4 @@
-// Content helpers, adapted from freellmapi's server/src/lib/content.ts (MIT).
+// Content helpers for chat message content blocks.
 import type { ChatContent, ChatMessage } from '../shared/types';
 
 /** Flatten OpenAI multimodal content (string | null | block[]) to plain text. */

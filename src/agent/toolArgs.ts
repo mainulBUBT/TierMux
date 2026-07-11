@@ -1,6 +1,5 @@
 // Schema-aware repair of double-encoded tool-call arguments, plus a compact
 // rescue for models that emit tool calls as inline dialect text.
-// Ported/adapted from freellmapi's server/src/lib/{tool-args,tool-call-rescue}.ts (MIT).
 
 interface JsonSchemaish {
   type?: string;

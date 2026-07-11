@@ -1,5 +1,4 @@
-// Provider base class. Adapted from freellmapi's server/src/providers/base.ts
-// (MIT) — `proxyFetch` is replaced with the global `fetch` since the extension
+// Provider base class. Uses the global `fetch` since the extension
 // talks to providers directly (no proxy server).
 import type { ChatCompletionChunk, ChatCompletionResponse, ChatMessage, Platform } from '../shared/types';
 import type { CompletionOptions } from './options';

@@ -1,4 +1,4 @@
-// Build script for the free-llm-agent extension.
+// Build script for the tiermux extension.
 // - Bundles src/extension.ts -> dist/extension.js (node/cjs, vscode external).
 // - Bundles media/src/main.ts -> media/main.js (browser/iife, the webview UI).
 // - Copies the webview vendor assets (marked + highlight.js) into media/vendor/.
