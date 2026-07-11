@@ -1,6 +1,5 @@
-// Workspace + pasted file extraction. PDFs and DOCX are heavy binary formats —
-// the model never sees the raw bytes, only the text we pull out here. Images
-// pass through as data: URLs so the vision provider can look at them directly.
+
+
 import * as vscode from 'vscode';
 import mammoth from 'mammoth';
 import type { Attachment, AttachmentKind } from '../messages';
@@ -15,8 +14,7 @@ import type { Attachment, AttachmentKind } from '../messages';
 function ensureBrowserGlobals(): void {
   const g = globalThis as Record<string, unknown>;
   if (!g.DOMMatrix) {
-    // Minimal 2D-affine DOMMatrix — enough for pdfjs's text-extraction path under Node.
-    // biome-ignore lint/suspicious/noExplicitAny: polyfill typed loosely on purpose
+
     g.DOMMatrix = class DOMMatrix {
       a = 1; b = 0; c = 0; d = 1; e = 0; f = 0;
       constructor(init?: number[]) {
@@ -25,9 +23,9 @@ function ensureBrowserGlobals(): void {
           this.d = init[3] ?? 1; this.e = init[4] ?? 0; this.f = init[5] ?? 0;
         }
       }
-      // biome-ignore lint/suspicious/noExplicitAny: polyfill
+
       multiply(o: any) {
-        // biome-ignore lint/suspicious/noExplicitAny: polyfill
+
         const M = g.DOMMatrix as new (i?: number[]) => any;
         return new M([
           this.a * (o?.a ?? 1) + this.c * (o?.b ?? 0),
@@ -38,11 +36,11 @@ function ensureBrowserGlobals(): void {
           this.b * (o?.e ?? 0) + this.d * (o?.f ?? 0) + this.f,
         ]);
       }
-      // biome-ignore lint/suspicious/noExplicitany: polyfill
+
       translate(tx = 0, ty = 0) { const M = g.DOMMatrix as new (i?: number[]) => any; return new M([this.a, this.b, this.c, this.d, this.e + tx, this.f + ty]); }
-      // biome-ignore lint/suspicious/noExplicitany: polyfill
+
       scale(s = 1) { const M = g.DOMMatrix as new (i?: number[]) => any; return new M([this.a * s, this.b * s, this.c * s, this.d * s, this.e, this.f]); }
-      // biome-ignore lint/suspicious/noExplicitany: polyfill
+
       transformPoint(p: { x?: number; y?: number } = {}) { return { x: this.a * (p.x ?? 0) + this.c * (p.y ?? 0) + this.e, y: this.b * (p.x ?? 0) + this.d * (p.y ?? 0) + this.f, z: 0, w: 1 }; }
       toString() { return `matrix(${this.a}, ${this.b}, ${this.c}, ${this.d}, ${this.e}, ${this.f})`; }
     };
@@ -137,12 +135,12 @@ export async function buildAttachmentFromUri(uri: vscode.Uri, source: Attachment
       const { value } = await mammoth.extractRawText({ buffer: Buffer.from(bytes) });
       att.text = value.slice(0, MAX_EXTRACTED_CHARS);
     } else {
-      // Plain text / markdown / json / .doc (best-effort) — decode as text and trust the user.
+
       att.text = new TextDecoder('utf-8', { fatal: false }).decode(bytes).slice(0, MAX_EXTRACTED_CHARS);
     }
     return att;
   }
-  // 'file': anything else we agreed to show in the picker. Decode as text.
+
   att.text = new TextDecoder('utf-8', { fatal: false }).decode(bytes).slice(0, MAX_EXTRACTED_CHARS);
   return att;
 }
@@ -154,15 +152,11 @@ export async function extractPdfText(buf: Buffer): Promise<string> {
   ensureBrowserGlobals();
   try {
     const mod = await import('pdf-parse');
-    // biome-ignore lint/suspicious/noExplicitAny: pdf-parse has varied export shapes across versions
+
     const lib = (mod as any).PDFParse ?? (mod as any).default;
-    // `getText` lives on the CLASS's prototype (instance method), not as a static property
-    // on `lib` itself — `lib.getText` is always undefined for the class form, which used to
-    // silently fall through to the "plain function" branch below and throw ("Class
-    // constructor PDFParse cannot be invoked without 'new'"), caught by the outer try and
-    // turned into a silent empty-string result. Check the prototype instead.
+
     if (lib && typeof lib === 'function' && typeof lib.prototype?.getText === 'function') {
-      // Class form: new PDFParse({ data }).getText()
+
       const parser = new lib({ data: new Uint8Array(buf) });
       try {
         const result = await parser.getText();
@@ -172,13 +166,13 @@ export async function extractPdfText(buf: Buffer): Promise<string> {
       }
     }
     if (typeof lib === 'function') {
-      // Function form: pdfParse(buffer) → { text }
+
       const result = await lib(new Uint8Array(buf));
       return (result?.text ?? '').trim();
     }
     return '';
   } catch {
-    // A malformed/encrypted PDF or a missing optional dep must never break the attachment flow.
+
     return '';
   }
 }

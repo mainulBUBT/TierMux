@@ -1,5 +1,5 @@
-// Copilot-style inline (ghost-text) completions. Off by default; debounced;
-// uses a fast model. High request volume vs free-tier limits — documented.
+
+
 import * as vscode from 'vscode';
 import type { Router } from '../router/router';
 import type { Catalog } from '../catalog/catalog';
@@ -41,7 +41,6 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
   ): Promise<vscode.InlineCompletionItem[] | undefined> {
     if (!this.enabled() || token.isCancellationRequested) return undefined;
 
-    // Debounce: wait, and bail if cancelled (user kept typing).
     await new Promise((r) => { this.timer && clearTimeout(this.timer); this.timer = setTimeout(r, this.debounceMs()); });
     if (token.isCancellationRequested) return undefined;
 

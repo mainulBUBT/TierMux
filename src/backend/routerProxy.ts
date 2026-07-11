@@ -1,15 +1,5 @@
-// Router Proxy — a dumb HTTP bridge that exposes TierMux's Router as an
-// OpenAI-compatible `/v1` endpoint. The keystone of the OpenCode integration:
-// OpenCode (the bundled agent engine) is pointed at this URL as a custom
-// `@ai-sdk/openai-compatible` provider, so every model call OC makes is routed
-// across TierMux's 22+ free providers with automatic failover.
-//
-// Implements only protocol translation. No session state, no retry logic (the
-// Router owns failover), no streaming-state machine — those are OC's job on the
-// other side of this wire. See docs/ARCHITECTURE.md → "Router Proxy".
-//
-//   GET  /v1/models            → catalog models + virtual routing profiles
-//   POST /v1/chat/completions  → Router.route(), streamed or buffered
+
+
 import * as http from 'http';
 import type { Router } from '../router/router';
 import type { RouteOptions } from '../router/router';
@@ -29,11 +19,6 @@ const PROFILE_FAST = 'tiermux/fast';
 const PROFILE_SMART = 'tiermux/smart';
 const PROFILE_AUTO = 'tiermux/auto';
 
-// The concrete provider+model the Router last resolved a turn onto (e.g. platform
-// "chutes", model "stepfun/step-3.7-flash:free"), as opposed to the virtual profile OC
-// requested ("tiermux/auto"). The agent driver (sdk.ts) reads this to show the *actual*
-// picked model in the UI instead of the "tiermux" placeholder. Safe because runs are
-// serialized — there is only ever one active run, so "last" == "current".
 export interface RoutedModel { platform: string; model: string; runtimeName?: string }
 let lastRouted: RoutedModel | undefined;
 export function getLastRoutedModel(): RoutedModel | undefined {
@@ -128,13 +113,8 @@ export function startRouterProxy(router: Router): Promise<RouterProxyServer> {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Request dispatch
-// ---------------------------------------------------------------------------
-
 async function handle(req: http.IncomingMessage, res: http.ServerResponse, router: Router): Promise<void> {
-  // Same-origin / CORS: OC's SDK may run inside a webview; the random port is
-  // the only thing exposed and it's bound to loopback, so permissive CORS is fine.
+
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'authorization, content-type, x-opencode-directory');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -154,7 +134,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, route
       await handleChatCompletion(req, res, router);
       return;
     }
-    // OpenAI-compatible servers are sometimes probed at /v1 or /models by health checks.
+
     if (req.method === 'GET' && (url === '/' || url === '/v1' || url === '/models')) {
       await handleModels(router, res);
       return;
@@ -165,22 +145,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, route
   }
 }
 
-// ---------------------------------------------------------------------------
-// GET /v1/models
-// ---------------------------------------------------------------------------
-
 async function handleModels(router: Router, res: http.ServerResponse): Promise<void> {
-  // Expose virtual routing profiles first (these are what OC's model picker should show),
-  // then every enabled catalog model so an OC user can also pin a real provider.
+
   const data: Array<{ id: string; object: 'model'; created: number; owned_by: string }> = [
     { id: PROFILE_AUTO, object: 'model', created: 0, owned_by: 'tiermux' },
     { id: PROFILE_FAST, object: 'model', created: 0, owned_by: 'tiermux' },
     { id: PROFILE_SMART, object: 'model', created: 0, owned_by: 'tiermux' },
   ];
   for (const m of listEnabledModels(router)) {
-    // Expose the tm_-encoded ID (not the raw platform::modelId) so OC accepts it at session
-    // creation. Raw IDs contain '::', '/', ':' which OC rejects. sdk.ts sends the same
-    // encoding; mapProfile decodes it back before routing.
+
     const rawId = `${m.platform}::${m.modelId}`;
     const encodedId = 'tm_' + Buffer.from(rawId).toString('base64url');
     data.push({ id: encodedId, object: 'model', created: 0, owned_by: m.platform });
@@ -190,18 +163,11 @@ async function handleModels(router: Router, res: http.ServerResponse): Promise<v
 
 /** All enabled models (catalog + custom endpoints) in the fallback chain. */
 function listEnabledModels(router: Router): Array<{ platform: string; modelId: string }> {
-  // Include ALL enabled entries — catalog models AND custom endpoint models.
-  // Previously this filtered through catalog.find(), which silently dropped custom
-  // endpoint models (they have no catalog entry), causing OC to 500 when asked to
-  // use them (the encoded model ID never appeared in /v1/models so OC rejected it).
+
   return (router as unknown as {
     settings: { enabledByPriority(): Array<{ platform: string; modelId: string }> };
   }).settings.enabledByPriority();
 }
-
-// ---------------------------------------------------------------------------
-// POST /v1/chat/completions
-// ---------------------------------------------------------------------------
 
 interface IncomingRequest {
   model?: string;
@@ -213,7 +179,7 @@ interface IncomingRequest {
   max_tokens?: number;
   top_p?: number;
   parallel_tool_calls?: boolean;
-  // OpenAI passes reasoning effort under several keys depending on SDK version.
+
   reasoning_effort?: ReasoningEffort;
   reasoning?: { effort?: ReasoningEffort };
 }
@@ -235,13 +201,9 @@ async function handleChatCompletion(
   }
   const stream = body.stream === true;
   const lastUserText = extractLastUserText(body.messages);
-  // Already-normalized TierMux content (image_url/file blocks pass through toTierMuxMessage
-  // unchanged) — reused here so mapProfile's vision routing sees real attachment signals
-  // instead of only the flattened text.
+
   const lastUserContent = [...messages].reverse().find((m) => m.role === 'user')?.content ?? '';
-  // A raw PDF `file` block (vs. `image_url`) means text extraction produced nothing —
-  // the bytes are the only way a model can read it. Some vision models refuse the whole
-  // turn on seeing this (CatalogModel.rejectsRawPdf) — see Router.candidates().
+
   const hasRawPdfPart = Array.isArray(lastUserContent) && lastUserContent.some((b) => {
     if (!b || typeof b !== 'object') return false;
     return (b as { type?: string }).type === 'file';
@@ -257,8 +219,7 @@ async function handleChatCompletion(
     max_tokens: body.max_tokens,
     top_p: body.top_p,
     reasoningEffort: forcedReasoningEffortForRun ?? body.reasoning_effort ?? body.reasoning?.effort,
-    // Agent turns (tools present) must land on tool-capable models; OC always
-    // sends tools for plan/build, so this keeps routing honest.
+
     requireTools: !!(body.tools && body.tools.length),
     hasRawPdfPart,
   };
@@ -271,9 +232,6 @@ async function handleChatCompletion(
       'X-Accel-Buffering': 'no',
     });
 
-    // The Router streams text deltas through onChunk only on tool-free turns.
-    // Tool-call turns return a single buffered response; in that case we emit the
-    // whole thing as one chunk so OC still sees a well-formed stream.
     let buffered = '';
     const chunks: string[] = [];
     routeOpts.onChunk = (delta) => {
@@ -286,10 +244,7 @@ async function handleChatCompletion(
       lastRouted = { platform: result.platform, model: result.model, runtimeName: result.runtimeName };
       buffered = chunks.join('');
       const choice = result.response.choices?.[0];
-      // Tool-call turns (OC sends tools for chat/build/plan) don't stream via
-      // onChunk — the Router buffers and returns a single response. Nothing was
-      // streamed, so emit the final message (text + tool_calls) as one chunk;
-      // otherwise OC receives an empty assistant message → blank reply.
+
       if (!chunks.length) {
         const msg = choice?.message;
         const content = typeof msg?.content === 'string' ? msg.content : '';
@@ -300,13 +255,7 @@ async function handleChatCompletion(
           }));
         }
       }
-      // Final chunk: finish_reason MUST match what the turn actually was. A tool-call
-      // turn ends with 'tool_calls' (NOT 'stop') — OC's agent loop keys off this to
-      // execute the requested tools and feed their results back for another step.
-      // Sending 'stop' on a tool-call turn makes OC run the tool ONCE then end the run
-      // with no follow-up answer (the "tool runs, then it stops" symptom). Honor the
-      // upstream finish_reason (the Router passes the provider's value through), and
-      // force 'tool_calls' when tool_calls are present as a safety net.
+
       const toolMsg = choice?.message;
       const hasTools = !!toolMsg?.tool_calls?.length;
       const upstreamReason = choice?.finish_reason;
@@ -318,8 +267,7 @@ async function handleChatCompletion(
       res.write('data: [DONE]\n\n');
       res.end();
     } catch (err) {
-      // If we already streamed partial text, we can't change the HTTP status —
-      // emit the error inline as an OpenAI-style error chunk and close. OC surfaces it.
+
       if (buffered) {
         sendSSE(res, makeErrorChunk(err));
         res.write('data: [DONE]\n\n');
@@ -332,7 +280,6 @@ async function handleChatCompletion(
     return;
   }
 
-  // Non-streaming: the Router already returns an OpenAI-shaped ChatCompletionResponse.
   try {
     const result = await router.route(messages, routeOpts);
     lastRouted = { platform: result.platform, model: result.model, runtimeName: result.runtimeName };
@@ -373,20 +320,11 @@ function extractLastUserText(messages: unknown[]): string {
  * - Real ids (platform::modelId) are passed through to pin a specific model.
  */
 function mapProfile(model: string | undefined, lastUserText?: string, lastUserContent?: ChatMessage['content']): { model?: string; taskKind?: TaskKind } {
-  // OC's @ai-sdk/openai-compatible adapter sends the BARE model id ("auto"/"fast"/
-  // "smart"), not the provider-prefixed "tiermux/auto" we declare it under. Accept
-  // both the bare id and the "tiermux/"-prefixed form so routing works either way.
+
   const bare = (p: string) => p.replace(/^tiermux\//, '');
-  // Decode base64url-encoded model IDs (sdk.ts encodes any non-virtual model with 'tm_' prefix
-  // because OC rejects special chars like '::', ':', '/' in model IDs and returns 500).
+
   const decode = (p: string) => p.startsWith('tm_') ? Buffer.from(p.slice(3), 'base64url').toString('utf8') : p;
 
-  // If sdk.ts set a forced model for this run, use it unconditionally — OC's session
-  // was created with a virtual profile (so OC accepts it without a registry entry),
-  // but the router must still force the real pinned model on every completion call.
-  // The forced value is the same tm_-encoded id sdk.ts got from /v1/models, so it needs
-  // the same decode as every other path or the router ends up "routing" to the literal
-  // base64 string instead of the real platform::modelId.
   const forced = getForcedModel();
   if (forced && forced.trim()) return { model: decode(bare(forced)) };
   const id = decode(bare(model ?? PROFILE_AUTO));
@@ -394,40 +332,22 @@ function mapProfile(model: string | undefined, lastUserText?: string, lastUserCo
     return { model: 'auto' };
   }
   if (id === bare(PROFILE_FAST)) {
-    // Speed-first ordering for plain read-only Q&A — but a visual attachment (image, or
-    // a PDF with no extractable text) still needs a vision-capable model regardless of
-    // hop. Previously hardcoded taskKind: 'chat' unconditionally, which meant an
-    // attachment sent on chat mode's default hop 0 ('fast') never triggered vision
-    // routing — the turn could land on a text-only model with no way to read it. Same
-    // forcedTaskKindForRun override as PROFILE_SMART below — see setForcedTaskKind.
+
     const classified: TaskKind = lastUserText
       ? classifyTask(lastUserText, { attachmentKinds: attachmentKindsFromContent(lastUserContent ?? '') })
       : 'chat';
     return { model: 'auto', taskKind: forcedTaskKindForRun ?? classified };
   }
   if (id === bare(PROFILE_SMART)) {
-    // Classify the actual user message so the right model comparator fires:
-    // debug → reasoning models, coding → coder-tagged, trivial → speed-first, an
-    // image/PDF attachment → vision-capable models preferred, etc. Falls back to
-    // 'agent' when there's no user text (e.g. health-check probes).
-    //
-    // forcedTaskKindForRun overrides this when sdk.ts already classified the run
-    // from the real user content — see setForcedTaskKind. Critical for vision:
-    // OC may not forward attachment blocks per-call, so redetection here would
-    // miss the attachment and drop the 'vision' kind entirely.
+
     const classified: TaskKind = lastUserText
       ? classifyTask(lastUserText, { attachmentKinds: attachmentKindsFromContent(lastUserContent ?? '') })
       : 'agent';
     return { model: 'auto', taskKind: forcedTaskKindForRun ?? classified };
   }
-  // A real tm_-encoded platform::modelId — pass the decoded id.
+
   return { model: id };
 }
-
-// ---------------------------------------------------------------------------
-// Message mapping (OpenAI → TierMux). The shapes are already near-identical;
-// we normalize the bits that differ (array content, tool role).
-// ---------------------------------------------------------------------------
 
 function hasAttachmentBlocks(content: ChatContent): boolean {
   return Array.isArray(content) && content.some((b) => {
@@ -462,13 +382,13 @@ function toTierMuxMessage(raw: unknown): ChatMessage {
   const role = (m.role as ChatMessage['role']) ?? 'user';
   let content = m.content as ChatMessage['content'];
   if (Array.isArray(content)) {
-    // Collapse OpenAI content parts (text / image_url) into TierMux blocks.
+
     content = content
       .map((part) => {
         if (typeof part === 'string') return part;
         const p = part as { type?: string; text?: string };
         if (p.type === 'text' || (p.text !== undefined && p.type === undefined)) return p.text ?? '';
-        // Non-text parts (images) are passed through as blocks; the provider adapters handle them.
+
         return part;
       });
   }
@@ -480,22 +400,18 @@ function toTierMuxMessage(raw: unknown): ChatMessage {
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// OpenAI SSE framing helpers
-// ---------------------------------------------------------------------------
-
 function makeChunk(
   model: string,
   delta: { content?: string; tool_calls?: ChatMessage['tool_calls'] },
   finish_reason: string | null = null,
   routedModel?: string,
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number },
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number; reasoning_tokens?: number },
 ) {
   return {
     id: `chatcmpl-tiermux-${Math.random().toString(36).slice(2)}`,
     object: 'chat.completion.chunk',
     created: Math.floor(Date.now() / 1000),
-    // Surface the model the router actually picked so OC's UI shows it.
+
     model: routedModel ?? model,
     choices: [{ index: 0, delta, finish_reason }],
     ...(usage ? { usage } : {}),
@@ -509,10 +425,6 @@ function makeErrorChunk(err: unknown) {
 function sendSSE(res: http.ServerResponse, payload: unknown): void {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
-
-// ---------------------------------------------------------------------------
-// Body reading + error shaping
-// ---------------------------------------------------------------------------
 
 function readJSON<T>(req: http.IncomingMessage): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -554,10 +466,9 @@ function describeError(err: unknown): string {
 }
 
 function statusFor(err: unknown): number {
-  // No suitable upstream available → 503. Anything else = 500.
+
   if (err instanceof AllModelsFailedError) return 503;
-  // No vision-capable model enabled for an attachment → 422: the request is
-  // well-formed but can't be fulfilled with the current model set (user action needed).
+
   if (err instanceof NoVisionModelError) return 422;
   return 500;
 }

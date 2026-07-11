@@ -1,11 +1,5 @@
-// Time-boxed "slow" label per model. When a request takes noticeably longer than
-// a healthy response, the router flags that `platform::modelId` here so Auto
-// deprioritizes it for a while — the model stays selectable if the user pins it
-// directly, but Auto tries faster candidates first until the label expires.
-//
-// NO BACKEND: persisted in VS Code globalState only, consistent with this
-// extension's "runs entirely in the extension host" design (same pattern as
-// ModelStatsStore).
+
+
 import type * as vscode from 'vscode';
 
 type SlowMap = Record<string, number>; // key: `${platform}::${modelId}` -> expiry epoch ms

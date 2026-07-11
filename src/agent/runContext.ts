@@ -1,10 +1,5 @@
-// Per-run context that threads a session's checkpoints + approval handlers through the
-// shared, stateless EditGate/CommandGate/WorkspaceTools. This is what lets concurrent
-// agent runs (one per chat session) use the SAME gate instances without crossing wires:
-// each run supplies its own checkpoints recorder, approval callbacks, and auto-approve read.
-//
-// Callers without a session (e.g. inline editor chat) omit it, and the gates fall back to
-// their construct-time closures — preserving today's single-session behavior exactly.
+
+
 import type * as vscode from 'vscode';
 
 export interface RunContext {

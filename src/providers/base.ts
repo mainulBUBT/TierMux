@@ -1,5 +1,5 @@
-// Provider base class. Uses the global `fetch` since the extension
-// talks to providers directly (no proxy server).
+
+
 import type { ChatCompletionChunk, ChatCompletionResponse, ChatMessage, Platform } from '../shared/types';
 import type { CompletionOptions } from './options';
 
@@ -117,7 +117,7 @@ export abstract class BaseProvider {
           try {
             yield JSON.parse(data) as ChatCompletionChunk;
           } catch {
-            // skip malformed chunk
+
           }
         }
       }

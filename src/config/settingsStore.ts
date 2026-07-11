@@ -1,5 +1,5 @@
-// Persists the fallback chain (enabled + priority) and per-platform endpoint
-// overrides in globalState. The model-management UI is the source of truth.
+
+
 import * as vscode from 'vscode';
 import type { FallbackEntry, Platform, CustomEndpoint } from '../shared/types';
 import type { Catalog } from '../catalog/catalog';
@@ -36,8 +36,7 @@ export class SettingsStore {
   private reconcile(stored: FallbackEntry[]): FallbackEntry[] {
     const catalogModels = this.catalog.all();
     const inCatalog = new Set(catalogModels.map((m) => `${m.platform}::${m.modelId}`));
-    // Keep stored entries that still exist; preserve user order/flags.
-    // Custom endpoints: keep entries whose endpoint still exists in customEndpoints.
+
     const endpoints = this.getCustomEndpoints();
     const epIds = new Set(endpoints.map((ep) => ep.id));
     const kept = stored.filter((e) =>
@@ -45,7 +44,7 @@ export class SettingsStore {
       (e.platform === 'custom' && epIds.has(e.modelId.split('::')[0]))
     );
     const known = new Set(kept.map((e) => `${e.platform}::${e.modelId}`));
-    // Append catalog models not yet in the chain (disabled by default).
+
     let nextPriority = kept.reduce((mx, e) => Math.max(mx, e.priority), -1) + 1;
     for (const m of catalogModels) {
       const k = `${m.platform}::${m.modelId}`;
@@ -88,12 +87,10 @@ export class SettingsStore {
       .sort((a, b) => a.priority - b.priority);
   }
 
-  // ---- provider-level on/off (preserves individual model enabled flags) ----
-
   getDisabledProviders(): Platform[] {
     const stored = this.state.get<Platform[]>(DISABLED_PROVIDERS_KEY);
     if (stored) return stored;
-    // First run / never touched: only DEFAULT_ENABLED_PLATFORM starts on.
+
     const def = allPlatformInfo()
       .map((p) => p.platform)
       .filter((p) => p !== DEFAULT_ENABLED_PLATFORM);
@@ -113,8 +110,6 @@ export class SettingsStore {
     await this.state.update(DISABLED_PROVIDERS_KEY, next);
     this._onChange.fire();
   }
-
-  // ---- endpoint overrides ----
 
   getEndpoints(): Record<string, string> {
     return this.state.get<Record<string, string>>(ENDPOINTS_KEY) ?? {};
@@ -137,8 +132,6 @@ export class SettingsStore {
     await this.state.update(ENDPOINTS_KEY, map);
     this._onChange.fire();
   }
-
-  // ---- custom OpenAI-compatible endpoints ----
 
   getCustomEndpoints(): CustomEndpoint[] {
     return this.state.get<CustomEndpoint[]>(CUSTOM_ENDPOINTS_KEY) ?? [];

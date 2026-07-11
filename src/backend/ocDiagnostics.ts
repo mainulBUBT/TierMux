@@ -1,9 +1,5 @@
-// Bridge diagnostics: exercises the router proxy (and the OC engine, if up) so we can
-// verify the TierMux↔OC wire end-to-end and empirically discover OC's REST/SSE paths
-// without guessing. Surfaced via the `tiermux.testOcBridge` command.
-//
-// Each check records { ok, status?, detail } so the report shows exactly which paths
-// OC serves in headless `serve` mode — the missing piece needed before the UI rewire.
+
+
 import type { OcConnection } from './ocLauncher';
 
 interface CheckResult {
@@ -64,7 +60,6 @@ async function probePaths(base: string, headers: Record<string, string>, paths: 
 export async function runBridgeDiagnostic(handles: BridgeHandles): Promise<CheckResult[]> {
   const out: CheckResult[] = [];
 
-  // ---- 1. Router proxy: listing ----
   if (!handles.routerProxy) {
     out.push({ label: 'Router proxy', ok: false, detail: 'not started (extension still activating?)' });
     return out;
@@ -83,7 +78,6 @@ export async function runBridgeDiagnostic(handles: BridgeHandles): Promise<Check
     detail: modelsRes.ok ? `${modelCount} models (incl. tiermux/auto|fast|smart)` : modelsRes.text || `HTTP ${modelsRes.status}`,
   });
 
-  // ---- 2. Router proxy: a real routed completion (needs ≥1 enabled model + key) ----
   const chatRes = await safeFetch(`${proxyBase}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -101,7 +95,6 @@ export async function runBridgeDiagnostic(handles: BridgeHandles): Promise<Check
     detail: chatRes.ok ? 'routed a completion through TierMux' : chatRes.text || `HTTP ${chatRes.status}`,
   });
 
-  // ---- 3. OC engine (only if the launcher brought it up) ----
   if (!handles.ocConnection) {
     const cache = process.env.HOME
       ? `${process.env.HOME}/Library/Application Support/Code/User/globalStorage/mainul-islam.tiermux/bin/opencode`

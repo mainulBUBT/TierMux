@@ -1,8 +1,5 @@
-// Background context condensing: summarize the OLDER prefix of a conversation into one message
-// while keeping a recent tail verbatim — so long tasks don't hit the context wall and recent
-// detail isn't lost to the router's lossy trimming (fitMessages just drops old turns).
-// Runs on the cheapest utility model with SUMMARY_SYSTEM. Pure helper — the chat handler owns
-// the history array, calls this, and persists the result.
+
+
 import type { ChatMessage } from '../shared/types';
 import type { Router } from '../router/router';
 import { SUMMARY_SYSTEM } from './prompts';
@@ -36,7 +33,7 @@ export async function condenseHistory(
   previousModel?: string,
 ): Promise<{ messages: ChatMessage[]; summary: string } | null> {
   if (!shouldCondense(history)) return null;
-  // Walk forward from (length - KEEP_TAIL) to the nearest 'user' turn so the tail starts clean.
+
   let tailStart = history.length - KEEP_TAIL;
   while (tailStart < history.length && history[tailStart].role !== 'user') tailStart++;
   if (tailStart >= history.length) return null;
@@ -55,8 +52,7 @@ export async function condenseHistory(
   );
   const summary = contentToString(result.response.choices[0]?.message.content).trim();
   if (!summary) return null;
-  // Cross-model handoff: tell the new model who came before, so it doesn't act like the first
-  // turn. Cheap, model-agnostic, and survives model switches (free-tier failover, manual swap).
+
   const carry = previousModel ? `\n\n(Continued from a previous model: ${previousModel}.)` : '';
   const summaryMsg: ChatMessage = { role: 'user', content: `Summary of the earlier conversation:\n${summary}${carry}` };
   return { messages: [summaryMsg, ...tail], summary };

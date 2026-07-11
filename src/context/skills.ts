@@ -1,9 +1,5 @@
-// Slash-command skills: markdown files under `.tiermux/skills/` whose body is a
-// prompt template substituted in place of the user's `/name` invocation. This is
-// the two-phase pattern used for skill discovery — an always-on lightweight index
-// (name + one-line description, sent to the webview for the `/` autocomplete) and
-// full skill content that only ever reaches the model when its name is matched by
-// parseSlash() for that one turn. Mirrors userMemory.ts (workspace file, no backend).
+
+
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -57,9 +53,6 @@ function loadUniversalDir(dir: string, into: Map<string, Skill>): void {
   }
 }
 
-// Cache keyed by (extensionPath, workspaceRoot) — invalidated by fs.watch on the
-// source directories so an edited skill file still takes effect on the next call,
-// without re-reading every .md file on every message send.
 const cache = new Map<string, Map<string, Skill>>();
 const watched = new Set<string>();
 
@@ -106,10 +99,6 @@ export function invalidateSkillsCache(extensionPath: string, workspaceRoot?: str
   cache.delete(`${extensionPath}|${workspaceRoot ?? ''}`);
 }
 
-// Every installed skill's name+description rides along on EVERY turn (baked into the static
-// system prompt), unlike the full skill body which only reaches the model behind explicit
-// `/name` invocation. A large install count would otherwise silently inflate every request —
-// this caps the index so cost stays bounded regardless of how many skills accumulate.
 const MAX_INDEX_CHARS = 2000;
 
 /**
@@ -136,8 +125,7 @@ export function skillIndexPrompt(extensionPath: string, workspaceRoot?: string):
     len += line.length + 1;
     shown++;
   }
-  // Truncation must be stated explicitly — a silently-cut list reads as "complete" to the
-  // model, which could then wrongly claim no skill matches one that was dropped from view.
+
   const omitted = all.length - shown;
   const footer = omitted > 0
     ? `\n(+${omitted} more installed skill${omitted > 1 ? 's' : ''} not shown here — if none of the above match, don't assume none exist; you may not have visibility into all of them.)`

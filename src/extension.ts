@@ -16,7 +16,7 @@ import { EditGate } from './edits/applyEdit';
 import { CommandGate, type CommandApproval } from './edits/commandGate';
 import { registerCheckpointContentProvider } from './edits/checkpoints';
 import { registerOcSessionDiffContentProvider } from './edits/ocSessionDiff';
-// (ToolCache was removed in v7 — its no-op stand-in is no longer needed.)
+
 import { setOcEngine, setOcTrace, setQualityGate, setHotStandby, setHedging } from './agent/sdk';
 import { McpManager } from './mcp/mcpManager';
 import { normalizeMcpServerConfig, type McpServerConfig } from './mcp/mcpClient';
@@ -31,27 +31,18 @@ import { watchGitCommits } from './scm/gitWatch';
 import { openMemoryForEdit } from './context/userMemory';
 import { invalidateSkillsCache } from './context/skills';
 import { installSkillPackage, checkNpxAvailable } from './context/skillInstaller';
-// Pre-research modules (symbolIndex, invertedIndex, bundleCache, structuralGraph, repoMap)
-// removed in v7.0 — superseded by OpenCode's `grep`/`glob`/LSP tools when
-// `tiermux.useOpenCodeEngine` is true (the default). The file-watcher handlers
-// that used to keep the inverted index in sync are no-ops now.
+
 import { formatTelemetryReport, resetTelemetry, getSnapshot, onTelemetryUpdate } from './context/telemetry';
 import { createProfiler, type IProfilerService } from './profiler/profilerService';
 import { render as renderProfilerReport } from './profiler/outputRenderer';
 import { toExportData as exportProfilerData } from './profiler/export';
 
-// OpenAI-compatible router proxy handle; closed on deactivation.
 let routerProxy: { baseURL: string; close(): void } | undefined;
-// OpenCode engine handle (undefined when the OC engine is off / unavailable).
+
 let ocConnection: OcConnection | undefined;
-// "TierMux Engine" Output channel — surfaces the proxy URL, first-run download
-// progress, OC stdout/stderr, and any startup error. Visible via View → Output
-// → TierMux Engine (or `tiermux.showEngineLog`).
+
 let engineLog: vscode.OutputChannel | undefined;
-// Set once ChatViewProvider is constructed in activate() — used by startOpenCodeEngine
-// (a free function, no closure over activate()'s locals) to post onboarding progress.
-// ChatViewProvider.post() queues messages until the webview is actually open, so it's
-// safe to call before the user has ever looked at the panel.
+
 let chatProviderRef: ChatViewProvider | undefined;
 const ts = () => new Date().toISOString().slice(11, 23);
 
@@ -146,8 +137,7 @@ async function startOpenCodeEngine(
   mcpServers: Record<string, McpServerConfig>,
   globalState: vscode.Memento,
 ): Promise<void> {
-  // Guard against overlapping attempts (manual Retry click racing the auto-retry timer,
-  // or a double-click) — a second concurrent launch would race the same cache dir/port.
+
   if (engineStartInFlight) return;
   engineStartInFlight = true;
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -156,7 +146,7 @@ async function startOpenCodeEngine(
   log(`startOpenCodeEngine: proxy=${routerProxyBaseURL} cacheDir=${cacheDir}`);
   const onboarding = !globalState.get<boolean>(ONBOARDED_KEY, false);
   try {
-    // withProgress makes the first-run binary download visible; later boots are instant (cached).
+
     ocConnection = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Window, title: 'Starting TierMux engine' },
       (progress) => launchOpenCode({
@@ -174,18 +164,14 @@ async function startOpenCodeEngine(
     }),
   );
     setOcEngine(ocConnection); // flip sdk.ts onto the OC path
-    // Wire the OC SSE trace toggle (sink passed directly — no global indirection).
+
     const traceSink = (raw: string) => engineLog?.appendLine(`[${ts()}] [oc-event] ${raw}`);
     setOcTrace(vscode.workspace.getConfiguration('tiermux.engine').get<boolean>('traceOcEvents', false), traceSink);
     log(`OpenCode engine UP at ${ocConnection.baseURL} (routing via ${routerProxyBaseURL})`);
     console.log(`[tiermux] OpenCode engine up at ${ocConnection.baseURL} (routing via ${routerProxyBaseURL})`);
 
     if (onboarding) {
-      // Onboarding only vouches for the ENGINE — a brand-new install has zero configured
-      // models/keys by definition, so a chat round-trip would always fail here and trap
-      // the user behind an unfixable "Retry" (retrying doesn't add an API key). Only run
-      // the real round-trip check when the user already has a model enabled; otherwise
-      // the engine coming up at all is success — model setup is a separate later step.
+
       if (enabledModelIds.length === 0) {
         await globalState.update(ONBOARDED_KEY, true);
         chatProviderRef?.postEngineStatus({ state: 'ready' });
@@ -215,9 +201,7 @@ async function startOpenCodeEngine(
       if (choice === 'Show Log') engineLog?.show(true);
       else if (choice === 'Retry') void startOpenCodeEngine(extensionPath, routerProxyBaseURL, cacheDir, enabledModelIds, mcpServers, globalState);
     });
-    // Safety net: a transient blip (rate-limited download, momentary DNS failure) shouldn't
-    // require the user to notice and click Retry. Try once more, unattended, after a delay —
-    // but only during onboarding, and only once per activation.
+
     if (onboarding && !autoRetryScheduled) {
       autoRetryScheduled = true;
       log(`scheduling one automatic retry in 30s`);
@@ -251,13 +235,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const slowModels = new SlowModelStore(context.globalState);
   const router = new Router(secrets, settings, catalog, usage, modelStats, usageStore, slowModels);
 
-  // Profiler — collects per-turn performance traces for diagnostics.
-  // Enabled/disabled via tiermux.profiler.enabled (default: false → NoopProfiler, zero overhead).
   let profiler: IProfilerService = createProfiler(
     vscode.workspace.getConfiguration('tiermux.profiler').get<boolean>('enabled', false),
     vscode.workspace.getConfiguration('tiermux.profiler').get<number>('ringSize', 200),
   );
-  // Re-create profiler when the setting changes
+
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('tiermux.profiler.enabled') || e.affectsConfiguration('tiermux.profiler.ringSize')) {
@@ -268,18 +250,13 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  // OpenAI-compatible router proxy. OC (the agent engine) is pointed at this URL
-  // as a custom provider, so every model call it makes is routed across TierMux's
-  // free providers with failover. Without the OC engine up, chat/agent runs cannot
-  // happen — the built-in agent loop was removed in v7.0.
   void startRouterProxy(router)
     .then((srv) => {
       routerProxy = srv;
       console.log(`[tiermux] router proxy listening on ${srv.baseURL}`);
-      // Bring up the OC engine now that the proxy URL is known.
+
       if (vscode.workspace.getConfiguration('tiermux').get<boolean>('useOpenCodeEngine', true)) {
-        // Encode all currently enabled models as tm_<base64url> so OC's static model
-        // registry accepts them. Models added after launch need a reload.
+
         const enabledModelIds = settings.enabledByPriority().map(
           (e) => 'tm_' + Buffer.from(`${e.platform}::${e.modelId}`).toString('base64url'),
         );
@@ -296,23 +273,14 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   context.subscriptions.push(editGate.register());
 
-  // Quality gate (FrugalGPT-style): escalate weak-but-non-empty answers. Default on;
-  // re-read in the onDidChangeConfiguration listener below.
   setQualityGate(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('qualityGate', true));
 
-  // Hot standby: pre-create the next chain hop's OC session while the current hop runs,
-  // so escalation is instant. Default on; re-read in the listener below.
   setHotStandby(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('hotStandby', true));
 
-  // Chat hedging: race fast+smart for a short first chat turn. Default on; re-read below.
   setHedging(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('chatHedging', true));
 
-  // One shared checkpoint content provider for every session (VS Code allows one per scheme);
-  // each ChatViewProvider session owns its own CheckpointManager data on top of it.
   context.subscriptions.push(registerCheckpointContentProvider());
 
-  // Read-only OC session-diff content provider — separate scheme/store from checkpoints
-  // (see ocSessionDiff.ts header for why the two must not share a store).
   context.subscriptions.push(registerOcSessionDiffContentProvider());
 
   const commandGate = new CommandGate(
@@ -346,27 +314,13 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   chatProviderRef = chat;
 
-  // File edits that don't come from a chat run (e.g. inline editor chat, which has no
-  // session) fall back to a native Apply/Reject modal — the 1-arg overload returns
-  // undefined so the EditGate opens the modal. Chat-run edits go through the per-run
-  // RunContext instead (see ChatViewProvider.runContext).
   editGate.setConfirmHandler((req) => chat.requestEditApproval(req));
-  // Session Auto-approve toggle (composer): both gates read it live to skip prompts.
+
   commandGate.setAutoApprove(() => chat.autoApprove);
   editGate.setAutoApprove(() => chat.autoApprove);
 
-  // Once the user actually commits, the pinned "changed files / undo" bar's working-tree
-  // diff is moot — those edits are history now, not something "Undo all" should revert.
-  // The Git API has no dedicated commit event, so watch each repo's HEAD commit sha and
-  // treat any change as a commit boundary (a checkout/pull invalidates the same way: the
-  // begin-tree snapshot no longer describes "before this session's edits" either).
   context.subscriptions.push(watchGitCommits(() => { void chat.clearAllCheckpoints(); }));
 
-  // Pre-research removed — OpenCode handles code intelligence via LSP/grep/glob.
-
-  // Retrieval quality status bar item — bottom right, always visible.
-  // Shows symbol/cache hit rate. Green ≥80%, orange ≥60%, red <60%.
-  // Only renders after ≥3 requests so the number is meaningful.
   const telemetryBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
   telemetryBar.command = 'tiermux.showTelemetry';
   context.subscriptions.push(telemetryBar);
@@ -395,7 +349,6 @@ export function activate(context: vscode.ExtensionContext): void {
     telemetryBar.show();
   }) });
 
-  // Reconnect MCP servers when their configuration changes.
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('tiermux.mcpServers')) void mcp.reconnect().then(() => chat.refresh());
@@ -423,9 +376,6 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  // Model catalog: fetch the published list in the background on every startup;
-  // when it changes, refresh the chat view. Cached + bundled lists keep it
-  // working offline (see Catalog).
   context.subscriptions.push(catalog.onDidChange(() => chat.refresh()));
   void catalog.refresh(
     vscode.workspace.getConfiguration('tiermux').get<string>('catalog.url', ''),
@@ -438,7 +388,6 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  // Commands ----------------------------------------------------------------
   context.subscriptions.push(
     vscode.commands.registerCommand('tiermux.newChat', () => chat.newChat()),
     vscode.commands.registerCommand('tiermux.showHistory', () => chat.showHistory()),
@@ -506,10 +455,7 @@ export function activate(context: vscode.ExtensionContext): void {
       resetTelemetry();
       void vscode.window.showInformationMessage('TierMux: telemetry counters reset.');
     }),
-    // Exercises the router proxy + OC engine end-to-end and reports which paths OC
-    // serves. Used to verify the bridge and discover OC's REST/SSE shape before rewiring the UI.
-    // If the OC engine isn't up but a binary is now available (e.g. the user pre-seeded the
-    // cache after activation), re-attempt the launch so they don't have to reload the window.
+
     vscode.commands.registerCommand('tiermux.testOcBridge', async () => {
       if (!ocConnection) {
         const cacheDir = context.globalStorageUri.fsPath;
@@ -544,15 +490,12 @@ export function activate(context: vscode.ExtensionContext): void {
       channel.appendLine(renderVerifyReport(report));
       void vscode.window.showInformationMessage(`Grounding verify: ${report.ok ? 'PASS' : 'FAIL'} (${report.passed}/${report.total} questions passed)`);
     }),
-    // Reveal the "TierMux Engine" output channel so the user can see proxy URL,
-    // first-run download progress, OC stdout/stderr, and any startup error.
+
     vscode.commands.registerCommand('tiermux.showEngineLog', () => {
       if (!engineLog) engineLog = vscode.window.createOutputChannel('TierMux Engine');
       engineLog.show(true);
     }),
-    // Dev/QA helper: clear the "engine onboarded" flag and re-run engine startup so the
-    // first-run onboarding overlay (download progress → verify → ready/error) can be
-    // exercised again without a fresh VS Code profile.
+
     vscode.commands.registerCommand('tiermux.resetEngineOnboarding', async () => {
       const deleteCache = await vscode.window.showWarningMessage(
         'Reset TierMux engine onboarding? This restarts the engine and shows the first-run overlay again.',
@@ -577,7 +520,7 @@ export function activate(context: vscode.ExtensionContext): void {
       );
       void startOpenCodeEngine(context.extensionUri.fsPath, routerProxy.baseURL, cacheDir, enabledModelIds, readMcpServers(), context.globalState);
     }),
-    // Toggle the OC SSE event trace on/off (writes raw frames to the engine channel).
+
     vscode.commands.registerCommand('tiermux.toggleOcTrace', async () => {
       const cfg = vscode.workspace.getConfiguration('tiermux.engine');
       const next = !cfg.get<boolean>('traceOcEvents', false);
@@ -589,7 +532,7 @@ export function activate(context: vscode.ExtensionContext): void {
       engineLog.show(true);
       void vscode.window.showInformationMessage(`TierMux: OC event trace ${next ? 'enabled' : 'disabled'}.`);
     }),
-    // Profiler commands
+
     vscode.commands.registerCommand('tiermux.showProfiler', () => {
       const channel = vscode.window.createOutputChannel('TierMux Profiler');
       channel.clear();
@@ -624,7 +567,6 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   console.log('[tiermux-bench-debug] activate() COMPLETED — all commands registered');
 
-  // Advanced features -------------------------------------------------------
   context.subscriptions.push(
     ...registerEditorCommands(chat),
     ...registerCodeActions(chat),
@@ -653,7 +595,6 @@ async function setApiKey(secrets: SecretStore, platformArg?: Platform): Promise<
   if (info?.keyless) { void vscode.window.showInformationMessage(`${info.name} is keyless — no API key needed.`); return; }
   const existing = await secrets.getKeys(platform);
 
-  // Cloudflare: collect Account ID and API Token separately.
   if (platform === 'cloudflare') {
     const existingAccountId = await secrets.getCloudflareAccountId();
     const accountPrompt = existingAccountId
@@ -667,7 +608,7 @@ async function setApiKey(secrets: SecretStore, platformArg?: Platform): Promise<
       void vscode.window.showWarningMessage('Cloudflare Account ID is required.');
       return;
     }
-    // Now collect the API token.
+
     const tokenPrompt = existing.length
       ? 'Replace Cloudflare API Token (blank = clear all keys)'
       : 'Set Cloudflare API Token (blank = cancel)';
@@ -699,7 +640,7 @@ async function setApiKey(secrets: SecretStore, platformArg?: Platform): Promise<
     }
     return;
   }
-  // Parse comma- or newline-separated key list.
+
   const keys = key.split(/[\n,]+/).map((k) => k.trim()).filter(Boolean);
   await secrets.setKeys(platform, keys);
   const label = keys.length > 1 ? `${keys.length} keys` : 'API key';

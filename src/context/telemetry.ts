@@ -1,10 +1,4 @@
-// In-process telemetry counters — zero external dependencies, zero I/O.
-//
-// KPI targets (MVP validation):
-//   Retrieval  → symbolHitRate ≥80%, grepRate ≤20%, windowReadRate ≥80%, largeReadRate ≤5%
-//   Efficiency → avgToolCalls ≤ 3.5 overall (Explain ≤2, Bug ≤4, Feature ≤6)
-//
-// Lifetime: extension session. Resets on reload. Not persisted to disk.
+
 
 interface TelemetrySnapshot {
   totalRequests: number;
@@ -16,7 +10,7 @@ interface TelemetrySnapshot {
   largeContextReads: number;
   windowReads: number;
   fullFileReads: number;
-  // Derived
+
   symbolHitRate: number;
   cacheHitRate: number;
   grepRate: number;
@@ -38,13 +32,12 @@ const counts = {
   fullFileReads: 0,
 };
 
-// ---- Listeners ----
 const listeners = new Set<() => void>();
 export function onTelemetryUpdate(cb: () => void): () => void {
   listeners.add(cb);
   return () => listeners.delete(cb);
 }
-// ---- Snapshot ----
+
 function rate(n: number, total: number): number {
   return total === 0 ? 0 : Math.round((n / total) * 100);
 }
@@ -76,7 +69,6 @@ export function resetTelemetry(): void {
   counts.fullFileReads = 0;
 }
 
-// ---- Report ----
 function kpi(value: number, target: number, op: '>=' | '<='): string {
   return (op === '>=' ? value >= target : value <= target) ? '✓' : '✗';
 }

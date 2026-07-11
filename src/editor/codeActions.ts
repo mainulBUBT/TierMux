@@ -1,4 +1,4 @@
-// "Fix with AI" lightbulb on diagnostics.
+
 import * as vscode from 'vscode';
 import type { ChatViewProvider } from '../chatViewProvider';
 

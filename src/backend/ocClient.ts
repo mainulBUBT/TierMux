@@ -1,13 +1,5 @@
-// OpenCode HTTP/SSE client — drives the bundled `opencode serve` engine from TierMux's
-// sdk.ts seam. Wraps the official `@opencode-ai/sdk` client (pinned to the same version
-// as the vendored binary in scripts/fetch-opencode.mjs) instead of hand-rolled fetch/SSE
-// parsing, so the request/response shapes and SSE event union track the real server API.
-//
-// Two fields the SDK's generated OpenAPI types don't declare — `agent`/`model` on
-// POST /session and `permission` on PATCH /session/{id} — are real and accepted by the
-// live server (verified empirically against the vendored 1.17.11 binary: the server
-// echoes them back applied). The generated schema just lags the server here, so those
-// two call sites cast the body past the declared type rather than dropping the fields.
+
+
 import { createOpencodeClient, type OpencodeClient } from '@opencode-ai/sdk';
 import type { OcConnection } from './ocLauncher';
 import type { ChatContent } from '../shared/types';
@@ -87,8 +79,7 @@ export class OcClient {
     this.client = createOpencodeClient({
       baseUrl: conn.baseURL.replace(/\/$/, ''),
       headers: { Authorization: auth },
-      // Preserve the old hand-rolled client's throw-on-!res.ok behavior so every
-      // call site here can keep assuming a rejected promise means a non-2xx response.
+
       throwOnError: true,
     });
   }
@@ -112,8 +103,7 @@ export class OcClient {
    */
   async createSession(opts?: { agent?: string; model?: { providerID: string; id: string }; title?: string }): Promise<OcSessionInfo> {
     console.log(`[tiermux] OC session.create body=${JSON.stringify(opts ?? {})}`);
-    // `agent`/`model` aren't in the SDK's declared SessionCreateData body type (only
-    // parentID/title are) but the live server accepts and applies them — see file header.
+
     const { data } = await this.client.session.create({ body: (opts ?? {}) as any });
     console.log(`[tiermux] OC createSession returned:`, JSON.stringify(data));
     return data as OcSessionInfo;
@@ -152,8 +142,7 @@ export class OcClient {
    */
   async updatePermission(sessionId: string, rules: OcPermissionRule[]): Promise<void> {
     console.log(`[tiermux] OC session.update(${sessionId}) permission=${JSON.stringify(rules)}`);
-    // `permission` isn't in the SDK's declared SessionUpdateData body type (only `title`
-    // is) but the live server accepts this exact array-of-rules shape — see file header.
+
     await this.client.session.update({ path: { id: sessionId }, body: { permission: rules } as any });
   }
 
@@ -246,8 +235,7 @@ export class OcClient {
           console.log(`[tiermux] OC SSE connecting (global.event)`);
           const result = await this.client.global.event({ signal: controller.signal });
           console.log(`[tiermux] OC SSE connected`);
-          // `global.event()` streams `{ directory, payload: Event }` — unwrap to the
-          // actual ServerEvent (`{ type, properties }`) callers expect.
+
           for await (const ev of result.stream) {
             const payload = (ev as { payload?: unknown }).payload ?? ev;
             const raw = JSON.stringify(payload);

@@ -94,7 +94,7 @@ interface Session {
   titleGenerated: boolean;
   createdAt: number;
   updatedAt: number;
-  // runtime — NEVER persisted (a dead agent process can't resume mid-run):
+
   activeRequestId?: string;
   cancel?: vscode.CancellationTokenSource;
   pendingApprovals: Map<string, (approved: boolean) => void>;
@@ -114,8 +114,7 @@ interface Session {
   executingPlan?: boolean;
   checkpoints: CheckpointManager;
   lastWindow: number;
-  // Cached live status for re-emitting when the user switches back to a running session
-  // (the webview shows one session at a time and rebuilds on switch — see openSession).
+
   livePlatform?: string;
   liveModel?: string;
   liveRuntimeName?: string;
@@ -143,7 +142,6 @@ interface StoredSession {
   model?: string;
   reasoningEffort?: string;
 }
-
 
 /**
  * Discover the model list for an OpenAI-compatible endpoint.
@@ -233,14 +231,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   autoApprove = false;
 
-  // ---- OpenCode engine state ----
   constructor(private readonly extensionUri: vscode.Uri, private readonly deps: ChatDeps) {
     this.autoApprove = deps.workspaceState.get<boolean>(AUTO_APPROVE_KEY, false);
     const stored = this.loadSessions();
-    // Rehydrate every persisted chat as a Session with EMPTY runtime — a dead agent process
-    // can't resume, so nothing starts "running" after a reload (transcripts come back intact).
-    // History stays browsable via the session list, but each fresh open starts on a new/home
-    // chat rather than resuming whatever was last viewed.
+
     for (const s of stored) this.sessions.set(s.id, this.hydrateSession(s));
     this.viewedSessionId = this.createSession().id;
     deps.secrets.onDidChange(() => void this.sendConfig());
@@ -255,8 +249,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private skills() {
     return loadSkills(this.extensionUri.fsPath, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
   }
-
-  // ---------- session model ----------
 
   private newSessionId(): string {
     return 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -317,7 +309,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private current(): Session {
     const s = this.sessions.get(this.viewedSessionId);
     if (s) return s;
-    // Shouldn't happen, but never return undefined.
+
     return this.createSession();
   }
 
@@ -334,8 +326,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Push the current session's title into the webview header; the chrome shows just the brand. */
   private updateViewTitle(): void {
     if (this.view) this.view.title = PRODUCT_NAME;
-    // Only update the title field for the VIEWED session — a background session's title
-    // generation must not clobber the field the user is looking at.
+
     const s = this.sessions.get(this.viewedSessionId);
     if (s) this.post({ type: 'sessionTitle', sessionId: s.id, title: s.title?.trim() || this.deriveTitle(s) || PRODUCT_NAME });
   }
@@ -354,12 +345,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.postSessionList();
   }
 
-  // ---------- tab status + session list ----------
-
   private setStatus(sessionId: string, status: SessionStatus): void {
     this.statusOf.set(sessionId, status);
-    // The activity badge only makes sense while a run is actually live — clear it the moment
-    // the session leaves running/queued so a finished/idle tab doesn't show a stale "Modifications".
+
     if (status !== 'running' && status !== 'queued') {
       const s = this.sessions.get(sessionId);
       if (s) s.liveActivity = undefined;
@@ -380,8 +368,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }));
     this.post({ type: 'sessionList', sessions });
   }
-
-
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
@@ -452,7 +438,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   requestEditApproval(req: { path: string; title: string; kind: 'write' | 'delete' }): Promise<boolean | undefined>;
   requestEditApproval(sessionId: string, requestId: string, req: { path: string; title: string; kind: 'write' | 'delete' }): Promise<boolean | undefined>;
   requestEditApproval(sessionIdOrReq: string | { path: string; title: string; kind: 'write' | 'delete' }, requestId?: string, req?: { path: string; title: string; kind: 'write' | 'delete' }): Promise<boolean | undefined> {
-    // No-session overload (inline editor chat) → native modal.
+
     if (typeof sessionIdOrReq !== 'string') return Promise.resolve(undefined);
     const sessionId = sessionIdOrReq;
     const s = this.sessions.get(sessionId);
@@ -507,8 +493,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const approvalIds = new Set(s.pendingApprovals.keys());
     for (const resolve of s.pendingApprovals.values()) resolve(approved);
     s.pendingApprovals.clear();
-    // Permission-ask prompts don't take a boolean — always settle with 'reject' on cancel/stop
-    // (same reasoning as approvals: never leave the OC-side tool call hanging).
+
     const permissionIds = new Set(s.pendingPermissions.keys());
     for (const resolve of s.pendingPermissions.values()) resolve('reject');
     s.pendingPermissions.clear();
@@ -527,7 +512,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  the card stays interactive even though the agent loop has already moved on). */
   private settlePendingAskUser(s: Session): void {
     if (s.pendingAskUser.size === 0) return;
-    // Snapshot the entries to avoid mutating during iteration.
+
     const callIds = Array.from(s.pendingAskUser.keys());
     const requestId = s.activeRequestId ?? '';
     for (const callId of callIds) {
@@ -558,8 +543,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     for (const m of queued) void this.view?.webview.postMessage(m);
   }
 
-  // ---------- concurrency cap ----------
-
   private maxConcurrent(): number {
     return Math.max(1, vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxConcurrentRuns', 3));
   }
@@ -588,7 +571,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Reveal the chat and submit a prompt programmatically (editor commands). */
   async submitExternal(text: string, mode: Mode): Promise<void> {
     await vscode.commands.executeCommand('tiermux.chat.focus');
-    // Give the webview a moment to mount if it was just revealed.
+
     await new Promise((r) => setTimeout(r, 150));
     const requestId = `ext-${Date.now()}`;
     const s = this.current();
@@ -597,7 +580,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   newChat(): void {
-    // Create + view a fresh session. Other sessions' runs are NOT touched.
+
     const s = this.createSession();
     this.viewedSessionId = s.id;
     void this.deps.workspaceState.update(CURRENT_KEY, s.id);
@@ -641,7 +624,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.persist(id);
       return;
     }
-    // Not in memory (e.g. evicted beyond MAX_SESSIONS but still listed) — update storage only.
+
     const stored = this.loadSessions();
     const x = stored.find((u) => u.id === id);
     if (x) { x.title = title; void this.deps.workspaceState.update(SESSIONS_KEY, stored); }
@@ -666,11 +649,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.postSessionList();
     this.post({ type: 'switchSession', sessionId: id, messages: s.transcript });
     this.post({ type: 'busy', sessionId: id, busy: !!s.activeRequestId });
-    // Live signals now stream into every open session's own persistent pane regardless of
-    // view (see agentCallbacks), so a pane that's already been created for this session is
-    // already showing current step/todos/text — this re-emit only matters the FIRST time the
-    // webview creates a pane for `id` (e.g. right after a reload, before any live event for it
-    // has arrived). It's a harmless no-op resend of already-current state otherwise.
+
     if (s.activeRequestId) {
       const rid = s.activeRequestId;
       this.post({ type: 'assistantStart', sessionId: s.id, requestId: rid, platform: s.livePlatform ?? '', model: s.liveModel ?? '' });
@@ -715,7 +694,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.statusOf.delete(id);
     void this.deps.workspaceState.update(SESSIONS_KEY, this.loadSessions().filter((s) => s.id !== id));
     if (wasViewed) {
-      // Switch to the most recent remaining session, or start a fresh one.
+
       const next = this.loadSessions()[0]?.id;
       if (next && this.sessions.has(next)) this.openSession(next);
       else this.newChat();
@@ -920,22 +899,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       case 'clearUsage': {
-        // Confirm on the host: window.confirm() is unavailable inside the webview iframe.
+
         const clearChoice = await vscode.window.showWarningMessage(
           'Clear all lifetime usage data? This resets the persistent token and est. $ saved counters. This cannot be undone.',
           { modal: true },
           'Clear',
         );
-        // Re-arm the button regardless (the webview left it on "Clearing…").
+
         this.post({ type: 'usageTotals', totals: this.currentUsageTotals(this.current()) });
         if (clearChoice !== 'Clear') break;
         await this.deps.usageStore.clear();
         this.deps.usage.reset();
-        // Reflect the zeroed totals IMMEDIATELY. sendConfig() does network work (MCP
-        // registry fetch, key/endpoint probes) before posting; if that is slow or
-        // throws, the card never refreshed and the button sat on "Clearing…" — looking
-        // broken even though the store was already cleared. This lightweight post is
-        // independent of sendConfig so the UI always updates right away.
+
         this.post({ type: 'usageTotals', totals: this.currentUsageTotals(this.current()) });
         void this.sendConfig();
         this.post({ type: 'notice', sessionId: this.viewedSessionId, text: '🧹 Usage data cleared.' });
@@ -973,9 +948,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'newChat':
         this.newChat();
         break;
-      // Custom OpenAI-compatible endpoints
+
       case 'addCustomEndpoint': {
-        // Validate name (1-40 chars, trimmed, unique)
+
         const name = m.name.trim();
         if (name.length < 1 || name.length > 40) {
           void vscode.window.showWarningMessage('Endpoint name must be 1-40 characters.');
@@ -986,12 +961,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           void vscode.window.showWarningMessage(`An endpoint named "${name}" already exists.`);
           break;
         }
-        // Validate baseUrl
+
         if (!/^https?:\/\/.+/i.test(m.baseUrl)) {
           void vscode.window.showWarningMessage('Base URL must start with http:// or https://');
           break;
         }
-        // Generate id (c_ + 6 random base36 chars)
+
         const id = 'c_' + Math.random().toString(36).slice(2, 8);
         const endpoint: CustomEndpoint = {
           id,
@@ -1032,27 +1007,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         if (m.extraHeaders !== undefined) updated.extraHeaders = m.extraHeaders;
         await this.deps.settings.upsertCustomEndpoint(updated);
-        // Invalidate provider cache so the new URL/name is used
+
         const { invalidateCustomProvider } = await import('./providers/index.js');
         invalidateCustomProvider(m.id);
         void this.sendConfig();
         break;
       }
       case 'removeCustomEndpoint': {
-        // Fetch models BEFORE removing the endpoint — removal clears it from storage.
+
         const endpoint = this.deps.settings.getCustomEndpoint(m.id);
         await this.deps.settings.removeCustomEndpoint(m.id);
-        // Clear endpoint-level key and all per-model keys.
+
         await this.deps.secrets.clearCustomKey(m.id);
         if (endpoint) {
           for (const model of endpoint.models) {
             await this.deps.secrets.clearCustomModelKey(m.id, model.modelId);
           }
         }
-        // Remove fallback entries for this endpoint
+
         const fallback = this.deps.settings.getFallback().filter((e) => !e.modelId.startsWith(m.id + '::'));
         await this.deps.settings.setFallback(fallback);
-        // Invalidate provider cache
+
         const { invalidateCustomProvider } = await import('./providers/index.js');
         invalidateCustomProvider(m.id);
         void this.sendConfig();
@@ -1073,7 +1048,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           void vscode.window.showWarningMessage('Endpoint not found.');
           break;
         }
-        // Validate modelId (1-200 chars, no ::, no whitespace, unique within endpoint)
+
         const modelId = m.modelId.trim();
         if (modelId.length < 1 || modelId.length > 200) {
           void vscode.window.showWarningMessage('Model ID must be 1-200 characters.');
@@ -1087,10 +1062,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           void vscode.window.showWarningMessage(`Model "${modelId}" already exists in this endpoint.`);
           break;
         }
-        // Add to endpoint.models
+
         endpoint.models.push({ modelId, displayName: m.displayName });
         await this.deps.settings.upsertCustomEndpoint(endpoint);
-        // Add fallback entry (disabled by default)
+
         const fallback = this.deps.settings.getFallback();
         const maxPriority = Math.max(0, ...fallback.map((e) => e.priority));
         fallback.push({
@@ -1109,13 +1084,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           void vscode.window.showWarningMessage('Endpoint not found.');
           break;
         }
-        // Remove from endpoint.models
+
         endpoint.models = endpoint.models.filter((em) => em.modelId !== m.modelId);
         await this.deps.settings.upsertCustomEndpoint(endpoint);
-        // Remove fallback entry
+
         const fallback = this.deps.settings.getFallback().filter((e) => !(e.platform === 'custom' && e.modelId === `${m.endpointId}::${m.modelId}`));
         await this.deps.settings.setFallback(fallback);
-        // Clear per-model key
+
         await this.deps.secrets.clearCustomModelKey(m.endpointId, m.modelId);
         void this.sendConfig();
         break;
@@ -1219,7 +1194,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'attachmentAdded', attachment });
         return;
       }
-      // Non-image: drop the bytes into .tiermux/attach/ and run the workspace extractor.
+
       const folder = vscode.workspace.workspaceFolders?.[0];
       if (!folder) { this.post({ type: 'error', sessionId: this.viewedSessionId, message: 'Open a folder first — non-image attachments need a workspace to land in.' }); return; }
       const dir = vscode.Uri.joinPath(folder.uri, '.tiermux', 'attach');
@@ -1261,9 +1236,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } else {
       const environment: Record<string, string> = {};
       for (const e of item.env ?? []) {
-        // Only secret vars are masked and treated as required; everything else
-        // is optional and can be skipped with a blank entry. This is why a
-        // keyless server (no `env` at all) adds with zero prompts.
+
         const optional = !e.password;
         const val = await vscode.window.showInputBox({
           title: `Add ${item.name}`,
@@ -1296,8 +1269,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (pick !== 'Remove') return;
     delete servers[name];
     await cfg.update('mcpServers', servers, vscode.ConfigurationTarget.Global);
-    // Drop just this server now so the panel updates instantly; the rest keep
-    // running. (The config-change watcher reconnects + refreshes in the back.)
+
     this.deps.mcp.disconnect(name);
     await this.sendConfig();
     void vscode.window.showInformationMessage(`Removed MCP server "${name}".`);
@@ -1375,15 +1347,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .join('\n\n');
     const textParts = [text, contextText, fileBlocks].filter((s) => s && s.trim().length > 0).join('\n\n');
 
-    // Visual blocks: images ALWAYS (no text fallback exists for them — this is the only
-    // channel a model has to see one). PDFs are DIFFERENT: extracted text already carries
-    // the content to every model via `fileBlocks` above, universally, so the raw file part
-    // is only worth the risk when there's no text to fall back on (a scanned PDF with no
-    // extractable text layer). Observed in practice: some models (e.g. Gemini's lighter
-    // tiers) don't support a PDF-typed file part and refuse the WHOLE turn on seeing one —
-    // "I cannot process PDF file input" — even though the same message also carried a
-    // perfectly good extracted-text answer. Sending it unconditionally made working PDFs
-    // (successful extraction) WORSE, not better, for exactly the models that can't use it.
     const visualBlocks: ChatContentBlock[] = [];
     for (const a of list) {
       if (a.kind === 'image' && a.dataUrl) {
@@ -1393,7 +1356,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
     if (visualBlocks.length === 0) return textParts;
-    // Multimodal envelope for vision models.
+
     return [
       { type: 'text', text: textParts },
       ...visualBlocks,
@@ -1438,13 +1401,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.cancel?.dispose();
     s.cancel = new vscode.CancellationTokenSource();
     s.activeRequestId = m.requestId;
-    // Starting a new turn drops any in-flight askUser card (the old run is being cancelled);
-    // settle before the new run takes over so its first askUser doesn't collide.
+
     this.settlePendingAskUser(s);
     s.executingPlan = false;
 
     const release = await this.acquireRunSlot(s.id);
-    // Cancelled (Stop) while queued → release the slot and bail before running.
+
     if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
 
     this.post({ type: 'busy', sessionId: s.id, busy: true });
@@ -1460,24 +1422,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         : sdkMode === 'plan'
           ? await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {})
           : await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
-      // Abandoned mid-run by a cancel → drop the output entirely.
+
       if (!this.isActiveRun(s, m.requestId)) return;
 
       if (m.mode === 'plan') {
         const clar = parseClarifying(result.text);
         if (clar.questions && clar.questions.length) {
-          // The planner needs clarification before it can produce a good plan: drop the user
-          // turn (re-added after answers), surface the questions as an interactive card, re-plan.
+
           s.history.pop();
           s.pendingPlanUser = userContent;
           s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: clar.questions, mode: 'plan' };
           this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: clar.questions });
           return;
         }
-        // Only gate an ACTUAL actionable plan with "Approve & Run". A discussion answer — e.g.
-        // "give me 6 changes", "how does this work?" — stays a normal chat turn (no run button,
-        // no saved file), so Plan mode supports the discuss phase instead of slapping a run gate
-        // on every reply. The turn is kept in history so the conversation continues naturally.
+
         if (looksLikeActionablePlan(clar.text)) {
           s.history.pop(); // not committed yet — re-added on approval
           s.pendingPlanUser = userContent;
@@ -1485,17 +1443,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           void this.savePlan(s, prompt, clar.text);
           return;
         }
-        // else: fall through and render as a normal assistant answer (discuss phase).
+
       }
 
-      // Auto-continue: if the agent paused after hitting its step cap, silently resume
-      // instead of making the user click "Continue" every time. Works for Agent and Ask-code
-      // modes. Plan mode pauses are intentional (clarification / approval gates), so skip them.
-      // Cap at 3 auto-continues so a genuinely-stuck model eventually surfaces to the user.
       const autoContinueOn = vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('autoContinue', true);
       if (m.mode !== 'plan') {
         for (let ac = 0; result.paused && autoContinueOn && ac < 3 && this.isActiveRun(s, m.requestId); ac++) {
-          // Persist the tool-call transcript so the next run can read what was already done.
+
           this.persistAgentTurn(s, result);
           s.history.push({ role: 'user', content: 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.' });
           result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model), {});
@@ -1504,37 +1458,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       const after = this.deps.usage.get();
-      const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
-      // Check for a ???QUESTIONS??? block in the response (agent asked for user input).
-      // Strip it from the displayed text and show the structured Q&A card instead.
-      // All modes can ask, including Chat — a genuinely ambiguous question pauses with
-      // a card instead of the model guessing or flatly refusing.
+      const usage = {
+        promptTokens: after.promptTokens - before.promptTokens,
+        completionTokens: after.completionTokens - before.completionTokens,
+        reasoningTokens: after.reasoningTokens - before.reasoningTokens,
+        totalTokens: after.totalTokens - before.totalTokens,
+      };
+
       const agentClar = !result.paused ? parseClarifying(result.text) : { questions: null, text: result.text };
-      // parseClarifying's `text` is ALWAYS already sentinel-scrubbed, whether or not it found
-      // well-formed questions — using `result.text` (raw) in the no-questions case left any
-      // incidental/malformed `???QUESTIONS???` fragment (a model half-attempting the format,
-      // or just echoing it) in what got sent to the webview, which the client's OWN blunter
-      // stripper (stripClarifyBlock in main.ts) then deleted from the sentinel to the end of
-      // the message with no validity check — silently truncating a real answer to nothing.
+
       const displayText = agentClar.text;
-      // Persist the SCRUBBED text, not raw result.text — persistAgentTurn/pushAssistantTurn
-      // feed s.history (conversation context) and s.transcript (rebuilt on session switch /
-      // window reload via renderAssistantStatic, which never re-runs parseClarifying). Persisting
-      // the raw sentinel-laden text left every re-render from persisted history showing the
-      // literal ???QUESTIONS???/Q[Label]:/???END??? markup instead of the clean answer the
-      // live view showed the first time.
+
       const persistedResult: AgentResult = displayText !== result.text ? { ...result, text: displayText } : result;
       this.persistAgentTurn(s, persistedResult);
       this.pushAssistantTurn(s, m.requestId, persistedResult, sentAt, usage);
       this.rememberWindow(s, result.platform, result.model);
-      // Remember which (task kind, model) produced this reply so 👍/👎 can teach the router.
+
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
       const pinned = (s.model && s.model !== 'auto') ? s.model : result.model;
       const hasQuestions = !!(agentClar.questions && agentClar.questions.length);
-      // Defer the footer to the eventual final-answer bubble (a new requestId, once the user
-      // answers) rather than showing it on the question-asking turn — the task isn't done yet.
+
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: pinned, paused: result.paused, noFooter: hasQuestions });
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
       if (hasQuestions) {
@@ -1545,11 +1490,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned run — don't surface its error
       this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
       void this.maybeRecommendModels(e);
-      // Drop the user turn that produced no answer to keep history clean.
+
       if (s.history[s.history.length - 1]?.role === 'user') s.history.pop();
     } finally {
-      // Only finalize if this run still owns the session; a cancelled run leaves cleanup to
-      // stopRun (which already settled approvals + reset status).
+
       release();
       if (this.isActiveRun(s, m.requestId)) {
         s.activeRequestId = undefined;
@@ -1619,7 +1563,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const removedText = s.transcript[idx].text;
     const removedAttachments = s.transcript[idx].attachments;
     const removedIds = s.transcript.slice(idx).filter((t) => t.role === 'user' && t.requestId).map((t) => t.requestId!);
-    // The earliest checkpoint among removed turns reverts everything from here onward.
+
     let firstCpId: string | undefined;
     for (const rid of removedIds) { const cid = s.checkpoints.idForRequest(rid); if (cid) { firstCpId = cid; break; } }
     const fileCount = firstCpId ? (await s.checkpoints.changedFiles(firstCpId)).length : 0;
@@ -1631,17 +1575,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const choice = await vscode.window.showWarningMessage(`Revert to this point? ${detail}`, { modal: true }, 'Revert');
     if (choice !== 'Revert') return;
 
-    // Stop any in-flight run for this session: the transcript/history we're about to
-    // truncate is what that run is appending to, so leaving it going would strand it
-    // (and leave the busy indicator pinned red). rebuild=false — we re-post below.
     this.stopRun(s.id, false);
 
     if (firstCpId) await s.checkpoints.restore(firstCpId);
     s.checkpoints.dropByRequestIds(removedIds);
 
-    // Restore history to just before the reverted turn. We snapshot historyLen on each user
-    // turn (see handleSend), so truncating to it preserves every earlier tool call/result —
-    // rebuilding from transcript text alone would silently drop all of that context.
     const cut = s.transcript[idx]?.historyLen;
     s.transcript = s.transcript.slice(0, idx);
     s.history = (typeof cut === 'number' && cut <= s.history.length)
@@ -1652,9 +1590,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'setInput', text: removedText, attachments: removedAttachments });
     if (fileCount) this.post({ type: 'notice', sessionId: s.id, text: `⟲ Reverted ${fileCount} file${fileCount !== 1 ? 's' : ''} to this point.` });
     this.persist(s.id);
-    // Checkpoint bar refresh involves several git subprocess calls per remaining
-    // checkpoint — run it after the input/transcript are already back on screen so
-    // the composer doesn't wait behind it.
+
     await this.postCheckpoints(s);
   }
 
@@ -1727,7 +1663,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         (c as { deferred?: boolean }).deferred = true;
       }
     }
-    // Overwrite the plan file with any edits the user made before deferring.
+
     if (m.steps) void this.writePlanFile(s, m.steps);
   }
 
@@ -1743,7 +1679,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: 'planDiscarded', sessionId: s.id, requestId: m.requestId });
       return;
     }
-    // Overwrite the plan file with any edits the user made before approving.
+
     if (m.steps) void this.writePlanFile(s, m.steps);
     s.pendingPlanFile = undefined;
     this.removeCards(s, (c) => c.type === 'planProposed');
@@ -1761,8 +1697,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'busy', sessionId: s.id, busy: true });
     const stepCount = planStepsToTodos(m.steps).length;
     this.post({ type: 'agentStep', sessionId: s.id, requestId: m.requestId, phase: 'thinking', label: stepCount > 0 ? `▶ Executing approved plan (${stepCount} steps)` : '▶ Executing approved plan' });
-    // Seed the live checklist from the approved plan so the user sees it immediately;
-    // the agent then advances each item via updateTodos as it executes.
+
     const seeded = planStepsToTodos(m.steps);
     if (seeded.length) this.post({ type: 'todos', sessionId: s.id, requestId: m.requestId, todos: seeded, followingPlan: true });
     const before = this.deps.usage.get();
@@ -1773,11 +1708,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk3, s.model), {});
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       const after = this.deps.usage.get();
-      const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
+      const usage = {
+        promptTokens: after.promptTokens - before.promptTokens,
+        completionTokens: after.completionTokens - before.completionTokens,
+        reasoningTokens: after.reasoningTokens - before.reasoningTokens,
+        totalTokens: after.totalTokens - before.totalTokens,
+      };
       this.persistAgentTurn(s, result);
       this.pushAssistantTurn(s, m.requestId, result, sentAt, usage);
       this.rememberWindow(s, result.platform, result.model);
-      // Remember which (task kind, model) produced this reply so 👍/👎 can teach the router.
+
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
@@ -1821,7 +1761,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * session switch — can rebuild the "Reasoning" and "Worked for Ns" disclosures instead of
    * dropping them. Drains the per-requestId step accumulator.
    */
-  private pushAssistantTurn(s: Session, requestId: string, result: AgentResult, sentAt: number, usage?: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
+  private pushAssistantTurn(s: Session, requestId: string, result: AgentResult, sentAt: number, usage?: { promptTokens: number; completionTokens: number; reasoningTokens?: number; totalTokens: number }): void {
     const steps = s.liveSteps.get(requestId);
     s.liveSteps.delete(requestId);
     s.transcript.push({
@@ -1831,7 +1771,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       ts: Date.now(),
       secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)),
       reasoning: result.reasoning || undefined,
-      usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,
+      usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, reasoningTokens: usage.reasoningTokens } : undefined,
       steps: steps && steps.length ? steps : undefined,
     });
   }
@@ -1852,8 +1792,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private stopRun(sessionId: string, rebuild = true): void {
     const s = this.sessions.get(sessionId);
     if (!s) return;
-    // If it was still queued (not running yet), unblock its acquireRunSlot so the slot frees;
-    // the handler's post-acquire liveness guard then bails out.
+
     const qi = this.runQueue.findIndex((q) => q.sessionId === sessionId);
     if (qi >= 0) { this.runQueue.splice(qi, 1)[0].resolve(); }
     s.cancel?.cancel();
@@ -1865,8 +1804,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.executingPlan = false;
     s.cards = [];
     this.setStatus(sessionId, 'idle');
-    // If the user is watching this session, rebuild its thread clean (drops the abandoned
-    // turn's live cards) and reset the composer.
+
     if (rebuild && this.viewedSessionId === sessionId) {
       this.post({ type: 'switchSession', sessionId, messages: s.transcript });
     }
@@ -1902,12 +1840,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private agentCallbacks(s: Session, requestId: string, _mode: Mode): Omit<AgentOpts, 'messages' | 'mode' | 'effort' | 'abortSignal' | 'pinnedModel' | 'taskKind'> {
     const live = (): boolean => this.isActiveRun(s, requestId);
-    // The webview keeps a persistent DOM pane per session (not just the viewed one), so every
-    // live signal below posts unconditionally once the run is live — the pane it belongs to
-    // renders it whether or not that session is currently in view. `s.live*`/`s.last*` caches
-    // are still kept (openSession reads them to seed a pane the very first time it's created,
-    // e.g. after a reload) but are no longer the ONLY way a background run's progress reaches
-    // the webview.
+
     return {
       onModel: (platform, model, runtimeName) => {
         if (!live()) return;
@@ -1919,21 +1852,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       onTool: (e: ToolEvent) => {
         if (!live()) return;
-        // Accumulate every step (regardless of view) so the turn's transcript entry can be
-        // rebuilt with its full step list after a re-render (e.g. "Revert to here").
+
         const steps = s.liveSteps.get(requestId) ?? [];
         const i = steps.findIndex((st) => st.toolCallId === e.toolCallId);
         const mappedState = e.state === 'queued' ? 'running' : e.state as 'running' | 'done' | 'error';
         const entry: TranscriptStep = { toolCallId: e.toolCallId, name: e.name, args: e.args, state: mappedState, detail: e.detail };
         if (i < 0 && FILE_WRITE_TOOL_NAMES.has(e.name)) {
-          // OC (the agent engine) applies Agent/Plan-mode edits directly to the workspace,
-          // bypassing TierMux's own EditGate — so record()-based checkpoints normally see
-          // nothing for these edits (the git-tree snapshot in gitSnapshot.ts covers most of
-          // it, but can't see gitignored files). Best-effort close that gap: on the FIRST
-          // event we see for a given tool call (ideally its 'running'/'queued' state, before
-          // OC has actually written anything), read the file's current on-disk content and
-          // record it as this turn's baseline. record() itself dedupes by file, so later/
-          // duplicate events for the same path are harmless no-ops.
+
           const rel = extractToolFilePath(e.args);
           const root = vscode.workspace.workspaceFolders?.[0]?.uri;
           if (rel && root) {
@@ -1956,8 +1881,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!live()) return;
         const t = (text || '').trim();
         if (!t) return;
-        // A thinking block rides the same step pipeline as tool cards (a step named 'reasoning'),
-        // so it persists in liveSteps and replays on re-render with zero extra plumbing.
+
         const steps = s.liveSteps.get(requestId) ?? [];
         const id = `reason-${steps.length}`;
         steps.push({ toolCallId: id, name: 'reasoning', state: 'done', detail: t });
@@ -1973,17 +1897,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       onAskUser: async (question, options) => {
         if (!live()) return '';
-        // Mint a unique callId per prompt so the webview's response correlates back to the
-        // exact pending promise. The agent loop is sequential so only one askUser can be
-        // in-flight at a time per session — the callId is purely for response routing.
+
         const callId = `ask-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         return this.requestAskUser(s, requestId, callId, question, options);
       },
       onPermissionAsk: async (info) => {
         if (!live()) return 'reject';
-        // Session Auto-approve: reply through OC's own permission channel instead of
-        // showing the inline card, mirroring commandGate's non-dangerous-only carve-out
-        // so destructive commands (rm -rf, force push, sudo…) still always ask.
+
         if (this.autoApprove && !(info.command && isDangerous(info.command))) return 'once';
         return this.requestPermissionAsk(s.id, requestId, info.title, info.pattern);
       },
@@ -2004,8 +1924,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'error', sessionId: s.id, requestId, message });
       },
       onWarning: (message) => {
-        // Soft, non-blocking notice — used when the run delivered a usable answer despite a
-        // mid-stream error, instead of a scary red error that hides the answer.
+
         if (!live()) return;
         this.post({ type: 'notice', sessionId: s.id, text: message });
       },
@@ -2039,7 +1958,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async handleResume(m: Extract<InMessage, { type: 'resume' }>): Promise<void> {
     const s = this.current();
 
-
     s.history.push({
       role: 'user',
       content: 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.',
@@ -2058,7 +1976,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk4, s.model), {});
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       const after = this.deps.usage.get();
-      const usage = { promptTokens: after.promptTokens - before.promptTokens, completionTokens: after.completionTokens - before.completionTokens, totalTokens: after.totalTokens - before.totalTokens };
+      const usage = {
+        promptTokens: after.promptTokens - before.promptTokens,
+        completionTokens: after.completionTokens - before.completionTokens,
+        reasoningTokens: after.reasoningTokens - before.reasoningTokens,
+        totalTokens: after.totalTokens - before.totalTokens,
+      };
       this.persistAgentTurn(s, result);
       this.pushAssistantTurn(s, m.requestId, result, sentAt, usage);
       this.rememberWindow(s, result.platform, result.model);
@@ -2071,7 +1994,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (!this.isActiveRun(s, m.requestId)) return;
       this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
       void this.maybeRecommendModels(e);
-      // The resume nudge produced nothing — drop it so history stays clean and resumable.
+
       if (s.history[s.history.length - 1]?.role === 'user') s.history.pop();
     } finally {
       release();
@@ -2093,8 +2016,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const s = this.current();
     const ctx = (s.pendingClarify && s.pendingClarify.requestId === m.requestId) ? s.pendingClarify : undefined;
     s.pendingClarify = undefined;
-    // Drop the card from the cache so switching sessions away and back can't re-render a
-    // stale question form after the user already answered.
+
     this.removeCards(s, (c) => c.type === 'clarifyingQuestions' && c.requestId === m.requestId);
     if (!ctx) return;
 
@@ -2102,14 +2024,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .map((q, i) => `Q: ${q.text}\nA: ${m.answers[i] ?? '(no answer)'}`)
       .join('\n');
 
-    // Agent/chat end-of-turn: send answers as a new user message to continue the OC session.
     if (ctx.mode === 'agent' || ctx.mode === 'chat') {
       const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       await this.handleSend({ type: 'sendMessage', requestId, text: qa, mode: ctx.mode, model: s.model ?? 'auto', reasoningEffort: s.reasoningEffort ?? 'medium' });
       return;
     }
 
-    // Plan pre-flight: fold answers in and re-run Plan mode for a real plan.
     const base = s.history.length;
     s.history.push({ role: 'user', content: ctx.userContent });
     s.history.push({ role: 'user', content: `Clarifications from the user:\n${qa}\n\nUsing these answers, produce the step-by-step plan now.` });
@@ -2128,7 +2048,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const clar = parseClarifying(result.text);
       this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
       void this.savePlan(s, ctx.prompt, clar.text);
-      // pendingPlanUser (set in handleSend) stays for the subsequent Approve flow.
+
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return;
       this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
@@ -2136,7 +2056,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } finally {
       release();
       if (this.isActiveRun(s, m.requestId)) {
-        // Drop the clarify turns we added; the user turn is re-added on approval via pendingPlanUser.
+
         s.history.length = base;
         s.activeRequestId = undefined;
         this.settlePendingAskUser(s);
@@ -2242,6 +2162,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         totalRequests: lifetime.totalRequests,
         estimatedSavingsUsd: lifetime.estimatedSavingsUsd,
         firstRecordedAt: lifetime.firstRecordedAt,
+        totalReasoningTokens: lifetime.totalReasoningTokens,
       },
       retrieval: retrieval.totalRequests >= 3 ? retrieval : undefined,
     };
@@ -2266,9 +2187,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (s.titleGenerated) return;
     const users = s.transcript.filter((t) => t.role === 'user');
     if (!users.length) return;
-    // Title from the first ACTUAL request. A greeting only gets a provisional title and
-    // we retry on later turns — so "Hi" followed by a real question updates the title
-    // instead of staying stuck on "Starting Conversation".
+
     const firstReal = users.find((u) => classifyTask(u.text ?? '') !== 'trivial');
     if (!firstReal) {
       if (s.title !== 'Starting Conversation') { s.title = 'Starting Conversation'; this.persist(s.id); this.updateViewTitle(); }

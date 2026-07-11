@@ -1,6 +1,5 @@
-// Generic OpenAI-compatible provider. Covers Groq, Cerebras, NVIDIA,
-// Mistral, OpenRouter, GitHub Models, Zhipu, HuggingFace router, Ollama, Kilo,
-// Pollinations, LLM7, OpenCode Zen, OVH, Agnes, and user `custom` endpoints.
+
+
 import type {
   ChatCompletionChunk,
   ChatCompletionResponse,
@@ -79,28 +78,20 @@ export class OpenAICompatProvider extends BaseProvider {
   /** Map the neutral reasoning effort to the provider's request fields. */
   private reasoningFields(effort?: ReasoningEffort): Record<string, unknown> {
     if (!effort || effort === 'off' || this.reasoningStyle === 'none') return {};
-    // The OpenAI-wire reasoning_effort field only accepts low/medium/high; our
-    // extra 'xhigh' tier maps down to 'high' so providers don't reject it.
+
     const wire = effort === 'xhigh' ? 'high' : effort;
     if (this.reasoningStyle === 'openrouter') return { reasoning: { effort: wire } };
     return { reasoning_effort: wire };
   }
 
   private buildBody(messages: ChatMessage[], modelId: string, options: CompletionOptions | undefined, stream: boolean): string {
-    // Two content transforms:
-    //  - flattenContent (Cohere/Cloudflare-style): collapse every block array to a string.
-    //  - stripFileBlocks: drop our custom `file` (PDF) envelope on the wire, since most
-    //    OpenAI-compat providers don't recognize it. The PDF's extracted text is already
-    //    part of the user message (buildUserContent inlines it), so nothing is lost.
+
     const wireMessages = this.flattenContent
       ? flattenMessageContent(messages)
       : messages.map((m) => m.content === null || m.content === undefined || typeof m.content === 'string'
           ? m
           : { ...m, content: stripFileBlocks(m.content) });
-    // Custom-endpoint model IDs are namespaced as `<endpointId>::<upstreamModelId>` so the
-    // router can map them back to an endpoint. The upstream API only knows the bare model
-    // name, so strip the prefix on the wire — otherwise it 4xxs on an unknown model, which
-    // surfaces to the user as a misleading "rejected the API key" auth error.
+
     const wireModel = this.platform === 'custom' && modelId.includes('::')
       ? modelId.split('::').slice(1).join('::')
       : modelId;
@@ -114,7 +105,7 @@ export class OpenAICompatProvider extends BaseProvider {
       tool_choice: options?.tool_choice,
       parallel_tool_calls: this.resolveParallelToolCalls(options),
       ...this.reasoningFields(options?.reasoningEffort),
-      ...(stream ? { stream: true } : {}),
+      ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
     });
   }
 
@@ -170,6 +161,14 @@ export class OpenAICompatProvider extends BaseProvider {
         `${this.name} returned a non-JSON 200 body — the endpoint may not be OpenAI-compatible. Check the base URL (e.g. Ollama needs the /v1 path).`,
       );
     }
+    const raw = data as unknown as {
+      usage?: {
+        completion_tokens_details?: { reasoning_tokens?: number };
+      };
+    };
+    if (data.usage && raw.usage?.completion_tokens_details?.reasoning_tokens !== undefined) {
+      data.usage.reasoning_tokens = raw.usage.completion_tokens_details.reasoning_tokens;
+    }
     normalizeChoices(data);
     data._routed_via = { platform: this.platform, model: modelId };
     return data;
@@ -214,8 +213,7 @@ function normalizeChoices(data: ChatCompletionResponse): void {
         .map((seg) => (typeof seg === 'string' ? seg : seg.text ?? ''))
         .join('');
     }
-    // gpt-oss / Harmony models leak control tokens into tool-call names and
-    // sometimes into content — clean both so calls resolve and answers read right.
+
     for (const tc of msg.tool_calls ?? []) {
       if (tc?.function?.name) tc.function.name = sanitizeToolName(tc.function.name);
     }

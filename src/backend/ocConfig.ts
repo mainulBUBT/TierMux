@@ -1,11 +1,5 @@
-// Builds the OpenCode config that points OC at the TierMux router proxy.
-// Injected via the OPENCODE_CONFIG_CONTENT env var (OC's flag.ts), so no temp
-// file is written and the user's global ~/.config/opencode is untouched.
-//
-// OC sees one custom OpenAI-compatible provider, "tiermux", with three virtual
-// models (auto/fast/smart) backed by the router proxy. Failover, rate-limit
-// cooldowns, and cost tracking all happen inside the proxy/router — OC just
-// thinks it has one reliable provider.
+
+
 import type { McpServerConfig } from '../mcp/mcpClient';
 
 export interface OcConfigOptions {
@@ -36,11 +30,7 @@ export interface OcConfigOptions {
  * target the proxy, and `models` declares the virtual routing profiles.
  */
 export function buildOcConfig(opts: OcConfigOptions): string {
-  // Kilo-Code-style grounding preamble prepended to every agent prompt. Two failure modes
-  // to prevent at once: (a) hallucination — answering about the codebase from training-data
-  // memory; (b) overcall — blindly reading dozens of files when one grep would do (profiler
-  // saw chat mode do 60 useless readFile calls in a single turn). So the rule is NOT "read
-  // first" — it is "SEARCH smart, then READ targeted".
+
   const GROUNDED =
     'You are TierMux, an AI coding assistant working inside the user\'s project.\n'
     + 'The project on disk is your SOURCE OF TRUTH, not your training data.\n\n'
@@ -75,12 +65,6 @@ export function buildOcConfig(opts: OcConfigOptions): string {
     + '- If you cannot find X in the codebase, say "I couldn\'t find X in the codebase" — do NOT '
     + 'give a generic explanation.\n\n';
 
-  // Shared clarifying-questions block format, reused by chat/build/planx. Weaker free-tier
-  // models tend to drift from a described format into a conversational paraphrase (a
-  // preamble sentence, markdown-bold "**Q[Label]:**", no literal sentinel) — spelled out
-  // this explicitly/repetitively because that drift is exactly what breaks the parser
-  // (clarify.ts) that turns this block into an interactive card. `${stopClause}` slots in
-  // what NOT to do yet, since it differs per agent (no answer / no edits / no plan).
   const clarifyFormat = (stopClause: string): string =>
     'If the request is genuinely ambiguous (answering requires guessing between materially '
     + `different interpretations), FIRST emit a clarifying-questions block and STOP (${stopClause} yet) `
@@ -101,31 +85,16 @@ export function buildOcConfig(opts: OcConfigOptions): string {
     + '- Option B :: optional one-line description\n'
     + '???END???\n';
 
-  // Virtual routing profiles — always present so OC's default model (tiermux/auto)
-  // is valid and the three "speeds" the UI exposes map to the router's task-kind logic.
-  // `attachment: false` used to be set on `fast` (chat mode's default hop) on the
-  // assumption fast-tier models are text-only. It isn't — the router dynamically picks
-  // the real underlying model per turn (including vision-capable ones when an
-  // image/PDF is attached), but OC honors this flag client-side and was stripping the
-  // attachment before the request ever reached the router, no matter what taskKind the
-  // router would have routed to. Chat mode was the one mode that couldn't read
-  // attachments as a result. See mapProfile's PROFILE_FAST branch in routerProxy.ts.
   const models: Record<string, object> = {
     auto:  { name: 'Auto',  limit: { context: 128000, output: 8192 } },
     fast:  { name: 'Fast',  limit: { context: 128000, output: 8192 } },
     smart: { name: 'Smart', limit: { context: 200000, output: 8192 } },
   };
 
-  // Every enabled catalog / custom-endpoint model encoded as tm_<base64url> so
-  // OC recognises it at createSession + prompt without choking on '::' or '/'.
   for (const id of opts.extraModelIds ?? []) {
     models[id] = { name: id, limit: { context: 128000, output: 8192 } };
   }
 
-  // `tiermux.mcpServers` entries already match OC's native McpLocalConfig/McpRemoteConfig
-  // shape field-for-field (see mcpClient.ts), so this is a near-direct passthrough — just
-  // dropping explicitly-disabled entries. Once present in OC's own config, OC discovers
-  // and calls these tools itself.
   const mcp: Record<string, object> = {};
   for (const [name, sc] of Object.entries(opts.mcpServers ?? {})) {
     if (sc.enabled === false) continue;
@@ -161,23 +130,11 @@ export function buildOcConfig(opts: OcConfigOptions): string {
         models,
       },
     },
-    // Force every agent in OC to use the TierMux provider by default, so model
-    // selection always flows through the router. Users can still override per-session.
+
     model: 'tiermux/auto',
-    // Custom agents. OC's built-in `build` edits and `plan` writes a plan file then
-    // exits — neither fits Chat mode, which needs a read-only Q&A answerer. So we
-    // register our own `chat` agent: it may inspect the project (read/list/glob/grep)
-    // and fetch current info (web_fetch/web_search), but CANNOT edit/write/move/remove
-    // files or run commands/bash/subagents. Tool names match OC's wire names (note the
-    // underscores on the web tools). `permission` is the modern per-tool allow/deny map;
-    // `tools: {bool}` also works but is deprecated. OC reads this ONLY at startup, so a
-    // running OC process won't see a new agent until it restarts (a window reload does it).
+
     agent: {
-      // Kilo-Code-style grounding preamble shared by every agent. The #1 rule: NEVER answer
-      // about the codebase from training-data memory — always read first. Free-tier models
-      // hallucinate the moment they skip tool calls, so this is stated as an absolute.
-      // `GROUNDED` is prepended to each agent's mode-specific prompt below.
-      // (chat/planx are read-only; build may edit. Permissions differ per agent.)
+
       chat: {
         mode: 'primary',
         description: 'Read-only Q&A: reads the project and the web, cannot modify files or run commands.',
@@ -198,8 +155,7 @@ export function buildOcConfig(opts: OcConfigOptions): string {
           move: 'deny', remove: 'deny', task: 'deny', todowrite: 'deny', code_execution: 'deny',
         },
       },
-      // Agent mode. Overrides OC's built-in `build` so TierMux controls the prompt — the
-      // built-in's generic prompt lets free-tier models edit blindly from memory.
+
       build: {
         mode: 'primary',
         description: 'Full agent: reads the project, then edits files and runs commands.',
@@ -229,10 +185,7 @@ export function buildOcConfig(opts: OcConfigOptions): string {
           move: 'allow', remove: 'allow', task: 'allow', todowrite: 'allow',
         },
       },
-      // Plan mode. OC's BUILT-IN `plan` writes to .opencode/plans/*.md then `plan_exit`s into
-      // `build` — file/handoff-oriented, never returns the plan as text, so TierMux's
-      // planProposed card gets garbage. This custom `planx` is a read-only researcher that
-      // returns the plan INLINE as text. Named `planx` to avoid colliding with the built-in.
+
       planx: {
         mode: 'primary',
         description: 'Read-only planner: reads the project and returns a step-by-step plan as text.',
@@ -254,8 +207,7 @@ export function buildOcConfig(opts: OcConfigOptions): string {
         },
       },
     },
-    // Append our identity/behavior instructions to every agent's system prompt so the
-    // assistant presents as TierMux (not "opencode") and acts on the task directly.
+
     ...(opts.instructionsPaths?.length ? { instructions: opts.instructionsPaths } : {}),
     ...(Object.keys(mcp).length ? { mcp } : {}),
   };

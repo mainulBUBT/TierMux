@@ -4,23 +4,14 @@ import { normalizeAttachmentBlocks } from './content';
 
 export type TaskKind = 'trivial' | 'chat' | 'agent' | 'coding' | 'debug' | 'longContext' | 'plan' | 'vision';
 
-// Greeting / acknowledgement that is the WHOLE message (anchored) — safe to treat as trivial.
 const GREETING = /^(hi+|hey+|hello+|yo|sup|howdy|gm|gn|good (morning|afternoon|evening|night)|thanks?|thank you|thx|ty|ok(ay)?|k|cool|nice|great|awesome|bye|goodbye|cheers|np|no problem|got it|sounds good)\b[\s!.?]*$/i;
-// Action/edit verbs — broad on purpose so natural phrasings ("make X", "put Y") still trigger edits.
+
 const TASK_VERB = /\b(add|create|implement|build|write|fix|refactor|rename|move|delete|remove|update|change|modif(?:y|ies)|edit|generate|migrate|install|set ?up|wire|integrate|replace|convert|optimi[sz]e|run|test|make|put|turn|set|swap|drop|append|insert|extract|split|merge|comment|uncomment|format|bump|upgrade|downgrade|configure|enable|disable|support|handle|apply|hook|connect|expose|document|export|validate|cache|scaffold)\b/i;
-// Real bug/diagnosis language — broad enough to catch natural phrasings, narrow enough
-// not to hijack every "why" question. Groups:
-//   1. Explicit bug words: debug, bug, error, exception, crash, …
-//   2. "not <symptom-verb>": not loading, not showing, not rendering, …
-//   3. Inability: can't/cannot/won't/doesn't + action verb
-//   4. Wrong-value symptoms: shows 0, returns null, displays wrong, …
-//   5. State descriptions: "something wrong with", "is broken", "does nothing"
+
 const DEBUG_HINT = /\b(debug|bug|error|exception|stack ?trace|traceback|failing|fails?|failed|broken|crash(?:es|ed)?|throws?|not working|isn'?t working|won'?t (?:work|run|build|compile)|doesn'?t (?:work|run)|null pointer|segfault)\b|\bnot (?:loading|showing|rendering|displaying|working|saving|submitting|connecting|fetching|appearing|updating|redirecting|running|opening|logging in)\b|\b(?:can'?t|cannot|couldn'?t|won'?t|didn'?t|doesn'?t)\s+(?:log ?in|load|show|work|submit|run|open|save|fetch|connect|find|access|see|get|send|redirect|register|authenticate)\b|\b(?:shows?|returns?|displays?|gives?|outputs?)\s+(?:0|zero|null|undefined|nothing|empty|wrong|incorrect|the wrong)\b|\b(?:something (?:wrong|broken|off)|is (?:wrong|broken|incorrect)|looks (?:wrong|broken)|seems (?:broken|wrong)|does nothing|do nothing|nothing happens)\b/i;
-// Explanation-seeking phrasing — answer, don't act (read-only chat).
+
 const EXPLAIN_Q = /^\s*(how (?:do|to|can|could|would|does|is|are)|what(?:'?s| is| are| does| do)|why (?:do|does|is|are|would)|when (?:should|do|does|is)|which |who |whose |where (?:is|are|do|does|can)|should i|is it|are there|can i|could i|do i|does it|explain|describe|tell me|walk me|difference between)\b/i;
-// Code-editing intent: a referenced file path, a fenced code block, or a code-edit verb paired
-// with a code noun. Narrow so a generic "add a button" still routes as `agent` — only genuine
-// code work pulls into `coding` (which then prefers coder-tagged models).
+
 const FILE_REF = /(?:^|\s|[(["'`])(\.\/)?(\w[\w-./]*\.[a-zA-Z]{1,5})\b|```/;
 const CODE_VERB = /\b(refactor|implement|write|generate|port|migrate|optimi[sz]e|debug|fix|extend|extract|scaffold|wire)\b/i;
 const CODE_NOUN = /\b(function|method|class|component|hook|endpoint|api|route|handler|test|spec|schema|query|type|interface|module|util|service|model|directive|middleware|controller|repository|migration|contribution|submission|webhook|queue|observer|listener|factory|seeder|validation|request|resource|policy|scope|trait|enum|entity|payload|dto)\b/i;
@@ -67,16 +58,10 @@ export function classifyTask(text: string, signals?: ClassifySignals): TaskKind 
   if (!t) return 'chat';
   const words = t.split(/\s+/).filter(Boolean);
 
-  // Trivial: a short greeting/acknowledgement and nothing else.
   if (words.length <= 6 && GREETING.test(t) && !TASK_VERB.test(t)) return 'trivial';
 
-  // Vision: a visual attachment changes the kind so the router prioritizes a
-  // vision-capable model. We still let "explain this image" land on chat/agent
-  // (the image block is in the user message); the kind just steers the model
-  // pick so a vision model wins over a tiny text-only default.
   const hasVisual = (signals?.attachmentKinds ?? []).some((k) => k === 'image' || k === 'pdf');
 
-  // Large inputs need a big context window regardless of intent.
   if (t.length > 6000 || (signals?.attachments ?? 0) > 0 || (signals?.mentions ?? 0) >= 3) {
     return hasVisual ? 'vision' : 'longContext';
   }
@@ -118,25 +103,15 @@ export function orderForTask(
   const ctx = (a: CatalogModel, b: CatalogModel): number => (b.contextWindow ?? 0) - (a.contextWindow ?? 0);
   const tools = (a: CatalogModel, b: CatalogModel): number => Number(b.supportsTools) - Number(a.supportsTools);
   const reason = (a: CatalogModel, b: CatalogModel): number => Number(b.supportsReasoning) - Number(a.supportsReasoning);
-  // Balanced "fast AND capable" score: lower = better. Summing intelligence +
-  // speed means a fast smart model (intel 2, speed 1 → 3) leads a slow frontier
-  // one (intel 1, speed 5 → 6), so the first response is quick. Escalation still
-  // reaches the smartest models — the maxIntelligenceRank floor includes rank 1.
+
   const balanced = (a: CatalogModel, b: CatalogModel): number =>
     (a.intelligenceRank + a.speedRank) - (b.intelligenceRank + b.speedRank);
-  // Newer first. Only ever a tiebreaker — so when two models rate equally on what
-  // the task needs, the more recent one wins instead of the older equal always
-  // taking the slot. Missing `released` sorts as oldest.
+
   const recency = (a: CatalogModel, b: CatalogModel): number => (b.released ?? '').localeCompare(a.released ?? '');
-  // Prefer models tagged for the task (e.g. ["coding"]) — the tag is the clearest signal
-  // that a model was built for this kind of work, so it leads before generic fitness.
+
   const hasTag = (m: CatalogModel, tag: string): number => Number((m.tags ?? []).includes(tag));
   const codingTag = (a: CatalogModel, b: CatalogModel): number => hasTag(b, 'coding') - hasTag(a, 'coding');
 
-  // Vision-capable comparator: prefer a model that can actually see the image
-  // (supportsVision=true), then prefer tools+balanced+recency like agent mode.
-  // A non-vision model still ranks, just below every vision-capable one — so
-  // when nothing vision-capable is enabled, the user gets a sensible text fallback.
   const vision = (a: CatalogModel, b: CatalogModel): number => Number(!!b.supportsVision) - Number(!!a.supportsVision);
 
   const cmp: Record<TaskKind, (a: CatalogModel, b: CatalogModel) => number> = {

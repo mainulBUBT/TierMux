@@ -1,8 +1,5 @@
-// OpenCode backend launcher. Spawns `opencode serve` headless, pointing it at the
-// TierMux router proxy via OPENCODE_CONFIG_CONTENT, and discovers its URL from
-// stdout. Ports paviko/opencode-ide-plugin's BackendLauncher, adapted to inject
-// our routing config and to fail soft (a missing/broken OC binary just leaves the
-// integration off — the built-in agent keeps working).
+
+
 import { ChildProcess, spawn } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
@@ -133,7 +130,6 @@ export async function launchOpenCode(opts: OcLaunchOptions): Promise<OcConnectio
   });
   const cwd = opts.workspaceRoot ?? process.cwd();
 
-  // `--port 0` lets the OS pick an ephemeral port; we read the real one from stdout.
   const args = [binary, 'serve', '--port', '0', '--hostname', '127.0.0.1'];
   const shell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(binary);
 
@@ -173,7 +169,7 @@ export async function launchOpenCode(opts: OcLaunchOptions): Promise<OcConnectio
       const text = chunk.toString();
       stdout += text;
       log(`[oc stdout] ${text.trimEnd()}`);
-      // OC logs: `opencode server listening on http://127.0.0.1:4099`
+
       const match = stdout.match(/opencode server listening on (https?:\/\/\S+)/i);
       if (match && !settled) {
         settled = true;

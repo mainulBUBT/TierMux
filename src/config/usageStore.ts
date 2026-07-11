@@ -1,19 +1,5 @@
-// Lifetime token-usage accumulator. Persisted across sessions in globalState so
-// the user can see their "est. $ saved" and total token counts even after a
-// reload. Distinct from `UsageTracker` (src/config/usage.ts), which is the
-// in-memory per-session accumulator that the router already updates — this one
-// is the persistent counterpart the footer reads to show lifetime totals.
-//
-// Estimated savings are computed per-model from the catalog's published
-// "original provider" price (origInputPricePer1M / origOutputPricePer1M, USD
-// per 1M tokens) — i.e. what you would have paid the model's original paid
-// provider for the same tokens. Models with no published price contribute $0
-// to savings (their tokens still count toward the token/request totals). The
-// price is re-applied on every read against the *current* catalog so pricing
-// corrections in the remote sheet retroactively update the displayed savings
-// — we don't snapshot the dollar value at write time, because there's no real
-// cost (every provider here is free) and the number is a marketing/awareness
-// signal, not a bill.
+
+
 import * as vscode from 'vscode';
 import type { Catalog } from '../catalog/catalog';
 
@@ -22,12 +8,14 @@ interface ModelUsage {
   modelId: string;
   promptTokens: number;
   completionTokens: number;
+  reasoningTokens: number;
   requests: number;
 }
 
 interface LifetimeUsage {
   totalPromptTokens: number;
   totalCompletionTokens: number;
+  totalReasoningTokens: number;
   totalTokens: number;
   totalRequests: number;
   estimatedSavingsUsd: number;
@@ -72,6 +60,7 @@ function migrate(v1: PersistedLifetimeV1): PersistedLifetimeV2 {
       modelId: 'unknown',
       promptTokens: v1.totalPromptTokens || 0,
       completionTokens: v1.totalCompletionTokens || 0,
+      reasoningTokens: 0,
       requests: v1.totalRequests || 0,
     };
   }
@@ -92,9 +81,10 @@ export class UsageStore {
   }
 
   /** Record one successful request's token counts against the model that served it. */
-  addRequest(platform: string, modelId: string, promptTokens: number, completionTokens: number): void {
+  addRequest(platform: string, modelId: string, promptTokens: number, completionTokens: number, reasoningTokens?: number): void {
     const p = Math.max(0, Math.round(promptTokens || 0));
     const c = Math.max(0, Math.round(completionTokens || 0));
+    const r = Math.max(0, Math.round(reasoningTokens || 0));
     if (p === 0 && c === 0) return;
     const key = `${platform}::${modelId}`;
     const prev = this.data.byModel[key];
@@ -107,6 +97,7 @@ export class UsageStore {
           modelId,
           promptTokens: (prev?.promptTokens || 0) + p,
           completionTokens: (prev?.completionTokens || 0) + c,
+          reasoningTokens: (prev?.reasoningTokens || 0) + r,
           requests: (prev?.requests || 0) + 1,
         },
       },
@@ -126,10 +117,11 @@ export class UsageStore {
    *  with no published price (or no longer present in the catalog) price
    *  at $0 for that slice of usage — never a flat/blended fallback. */
   getLifetime(catalog: Catalog): LifetimeUsage {
-    let p = 0, c = 0, requests = 0, savings = 0;
+    let p = 0, c = 0, r = 0, requests = 0, savings = 0;
     for (const usage of Object.values(this.data.byModel)) {
       p += usage.promptTokens;
       c += usage.completionTokens;
+      r += usage.reasoningTokens;
       requests += usage.requests;
       const model = catalog.find(usage.platform, usage.modelId);
       const inPrice = model?.origInputPricePer1M ?? 0;
@@ -139,6 +131,7 @@ export class UsageStore {
     return {
       totalPromptTokens: p,
       totalCompletionTokens: c,
+      totalReasoningTokens: r,
       totalTokens: p + c,
       totalRequests: requests,
       estimatedSavingsUsd: savings,

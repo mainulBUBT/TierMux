@@ -608,7 +608,8 @@
     "bench:dataset": "esbuild scripts/bench/dataset.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/benchDataset.cjs && node dist/benchDataset.cjs",
     "package": "vsce package --no-dependencies",
     "fetch:binaries": "node scripts/fetch-opencode.mjs",
-    "package:full": "npm run fetch:binaries && npm run build && vsce package --no-dependencies"
+    "package:full": "npm run fetch:binaries && npm run build && vsce package --no-dependencies",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
@@ -617,6 +618,7 @@
     "@vscode/vsce": "^2.32.0",
     "esbuild": "^0.23.0",
     "highlight.js": "^11.10.0",
+    "husky": "^9.1.7",
     "marked": "^12.0.2",
     "typescript": "^5.5.4"
   },

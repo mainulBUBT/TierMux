@@ -1,14 +1,5 @@
-// Git-backed working-tree snapshots for checkpoints. The agent (OC's `build` agent in Agent
-// mode) edits the workspace directly, bypassing TierMux's EditGate — so record()-based
-// checkpoints see nothing. These helpers snapshot the working tree via git (non-mutating)
-// and restore to it on revert, independent of who applied the edits. This is how Cursor and
-// Copilot implement checkpoint revert.
-//
-// Non-mutation guarantee: a working tree is captured by staging into a THROWAWAY index file
-// (GIT_INDEX_FILE) and writing a tree object from it — the user's real index, HEAD, and
-// working tree are never touched. Changed files are computed by diffing TWO captured trees
-// (pure tree-to-tree; the real index is never involved, so untracked files don't confuse it).
-// Restore uses `git restore --worktree` (worktree only, never stages).
+
+
 import { execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
 import * as vscode from 'vscode';
@@ -77,7 +68,7 @@ async function treePaths(cwd: string, tree: string): Promise<Set<string>> {
 export async function changedSince(cwd: string, beginTree: string): Promise<CheckpointFile[]> {
   const curTree = await writeWorkTree(cwd);
   if (!curTree) return [];
-  // Pure tree-to-tree diff: paths whose blobs differ between begin and now.
+
   const diffOut = await git(cwd, ['diff', '--name-only', '--no-renames', beginTree, curTree]);
   const changed = diffOut.split('\n').map((s) => s.trim()).filter(Boolean);
   if (!changed.length) return [];
@@ -110,11 +101,10 @@ export async function restoreToTree(cwd: string, beginTree: string): Promise<num
     const rel = f.rel;
     try {
       if (inBegin.has(rel)) {
-        // Restore worktree content from the begin tree (recreates deleted files). `git restore`
-        // defaults to worktree-only — the index is NOT touched unless --staged is passed.
+
         await git(cwd, ['restore', '--source', beginTree, '--worktree', '--', rel]);
       } else {
-        // Created after begin and not in the begin tree → remove it.
+
         const uri = vscode.Uri.file(path.join(cwd, rel));
         if (await pathExists(uri)) await vscode.workspace.fs.delete(uri, { recursive: false, useTrash: true });
       }

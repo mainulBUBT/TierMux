@@ -3956,6 +3956,9 @@ import { handleToolStatus } from './handlers/toolStatus';
       tiles.appendChild(t);
     };
     tile('◆', fmtTokens(lt.totalTokens || 0), 'Total tokens');
+    if (lt.totalReasoningTokens) {
+      tile('◈', fmtTokens(lt.totalReasoningTokens || 0), 'Reasoning tokens');
+    }
     tile('↻', String(lt.totalRequests || 0), 'Total requests');
     tile('$', fmtUsd(lt.estimatedSavingsUsd || 0), 'Est. saved');
     el.appendChild(tiles);

@@ -1,6 +1,4 @@
-// System prompts used by the v7 utility paths (title generation, conversation compaction).
-// The agent-mode prompts (chat/agent/plan/debug/orchestrator/responsibility) are no longer
-// used in v7 — OpenCode supplies its own agent prompts at runtime.
+
 
 export const SUMMARY_SYSTEM = `You compress a coding conversation into a compact, self-contained
 summary so it can continue with far less context. Capture: the user's goals and constraints, key

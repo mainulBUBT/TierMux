@@ -1,5 +1,5 @@
-// Connects the configured MCP stdio servers, aggregates their tools into the
-// agent's tool space (namespaced `mcp__<server>__<tool>`), and routes calls.
+
+
 import * as vscode from 'vscode';
 import type { ChatToolDefinition } from '../shared/types';
 import type { McpServerInfo } from '../messages';
@@ -59,8 +59,7 @@ export class McpManager {
   private async connectAll(): Promise<void> {
     const cfg = this.readConfig();
     const wsCwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    // Build into locals and swap in atomically at the end — never append to the
-    // shared maps mid-flight, so an overlapping run can't double-list servers.
+
     const clients = new Map<string, McpClient>();
     const toolMap = new Map<string, { server: string; tool: string }>();
     const infos: McpServerInfo[] = [];
@@ -83,7 +82,7 @@ export class McpManager {
         infos.push({ name, status: 'error', toolCount: 0, tools: [], error: e instanceof Error ? e.message : String(e) });
       }
     }));
-    // Swap in the freshly built state, then dispose the connections it replaces.
+
     const old = this.clients;
     this.clients = clients;
     this.toolMap = toolMap;

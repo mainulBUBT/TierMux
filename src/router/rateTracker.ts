@@ -1,13 +1,10 @@
-// Proactive rate-limit tracker.
-// Counts actual outbound requests per model on a rolling 1-minute and 24-hour window.
-// The router checks canSend() before each attempt — models known to be at their limit
-// are skipped immediately rather than discovered via a 429 round-trip.
+
 
 const MIN_MS = 60_000;
 const DAY_MS = 86_400_000;
 
 export class RateTracker {
-  // Epoch-ms timestamps of each request, keyed by `platform::modelId`
+
   private ts = new Map<string, number[]>();
 
   /** True if sending now would stay within both the per-minute and per-day limits. */
@@ -37,7 +34,7 @@ export class RateTracker {
     const key = `${platform}::${modelId}`;
     const stamps = this.prune(key, now).filter(t => now - t < MIN_MS);
     if (stamps.length < rpmLimit) return 0;
-    // Oldest stamp in the window; once it ages out, we're under limit again.
+
     const oldest = stamps.sort((a, b) => a - b)[0];
     return Math.max(0, oldest + MIN_MS - now);
   }

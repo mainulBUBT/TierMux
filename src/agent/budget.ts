@@ -1,5 +1,5 @@
-// Token budgeting: rough estimation + fitting a message list to a model's
-// context window. Estimation uses the common ~4-chars-per-token heuristic.
+
+
 import type { ChatMessage } from '../shared/types';
 import { contentToString } from './content';
 
@@ -36,11 +36,11 @@ export function fitMessages(messages: ChatMessage[], maxInputTokens: number): { 
     kept.unshift(rest[i]);
     used += t;
   }
-  // Don't start mid-round (orphan tool result / dangling tool-call).
+
   while (kept.length && kept[0].role !== 'user') kept.shift();
 
   let out = [...system, ...kept];
-  // If even that overflows (huge final message), hard-truncate the last one.
+
   if (estimateMessagesTokens(out) > maxInputTokens && out.length) {
     const last = out[out.length - 1];
     const budgetChars = Math.max(2000, maxInputTokens) * 4;

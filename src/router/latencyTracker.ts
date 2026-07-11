@@ -1,5 +1,4 @@
-// Per-model latency tracker. Keeps a rolling window of the last 20 request
-// durations so the router can prefer genuinely fast models for simple tasks.
+
 
 const MAX_SAMPLES = 20;
 

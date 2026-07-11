@@ -1,0 +1,2 @@
+# pre-push — full PUBLISHING.md gate before anything reaches the public remote.
+node scripts/prepublish-check.mjs

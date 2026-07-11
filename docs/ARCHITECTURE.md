@@ -1,9 +1,5 @@
 # TierMux Architecture
 
-> **Reading guide:** sections marked **🚢 Shipped in v0.1.0-beta.6** describe
-> what the codebase actually does today. Sections marked **🛣️ Roadmap (Phase
-> 3+)** describe the future design target — they're not yet implemented and
-> should be treated as design notes, not behavior contracts.
 
 ## Identity
 

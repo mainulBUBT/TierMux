@@ -1,7 +1,5 @@
-// Session-context replay — used when sdk.ts recreates an OC session mid-conversation
-// (escalation, manual model switch, a retry-created session, or a Hot Standby prewarm)
-// so the new session doesn't start with amnesia. Kept separate from sdk.ts's main OC
-// driver loop since it's pure enough to unit-test without a live OC connection.
+
+
 import type { ChatMessage } from '../shared/types';
 import { contentToString } from './content';
 
@@ -39,9 +37,7 @@ export function findReplayBoundary(oldMessages: OcMessage[], priorUserTurnCount:
  * session, on the very first prompt sent to it.
  */
 export function formatTranscriptForReplay(messages: ChatMessage[]): string {
-  // Text only — an attachment's raw base64 (image_url/file blocks) must never leak into
-  // this fallback prompt as literal JSON. This path already degrades to text-only for
-  // attachments (no FilePart is resent here), matching contentToString's own semantics.
+
   const contentOf = (m: ChatMessage): string => contentToString(m.content);
   const prior = messages.slice(0, -1);
   const current = messages[messages.length - 1];

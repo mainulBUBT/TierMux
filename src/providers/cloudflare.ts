@@ -1,5 +1,5 @@
-// Cloudflare Workers AI provider. The API key is
-// "account_id:api_token"; the account id builds the URL, the token is the bearer.
+
+
 import type { ChatCompletionChunk, ChatCompletionResponse, ChatMessage } from '../shared/types';
 import { BaseProvider, providerHttpError } from './base';
 import type { CompletionOptions } from './options';

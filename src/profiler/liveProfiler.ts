@@ -91,9 +91,7 @@ export class LiveProfiler implements IProfilerService {
 
     const startMs = this.turnStartTimes.get(turnId) ?? trace.timestamp;
     trace.timing.totalMs = Date.now() - startMs;
-    // Estimate provider time: total minus what we measured explicitly.
-    // The LLM calls happen inside OC (Router Proxy calls), so our timerStart/timerEnd
-    // for 'Provider' is never called from sdk.ts. Infer it from the gap instead of 0.
+
     if (trace.timing.providerMs === 0 && trace.timing.totalMs > 0) {
       trace.timing.providerMs = Math.max(0, trace.timing.totalMs - trace.timing.sessionSetupMs - trace.timing.toolMs);
     }

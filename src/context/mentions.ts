@@ -1,5 +1,5 @@
-// Resolves @file / @folder / @symbol mentions and parses slash commands from a
-// chat message, returning extra context text to inject and a cleaned prompt.
+
+
 import * as vscode from 'vscode';
 import type { MentionItem } from '../messages';
 
@@ -17,7 +17,7 @@ export async function searchMentions(query: string): Promise<MentionItem[]> {
   for (const f of files) {
     const rel = vscode.workspace.asRelativePath(f);
     push({ label: rel.split('/').pop() || rel, insert: rel, kind: 'file', detail: rel });
-    // Derive parent folders that match the query.
+
     const parts = rel.split('/');
     for (let i = parts.length - 1; i >= 1; i--) {
       const seg = parts[i - 1];
@@ -37,7 +37,6 @@ export async function searchMentions(query: string): Promise<MentionItem[]> {
     }
   }
 
-  // Files first, then folders, then symbols; cap the list.
   const order = { file: 0, folder: 1, symbol: 2 } as const;
   return items.sort((a, b) => order[a.kind] - order[b.kind]).slice(0, 20);
 }
@@ -71,7 +70,7 @@ export async function resolveMentions(text: string): Promise<string> {
 }
 
 async function resolveOne(target: string): Promise<string | undefined> {
-  // @file: try to find a matching workspace file and inline its content.
+
   const files = await vscode.workspace.findFiles(`**/${target}`, '**/node_modules/**', 1);
   if (files.length > 0) {
     try {
@@ -80,10 +79,10 @@ async function resolveOne(target: string): Promise<string | undefined> {
       return `Context — file \`${vscode.workspace.asRelativePath(files[0])}\`:\n\`\`\`\n${text}\n\`\`\``;
     } catch { /* fall through */ }
   }
-  // @folder: if the target resolves to a directory, inject a listing.
+
   const folder = await resolveFolder(target);
   if (folder) return folder;
-  // @symbol: workspace symbol search.
+
   const symbols = (await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
     'vscode.executeWorkspaceSymbolProvider', target,
   )) ?? [];

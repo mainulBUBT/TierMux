@@ -1,10 +1,5 @@
-// Agent engine boundary — the only file chatViewProvider calls. OpenCode (OC) is the
-// SOLE agent engine: every run is driven over OC's HTTP/SSE API, which in turn routes
-// model calls through the TierMux router proxy. No AI SDK, no built-in agent loop.
-//
-// Contract preserved (AgentOpts / AgentResult / the four public functions) so
-// chatViewProvider is unchanged. When OC isn't connected, runs surface a clear error
-// rather than silently falling back to a second engine.
+
+
 import type { Router } from '../router/router';
 import { AllModelsFailedError } from '../router/router';
 import type { ChatContentBlock, ChatMessage, TodoItem, ReasoningEffort } from '../shared/types';
@@ -17,7 +12,6 @@ import { assessAnswerQuality } from './answerQuality';
 import { contentToString } from './content';
 import { findReplayBoundary, formatTranscriptForReplay } from './sessionReplay';
 
-// ---- Trace toggle — when true, raw OC SSE frames are logged via the supplied sink. ----
 let traceOcEvents = false;
 let traceSink: ((raw: string) => void) | undefined;
 /** Setter exposed for `extension.ts` (wires to the `tiermux.engine.traceOcEvents` config). */
@@ -26,35 +20,23 @@ export function setOcTrace(on: boolean, sink?: (raw: string) => void): void {
   if (sink) traceSink = sink;
 }
 
-// ---- Quality-gate toggle — when true, weak-but-non-empty answers escalate to the
-// next chain hop (FrugalGPT-style) instead of being accepted. Wires to
-// `tiermux.agent.qualityGate`. See plans/groovy-tinkering-swan.md. ----
 let qualityGateEnabled = true;
 /** Setter for `extension.ts` to wire `tiermux.agent.qualityGate` (refreshed on config change). */
 export function setQualityGate(on: boolean): void {
   qualityGateEnabled = on;
 }
 
-// ---- Hot-standby toggle — when true, the NEXT chain hop's OC session is created in the
-// background while the current hop is still running, so escalation (quality gate / no-answer
-// / network retry) doesn't pay session-creation latency on top of the failure. Wires to
-// `tiermux.agent.hotStandby`. ----
 let hotStandbyEnabled = true;
 /** Setter for `extension.ts` to wire `tiermux.agent.hotStandby` (refreshed on config change). */
 export function setHotStandby(on: boolean): void {
   hotStandbyEnabled = on;
 }
 
-// ---- Chat hedging toggle — when true, a short first chat turn races `fast` and `smart`
-// concurrently instead of sequentially, taking whichever produces a good answer first.
-// Wires to `tiermux.agent.chatHedging`. ----
 let hedgingEnabled = true;
 /** Setter for `extension.ts` to wire `tiermux.agent.chatHedging` (refreshed on config change). */
 export function setHedging(on: boolean): void {
   hedgingEnabled = on;
 }
-
-// ---- Public types (frozen — chatViewProvider depends on these) ----
 
 export interface ToolEvent {
   toolCallId: string;
@@ -84,7 +66,7 @@ export interface AgentOpts {
   taskKind?: string;
   /** TierMux chat session id — keys the long-lived OC session (OC holds history). */
   sessionId?: string;
-  // Streaming callbacks → webview postMessage
+
   onChunk: (text: string) => void;
   onTool: (e: ToolEvent) => void;
   onReasoning: (text: string) => void;
@@ -118,10 +100,7 @@ function extractOcError(p: any): string {
   const e = p?.error;
   if (typeof e === 'string' && e.trim()) return e.trim();
   const obj = e && typeof e === 'object' ? e : {};
-  // First non-empty string value wins. OC error payloads vary by build and upstream
-  // provider — message can sit at error.message, error.error.message, message, msg,
-  // or (commonly) the less-obvious details/detail/reason/data/cause fields. Cast a
-  // wide net so the real cause surfaces instead of the useless "OC session error".
+
   const pick = (...vals: any[]): string => {
     const v = vals.find((v) => typeof v === 'string' && v.trim());
     return v ? v.trim() : '';
@@ -143,8 +122,6 @@ function extractOcError(p: any): string {
 /** Errors that won't be fixed by retrying on the same model (so we skip the one-shot retry and
  *  go straight to escalation): context-length/overflow, auth/key, and provider-side rejections. */
 const NON_RETRYABLE = /context\s*length|token\s*limit|maximum\s*context|too\s+(long|large|many\s*tokens)|rate\s*limit|quota|unauthorized|invalid\s+api\s?key|forbidden|\b401\b|\b403\b/i;
-
-// ---- OpenCode engine state ----
 
 let ocClient: OcClient | undefined;
 /** TierMux session id → OC session id (OC accumulates conversation history server-side). */
@@ -188,10 +165,7 @@ export async function getOcSessionDiff(sessionId: string): Promise<Array<{ file:
  */
 const FALLBACK_CHAIN: Record<'chat' | 'agent' | 'plan', string[]> = {
   chat: ['fast', 'smart'],
-  // Two hops of `smart`: a dropped connection (or a hung/broken OC session) escalates to
-  // a FRESH smart run rather than downgrading to `fast`. The router still rotates the
-  // underlying provider/key per hop, so the second attempt often lands on a different
-  // upstream — full quality preserved, no silent downgrade on a transient network blip.
+
   agent: ['smart', 'smart'],
   plan: ['smart'],
 };
@@ -212,27 +186,19 @@ async function runViaOc(
   chainIndex = 0,
   staleOcId?: string,
   onSessionId?: (id: string) => void,
-  // Classified ONCE at hop 0 and threaded through every recursive escalation call —
-  // `opts.messages` never changes turn-to-turn within a single user turn, so
-  // recomputing per hop was redundant and (per review) makes the escalation decision
-  // deterministic-by-construction rather than deterministic-by-luck.
+
   taskKindHint?: TaskKind,
 ): Promise<AgentResult> {
   if (!ocClient) {
-    // Must throw, not return — a normal return makes callers post a blank assistant
-    // message with a zeroed "0 in · 0 out" usage footer, hiding the real error behind
-    // what looks like a completed (empty) turn.
+
     throw new Error('TierMux engine is not running. Check the "TierMux Engine" output channel for details, then reload the window to retry.');
   }
   const client = ocClient;
 
   const key = opts.sessionId ?? '__default__';
-  // `planx` is our custom read-only planner (returns the plan as text). NOT OC's built-in `plan`,
-  // which writes a plan file and plan_exit-hands-off to build — wrong for TierMux's planProposed card.
+
   const agent = opts.mode === 'chat' ? 'chat' : opts.mode === 'plan' ? 'planx' : 'build';
-  // Honor the user's explicitly-selected model; fall back to the routing chain only when on auto.
-  // An explicit user pin means there's nothing to fall back to — treat it as a length-1 chain so
-  // `tryEscalate` below never tries to hand off away from the model the user chose.
+
   const pinned = opts.pinnedModel && opts.pinnedModel !== 'auto' ? opts.pinnedModel : undefined;
   const chain = pinned ? [pinned] : (FALLBACK_CHAIN[opts.mode] ?? ['smart']);
   const hop = Math.min(chainIndex, chain.length - 1);
@@ -241,12 +207,9 @@ async function runViaOc(
   const modelID = pinned ?? profile;
 
   let ocId = ocSessions.get(key);
-  // Source session to replay history FROM when we're about to create a brand-new OC
-  // session mid-conversation (escalation/retry pass their old ocId in via `staleOcId`;
-  // a same-call model switch captures its own `ocId` right here, before nulling it).
+
   let forkSourceOcId = staleOcId;
-  // If the user changed the model since the last run, the existing OC session was created
-  // with the old model. OC doesn't switch models mid-session, so we start a fresh one.
+
   if (ocId && ocSessionModels.get(key) !== modelID) {
     console.log(`[tiermux] model changed (${ocSessionModels.get(key)} → ${modelID}), resetting OC session`);
     forkSourceOcId = ocId;
@@ -255,21 +218,7 @@ async function runViaOc(
     ocSessionAgents.delete(key);
     ocId = undefined;
   }
-  // If the user switched mode (Ask/Plan/Agent) since the last run in this tab, the existing
-  // OC session was created bound to the OLD agent (chat/planx/build) — OC fixes an agent's
-  // system prompt, tool permissions, and read-only-ness at session creation and does not
-  // switch it mid-session, even though the per-prompt `agent` field is accepted on the wire.
-  // Without this reset, e.g. Ask → Agent kept running the read-only `chat` agent under the
-  // hood: it can't edit/run commands, so it either answers as if still read-only or produces
-  // no usable output — surfacing as a hallucinated "ask mode" answer with a 0 in / 0 out
-  // usage footer.
-  // Deliberately NOT set as a fork source (unlike the model-change reset above): OC's
-  // `/session/fork` endpoint takes no agent override, so a forked session likely inherits
-  // the OLD agent binding too — defeating the whole point of this reset. Leaving
-  // `forkSourceOcId` untouched falls through to the transcript-replay path below instead,
-  // which calls `createSession({ agent, ... })` directly with the CORRECT new agent and
-  // replays prior turns as formatted text — guaranteed correct agent, at the cost of OC
-  // re-reading history as text rather than its own structured memory.
+
   if (ocId && ocSessionAgents.get(key) !== undefined && ocSessionAgents.get(key) !== agent) {
     console.log(`[tiermux] mode changed (${ocSessionAgents.get(key)} → ${agent}), resetting OC session`);
     ocSessions.delete(key);
@@ -277,41 +226,22 @@ async function runViaOc(
     ocSessionAgents.delete(key);
     ocId = undefined;
   }
-  // Always use the virtual profile (fast/smart) for OC session creation so OC never needs
-  // to know about specific model IDs. OC's static model registry is built at launch time
-  // from enabled models — custom endpoint models added or enabled later would cause
-  // createSession to 400. Instead, we pass the real pinned model to routerProxy via
-  // setForcedModel (an in-process channel safe to use because runs are serialized) so the
-  // router forces it on every completion call without OC needing to know about it.
+
   const VIRTUAL = new Set(['auto', 'fast', 'smart']);
   const isVirtual = VIRTUAL.has(modelID);
-  // `profile` is NOT safe to use here when pinned: `chain` collapses to `[pinned]` in that
-  // case, so `profile` is the raw "platform::modelId" pin itself, not a virtual name — OC
-  // 400s on it. Use the mode's own virtual chain position instead so createSession always
-  // gets a name OC recognizes, regardless of whether this run is pinned.
+
   const virtualChain = FALLBACK_CHAIN[opts.mode] ?? ['smart'];
   const ocModelID = isVirtual ? modelID : virtualChain[Math.min(hop, virtualChain.length - 1)];
   if (!isVirtual) setForcedModel(modelID);
 
   const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
-  // NOT JSON.stringify: array content (image/PDF attachments) has a `{type:'text',...}`
-  // block holding the actual question/file-text, plus binary image_url/file blocks OC's
-  // single text part can't carry. Dumping the raw array as JSON sent the base64 payload
-  // as literal prompt text — unreadable to the model and easily mistaken for the turn
-  // "forgetting" its attachment once that garbage replaced the real question.
+
   const userText = contentToString(lastUser?.content);
-  // Classified once (hop 0) and reused on every escalation hop — see the `taskKindHint`
-  // param doc above.
+
   const taskKind: TaskKind = taskKindHint ?? classifyTask(userText, { attachmentKinds: attachmentKindsFromContent(lastUser?.content ?? '') });
-  // Push the run's true task kind to the router for every OC completion call. The
-  // router otherwise reclassifies from each request's last-user content, which OC
-  // may forward without the image/file blocks — so a visual attachment would be
-  // missed and the turn routed to a text-only model. Only 'vision' needs forcing
-  // (text-bearing content survives OC intact); set unconditionally, cleared at exit.
+
   setForcedTaskKind(taskKind === 'vision' ? 'vision' : undefined);
-  // Also push the actual image_url/file blocks so the router proxy can splice them
-  // back into OC's completion request if OC's own re-serialization dropped them —
-  // see setForcedAttachments. Only needed alongside the vision forcing above.
+
   const attachmentBlocks = Array.isArray(lastUser?.content)
     ? (lastUser.content as ChatContentBlock[]).filter((b) => {
       const type = typeof b === 'object' && b !== null ? (b as { type?: string }).type : undefined;
@@ -319,8 +249,7 @@ async function runViaOc(
     })
     : [];
   setForcedAttachments(taskKind === 'vision' ? attachmentBlocks : undefined);
-  // Push the composer's chosen reasoning effort — OC's own re-serialized completion
-  // request has no channel for it, so without this the effort picker had no effect.
+
   setForcedReasoningEffort(opts.effort);
 
   const profiler = opts.profiler;
@@ -349,25 +278,14 @@ async function runViaOc(
       console.log(`[tiermux] using pre-warmed OC session id=${ocId} for hop=${hop} model=${modelID}`);
     }
   }
-  // Replay text for the FIRST prompt only (transcript-fallback path) — undefined means
-  // "send userText as normal," exactly like every reused session today.
+
   let firstPromptOverride: string | undefined;
-  // A brand-new OC session mid-conversation starts with zero memory of prior turns (OC
-  // scopes history per session id). Before falling back to a blank session, try to fork
-  // the old one so the new session inherits everything already settled. No-ops (returns
-  // undefined) when there's no prior history (a session's true first turn) or no source
-  // to fork from — those cases fall straight through to today's exact createSession path.
+
   const priorUserTurnCount = opts.messages.filter((m) => m.role === 'user').length - 1;
   if (!ocId && forkSourceOcId && priorUserTurnCount > 0) {
     try {
       const oldMessages = await client.messages(forkSourceOcId);
-      // `client.messages()` silently swallows any fetch error to `[]` — indistinguishable
-      // from a real (impossible) empty session. Since we only ever reach here when the old
-      // session is known to have had activity, an empty result means the fetch failed, not
-      // that there's nothing to exclude. Forking with an unresolved boundary in that case
-      // would ask OC for the session's CURRENT live state — which, for escalation/retry,
-      // already contains the very turn we're trying to discard. Bail to the transcript
-      // fallback instead of risking that leak.
+
       if (oldMessages.length === 0) throw new Error('messages() returned no history — refusing an unbounded fork');
       const boundary = findReplayBoundary(oldMessages as any, priorUserTurnCount);
       const forked = await client.fork(forkSourceOcId, boundary);
@@ -386,18 +304,14 @@ async function runViaOc(
       firstPromptOverride = formatTranscriptForReplay(opts.messages);
     }
   } else if (!ocId && priorUserTurnCount > 0) {
-    // No fork source (e.g. the extension host restarted and lost the in-memory OC
-    // session map, but chatViewProvider's persisted history survived). We still have
-    // full ground truth in `opts.messages` — replay it rather than starting the new
-    // session with zero memory of settled turns.
+
     console.log(`[tiermux] no OC session found for an existing conversation — replaying transcript from history`);
     firstPromptOverride = formatTranscriptForReplay(opts.messages);
   }
   if (!ocId) {
     let info: unknown;
     try {
-      // OC's createSession schema wants `model.id` (NOT `model.modelID`, which the
-      // prompt endpoint uses). Sending modelID here 400s and the agent never starts.
+
       info = await client.createSession({ agent, model: { providerID: 'tiermux', id: ocModelID } });
     } catch (err) {
       console.error(`[tiermux] OC createSession failed:`, err);
@@ -405,13 +319,10 @@ async function runViaOc(
       setForcedTaskKind(undefined);
       setForcedAttachments(undefined);
       setForcedReasoningEffort(undefined);
-      // Must throw, not return — a normal return here makes callers post a blank assistant
-      // message with a zeroed "0 in · 0 out" usage footer, hiding the real error behind
-      // what looks like a completed (empty) turn.
+
       throw new Error(`TierMux engine failed to start a session: ${err instanceof Error ? err.message : err}`);
     }
-    // Defensive: handle response shapes where the id field is named differently
-    // or the entire body IS the id.
+
     const id = (info as any)?.id ?? (info as any)?.sessionID ?? (info as any)?.sessionId ?? (info as any)?.ID;
     if (typeof id === 'string' && id.length > 0) {
       ocId = id;
@@ -435,18 +346,10 @@ async function runViaOc(
   }
   onSessionId?.(ocId); // internal hook (Chat Hedging) — lets a caller track this hop's OC session id
 
-  // What actually goes out over the wire: `toOcParts(lastUser.content)` (text + attachments,
-  // in original order), UNLESS `firstPromptOverride` (set only on the transcript-fallback path
-  // above) replaces it ONCE for a freshly recreated session — see the `parts` build below.
-  // `userText` itself stays the real latest question — used for quality-gate
-  // classification/logging regardless of which content was actually sent to OC.
-
   let out = '';
   const platform = 'tiermux';
   const model = modelID;
-  // Tracks whether we've already announced the "now answering" phase. Emitted once on
-  // the first real text token so the live status reads Thinking… → Responding…, and so
-  // `s.lastStepLabel` / buffered (non-streaming) providers land on the right phase too.
+
   let responded = false;
   let firstChunkReceived = false;
   let promptSentAt = 0;
@@ -478,17 +381,11 @@ async function runViaOc(
       setForcedTaskKind(undefined);
       setForcedAttachments(undefined);
       setForcedReasoningEffort(undefined);
-      // Every terminal path funnels through finish()/fail() exactly once (guarded by
-      // `done`) — the single choke point to reclaim intentionallyAbortedOcIds, instead of
-      // relying on the session.error handler catching every abort (the watchdog timeout
-      // and the prompt().catch() path both settle the run without ever seeing that event).
+
       intentionallyAbortedOcIds.delete(ocId);
-      // Drop any pre-warmed session for a hop this run never escalated into — it would
-      // otherwise leak (OC has no delete API; this just stops us tracking/reusing it).
+
       for (const k of [...prewarmedSessions.keys()]) if (k.startsWith(`${key}:`)) prewarmedSessions.delete(k);
-      // Replace the virtual profile ("fast"/"smart") with the concrete provider+model
-      // the Router actually resolved this run onto, so the UI shows the real pick (e.g.
-      // "chutes / stepfun/step-3.7-flash:free") instead of the generic "tiermux".
+
       const routed = getLastRoutedModel();
       if (routed && routed.model && routed.model !== model) {
         const realPlatform = routed.runtimeName ?? routed.platform;
@@ -498,10 +395,7 @@ async function runViaOc(
       }
       resolve(r);
     };
-    // Reject the run (rather than resolving via onError) ONLY for terminal router
-    // exhaustion — every provider/key failed. Throwing AllModelsFailedError lets the
-    // chatViewProvider catch surface the "enable these free models" recommendation
-    // instead of a cryptic 503. Reuses `done` so it can't race finish().
+
     const fail = (err: Error) => {
       if (done) return;
       done = true;
@@ -516,20 +410,11 @@ async function runViaOc(
       reject(err);
     };
 
-    // Empty-result takeover: if a run ends with NO usable text (model gave up, tool loop
-    // died empty, OC errored mid-run), hand off to the NEXT link in `chain` so a stronger
-    // model takes over — mirrors the 5xx retry in the prompt().catch() below. Bounded by
-    // `isFinalHop` (the chain's length) so a genuinely unanswerable turn still terminates.
-    // Returns true when a hop was kicked off; the caller MUST then skip finish() (the
-    // retry resolves later). Only invoked asynchronously (from event handlers / watchdog),
-    // by which point `unsub`/`watchdog` below are initialized.
     const tryEscalate = (force = false, weak?: { primary?: string }): boolean => {
-      // Pinned model / last hop: nowhere to hand off to.
+
       if (isFinalHop) { console.log(`[tiermux][DBG] tryEscalate SKIP: isFinalHop (model=${modelID} hop=${hop} chain=${chain.join('>')})`); return false; }
       const hasOut = !!out.trim();
-      // Accept a good answer: text present, not a forced (network) retry, and not
-      // flagged weak by the quality gate. (Previously this bailed on ANY non-empty
-      // out — the weak param is what lets weak-but-non-empty answers escalate.)
+
       if (!force && hasOut && !weak) { console.log(`[tiermux][DBG] tryEscalate SKIP: accepted (hasOut=${hasOut} force=${force} weak=${weak ? JSON.stringify(weak) : '-'})`); return false; }
       console.log(`[tiermux][DBG] tryEscalate DECIDE: force=${force} hasOut=${hasOut} weak=${weak ? JSON.stringify(weak) : '-'} model=${modelID}`);
       const nextProfile = chain[hop + 1];
@@ -543,18 +428,11 @@ async function runViaOc(
       ocSessionAgents.delete(key);
       unsub();
       clearTimeout(watchdog);
-      // hop+1 carries _retryCount unchanged: an OC-session drop shouldn't burn the prompt()
-      // retry budget — that's for transient 5xx on a single hop, not a profile escalation.
+
       void runViaOc(opts, _retryCount, hop + 1, ocId, undefined, taskKind).then(finish, fail);
       return true;
     };
 
-    // Quality gate (FrugalGPT-style): if the run produced a WEAK-but-non-empty
-    // answer (refusal / repetition / truncation / too-short-for-task), escalate
-    // to the next chain hop instead of accepting it. `userText` is the last user
-    // message, already resolved above; the task kind is recomputed locally
-    // because AgentOpts.taskKind is not populated by the caller. Bounded by
-    // isFinalHop (pinned/last hop) and the qualityGateEnabled kill-switch.
     const maybeEscalateWeak = (): boolean => {
       const len = out.trim().length;
       if (!out.trim() || isFinalHop || !qualityGateEnabled) {
@@ -571,11 +449,6 @@ async function runViaOc(
       return escalated;
     };
 
-    // Hot standby: create the NEXT hop's OC session in the background while THIS hop is
-    // still generating, so tryEscalate() can reuse it instead of blocking on createSession().
-    // Deliberately does NOT touch setForcedModel — that stays deferred until the pre-warmed
-    // session is actually swapped in for a real run, so it can't race the active hop's
-    // forced model (setForcedModel is a single global, safe only when calls stay serialized).
     const prewarmNextHop = (): void => {
       if (!hotStandbyEnabled || isFinalHop) return;
       const nextHop = hop + 1;
@@ -586,22 +459,11 @@ async function runViaOc(
         const id = (info as any)?.id ?? (info as any)?.sessionID ?? (info as any)?.sessionId ?? (info as any)?.ID;
         return typeof id === 'string' && id.length > 0 ? id : undefined;
       };
-      // Prior history exists: fork THIS (currently running) session ahead of time so the
-      // prewarmed session is correctly warm (has context), not just available. Falls back
-      // to a blank session (today's behavior) on any failure — the escalation path's own
-      // fork-then-transcript-fallback logic still covers it if this prewarm didn't land.
+
       const create = priorUserTurnCount > 0
         ? client.messages(ocId!).then((oldMessages) => {
             const boundary = findReplayBoundary(oldMessages as any, priorUserTurnCount);
-            // `undefined` here is AMBIGUOUS, not "safe to fork as-is": it can mean the
-            // current turn's own message hasn't landed on the old session yet — but by
-            // the time this fork() call actually reaches OC, the concurrently in-flight
-            // prompt() may have appended it (a real race, since prewarm deliberately runs
-            // while the current turn is still being processed). Forking with no boundary
-            // in that case would silently pull in a dangling/incomplete current turn. Since
-            // we can't be sure, skip prewarming this turn rather than risk it — the
-            // escalation path's own fork (run only AFTER the current turn fully settles,
-            // so it's never ambiguous) still covers correctness if this hop is needed.
+
             if (boundary === undefined) throw new Error('prewarm boundary ambiguous — current turn may already be in flight');
             return client.fork(ocId!, boundary);
           })
@@ -617,46 +479,25 @@ async function runViaOc(
         .catch((err) => console.log(`[tiermux] pre-warm failed (non-fatal): ${err instanceof Error ? err.message : err}`));
     };
 
-    // Track the latest text we saw per part id, so `message.part.updated` (which carries
-    // the full text) can be diffed against the previous value to emit deltas.
     const lastTextByPart = new Map<string, string>();
-    // Track the latest reasoning per part id (for the reasoning channel).
+
     const lastReasoningByPart = new Map<string, string>();
-    // Track which part ids are "text" vs "reasoning" vs other.
+
     const partKind = new Map<string, 'text' | 'reasoning' | 'other'>();
-    // Track message-id → role (from `message.updated`). OC fires part events for the
-    // USER message too; without this we'd stream the user's own text back as the answer.
+
     const messageRole = new Map<string, string>();
     const roleOfPart = (part: any, p: any): string | undefined => {
       if (part?.role) return part.role;
       const mid = part?.messageID ?? part?.messageId ?? p?.messageID ?? p?.messageId;
       return mid ? messageRole.get(mid) : undefined;
     };
-    // OC emits BOTH `message.part.delta` (incremental) and `message.part.updated`
-    // (cumulative) for the same text on some builds. Processing both doubles every
-    // token. Lock onto whichever text channel speaks first and ignore the other.
+
     let textChannel: 'delta' | 'updated' | undefined;
 
     const onRaw = traceOcEvents && traceSink
       ? (raw: string) => { try { traceSink!(raw); } catch { /* swallow */ } }
       : undefined;
 
-    // Inactivity watchdog — NOT a total-run timeout. `session.idle` is the normal
-    // resolver; this only fires if OC goes completely silent (no SSE events at all)
-    // for the window below, which means the engine died or the event name drifted.
-    // Every event resets it (see resetWatchdog() in the subscribe callback), so an
-    // actively-streaming run — however long — is never cut short. User cancel resolves
-    // immediately via the abort path. On fire we still try to salvage the last message.
-    //
-    // A running tool (bash build, big write) can legitimately emit nothing until it
-    // completes, which is longer than 3 minutes for real workloads. Track whether a
-    // tool is in-flight (`toolActive`, set from the tool-status branches below) and use
-    // a much longer window while one is — the short window still applies to plain
-    // "OC went silent" hangs where no tool is running.
-    //
-    // Non-final hops (a weak/free model that still has a stronger fallback ahead of it
-    // in `chain`) get a much shorter fuse: a dead or hung free-tier model should hand off
-    // to the next link quickly rather than making the user wait out the full window.
     const INACTIVITY_MS = 3 * 60_000;
     const TOOL_INACTIVITY_MS = 5 * 60_000;
     const FAST_FAIL_MS = 45_000;
@@ -680,21 +521,10 @@ async function runViaOc(
     resetWatchdog();
 
     const unsub = client.subscribe((ev) => {
-      // OC wraps the event envelope inside a top-level `payload` field:
-      //   { payload: { type: "session.idle", properties: { ... } } }
-      // Older OC builds sent { type, properties } directly. Handle both.
+
       const payload = (ev as any).payload ?? ev;
       const p = (payload as any).properties ?? {};
-      // sessionID filter: `client.subscribe()` is ONE global SSE stream shared by every
-      // concurrently-running session (see ocClient.ts) — each `runViaOc` call opens its
-      // own listener against that same stream, so every listener sees every session's
-      // events. Fail CLOSED, not open: an event with no `sessionID` (or one that doesn't
-      // match) is NOT ours and must be dropped, never processed on the assumption it's
-      // "probably fine" — the old `evSession && ocId && evSession !== ocId` check let
-      // sessionID-less frames sail through into every listener at once, which is exactly
-      // how one session's streamed text/tool calls leaked into another's chat bubble
-      // under concurrency. A dropped event we DID own just falls back to the existing
-      // idle-fetch recovery (client.messages() below) instead of silently mis-delivering.
+
       const evSession = p.sessionID ?? p.sessionId;
       if (evSession !== ocId) return;
 
@@ -702,19 +532,15 @@ async function runViaOc(
 
       const t = (payload as any).type ?? (ev as any).type ?? '';
 
-      // Verbose event log when the trace toggle is on — captures the FULL
-      // payload (not just the recognized types) so we can see what OC actually sends
-      // and patch the event-mapping switch accordingly.
       if (traceOcEvents && traceSink) {
         try { traceSink(`type=${t} sessionID=${p.sessionID ?? p.sessionId ?? '-'} keys=${Object.keys(p).join(',')}`); } catch { /* swallow */ }
       }
 
-      // ---- Streaming text deltas (some OC builds emit these) ----
       if (t === 'message.part.delta' || t === 'part.delta') {
         const delta = p.delta ?? p.text ?? '';
         const field = p.field;
         if (!delta) return;
-        // Skip deltas from the user message part (echo guard).
+
         if (roleOfPart(p.part ?? p, p) === 'user') return;
         if (field === 'reasoning' || p.partID && partKind.get(p.partID) === 'reasoning') {
           opts.onReasoning(delta);
@@ -732,7 +558,6 @@ async function runViaOc(
         return;
       }
 
-      // ---- Message metadata (carries the role; also where OC may report the model) ----
       if (t === 'message.updated' || t === 'message') {
         const info = p.info ?? p.message ?? p;
         const mid = info?.id ?? info?.messageID ?? info?.messageId;
@@ -740,12 +565,11 @@ async function runViaOc(
         return;
       }
 
-      // ---- Full part update (OC's primary text-carrier) ----
       if (t === 'message.part.updated' || t === 'part.updated') {
-        // Two shapes seen in OC: { part: { type, text, id, ... } } or the part at the top level.
+
         const part = p.part ?? (p.type ? p : null);
         if (!part) return;
-        // Ignore parts that belong to the USER message — otherwise we echo the prompt back.
+
         if (roleOfPart(part, p) === 'user') return;
         const partId: string = part.id ?? part.partID ?? p.partID ?? '';
         if (partId) {
@@ -753,15 +577,11 @@ async function runViaOc(
           else if (part.type === 'text') partKind.set(partId, 'text');
           else if (part.type === 'tool' || part.tool) {
             partKind.set(partId, 'other');
-            // OC 1.x tool part: { type:'tool', tool, state:{ status, input, output, title } }.
-            // `state` is an OBJECT (not a string) — passing it through verbatim renders as
-            // "[object Object]" and loses the input/output. Unpack it here.
+
             const st = part.state;
             const stObj = st && typeof st === 'object' ? st : null;
             const status = stObj?.status ?? (typeof st === 'string' ? st : 'running');
-            // Re-arm with the up-to-date flag — the resetWatchdog() at the top of this
-            // callback ran before we knew this event was a tool update, so it may have
-            // scheduled using the PREVIOUS (stale) toolActive value.
+
             toolActive = mapToolStatus(status) === 'running';
             resetWatchdog();
             opts.onTool({
@@ -785,8 +605,7 @@ async function runViaOc(
             partKind.set(partId, 'other');
           }
         }
-        // Reasoning parts carry their text in `part.text` (not `part.reasoning`); route it
-        // to the reasoning channel so it shows as a Thinking block, not as the answer.
+
         if (partKind.get(partId) === 'reasoning' && typeof part.text === 'string') {
           const prev = lastReasoningByPart.get(partId) ?? '';
           if (part.text.length > prev.length && part.text.startsWith(prev)) {
@@ -795,8 +614,7 @@ async function runViaOc(
           lastReasoningByPart.set(partId, part.text);
           return;
         }
-        // Extract text and/or reasoning from the part and emit only the diff.
-        // Skip when the delta channel already owns text emission (avoid double emit).
+
         if (typeof part.text === 'string' && textChannel !== 'delta') {
           textChannel = 'updated';
           const prev = lastTextByPart.get(partId) ?? '';
@@ -823,7 +641,6 @@ async function runViaOc(
         return;
       }
 
-      // ---- Tool updates (alternate shape) ----
       if (t === 'tool.updated' || t === 'tool') {
         const st = p.state;
         const stObj = st && typeof st === 'object' ? st : null;
@@ -849,7 +666,6 @@ async function runViaOc(
         return;
       }
 
-      // ---- Todo list ----
       if (t === 'todo.updated' || t === 'todo') {
         try {
           const todos = p.todos ?? (Array.isArray(p) ? p : null);
@@ -858,24 +674,13 @@ async function runViaOc(
         return;
       }
 
-      // ---- Permission ask (OC paused a tool call on an `ask` permission rule) ----
-      // Real wire event is `permission.asked`, NOT the SDK-documented `permission.updated` —
-      // verified against a live trace (tiermux.engine.traceOcEvents). Payload also lacks the
-      // documented `title`/`pattern` fields; real shape is
-      // { id, sessionID, permission: "bash", patterns: string[], metadata: {command}, always, tool }.
-      // Keep `permission.updated` as a harmless fallback alias in case a future OC build renames it.
       if (t === 'permission.asked' || t === 'permission.updated') {
         const permissionID: string = p.id ?? '';
         const patterns: string[] | undefined = p.patterns ?? (p.pattern ? (Array.isArray(p.pattern) ? p.pattern : [p.pattern]) : undefined);
         const command: string | undefined = p.metadata?.command;
         const title: string = p.title ?? (command ? `Run: ${command}` : patterns ? `${p.permission ?? 'tool'}: ${patterns.join(', ')}` : `OC wants to use ${p.permission ?? 'a tool'}`);
         if (!permissionID) return;
-        // Human decision time is unbounded and unrelated to "OC went silent" — no SSE event
-        // arrives while we wait on the approval card, so resetWatchdog() never re-fires during
-        // it. Without this, a slow click past the (as short as 45s) window let the watchdog
-        // treat a legitimately-paused tool as a hang: it force-finished the run and tore down
-        // this listener (unsub in finish()) out from under the still-pending permission, so the
-        // user's eventual click landed on a promise nothing was listening to anymore.
+
         clearTimeout(watchdog);
         void (async () => {
           const response = opts.onPermissionAsk
@@ -889,35 +694,25 @@ async function runViaOc(
         return;
       }
 
-      // ---- Status updates ----
       if (t === 'session.status' || t === 'status') {
         opts.onStep('working', p?.status?.message ?? p?.message ?? 'Working…');
         return;
       }
 
-      // ---- Errors ----
       if (t === 'session.error' || t === 'error') {
         const extracted = extractOcError(p);
         let errMsg = extracted;
         if (!extracted) {
-          // Payload shape unrecognized — capture the raw body so we can teach extractOcError
-          // the missing field, instead of silently falling back to "OC session error".
+
           const keys = p && typeof p === 'object' ? Object.keys(p) : [];
           console.warn('[tiermux] Unparsed session.error payload:', p);
           errMsg = keys.length
             ? `OC session error (unparsed payload; keys: ${keys.join(',')})`
             : 'OC session error';
         }
-        // Resolve the run NOW — otherwise the promise hangs until the 90s hard timeout,
-        // leaving the status + in-flight todos stuck on screen after a failure.
+
         console.log(`[tiermux] OC session.error: ${errMsg} (outLen=${out.trim().length} model=${modelID} hop=${hop})`);
 
-        // We deliberately aborted THIS exact session ourselves (chat hedging's losing leg,
-        // once the other leg won — see flushWinner) — OC reports that as a generic "Aborted"
-        // session.error, indistinguishable on the wire from a real transient failure. Retrying
-        // it here would resurrect a leg we just killed: a whole new session + tool-calling
-        // loop running to completion in the background after the outcome is already decided.
-        // Settle immediately instead of falling through to the transient-retry path below.
         if (ocId && intentionallyAbortedOcIds.delete(ocId)) {
           unsub();
           clearTimeout(watchdog);
@@ -925,19 +720,11 @@ async function runViaOc(
           return;
         }
 
-        // 1) We already streamed a usable answer — deliver it. A mid-stream error (upstream
-        //    timeout, dropped SSE, a tool failing late) shouldn't throw away 1.6k of good
-        //    output, and a "may be incomplete" notice is more often wrong (stream closing
-        //    after a clean finish) than right — just deliver silently.
         if (out.trim()) {
           finish({ text: out, platform, model, taskKind: opts.taskKind });
           return;
         }
 
-        // 2) No output yet — recover if we can. Transient errors get one fresh-session retry
-        //    (mirrors the 5xx/network path in prompt().catch). Non-retryable errors (context
-        //    overflow, auth/quota) skip straight to escalation — a bigger model can carry the
-        //    context that overflowed, and retrying the same input would just fail again.
         if (_retryCount === 0 && !NON_RETRYABLE.test(errMsg)) {
           console.log(`[tiermux] OC session.error (no output, transient) — dropping session ${ocId}, retrying`);
           ocSessions.delete(key);
@@ -949,25 +736,21 @@ async function runViaOc(
           return;
         }
 
-        // 3) Retry spent or non-retryable — hand off to a stronger model before giving up.
         if (tryEscalate()) return;
-        // No output to salvage — reject so the caller surfaces a real error instead of a
-        // blank assistant message with a zeroed "0 in · 0 out" usage footer.
+
         fail(new Error(errMsg));
         return;
       }
 
-      // ---- Session idle: resolve. If we never saw streaming deltas, fetch messages as a fallback. ----
       if (t === 'session.idle' || t === 'idle' || t === 'session.complete' || t === 'session.done' || t === 'session.completed') {
         console.log(`[tiermux][DBG] session.idle: outLen=${out.trim().length} model=${modelID} hop=${hop} chain=${chain.join('>')}`);
         if (out.trim()) {
-          // Quality gate: a non-empty but weak answer (refusal/loop/truncation/
-          // too-short) escalates to the next chain hop before we accept it.
+
           if (maybeEscalateWeak()) return;
           finish({ text: out, platform, model, taskKind: opts.taskKind });
           return;
         }
-        // No accumulated text — fetch the session messages and pull the last assistant text.
+
         void (async () => {
           try {
             const msgs = await client.messages(ocId!);
@@ -977,9 +760,9 @@ async function runViaOc(
               opts.onChunk(text);
             }
           } catch { /* ignore — keep whatever we have */ }
-          // Still no answer after the fallback fetch — let a stronger model take over (once).
+
           if (tryEscalate()) return;
-          // Fetched text may be non-empty but weak — run the quality gate on it too.
+
           if (maybeEscalateWeak()) return;
           finish({ text: out, platform, model, taskKind: opts.taskKind });
         })();
@@ -987,51 +770,28 @@ async function runViaOc(
       }
     }, opts.abortSignal, onRaw);
 
-    // Fire pre-warm alongside the prompt POST (not after it resolves — prompt() may not
-    // resolve until the whole turn finishes, since SSE/session.idle drives completion,
-    // not the HTTP response).
     prewarmNextHop();
     promptSentAt = Date.now();
-    // The transcript-replay fallback (firstPromptOverride) rebuilds PRIOR turns as flattened
-    // text (formatTranscriptForReplay drops attachment blocks — a synthesized replay string
-    // can't carry binary content). But the CURRENT turn's own attachments are real ChatContent
-    // blocks straight from opts.messages, not part of that synthesized string — silently
-    // dropping them here left a freshly-recreated session with no idea a file was attached,
-    // so it would keep talking about whatever task was flattened into the replay text instead.
-    // Re-append them as real FileParts alongside the flattened text.
+
     const parts = firstPromptOverride
       ? [{ type: 'text' as const, text: firstPromptOverride }, ...toOcParts(lastUser?.content ?? '').filter((p) => p.type === 'file')]
       : toOcParts(lastUser?.content ?? '');
     const promptP = client.prompt(ocId, { parts, agent, model: { providerID: 'tiermux', modelID: ocModelID } }, opts.abortSignal);
-    // The router resolves the concrete model synchronously while issuing the POST
-    // (candidate selection happens before the fetch awaits). Announce it now so an
-    // Auto-routed (virtual-profile) run shows the real model in the live status
-    // subtitle right away, instead of waiting for finish() (by which point the
-    // status is already hidden).
+
     const routedNow = getLastRoutedModel();
     if (routedNow?.model && routedNow.model !== model) {
       opts.onModel(routedNow.runtimeName ?? routedNow.platform, routedNow.model, routedNow.runtimeName);
     }
     void promptP
       .catch((e: unknown) => {
-        // User-cancel aborts the POST too — that's expected, not an error to surface.
+
         if (opts.abortSignal?.aborted) { finish({ text: out, platform, model }); return; }
         const msg = e instanceof Error ? e.message : String(e);
-        // OC's SDK (wrapClientError, error-interceptor.js) prefers the response BODY's own
-        // `message`/`data.message`/`name` field over its own "METHOD url → status" description —
-        // so any server that returns an error body shaped like `{ message: "..." }` (a very
-        // common NamedError shape) produces an Error.message with NO status text in it at all,
-        // and the old text-only regex below silently never matched. The real status code still
-        // survives on `error.cause.status` (set unconditionally by wrapClientError) — check that
-        // FIRST; the regex stays only as a fallback for errors that don't carry a `.cause`.
+
         const status = (e as { cause?: { status?: number } } | undefined)?.cause?.status;
-        // 5xx means the OC session is broken (server-side crash, stale session after restart, etc.).
-        // Drop it from the cache so the next attempt gets a fresh session, then retry once automatically.
+
         const is5xx = (typeof status === 'number' && status >= 500 && status < 600) || /→\s*5\d\d/.test(msg);
-        // Network-layer failures (OC bridge ↔ router connection lost) surface as Node undici's
-        // `TypeError: fetch failed` or one of its underlying causes. The router already treats these
-        // as failoverable; here at the OC layer we must too, or the agent dead-ends on a dropped
-        // connection. Retry once on the same hop; if that's exhausted, escalate to the next profile.
+
         const isNetwork = /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|socket hang up|other side closed|terminated|network error/i.test(msg);
         if ((is5xx || isNetwork) && _retryCount === 0) {
           console.log(`[tiermux] OC prompt() ${is5xx ? '5xx' : 'network error'} — dropping session ${ocId}, retrying with a fresh session`);
@@ -1040,28 +800,23 @@ async function runViaOc(
           ocSessionAgents.delete(key);
           unsub();
           clearTimeout(watchdog);
-          // Retry the full run on the SAME hop (will create a new OC session on the way in).
+
           void runViaOc(opts, 1, chainIndex, ocId, undefined, taskKind).then(finish, fail);
           return;
         }
-        // Retry budget spent (or this was a repeat). Before surfacing the error, try a fresh hop —
-        // a network blip shouldn't kill the turn if there's another profile link available.
+
         if (isNetwork && tryEscalate(true)) return;
-        // Terminal router exhaustion (routerProxy maps AllModelsFailedError → 503). Reject the run
-        // so the chatViewProvider catch fires maybeRecommendModels() — surfacing a concrete "enable
-        // these free models" prompt rather than a bare 503. Empty failures: the detail was already
-        // logged by the router; the recommendation only checks instanceof.
+
         if (status === 503 || /→\s*503/.test(msg)) {
           fail(new AllModelsFailedError([]));
           return;
         }
-        // Already streamed a usable answer → deliver it with a soft notice (see session.error).
+
         if (out.trim()) {
           finish({ text: out, platform, model });
           return;
         }
-        // No partial output to salvage — reject so the caller surfaces a real error
-        // instead of a blank assistant message with a zeroed "0 in · 0 out" usage footer.
+
         fail(new Error(msg));
       });
 
@@ -1106,20 +861,17 @@ function extractLastAssistantText(msgs: unknown): string {
   const arr = Array.isArray(msgs) ? msgs : [];
   for (let i = arr.length - 1; i >= 0; i--) {
     const m: any = arr[i];
-    // OC wraps each message as { info: { role, ... }, parts: [...] }; older/flat
-    // shapes put role at the top. Check both so we never return the user's message.
+
     const role = m?.info?.role ?? m?.role;
     if (!m || role !== 'assistant') continue;
-    // Direct content.
+
     if (typeof m.content === 'string') return m.content;
     if (Array.isArray(m.content)) {
       const texts: string[] = [];
       for (const p of m.content) {
         if (typeof p === 'string') { texts.push(p); continue; }
         if (p && typeof p === 'object') {
-          // Never surface reasoning (chain-of-thought) or tool parts as the answer —
-          // reasoning is where models ramble identity text ("As Claude Code, I…"), which
-          // otherwise leaks in as "random words" when a run ends via this fallback.
+
           if (p.type === 'reasoning' || p.type === 'tool' || p.type === 'tool_call') continue;
           if (typeof p.text === 'string') texts.push(p.text);
           else if (typeof p.content === 'string') texts.push(p.content);
@@ -1128,7 +880,7 @@ function extractLastAssistantText(msgs: unknown): string {
       const joined = texts.join('');
       if (joined) return joined;
     }
-    // Parts array (OC's shape).
+
     if (Array.isArray(m.parts)) {
       const texts: string[] = [];
       for (const p of m.parts) {
@@ -1143,8 +895,6 @@ function extractLastAssistantText(msgs: unknown): string {
   }
   return '';
 }
-
-// ---- Public API — what chatViewProvider calls ----
 
 /**
  * Chat mode: a question answered with **read-only tool access**. Runs through OC's custom
@@ -1164,11 +914,6 @@ export async function runChatStream(router: Router, opts: AgentOpts): Promise<Ag
   const userText = contentToString(lastUser?.content);
   const taskKind = classifyTask(userText, { attachmentKinds: attachmentKindsFromContent(lastUser?.content ?? '') });
 
-  // Direct router path for trivial greetings only — bypass OC entirely.
-  // Actual questions route through OC so the model can inspect the project
-  // (grounding rules live in ocConfig.ts's agent prompts, which this bypass
-  // skips entirely — 'chat' must NOT be added back here without also fixing
-  // where broad Q&A gets its grounding from).
   if (taskKind === 'trivial' && full.messages.length > 0) {
     const profiler = opts.profiler;
     const turnId = profiler?.beginTurn({
@@ -1224,10 +969,6 @@ export async function runChatStream(router: Router, opts: AgentOpts): Promise<Ag
   return isHedgeEligible(full) ? runChatHedged(full) : runViaOc(full);
 }
 
-// ---- Chat-Turn Request Hedging (turn-1-only) --------------------------------------
-// Short heuristic for "cheap enough to double-run" — mirrors the too-short word floors
-// already used for 'chat' in answerQuality.ts, just at the character level since we
-// haven't classified the turn yet at eligibility-check time.
 const HEDGE_MAX_CHARS = 300;
 
 /**
@@ -1289,11 +1030,7 @@ async function runChatHedged(opts: AgentOpts): Promise<AgentResult> {
 
   const runLeg = async (which: Profile): Promise<void> => {
     const leg = legs[which];
-    // Live UI updates (status/tool/reasoning/etc.) are allowed through while the race is
-    // still undecided (both legs' progress is worth showing) or once THIS leg is confirmed
-    // the winner — but suppressed once the OTHER leg has won, so a straggler (an orphaned
-    // retry, a slow abort, anything still emitting events after the outcome is decided)
-    // can't keep mutating the already-finalized turn's bubble in the background.
+
     const decidedAgainst = (): boolean => !!winner && winner !== which;
     const legOpts: AgentOpts = {
       ...opts,
@@ -1313,11 +1050,7 @@ async function runChatHedged(opts: AgentOpts): Promise<AgentResult> {
     try {
       const r = await runViaOc(legOpts, 0, 0, undefined, (id) => {
         leg.ocId = id;
-        // flushWinner may have already run and decided against this leg while its
-        // createSession() was still in flight — at that moment legs[other].ocId was
-        // undefined, so the abort() call there was skipped (see flushWinner's guard).
-        // Catch up now that the id is finally known, instead of letting this leg run
-        // its whole generation (and any tool-calling loop) to completion unaborted.
+
         if (winner && winner !== which) {
           intentionallyAbortedOcIds.add(id);
           void ocClient?.abort(id);
@@ -1333,7 +1066,7 @@ async function runChatHedged(opts: AgentOpts): Promise<AgentResult> {
 
   await Promise.allSettled([runLeg('fast'), runLeg('smart')]);
   if (!winner) {
-    // Neither leg was clearly good — accept whichever actually finished (prefer smart).
+
     const pick: Profile | undefined = legs.smart.result ? 'smart' : legs.fast.result ? 'fast' : undefined;
     if (pick) { flushWinner(pick); return legs[pick].result!; }
     throw legs.smart.err ?? legs.fast.err ?? new Error('Both hedge legs failed');

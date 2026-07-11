@@ -1,7 +1,5 @@
-// Wraps the `npx skills` CLI (skills.sh — package manager for the open agent-skills
-// ecosystem) so TierMux can install community skills without reimplementing discovery,
-// download, or the `.agents/skills/<name>/SKILL.md` layout that loadSkills() reads
-// (see skills.ts). We just shell out and let the CLI do its job.
+
+
 import { execFile } from 'child_process';
 
 export interface InstallSkillResult {

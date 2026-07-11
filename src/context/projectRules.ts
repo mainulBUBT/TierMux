@@ -1,9 +1,7 @@
-// Loads project convention files (AGENTS.md, CLAUDE.md, .cursorrules, etc.) so
-// the agent follows the repo's rules every turn.
+
+
 import * as vscode from 'vscode';
 
-// .tiermux/prompt.md is TierMux's own rules file — checked first so project-specific
-// rules take precedence. Standard agent files (AGENTS.md, CLAUDE.md, etc.) follow.
 const RULE_FILES = [
   '.tiermux/prompt.md',
   'AGENTS.md',

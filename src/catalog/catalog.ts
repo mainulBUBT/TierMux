@@ -1,7 +1,5 @@
-// Loads the bundled model catalog (offline) and derives a default fallback chain.
-// Optionally overlays a *remote* catalog fetched from a published CSV URL (e.g.
-// Google Sheets → Publish to web → CSV), cached in globalState so it survives
-// offline. Resolution order: remote (fetched/cached) → bundled.
+
+
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -102,8 +100,6 @@ export class Catalog {
     return withSpeed[0]?.e;
   }
 }
-
-// ---- CSV parsing (published Google Sheet) -------------------------------------
 
 /** Minimal RFC-4180-ish CSV parser: handles quoted fields, escaped quotes ("")
  *  and both \n and \r\n line endings. Returns rows of string cells. */

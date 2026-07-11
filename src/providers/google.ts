@@ -1,6 +1,5 @@
-// Google Gemini provider. Translates the neutral OpenAI shape to Gemini's
-// generateContent API, including function-calling and image inlineData, and
-// maps reasoning effort to generationConfig.thinkingConfig.
+
+
 import type {
   ChatCompletionChunk,
   ChatCompletionResponse,
@@ -28,7 +27,12 @@ interface GeminiPart {
 interface GeminiCandidate { content?: { parts?: GeminiPart[] }; finishReason?: string }
 interface GeminiResponse {
   candidates?: GeminiCandidate[];
-  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    totalTokenCount?: number;
+    thoughtsTokenCount?: number;
+  };
 }
 
 function safeParseObject(raw: string): Record<string, unknown> {
@@ -51,7 +55,6 @@ function toGeminiFinishReason(finishReason?: string): string {
   return 'stop';
 }
 
-// Gemini accepts only a subset of JSON Schema; strip unsupported keys.
 const UNSUPPORTED = new Set([
   '$schema', '$id', '$ref', '$defs', '$comment', 'definitions', 'exclusiveMinimum', 'exclusiveMaximum',
   'patternProperties', 'unevaluatedProperties', 'unevaluatedItems', 'if', 'then', 'else',
@@ -93,11 +96,11 @@ function toGeminiToolConfig(toolChoice?: ChatToolChoice): { functionCallingConfi
 
 const MAX_INLINE_BYTES = 20 * 1024 * 1024; // Gemini's per-part cap is ~20MB inline; PDFs up to this are sent natively, larger fall back to text only.
 function extractInlineDataUrl(block: unknown): string | undefined {
-  // Standard OpenAI-style image block.
+
   const iu = (block as { image_url?: unknown })?.image_url;
   if (typeof iu === 'string') return iu;
   if (iu && typeof (iu as { url?: unknown }).url === 'string') return (iu as { url: string }).url;
-  // Generic file block (we emit one for PDF attachments).
+
   const f = (block as { file?: unknown })?.file;
   if (f && typeof (f as { file_data?: unknown }).file_data === 'string') return (f as { file_data: string }).file_data;
   return undefined;
@@ -133,7 +136,7 @@ async function userContentToParts(content: ChatMessage['content']): Promise<Gemi
   if (Array.isArray(content)) {
     for (const block of content) {
       const type = (block as { type?: string })?.type;
-      // Accept image_url / image (OpenAI vision) AND our own 'file' (PDFs).
+
       if (type !== 'image_url' && type !== 'image' && type !== 'file') continue;
       const url = extractInlineDataUrl(block);
       if (!url) continue;
@@ -201,7 +204,7 @@ function extractText(parts: GeminiPart[] | undefined): string | null {
 /** Map reasoning effort to a Gemini thinking budget (tokens). */
 function thinkingConfig(effort?: ReasoningEffort): Record<string, unknown> | undefined {
   if (!effort || effort === 'off') return { thinkingConfig: { thinkingBudget: 0 } };
-  // 'xhigh' uses -1 = dynamic budget (model thinks as much as it needs).
+
   const budget = effort === 'xhigh' ? -1 : effort === 'high' ? 24576 : effort === 'medium' ? 8192 : 2048;
   return { thinkingConfig: { thinkingBudget: budget, includeThoughts: true } };
 }
@@ -212,7 +215,7 @@ export class GoogleProvider extends BaseProvider {
 
   private buildBody(contents: unknown, systemInstruction: unknown, options?: CompletionOptions, modelId?: string) {
     const tools = toGeminiTools(options?.tools);
-    // Gemma models don't support thinkingConfig — only include it for Gemini models.
+
     const isGemma = modelId?.startsWith('gemma-');
     const thinking = isGemma ? undefined : thinkingConfig(options?.reasoningEffort);
     const body: Record<string, unknown> = {
@@ -254,6 +257,7 @@ export class GoogleProvider extends BaseProvider {
       prompt_tokens: data.usageMetadata?.promptTokenCount ?? 0,
       completion_tokens: data.usageMetadata?.candidatesTokenCount ?? 0,
       total_tokens: data.usageMetadata?.totalTokenCount ?? 0,
+      reasoning_tokens: data.usageMetadata?.thoughtsTokenCount,
     };
     return {
       id: this.makeId(),
@@ -271,8 +275,7 @@ export class GoogleProvider extends BaseProvider {
   }
 
   async *streamChatCompletion(apiKey: string, messages: ChatMessage[], modelId: string, options?: CompletionOptions): AsyncGenerator<ChatCompletionChunk> {
-    // The extension uses simulated typing, so streaming just yields a single
-    // synthesized chunk from the non-streaming response.
+
     const resp = await this.chatCompletion(apiKey, messages, modelId, options);
     const msg = resp.choices[0]?.message;
     yield {

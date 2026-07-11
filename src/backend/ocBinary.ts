@@ -1,14 +1,5 @@
-// OpenCode binary resolver + downloader. Resolution order:
-//
-//   1. OPENCODE_BIN env override
-//   2. bundled per-platform binary: resources/bin/{os}/{arch}/opencode[.exe]
-//   3. cached download in globalStorage/bin (from a prior first-run fetch)
-//   4. download the platform binary on first run (Option 1 distribution)
-//   5. system `opencode` on PATH
-//
-// The first-run download (step 4) is what makes the marketplace vsix work for end
-// users without a bundled binary: one small vsix, auto-fetches the right OpenCode
-// build per platform on first activation, caches it forever after.
+
+
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -37,7 +28,7 @@ function detectArch(): 'amd64' | 'arm64' {
 
 /** Map this machine to an OpenCode release asset target, or undefined if none ships. */
 function releaseTarget(osType: string, arch: string): string | undefined {
-  // OpenCode publishes: darwin-arm64, darwin-x64, linux-arm64, linux-x64, windows-x64.
+
   if (osType === 'macos') return arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
   if (osType === 'linux') return arch === 'arm64' ? 'linux-arm64' : 'linux-x64';
   if (osType === 'windows') return arch === 'amd64' ? 'windows-x64' : undefined; // no win-arm64 build
@@ -70,12 +61,10 @@ export async function resolveOcBinary(extensionPath: string, opts: ResolveOption
   const binaryName = osType === 'windows' ? 'opencode.exe' : 'opencode';
   log(`detected platform: ${osType}/${arch}`);
 
-  // 1. Explicit override (dev / power users pointing at a custom build).
   const override = process.env.OPENCODE_BIN?.trim();
   if (override && fs.existsSync(override)) { log(`using OPENCODE_BIN override: ${override}`); return override; }
   if (override) log(`OPENCODE_BIN set but missing on disk: ${override}`);
 
-  // 2. Bundled binary for this platform (the Option 2 packaging path).
   const bundled = path.join(extensionPath, 'resources', 'bin', osType, arch, binaryName);
   if (fs.existsSync(bundled)) {
     log(`found bundled binary: ${bundled}`);
@@ -89,7 +78,6 @@ export async function resolveOcBinary(extensionPath: string, opts: ResolveOption
     log(`no bundled binary at ${bundled} — will try cache or download`);
   }
 
-  // 3 + 4. Cached download, or fetch on first run.
   let downloadError: string | undefined;
   if (opts.cacheDir) {
     const cached = path.join(opts.cacheDir, 'bin', binaryName);
@@ -107,7 +95,6 @@ export async function resolveOcBinary(extensionPath: string, opts: ResolveOption
     log(`no cacheDir provided — skipping download`);
   }
 
-  // 5. System opencode on PATH — only if it's actually there.
   const onPath = findOnPath(binaryName);
   if (onPath) { log(`found 'opencode' on PATH: ${onPath}`); return onPath; }
   log(`'opencode' not found on PATH`);
@@ -160,7 +147,7 @@ async function downloadBinary(
     log?.(`no release target for ${osType}/${arch}`);
     return undefined;
   }
-  // macOS + Windows ship as .zip; Linux as .tar.gz (verified against the release assets).
+
   const ext = osType === 'linux' ? 'tar.gz' : 'zip';
   const url = `${RELEASE_BASE}/latest/download/opencode-${target}.${ext}`;
   const archive = path.join(cacheDir, `opencode-${target}.${ext}`);
@@ -175,7 +162,6 @@ async function downloadBinary(
   );
   log?.(`download complete: ${archive}`);
 
-  // `tar -xf` extracts both .zip and .tar.gz on macOS/Linux/Win10+.
   await fs.promises.rm(extractDir, { recursive: true, force: true }).catch(() => undefined);
   await fs.promises.mkdir(extractDir, { recursive: true });
   await run('tar', ['-xf', archive, '-C', extractDir]);
@@ -188,7 +174,6 @@ async function downloadBinary(
   if (osType !== 'windows') await fs.promises.chmod(dest, 0o755).catch(() => undefined);
   log?.(`extracted → ${dest}`);
 
-  // Clean up the archive + extraction scratch.
   await fs.promises.rm(archive, { force: true }).catch(() => undefined);
   await fs.promises.rm(extractDir, { recursive: true, force: true }).catch(() => undefined);
   return dest;
@@ -213,9 +198,7 @@ async function download(url: string, dest: string, onProgress?: (mb: number, per
     if (err instanceof Error && err.name === 'AbortError') {
       throw new Error(`Download timed out after ${DOWNLOAD_TIMEOUT_MS / 1000}s: ${url}`);
     }
-    // Node's fetch (undici) wraps the real cause (ECONNREFUSED, ENOTFOUND, self-signed
-    // cert, proxy refusal, ...) in a generic "TypeError: fetch failed" — surface it so
-    // download failures are actually diagnosable instead of a dead end.
+
     const cause = err instanceof Error && err.cause instanceof Error ? `: ${err.cause.message}` : '';
     const base = err instanceof Error ? err.message : String(err);
     throw new Error(`${base}${cause} (${url})`);
@@ -237,7 +220,7 @@ async function download(url: string, dest: string, onProgress?: (mb: number, per
       onProgress(mb, percent);
     }
   };
-  // Tee the stream so we can report progress without buffering the whole body.
+
   const reportStream = new TransformStream({
     transform: (chunk, controller) => { onChunk(chunk as Uint8Array); controller.enqueue(chunk); },
   });

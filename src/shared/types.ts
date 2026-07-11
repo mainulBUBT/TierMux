@@ -1,5 +1,4 @@
-// Shared types for tiermux. OpenAI-compatible chat shapes are the
-// neutral wire format; the Gemini adapter translates to/from this.
+
 
 export type Platform =
   | 'google'
@@ -27,14 +26,10 @@ export type Platform =
   | 'llmgateway'
   | 'custom';
 
-// 'xhigh' ("Very High") is our own extra tier; the OpenAI-wire reasoning_effort
-// field caps at 'high', so providers map it down (Gemini uses a larger budget).
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
 
 /** The three TierMux chat modes (mapped to OC agents + routing profiles). */
 export type Mode = 'chat' | 'plan' | 'agent';
-
-// ---- OpenAI-compatible chat types ----
 
 interface ChatToolCallFunction {
   name: string;
@@ -81,6 +76,8 @@ export interface TokenUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  /** Reasoning / thinking tokens that are part of completion_tokens. */
+  reasoning_tokens?: number;
 }
 
 interface ChatCompletionChoice {
@@ -109,9 +106,10 @@ export interface ChatCompletionChunk {
     delta: { role?: 'assistant'; content?: string; tool_calls?: ChatToolCall[] };
     finish_reason: string | null;
   }[];
+  /** Provider usage object; typically present on the final chunk when
+   *  `stream_options: { include_usage: true }` is sent. */
+  usage?: TokenUsage;
 }
-
-// ---- Catalog & config ----
 
 export interface CatalogModel {
   platform: Platform;

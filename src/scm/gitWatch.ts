@@ -1,6 +1,5 @@
-// Detects git commits via the built-in Git extension's repo state, since it exposes no
-// dedicated commit event. Used to invalidate the pinned "changed files / undo" checkpoint
-// bar once edits are committed (see clearAllCheckpoints in chatViewProvider.ts).
+
+
 import * as vscode from 'vscode';
 
 interface GitRepoState {

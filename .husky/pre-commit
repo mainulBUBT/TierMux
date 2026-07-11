@@ -1,0 +1,4 @@
+# pre-commit — fast secret gate. Blocks a secret or sensitive path from ever
+# entering history. Advisory personal-info check is skipped here to stay quiet
+# (run the full check at pre-push).
+node scripts/prepublish-check.mjs --no-advisory

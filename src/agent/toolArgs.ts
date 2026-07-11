@@ -1,5 +1,4 @@
-// Schema-aware repair of double-encoded tool-call arguments, plus a compact
-// rescue for models that emit tool calls as inline dialect text.
+
 
 interface JsonSchemaish {
   type?: string;
@@ -16,7 +15,6 @@ export function repairToolArguments(args: string, paramSchema?: JsonSchemaish): 
 
   let changed = false;
 
-  // Whole-arguments double encoding: `"{\"a\":1}"`.
   if (typeof parsed === 'string') {
     try {
       const inner = JSON.parse(parsed);
@@ -54,7 +52,7 @@ export function repairToolArguments(args: string, paramSchema?: JsonSchemaish): 
           changed = true;
         }
       } catch {
-        // not actually JSON — leave it
+
       }
     }
   }
@@ -102,14 +100,12 @@ export function stripHarmonyTokens(text: string): string {
     if (finals.length || thoughts.length) {
       const answer = finals.join('\n').trim();
       const reasoning = thoughts.join('\n').trim();
-      // Answer present → show it (with reasoning tucked into <think>). Analysis only
-      // (model produced no final channel) → return just the <think> so the visible
-      // answer is empty and the caller's fallback message is used, never raw CoT.
+
       if (answer) return reasoning ? `<think>${reasoning}</think>${answer}` : answer;
       if (reasoning) return `<think>${reasoning}</think>`;
     }
   }
-  // No channels (or unparseable): strip any lone control tokens.
+
   return text
     .replace(/<\|channel\|>\s*(?:analysis|commentary|final)?\s*<\|message\|>/g, '')
     .replace(/<\|(?:start|end|message|channel|constrain|call|return)\|>/g, '')
@@ -142,9 +138,6 @@ interface RescuedCall {
 export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { detected: boolean; calls: RescuedCall[] } {
   const calls: RescuedCall[] = [];
 
-  // Pattern A: <function=NAME>{json}</function> or <function=NAME>{json} — the closing tag
-  // and the `>` after the name are both optional: weak models often emit malformed forms like
-  // `<function=listDir{"path":"."}` (no `>`, no closing tag).
   const fnTag = /<function=([a-zA-Z0-9_\-]+)\s*>?\s*(\{[\s\S]*?\})\s*(?:<\/function>)?/g;
   let m: RegExpExecArray | null;
   while ((m = fnTag.exec(text)) !== null) {
@@ -152,7 +145,6 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     if (toolNames.has(name)) calls.push({ name, arguments: m[2] });
   }
 
-  // Pattern B: {"name":"NAME","arguments":{...}} blobs.
   if (calls.length === 0) {
     const blob = /\{\s*"name"\s*:\s*"([a-zA-Z0-9_\-]+)"\s*,\s*"arguments"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
     while ((m = blob.exec(text)) !== null) {

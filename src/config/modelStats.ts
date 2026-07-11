@@ -1,9 +1,5 @@
-// Local, per-task model feedback (👍/👎). Teaches the router which model actually
-// answers the user's tasks best — not just which one responds successfully.
-//
-// NO BACKEND: stats live in VS Code globalState only, consistent with this
-// extension's "runs entirely in the extension host" design. `snapshot()` is the
-// single hook a future opt-in backend sync could read from — nothing here phones home.
+
+
 import type * as vscode from 'vscode';
 
 export type Vote = 'up' | 'down' | 'none';

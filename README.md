@@ -4,187 +4,158 @@
 
 <h3 align="center">Stack free. Route smart. Ship faster.</h3>
 
----
-
-**TierMux** is a free, open-source AI coding assistant for VS Code. Instead of locking you into a single model or running up an API bill, TierMux automatically routes each message to the best available **free** model across **22+ providers** — and silently switches to another one when a provider is slow, rate-limited, or down.
-
-> **The name:** **Tier** (free provider tiers) + **Mux** (a multiplexer that switches between them).
+<p align="center">
+  A free, open-source VS Code AI coding assistant that multiplexes 22+ free-tier LLM providers — auto-routing, auto-failing-over, learning your codebase.
+</p>
 
 ---
 
-## What Problem Does TierMux Solve?
+## Why TierMux
 
-Most AI coding tools force a trade-off:
-
-- **Pay per token** → bills grow fast, especially with agentic tasks that make dozens of requests.
-- **Pick one model** → you're stuck with its rate limits, downtime, and blind spots.
-- **Manage keys manually** → juggling 10 dashboards is not how you want to spend your time.
-
-**TierMux eliminates all three.** It runs entirely on the free tiers of 22+ providers, automatically picks the right model for each task, and fails over silently when any one provider has issues. You just type — TierMux handles the rest.
+Free LLM tiers (Groq, Cerebras, Google AI Studio, Mistral, NVIDIA NIM, OpenRouter…) are powerful but unreliable individually — rate limits, downtime, blind spots. TierMux pools them into one self-healing surface. No middleman, no API bill, no babysitting.
 
 ---
 
-## Supported Platforms
+## How It Works
 
-TierMux connects to **22+ AI providers** out of the box. Each one is pre-configured — you just add a key (or use it keyless where supported):
+When you send a message, TierMux runs it through a 5-step pipeline — all invisible to you:
 
-| Provider | Key Required |
+```
+your message ──▶ Classify ──▶ Rank ──▶ Send ──▶ Fail-over ──▶ Learn
+```
+
+**1. Classify** — TierMux reads your message and decides what kind of task it is: a quick question, a code edit, a debugging session, a full agent run, an image, a long document, etc. This determines which kind of model is needed.
+
+**2. Rank** — From your enabled providers, TierMux builds an ordered shortlist. Providers you placed higher in your priority list come first. Any provider that recently rate-limited you is temporarily skipped. Models that can't handle the task type (e.g. no vision support for an image message) are filtered out.
+
+**3. Send** — Your message goes directly from VS Code to the top-ranked provider's API. There is no TierMux server between you and them.
+
+**4. Fail-over** — If the provider rate-limits you, times out, sends back nothing, or refuses the request, TierMux silently moves to the next one on the list and retries. You see no error and feel no delay — unless every provider in the list fails, which is the only time an error message appears.
+
+**5. Learn** — After each reply, your 👍 or 👎 nudges future routing. TierMux also silently reads the files you edit to pick up your indentation style, quote preference, and semicolon usage, then instructs models to match — no config needed.
+
+---
+
+## Under the Hood — How the Agent Runs
+
+When you send a message in Agent or Plan mode, TierMux's internal engine takes over:
+
+```
+Your message (VS Code panel)
+      │
+      ▼
+Task classifier       reads your message → assigns a speed/capability tier (fast | smart | auto)
+      │
+      ▼
+Agent engine          drives the tool loop — reads files, runs commands, streams results back to you
+      │
+      ▼
+Routing layer         internal OpenAI-compatible endpoint; every model call goes through here
+      │
+      ▼
+Provider router       failover chain across 22+ providers
+```
+
+### Smart routing options (all configurable in the panel)
+
+| Option | Default | What it does |
+|---|---|---|
+| **Quality gate** | On | If a model gives a weak answer, TierMux automatically retries with a smarter model instead of showing you a bad reply |
+| **Hot standby** | On | The next fallback model is pre-warmed in the background — so escalating to it feels instant, not slow |
+| **Chat hedging** | On | Short messages are sent to a fast and a smart model at the same time; whichever answers well first wins |
+
+---
+
+## Providers & Models
+
+22 pre-configured providers, 121+ models out of the box:
+
+> Agnes AI · Cerebras · Cloudflare Workers AI · Cohere · GitHub Models · Google AI Studio · Groq · HuggingFace Router · Kilo Gateway · LLM7 · LLM Gateway · Mistral · NVIDIA NIM · Ollama Cloud · OpenCode Zen · OpenRouter · OVH AI Endpoints · Pollinations · SambaNova · SiliconFlow · ZenMux · Zhipu AI
+
+**Keyless (zero setup):** Kilo Gateway · OVH AI Endpoints · Pollinations  
+**Custom endpoints:** any OpenAI-compatible URL — vLLM, LiteLLM, Azure OpenAI, Cloudflare AI Gateway, etc.
+
+---
+
+## Modes & Capabilities
+
+| Mode | Behavior |
 |---|---|
-| **Cerebras** | ✅ Free API key |
-| **Cloudflare Workers AI** | ✅ Free (account:token) |
-| **Cohere** | ✅ Free API key |
-| **GitHub Models** | ✅ GitHub token |
-| **Google AI Studio** | ✅ Free API key |
-| **Groq** | ✅ Free API key |
-| **LLM7** | ✅ Free API key |
-| **Mistral** | ✅ Free API key |
-| **NVIDIA NIM** | ✅ Free API key |
-| **Ollama Cloud** | ✅ API key |
-| **OpenCode Zen** | ✅ Free account |
-| **OpenRouter** | ✅ Free API key |
-| **OVH AI Endpoints** | ⚡ Keyless |
-| **Pollinations** | ⚡ Keyless |
-| **SambaNova** | ✅ Free API key |
-| **Zhipu AI** | ✅ Free API key |
-| **ZenMux** | ✅ Free API key |
-| **Agnes AI** | ✅ Free API key |
-| **Kilo Gateway** | ⚡ Keyless |
-| **HuggingFace Router** | ✅ HF token |
-| **SiliconFlow** | ✅ Free API key |
+| **Ask** | Read-only — explains, documents, answers. Never touches your files. |
+| **Plan** | Reads your code, produces a step-by-step plan, waits for approval before acting. |
+| **Agent** | Full loop — reads files, applies diffs, runs terminal commands, tracks progress with checkpoints. |
 
-> ⚡ **Keyless** means you can use the provider with zero configuration — no account needed.
->
-> You can also add **your own OpenAI-compatible endpoint** (vLLM, LiteLLM, Azure OpenAI, Cloudflare AI Gateway, etc.).
+**Auto** mode classifies your message and picks the right mode + model automatically.
+
+**Agent also gives you:** checkpoints (undo any turn) · parallel tabs · diff review before writes · configurable terminal approval · session replay on failure
+
+**Editor:** right-click → Explain / Fix / Refactor / Generate Tests / Docs · Fix with AI on squiggles · inline chat `Ctrl/Cmd+I` · git commit messages · optional autocomplete (off by default)
+
+### Skills (slash commands)
+
+Drop a Markdown file into `.tiermux/skills/<name>.md` (or `.agents/skills/<name>/SKILL.md`). Invoke as `/<name>`. Only the one-line name + description loads up front; the full prompt reaches the model only on invocation — no context bloat.
+
+### MCP servers
+
+Register any MCP server in the TierMux panel. TierMux connects, discovers tools, and exposes them to the agent as native capabilities.
 
 ---
 
-## How TierMux Learns — What It Understands About Your Work
+## Install & First Run
 
-TierMux isn't just a dumb proxy. It actively learns from your workflow:
+**Requirements:** VS Code `1.90+` · internet connection · at least one enabled provider.
 
-### 🔀 Smart Routing — Right Model, Right Task
+### From Marketplace
+Extensions view (`Ctrl/Cmd+Shift+X`) → search **TierMux** → Install.
 
-Every message is classified before it's sent. A quick "what does this function do?" goes to a fast, lightweight model. A "refactor this entire auth system" goes to a deeper reasoning model. You don't need to think about this — TierMux decides automatically when you're on **Auto** mode.
+### From source
+```bash
+git clone https://github.com/mainulBUBT/TierMux.git
+cd TierMux
+npm install
+npm run package          # produces tiermux-*.vsix
+code --install-extension tiermux-*.vsix
+```
 
-### 🔁 Automatic Failover — Never Gets Stuck
+### First run
+1. Click the **TierMux** icon in the Activity Bar.
+2. **⚙ Manage Models & Keys** → enable providers, add API keys, set priority order.
+3. Leave everything on **Auto** and start typing.
 
-If a provider rate-limits you, times out, or returns an empty/refused response, TierMux silently tries the next best option in your priority list. Background agents keep running. You never see an error unless every provider in the chain fails.
-
-### 🧠 Learns Your Preferences
-
-- Give any reply a **👍 or 👎** — TierMux remembers which models actually work well for your codebase and adjusts future routing.
-- Picks up on your **coding style** (indentation, quote style, semicolons) directly from files you edit and instructs the model to match it — no manual config needed.
-
-### 📊 Tracks Your Savings
-
-Every token request is tracked. The footer shows live token usage and an estimate of how much money you've saved compared to paying for a commercial API. Across a day of agentic coding, this can easily reach **$5–$50+**.
-
----
-
-## What TierMux Can Do For You
-
-### Three Modes
-
-| Mode | What it does |
-|---|---|
-| **Ask** | Answers questions, explains code, documents functions. Read-only — never touches your files. |
-| **Plan** | Reads your code, writes a step-by-step plan, and waits for your approval before doing anything. |
-| **Agent** | Does the work end to end — reads files, edits them, runs terminal commands, and tracks progress. |
-
-Leave everything on **Auto** and TierMux reads your message to pick the right mode and the right model automatically.
-
-### Agent Capabilities
-
-- **Reads your project first** — greps files, checks types, reads diagnostics — so it's not guessing about your codebase.
-- **File editing with diffs** — every change shows up as a diff you review and approve before it's applied.
-- **Terminal commands** — runs commands with configurable confirmation levels (always / auto-approve safe / fully autonomous).
-- **Checkpoint system** — saves a snapshot every turn so you can undo back to before any message.
-- **Fallback on bad answers** — if a model returns empty output, refuses, or loops, TierMux automatically retries with a smarter model.
-- **Parallel agents** — multiple chat tabs can each run their own agent simultaneously (up to your configured limit).
-
-### Editor Integration
-
-- **Right-click menu** → Explain / Fix / Refactor / Generate Tests / Generate Docs on any selected code.
-- **Fix with AI** on red squiggly errors directly from the Problems panel.
-- **Inline chat** → `Ctrl/Cmd+I` anywhere in the editor for instant in-place edits.
-- **Git commit messages** — TierMux writes them for you based on your staged diff.
-- **Optional inline autocomplete** — off by default to preserve free-tier quota, but available to enable.
-
-### MCP Server Support
-
-Connect **Model Context Protocol (MCP)** servers to give the agent additional tools — databases, APIs, file systems, custom scripts, and more.
-
----
-
-## Getting Started
-
-### Step 1 — Open TierMux
-
-Click the **TierMux** icon in the VS Code Activity Bar (sidebar).
-
-### Step 2 — Configure Providers (UI-Based)
-
-Click **⚙ Manage Models & Keys** inside the TierMux panel.
-
-The configuration UI lets you:
-- **Enable / disable** individual providers with a toggle
-- **Add API keys** for each provider in a secure input field
-- **Set priority order** — drag providers up/down to control which ones TierMux tries first
-- **Add custom endpoints** — paste any OpenAI-compatible base URL
-- **Set custom headers** for enterprise endpoints that require them
-
-> **No `settings.json` editing required.** Everything is point-and-click inside the extension panel.
-
-### Step 3 — Start Coding
-
-Leave everything on **Auto** and start typing. If you have no keys yet, start with a keyless provider like **OVH**, **Pollinations**, or **Kilo** — no account required.
+> No `settings.json` editing needed — everything is point-and-click in the panel.
 
 ---
 
 ## Settings
 
-All settings live inside the TierMux panel — no need to open VS Code's `settings.json`.
+All settings live in the TierMux panel (`Manage Models & Keys` for providers; `Others` for behavior). Changes apply immediately.
 
-- **Providers & Models** → `⚙ Manage Models & Keys` tab
-- **Agent behavior, context, memory, timeouts** → `Others` tab in the same panel
-
-| Setting | Default | What it does |
-|---|---|---|
-| Max iterations | `25` | Agent steps before it checks in with you |
-| Max concurrent runs | `3` | How many chat tabs can run an agent simultaneously |
-| Require write confirmation | `on` | Show a diff and ask before writing to any file |
-| Command approval | `always` | How cautious the agent is before running terminal commands |
-| Request timeout | `60s` | How long to wait on a provider before trying the next |
-| Rate-limit cooldown | `60s` | How long to skip a provider after it rate-limits you |
-| Reference price (per 1M tokens) | Per-model (pre-configured) | Used to estimate your savings. Override per model, or set to `0` to hide. |
-
----
-
-## 🔒 Your Privacy & Credentials
-
-**Your API keys never leave your machine.**
-
-- **Keys are stored in VS Code's encrypted secret storage** — the same secure vault VS Code uses for Git credentials. They are never written to any config file, never logged, and never synced to the cloud.
-- **No TierMux backend server exists.** There is no middleman. Every request goes directly from your VS Code instance to the model provider's API.
-- **Feedback and usage stats are stored locally only** — in your VS Code extension storage folder on your own machine.
-- **Nothing you type, paste, or ask is ever sent to TierMux** — only to the provider you've selected (or that TierMux auto-selected for that message).
-
-> You are always in control of which providers are active, which models are used, and how your keys are stored. TierMux is a routing layer — not a service.
-
-Contributing from a fork or clone? See [PUBLISHING.md](PUBLISHING.md) before pushing — it's a checklist for keeping local secrets/config out of the public repo.
+| Setting | Default | Keep on? | What it does |
+|---|---|---|---|
+| Quality gate | On | ✅ Yes | Auto-retries with a smarter model if the first answer is weak |
+| Hot standby | On | ✅ Yes | Pre-warms the next fallback so escalation feels instant |
+| Chat hedging | On | ✅ Yes | Races fast + smart models on short turns; takes the better answer |
+| Require write confirmation | On | ✅ Yes | Shows a diff before writing to any file |
+| Command approval | Always | ✅ Yes (start here) | Confirms before running terminal commands — switch to auto-approve once you trust it |
+| Max iterations | `25` | — | Agent steps before it pauses and checks in with you |
+| Max concurrent runs | `3` | — | How many chat tabs can run agents simultaneously |
+| Request timeout | `60s` | — | How long to wait on a provider before trying the next |
+| Rate-limit cooldown | `60s` | — | How long a rate-limited provider is skipped |
+| Reference price | Per-model | — | Used to calculate your savings estimate (`0` to hide) |
 
 ---
 
-## About TierMux
+## Privacy
 
-TierMux was built to answer a simple question: *why should writing code with AI cost money when so many excellent models are free?*
+- **Keys** — stored in VS Code's encrypted secret storage. Never written to disk, never synced, never logged.
+- **No TierMux backend.** Every request goes VS Code → provider API directly.
+- **Feedback & stats** — local extension storage only, never uploaded.
+- **Nothing you type is sent to TierMux** — only to the provider you (or Auto) selected.
 
-The free tiers of modern LLM providers — Groq, Cerebras, Google AI Studio, OpenRouter, Mistral, NVIDIA NIM, and many more — are genuinely powerful. The problem is that no single free tier is reliable enough on its own: rate limits hit, providers go down, and different models are better at different things.
-
-TierMux solves this by treating all those free tiers as a single, unified, self-healing pool. It routes intelligently, fails over automatically, and learns what works best for your specific codebase and style. The result is a coding assistant that costs nothing, improves over time, and never leaves you staring at a rate-limit error.
+Contributing? Read [PUBLISHING.md](PUBLISHING.md) before pushing — checklist for keeping local secrets out of the repo.
 
 ---
 
 ## License
 
-MIT — free to use, modify, and distribute.
+MIT — free to use, modify, distribute. See [LICENSE](LICENSE).

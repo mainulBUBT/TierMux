@@ -1,19 +1,7 @@
-// Answer-quality scoring for the FrugalGPT-style quality gate.
-// Pure module — no `vscode` imports — so it is unit-testable standalone in
-// scripts/selftest.ts, just like src/scm/commitMessageClean.ts.
-//
-// Used by sdk.ts at session.idle: if an OC run produced a WEAK-but-non-empty
-// answer (refusal, repetition, truncation, or too-short-for-task), the run is
-// escalated to the next link in the fallback chain instead of being accepted.
-// See plans/groovy-tinkering-swan.md for the full design.
+
+
 import type { TaskKind } from './routing';
 import { estimateTokens } from './budget';
-
-// ---------------------------------------------------------------------------
-// Reused text primitives — moved here from src/scm/commitMessageClean.ts so the
-// general-purpose detection logic lives in one general-purpose module. The SCM
-// module imports these back; commitMessageClean.ts is unchanged behaviorally.
-// ---------------------------------------------------------------------------
 
 /** Known refusal / preamble prefixes that are never a valid answer lead-in. */
 export const REFUSAL_PREFIXES = /^(i cannot|i'm sorry|im sorry|as an ai|sure[!,.]?\s*|okay[!,.]?\s*|certainly[!,.]?\s*|of course[!,.]?\s*)/i;
@@ -30,13 +18,6 @@ export function hasRepeatedLineRun(text: string, count: number): boolean {
   }
   return false;
 }
-
-// ---------------------------------------------------------------------------
-// Centralized tuning constants — every weight / threshold / floor lives here.
-// Adjusting the gate's behavior is a one-spot edit. If runtime-configurable
-// tuning is needed later, expose these via `tiermux.agent.qualityGate.*` VS
-// Code settings (setQualityGate already shows the setter/listener pattern).
-// ---------------------------------------------------------------------------
 
 export type QualitySignal = 'refusal' | 'repetition' | 'truncation' | 'too_short';
 
@@ -83,10 +64,8 @@ export interface AnswerQuality {
   primary?: QualitySignal;
 }
 
-// A mid-sentence cutoff: trailing conjunction or flow punctuation suggests the
-// model was cut off mid-thought.
 const TRAILING_FRAGMENT = /[\s,:;&-]$|\b(and|or|but|because|while|when|if|then)\s*$/i;
-// Terminal punctuation / closing brackets that indicate a complete answer.
+
 const TERMINAL_CHAR = /[.!?:)"'\]”’]$/;
 
 /**
@@ -107,40 +86,28 @@ export function assessAnswerQuality(out: string, taskKind: TaskKind): AnswerQual
   const words = t.split(/\s+/).filter(Boolean).length;
   const signals: QualitySignal[] = [];
 
-  // --- refusal -------------------------------------------------------------
-  // Prefix refusal with a short body, or a dominant refusal phrase anywhere.
   const dominantRefusal = t.length < 120 && /i can(?:no|')?t|i'm sorry|as an ai/i.test(t);
   if ((REFUSAL_PREFIXES.test(t) && words < 40) || dominantRefusal) {
     signals.push('refusal');
   }
 
-  // --- repetition ----------------------------------------------------------
-  // Identical consecutive lines, or an 8-gram that repeats (a model stuck in a
-  // loop). The n-gram check is only meaningful for short-ish answers.
   if (hasRepeatedLineRun(t, 3) || (words < 60 && hasRepeatedNgram(t, 8, 3))) {
     signals.push('repetition');
   }
 
-  // --- truncation (text proxies; no finish_reason available at this layer) -
   if (looksTruncated(t)) {
     signals.push('truncation');
   }
 
-  // --- too_short -----------------------------------------------------------
-  // Below the task's word floor AND not a code-block answer (a fenced one-line
-  // patch is legitimately terse). A near-empty answer (< ~8 tokens) is short
-  // regardless of a fence.
   const floor = TASK_WORD_FLOOR[taskKind as Exclude<TaskKind, 'trivial'>] ?? 12;
   const hasFence = t.includes('```');
   if ((words < floor && !hasFence) || estimateTokens(t) < 8) {
     signals.push('too_short');
   }
 
-  // Dedupe (a signal could be pushed once at most today, but be safe).
   const uniq = Array.from(new Set(signals));
   const score = uniq.reduce((sum, s) => sum + (QUALITY_WEIGHTS[s] ?? 0), 0);
-  // primary = highest-weight signal; ties broken by QUALITY_WEIGHTS order
-  // (refusal > repetition > truncation > too_short).
+
   const primary = uniq.length
     ? uniq.slice().sort((a, b) => (QUALITY_WEIGHTS[b] ?? 0) - (QUALITY_WEIGHTS[a] ?? 0))[0]
     : undefined;
@@ -172,13 +139,13 @@ function hasRepeatedNgram(text: string, size: number, n: number): boolean {
  */
 function looksTruncated(t: string): boolean {
   if (!TERMINAL_CHAR.test(t) && TRAILING_FRAGMENT.test(t)) return true;
-  // Code fences: odd count means an unclosed block.
+
   const fences = (t.match(/```/g) ?? []).length;
   if (fences % 2 === 1) return true;
-  // Inline backticks: odd count means unbalanced.
+
   const ticks = (t.match(/`/g) ?? []).length;
   if (ticks % 2 === 1) return true;
-  // Dangling opener on the last line.
+
   const lastLine = t.split('\n').pop() ?? '';
   if (/[({[]\s*$/.test(lastLine)) return true;
   return false;

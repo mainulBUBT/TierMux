@@ -1,6 +1,5 @@
-// Per-turn checkpoints: snapshot every file the agent touches during one turn so
-// the whole batch can be reviewed (diffed) and restored as a unit. In-memory and
-// session-scoped (reset on New chat; not persisted across window reloads).
+
+
 import * as vscode from 'vscode';
 import type { CheckpointFile } from '../messages';
 import { captureWorkingTree, changedSince, restoreToTree, readFileAtTree } from './gitSnapshot';
@@ -165,7 +164,7 @@ export class CheckpointManager {
       n += await restoreToTree(this.cwd, beginTree);
       for (const f of await changedSince(this.cwd, beginTree)) gitRel.add(f.rel);
     }
-    // Snap-tracked files the git restore couldn't see (gitignored, or no git at all).
+
     for (const s of this.aggregateSince(id).values()) {
       if (gitRel.has(s.rel)) continue; // already restored above
       try {
@@ -190,9 +189,7 @@ export class CheckpointManager {
       rel = snap.rel;
       before = snap.before;
     } else {
-      // Git mode: the bar's file list comes from a tree-to-tree diff, not EditGate.record(),
-      // so edits the agent applied directly (bypassing the gate) have no snap here. Read the
-      // pre-turn content straight from the begin tree instead of bailing out silently.
+
       const beginTree = this.beginTreeSince(id);
       if (!beginTree || !this.cwd) return;
       rel = vscode.workspace.asRelativePath(fileUri);

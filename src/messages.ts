@@ -32,6 +32,7 @@ export interface Attachment {
 export interface UsagePayload {
   promptTokens: number;
   completionTokens: number;
+  reasoningTokens?: number;
   totalTokens: number;
 }
 
@@ -46,6 +47,7 @@ export type UsageTotals = UsagePayload & {
     totalRequests: number;
     estimatedSavingsUsd: number;
     firstRecordedAt: number;
+    totalReasoningTokens?: number;
   };
 };
 
@@ -251,7 +253,7 @@ export interface TranscriptMessage {
   /** Assistant reasoning text — replayed as the "Reasoning" disclosure on re-render. */
   reasoning?: string;
   /** Assistant turn token usage — replayed in the footer on re-render. */
-  usage?: { promptTokens: number; completionTokens: number };
+  usage?: { promptTokens: number; completionTokens: number; reasoningTokens?: number };
   /** Tool steps for the "Worked for Ns" disclosure — replayed on re-render. */
   steps?: TranscriptStep[];
   /** Present on user turns that had one — replayed as attachment chips on re-render

@@ -12,7 +12,7 @@ export function sanitizeTitle(raw: string): string {
   s = s.replace(/^["'`]+|["'`.]+$/g, '').trim();
   if (!s) return '';
   const words = s.split(/\s+/).filter(Boolean);
-  // Tell-tale signs the model explained instead of titling (or got cut off mid-reasoning).
+
   const cot = /\b(the user|user'?s message|this is|let me|we need|i'?ll|i will|i should|first,?|okay,?|because|according|greeting|not a|the message|so the title|title for)\b/i;
   if (words.length > 8 || s.length > 64 || cot.test(s)) return '';
   return s;
@@ -37,7 +37,6 @@ export function planStepsToTodos(steps: string): TodoItem[] {
     .slice(0, 20);
 }
 
-// A list step that reads like a CHANGE: starts with an imperative edit-verb, or names a file/path.
 const PLAN_EDIT_VERB = /^(add|create|implement|build|writ|fix|refactor|rename|move|delete|remove|updat|chang|modif|edit|replac|wir|integrat|convert|migrat|install|configur|extract|split|merg|append|insert|expos|export|hook|connect|introduc|switch|drop|bump|upgrad|enabl|disabl|set ?up|scaffold|register|inject|guard|validat)\w*\b/i;
 const PLAN_PATHISH = /[\w./-]+\.[a-z]{1,6}\b|\b[\w-]+\/[\w-]+/;
 

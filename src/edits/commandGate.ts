@@ -1,6 +1,5 @@
-// Runs shell commands for the agent's `runCommand` tool, behind an approval
-// policy. Commands run in the workspace root with a timeout; stdout/stderr are
-// captured (truncated) and returned to the model so it can verify and self-heal.
+
+
 import * as vscode from 'vscode';
 import { spawn } from 'child_process';
 import type { RunContext } from '../agent/runContext';
@@ -100,11 +99,10 @@ export class CommandGate {
     const policy = this.policy();
     if (policy === 'never') return false;
     if (policy === 'allowlist' && this.isAllowlisted(command)) return true;
-    // Auto-approve runs non-dangerous commands without a prompt for a smooth agent flow;
-    // anything destructive still falls through to the confirmation below.
+
     const autoApprove = ctx ? ctx.autoApprove() : this.autoApprove?.();
     if (autoApprove && !isDangerous(command)) return true;
-    // Prefer an inline approval card in the chat view; fall back to a native modal.
+
     const confirmViaUi = ctx ? ctx.approveCommand : this.confirmViaUi;
     if (confirmViaUi) return confirmViaUi(command, cwd);
     const choice = await vscode.window.showWarningMessage(

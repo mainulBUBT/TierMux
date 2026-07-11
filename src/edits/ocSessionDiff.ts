@@ -1,7 +1,5 @@
-// Read-only view of OC's own aggregate session diff (client.session.diff() via ocClient.ts).
-// Distinct from CheckpointManager: checkpoints are TierMux's own per-turn snapshot/restore
-// system; this is just "what did OC change over the whole session so far" — no revert, no
-// restore, just opening a native VS Code diff editor per changed file.
+
+
 import * as vscode from 'vscode';
 
 const SCHEME = 'oc-session-diff';

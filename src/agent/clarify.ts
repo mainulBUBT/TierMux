@@ -1,10 +1,4 @@
-// Parsing for Plan mode's optional clarifying-questions block.
-//
-// The planner may emit a delimited block before producing a plan when the request is
-// ambiguous. We surface it as interactive multiple-choice questions in the webview,
-// then re-run Plan mode with the answers (see chatViewProvider). The format is kept
-// simple and the parser lenient so weaker models that ignore it just produce a normal
-// plan with no regression.
+
 
 /** One selectable answer: a short title plus an optional one-line description. */
 interface ClarifyOption {
@@ -26,11 +20,6 @@ interface ParsedClarifying {
   text: string;
 }
 
-// Tolerant sentinel matchers — weak free-tier models sometimes emit `??? QUESTIONS ???`
-// (inner spaces), `???Questions???` (wrong case), `?? QUESTIONS ??` (missing a ?), or wrap
-// the whole sentinel in markdown bold (`**???QUESTIONS???**`) despite being told not to.
-// Match any run of 2+ `?`, optional whitespace, the word, optional whitespace, 2+ `?`,
-// with optional flanking `**`.
 const START_RE = /\*{0,2}\?{2,}\s*QUESTIONS\s*\?{2,}\*{0,2}/i;
 const END_RE = /\*{0,2}\?{2,}\s*END\s*\?{2,}\*{0,2}/i;
 /** Scrub any leftover sentinel tokens so `???QUESTIONS???` / `???END???` never leak into
@@ -64,18 +53,16 @@ export function parseClarifying(input: string): ParsedClarifying {
   const em = END_RE.exec(input.slice(afterStart));
   const endRel = em ? em.index : -1;
   const block = endRel === -1 ? input.slice(afterStart) : input.slice(afterStart, afterStart + endRel);
-  // Strip the block (and its sentinels) from the text we'd show as a plan.
+
   const text = (input.slice(0, start) + (endRel === -1 ? '' : input.slice(afterStart + endRel + (em ? em[0].length : 0)))).trim();
 
   const questions: ClarifyingQuestion[] = [];
   let current: ClarifyingQuestion | null = null;
   for (const raw of block.split('\n')) {
-    // Strip markdown bold/heading markers weaker models sometimes wrap Q/option lines in
-    // (e.g. `**Q[Label]:**`, `## Q: ...`) — a single `-`/`*` bullet prefix is untouched.
+
     const line = raw.replace(/\*\*/g, '').replace(/^#+\s*/, '').trim();
     if (!line) continue;
-    // `Q[Short Label]: question` — label and question text are both optional independently.
-    // Lenient: `Q[Label]` alone (no text), `Q: question` (no label), or `Q[Label]: question`.
+
     const q = line.match(/^Q(?:\s*\[([^\]]+)\])?(?:\s*[:.)]?\s*(.+))?$/i);
     if (q && (q[1] || q[2])) {
       if (current) questions.push(current); // push even with 0 options (free-form question)
@@ -84,12 +71,11 @@ export function parseClarifying(input: string): ParsedClarifying {
       current = { text, label, options: [] };
       continue;
     }
-    // `- Title :: one-line description` — the ` :: ` and description are optional.
-    // Lenient: also accept lines without a leading `-`/`*` when they contain ` :: `.
+
     const opt = line.match(/^(?:[-*]\s+)?(.+)$/) ;
     if (opt && current) {
       const candidate = opt[1];
-      // Must be an option line: either starts with `-`/`*`, or contains ` :: ` (bare option style).
+
       const hasBullet = /^[-*]\s/.test(line);
       const hasSeparator = candidate.includes(' :: ');
       if (!hasBullet && !hasSeparator) continue;

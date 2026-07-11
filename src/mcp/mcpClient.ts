@@ -1,9 +1,5 @@
-// Minimal MCP stdio client: spawns a server process and speaks newline-delimited
-// JSON-RPC 2.0 (the MCP stdio transport). No external dependency.
-//
-// The config shape below mirrors OpenCode's own native MCP config (McpLocalConfig /
-// McpRemoteConfig, verified against its live OpenAPI spec) field-for-field, so a
-// `tiermux.mcpServers` entry needs no lossy translation on its way into buildOcConfig().
+
+
 import { spawn, type ChildProcess } from 'child_process';
 
 export interface McpLocalServerConfig {
@@ -142,7 +138,7 @@ export class McpStdioClient {
         if (msg.error) p.reject(new Error(msg.error.message ?? 'MCP error'));
         else p.resolve(msg.result);
       }
-      // server-initiated requests/notifications are ignored (no sampling support)
+
     }
   }
 
@@ -246,7 +242,7 @@ export class McpHttpClient implements McpClient {
 
   async start(): Promise<void> {
     await this.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'tiermux', version: '0.1.0' } });
-    // initialized notification (no id, fire-and-forget)
+
     await fetch(this.cfg.url, { method: 'POST', headers: this.headers(), body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) }).catch(() => { /* ignore */ });
     const res = (await this.rpc('tools/list', {})) as { tools?: McpTool[] };
     this.tools = res?.tools ?? [];

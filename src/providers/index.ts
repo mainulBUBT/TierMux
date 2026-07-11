@@ -44,22 +44,17 @@ function registerCompat(opts: OpenAICompatOpts & { keyUrl?: string }) {
   });
 }
 
-// Google (Gemini) — bespoke adapter.
 const googleProvider = new GoogleProvider();
 googleProvider.skipPreflight = true;
 providers.set('google', googleProvider);
 platformInfo.set('google', { platform: 'google', name: 'Google AI Studio', defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta', keyless: false, keyUrl: 'https://aistudio.google.com/apikey' });
 
-// Cohere — OpenAI-compatible via the compatibility endpoint (flatten content).
 registerCompat({ platform: 'cohere', name: 'Cohere', baseUrl: 'https://api.cohere.ai/compatibility/v1', flattenContent: true, keyUrl: 'https://dashboard.cohere.com/api-keys' });
 
-// Cloudflare Workers AI — bespoke (account_id:token key).
 providers.set('cloudflare', new CloudflareProvider());
 platformInfo.set('cloudflare', { platform: 'cloudflare', name: 'Cloudflare Workers AI', defaultBaseUrl: 'https://api.cloudflare.com/client/v4/accounts/<id>/ai/v1', keyless: false, keyUrl: 'https://dash.cloudflare.com/profile/api-tokens' });
 
 for (const c of COMPAT) registerCompat(c);
-
-// No built-in 'custom' platformInfo — custom endpoints are user-defined.
 
 const CUSTOM_TIMEOUT_MS = 120000;
 
@@ -73,9 +68,9 @@ export function resolveProvider(
     const epId = modelId.split('::')[0];
     const endpoint = customEndpoints.find((ep) => ep.id === epId);
     if (!endpoint) return undefined;
-    // Check cache first.
+
     if (customProviderCache.has(epId)) return customProviderCache.get(epId);
-    // Build and cache a new provider.
+
     const provider = new OpenAICompatProvider({
       platform: 'custom',
       name: endpoint.name,
@@ -83,12 +78,7 @@ export function resolveProvider(
       baseUrl: endpoint.baseUrl.replace(/\/+$/, ''),
       extraHeaders: endpoint.extraHeaders,
       timeoutMs: CUSTOM_TIMEOUT_MS,
-      // Skip the 2s preflight ping for user-configured endpoints. Custom/self-hosted
-      // models are often slow on first response, so the ping aborts and gets the model
-      // wrongly marked dead (cached 60s) before the real request — the dominant cause of
-      // "custom endpoint times out instantly". A custom model is a single forced pick with
-      // no failover chain, so preflight buys nothing; the real request runs with the full
-      // CUSTOM_TIMEOUT_MS budget instead. Matches how Cline/Kilo treat custom providers.
+
       skipPreflight: true,
     });
     customProviderCache.set(epId, provider);

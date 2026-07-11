@@ -1,6 +1,5 @@
-// Suggest powerful free (keyless) models the user could enable when their configured chain
-// can't handle a task — so a "weak model can't cope" failure points at a concrete fix instead
-// of a generic error. Reads the catalog + the platform keyless registry (getPlatformInfo).
+
+
 import type { Catalog } from '../catalog/catalog';
 import { getPlatformInfo } from '../providers';
 

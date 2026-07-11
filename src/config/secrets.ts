@@ -1,4 +1,4 @@
-// Per-platform API keys via VS Code SecretStorage.
+
 import * as vscode from 'vscode';
 import type { KeyStatus, Platform } from '../shared/types';
 import { allPlatformInfo, getPlatformInfo } from '../providers';
@@ -40,7 +40,7 @@ export class SecretStore {
   async set(platform: Platform, key: string): Promise<void> {
     const trimmed = key.trim();
     await this.secrets.store(PREFIX + platform, trimmed);
-    // Mirror into the multi-key pool: add if not already present.
+
     const existing = await this.getKeys(platform);
     if (!existing.includes(trimmed)) {
       await this.secrets.store(KEYS_PREFIX + platform, JSON.stringify([trimmed, ...existing]));
@@ -53,8 +53,6 @@ export class SecretStore {
     await this.secrets.delete(KEYS_PREFIX + platform);
     this.statuses.delete(platform);
   }
-
-  // ---- multi-key pool per platform ----
 
   /** All stored keys for a platform (in priority order). Falls back to the single key. */
   async getKeys(platform: Platform): Promise<string[]> {
@@ -124,8 +122,6 @@ export class SecretStore {
     return undefined; // all keys cooled
   }
 
-  // ---- per-model API keys (override the platform key) ----
-
   async getModelKey(platform: Platform, modelId: string): Promise<string | undefined> {
     return this.secrets.get(MODEL_KEY_PREFIX + modelKeyId(platform, modelId));
   }
@@ -140,8 +136,6 @@ export class SecretStore {
   async clearModelKey(platform: Platform, modelId: string): Promise<void> {
     await this.secrets.delete(MODEL_KEY_PREFIX + modelKeyId(platform, modelId));
   }
-
-  // ---- per-custom-endpoint API keys ----
 
   async getCustomKey(id: string): Promise<string | undefined> {
     return this.secrets.get(CUSTOM_KEY_PREFIX + id);
@@ -170,8 +164,6 @@ export class SecretStore {
   async clearCustomModelKey(id: string, upstreamModelId: string): Promise<void> {
     await this.secrets.delete(CUSTOM_MODEL_KEY_PREFIX + id + '::' + upstreamModelId);
   }
-
-  // ---- Cloudflare account ID (separate from the API token) ----
 
   async getCloudflareAccountId(): Promise<string | undefined> {
     return this.secrets.get(CLOUDFLARE_ACCOUNT_PREFIX);
@@ -211,7 +203,7 @@ export class SecretStore {
 
   setStatus(platform: Platform, status: KeyStatus): void {
     this.statuses.set(platform, status);
-    // A success clears any outstanding rate-limit penalty.
+
     if (status === 'healthy') this.cooldownUntil.delete(platform);
     this._onChange.fire();
   }
@@ -289,7 +281,7 @@ export class SecretStore {
    *  Prefers a non-cooled key; falls back to the first key if all are cooled
    *  (the router checks per-key cooldown separately and handles failover). */
   async resolveKey(platform: Platform, modelId?: string): Promise<string | undefined> {
-    // Custom endpoints: prefer model key, then endpoint key, then '' (keyless allowed).
+
     if (platform === 'custom' && modelId) {
       const epId = modelId.split('::')[0];
       const upstream = modelId.split('::').slice(1).join('::');
@@ -305,15 +297,12 @@ export class SecretStore {
     const next = await this.getNextAvailableKey(platform);
     let key = next;
     if (key === undefined) {
-      // All keys cooled — return first key so caller surfaces the cooldown error
-      // rather than treating it as "no key configured".
+
       const keys = await this.getKeys(platform);
       key = keys[0];
     }
     if (key === undefined) return undefined;
-    // Cloudflare: prepend stored account ID to the token if available.
-    // The token may already be in "account_id:api_token" format for backward
-    // compatibility; if so we don't need to prepend again.
+
     if (platform === 'cloudflare') {
       const accountId = await this.getCloudflareAccountId();
       if (accountId && !key.startsWith(accountId + ':')) {

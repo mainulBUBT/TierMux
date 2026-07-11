@@ -1,5 +1,5 @@
-// Ctrl+I inline chat: prompt for an instruction, then replace the selection
-// (or whole file) with the model's edited version, shown via the diff gate.
+
+
 import * as vscode from 'vscode';
 import type { Router } from '../router/router';
 import type { EditGate } from '../edits/applyEdit';

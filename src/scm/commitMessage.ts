@@ -1,7 +1,5 @@
-// Generate a commit message from the staged diff via the built-in Git API.
-// Hardening: better post-processing of model output, garbage detection, a
-// multi-stage model fallback chain, and a deterministic template fallback so
-// the SCM input box never shows garbage text from a noisy free-tier model.
+
+
 import * as vscode from 'vscode';
 import type { Router } from '../router/router';
 import { contentToString } from '../agent/content';
@@ -76,7 +74,7 @@ export async function generateCommitMessage(router: Router): Promise<void> {
     return;
   }
   const repo = git.repositories[0];
-  // Whatever the user already typed in the box is guidance, not something to clobber.
+
   const typed = (repo.inputBox.value || '').trim();
   await vscode.window.withProgress({ location: vscode.ProgressLocation.SourceControl, title: 'Generating commit message…' }, async () => {
     let diff = '';
@@ -90,7 +88,6 @@ export async function generateCommitMessage(router: Router): Promise<void> {
     }
     const clipped = filterDiff(diff).slice(0, 12000);
 
-    // Recent subjects so the message matches the repo's existing convention.
     let recent: string[] = [];
     try {
       const commits = await repo.log?.({ maxEntries: 10 });
@@ -113,10 +110,7 @@ export async function generateCommitMessage(router: Router): Promise<void> {
     ];
 
     try {
-      // Multi-stage fallback: try the user's utility-model pick first, then a
-      // ladder of stronger models. Each attempt is validated; the first clean
-      // output wins. If every model produces garbage, use the deterministic
-      // template so the user never sees garbage in the input box.
+
       const primary = await router.pickUtilityModel();
       const fallbacks = [
         'google::gemini-2.5-flash',
@@ -151,7 +145,7 @@ export async function generateCommitMessage(router: Router): Promise<void> {
       }
       if (msg) repo.inputBox.value = msg;
     } catch (e) {
-      // Catastrophic failure (no router, etc.) — at minimum, show a clean template.
+
       const fallback = buildTemplateFallback(diff);
       if (fallback) repo.inputBox.value = fallback;
       void vscode.window.showErrorMessage(`Commit message generation failed: ${e instanceof Error ? e.message : e}`);

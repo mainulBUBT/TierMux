@@ -1,5 +1,5 @@
-// Curated MCP server registry (a small "marketplace"). Loads the bundled list
-// and, if a remote URL is configured, fetches that instead.
+
+
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -55,7 +55,6 @@ function mapRegServer(s: RegServer): McpRegistryItem | null {
   const id = (name.split('/').pop() ?? name).replace(/[^a-zA-Z0-9_-]/g, '-');
   const base = { id, name, description: s.description ?? '', homepage: s.repository?.url };
 
-  // Prefer a runnable stdio package.
   const pkgs = s.packages ?? [];
   const pkg = pkgs.find((p) => (p.transport?.type ?? 'stdio') === 'stdio') ?? pkgs[0];
   const ident = pkg && (pkg.identifier ?? pkg.name);
@@ -69,7 +68,6 @@ function mapRegServer(s: RegServer): McpRegistryItem | null {
     return { ...base, command, args, env, transport: 'stdio' };
   }
 
-  // Otherwise a remote streamable-HTTP server.
   const remote = (s.remotes ?? []).find((r) => r.type === 'streamable-http') ?? (s.remotes ?? [])[0];
   if (remote?.url) {
     const headers = (remote.headers ?? []).filter((h) => h.name).map((h) => ({ name: h.name as string, value: h.value ?? '', secret: !!h.isSecret }));

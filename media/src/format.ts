@@ -25,10 +25,12 @@ export function fmtCompact(n: number): string {
   return String(n);
 }
 
-// Friendly per-message usage, e.g. "4.3k in · 67 out".
-export function fmtUsage(u?: { promptTokens?: number; completionTokens?: number } | null): string {
+// Friendly per-message usage, e.g. "4.3k in · 67 out · 12 reason".
+export function fmtUsage(u?: { promptTokens?: number; completionTokens?: number; reasoningTokens?: number } | null): string {
   if (!u) return '';
-  return `${fmtTokens(u.promptTokens ?? 0)} in · ${fmtTokens(u.completionTokens ?? 0)} out`;
+  const parts = [`${fmtTokens(u.promptTokens ?? 0)} in`, `${fmtTokens(u.completionTokens ?? 0)} out`];
+  if (u.reasoningTokens) parts.push(`${fmtTokens(u.reasoningTokens)} reason`);
+  return parts.join(' · ');
 }
 
 // Dollar formatter for the "est. $ saved" line. Two decimals by default;

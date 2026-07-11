@@ -1,5 +1,5 @@
-// Diff preview + apply for agent file edits. Shows a native diff editor, asks
-// for confirmation (when enabled), and applies via WorkspaceEdit.
+
+
 import * as vscode from 'vscode';
 import type { RunContext } from '../agent/runContext';
 
@@ -77,15 +77,14 @@ export class EditGate {
   /** Show a diff between current and proposed content and (optionally) confirm. */
   private async previewAndConfirm(uri: vscode.Uri, current: string, proposed: string, title: string, ctx?: RunContext): Promise<boolean> {
     if (!this.requireConfirm()) return true;
-    // Auto-approve applies edits without opening a diff or asking; the pre-edit content is
-    // still recorded by write()/remove(), so the change stays revertible via checkpoints.
+
     const autoApprove = ctx ? ctx.autoApprove() : this.autoApprove?.();
     if (autoApprove) return true;
     const name = vscode.workspace.asRelativePath(uri);
     const leftUri = this.provider.set(this.token(`current/${name}`), current);
     const rightUri = this.provider.set(this.token(`proposed/${name}`), proposed);
     await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, title, { preview: true });
-    // Prefer an inline Apply/Reject card in the chat view; fall back to a native modal.
+
     const confirmViaUi = ctx ? ctx.approveEdit : this.confirmViaUi;
     if (confirmViaUi) {
       const inline = await confirmViaUi({ path: name, title: `Apply changes to ${name}?`, kind: 'write' });

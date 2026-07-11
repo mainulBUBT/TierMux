@@ -1,7 +1,5 @@
-// Multi-provider router with automatic failover. Iterates the enabled fallback
-// chain by priority; on a failover-able error (rate limit / transient / network
-// / timeout / missing key) it advances to the next model. Non-streaming, so
-// there is no mid-stream failover problem.
+
+
 import type {
   ChatCompletionResponse,
   ChatMessage,
@@ -46,11 +44,10 @@ export class ThinkStripper {
       if (this.insideThink) {
         const closeIdx = this.buf.toLowerCase().indexOf('</think>');
         if (closeIdx === -1) {
-          // Still inside `<think>`, haven't seen closing tag yet — hold everything
-          // in case the close tag arrives in the next chunk.
+
           break;
         }
-        // Found closing tag — discard everything up to and including it.
+
         this.buf = this.buf.slice(closeIdx + '</think>'.length);
         this.insideThink = false;
         continue;
@@ -58,11 +55,9 @@ export class ThinkStripper {
 
       const openIdx = this.buf.toLowerCase().indexOf('<think>');
       if (openIdx === -1) {
-        // No opening tag — but we must hold back the tail in case a partial
-        // `<think>` is split across chunks. The longest prefix of `<think>` is
-        // 6 chars (`<think`), so hold back up to 6 chars.
+
         const holdBack = Math.min(6, this.buf.length);
-        // Check if the tail could be a partial `<think>` prefix.
+
         const prefix = '<think>';
         let safeUpTo = this.buf.length;
         for (let i = this.buf.length - holdBack + 1; i <= this.buf.length; i++) {
@@ -76,7 +71,6 @@ export class ThinkStripper {
         break;
       }
 
-      // Found opening tag — emit everything before it, then enter think mode.
       out += this.buf.slice(0, openIdx);
       this.buf = this.buf.slice(openIdx + '<think>'.length);
       this.insideThink = true;
@@ -103,9 +97,9 @@ export class ThinkStripper {
 /** Strip `<think>…</think>` from a complete (non-streamed) response string. */
 export function stripThinkTags(text: string): string {
   let result = text;
-  // Remove complete `<think>…</think>` blocks.
+
   result = result.replace(/<think>[\s\S]*?<\/think>/gi, '');
-  // Remove dangling `<think>…` (no closing tag — model cut off mid-reasoning).
+
   result = result.replace(/<think>[\s\S]*$/i, '');
   return result.trim();
 }
@@ -159,15 +153,12 @@ export class AllModelsFailedError extends Error {
     if (failures.length === 0) {
       return 'No enabled models are configured. Open "Manage Models & Keys" to enable a model and add an API key.';
     }
-    // A lone failure is almost always a model the user explicitly forced — give
-    // an actionable message (set a key / switch to Auto) instead of a code.
+
     if (failures.length === 1) {
       const f = failures[0];
       const who = `${f.platform}/${f.model}`;
       const isCustom = f.platform === 'custom';
-      // The upstream's own words ("invalid model", "invalid api key", ...) — appended so a
-      // misclassified failure (e.g. a 401 that's really a bad model id on a gateway that
-      // auths-after-routing) is debuggable instead of a dead-end "update your key".
+
       const upstream = f.detail ? ` — endpoint said: ${f.detail}` : '';
       switch (f.reason) {
         case 'no_api_key': return `${who} needs an API key. Add one in "Manage Models & Keys", or set the model to Auto.`;
@@ -204,9 +195,7 @@ export class NoVisionModelError extends Error {
 }
 
 function classify(err: unknown): { reason: string; failoverable: boolean; retryAfterMs?: number; detail?: string } {
-  // The upstream's own error text (e.g. "invalid model", "invalid api key") — preserved so the
-  // surfaced message can show what actually failed instead of only a canned reason. Critical for
-  // custom endpoints, where "auth" might really be a bad model id or wrong base URL.
+
   const detail = err instanceof Error && err.message ? err.message : undefined;
   if (err instanceof ProviderHttpError) {
     const s = err.status;
@@ -217,15 +206,12 @@ function classify(err: unknown): { reason: string; failoverable: boolean; retryA
     if (s === 413) return { reason: 'http_413', failoverable: true, detail };
     if (s === 404) return { reason: 'not_found', failoverable: true, detail };
     if (s === 400) return { reason: 'bad_request', failoverable: true, detail };
-    // 402 Payment Required = the model is paid-only / out of free quota under
-    // the user's current key. In AUTO mode, make it failoverable so the next
-    // enabled model in the chain gets a chance. If ALL models 402, the error
-    // surfaces as "All models exhausted" with the per-reason breakdown.
+
     if (s === 402) return { reason: 'paid_only', failoverable: true, detail };
     if (s && s >= 500) return { reason: 'server_error', failoverable: true, detail };
     return { reason: `http_${s ?? '?'}`, failoverable: true, detail };
   }
-  // Network errors (fetch TypeError) and anything else: try the next model.
+
   return { reason: 'network', failoverable: true, detail };
 }
 
@@ -274,15 +260,12 @@ export class Router {
       return undefined;
     };
 
-    // 0. Explicit user choice (Settings → Others) wins when it's usable.
     const chosen = vscodeConfigString('tiermux.utilityModel', 'auto');
     if (chosen && chosen !== 'auto' && (await this.isReady(chosen))) return chosen;
 
-    // 1. Strong KEYLESS models — the default, so titles/commits work with no API key.
     const keyless = await pick(['ovh::gpt-oss-120b', 'ovh::Meta-Llama-3_3-70B-Instruct', 'pollinations::openai-fast']);
     if (keyless) return keyless;
 
-    // 2. Curated strong keyed models, if the user added a key.
     const keyed = await pick([
       'google::gemini-2.5-flash',
       'groq::openai/gpt-oss-120b',
@@ -292,7 +275,6 @@ export class Router {
     ]);
     if (keyed) return keyed;
 
-    // 3. The smartest model the user actually has.
     const ranked = entries
       .map((e) => ({ e, m: this.catalog.find(e.platform, e.modelId) }))
       .filter((x): x is { e: FallbackEntry; m: CatalogModel } => !!x.m)
@@ -341,7 +323,7 @@ export class Router {
   private estimateComplexity(messages: ChatMessage[], taskKind?: string): 'simple' | 'complex' {
     if (taskKind === 'trivial') return 'simple';
     if (taskKind === 'agent' || taskKind === 'debug') return 'complex';
-    // Long conversations or large messages indicate a complex task
+
     if (messages.length > 6 || estimateMessagesTokens(messages) > 800) return 'complex';
     return 'simple';
   }
@@ -353,50 +335,33 @@ export class Router {
     if (forcedModel) {
       const [platform, ...rest] = opts.model!.split('::');
       const modelId = rest.join('::');
-      // Honor an explicit model pick EXACTLY: try only that model, never silently
-      // substitute another. Falling over to a different model would contradict the
-      // manual choice (the user picks Auto when they want failover). If it can't
-      // run (no key, rate-limited, …) the caller surfaces a clear error instead.
+
       const forced = list.find((e) => e.platform === platform && e.modelId === modelId);
       return [forced ?? { platform: platform as Platform, modelId, enabled: true, priority: -1 }];
     }
     if (opts.requireTools) {
-      // Skip models the catalog marks tool-incapable AND those quarantined at
-      // runtime after rejecting a tools payload.
+
       list = list.filter(
         (e) =>
           this.catalog.find(e.platform, e.modelId)?.supportsTools !== false &&
           !this.secrets.isToolIncompatible(e.platform, e.modelId),
       );
     }
-    // Drop models a provider has 404'd (deprecated/removed) so Auto never re-tries a
-    // dead model — unless that would leave nothing, in which case keep them and let
-    // the attempt surface a real error rather than silently doing nothing.
+
     const live = list.filter((e) => !this.secrets.isDeprecated(e.platform, e.modelId));
     if (live.length > 0) list = live;
-    // Vision attachment (an image, or a PDF with no extractable text — only those
-    // emit a visual block, so taskKind==='vision' implies "the model must see the
-    // bytes"): filter to vision-capable models instead of merely preferring them.
-    // Without this, a text-only model can win the turn on tools/speed and then
-    // honestly refuse ("I can't read this PDF"). A forced model pick returned
-    // above, so this only reshuffles Auto routing. If nothing vision-capable is
-    // enabled, throw a clear error rather than sending a turn that can't succeed.
+
     if (opts.taskKind === 'vision') {
       const visionCapable = list.filter((e) => this.catalog.find(e.platform, e.modelId)?.supportsVision);
       if (visionCapable.length === 0) throw new NoVisionModelError();
       list = visionCapable;
-      // A raw PDF file part (no extracted text to fall back on): some vision models
-      // otherwise refuse the WHOLE turn on seeing it (see CatalogModel.rejectsRawPdf).
-      // Prefer models known to accept it; only fall back to the full vision-capable
-      // list if that would leave nothing to try.
+
       if (opts.hasRawPdfPart) {
         const acceptsRawPdf = list.filter((e) => !this.catalog.find(e.platform, e.modelId)?.rejectsRawPdf);
         if (acceptsRawPdf.length > 0) list = acceptsRawPdf;
       }
     }
-    // Quality-based escalation (Auto only): drop models that already underperformed, and any
-    // weaker than the floor, so a flaky weak model is replaced by a stronger one. If nothing
-    // is left, route() surfaces AllModelsFailedError — the caller then recommends a free model.
+
     if (opts.exclude?.length) {
       const ex = new Set(opts.exclude);
       list = list.filter((e) => !ex.has(`${e.platform}::${e.modelId}`));
@@ -408,15 +373,12 @@ export class Router {
         return !m || m.intelligenceRank <= floor;
       });
     }
-    // Reorder by what the task needs (fast for chat, tool-capable+smart for
-    // agent, etc.). Only Auto reaches here — a forced model returned above.
+
     if (opts.taskKind) {
       const kind = opts.taskKind;
       const score = this.stats ? (p: string, m: string): number => this.stats!.score(kind, p, m) : undefined;
       list = orderForTask(kind, list, this.catalog, score);
-      // Fast path: lead with the model that last worked for this task kind, so we
-      // don't re-walk the cascade each time — unless the user has downvoted it for
-      // this task. (Filtered out below if it's cooling.)
+
       const good = this.lastGood.get(kind);
       if (good) {
         const i = list.findIndex((e) => `${e.platform}::${e.modelId}` === good);
@@ -424,8 +386,7 @@ export class Router {
         if (i > 0 && notDisliked) list = [list[i], ...list.slice(0, i), ...list.slice(i + 1)];
       }
     }
-    // Prefer platforms that aren't rate-limit-cooling. Never starve: if all are
-    // cooling, fall back to the least-cooled order so we still attempt something.
+
     const ready = list.filter((e) => this.secrets.cooldownRemaining(e.platform) === 0);
     if (ready.length > 0) return ready;
     return [...list].sort(
@@ -515,18 +476,13 @@ export class Router {
   async route(messages: ChatMessage[], opts: RouteOptions = {}): Promise<RouteResult> {
     const failures: Array<{ platform: Platform; model: string; reason: string; detail?: string }> = [];
     const maxOut = opts.max_tokens ?? 4096;
-    // The tool manifest is appended to every request but isn't part of the
-    // trimmed message list — reserve budget for it so we don't 413.
+
     const sentTools = !!(opts.tools && opts.tools.length);
     const toolsTokens = sentTools ? estimateTokens(JSON.stringify(opts.tools)) : 0;
 
-    // Track which models we've tried and how many times
     const triedModels = new Map<string, number>();
     const MAX_RETRIES = 3;
 
-    // Don't switch to a model that can't hold the conversation: prefer fallbacks
-    // whose context window fits the current history (so a rate-limit hop doesn't
-    // force trimming older turns). Only when the model is "Auto"; never starves.
     let cands = this.candidates(opts);
     const forced = !!(opts.model && opts.model !== 'auto');
     if (!forced && cands.length > 1) {
@@ -538,11 +494,6 @@ export class Router {
         cands = [...fitting, ...cands.filter((e) => !fits(e))];
       }
 
-      // Complexity-aware latency preference.
-      // Simple tasks (short messages, chat/trivial taskKind): within the same
-      // intelligence tier (rank ±1), prefer whichever model has the lower p50
-      // latency from real measurements. Complex tasks (agent/debug, long history)
-      // keep the intelligence-first order that orderForTask already produced.
       const complexity = this.estimateComplexity(messages, opts.taskKind);
       if (complexity === 'simple') {
         cands = [...cands].sort((a, b) => {
@@ -555,9 +506,6 @@ export class Router {
         });
       }
 
-      // Models labeled slow (a recent request took ≥ SLOW_LATENCY_MS) are pushed to
-      // the bottom of Auto's cascade for the label's lifetime — still triable if
-      // every faster candidate fails, and still directly selectable by the user.
       if (this.slowModels) {
         const notSlow = cands.filter((e) => !this.slowModels!.isSlow(e.platform, e.modelId));
         const slow = cands.filter((e) => this.slowModels!.isSlow(e.platform, e.modelId));
@@ -569,7 +517,6 @@ export class Router {
       const modelKey = `${entry.platform}::${entry.modelId}`;
       const retryCount = triedModels.get(modelKey) || 0;
 
-      // Skip if we've already tried this model MAX_RETRIES times
       if (retryCount >= MAX_RETRIES) {
         failures.push({ platform: entry.platform, model: entry.modelId, reason: `tried ${MAX_RETRIES} times` });
         continue;
@@ -581,30 +528,23 @@ export class Router {
         opts.onProviderAttempt?.({ platform: entry.platform, model: entry.modelId, status: 'fail', latencyMs: 0, errorType: 'not_found', reason: 'no_provider' });
         continue;
       }
-      // Resolve the API key (check model-specific key first, then platform key)
+
       let apiKey = entry.key
         ?? await this.secrets.getModelKey(entry.platform, entry.modelId)
         ?? await this.secrets.resolveKey(entry.platform, entry.modelId);
-      // Custom endpoints without a configured key are treated as missing (not keyless).
-      // Empty-string keys from resolveKey happen when getCustomKey returns undefined.
+
       if (apiKey === undefined || (entry.platform === 'custom' && apiKey === '')) {
         failures.push({ platform: entry.platform, model: entry.modelId, reason: 'no_api_key' });
         continue;
       }
 
-      // Pre-flight: skip models we recently learned are down (ping failed in
-      // the last minute) so the user doesn't sit through a full request that
-      // we already know will fail. Cached "ok" lets a known-healthy model
-      // skip the probe entirely.
       if (retryCount === 0) {
         const cached = this.healthOf(entry.platform, entry.modelId);
         if (cached === 'bad' && !provider.skipPreflight) {
-          // Surface the cached probe reason (auth/timeout/network/...) instead of
-          // a generic 'preflight_failed' so the user knows what actually broke.
+
           const reason = this.cachedHealthReason(entry.platform, entry.modelId) ?? 'preflight_failed';
           failures.push({ platform: entry.platform, model: entry.modelId, reason });
-          // Only signal failover when in Auto mode — forced models shouldn't show
-          // "Routing to the best available model" since there's no actual routing.
+
           if (!forced) opts.onFailover?.({ from: entry, reason });
           continue;
         }
@@ -623,10 +563,6 @@ export class Router {
 
       const model: CatalogModel | undefined = this.catalog.find(entry.platform, entry.modelId);
 
-      // Proactive rate-limit check: if we know this model's RPM/RPD limit and we've
-      // already hit it this window, skip straight to the next model instead of waiting
-      // for a 429 round-trip. Records every outbound attempt (below) so the window
-      // stays accurate even across retries.
       if (model && !this.rateTracker.canSend(entry.platform, entry.modelId, model.rpmLimit, model.rpdLimit)) {
         const coolMs = this.rateTracker.rpmCooldownMs(entry.platform, entry.modelId, model.rpmLimit);
         failures.push({ platform: entry.platform, model: entry.modelId, reason: `rpm_limit (${Math.ceil(coolMs / 1000)}s cooldown)` });
@@ -649,25 +585,25 @@ export class Router {
       let reserved = toolsTokens;
       let triedTrim = false;
       for (;;) {
-        // Trim the conversation to fit this model's context window.
+
         const fitted = fitMessages(messages, inputBudget(model?.contextWindow, maxOut, reserved)).messages;
         const t0 = Date.now();
         try {
           let response: ChatCompletionResponse;
-          // Stream when: caller wants live chunks AND this is a text-answer turn (no tools).
-          // Tool-call turns produce JSON fragments, not prose — streaming them is useless and
-          // would send partial JSON to onChunk, confusing the UI. The agent already knows
-          // which turns need tools vs. which produce the final answer.
-          // Record this attempt in the rate tracker BEFORE the HTTP call so the
-          // window stays accurate even if the request errors.
+
           this.rateTracker.record(entry.platform, entry.modelId);
 
           const wantsStream = !!(opts.onChunk && !opts.tools?.length);
           if (wantsStream) {
             const chunks: string[] = [];
             let toolCalls: import('../shared/types').ChatToolCall[] | undefined;
+            let finalUsage: import('../shared/types').TokenUsage | undefined;
             const thinkStrip = new ThinkStripper();
             for await (const chunk of provider.streamChatCompletion(apiKey, fitted, entry.modelId, completionOpts)) {
+              if (chunk.usage) {
+                finalUsage = chunk.usage;
+                continue;
+              }
               const delta = chunk.choices?.[0]?.delta;
               if (!delta) continue;
               if (delta.content) {
@@ -685,37 +621,31 @@ export class Router {
               opts.onChunk!(tail);
             }
             const fullText = chunks.join('');
-            // Most providers don't emit `usage` in their SSE chunks (would need
-            // `stream_options.include_usage` set on the request, which the OpenAI
-            // stream spec supports but not every free provider honors). Until the
-            // request body opts in, estimate the counts from the data we DO have:
-            // the fitted messages we actually sent (prompt) and the assembled
-            // text we received (completion). Same heuristic the rest of the router
-            // uses for context-fit pre-checks (`estimateMessagesTokens(messages)`
-            // at line 347), so the session and lifetime counters stay consistent
-            // with the budget logic.
-            const promptTokens = estimateMessagesTokens(fitted);
-            const completionTokens = estimateTokens(fullText);
+
+            const promptTokens = finalUsage?.prompt_tokens ?? estimateMessagesTokens(fitted);
+            const completionTokens = finalUsage?.completion_tokens ?? estimateTokens(fullText);
+            const totalTokens = finalUsage?.total_tokens ?? promptTokens + completionTokens;
             response = {
               id: `chatcmpl-stream-${Date.now()}`,
               object: 'chat.completion',
               created: Math.floor(Date.now() / 1000),
               model: entry.modelId,
               choices: [{ index: 0, message: { role: 'assistant', content: fullText, ...(toolCalls ? { tool_calls: toolCalls } : {}) }, finish_reason: 'stop' }],
-              usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
+              usage: {
+                prompt_tokens: promptTokens,
+                completion_tokens: completionTokens,
+                total_tokens: totalTokens,
+                ...(finalUsage?.reasoning_tokens !== undefined ? { reasoning_tokens: finalUsage.reasoning_tokens } : {}),
+              },
             };
           } else {
             response = await provider.chatCompletion(apiKey, fitted, entry.modelId, completionOpts);
           }
 
-          // Strip `<think>` tags from response content (models like Qwen3, DeepSeek-R1 emit reasoning inline)
           if (response.choices?.[0]?.message?.content && typeof response.choices[0].message.content === 'string') {
             response.choices[0].message.content = stripThinkTags(response.choices[0].message.content);
           }
 
-          // Empty response (no text, no tool calls): treat as failure and failover.
-          // Some misconfigured endpoints return HTTP 200 with empty content — don't
-          // accept that as a successful answer when better models are available.
           const responseContent = response.choices?.[0]?.message?.content;
           const hasToolCalls = !!(response.choices?.[0]?.message?.tool_calls?.length);
           if (!forced && !responseContent && !hasToolCalls) {
@@ -730,18 +660,16 @@ export class Router {
           this.latencyTracker.record(entry.platform, entry.modelId, elapsedMs);
           if (elapsedMs >= SLOW_LATENCY_MS) this.slowModels?.markSlow(entry.platform, entry.modelId);
           this.usage.add(response.usage);
-          this.usageStore?.addRequest(entry.platform, entry.modelId, response.usage?.prompt_tokens || 0, response.usage?.completion_tokens || 0);
+          this.usageStore?.addRequest(entry.platform, entry.modelId, response.usage?.prompt_tokens || 0, response.usage?.completion_tokens || 0, response.usage?.reasoning_tokens);
           this.secrets.setStatus(entry.platform, 'healthy');
           this.markHealth(entry.platform, entry.modelId, 'ok');
-          // Remember the winner so the next same-kind task starts here, not at the top of the cascade.
+
           if (opts.taskKind) this.lastGood.set(opts.taskKind, `${entry.platform}::${entry.modelId}`);
           opts.onProviderAttempt?.({ platform: entry.platform, model: entry.modelId, status: 'ok', latencyMs: Date.now() - t0 });
           return { response, platform: entry.platform, model: entry.modelId, runtimeName: (provider as any).runtimeName };
         } catch (err) {
           const { reason, failoverable, retryAfterMs, detail } = classify(err);
 
-          // Payload too large with tools: retry this same model once with a
-          // tighter budget before failing over.
           if (reason === 'http_413' && sentTools && !triedTrim) {
             triedTrim = true;
             reserved = toolsTokens * 2 + 1024;
@@ -749,8 +677,7 @@ export class Router {
           }
 
           if (reason === 'rate_limited') {
-            // Cool just this key, then check if another key is available for
-            // the same platform before failing over to the next model.
+
             this.secrets.setCooldownForKey(apiKey, retryAfterMs ?? this.rateLimitCooldownMs());
             const allKeys = await this.secrets.getKeys(entry.platform);
             const nextKey = allKeys.find((k) => this.secrets.keyCooldownRemaining(k) === 0);
@@ -760,11 +687,9 @@ export class Router {
               triedTrim = false;
               continue;
             }
-            // All keys for this platform are cooled — cool the platform itself.
+
             this.secrets.setCooldown(entry.platform, retryAfterMs ?? this.rateLimitCooldownMs());
 
-            // Pinned model: wait for the cooldown and retry the SAME model (up to MAX_RETRIES).
-            // This handles per-second / short-window rate limits transparently without failing over.
             if (forced && retryCount < MAX_RETRIES) {
               const waitMs = Math.min(retryAfterMs ?? this.rateLimitCooldownMs(), 15_000);
               await new Promise((resolve) => setTimeout(resolve, waitMs));
@@ -777,31 +702,23 @@ export class Router {
             this.secrets.setStatus(entry.platform, 'error');
           }
 
-          // A model that advertises tools but rejects the tools payload gets
-          // quarantined so requireTools routing skips it next time.
           if (sentTools && (reason === 'bad_request' || reason === 'http_413')) {
             this.secrets.markToolIncompatible(entry.platform, entry.modelId);
           }
 
-          // A 404 means the model is gone/deprecated (catalog entries go stale).
-          // Quarantine it so Auto stops trying it and the picker can flag it.
           if (reason === 'not_found') {
             this.secrets.markDeprecated(entry.platform, entry.modelId);
           }
 
-          // Cache the failure so the next call within TTL skips straight to
-          // the next model (no preflight ping, no full request).
           this.markHealth(entry.platform, entry.modelId, 'bad', reason);
 
-          // Increment the retry count for this model
           triedModels.set(modelKey, retryCount + 1);
 
           if (Date.now() - t0 >= SLOW_LATENCY_MS) this.slowModels?.markSlow(entry.platform, entry.modelId);
 
           failures.push({ platform: entry.platform, model: entry.modelId, reason, detail });
           opts.onProviderAttempt?.({ platform: entry.platform, model: entry.modelId, status: 'fail', latencyMs: Date.now() - t0, errorType: reason, reason: detail });
-          // Only signal failover when in Auto mode — forced models shouldn't show
-          // "Routing to the best available model" since there's no actual routing.
+
           if (!forced) opts.onFailover?.({ from: entry, reason });
           if (!failoverable || forced) break candidates;
           continue candidates;
@@ -812,7 +729,6 @@ export class Router {
   }
 }
 
-// Late-bound to avoid importing vscode at module-eval time in non-extension tests.
 function vscodeConfigNumber(key: string, fallback: number): number {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
