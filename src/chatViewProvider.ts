@@ -236,12 +236,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(private readonly extensionUri: vscode.Uri, private readonly deps: ChatDeps) {
     this.autoApprove = deps.workspaceState.get<boolean>(AUTO_APPROVE_KEY, false);
     const stored = this.loadSessions();
-    const currentId = deps.workspaceState.get<string>(CURRENT_KEY);
     // Rehydrate every persisted chat as a Session with EMPTY runtime — a dead agent process
     // can't resume, so nothing starts "running" after a reload (transcripts come back intact).
+    // History stays browsable via the session list, but each fresh open starts on a new/home
+    // chat rather than resuming whatever was last viewed.
     for (const s of stored) this.sessions.set(s.id, this.hydrateSession(s));
-    const viewed = currentId && this.sessions.has(currentId) ? currentId : stored[0]?.id;
-    this.viewedSessionId = viewed ?? this.createSession().id;
+    this.viewedSessionId = this.createSession().id;
     deps.secrets.onDidChange(() => void this.sendConfig());
     deps.settings.onDidChange(() => void this.sendConfig());
   }
@@ -400,6 +400,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  webview isn't open yet. */
   postEngineStatus(status: { state: 'downloading' | 'starting' | 'verifying' | 'ready' | 'error'; message?: string; percent?: number }): void {
     this.post({ type: 'engineStatus', ...status });
+  }
+
+  /** Dismissible "new models added" banner above the composer, mirroring the
+   *  native toast in extension.ts's notifyNewModels(). */
+  postNewModels(message: string): void {
+    this.post({ type: 'newModelsAvailable', message });
   }
 
   private post(msg: OutMessage): void {
@@ -940,6 +946,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.sendConfig();
         break;
       }
+      case 'openKeybinding':
+        await vscode.commands.executeCommand('workbench.action.openGlobalKeybindings', m.command);
+        break;
       case 'setAutoApprove':
         this.autoApprove = m.enabled;
         await this.deps.workspaceState.update(AUTO_APPROVE_KEY, m.enabled);

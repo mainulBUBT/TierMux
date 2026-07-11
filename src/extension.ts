@@ -112,6 +112,7 @@ function notifyNewModels(entries: FallbackEntry[]): void {
 
   void vscode.window.showInformationMessage(message, 'Manage Models')
     .then((choice) => { if (choice === 'Manage Models') void vscode.commands.executeCommand('tiermux.openModelSettings'); });
+  chatProviderRef?.postNewModels(message);
 }
 
 /** Reads `tiermux.mcpServers`, upgrading any legacy (pre-native-schema) entries on the fly. */

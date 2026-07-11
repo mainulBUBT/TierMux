@@ -558,17 +558,18 @@ details[open].think-block > details > summary::before { content: '▾ '; }
   animation: idx-spin .8s linear infinite;
 }
 @keyframes idx-spin { to { transform: rotate(360deg); } }
-/* Pinned changed-files review bar above the input (Cursor/Kilo-style) */
-.changed-bar {
+/* Pinned changed-files review bar above the input (Cursor/Kilo-style), and the
+   "new models added" banner reusing the same bar chrome. */
+.changed-bar, .new-models-bar {
   display: flex; flex-direction: column; gap: 6px;
   padding: 6px 8px; border-radius: 6px;
   border: 1px solid var(--vscode-panel-border);
   background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.12));
 }
-.changed-bar.hidden { display: none; }
+.changed-bar.hidden, .new-models-bar.hidden { display: none; }
 .changed-bar.collapsed .cb-files { display: none; }
 .changed-bar.collapsed { gap: 0; }
-.changed-bar .cb-head { display: flex; align-items: center; gap: 6px; }
+.changed-bar .cb-head, .new-models-bar .cb-head { display: flex; align-items: center; gap: 6px; }
 .changed-bar .cb-chevron {
   flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
   background: transparent; border: none; cursor: pointer; color: var(--vscode-foreground);
@@ -577,18 +578,22 @@ details[open].think-block > details > summary::before { content: '▾ '; }
 .changed-bar .cb-chevron:hover { opacity: 1; }
 .changed-bar.collapsed .cb-chevron { transform: rotate(0deg); }
 .changed-bar .cb-chevron svg { width: 12px; height: 12px; }
-.changed-bar .cb-title { font-size: 11px; font-weight: 600; flex: 1 1 auto; }
-.changed-bar .cb-action {
+.changed-bar .cb-title, .new-models-bar .cb-title { font-size: 11px; font-weight: 600; flex: 1 1 auto; }
+.new-models-bar .cb-icon {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  color: var(--vscode-charts-yellow, #cca700); opacity: .9; width: 13px; height: 13px;
+}
+.changed-bar .cb-action, .new-models-bar .cb-action {
   font-size: 11px; cursor: pointer; padding: 2px 8px; border-radius: 10px;
   background: transparent; color: var(--vscode-foreground);
   border: 1px solid var(--vscode-panel-border);
 }
-.changed-bar .cb-action:hover { background: var(--vscode-toolbar-hoverBackground); }
-.changed-bar .cb-close {
+.changed-bar .cb-action:hover, .new-models-bar .cb-action:hover { background: var(--vscode-toolbar-hoverBackground); }
+.changed-bar .cb-close, .new-models-bar .cb-close {
   font-size: 13px; line-height: 1; cursor: pointer; padding: 0 4px;
   background: transparent; color: var(--vscode-foreground); border: none; opacity: .6;
 }
-.changed-bar .cb-close:hover { opacity: 1; }
+.changed-bar .cb-close:hover, .new-models-bar .cb-close:hover { opacity: 1; }
 .changed-bar .cb-files { display: flex; flex-wrap: wrap; gap: 4px; max-height: 84px; overflow-y: auto; }
 .changed-bar .cb-file {
   display: inline-flex; align-items: center; gap: 5px; max-width: 100%;

@@ -207,6 +207,7 @@ export type InMessage =
   | { type: 'copyText'; text: string }
   | { type: 'setUtilityModel'; model: string }
   | { type: 'setExtensionSetting'; key: string; value: boolean | number | string }
+  | { type: 'openKeybinding'; command: string }
   | { type: 'setAutoApprove'; enabled: boolean }
   | { type: 'resume'; requestId: string }
   | { type: 'newChat' }
@@ -305,4 +306,5 @@ export type OutMessage =
   /** First-run engine onboarding: binary download progress → verify → ready/error.
    *  Only sent while the engine hasn't been successfully onboarded before (see
    *  `tiermux.onboardedEngine` global state) — returning users never see this. */
-  | { type: 'engineStatus'; state: 'downloading' | 'starting' | 'verifying' | 'ready' | 'error'; message?: string; percent?: number };
+  | { type: 'engineStatus'; state: 'downloading' | 'starting' | 'verifying' | 'ready' | 'error'; message?: string; percent?: number }
+  | { type: 'newModelsAvailable'; message: string };

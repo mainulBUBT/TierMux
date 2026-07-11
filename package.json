@@ -329,6 +329,12 @@
         "key": "ctrl+i",
         "mac": "cmd+i",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "tiermux.addSelectionToChat",
+        "key": "ctrl+l",
+        "mac": "cmd+l",
+        "when": "editorHasSelection"
       }
     ],
     "configuration": {

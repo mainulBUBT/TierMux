@@ -82,6 +82,7 @@ import { handleToolStatus } from './handlers/toolStatus';
       <div class="settings" id="settings"></div>
     <div class="composer" id="composer">
       <div class="index-status hidden" id="index-status"></div>
+      <div class="new-models-bar hidden" id="new-models-bar"></div>
       <div class="changed-bar hidden" id="changed-bar"></div>
       <div class="chips" id="chips"></div>
       <div class="input-wrap">
@@ -1719,6 +1720,26 @@ import { handleToolStatus } from './handlers/toolStatus';
       (value) => send({ type: 'setExtensionSetting', key: 'completions.model', value }),
     ));
 
+    // Keybinding for "Add Selection to Chat": VS Code doesn't let extensions register
+    // keybindings at runtime, so this hands off to VS Code's own Keyboard Shortcuts editor
+    // (pre-filtered to our command), which already knows the right modifier per OS.
+    const kbRow = el('div', 'setting-row');
+    const kbLeft = el('div', 'setting-left');
+    const kbLbl = el('div', 'setting-label');
+    kbLbl.textContent = 'Add Selection to Chat shortcut';
+    const kbDsc = el('div', 'setting-desc');
+    kbDsc.textContent = 'Default: Cmd+L (Mac) / Ctrl+L (Windows/Linux) with a selection active. Click to change it for your OS.';
+    kbLeft.append(kbLbl, kbDsc);
+    kbRow.append(kbLeft);
+    const kbBtn = document.createElement('button');
+    kbBtn.className = 'secondary';
+    kbBtn.textContent = 'Change Shortcut';
+    kbBtn.addEventListener('click', () => {
+      send({ type: 'openKeybinding', command: 'tiermux.addSelectionToChat' });
+    });
+    kbRow.append(kbBtn);
+    wrap.append(kbRow);
+
     const settings = state.settings || {};
     const settingsMeta = state.settingsMeta || [];
     let lastSection = '';
@@ -2994,6 +3015,9 @@ import { handleToolStatus } from './handlers/toolStatus';
       case 'engineStatus':
         handleEngineStatus(msg);
         break;
+      case 'newModelsAvailable':
+        renderNewModelsBar(msg.message);
+        break;
       case 'config':
         state = msg.config;
         autoApprove = !!state.autoApprove;
@@ -3806,6 +3830,29 @@ import { handleToolStatus } from './handlers/toolStatus';
   // every file edited this session; collapse the list, click a file to diff it, or
   // undo all the edits. Collapsed state persists across re-renders.
   let changedBarCollapsed = false;
+  /** Dismissible "new models added" banner above the composer. The host only sends this
+   *  once per model (see checkForNewModels in settingsStore.ts), so closing it is a plain
+   *  hide — it won't reappear until the catalog actually gains something new. */
+  function renderNewModelsBar(message) {
+    const bar = $('#new-models-bar');
+    if (!bar) return;
+    bar.innerHTML = '';
+    const head = document.createElement('div'); head.className = 'cb-head';
+    const icon = document.createElement('span'); icon.className = 'cb-icon';
+    icon.innerHTML = ICON.bell;
+    const title = document.createElement('span'); title.className = 'cb-title';
+    title.textContent = message;
+    const manage = document.createElement('button'); manage.className = 'cb-action';
+    manage.textContent = 'Manage Models';
+    manage.addEventListener('click', () => { toggleSettings(); bar.classList.add('hidden'); });
+    const close = document.createElement('button'); close.className = 'cb-close'; close.textContent = '×';
+    close.title = 'Dismiss';
+    close.addEventListener('click', () => { bar.classList.add('hidden'); });
+    head.appendChild(icon); head.appendChild(title); head.appendChild(manage); head.appendChild(close);
+    bar.appendChild(head);
+    bar.classList.remove('hidden');
+  }
+
   function renderChangedBar(msg) {
     const bar = $('#changed-bar');
     if (!bar) return;
