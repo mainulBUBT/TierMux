@@ -12,6 +12,7 @@ scripts/**
 **/*.map
 dist/*.e2e.cjs
 dist/*.manual.cjs
+dist/bench*.cjs
 tsconfig.json
 esbuild.js
 .gitignore
@@ -23,3 +24,8 @@ PUBLISHING.md
 .cache/**
 media/banner.png
 package-lock.json
+bin/**
+.husky/**
+.benchmarks/**
+tsconfig.webview.json
+resources/bin/**
