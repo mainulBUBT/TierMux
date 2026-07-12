@@ -1022,7 +1022,7 @@ function extractLastAssistantText(msgs: unknown): string {
 /**
  * Chat mode: a question answered with **read-only tool access**. Runs through OC's custom
  * `chat` agent (defined in ocConfig.ts) over `tiermux/fast` — the agent may inspect the
- * project (read/list/glob/grep) and fetch current info (web_fetch/web_search), but cannot
+ * project (read/list/glob/grep) and fetch current info (webfetch/websearch), but cannot
  * edit/write files or run commands. The OC session is keyed by TierMux session id so prior
  * turns are retained server-side, just like agent/plan mode.
  *

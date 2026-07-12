@@ -645,7 +645,7 @@
     "package": "vsce package --no-dependencies",
     "fetch:binaries": "node scripts/fetch-opencode.mjs",
     "package:full": "npm run fetch:binaries && npm run build && vsce package --no-dependencies",
-    "publish": "npm run build && vsce publish --no-dependencies && ovsx publish --no-dependencies",
+    "publish": "npm run build && vsce publish --no-dependencies && ovsx publish --no-dependencies -p \"$OVSX_PAT\"",
     "prepare": "husky"
   },
   "devDependencies": {

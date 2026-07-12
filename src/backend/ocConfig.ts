@@ -55,10 +55,10 @@ export function buildOcConfig(opts: OcConfigOptions): string {
     + '- list  → see a directory\'s layout before drilling in.\n'
     + '- read  → read a SPECIFIC file you already located above (not a guess). Prefer reading the '
     + 'smallest range that answers the question.\n'
-    + '- web_fetch/web_search → only for current info you can\'t find locally.\n\n'
+    + '- webfetch/websearch → only for current info you can\'t find locally.\n\n'
     + 'RESEARCH BUDGET:\n'
     + '- Spend the FEWEST tool calls that let you answer confidently. 1–2 targeted calls is ideal '
-    + 'for a question; only an edit task justifies more. NEVER make more than 2 web_fetch calls in one turn.\n'
+    + 'for a question; only an edit task justifies more. NEVER make more than 2 webfetch calls in one turn.\n'
     + '- Do NOT read whole directories file-by-file. Search (glob/grep) to pick the 1–3 files that '
     + 'matter, then read just those.\n'
     + '- If a search returns nothing after one good-faith attempt, STOP searching and say so.\n\n'
@@ -72,11 +72,11 @@ export function buildOcConfig(opts: OcConfigOptions): string {
     + 'GENERAL KNOWLEDGE / CURRENT EVENTS:\n'
     + '- STATIC facts (history, science, geography, language syntax, math, well-known definitions) → you may '
     + 'answer from training data.\n'
-    + '- TIME-SENSITIVE questions → you MUST call web_search FIRST, before answering. NEVER answer these from '
+    + '- TIME-SENSITIVE questions → you MUST call websearch FIRST, before answering. NEVER answer these from '
     + 'memory — memory is always stale. This covers: "latest / current / newest version", release dates, "is X '
     + 'out / supported / deprecated yet", anything about "today / now / this week", match schedules & scores, '
     + 'news, weather, prices, who holds a title/record. If in doubt whether something changed recently, search.\n'
-    + '- Use web_search (it returns fresh results). Only web_fetch a URL you FOUND via search — do NOT guess a '
+    + '- Use websearch (it returns fresh results). Only webfetch a URL you FOUND via search — do NOT guess a '
     + 'site URL. Avoid JS-rendered sites (e.g. fifa.com, ESPN) that return empty shells; prefer their API/docs '
     + 'pages or a results snippet.\n'
     + '- NEVER state what the user\'s project contains — versions in package.json/composer.json/requirements.txt, '
@@ -168,13 +168,13 @@ export function buildOcConfig(opts: OcConfigOptions): string {
           + 'configs, behavior), follow the GROUNDING + TOOL SELECTION rules above: search → read 1–3 '
           + 'targeted files → answer. This is a question, NOT an exploration — keep to the 1–3 call budget.\n'
           + '- General-knowledge questions: follow the GENERAL KNOWLEDGE rules — static facts from training data, '
-          + 'but anything time-sensitive (versions, releases, schedules, scores, news) MUST be web_searched first.\n'
+          + 'but anything time-sensitive (versions, releases, schedules, scores, news) MUST be websearched first.\n'
           + '- If search doesn\'t surface the answer, STOP and say you couldn\'t find it. Do not guess.\n'
           + clarifyFormat('no answer')
           + 'You CANNOT edit/write/move/remove files, run commands, or spawn subagents.',
         permission: {
           read: 'allow', list: 'allow', glob: 'allow', grep: 'allow',
-          web_fetch: 'allow', web_search: 'allow',
+          webfetch: 'allow', websearch: 'allow',
           write: 'deny', edit: 'deny', bash: 'deny',
           move: 'deny', remove: 'deny', task: 'deny', todowrite: 'deny', code_execution: 'deny',
         },
@@ -207,7 +207,7 @@ export function buildOcConfig(opts: OcConfigOptions): string {
           + 'stop silently while items remain pending or in-progress.',
         permission: {
           read: 'allow', list: 'allow', glob: 'allow', grep: 'allow',
-          web_fetch: 'allow', web_search: 'allow',
+          webfetch: 'allow', websearch: 'allow',
           write: 'allow', edit: 'allow', bash: 'ask',
           move: 'allow', remove: 'allow', task: 'allow', todowrite: 'allow',
         },
@@ -228,7 +228,7 @@ export function buildOcConfig(opts: OcConfigOptions): string {
           + 'Otherwise skip the block and output only the plan. Keep it tight and skimmable.',
         permission: {
           read: 'allow', list: 'allow', glob: 'allow', grep: 'allow',
-          web_fetch: 'allow', web_search: 'allow',
+          webfetch: 'allow', websearch: 'allow',
           write: 'deny', edit: 'deny', bash: 'deny',
           move: 'deny', remove: 'deny', task: 'deny', todowrite: 'deny', code_execution: 'deny',
         },
