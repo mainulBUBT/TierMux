@@ -22,6 +22,13 @@ export interface OcConfigOptions {
   /** `tiermux.mcpServers` setting, keyed by server name — mapped onto OC's native
    *  `mcp` config block so OC discovers and calls their tools itself. */
   mcpServers?: Record<string, McpServerConfig>;
+  /**
+   * `tiermux.engine.compaction` setting (camelCase), mapped onto OC's top-level
+   * `compaction` block (snake_case). When undefined, OC's built-in defaults
+   * (`{ auto: true, tail_turns: 15 }`) apply. Setting `auto: true` makes OC compact
+   * server-side BEFORE a provider context-length error can surface — see Fix 1.
+   */
+  compaction?: { auto: boolean; tailTurns: number; preserveRecentTokens: number; reserved: number };
 }
 
 /**
@@ -75,7 +82,12 @@ export function buildOcConfig(opts: OcConfigOptions): string {
     + '- NEVER state what the user\'s project contains — versions in package.json/composer.json/requirements.txt, '
     + 'installed deps, file contents — unless you opened and read that file THIS turn. If the question is general '
     + '(not about this project), do NOT drag the project in or invent facts about it.\n'
-    + '- Be honest about the source: say "from the web (searched just now)" or "from training data".\n\n';
+    + '- Be honest about the source: say "from the web (searched just now)" or "from training data".\n\n'
+    + 'CONVERSATION CONTINUITY:\n'
+    + '- The conversation above is the user\'s working context. Resolve pronouns and implied references '
+    + '("it", "that", "the same one", "continue", "the file we just touched", "your last change") against '
+    + 'earlier turns before answering or acting. Prefer resolving implied references from the conversation '
+    + 'history instead of asking the user to restate. Only ask when the reference is genuinely ambiguous.\n\n';
 
   const clarifyFormat = (stopClause: string): string =>
     'If the request is genuinely ambiguous (answering requires guessing between materially '
@@ -189,7 +201,10 @@ export function buildOcConfig(opts: OcConfigOptions): string {
           + 'yet. Wait for the user to confirm before acting. Skip this for small/obvious asks (a typo, '
           + 'a one-line fix, an explicitly detailed instruction) — just do those directly.\n'
           + clarifyFormat('no edits')
-          + 'Otherwise skip the block and proceed with the task.',
+          + 'Otherwise skip the block and proceed with the task.\n'
+          + 'TODOS: if you create a todo list with todowrite, keep it synchronized with your progress. '
+          + 'Before finishing, either complete every item or explain why it cannot be completed — do not '
+          + 'stop silently while items remain pending or in-progress.',
         permission: {
           read: 'allow', list: 'allow', glob: 'allow', grep: 'allow',
           web_fetch: 'allow', web_search: 'allow',
@@ -222,6 +237,20 @@ export function buildOcConfig(opts: OcConfigOptions): string {
 
     ...(opts.instructionsPaths?.length ? { instructions: opts.instructionsPaths } : {}),
     ...(Object.keys(mcp).length ? { mcp } : {}),
+
+    // OC-native auto-compaction (Fix 1): lets OC summarize older turns server-side
+    // before a provider context-length error ever surfaces. camelCase setting → OC's
+    // snake_case keys. When opts.compaction is undefined we omit the block and OC's
+    // built-in defaults ({ auto: true, tail_turns: 15 }) apply.
+    ...(opts.compaction ? {
+      compaction: {
+        auto: opts.compaction.auto,
+        prune: true,
+        tail_turns: opts.compaction.tailTurns,
+        preserve_recent_tokens: opts.compaction.preserveRecentTokens,
+        reserved: opts.compaction.reserved,
+      },
+    } : {}),
   };
   return JSON.stringify(cfg);
 }

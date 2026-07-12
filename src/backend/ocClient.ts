@@ -198,6 +198,22 @@ export class OcClient {
   }
 
   /**
+   * Fetch the authoritative todo list for a session (`GET /session/{id}/todo`). This is
+   * the source of truth for whether any todos remain unfinished — preferred over the
+   * `todo.updated` SSE snapshot, which can lag or arrive out of order during a
+   * continuation. Best-effort: returns [] on failure so callers can fall back to the
+   * last `todo.updated` payload.
+   */
+  async todo(sessionId: string): Promise<any[]> {
+    try {
+      const { data } = await this.client.session.todo({ path: { id: sessionId } });
+      return Array.isArray(data) ? data : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Fork a session, replaying its history into a brand-new session. Verified against
    * OC 1.17.11: forking at a USER message's id returns everything STRICTLY BEFORE it —
    * that message's own turn (and any reply) is excluded. Passing no `messageId` forks

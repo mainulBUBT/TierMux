@@ -6,7 +6,7 @@ import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
 import type { UsageStore } from './config/usageStore';
 import type { Mode } from './shared/types';
-import { runChatStream, runAgentStream, runPlanStream, getOcSessionDiff, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
+import { runChatStream, runAgentStream, runPlanStream, getOcSessionDiff, isOcEngineActive, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
 import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
 import { SETTINGS_META, defaultForSetting } from './settingsMeta';
@@ -92,6 +92,9 @@ interface Session {
   transcript: TranscriptMessage[];
   title?: string;
   titleGenerated: boolean;
+  /** Set when the user manually renamed this session — suppresses auto-title overrides
+   *  from OC's `session.updated` so a user-chosen name sticks. */
+  userRenamedTitle?: boolean;
   createdAt: number;
   updatedAt: number;
 
@@ -621,6 +624,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const s = this.sessions.get(id);
     if (s) {
       s.title = title;
+      s.userRenamedTitle = true; // user-chosen name sticks — don't let OC's title override it
       this.persist(id);
       return;
     }
@@ -1890,6 +1894,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       onStep: (phase, label) => { if (!live()) return; s.lastStepLabel = label; this.post({ type: 'agentStep', sessionId: s.id, requestId, phase: phase as 'thinking' | 'synthesizing' | 'done', label }); },
       onTodos: (todos) => { if (!live()) return; s.lastTodos = todos; this.post({ type: 'todos', sessionId: s.id, requestId, todos, followingPlan: !!s.executingPlan }); },
+      onSessionTitle: (title) => {
+        if (!live()) return;
+        const t = (title || '').trim();
+        if (!t || s.userRenamedTitle || s.title === t) return; // honor manual rename; dedup
+        s.title = t;
+        s.titleGenerated = true;
+        this.persist(s.id);
+        this.updateViewTitle();
+        this.post({ type: 'sessionTitle', sessionId: s.id, title: t });
+      },
       onChunk: (text) => {
         if (!live()) return;
         if (s.liveActivity !== 'Text change') { s.liveActivity = 'Text change'; this.postSessionList(); }
@@ -2184,7 +2198,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Best-effort: ask a free LLM for a short title from the user's first message. */
   private async maybeGenerateTitle(s: Session): Promise<void> {
-    if (s.titleGenerated) return;
+    if (s.titleGenerated || s.userRenamedTitle) return;
     const users = s.transcript.filter((t) => t.role === 'user');
     if (!users.length) return;
 
@@ -2193,6 +2207,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (s.title !== 'Starting Conversation') { s.title = 'Starting Conversation'; this.persist(s.id); this.updateViewTitle(); }
       return; // leave titleGenerated false → re-evaluate when a real message arrives
     }
+
+    // When the OC engine is active it generates the session title natively (via its
+    // small_model) and delivers it through `session.updated` → onSessionTitle. Use a cheap
+    // local placeholder until then and SKIP our own LLM title call so we don't duplicate
+    // OC's work. Leave titleGenerated false so OC's title can still override the placeholder.
+    if (isOcEngineActive()) {
+      const placeholder = deriveTitleFrom(firstReal.text ?? '');
+      if (placeholder && s.title !== placeholder) { s.title = placeholder; this.persist(s.id); this.updateViewTitle(); }
+      return;
+    }
+
     s.titleGenerated = true; // guard before the call to avoid duplicate runs
     try {
       const snippet = (firstReal.text ?? '').slice(0, 800);

@@ -91,6 +91,9 @@ export interface OcLaunchOptions {
   /** `tiermux.mcpServers` setting — forwarded to buildOcConfig() so OC natively
    *  discovers and calls these servers' tools itself. */
   mcpServers?: Record<string, McpServerConfig>;
+  /** `tiermux.engine.compaction` setting — forwarded to buildOcConfig() so OC
+   *  auto-compacts long conversations server-side (Fix 1). */
+  compaction?: { auto: boolean; tailTurns: number; preserveRecentTokens: number; reserved: number };
   /** Progress callback for the first-run download. */
   onProgress?: (message: string, percent?: number) => void;
   /** Optional logger that mirrors progress + diagnostics into the "TierMux Engine"
@@ -127,6 +130,7 @@ export async function launchOpenCode(opts: OcLaunchOptions): Promise<OcConnectio
     instructionsPaths: instructionsFile ? [instructionsFile] : undefined,
     extraModelIds: opts.enabledModelIds,
     mcpServers: opts.mcpServers,
+    compaction: opts.compaction,
   });
   const cwd = opts.workspaceRoot ?? process.cwd();
 

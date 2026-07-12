@@ -513,6 +513,42 @@
           "default": false,
           "description": "Log every raw TierMux engine event to the 'TierMux Engine' output channel. Use this to debug chat issues — turn on, send a chat, then check View → Output → TierMux Engine."
         },
+        "tiermux.engine.compaction": {
+          "type": "object",
+          "default": {
+            "auto": true,
+            "tailTurns": 12,
+            "preserveRecentTokens": 8000,
+            "reserved": 4096
+          },
+          "markdownDescription": "Lets the TierMux engine (OpenCode) compact long conversations server-side *before* they hit a provider context-length error. Older turns are summarized; the most recent turns are kept verbatim. Tune only if a model's context window is being exhausted.",
+          "properties": {
+            "auto": {
+              "type": "boolean",
+              "default": true,
+              "description": "Compact automatically as the conversation grows past the model's context window."
+            },
+            "tailTurns": {
+              "type": "number",
+              "default": 12,
+              "minimum": 1,
+              "description": "Number of the most recent full turns always kept verbatim (not summarized)."
+            },
+            "preserveRecentTokens": {
+              "type": "number",
+              "default": 8000,
+              "minimum": 0,
+              "description": "Token budget reserved for the most recent content when compacting."
+            },
+            "reserved": {
+              "type": "number",
+              "default": 4096,
+              "minimum": 0,
+              "description": "Tokens reserved for the model's response when compacting."
+            }
+          },
+          "additionalProperties": false
+        },
         "tiermux.catalog.url": {
           "type": "string",
           "default": "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ0gOSMeX5RCp4zJIZxZRSr74Ro8jYFFlsPqMSm3Uw4hLa4-telxqDwvxxdO6JaXAWL3UM9BaQCTUF5/pub?output=csv",

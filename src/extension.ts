@@ -17,7 +17,7 @@ import { CommandGate, type CommandApproval } from './edits/commandGate';
 import { registerCheckpointContentProvider } from './edits/checkpoints';
 import { registerOcSessionDiffContentProvider } from './edits/ocSessionDiff';
 
-import { setOcEngine, setOcTrace, setQualityGate, setHotStandby, setHedging } from './agent/sdk';
+import { setOcEngine, setOcTrace, setQualityGate, setHotStandby, setHedging, setCompactionTailTurns } from './agent/sdk';
 import { McpManager } from './mcp/mcpManager';
 import { normalizeMcpServerConfig, type McpServerConfig } from './mcp/mcpClient';
 import { ChatViewProvider } from './chatViewProvider';
@@ -120,6 +120,27 @@ function readMcpServers(): Record<string, McpServerConfig> {
 }
 
 /**
+ * Reads `tiermux.engine.compaction` and returns the normalized camelCase shape the
+ * engine-config path expects, or `undefined` to let OC fall back to its built-in
+ * compaction defaults. Coerces garbage/clamped values so a malformed setting can't
+ * break session creation (e.g. a non-positive tail_turns).
+ */
+function readCompactionSetting(): { auto: boolean; tailTurns: number; preserveRecentTokens: number; reserved: number } | undefined {
+  const raw = vscode.workspace.getConfiguration('tiermux.engine').get<Record<string, unknown>>('compaction');
+  if (!raw || typeof raw !== 'object') return undefined;
+  const num = (v: unknown, dflt: number, min: number) => {
+    const n = typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : dflt;
+    return Math.max(min, n);
+  };
+  return {
+    auto: typeof raw.auto === 'boolean' ? raw.auto : true,
+    tailTurns: num(raw.tailTurns, 12, 1),
+    preserveRecentTokens: num(raw.preserveRecentTokens, 8000, 0),
+    reserved: num(raw.reserved, 4096, 0),
+  };
+}
+
+/**
  * Start the OC engine pointed at the router proxy. Logs the outcome; never throws
  * — a missing binary just means the integration stays off and the built-in agent runs.
  *
@@ -156,6 +177,7 @@ async function startOpenCodeEngine(
         cacheDir,
         enabledModelIds,
         mcpServers,
+        compaction: readCompactionSetting(),
         onProgress: (msg, percent) => {
           progress.report({ message: msg });
           if (onboarding) forwardEngineProgress(msg, percent);
@@ -167,6 +189,7 @@ async function startOpenCodeEngine(
 
     const traceSink = (raw: string) => engineLog?.appendLine(`[${ts()}] [oc-event] ${raw}`);
     setOcTrace(vscode.workspace.getConfiguration('tiermux.engine').get<boolean>('traceOcEvents', false), traceSink);
+    setCompactionTailTurns(readCompactionSetting()?.tailTurns);
     log(`OpenCode engine UP at ${ocConnection.baseURL} (routing via ${routerProxyBaseURL})`);
     console.log(`[tiermux] OpenCode engine up at ${ocConnection.baseURL} (routing via ${routerProxyBaseURL})`);
 

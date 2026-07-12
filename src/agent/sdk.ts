@@ -38,6 +38,18 @@ export function setHedging(on: boolean): void {
   hedgingEnabled = on;
 }
 
+/**
+ * Configured `compaction.tailTurns` (from `tiermux.engine.compaction`), used only to make
+ * the `session.compacted` user notice informative ("…last ~N turns preserved"). Defaults to
+ * OC's built-in 15 when TierMux doesn't override it. Purely cosmetic — compaction itself is
+ * driven entirely server-side by OC reading the same setting at launch.
+ */
+let compactionTailTurns = 15;
+/** Setter for `extension.ts` to share the resolved compaction.tailTurns for the notice. */
+export function setCompactionTailTurns(n: number | undefined): void {
+  if (typeof n === 'number' && Number.isFinite(n) && n > 0) compactionTailTurns = Math.round(n);
+}
+
 export interface ToolEvent {
   toolCallId: string;
   name: string;
@@ -75,6 +87,10 @@ export interface AgentOpts {
   onKeyRotated?: (info: { platform: string; keyIndex: number; keyTotal: number }) => void;
   onStep: (phase: string, label: string) => void;
   onTodos: (todos: TodoItem[]) => void;
+  /** OC generated/updated this session's title (from its own `small_model`, delivered via
+   *  `session.updated`). TierMux uses OC's title as the source of truth instead of generating
+   *  its own — see chatViewProvider.onSessionTitle. */
+  onSessionTitle?: (title: string) => void;
   onAskUser: (question: string, options?: string[]) => Promise<string>;
   /** OC paused a tool call on an `ask` permission rule (e.g. `bash: 'ask'` in ocConfig.ts) and
    *  is waiting for a decision before it proceeds. `title` is OC's own human-readable
@@ -149,6 +165,12 @@ export function setOcEngine(conn: OcConnection | undefined): void {
   if (!ocClient) { ocSessions.clear(); ocSessionModels.clear(); ocSessionAgents.clear(); prewarmedSessions.clear(); }
 }
 
+/** True while the OC engine backend is connected. Lets callers (e.g. title generation)
+ *  defer to OC's native behavior instead of duplicating it. */
+export function isOcEngineActive(): boolean {
+  return !!ocClient;
+}
+
 /** OC's own aggregate diff for a TierMux chat session's OC-backed conversation, if one
  *  exists yet (a session with no OC turns yet has no OC session id — returns []). */
 export async function getOcSessionDiff(sessionId: string): Promise<Array<{ file: string; before: string; after: string; additions: number; deletions: number }>> {
@@ -220,7 +242,13 @@ async function runViaOc(
   }
 
   if (ocId && ocSessionAgents.get(key) !== undefined && ocSessionAgents.get(key) !== agent) {
-    console.log(`[tiermux] mode changed (${ocSessionAgents.get(key)} → ${agent}), resetting OC session`);
+    // Fix 4: mode changed (e.g. Plan→Agent, Ask→Agent). Fork the existing session so the
+    // full native history (roles, tool calls, reasoning) carries over — mirroring the
+    // model-change block above. Previously this dropped the session WITHOUT forking, which
+    // forced the lossy formatTranscriptForReplay() path and flattened the whole conversation
+    // into one text blob (indirect-reference hallucination).
+    console.log(`[tiermux] mode changed (${ocSessionAgents.get(key)} → ${agent}), forking OC session to preserve history`);
+    forkSourceOcId = ocId;
     ocSessions.delete(key);
     ocSessionModels.delete(key);
     ocSessionAgents.delete(key);
@@ -349,6 +377,18 @@ async function runViaOc(
   let out = '';
   const platform = 'tiermux';
   const model = modelID;
+
+  // Fix 3 — todo completion guard state (per run). `latestTodos` is a snapshot only; the
+  // authoritative list is re-fetched from `session.todo` at each idle. The stall detector
+  // compares the open-todo signature across idles; `askedBlocker` guarantees termination.
+  let latestTodos: TodoItem[] = [];
+  let prevOpenSig = '';
+  let unchangedCount = 0;
+  let askedBlocker = false;
+  const TODO_STALL_THRESHOLD = 2;
+  // Fix 5 — serialize the idle → todo-check → continue/finish flow so an overlapping
+  // `session.idle` (or a late `todo.updated`) can't double-fire a continuation or race finish().
+  let idleBusy = false;
 
   let responded = false;
   let firstChunkReceived = false;
@@ -505,7 +545,14 @@ async function runViaOc(
     let watchdog: ReturnType<typeof setTimeout>;
     const resetWatchdog = () => {
       clearTimeout(watchdog);
-      const windowMs = !isFinalHop ? FAST_FAIL_MS : toolActive ? TOOL_INACTIVITY_MS : INACTIVITY_MS;
+      // Capability-based (Fix 2): only fast-fail when there's a MEANINGFULLY DIFFERENT next
+      // hop to escalate to. chat's `fast→smart` race escalates to a different tier → 45s
+      // fast-fail is wanted. agent's `smart→smart` escalates to the SAME tier (pointless —
+      // would just destroy in-progress work and restart) → use the normal 3/5-min window.
+      // Future-proof: a `smart→smarter→max` chain fast-fails only where the next tier differs.
+      const nextProfile = chain[hop + 1];
+      const canEscalate = !isFinalHop && !!nextProfile && nextProfile !== profile;
+      const windowMs = canEscalate ? FAST_FAIL_MS : toolActive ? TOOL_INACTIVITY_MS : INACTIVITY_MS;
       watchdog = setTimeout(() => {
         void (async () => {
           try {
@@ -525,7 +572,7 @@ async function runViaOc(
       const payload = (ev as any).payload ?? ev;
       const p = (payload as any).properties ?? {};
 
-      const evSession = p.sessionID ?? p.sessionId;
+      const evSession = p.sessionID ?? p.sessionId ?? p.info?.id;
       if (evSession !== ocId) return;
 
       resetWatchdog(); // an event confirmed as OURS = this run is alive; keep it going
@@ -669,7 +716,13 @@ async function runViaOc(
       if (t === 'todo.updated' || t === 'todo') {
         try {
           const todos = p.todos ?? (Array.isArray(p) ? p : null);
-          if (Array.isArray(todos)) opts.onTodos(todos as TodoItem[]);
+          if (Array.isArray(todos)) {
+            // Snapshot only — the authoritative list is fetched from `session.todo` at idle
+            // (Fix 3 impl note 2). Never drive a continue/finish decision from this event: a
+            // stale `todo.updated` from the previous turn can land mid-continuation.
+            latestTodos = todos as TodoItem[];
+            opts.onTodos(todos as TodoItem[]);
+          }
         } catch { /* ignore */ }
         return;
       }
@@ -695,7 +748,28 @@ async function runViaOc(
       }
 
       if (t === 'session.status' || t === 'status') {
+        // Busy status is a live signal — the top-of-callback resetWatchdog() already kept
+        // the run alive; surface OC's status line so the UI shows current activity.
         opts.onStep('working', p?.status?.message ?? p?.message ?? 'Working…');
+        return;
+      }
+
+      if (t === 'session.compacted' || t === 'session.compaction') {
+        // Fix 1/4: OC compacted the conversation server-side. Keep the run alive (the
+        // top-of-callback resetWatchdog() already did) and tell the user + engine channel.
+        // `compactionTailTurns` is the configured tail (cosmetic — for the "N turns kept" line).
+        const msg = `Context compacted by engine — older turns summarized; last ~${compactionTailTurns} turns preserved.`;
+        console.log(`[tiermux] ${msg} (session=${ocId})`);
+        opts.onWarning?.(msg);
+        return;
+      }
+
+      if (t === 'session.updated' || t === 'session.created' || t === 'session.title' || t === 'session.title.updated') {
+        // OC owns the session title (generated by its own small_model). Surface it so
+        // TierMux uses OC's title as the source of truth instead of generating its own.
+        const info = p.info ?? p;
+        const title = typeof info?.title === 'string' ? info.title.trim() : '';
+        if (title) opts.onSessionTitle?.(title);
         return;
       }
 
@@ -744,27 +818,76 @@ async function runViaOc(
 
       if (t === 'session.idle' || t === 'idle' || t === 'session.complete' || t === 'session.done' || t === 'session.completed') {
         console.log(`[tiermux][DBG] session.idle: outLen=${out.trim().length} model=${modelID} hop=${hop} chain=${chain.join('>')}`);
-        if (out.trim()) {
-
-          if (maybeEscalateWeak()) return;
-          finish({ text: out, platform, model, taskKind: opts.taskKind });
-          return;
-        }
+        // Fix 5: serialize — ignore an idle that arrives while we're already handling one
+        // (e.g. a late idle during the `await client.todo()` window). The lock is released in
+        // the finally below, including when we send a continuation and return to wait for the
+        // NEXT idle, so the legitimate next cycle still runs.
+        if (idleBusy) return;
+        idleBusy = true;
 
         void (async () => {
           try {
-            const msgs = await client.messages(ocId!);
-            const text = extractLastAssistantText(msgs);
-            if (text) {
-              out = text;
-              opts.onChunk(text);
+            // Fix 3: before accepting the finish, check for unfinished todos (agent mode).
+            // `session.todo` is the source of truth — `latestTodos` is only a fallback. One
+            // continuation per idle; stall → one "explain the blocker" turn → finish.
+            if (opts.mode === 'agent' && !askedBlocker) {
+              let todos: any[] = [];
+              try { todos = await client.todo(ocId!); }
+              catch { todos = latestTodos; }
+              if (!todos.length && latestTodos.length) todos = latestTodos; // endpoint returned [] but we saw todos
+              const open = todos.filter((td) => td && td.status !== 'completed');
+              if (open.length) {
+                const sig = open.map((td) => `${td.id ?? td.content ?? ''}:${td.status}`).sort().join('|');
+                unchangedCount = sig === prevOpenSig ? unchangedCount + 1 : 0;
+                prevOpenSig = sig;
+
+                if (unchangedCount >= TODO_STALL_THRESHOLD) {
+                  // Stalled — one final turn to explain the blocker, then finish regardless.
+                  askedBlocker = true;
+                  opts.onStep('working', 'Wrapping up stalled todos…');
+                  console.log(`[tiermux] todos stalled (${open.length} unchanged for ${unchangedCount} idles) — asking for a blocker explanation, then finishing`);
+                  void client.prompt(ocId!, {
+                    parts: [{ type: 'text' as const, text:
+                      `These todos are still unfinished after repeated attempts:\n${open.map((td: any) => `- [${td.status}] ${td.content ?? td.title ?? ''}`).join('\n')}\nBriefly explain what blocked them (1–2 sentences), then stop.` }],
+                    agent, model: { providerID: 'tiermux', modelID: ocModelID },
+                  }, opts.abortSignal).catch((e) => console.log(`[tiermux] stall-explain prompt failed: ${e instanceof Error ? e.message : e}`));
+                  return; // next idle: askedBlocker true → falls through to finish
+                }
+
+                opts.onStep('working', `Resuming ${open.length} unfinished task(s)…`);
+                console.log(`[tiermux] ${open.length} unfinished todo(s) on idle — sending one continuation (unchanged=${unchangedCount})`);
+                void client.prompt(ocId!, {
+                  parts: [{ type: 'text' as const, text:
+                    `Continue. Finish these todos, marking each completed as you go:\n${open.map((td: any) => `- [${td.status}] ${td.content ?? td.title ?? ''}`).join('\n')}` }],
+                  agent, model: { providerID: 'tiermux', modelID: ocModelID },
+                }, opts.abortSignal).catch((e) => console.log(`[tiermux] todo-continuation prompt failed: ${e instanceof Error ? e.message : e}`));
+                return; // wait for the next idle
+              }
             }
-          } catch { /* ignore — keep whatever we have */ }
 
-          if (tryEscalate()) return;
+            // No unfinished todos (or not agent mode) — normal completion path.
+            if (out.trim()) {
+              if (maybeEscalateWeak()) return;
+              finish({ text: out, platform, model, taskKind: opts.taskKind });
+              return;
+            }
 
-          if (maybeEscalateWeak()) return;
-          finish({ text: out, platform, model, taskKind: opts.taskKind });
+            try {
+              const msgs = await client.messages(ocId!);
+              const text = extractLastAssistantText(msgs);
+              if (text) {
+                out = text;
+                opts.onChunk(text);
+              }
+            } catch { /* ignore — keep whatever we have */ }
+
+            if (tryEscalate()) return;
+
+            if (maybeEscalateWeak()) return;
+            finish({ text: out, platform, model, taskKind: opts.taskKind });
+          } finally {
+            idleBusy = false;
+          }
         })();
         return;
       }
