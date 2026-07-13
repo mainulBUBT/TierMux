@@ -7,7 +7,9 @@ import { UsageTracker } from './config/usage';
 import { UsageStore } from './config/usageStore';
 import { ModelStatsStore } from './config/modelStats';
 import { SlowModelStore } from './config/slowModel';
-import { Router } from './router/router';
+import { Router, setSmartScoring } from './router/router';
+import { MetricsStore } from './router/metricsStore';
+import { ScoringEngine } from './router/scoring';
 import { startRouterProxy } from './backend/routerProxy';
 import { launchOpenCode, stopOpenCode, type OcConnection } from './backend/ocLauncher';
 import { runBridgeDiagnostic, formatReport } from './backend/ocDiagnostics';
@@ -256,7 +258,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const usageStore = new UsageStore(context.globalState);
   const modelStats = new ModelStatsStore(context.globalState);
   const slowModels = new SlowModelStore(context.globalState);
-  const router = new Router(secrets, settings, catalog, usage, modelStats, usageStore, slowModels);
+  const metrics = new MetricsStore(context.globalState);
+  const scoring = new ScoringEngine(catalog, metrics, modelStats);
+  const router = new Router(secrets, settings, catalog, usage, modelStats, usageStore, slowModels, metrics, scoring);
 
   let profiler: IProfilerService = createProfiler(
     vscode.workspace.getConfiguration('tiermux.profiler').get<boolean>('enabled', false),
@@ -301,6 +305,27 @@ export function activate(context: vscode.ExtensionContext): void {
   setHotStandby(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('hotStandby', true));
 
   setHedging(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('chatHedging', true));
+
+  setSmartScoring(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('smartScoring', true));
+  let scoringTraceOn = vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('scoringTrace', false);
+  let routerLog: vscode.OutputChannel | undefined;
+  /** Dev-facing trace channel for the Smart Auto scoring rationale (the engineLog pattern). */
+  function getRouterLog(): vscode.OutputChannel {
+    if (!routerLog) routerLog = vscode.window.createOutputChannel('TierMux Router');
+    return routerLog;
+  }
+  function logRationale(taskKind: string, rationale: import('./router/scoring').RationaleEntry[]): void {
+    if (!scoringTraceOn) return;
+    const ch = getRouterLog();
+    const win = rationale.find((r) => r.selected);
+    ch.appendLine(`[${ts()}] Smart Auto · ${taskKind} → ${win ? `${win.platform}/${win.modelId}` : 'none'}`);
+    for (const r of rationale) {
+      const tag = r.selected ? '✓' : '·';
+      const sig = `cap ${r.capability.toFixed(2)} · runtime ×${r.runtimeMultiplier.toFixed(2)} · pref ${r.userPreference.toFixed(2)} = ${r.score.toFixed(3)}`;
+      ch.appendLine(`  ${tag} ${r.platform}/${r.modelId} — ${sig} — ${r.reason}`);
+    }
+  }
+  router.setRationaleSink((info) => logRationale(info.taskKind, info.rationale));
 
   context.subscriptions.push(registerCheckpointContentProvider());
 
@@ -389,6 +414,13 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       if (e.affectsConfiguration('tiermux.agent.chatHedging')) {
         setHedging(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('chatHedging', true));
+      }
+      if (e.affectsConfiguration('tiermux.agent.smartScoring')) {
+        setSmartScoring(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('smartScoring', true));
+      }
+      if (e.affectsConfiguration('tiermux.agent.scoringTrace')) {
+        scoringTraceOn = vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('scoringTrace', false);
+        if (scoringTraceOn) getRouterLog().show(true);
       }
       if (e.affectsConfiguration('tiermux.catalog')) {
         void catalog.refresh(

@@ -22,6 +22,27 @@ import type { SlowModelStore } from '../config/slowModel';
 import { SLOW_LATENCY_MS } from '../config/slowModel';
 import { RateTracker } from './rateTracker';
 import { LatencyTracker } from './latencyTracker';
+import type { MetricsStore, MetricSample } from './metricsStore';
+import { ScoringEngine, type SelectionContext, type HealthState, type RationaleEntry } from './scoring';
+import type { FailureType } from './scoringConfig';
+import { SCORING_CONFIG } from './scoringConfig';
+
+/** Smart Auto scoring toggle (module-level mutable, wired from settings — the chatHedging pattern). */
+let smartScoringEnabled = true;
+export function setSmartScoring(on: boolean): void {
+  smartScoringEnabled = on;
+}
+
+/** Map a classified route `reason` (+ whether tools were sent) to a metrics FailureType. */
+function toFailureType(reason: string, sentTools: boolean): FailureType {
+  if (reason === 'rate_limited') return 'http_429';
+  if (reason === 'timeout') return 'timeout';
+  if (reason === 'network') return 'connection_refused';
+  if (reason === 'server_error') return 'http_5xx';
+  if (reason === 'http_413') return sentTools ? 'tool_unsupported' : 'context_too_large';
+  if (reason === 'bad_request') return sentTools ? 'tool_unsupported' : 'bad_request';
+  return 'other';
+}
 
 /**
  * Streaming `<think>…</think>` stripper. Buffers incoming deltas and emits only
@@ -119,6 +140,12 @@ export interface RouteOptions extends CompletionOptions {
   onFailover?: (info: { from: FallbackEntry; reason: string }) => void;
   /** Notified when a 429 triggers a key rotation (same model, next key in pool). */
   onKeyRotated?: (info: { platform: Platform; keyIndex: number; keyTotal: number }) => void;
+  /** Notified once per route() with the per-model scoring rationale (why selected / why not). */
+  onSelectionRationale?: (info: {
+    taskKind: TaskKind;
+    picked?: FallbackEntry;
+    rationale: import('./scoring').RationaleEntry[];
+  }) => void;
   /** Quality-based escalation: skip these `platform::modelId` keys (ones that underperformed). */
   exclude?: string[];
   /** Quality-based escalation: only consider models at least this smart (intelligenceRank <= this). */
@@ -242,7 +269,19 @@ export class Router {
     private readonly stats?: ModelStatsStore,
     private readonly usageStore?: UsageStore,
     private readonly slowModels?: SlowModelStore,
+    private readonly metrics?: MetricsStore,
+    private readonly scoring?: ScoringEngine,
   ) {}
+
+  private smartScoringActive(): boolean {
+    return smartScoringEnabled && !!this.scoring && !!this.metrics;
+  }
+
+  /** Optional dev trace sink — fired once per route() with the scoring rationale. */
+  private rationaleSink?: (info: { taskKind: TaskKind; rationale: RationaleEntry[] }) => void;
+  setRationaleSink(fn: ((info: { taskKind: TaskKind; rationale: RationaleEntry[] }) => void) | undefined): void {
+    this.rationaleSink = fn;
+  }
 
   /**
    * Pick a model for utility tasks (commit messages, titles) — short outputs where a
@@ -326,6 +365,50 @@ export class Router {
 
     if (messages.length > 6 || estimateMessagesTokens(messages) > 800) return 'complex';
     return 'simple';
+  }
+
+  /**
+   * Gather the synchronous runtime facts per candidate that the scoring engine
+   * needs (health, rate-availability, capability). Key resolution is deliberately
+   * NOT done here (it can prompt); the try-loop remains the authoritative gate
+   * for missing keys, so `hasKey` defaults optimistic.
+   */
+  private buildSelectionContext(kind: TaskKind, entries: FallbackEntry[], opts: RouteOptions): SelectionContext {
+    const runtime = new Map<string, { health: HealthState; canSend: boolean; hasKey: boolean; capable: boolean }>();
+    for (const e of entries) {
+      const m = this.catalog.find(e.platform, e.modelId);
+      const h = this.healthOf(e.platform, e.modelId);
+      const health: HealthState = h === 'bad' ? 'bad' : h === 'half-open' ? 'half-open' : 'ok';
+      const canSend = m ? this.rateTracker.canSend(e.platform, e.modelId, m.rpmLimit, m.rpdLimit) : true;
+      const capable = opts.requireTools
+        ? m?.supportsTools !== false && !this.secrets.isToolIncompatible(e.platform, e.modelId)
+        : kind === 'vision'
+          ? !!m?.supportsVision
+          : true;
+      runtime.set(`${e.platform}::${e.modelId}`, { health, canSend, hasKey: true, capable });
+    }
+    return { taskKind: kind, entries, runtime, requireTools: !!opts.requireTools, isVision: kind === 'vision' };
+  }
+
+  /**
+   * Baseline-relative slow labeling (replaces the fixed 8s rule). A model is slow
+   * only when a response runs well above its OWN historical baseline with enough
+   * samples to trust the comparison — so "Laguna is always 30s" isn't penalized,
+   * but "Groq is 20s tonight" is. Falls back to the legacy fixed threshold when
+   * the metrics store isn't present or a model has no baseline yet.
+   */
+  private maybeMarkSlow(platform: Platform, modelId: string, kind: TaskKind, totalMs: number, ttftMs?: number): void {
+    if (!this.slowModels) return;
+    if (!this.metrics) {
+      if (totalMs >= SLOW_LATENCY_MS) this.slowModels.markSlow(platform, modelId);
+      return;
+    }
+    const agg = this.metrics.modelAgg(platform, modelId, kind);
+    if (!agg || this.metrics.sampleCount(agg) < SCORING_CONFIG.minSamples) return;
+    const base = this.metrics.ttftBaseline(agg) || this.metrics.totalBaseline(agg);
+    if (base > 0 && (ttftMs ?? totalMs) > base * SCORING_CONFIG.driftMultiplier) {
+      this.slowModels.markSlow(platform, modelId);
+    }
   }
 
   /** Build the ordered candidate list for a request. */
@@ -500,6 +583,7 @@ export class Router {
     let cands = this.candidates(opts);
     const forced = !!(opts.model && opts.model !== 'auto');
     if (!forced && cands.length > 1) {
+      // Context-window fit is a hard constraint in both modes — fitting models first.
       const convoTokens = estimateMessagesTokens(messages);
       const fits = (e: FallbackEntry): boolean =>
         inputBudget(this.catalog.find(e.platform, e.modelId)?.contextWindow ?? 32768, maxOut, toolsTokens) >= convoTokens;
@@ -508,26 +592,36 @@ export class Router {
         cands = [...fitting, ...cands.filter((e) => !fits(e))];
       }
 
-      const complexity = this.estimateComplexity(messages, opts.taskKind);
-      if (complexity === 'simple') {
-        cands = [...cands].sort((a, b) => {
-          const ra = this.catalog.find(a.platform, a.modelId)?.intelligenceRank ?? 5;
-          const rb = this.catalog.find(b.platform, b.modelId)?.intelligenceRank ?? 5;
-          if (Math.abs(ra - rb) > 1) return 0; // different quality tiers — preserve order
-          const la = this.latencyTracker.p50(a.platform, a.modelId);
-          const lb = this.latencyTracker.p50(b.platform, b.modelId);
-          // No p50 yet (< 3 samples) → keep catalog order rather than sinking the unsampled
-          // model to the bottom — treating "unmeasured" as "slowest" meant a fresh fast model
-          // could never earn samples while a measured-slow one kept winning.
-          if (la == null || lb == null) return 0;
-          return la - lb;
-        });
-      }
+      if (this.smartScoringActive() && opts.taskKind) {
+        // Smart Auto: learned Capability × Runtime × Preference scoring subsumes the
+        // legacy latency-sort, slow-deprioritization, and lastGood heuristics.
+        const ctx = this.buildSelectionContext(opts.taskKind, cands, opts);
+        const rank = this.scoring!.rank(ctx);
+        cands = rank.ordered;
+        opts.onSelectionRationale?.({ taskKind: opts.taskKind, picked: rank.ordered[0], rationale: rank.rationale });
+        this.rationaleSink?.({ taskKind: opts.taskKind, rationale: rank.rationale });
+      } else {
+        const complexity = this.estimateComplexity(messages, opts.taskKind);
+        if (complexity === 'simple') {
+          cands = [...cands].sort((a, b) => {
+            const ra = this.catalog.find(a.platform, a.modelId)?.intelligenceRank ?? 5;
+            const rb = this.catalog.find(b.platform, b.modelId)?.intelligenceRank ?? 5;
+            if (Math.abs(ra - rb) > 1) return 0; // different quality tiers — preserve order
+            const la = this.latencyTracker.p50(a.platform, a.modelId);
+            const lb = this.latencyTracker.p50(b.platform, b.modelId);
+            // No p50 yet (< 3 samples) → keep catalog order rather than sinking the unsampled
+            // model to the bottom — treating "unmeasured" as "slowest" meant a fresh fast model
+            // could never earn samples while a measured-slow one kept winning.
+            if (la == null || lb == null) return 0;
+            return la - lb;
+          });
+        }
 
-      if (this.slowModels) {
-        const notSlow = cands.filter((e) => !this.slowModels!.isSlow(e.platform, e.modelId));
-        const slow = cands.filter((e) => this.slowModels!.isSlow(e.platform, e.modelId));
-        if (slow.length > 0 && notSlow.length > 0) cands = [...notSlow, ...slow];
+        if (this.slowModels) {
+          const notSlow = cands.filter((e) => !this.slowModels!.isSlow(e.platform, e.modelId));
+          const slow = cands.filter((e) => this.slowModels!.isSlow(e.platform, e.modelId));
+          if (slow.length > 0 && notSlow.length > 0) cands = [...notSlow, ...slow];
+        }
       }
     }
 
@@ -612,6 +706,7 @@ export class Router {
           this.rateTracker.record(entry.platform, entry.modelId);
 
           const wantsStream = !!(opts.onChunk && !opts.tools?.length);
+          let firstChunkAt: number | null = null; // TTFT — time to first emitted content
           if (wantsStream) {
             const chunks: string[] = [];
             let toolCalls: import('../shared/types').ChatToolCall[] | undefined;
@@ -624,6 +719,7 @@ export class Router {
               if (delta.content) {
                 const clean = thinkStrip.feed(delta.content);
                 if (clean) {
+                  if (firstChunkAt === null) firstChunkAt = Date.now();
                   chunks.push(clean);
                   opts.onChunk!(clean);
                 }
@@ -672,8 +768,13 @@ export class Router {
           }
 
           const elapsedMs = Date.now() - t0;
+          const ttftMs = firstChunkAt !== null ? firstChunkAt - t0 : undefined;
           this.latencyTracker.record(entry.platform, entry.modelId, elapsedMs);
-          if (elapsedMs >= SLOW_LATENCY_MS) this.slowModels?.markSlow(entry.platform, entry.modelId);
+          const kind = opts.taskKind ?? 'chat';
+          this.metrics?.record(entry.platform, entry.modelId, kind, {
+            ok: true, ttftMs, totalMs: elapsedMs, rateLimited: false,
+          } satisfies MetricSample);
+          this.maybeMarkSlow(entry.platform, entry.modelId, kind, elapsedMs, ttftMs);
           this.usage.add(response.usage);
           this.usageStore?.addRequest(entry.platform, entry.modelId, response.usage?.prompt_tokens || 0, response.usage?.completion_tokens || 0, response.usage?.reasoning_tokens);
           this.secrets.setStatus(entry.platform, 'healthy');
@@ -681,11 +782,13 @@ export class Router {
 
           if (opts.taskKind) {
             const modelKey2 = `${entry.platform}::${entry.modelId}`;
-            if (elapsedMs < SLOW_LATENCY_MS) {
+            // Baseline-relative: a success that ran well above the model's own baseline must
+            // not (re)pin itself as lastGood — drop a stale pin so the next turn re-evaluates
+            // instead of repeating a slow pick. Falls back to the fixed threshold w/o metrics.
+            const slow = this.slowModels?.isSlow(entry.platform, entry.modelId) ?? false;
+            if (!slow) {
               this.lastGood.set(opts.taskKind, modelKey2);
             } else if (this.lastGood.get(opts.taskKind) === modelKey2) {
-              // A slow success must not (re)pin itself as lastGood — drop a stale pin so
-              // the next turn falls back to catalog order instead of repeating the slow pick.
               this.lastGood.delete(opts.taskKind);
             }
           }
@@ -739,7 +842,12 @@ export class Router {
 
           triedModels.set(modelKey, retryCount + 1);
 
-          if (Date.now() - t0 >= SLOW_LATENCY_MS) this.slowModels?.markSlow(entry.platform, entry.modelId);
+          const failElapsed = Date.now() - t0;
+          const fType = toFailureType(reason, sentTools);
+          this.metrics?.record(entry.platform, entry.modelId, opts.taskKind ?? 'chat', {
+            ok: false, failureType: fType, totalMs: failElapsed, rateLimited: reason === 'rate_limited',
+          } satisfies MetricSample);
+          this.maybeMarkSlow(entry.platform, entry.modelId, opts.taskKind ?? 'chat', failElapsed);
 
           failures.push({ platform: entry.platform, model: entry.modelId, reason, detail });
           opts.onProviderAttempt?.({ platform: entry.platform, model: entry.modelId, status: 'fail', latencyMs: Date.now() - t0, errorType: reason, reason: detail });

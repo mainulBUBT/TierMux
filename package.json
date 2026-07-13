@@ -377,6 +377,16 @@
           "default": true,
           "description": "For a short first chat message in a new session, race the fast and smart models simultaneously and take whichever answers well first, instead of trying fast then smart sequentially."
         },
+        "tiermux.agent.smartScoring": {
+          "type": "boolean",
+          "default": true,
+          "description": "Route Auto requests by learned, per-model runtime metrics (success rate, TTFT vs the model's own baseline, provider health, confidence-weighted) instead of fixed priority. Adapts within minutes when a model or gateway degrades. Turn off to restore priority-only routing."
+        },
+        "tiermux.agent.scoringTrace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log the per-turn Smart Auto scoring rationale (why each model was selected or skipped, with per-signal scores) to the \"TierMux Router\" output channel."
+        },
         "tiermux.agent.commandApproval": {
           "type": "string",
           "enum": [
@@ -637,6 +647,7 @@
     "test:e2e:circuit": "esbuild scripts/circuitBreaker.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/circuitBreaker.e2e.cjs && node dist/circuitBreaker.e2e.cjs",
     "test:e2e:replay": "esbuild scripts/sessionReplay.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/sessionReplay.e2e.cjs && node dist/sessionReplay.e2e.cjs",
     "test:e2e:hedge": "esbuild scripts/chatHedging.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/chatHedging.e2e.cjs && node dist/chatHedging.e2e.cjs",
+    "test:e2e:scoring": "esbuild scripts/scoring.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/scoring.e2e.cjs && node dist/scoring.e2e.cjs",
     "test:e2e:attachments": "esbuild scripts/attachmentParts.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/attachmentParts.e2e.cjs && node dist/attachmentParts.e2e.cjs",
     "test:e2e:concurrent": "esbuild scripts/concurrentSessions.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/concurrentSessions.e2e.cjs && node dist/concurrentSessions.e2e.cjs",
     "bench": "esbuild scripts/bench/runBench.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bench.cjs && node dist/bench.cjs",
