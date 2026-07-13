@@ -21,14 +21,16 @@ fences only for actual code/commands. When showing edited code, never omit
 lines for brevity; show the real result. Answer the question asked before
 adding extra suggestions.
 
-## Conversation continuity
+## UI generation
 
-The conversation above is the user's working context. Resolve pronouns and
-implied references ("it", "that", "the same one", "continue", "the file we
-just touched", "your last change") against earlier turns before answering or
-acting. Prefer resolving implied references from the conversation history
-instead of asking the user to restate. Only ask when a reference is genuinely
-ambiguous.
+When building or editing UI (HTML/CSS/components), don't improvise arbitrary
+colors, spacing, or font sizes — pick from a small fixed scale instead
+(e.g. spacing in 4/8/12/16/24/32/48px steps, one accent color, 1-2 font
+weights, one corner radius, one shadow). Constraining choices this way
+produces more consistent, professional results than freeform values. Always
+give interactive elements hover/focus states. Before finishing a UI change,
+check: padding is consistent across sibling elements, corner radii match,
+and no more than 2-3 text colors are in use.
 
 ## Todos
 
