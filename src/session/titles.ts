@@ -18,9 +18,22 @@ export function sanitizeTitle(raw: string): string {
   return s;
 }
 
-/** A plain readable title from a message when the LLM title is unusable (first ~6 words). */
+const CODE_LINE = /^\s*(?:```|curl\b|git\b|npm\b|yarn\b|pnpm\b|docker\b|kubectl\b|ssh\b|python[23]?\b|node\b|go\b|cargo\b|make\b|sudo\b|\$\s|#\s|--\S|https?:\/\/|[{[])/i;
+
+/** First line of prose in a message — skips code fences, shell commands, URLs and JSON
+ *  so a pasted curl/log/snippet doesn't become the title basis. Falls back to the raw
+ *  text if every line looks code-like (nothing prose to pick from). */
+function firstProseLine(text: string): string {
+  const lines = (text || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const prose = lines.find((l) => !CODE_LINE.test(l) && l.split(/\s+/).length >= 2);
+  return prose ?? lines[0] ?? '';
+}
+
+/** A plain readable title from a message when the LLM title is unusable (first ~6 words
+ *  of the first prose line, so a pasted command/log doesn't swamp the placeholder). */
 export function deriveTitleFrom(text: string): string {
-  const s = (text || '').trim().replace(/\s+/g, ' ').replace(/[?.!,;:]+$/, '');
+  const line = firstProseLine(text);
+  const s = line.trim().replace(/\s+/g, ' ').replace(/[?.!,;:]+$/, '');
   if (!s) return 'New chat';
   const words = s.split(' ').slice(0, 6).join(' ').slice(0, 60);
   return words.charAt(0).toUpperCase() + words.slice(1);

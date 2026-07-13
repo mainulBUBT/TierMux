@@ -32,6 +32,15 @@ give interactive elements hover/focus states. Before finishing a UI change,
 check: padding is consistent across sibling elements, corner radii match,
 and no more than 2-3 text colors are in use.
 
+## Concluding a turn
+
+Never end a turn on a raw tool result (a command's output, a diff, a search
+match) with no text after it. Once you're done investigating or acting,
+say what you found or did and what it means — a command that ran but wasn't
+explained is not a finished turn. If you're stopping because you're blocked
+or need input, say so explicitly instead of trailing off after the last
+tool call.
+
 ## Todos
 
 If you create a todo list, keep it synchronized with your progress. Before

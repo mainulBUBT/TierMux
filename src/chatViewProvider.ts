@@ -1903,6 +1903,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.persist(s.id);
         this.updateViewTitle();
         this.post({ type: 'sessionTitle', sessionId: s.id, title: t });
+        this.postSessionList(); // refresh the tab strip label, not just the in-panel title field
       },
       onChunk: (text) => {
         if (!live()) return;
@@ -2204,7 +2205,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const firstReal = users.find((u) => classifyTask(u.text ?? '') !== 'trivial');
     if (!firstReal) {
-      if (s.title !== 'Starting Conversation') { s.title = 'Starting Conversation'; this.persist(s.id); this.updateViewTitle(); }
+      if (s.title !== 'Starting Conversation') { s.title = 'Starting Conversation'; this.persist(s.id); this.updateViewTitle(); this.postSessionList(); }
       return; // leave titleGenerated false → re-evaluate when a real message arrives
     }
 
@@ -2214,7 +2215,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // OC's work. Leave titleGenerated false so OC's title can still override the placeholder.
     if (isOcEngineActive()) {
       const placeholder = deriveTitleFrom(firstReal.text ?? '');
-      if (placeholder && s.title !== placeholder) { s.title = placeholder; this.persist(s.id); this.updateViewTitle(); }
+      if (placeholder && s.title !== placeholder) { s.title = placeholder; this.persist(s.id); this.updateViewTitle(); this.postSessionList(); }
       return;
     }
 
@@ -2240,10 +2241,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       s.title = title || deriveTitleFrom(firstReal.text ?? '');
       this.persist(s.id);
       this.updateViewTitle();
+      this.postSessionList();
     } catch {
       s.title = deriveTitleFrom(firstReal.text ?? '');
       this.persist(s.id);
       this.updateViewTitle();
+      this.postSessionList();
     }
   }
 

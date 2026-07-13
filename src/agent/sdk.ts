@@ -835,6 +835,7 @@ async function runViaOc(
               try { todos = await client.todo(ocId!); }
               catch { todos = latestTodos; }
               if (!todos.length && latestTodos.length) todos = latestTodos; // endpoint returned [] but we saw todos
+              if (todos.length) opts.onTodos(todos as TodoItem[]); // push authoritative state so the UI reflects completion, not just the initial seed
               const open = todos.filter((td) => td && td.status !== 'completed');
               if (open.length) {
                 const sig = open.map((td) => `${td.id ?? td.content ?? ''}:${td.status}`).sort().join('|');
