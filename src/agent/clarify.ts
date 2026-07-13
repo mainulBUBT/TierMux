@@ -29,6 +29,28 @@ function scrubSentinels(s: string): string {
 }
 
 /**
+ * Fallback for models that ignore the ???QUESTIONS??? sentinel and just ask their
+ * questions as plain prose (common on smaller/faster models). Deliberately narrow so
+ * it doesn't misfire on a normal answer that happens to end with an optional "want me
+ * to proceed?" — only matches short, mostly-question replies, not a long report with
+ * one trailing question.
+ */
+function detectFreeformQuestions(text: string): ClarifyingQuestion[] | null {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.length > 600) return null;
+  if (/```|^\s*\|.*\|\s*$|^#{1,6}\s/m.test(trimmed)) return null; // code fence, table, heading — a report, not a question
+
+  const lines = trimmed.split('\n').map((l) => l.replace(/^[-*\d.)\s]+/, '').trim()).filter(Boolean);
+  if (!lines.length) return null;
+
+  const questionLines = lines.filter((l) => l.endsWith('?'));
+  if (questionLines.length < 2) return null; // one trailing question is usually just an offer, not a block
+  if (questionLines.length / lines.length < 0.5) return null; // must be mostly questions
+
+  return questionLines.map((q) => ({ text: q, options: [] }));
+}
+
+/**
  * Extract an optional clarifying-questions block from Plan mode output.
  *
  * Block shape:
@@ -42,11 +64,13 @@ function scrubSentinels(s: string): string {
  *   ???END???
  *
  * Lenient: a missing or malformed block yields `questions: null` and the text with any
- * partial block stripped, so the normal plan still renders cleanly.
+ * partial block stripped, so the normal plan still renders cleanly. If no sentinel block
+ * is found at all, falls back to `detectFreeformQuestions` for models that didn't follow
+ * the exact format.
  */
 export function parseClarifying(input: string): ParsedClarifying {
   const sm = START_RE.exec(input);
-  if (!sm) return { questions: null, text: scrubSentinels(input) };
+  if (!sm) return { questions: detectFreeformQuestions(input), text: scrubSentinels(input) };
 
   const start = sm.index;
   const afterStart = start + sm[0].length;
