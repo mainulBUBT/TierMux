@@ -115,7 +115,15 @@ export abstract class BaseProvider {
           const data = trimmed.slice(trimmed.indexOf(':') + 1).trim();
           if (data === '[DONE]') return;
           try {
-            yield JSON.parse(data) as ChatCompletionChunk;
+            const chunk = JSON.parse(data) as ChatCompletionChunk;
+            // OpenAI-wire streams report reasoning tokens under
+            // usage.completion_tokens_details; lift them to our flat
+            // reasoning_tokens field (mirrors the non-stream path).
+            const details = (chunk.usage as unknown as { completion_tokens_details?: { reasoning_tokens?: number } } | undefined)?.completion_tokens_details;
+            if (chunk.usage && chunk.usage.reasoning_tokens === undefined && details?.reasoning_tokens !== undefined) {
+              chunk.usage.reasoning_tokens = details.reasoning_tokens;
+            }
+            yield chunk;
           } catch {
 
           }

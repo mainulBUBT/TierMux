@@ -253,11 +253,15 @@ export class GoogleProvider extends BaseProvider {
     const parts = candidate?.content?.parts;
     const toolCalls = extractToolCalls(parts);
     const text = extractText(parts);
+    // Gemini reports thoughtsTokenCount SEPARATELY from candidatesTokenCount,
+    // but TokenUsage's contract (and Gemini billing) treats reasoning as part
+    // of completion — fold thoughts in so totals and $-savings price them.
+    const thoughts = data.usageMetadata?.thoughtsTokenCount ?? 0;
     const usage: TokenUsage = {
       prompt_tokens: data.usageMetadata?.promptTokenCount ?? 0,
-      completion_tokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+      completion_tokens: (data.usageMetadata?.candidatesTokenCount ?? 0) + thoughts,
       total_tokens: data.usageMetadata?.totalTokenCount ?? 0,
-      reasoning_tokens: data.usageMetadata?.thoughtsTokenCount,
+      ...(data.usageMetadata?.thoughtsTokenCount !== undefined ? { reasoning_tokens: thoughts } : {}),
     };
     return {
       id: this.makeId(),
@@ -284,6 +288,16 @@ export class GoogleProvider extends BaseProvider {
       created: resp.created,
       model: resp.model,
       choices: [{ index: 0, delta: { role: 'assistant', content: contentToString(msg?.content), tool_calls: msg?.tool_calls }, finish_reason: resp.choices[0]?.finish_reason ?? 'stop' }],
+    };
+    // Usage-only chunk (the router treats usage chunks as data-free), so the
+    // streamed path records real token counts instead of char/4 estimates.
+    yield {
+      id: resp.id,
+      object: 'chat.completion.chunk',
+      created: resp.created,
+      model: resp.model,
+      choices: [],
+      usage: resp.usage,
     };
   }
 }

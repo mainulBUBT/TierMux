@@ -618,10 +618,7 @@ export class Router {
             let finalUsage: import('../shared/types').TokenUsage | undefined;
             const thinkStrip = new ThinkStripper();
             for await (const chunk of provider.streamChatCompletion(apiKey, fitted, entry.modelId, completionOpts)) {
-              if (chunk.usage) {
-                finalUsage = chunk.usage;
-                continue;
-              }
+              if (chunk.usage) finalUsage = chunk.usage;
               const delta = chunk.choices?.[0]?.delta;
               if (!delta) continue;
               if (delta.content) {
