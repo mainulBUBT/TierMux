@@ -2,7 +2,7 @@
   "name": "tiermux",
   "displayName": "TierMux",
   "description": "Free agentic AI coding assistant for VS Code. Multiplexes many free-tier LLM providers into one self-healing surface — auto-routes, auto-fails-over, learns your codebase. Zero setup with keyless providers; bring your own keys anytime.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "mainul-islam",
   "license": "MIT",
   "repository": {
