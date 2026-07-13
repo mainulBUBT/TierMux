@@ -19,15 +19,25 @@ export function hasRepeatedLineRun(text: string, count: number): boolean {
   return false;
 }
 
-export type QualitySignal = 'refusal' | 'repetition' | 'truncation' | 'too_short';
+export type QualitySignal = 'refusal' | 'repetition' | 'truncation' | 'too_short' | 'vision_blind';
 
 /** Contribution of each matched signal to the weakness score (higher = weaker). */
 export const QUALITY_WEIGHTS: Record<QualitySignal, number> = {
-  refusal: 100,    // near-certain: escalate alone
-  repetition: 60,  // strong: escalate alone
-  truncation: 50,  // strong: escalate alone
-  too_short: 15,   // weak: never escalates alone, only pushes past threshold with another signal
+  refusal: 100,      // near-certain: escalate alone
+  vision_blind: 100, // vision turn answered "I can't see images" — the image never reached the model; escalate alone
+  repetition: 60,    // strong: escalate alone
+  truncation: 50,    // strong: escalate alone
+  too_short: 15,     // weak: never escalates alone, only pushes past threshold with another signal
 };
+
+/**
+ * On a vision turn, an answer claiming the model cannot see/process images means the
+ * image was dropped somewhere upstream (aggregator delegated to a text-only model,
+ * provider flattened the content, …) — the answer is useless no matter how fluent.
+ * Matched only when taskKind === 'vision', so text turns can freely discuss image
+ * processing without tripping it.
+ */
+const VISION_BLIND = /\b(?:can(?:no|')?t|cannot|unable to|not able to)\s+(?:actually\s+)?(?:"?see"?|view|interpret|process|analyz\w*|read)\b[^.\n]{0,60}\b(?:image|picture|screenshot|photo|visual)s?\b|\b(?:capabilit(?:y|ies)|i)\s+(?:am|are|is)?\s*limited to (?:processing |interpreting )?text\b|\bas a text-(?:only|based) (?:ai|model|assistant)\b/i;
 
 /** A run scores at or above this is considered weak and escalated. */
 export const WEAK_THRESHOLD = 40;
@@ -89,6 +99,10 @@ export function assessAnswerQuality(out: string, taskKind: TaskKind): AnswerQual
   const dominantRefusal = t.length < 120 && /i can(?:no|')?t|i'm sorry|as an ai/i.test(t);
   if ((REFUSAL_PREFIXES.test(t) && words < 40) || dominantRefusal) {
     signals.push('refusal');
+  }
+
+  if (taskKind === 'vision' && VISION_BLIND.test(t)) {
+    signals.push('vision_blind');
   }
 
   if (hasRepeatedLineRun(t, 3) || (words < 60 && hasRepeatedNgram(t, 8, 3))) {

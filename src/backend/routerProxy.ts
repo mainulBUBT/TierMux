@@ -3,7 +3,6 @@ import * as http from 'http';
 import type { Router } from '../router/router';
 import type { RouteOptions } from '../router/router';
 import type {
-  ChatContent,
   ChatContentBlock,
   ChatMessage,
   ChatToolDefinition,
@@ -12,6 +11,7 @@ import type {
 } from '../shared/types';
 import { AllModelsFailedError, NoVisionModelError } from '../router/router';
 import { classifyTask, attachmentKindsFromContent, type TaskKind } from '../agent/routing';
+import { normalizeAttachmentBlocks } from '../agent/content';
 
 /** Virtual models OC can request to select a routing profile (vs. a real model). */
 const PROFILE_FAST = 'tiermux/fast';
@@ -76,6 +76,18 @@ export function getForcedAttachments(): ChatContentBlock[] | undefined { return 
  * picker had zero effect on the actual request. Cleared at every run exit, alongside the
  * other forced-* channels.
  */
+/**
+ * Run-scoped listener for router-level failover events (model skipped, rate-limit
+ * wait, escalation). Same lifecycle as the other forced-* channels: set by sdk.ts
+ * before prompting OC, cleared at run exit. Without this bridge, router failovers
+ * during OC-driven completions are invisible — the UI just shows an idle spinner
+ * while the router silently waits out cooldowns or walks the fallback chain.
+ */
+let routeFailoverListenerForRun: ((from: string, reason: string) => void) | undefined;
+export function setRouteFailoverListener(fn: ((from: string, reason: string) => void) | undefined): void {
+  routeFailoverListenerForRun = fn;
+}
+
 let forcedReasoningEffortForRun: ReasoningEffort | undefined;
 export function setForcedReasoningEffort(e: ReasoningEffort | undefined): void {
   forcedReasoningEffortForRun = e && e !== 'off' ? e : undefined;
@@ -221,7 +233,10 @@ async function handleChatCompletion(
     return (b as { type?: string }).type === 'file';
   });
   const toolNames = (body.tools ?? []).map((t: ChatToolDefinition) => t.function?.name).filter(Boolean).join(',');
-  console.log(`[tiermux][DBG] completion-request: model=${body.model ?? '-'} stream=${stream} msgs=${messages.length} tools=[${toolNames}]`);
+  const attInfo = normalizeAttachmentBlocks(lastUserContent)
+    .map((a) => `${a.mime}@${a.url.startsWith('data:') ? 'data' : a.url.split(':')[0]}`)
+    .join(',');
+  console.log(`[tiermux][DBG] completion-request: model=${body.model ?? '-'} stream=${stream} msgs=${messages.length} tools=[${toolNames}] att=[${attInfo}] forcedKind=${forcedTaskKindForRun ?? '-'}`);
 
   const routeOpts: RouteOptions = {
     ...mapProfile(body.model, lastUserText, lastUserContent),
@@ -235,6 +250,7 @@ async function handleChatCompletion(
 
     requireTools: !!(body.tools && body.tools.length),
     hasRawPdfPart,
+    onFailover: (info) => routeFailoverListenerForRun?.(`${info.from.platform}::${info.from.modelId}`, info.reason),
   };
 
   if (stream) {
@@ -390,30 +406,45 @@ function mapProfile(model: string | undefined, lastUserText?: string, lastUserCo
   return { model: id };
 }
 
-function hasAttachmentBlocks(content: ChatContent): boolean {
-  return Array.isArray(content) && content.some((b) => {
-    if (!b || typeof b !== 'object') return false;
-    const type = (b as { type?: string }).type;
-    return type === 'image_url' || type === 'file';
-  });
+/** A payload a provider can actually consume — a `data:` URI (decoded locally) or an
+ *  http(s) URL (fetched). OC sometimes re-serializes a FilePart with its own rewritten
+ *  URL (a local path / file://), which providers silently drop. */
+function isUsableAttachmentUrl(url: string): boolean {
+  return /^(data:|https?:\/\/)/i.test(url);
 }
 
 /**
- * Splices the run's real attachment blocks (see setForcedAttachments) into the last
- * user message when OC's own completion request arrived without any — OC's re-
- * serialization of a turn doesn't reliably carry image/file blocks through. Only
- * touches the LAST user message so a multi-turn conversation doesn't get the same
- * attachment re-injected into every earlier turn on each escalation hop.
+ * Splices the run's real attachment blocks (see setForcedAttachments — the whole
+ * session's, not just this turn's) into the last user message. OC's re-serialization
+ * of history doesn't reliably carry image/file blocks through (it may omit them, or
+ * forward them with a rewritten non-data URL no provider can fetch), so: keep any
+ * usable attachment OC did forward, strip unusable ones, and append every forced
+ * block whose payload URL isn't already present. Only touches the LAST user message
+ * so the same attachment isn't re-injected into every earlier turn on each hop.
  */
 function reinjectMissingAttachments(messages: ChatMessage[], blocks: ChatContentBlock[]): void {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role !== 'user') continue;
-    if (hasAttachmentBlocks(messages[i].content)) return;
     const existing = messages[i].content;
-    const textBlocks: ChatContentBlock[] = typeof existing === 'string'
+    const presentUrls = new Set(
+      normalizeAttachmentBlocks(existing).filter((a) => isUsableAttachmentUrl(a.url)).map((a) => a.url),
+    );
+    const missing = blocks.filter((b) => {
+      const [norm] = normalizeAttachmentBlocks([b]);
+      return norm && !presentUrls.has(norm.url);
+    });
+    if (missing.length === 0) return;
+    const kept: ChatContentBlock[] = typeof existing === 'string'
       ? (existing ? [{ type: 'text', text: existing }] : [])
-      : (existing ?? []);
-    messages[i].content = [...textBlocks, ...blocks];
+      : (existing ?? []).filter((b) => {
+        if (!b || typeof b !== 'object') return true;
+        const type = (b as { type?: string }).type;
+        if (type !== 'image_url' && type !== 'file') return true;
+        const [norm] = normalizeAttachmentBlocks([b as ChatContentBlock]);
+        return !!norm && isUsableAttachmentUrl(norm.url); // drop OC-rewritten unusable blocks
+      });
+    messages[i].content = [...kept, ...missing];
+    console.log(`[tiermux][DBG] reinjected ${missing.length}/${blocks.length} session attachment block(s) into last user message`);
     return;
   }
 }

@@ -356,6 +356,16 @@ export class Router {
       if (visionCapable.length === 0) throw new NoVisionModelError();
       list = visionCapable;
 
+      // A flattenContent provider (e.g. Cohere's compat endpoint) reduces multimodal
+      // content to plain text on the wire — the image never reaches the model, so for a
+      // vision turn such entries are vision-capable in name only. Prefer providers that
+      // can actually carry the image; keep the flatteners only as a last resort.
+      const carriesImages = list.filter((e) => {
+        const p = resolveProvider(e.platform, e.modelId, this.settings.getCustomEndpoints());
+        return !(p as { flattenContent?: boolean } | undefined)?.flattenContent;
+      });
+      if (carriesImages.length > 0) list = carriesImages;
+
       if (opts.hasRawPdfPart) {
         const acceptsRawPdf = list.filter((e) => !this.catalog.find(e.platform, e.modelId)?.rejectsRawPdf);
         if (acceptsRawPdf.length > 0) list = acceptsRawPdf;
@@ -383,7 +393,11 @@ export class Router {
       if (good) {
         const i = list.findIndex((e) => `${e.platform}::${e.modelId}` === good);
         const notDisliked = !this.stats || this.stats.score(kind, list[i]?.platform, list[i]?.modelId) >= 0;
-        if (i > 0 && notDisliked) list = [list[i], ...list.slice(0, i), ...list.slice(i + 1)];
+        // A lastGood pin must not resurrect a model currently flagged slow — "it answered"
+        // is not "it answered acceptably fast", and the pin otherwise self-renews forever
+        // (each slow success re-writes lastGood, so the same 200s+ model wins every turn).
+        const notSlow = i < 0 || !this.slowModels?.isSlow(list[i].platform, list[i].modelId);
+        if (i > 0 && notDisliked && notSlow) list = [list[i], ...list.slice(0, i), ...list.slice(i + 1)];
       }
     }
 
@@ -500,8 +514,12 @@ export class Router {
           const ra = this.catalog.find(a.platform, a.modelId)?.intelligenceRank ?? 5;
           const rb = this.catalog.find(b.platform, b.modelId)?.intelligenceRank ?? 5;
           if (Math.abs(ra - rb) > 1) return 0; // different quality tiers — preserve order
-          const la = this.latencyTracker.p50(a.platform, a.modelId) ?? Infinity;
-          const lb = this.latencyTracker.p50(b.platform, b.modelId) ?? Infinity;
+          const la = this.latencyTracker.p50(a.platform, a.modelId);
+          const lb = this.latencyTracker.p50(b.platform, b.modelId);
+          // No p50 yet (< 3 samples) → keep catalog order rather than sinking the unsampled
+          // model to the bottom — treating "unmeasured" as "slowest" meant a fresh fast model
+          // could never earn samples while a measured-slow one kept winning.
+          if (la == null || lb == null) return 0;
           return la - lb;
         });
       }
@@ -664,7 +682,16 @@ export class Router {
           this.secrets.setStatus(entry.platform, 'healthy');
           this.markHealth(entry.platform, entry.modelId, 'ok');
 
-          if (opts.taskKind) this.lastGood.set(opts.taskKind, `${entry.platform}::${entry.modelId}`);
+          if (opts.taskKind) {
+            const modelKey2 = `${entry.platform}::${entry.modelId}`;
+            if (elapsedMs < SLOW_LATENCY_MS) {
+              this.lastGood.set(opts.taskKind, modelKey2);
+            } else if (this.lastGood.get(opts.taskKind) === modelKey2) {
+              // A slow success must not (re)pin itself as lastGood — drop a stale pin so
+              // the next turn falls back to catalog order instead of repeating the slow pick.
+              this.lastGood.delete(opts.taskKind);
+            }
+          }
           opts.onProviderAttempt?.({ platform: entry.platform, model: entry.modelId, status: 'ok', latencyMs: Date.now() - t0 });
           return { response, platform: entry.platform, model: entry.modelId, runtimeName: (provider as any).runtimeName };
         } catch (err) {
@@ -692,6 +719,7 @@ export class Router {
 
             if (forced && retryCount < MAX_RETRIES) {
               const waitMs = Math.min(retryAfterMs ?? this.rateLimitCooldownMs(), 15_000);
+              opts.onFailover?.({ from: entry, reason: `rate_limited — retrying in ${Math.ceil(waitMs / 1000)}s (${retryCount + 1}/${MAX_RETRIES})` });
               await new Promise((resolve) => setTimeout(resolve, waitMs));
               triedModels.set(modelKey, retryCount + 1);
               continue;

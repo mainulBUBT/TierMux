@@ -1,5 +1,5 @@
 
-import type { ChatContent, ChatMessage } from '../shared/types';
+import type { ChatContent, ChatContentBlock, ChatMessage } from '../shared/types';
 
 /** Flatten OpenAI multimodal content (string | null | block[]) to plain text. */
 export function contentToString(content: unknown): string {
@@ -61,6 +61,32 @@ export function normalizeAttachmentBlocks(content: ChatContent): AttachmentBlock
     }
   }
   return out;
+}
+
+/**
+ * Session attachment memory: every `image_url`/`file` block from every user turn in the
+ * conversation, oldest → newest, deduped by payload URL and capped to the most recent
+ * `cap` to bound per-request cost. Rationale: a follow-up question about a screenshot
+ * attached two turns ago must still (a) route to a vision model and (b) carry the image —
+ * OC does not reliably re-forward earlier turns' attachments, and the previous
+ * latest-message-only capture dropped them entirely.
+ */
+export function collectSessionAttachmentBlocks(messages: ChatMessage[], cap = 4): ChatContentBlock[] {
+  const seen = new Set<string>();
+  const out: ChatContentBlock[] = [];
+  for (const m of messages) {
+    if (m.role !== 'user' || !Array.isArray(m.content)) continue;
+    for (const block of m.content) {
+      if (!block || typeof block !== 'object') continue;
+      const type = (block as { type?: string }).type;
+      if (type !== 'image_url' && type !== 'file') continue;
+      const [norm] = normalizeAttachmentBlocks([block as ChatContentBlock]);
+      if (!norm || seen.has(norm.url)) continue;
+      seen.add(norm.url);
+      out.push(block as ChatContentBlock);
+    }
+  }
+  return out.slice(-cap);
 }
 
 /**

@@ -24,6 +24,7 @@ export type Platform =
   | 'zenmux'
   | 'kenari'
   | 'llmgateway'
+  | 'poolside'
   | 'custom';
 
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -147,6 +148,13 @@ export interface CatalogModel {
   origInputPricePer1M?: number;
   /** Original (non-free) provider's per-1M-token output price, USD. Undefined if unpublished. */
   origOutputPricePer1M?: number;
+  /**
+   * When false, the model is staged: it does NOT trigger the "new model added"
+   * notification, so you can add/test it in the remote sheet while developing without
+   * alerting users. Flip to true (or omit the column) to publish. Defaults to true
+   * when the source row doesn't carry the column.
+   */
+  ready?: boolean;
 }
 
 /** One entry in the agent's live task list (TodoWrite-style progress tracking). */

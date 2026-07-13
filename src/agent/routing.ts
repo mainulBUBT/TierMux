@@ -58,9 +58,9 @@ export function classifyTask(text: string, signals?: ClassifySignals): TaskKind 
   if (!t) return 'chat';
   const words = t.split(/\s+/).filter(Boolean);
 
-  if (words.length <= 6 && GREETING.test(t) && !TASK_VERB.test(t)) return 'trivial';
-
   const hasVisual = (signals?.attachmentKinds ?? []).some((k) => k === 'image' || k === 'pdf');
+
+  if (!hasVisual && words.length <= 6 && GREETING.test(t) && !TASK_VERB.test(t)) return 'trivial';
 
   if (t.length > 6000 || (signals?.attachments ?? 0) > 0 || (signals?.mentions ?? 0) >= 3) {
     return hasVisual ? 'vision' : 'longContext';
@@ -114,6 +114,11 @@ export function orderForTask(
 
   const vision = (a: CatalogModel, b: CatalogModel): number => Number(!!b.supportsVision) - Number(!!a.supportsVision);
 
+  // Aggregator "auto" endpoints (tag: 'router', e.g. kilo-auto/free, openrouter/free)
+  // claim supportsVision but delegate to arbitrary underlying models that may drop the
+  // image — for a vision turn, a direct vision model is strictly more trustworthy.
+  const directFirst = (a: CatalogModel, b: CatalogModel): number => hasTag(a, 'router') - hasTag(b, 'router');
+
   const cmp: Record<TaskKind, (a: CatalogModel, b: CatalogModel) => number> = {
     trivial: (a, b) => speed(a, b) || recency(a, b) || intel(a, b),                 // cheapest/fastest; smarts irrelevant
     chat: (a, b) => tools(a, b) || balanced(a, b) || recency(a, b) || intel(a, b),        // tool-capable, then fast+capable, newest among equals
@@ -122,7 +127,7 @@ export function orderForTask(
     debug: (a, b) => tools(a, b) || codingTag(a, b) || balanced(a, b) || reason(a, b) || recency(a, b),
     plan: (a, b) => balanced(a, b) || reason(a, b) || tools(a, b) || recency(a, b), // fast+capable first, reasoning breaks ties
     longContext: (a, b) => ctx(a, b) || balanced(a, b) || recency(a, b),            // biggest window, then fast+capable, then newest
-    vision: (a, b) => vision(a, b) || tools(a, b) || balanced(a, b) || recency(a, b), // must-see models first, then like agent
+    vision: (a, b) => vision(a, b) || directFirst(a, b) || tools(a, b) || balanced(a, b) || recency(a, b), // must-see models first, direct beats aggregator, then like agent
   };
 
   const sc = score ?? ((): number => 0);

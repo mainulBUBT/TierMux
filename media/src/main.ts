@@ -331,7 +331,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     openrouter: 'OpenRouter', github: 'GitHub Models', cohere: 'Cohere', cloudflare: 'Cloudflare',
     zhipu: 'Zhipu', ollama: 'Ollama', kilo: 'Kilo', pollinations: 'Pollinations', llm7: 'LLM7',
     huggingface: 'HuggingFace', opencode: 'OpenCode', ovh: 'OVH', agnes: 'Agnes', zenmux: 'ZenMux',
-    llmgateway: 'LLM Gateway',
+    llmgateway: 'LLM Gateway', poolside: 'Poolside',
     custom: 'Custom',
   };
 
@@ -349,16 +349,22 @@ import { handleToolStatus } from './handlers/toolStatus';
   // Fallback shown before the host's 'config' message arrives (or if it omits skills).
   // The host is the source of truth once connected: it sends the live skill index
   // (name + one-line description) built from .tiermux/skills/*.md — see ConfigPayload.
-  const FALLBACK_SLASH_COMMANDS = [
+  const FALLBACK_SKILL_COMMANDS = [
     { name: 'explain', detail: 'Explain the referenced code' },
     { name: 'fix', detail: 'Find and fix problems' },
     { name: 'tests', detail: 'Write unit tests' },
     { name: 'doc', detail: 'Add documentation/comments' },
+  ];
+  // Hardcoded in chatViewProvider.ts's handleSend — always available regardless of
+  // which skills the workspace defines, so never replaced by state.skills.
+  const BUILTIN_SLASH_COMMANDS = [
     { name: 'commit', detail: 'Generate a commit message from staged changes' },
     { name: 'ocdiff', detail: 'List files OC changed this session, with diffs' },
+    { name: 'grep', detail: 'Search file contents across the workspace' },
   ];
   function getSlashCommands() {
-    return (state.skills && state.skills.length) ? state.skills : FALLBACK_SLASH_COMMANDS;
+    const dynamic = (state.skills && state.skills.length) ? state.skills : FALLBACK_SKILL_COMMANDS;
+    return [...BUILTIN_SLASH_COMMANDS, ...dynamic];
   }
   // Autocomplete state.
   let acMode = null;       // 'slash' | 'mention' | null
@@ -1462,6 +1468,20 @@ import { handleToolStatus } from './handlers/toolStatus';
       acDebounce = setTimeout(() => send({ type: 'mentionQuery', queryId: id, query: q }), 150);
       return;
     }
+
+    // /grep <pattern>: live search-as-you-type preview, same debounce as mentions.
+    // Selecting a result opens the file instead of touching the textarea (the typed
+    // pattern is left as-is so Enter still runs the full /grep for the chat reply).
+    const grepMatch = /^\/grep\s+(.+)$/.exec(text);
+    if (grepMatch) {
+      acMode = 'grep'; acStart = 0;
+      const q = grepMatch[1].trim();
+      if (!q) { closeAc(); return; }
+      const id = ++acQueryId;
+      clearTimeout(acDebounce);
+      acDebounce = setTimeout(() => send({ type: 'grepQuery', queryId: id, query: q }), 150);
+      return;
+    }
     closeAc();
   }
 
@@ -1473,7 +1493,7 @@ import { handleToolStatus } from './handlers/toolStatus';
       row.className = 'ac-item' + (i === 0 ? ' active' : '');
       // Slash items' own label already starts with '/' (e.g. "/explain") — no separate icon,
       // or it renders as a redundant double slash ("/ /explain").
-      const icon = it.kind === 'folder' ? '📁' : it.kind === 'symbol' ? '◈' : it.kind === 'slash' ? '' : '📄';
+      const icon = it.kind === 'folder' ? '📁' : it.kind === 'symbol' ? '◈' : it.kind === 'slash' ? '' : it.kind === 'grep' ? '🔎' : '📄';
       row.innerHTML = `<span class="ac-icon">${icon}</span><span class="ac-label"></span><span class="ac-detail muted"></span>`;
       row.querySelector('.ac-label').textContent = it.label;
       row.querySelector('.ac-detail').textContent = it.detail || '';
@@ -1494,6 +1514,11 @@ import { handleToolStatus } from './handlers/toolStatus';
   function acceptAc() {
     const it = acItems[acIndex];
     if (!it) { closeAc(); return; }
+    if (it.kind === 'grep') {
+      send({ type: 'openGrepResult', path: it.path, line: it.lineNumber });
+      closeAc();
+      return;
+    }
     const caret = input.selectionStart;
     const before = input.value.slice(0, acStart);
     const after = input.value.slice(caret);
@@ -1893,7 +1918,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     const hint = document.createElement('div');
     hint.className = 'muted';
     hint.style.marginBottom = '8px';
-    hint.textContent = 'Click a provider to edit its endpoint and enable models. Set a per-model API key on each model row. Configured providers (green) are listed first.';
+    hint.textContent = 'Click a provider to edit its endpoint and enable models. Set a per-model API key on each model row. Enabled providers are listed first.';
     settingsContentEl.appendChild(hint);
 
     const cat = {};
@@ -1946,8 +1971,9 @@ import { handleToolStatus } from './handlers/toolStatus';
     });
     settingsContentEl.appendChild(allBar);
 
-    // Configured (or keyless) providers first, then alphabetical.
+    // Enabled providers first, then configured (or keyless) ones, then alphabetical.
     const provs = state.platforms.slice().sort((a, b) =>
+      (Number(disabledSet.has(a.platform)) - Number(disabledSet.has(b.platform))) ||
       (Number(!!b.configured) - Number(!!a.configured)) || a.name.localeCompare(b.name));
 
     provs.forEach((p) => {
@@ -3647,6 +3673,15 @@ import { handleToolStatus } from './handlers/toolStatus';
       case 'mentionResults':
         if (acMode === 'mention' && msg.queryId === acQueryId) {
           (msg.items && msg.items.length) ? renderAc(msg.items) : closeAc();
+        }
+        break;
+      case 'grepResults':
+        if (acMode === 'grep' && msg.queryId === acQueryId) {
+          const items = (msg.items || []).map((it) => ({
+            label: `${it.path}:${it.lineNumber}`, detail: it.lineText.trim(),
+            kind: 'grep', path: it.path, lineNumber: it.lineNumber,
+          }));
+          items.length ? renderAc(items) : closeAc();
         }
         break;
       case 'mcpRegistryResults':

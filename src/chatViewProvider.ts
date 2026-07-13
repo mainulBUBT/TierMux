@@ -6,7 +6,7 @@ import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
 import type { UsageStore } from './config/usageStore';
 import type { Mode } from './shared/types';
-import { runChatStream, runAgentStream, runPlanStream, getOcSessionDiff, isOcEngineActive, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
+import { runChatStream, runAgentStream, runPlanStream, getOcSessionDiff, findTextViaOc, isOcEngineActive, hasOcSession, summarizeOcSession, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
 import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
 import { SETTINGS_META, defaultForSetting } from './settingsMeta';
@@ -872,6 +872,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'mentionQuery':
         await this.handleMentionQuery(m);
         break;
+      case 'grepQuery':
+        await this.handleGrepQuery(m);
+        break;
+      case 'openGrepResult':
+        await this.openGrepResult(m.path, m.line);
+        break;
       case 'compact':
         await this.handleCompact(this.current());
         break;
@@ -1318,6 +1324,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** Live search-as-you-type for `/grep <pattern>` — mirrors handleMentionQuery. Capped
+   *  smaller than the `/grep` command's own 20-match display since this renders inline
+   *  in the autocomplete popup, not a full chat message. */
+  private async handleGrepQuery(m: Extract<InMessage, { type: 'grepQuery' }>): Promise<void> {
+    try {
+      const items = m.query.trim() ? (await findTextViaOc(m.query.trim())).slice(0, 8) : [];
+      this.post({ type: 'grepResults', queryId: m.queryId, items });
+    } catch {
+      this.post({ type: 'grepResults', queryId: m.queryId, items: [] });
+    }
+  }
+
+  /** Open a `/grep` autocomplete result at its matched line. Best-effort — the file may
+   *  have moved/been deleted since the search ran. */
+  private async openGrepResult(path: string, line: number): Promise<void> {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!root) return;
+    try {
+      const uri = vscode.Uri.joinPath(root, path);
+      const doc = await vscode.workspace.openTextDocument(uri);
+      const editor = await vscode.window.showTextDocument(doc);
+      const pos = new vscode.Position(Math.max(0, line - 1), 0);
+      editor.selection = new vscode.Selection(pos, pos);
+      editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+    } catch { /* file may have moved — best-effort */ }
+  }
+
   private async handleCompact(s: Session): Promise<void> {
     if (!shouldCondense(s.history)) {
       this.post({ type: 'notice', sessionId: s.id, text: 'Not enough conversation to compact yet.' });
@@ -1325,17 +1358,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     this.post({ type: 'busy', sessionId: s.id, busy: true });
     try {
+      // condenseHistory only ever shrinks TierMux's own local `s.history` (the UI transcript,
+      // and what direct-API mode replays as context). For an OC-backed session, OC keeps its
+      // OWN server-side conversation and TierMux only forwards the latest message each turn —
+      // so client-side condensing alone never reduces OC's actual token usage. Trigger OC's
+      // native compaction too when this session has a live OC session; best-effort, since it
+      // completes asynchronously (session.compacted SSE event) and shouldn't block the notice.
+      const ocCompacting = hasOcSession(s.id) ? await summarizeOcSession(s.id, this.deps.router) : false;
+
       const r = await condenseHistory(
         s.history,
         this.deps.router,
         s.livePlatform && s.liveModel ? `${s.livePlatform}/${s.liveModel}` : undefined,
       );
-      if (!r) { this.post({ type: 'notice', sessionId: s.id, text: 'Compaction produced no summary; context unchanged.' }); return; }
+      if (!r) {
+        this.post({ type: 'notice', sessionId: s.id, text: ocCompacting ? '🗜 OC is compacting this session in the background.' : 'Compaction produced no summary; context unchanged.' });
+        return;
+      }
       const prior = s.history.length;
       s.history = r.messages;
       this.persist(s.id);
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
-      this.post({ type: 'notice', sessionId: s.id, text: `🗜 Context compacted — ${prior} → ${r.messages.length} messages. Earlier turns summarized; the last few kept verbatim.` });
+      const ocNote = ocCompacting ? ' OC is also compacting its own session context in the background.' : '';
+      this.post({ type: 'notice', sessionId: s.id, text: `🗜 Context compacted — ${prior} → ${r.messages.length} messages. Earlier turns summarized; the last few kept verbatim.${ocNote}` });
     } catch (e) {
       this.post({ type: 'error', sessionId: s.id, message: `Compact failed: ${e instanceof Error ? e.message : String(e)}` });
     } finally {
@@ -1385,6 +1430,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           type: 'ocSessionDiffList', sessionId: s.id, requestId: m.requestId,
           files: files.map((f) => ({ file: f.file, additions: f.additions, deletions: f.deletions })),
         });
+      }
+      return;
+    }
+    if (slash?.name === 'grep') {
+      const s = this.current();
+      if (!slash.rest.trim()) {
+        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: 'Usage: `/grep <pattern>`' });
+        return;
+      }
+      const pattern = slash.rest.trim();
+      const matches = await findTextViaOc(pattern);
+      if (!matches.length) {
+        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: isOcEngineActive() ? `No matches for \`${pattern}\`.` : 'OC engine is not running — `/grep` needs it for text search.' });
+      } else {
+        const CAP = 20;
+        const shown = matches.slice(0, CAP);
+        const byFile = new Map<string, typeof shown>();
+        for (const hit of shown) {
+          const list = byFile.get(hit.path);
+          if (list) list.push(hit); else byFile.set(hit.path, [hit]);
+        }
+        const sections = Array.from(byFile.entries()).map(([file, hits]) => {
+          const rows = hits.map((h) => `${h.lineNumber} | ${h.lineText.trim()}`).join('\n');
+          return `**${file}**\n\`\`\`\n${rows}\n\`\`\``;
+        });
+        const omitted = matches.length - shown.length;
+        const header = `Found ${matches.length} match${matches.length === 1 ? '' : 'es'} for \`${pattern}\`${omitted > 0 ? ` (showing first ${CAP})` : ''}:`;
+        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: [header, ...sections].join('\n\n') });
       }
       return;
     }
@@ -1481,7 +1554,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      const pinned = (s.model && s.model !== 'auto') ? s.model : result.model;
+      // s.model (when pinned) is the picker's composite `platform::modelId` selector
+      // value — strip the platform prefix so `model` is always a bare modelId, matching
+      // result.model's shape. Otherwise the webview's `${platform}/${model}` footer
+      // double-prefixes (e.g. "poolside/poolside::poolside/laguna-xs-2.1").
+      const pinned = (s.model && s.model !== 'auto')
+        ? s.model.includes('::') ? s.model.split('::').slice(1).join('::') : s.model
+        : result.model;
       const hasQuestions = !!(agentClar.questions && agentClar.questions.length);
 
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: pinned, paused: result.paused, noFooter: hasQuestions });
@@ -1848,7 +1927,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return {
       onModel: (platform, model, runtimeName) => {
         if (!live()) return;
-        const pinned = (s.model && s.model !== 'auto') ? s.model : model;
+        // Same platform-prefix stripping as sendMessage's `pinned` — s.model is the
+        // picker's composite `platform::modelId` selector value when a model is pinned.
+        const pinned = (s.model && s.model !== 'auto')
+          ? s.model.includes('::') ? s.model.split('::').slice(1).join('::') : s.model
+          : model;
         s.livePlatform = platform;
         s.liveModel = pinned;
         s.liveRuntimeName = runtimeName;
@@ -1894,17 +1977,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       onStep: (phase, label) => { if (!live()) return; s.lastStepLabel = label; this.post({ type: 'agentStep', sessionId: s.id, requestId, phase: phase as 'thinking' | 'synthesizing' | 'done', label }); },
       onTodos: (todos) => { if (!live()) return; s.lastTodos = todos; this.post({ type: 'todos', sessionId: s.id, requestId, todos, followingPlan: !!s.executingPlan }); },
-      onSessionTitle: (title) => {
-        if (!live()) return;
-        const t = (title || '').trim();
-        if (!t || s.userRenamedTitle || s.title === t) return; // honor manual rename; dedup
-        s.title = t;
-        s.titleGenerated = true;
-        this.persist(s.id);
-        this.updateViewTitle();
-        this.post({ type: 'sessionTitle', sessionId: s.id, title: t });
-        this.postSessionList(); // refresh the tab strip label, not just the in-panel title field
-      },
       onChunk: (text) => {
         if (!live()) return;
         if (s.liveActivity !== 'Text change') { s.liveActivity = 'Text change'; this.postSessionList(); }
@@ -2209,41 +2281,47 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return; // leave titleGenerated false → re-evaluate when a real message arrives
     }
 
-    // When the OC engine is active it generates the session title natively (via its
-    // small_model) and delivers it through `session.updated` → onSessionTitle. Use a cheap
-    // local placeholder until then and SKIP our own LLM title call so we don't duplicate
-    // OC's work. Leave titleGenerated false so OC's title can still override the placeholder.
-    if (isOcEngineActive()) {
-      const placeholder = deriveTitleFrom(firstReal.text ?? '');
-      if (placeholder && s.title !== placeholder) { s.title = placeholder; this.persist(s.id); this.updateViewTitle(); this.postSessionList(); }
-      return;
+    // Show a cheap placeholder immediately (so the tab is never blank/odd), then upgrade
+    // it to a real LLM-generated title below. Matches the "meaningful short title" behavior
+    // of Cursor / Claude Code instead of leaving the raw message text in the tab.
+    const placeholder = deriveTitleFrom(firstReal.text ?? '');
+    if (placeholder && s.title !== placeholder) {
+      s.title = placeholder;
+      this.persist(s.id);
+      this.updateViewTitle();
+      this.postSessionList();
     }
 
+    // OC's own native title (e.g. "New session - <timestamp>") is ignored entirely — always
+    // generate our own meaningful LLM title so the tab never shows OC's raw placeholder.
+    await this.generateTitleViaLlm(s, firstReal.text ?? '');
+  }
+
+  /** Ask a free LLM for a short, meaningful title from the user's message and write it
+   *  to the session (falling back to the derived placeholder on any failure). */
+  private async generateTitleViaLlm(s: Session, messageText: string): Promise<void> {
+    if (s.titleGenerated || s.userRenamedTitle) return;
     s.titleGenerated = true; // guard before the call to avoid duplicate runs
     try {
-      const snippet = (firstReal.text ?? '').slice(0, 800);
-      let raw = '';
-
-      if (!raw) {
-        const model = await this.deps.router.pickUtilityModel();
-        const result = await this.deps.router.route(
-          [
-            { role: 'system', content: TITLE_SYSTEM },
-            { role: 'user', content: `User's message: ${snippet}` },
-          ],
-          { temperature: 0.3, max_tokens: 48, model, taskKind: 'trivial', reasoningEffort: 'off' },
-        );
-        raw = contentToString(result.response.choices[0]?.message.content);
-      }
+      const snippet = messageText.slice(0, 800);
+      const model = await this.deps.router.pickUtilityModel();
+      const result = await this.deps.router.route(
+        [
+          { role: 'system', content: TITLE_SYSTEM },
+          { role: 'user', content: `User's message: ${snippet}` },
+        ],
+        { temperature: 0.3, max_tokens: 48, model, taskKind: 'trivial', reasoningEffort: 'off' },
+      );
+      const raw = contentToString(result.response.choices[0]?.message.content);
 
       let title = sanitizeTitle(raw);
       if (/^(starting conversation|new chat|untitled|chat)$/i.test(title)) title = '';
-      s.title = title || deriveTitleFrom(firstReal.text ?? '');
+      s.title = title || deriveTitleFrom(messageText);
       this.persist(s.id);
       this.updateViewTitle();
       this.postSessionList();
     } catch {
-      s.title = deriveTitleFrom(firstReal.text ?? '');
+      s.title = deriveTitleFrom(messageText);
       this.persist(s.id);
       this.updateViewTitle();
       this.postSessionList();

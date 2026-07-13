@@ -160,6 +160,22 @@ export class OcClient {
   }
 
   /**
+   * Trigger OC's own server-side session compaction (POST /session/{id}/summarize). Unlike
+   * TierMux's client-side `condenseHistory`, this actually shrinks the conversation OC holds
+   * for this session — the thing that determines token usage on the NEXT `prompt()` call.
+   * Fire-and-forget: the 200 is just an ack that summarization started; completion arrives
+   * later as a `session.compacted` SSE event (already handled in sdk.ts).
+   */
+  async summarize(sessionId: string, modelID: string): Promise<boolean> {
+    try {
+      const { data } = await this.client.session.summarize({ path: { id: sessionId }, body: { providerID: 'tiermux', modelID } });
+      return data === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Fetch the whole session's aggregate file diff (before/after per changed file). Best-effort —
    * used for a read-only "what did this session change" view, not something a run depends on.
    *
@@ -174,6 +190,43 @@ export class OcClient {
   async diff(sessionId: string): Promise<Array<{ file: string; before: string; after: string; additions: number; deletions: number }>> {
     try {
       const { data } = await this.client.session.diff({ path: { id: sessionId } });
+      return Array.isArray(data) ? data : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Grep-style text search across the workspace (GET /find, ripgrep-backed on the OC
+   * server). TierMux has no local equivalent — `mentions.ts` only does filename/glob
+   * and symbol lookups via VS Code's own APIs, never file *content* search. Best-effort:
+   * returns [] on failure (e.g. OC not running) so callers can treat this as optional.
+   */
+  async findText(pattern: string, directory?: string): Promise<Array<{ path: string; lineNumber: number; lineText: string }>> {
+    try {
+      const { data } = await this.client.find.text({ query: { pattern, directory } });
+      return Array.isArray(data)
+        ? data.map((m) => ({ path: m.path.text, lineNumber: m.line_number, lineText: m.lines.text }))
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Fuzzy file-path search (GET /find/file, OC-side fuzzy matcher). Best-effort. */
+  async findFiles(query: string, directory?: string): Promise<string[]> {
+    try {
+      const { data } = await this.client.find.files({ query: { query, directory } });
+      return Array.isArray(data) ? data : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Workspace symbol search (GET /find/symbol, OC-side LSP-backed). Best-effort. */
+  async findSymbols(query: string, directory?: string): Promise<any[]> {
+    try {
+      const { data } = await this.client.find.symbols({ query: { query, directory } });
       return Array.isArray(data) ? data : [];
     } catch {
       return [];

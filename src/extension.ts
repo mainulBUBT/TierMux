@@ -240,7 +240,7 @@ async function startOpenCodeEngine(
 export function activate(context: vscode.ExtensionContext): void {
   console.log('[tiermux-bench-debug] activate() STARTED');
   const catalog = new Catalog(context.extensionPath);
-  catalog.loadCached(context.globalState);
+  catalog.loadCached(context.globalState, vscode.workspace.getConfiguration('tiermux').get<string>('catalog.url', ''));
   const secrets = new SecretStore(context.secrets);
   const settings = new SettingsStore(context.globalState, catalog);
   if (context.globalState.get('tiermux.notifiedModels') === undefined) {

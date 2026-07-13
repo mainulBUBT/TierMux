@@ -28,6 +28,10 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'zenmux', name: 'ZenMux', baseUrl: 'https://zenmux.ai/api/v1', timeoutMs: 30000, skipPreflight: true, reasoningStyle: 'openrouter', extraHeaders: { 'HTTP-Referer': 'https://github.com/mainulBUBT/TierMux', 'X-Title': 'tiermux' }, keyUrl: 'https://zenmux.ai/dashboard/keys' },
   { platform: 'kenari', name: 'Kenari', baseUrl: 'https://kenari.id/v1', skipPreflight: true, keyUrl: 'https://kenari.id' },
   { platform: 'llmgateway', name: 'LLM Gateway', baseUrl: 'https://api.llmgateway.io/v1', keyUrl: 'https://llmgateway.io' },
+  // defaultMaxTokens: thinking is always on and shares the output budget with the
+  // answer — an unset/small max_tokens lets it exhaust the budget mid-<think>, which
+  // ThinkStripper correctly discards, producing an empty (but billed) turn.
+  { platform: 'poolside', name: 'Poolside', baseUrl: 'https://inference.poolside.ai/v1', timeoutMs: 120000, skipPreflight: true, defaultMaxTokens: 8192, keyUrl: 'https://poolside.ai' },
 ];
 
 const providers = new Map<Platform, BaseProvider>();

@@ -2,14 +2,14 @@
 
 import type { Router } from '../router/router';
 import { AllModelsFailedError } from '../router/router';
-import type { ChatContentBlock, ChatMessage, TodoItem, ReasoningEffort } from '../shared/types';
+import type { ChatMessage, TodoItem, ReasoningEffort } from '../shared/types';
 import type { IProfilerService } from '../profiler/profilerService';
 import type { OcConnection } from '../backend/ocLauncher';
 import { OcClient, toOcParts } from '../backend/ocClient';
-import { getLastRoutedModel, setForcedModel, setForcedTaskKind, setForcedAttachments, setForcedReasoningEffort } from '../backend/routerProxy';
+import { getLastRoutedModel, setForcedModel, setForcedTaskKind, setForcedAttachments, setForcedReasoningEffort, setRouteFailoverListener } from '../backend/routerProxy';
 import { classifyTask, attachmentKindsFromContent, type TaskKind } from './routing';
 import { assessAnswerQuality } from './answerQuality';
-import { contentToString } from './content';
+import { contentToString, collectSessionAttachmentBlocks } from './content';
 import { findReplayBoundary, formatTranscriptForReplay } from './sessionReplay';
 
 let traceOcEvents = false;
@@ -87,10 +87,6 @@ export interface AgentOpts {
   onKeyRotated?: (info: { platform: string; keyIndex: number; keyTotal: number }) => void;
   onStep: (phase: string, label: string) => void;
   onTodos: (todos: TodoItem[]) => void;
-  /** OC generated/updated this session's title (from its own `small_model`, delivered via
-   *  `session.updated`). TierMux uses OC's title as the source of truth instead of generating
-   *  its own — see chatViewProvider.onSessionTitle. */
-  onSessionTitle?: (title: string) => void;
   onAskUser: (question: string, options?: string[]) => Promise<string>;
   /** OC paused a tool call on an `ask` permission rule (e.g. `bash: 'ask'` in ocConfig.ts) and
    *  is waiting for a decision before it proceeds. `title` is OC's own human-readable
@@ -169,6 +165,36 @@ export function setOcEngine(conn: OcConnection | undefined): void {
  *  defer to OC's native behavior instead of duplicating it. */
 export function isOcEngineActive(): boolean {
   return !!ocClient;
+}
+
+/** True if `sessionId` has a live OC session backing it — i.e. `/compact`'s client-side
+ *  `condenseHistory` is a no-op for its actual OC-side token usage (see summarizeOcSession). */
+export function hasOcSession(sessionId: string): boolean {
+  return ocSessions.has(sessionId);
+}
+
+/**
+ * Trigger OC's native server-side compaction for a TierMux session's OC-backed conversation.
+ * `condenseHistory` only rewrites TierMux's own local `s.history` — for a continuing OC
+ * session, TierMux forwards just the latest user message on each turn (see runViaOc) and
+ * relies on OC's own session memory for everything else, so client-side condensing never
+ * actually reduces OC's context. This does. Returns false (no-op) if there's no OC session
+ * for this id yet, or the OC call fails — callers should fall back to condenseHistory.
+ */
+export async function summarizeOcSession(sessionId: string, router: Router): Promise<boolean> {
+  const ocId = ocSessions.get(sessionId);
+  if (!ocId || !ocClient) return false;
+  const modelID = await router.pickUtilityModel();
+  if (!modelID) return false;
+  return ocClient.summarize(ocId, modelID);
+}
+
+/** Grep-style text search across the workspace via OC's ripgrep-backed `/find` endpoint
+ *  (no TierMux-local equivalent exists — see mentions.ts). Best-effort: [] if OC isn't
+ *  running, mirroring every other optional-OC-call in this file. */
+export async function findTextViaOc(pattern: string): Promise<Array<{ path: string; lineNumber: number; lineText: string }>> {
+  if (!ocClient) return [];
+  return ocClient.findText(pattern);
 }
 
 /** OC's own aggregate diff for a TierMux chat session's OC-backed conversation, if one
@@ -266,19 +292,17 @@ async function runViaOc(
 
   const userText = contentToString(lastUser?.content);
 
-  const taskKind: TaskKind = taskKindHint ?? classifyTask(userText, { attachmentKinds: attachmentKindsFromContent(lastUser?.content ?? '') });
+  // Attachments from the WHOLE session, not just the latest message — a follow-up
+  // question about an earlier screenshot must still route to a vision model and
+  // still carry the image (see collectSessionAttachmentBlocks).
+  const attachmentBlocks = collectSessionAttachmentBlocks(opts.messages);
+  const taskKind: TaskKind = taskKindHint ?? classifyTask(userText, { attachmentKinds: attachmentKindsFromContent(attachmentBlocks) });
 
   setForcedTaskKind(taskKind === 'vision' ? 'vision' : undefined);
-
-  const attachmentBlocks = Array.isArray(lastUser?.content)
-    ? (lastUser.content as ChatContentBlock[]).filter((b) => {
-      const type = typeof b === 'object' && b !== null ? (b as { type?: string }).type : undefined;
-      return type === 'image_url' || type === 'file';
-    })
-    : [];
   setForcedAttachments(taskKind === 'vision' ? attachmentBlocks : undefined);
 
   setForcedReasoningEffort(opts.effort);
+  setRouteFailoverListener((from, reason) => opts.onFailover(from, reason));
 
   const profiler = opts.profiler;
   const turnId = profiler?.beginTurn({
@@ -347,6 +371,7 @@ async function runViaOc(
       setForcedTaskKind(undefined);
       setForcedAttachments(undefined);
       setForcedReasoningEffort(undefined);
+      setRouteFailoverListener(undefined);
 
       throw new Error(`TierMux engine failed to start a session: ${err instanceof Error ? err.message : err}`);
     }
@@ -362,6 +387,7 @@ async function runViaOc(
       setForcedTaskKind(undefined);
       setForcedAttachments(undefined);
       setForcedReasoningEffort(undefined);
+      setRouteFailoverListener(undefined);
       throw new Error('TierMux engine could not start a session. Raw response logged to DevTools console.');
     }
     ocSessions.set(key, ocId);
@@ -421,6 +447,7 @@ async function runViaOc(
       setForcedTaskKind(undefined);
       setForcedAttachments(undefined);
       setForcedReasoningEffort(undefined);
+      setRouteFailoverListener(undefined);
 
       intentionallyAbortedOcIds.delete(ocId);
 
@@ -445,6 +472,7 @@ async function runViaOc(
       setForcedTaskKind(undefined);
       setForcedAttachments(undefined);
       setForcedReasoningEffort(undefined);
+      setRouteFailoverListener(undefined);
       intentionallyAbortedOcIds.delete(ocId);
       for (const k of [...prewarmedSessions.keys()]) if (k.startsWith(`${key}:`)) prewarmedSessions.delete(k);
       reject(err);
@@ -765,11 +793,8 @@ async function runViaOc(
       }
 
       if (t === 'session.updated' || t === 'session.created' || t === 'session.title' || t === 'session.title.updated') {
-        // OC owns the session title (generated by its own small_model). Surface it so
-        // TierMux uses OC's title as the source of truth instead of generating its own.
-        const info = p.info ?? p;
-        const title = typeof info?.title === 'string' ? info.title.trim() : '';
-        if (title) opts.onSessionTitle?.(title);
+        // OC's own title (e.g. "New session - <timestamp>") is ignored — TierMux generates
+        // its own LLM-based title instead (see chatViewProvider.maybeGenerateTitle).
         return;
       }
 

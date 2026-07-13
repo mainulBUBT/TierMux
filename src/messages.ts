@@ -193,6 +193,8 @@ export type InMessage =
   | { type: 'attachFromDataUrl'; name: string; mime: string; dataUrl: string; source?: 'paste' | 'drop' }
   | { type: 'addSelection' }
   | { type: 'mentionQuery'; queryId: number; query: string }
+  | { type: 'grepQuery'; queryId: number; query: string }
+  | { type: 'openGrepResult'; path: string; line: number }
   | { type: 'compact' }
   | { type: 'editMcp' }
   | { type: 'reconnectMcp' }
@@ -303,6 +305,7 @@ export type OutMessage =
   | { type: 'keyRotated'; sessionId: string; requestId: string; platform: string; platformName: string; keyIndex: number; keyTotal: number }
   | { type: 'attachmentAdded'; attachment: Attachment }
   | { type: 'mentionResults'; queryId: number; items: MentionItem[] }
+  | { type: 'grepResults'; queryId: number; items: Array<{ path: string; lineNumber: number; lineText: string }> }
   | { type: 'mcpRegistryResults'; queryId: number; items: McpRegistryItem[]; error?: string }
   | { type: 'setInput'; text: string; attachments?: Attachment[] }
   | { type: 'toggleSettings' }

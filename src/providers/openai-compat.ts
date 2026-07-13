@@ -33,6 +33,15 @@ export interface OpenAICompatOpts {
   preflightTimeoutMs?: number;
   /** Skip the preflight ping entirely for this provider. */
   skipPreflight?: boolean;
+  /**
+   * Floor applied to `max_tokens` when the caller doesn't specify one (OC often
+   * doesn't). Needed for providers whose reasoning isn't optional and shares the
+   * same output budget as the answer (e.g. Poolside) — a small/unset max_tokens
+   * lets the model exhaust its budget mid-`<think>`, so ThinkStripper correctly
+   * discards the (still-open) reasoning and the whole turn comes back empty even
+   * though tokens were billed.
+   */
+  defaultMaxTokens?: number;
 }
 
 export class OpenAICompatProvider extends BaseProvider {
@@ -43,7 +52,11 @@ export class OpenAICompatProvider extends BaseProvider {
   private readonly timeoutMs: number;
   private readonly forceSingleToolCall: boolean;
   private readonly reasoningStyle: ReasoningStyle;
-  private readonly flattenContent: boolean;
+  /** Public so the router can exclude flatteners from vision turns — a provider that
+   *  flattens multimodal content to plain text can never deliver an image, regardless
+   *  of what the catalog's supportsVision says about the underlying model. */
+  readonly flattenContent: boolean;
+  private readonly defaultMaxTokens?: number;
 
   constructor(opts: OpenAICompatOpts) {
     super();
@@ -59,6 +72,7 @@ export class OpenAICompatProvider extends BaseProvider {
     this.flattenContent = opts.flattenContent ?? false;
     this.preflightTimeoutMs = opts.preflightTimeoutMs;
     this.skipPreflight = opts.skipPreflight ?? false;
+    this.defaultMaxTokens = opts.defaultMaxTokens;
   }
 
   private resolveBaseUrl(options?: CompletionOptions): string {
@@ -99,7 +113,7 @@ export class OpenAICompatProvider extends BaseProvider {
       model: wireModel,
       messages: wireMessages,
       temperature: options?.temperature,
-      max_tokens: options?.max_tokens,
+      max_tokens: options?.max_tokens ?? this.defaultMaxTokens,
       top_p: options?.top_p,
       tools: options?.tools,
       tool_choice: options?.tool_choice,

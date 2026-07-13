@@ -30,8 +30,16 @@ export class Catalog {
   }
 
   /** Load the last successfully-fetched remote catalog from globalState. Instant,
-   *  works offline — call once on startup before the list is first read. */
-  loadCached(mem: vscode.Memento): void {
+   *  works offline — call once on startup before the list is first read.
+   *  `catalogUrl` is the currently configured `tiermux.catalog.url`: when the user
+   *  has blanked it out, any stale cache from a previous non-blank URL is dropped
+   *  instead of silently continuing to shadow the bundled catalog. */
+  loadCached(mem: vscode.Memento, catalogUrl: string): void {
+    if (!catalogUrl.trim()) {
+      this.remote = undefined;
+      void mem.update(CACHE_KEY, undefined);
+      return;
+    }
     const cached = mem.get<CatalogModel[]>(CACHE_KEY);
     if (Array.isArray(cached) && cached.length) this.remote = cached;
   }
@@ -62,7 +70,8 @@ export class Catalog {
     this._onDidChange.fire();
   }
 
-  /** Active model list: remote (fetched/cached) if present, else bundled. */
+  /** Active model list: the published sheet is the sole source of truth once a
+   *  remote fetch has succeeded — bundled is offline/first-run fallback only. */
   all(): CatalogModel[] {
     return this.remote && this.remote.length ? this.remote : this.bundled;
   }
@@ -173,6 +182,7 @@ function parseCsvCatalog(text: string): CatalogModel[] {
       supportsTools: bool(get('supportsTools'), true),
       supportsVision: bool(get('supportsVision'), false),
       supportsReasoning: bool(get('supportsReasoning'), false),
+      ready: bool(get('ready'), true),
       tags: tagsRaw ? tagsRaw.split(/[·|,]/).map((t) => t.trim()).filter(Boolean) : undefined,
       insight: (get('insight') ?? '').trim() || undefined,
       origInputPricePer1M: num(get('origInputPricePer1M_USD')) ?? undefined,

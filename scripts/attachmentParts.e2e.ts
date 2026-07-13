@@ -6,6 +6,7 @@
 //
 // Run:  esbuild scripts/attachmentParts.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/attachmentParts.e2e.cjs && node dist/attachmentParts.e2e.cjs
 import { toOcParts } from '../src/backend/ocClient';
+import { collectSessionAttachmentBlocks } from '../src/agent/content';
 import type { ChatContentBlock } from '../src/shared/types';
 
 let failures = 0;
@@ -117,6 +118,43 @@ function isTextPart(p: unknown): p is { type: 'text'; text: string } {
   ok('plain string: single TextPart', JSON.stringify(toOcParts('hello')) === JSON.stringify([{ type: 'text', text: 'hello' }]));
   ok('empty string: zero parts', toOcParts('').length === 0);
   ok('null content: zero parts', toOcParts(null).length === 0);
+}
+
+// --- collectSessionAttachmentBlocks: session attachment memory ----------------------
+{
+  const msgs = (contents: Array<{ role: 'user' | 'assistant'; content: ChatContentBlock[] | string }>) =>
+    contents as Parameters<typeof collectSessionAttachmentBlocks>[0];
+
+  // follow-up turn with no new attachment still sees the earlier image
+  const history = msgs([
+    { role: 'user', content: [text('here is a screenshot'), image('shot1')] },
+    { role: 'assistant', content: 'I see a login form.' },
+    { role: 'user', content: [text('why is the second column empty?')] },
+  ]);
+  const blocks = collectSessionAttachmentBlocks(history);
+  ok('session-memory: earlier image survives a text-only follow-up', blocks.length === 1);
+
+  // dedupe by url: the same image in two turns is collected once
+  const dup = collectSessionAttachmentBlocks(msgs([
+    { role: 'user', content: [image('same')] },
+    { role: 'user', content: [image('same')] },
+  ]));
+  ok('session-memory: identical payload deduped by url', dup.length === 1);
+
+  // cap: only the most recent N attachments are kept
+  const many = collectSessionAttachmentBlocks(msgs([
+    { role: 'user', content: [image('a'), image('b'), image('c'), image('d'), image('e')] },
+  ]));
+  ok('session-memory: capped to most recent 4', many.length === 4);
+  const [firstKept] = many.map((b) => (b as { image_url?: { filename?: string } }).image_url?.filename);
+  ok('session-memory: cap drops the OLDEST first', firstKept === 'b.png');
+
+  // assistant-turn and string-content messages contribute nothing
+  const none = collectSessionAttachmentBlocks(msgs([
+    { role: 'assistant', content: [image('fromAssistant')] },
+    { role: 'user', content: 'plain text' },
+  ]));
+  ok('session-memory: assistant/string turns contribute no attachments', none.length === 0);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);

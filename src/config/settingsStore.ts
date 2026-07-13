@@ -58,7 +58,13 @@ export class SettingsStore {
   checkForNewModels(): FallbackEntry[] {
     const fallback = this.getFallback(); // runs reconcile(), which appends new catalog models
     const notified = new Set(this.state.get<string[]>(NOTIFIED_MODELS_KEY, []));
-    const fresh = fallback.filter((e) => !notified.has(`${e.platform}::${e.modelId}`));
+    // Skip models the catalog flags as not-yet-ready (ready===false) so staging a
+    // new model in the remote sheet doesn't notify users until it's published.
+    const fresh = fallback.filter(
+      (e) =>
+        !notified.has(`${e.platform}::${e.modelId}`) &&
+        this.catalog.find(e.platform, e.modelId)?.ready !== false,
+    );
     if (fresh.length) {
       void this.state.update(NOTIFIED_MODELS_KEY, [...notified, ...fresh.map((e) => `${e.platform}::${e.modelId}`)]);
     }
