@@ -40,12 +40,15 @@ function detectFreeformQuestions(text: string): ClarifyingQuestion[] | null {
   if (!trimmed || trimmed.length > 600) return null;
   if (/```|^\s*\|.*\|\s*$|^#{1,6}\s/m.test(trimmed)) return null; // code fence, table, heading — a report, not a question
 
-  const lines = trimmed.split('\n').map((l) => l.replace(/^[-*\d.)\s]+/, '').trim()).filter(Boolean);
+  const lines = trimmed.split('\n').map((l) => l.replace(/\*\*/g, '').replace(/^[-*\d.)\s]+/, '').trim()).filter(Boolean);
   if (!lines.length) return null;
 
   const questionLines = lines.filter((l) => l.endsWith('?'));
   if (questionLines.length < 2) return null; // one trailing question is usually just an offer, not a block
   if (questionLines.length / lines.length < 0.5) return null; // must be mostly questions
+
+  const proseLines = lines.filter((l) => !l.endsWith('?') && l.split(/\s+/).length > 6);
+  if (proseLines.length) return null; // a full declarative sentence mixed in means this is prose with trailing offers, not a question block
 
   return questionLines.map((q) => ({ text: q, options: [] }));
 }
