@@ -642,11 +642,6 @@ export class Router {
       const modelKey = `${entry.platform}::${entry.modelId}`;
       const retryCount = triedModels.get(modelKey) || 0;
 
-      if (opts.taskKind === 'vision') {
-        const m = this.catalog.find(entry.platform, entry.modelId);
-        console.log(`[tiermux][DBG] vision attempt: ${entry.platform}/${entry.modelId} supportsVision=${!!m?.supportsVision} tags=[${(m?.tags ?? []).join(',')}]`);
-      }
-
       if (retryCount >= MAX_RETRIES) {
         failures.push({ platform: entry.platform, model: entry.modelId, reason: `tried ${MAX_RETRIES} times` });
         continue;
