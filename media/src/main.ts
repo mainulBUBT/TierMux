@@ -651,11 +651,126 @@ import { handleToolStatus } from './handlers/toolStatus';
   // ---------- send ----------
   function newId() { return 'r' + Date.now() + Math.random().toString(36).slice(2, 6); }
 
+  // ---- custom hover tooltip ----
+  // Some webview hosts (e.g. Antigravity/Electron variants) don't render the native
+  // `title` tooltip. Show our own from the element's title, and strip the native
+  // attribute while hovering so the two can't double up on hosts that DO render it.
+  let _hoverTip: HTMLElement | null = null;
+  function hoverTipEl() {
+    if (!_hoverTip) { _hoverTip = document.createElement('div'); _hoverTip.className = 'hover-tip'; document.body.appendChild(_hoverTip); }
+    return _hoverTip;
+  }
+  function showHoverTip(target) {
+    const native = target.getAttribute('title');
+    if (native) { target.dataset.tip = native; target.removeAttribute('title'); }
+    const text = target.dataset.tip;
+    if (!text) return;
+    const tip = hoverTipEl();
+    tip.textContent = text;
+    tip.style.left = '-9999px'; tip.style.top = '0px'; // place off-screen to measure
+    tip.classList.add('show');
+    const r = target.getBoundingClientRect();
+    const tw = tip.offsetWidth, th = tip.offsetHeight;
+    const left = Math.max(6, Math.min(r.left + r.width / 2 - tw / 2, window.innerWidth - tw - 6));
+    let top = r.top - th - 6;            // prefer above
+    if (top < 6) top = r.bottom + 6;     // flip below if no room
+    tip.style.left = left + 'px'; tip.style.top = top + 'px';
+  }
+  function hideHoverTip(target) {
+    if (_hoverTip) _hoverTip.classList.remove('show');
+    if (target && target.dataset && target.dataset.tip && !target.getAttribute('title')) {
+      target.setAttribute('title', target.dataset.tip); // restore for accessibility
+    }
+  }
+  function bindHoverTip(el) {
+    el.addEventListener('mouseenter', () => showHoverTip(el));
+    el.addEventListener('mouseleave', () => hideHoverTip(el));
+  }
+
   function iconBtn(icon, title, onClick) {
     const b = document.createElement('button');
     b.className = 'm-ic'; b.title = title; b.innerHTML = icon;
     b.addEventListener('click', onClick);
+    bindHoverTip(b);
     return b;
+  }
+  // Smart Auto "Why this model?" — a (?) on the footer that toggles a small popover
+  // explaining the scoring (winner + why-not for each candidate). Only added when the
+  // turn was smart-routed (rationale present).
+  let openRationalePop: HTMLElement | null = null;
+  function closeRationalePop() {
+    if (openRationalePop) { openRationalePop.remove(); openRationalePop = null; }
+    document.removeEventListener('keydown', onRationaleKey, true);
+    document.removeEventListener('mousedown', onRationaleOutside, true);
+  }
+  function onRationaleKey(e) { if (e.key === 'Escape') closeRationalePop(); }
+  function onRationaleOutside(e) {
+    if (openRationalePop && !openRationalePop.contains(e.target) && !e.target.closest?.('.why-ic')) closeRationalePop();
+  }
+  function showRationalePopover(anchor, data) {
+    if (openRationalePop) { closeRationalePop(); return; } // toggle off
+    const pop = document.createElement('div');
+    pop.className = 'rationale-pop';
+    const head = document.createElement('div');
+    head.className = 'rationale-pop-head';
+    head.textContent = data.picked ? `Why ${data.picked}?` : 'Why this model?';
+    pop.appendChild(head);
+    for (const e of (data.entries || [])) {
+      const row = document.createElement('div');
+      row.className = 'rationale-row' + (e.selected ? ' selected' : '');
+      const line = document.createElement('div');
+      const name = document.createElement('span');
+      name.className = 'rationale-model';
+      name.textContent = `${e.selected ? '✓' : '·'} ${e.model}`;
+      line.appendChild(name);
+      const meta = document.createElement('div');
+      meta.className = 'rationale-meta';
+      const metric = (label, val, tip) => {
+        const s = document.createElement('span');
+        s.className = 'rationale-metric';
+        s.title = tip; // hover explains what the number means
+        bindHoverTip(s);
+        const b = document.createElement('b'); b.textContent = label + ' ';
+        s.appendChild(b); s.appendChild(document.createTextNode(val));
+        return s;
+      };
+      const metrics = [
+        metric('Score', e.score.toFixed(2), 'Final ranking = Capability × Runtime × your preference. The highest-scoring model is chosen.'),
+        metric('Capability', e.capability.toFixed(2), 'How well this model fits the task by catalog — intelligence, speed, tool/vision support, context window. Static: it does not change with latency or health.'),
+        metric('Runtime', '×' + e.runtime.toFixed(2), 'Live health multiplier learned from real requests — success rate, latency vs the model’s own baseline, rate-limit/key availability, and provider health. ~1.0 = healthy, lower = currently degraded.'),
+        metric('Confidence', Math.round(e.confidence * 100) + '%', 'How much real data backs the Runtime score. Low % = little history yet, so Runtime leans toward a neutral default instead of over-reacting.'),
+      ];
+      metrics.forEach((m, i) => { if (i) meta.appendChild(document.createTextNode(' · ')); meta.appendChild(m); });
+      line.appendChild(meta);
+      const why = document.createElement('div');
+      why.className = 'rationale-why';
+      why.textContent = e.reason;
+      row.appendChild(line); row.appendChild(why);
+      pop.appendChild(row);
+    }
+    document.body.appendChild(pop);
+    openRationalePop = pop;
+    // Position: prefer above the (?) icon, flip below if there's no room; clamp to viewport.
+    const r = anchor.getBoundingClientRect();
+    const pw = pop.offsetWidth, ph = pop.offsetHeight;
+    let left = Math.max(6, Math.min(r.left + r.width / 2 - pw / 2, window.innerWidth - pw - 6));
+    let top = r.top - ph - 6;
+    if (top < 6) top = r.bottom + 6;
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
+    requestAnimationFrame(() => pop.classList.add('show'));
+    document.addEventListener('keydown', onRationaleKey, true);
+    document.addEventListener('mousedown', onRationaleOutside, true);
+  }
+  function attachWhyBtn(acts, data) {
+    const existing = acts.querySelector('.why-ic');
+    if (existing) existing.remove(); // refresh if rationale updated
+    const b = iconBtn(ICON.routing, 'Why this model?', (ev) => {
+      ev.stopPropagation();
+      showRationalePopover(ev.currentTarget, data);
+    });
+    b.classList.add('why-ic');
+    acts.appendChild(b);
   }
   function copyBtn(el) {
     const b = iconBtn(ICON.copy, 'Copy message', () => {
@@ -675,8 +790,8 @@ import { handleToolStatus } from './handlers/toolStatus';
       if (requestId) send({ type: 'vote', requestId, vote: now });
       showToast(now === 'up' ? '👍 Liked — prefer this model' : now === 'down' ? '👎 Disliked — avoid this model' : 'Feedback removed', el);
     };
-    const up = iconBtn(ICON.up, 'Good response — prefer this model for similar tasks', () => set('up'));
-    const down = iconBtn(ICON.down, 'Bad response — avoid this model for similar tasks', () => set('down'));
+    const up = iconBtn(ICON.up, 'Like — prefer this model for similar tasks', () => set('up'));
+    const down = iconBtn(ICON.down, 'Dislike — avoid this model for similar tasks', () => set('down'));
     frag.appendChild(up); frag.appendChild(down);
     return frag;
   }
@@ -745,14 +860,16 @@ import { handleToolStatus } from './handlers/toolStatus';
     body.appendChild(toggle); // sits directly under the text, inside the left column
   }
 
-  function assistantFooter(el, model, ts, requestId) {
+  function assistantFooter(el, model, ts, requestId, rationale) {
     const foot = document.createElement('div'); foot.className = 'msg-foot';
     const left = document.createElement('span'); left.className = 'foot-left';
     left.textContent = (model ? model + '  ·  ' : '') + fmtTime(ts);
     const acts = document.createElement('span'); acts.className = 'foot-acts';
     acts.appendChild(copyBtn(el));
     acts.appendChild(feedbackBtns(requestId));
+    if (rationale && rationale.entries && rationale.entries.length) attachWhyBtn(acts, rationale);
     foot.appendChild(left); foot.appendChild(acts);
+    foot._acts = acts;
     return foot;
   }
 
@@ -1237,6 +1354,50 @@ import { handleToolStatus } from './handlers/toolStatus';
       warnIfImageUnsupported('image');
     };
     reader.readAsDataURL(file);
+  }
+
+  // ---- shared image downscale (all ingest paths funnel through here) ----
+  // The extension host has no canvas/createImageBitmap, so workspace-picked and
+  // host-forwarded images arrive full-resolution. Downscale them here — the one
+  // place with a canvas — so the small version is what crosses every downstream
+  // hop (OC prompt, router proxy, provider request, per-turn re-injection). Base64
+  // isn't tokenized, so this is a latency/byte win, not a token-cost one.
+  function dataUrlToBlob(dataUrl) {
+    const comma = dataUrl.indexOf(',');
+    const head = dataUrl.slice(0, comma);
+    const mime = (head.match(/data:([^;]+)/) || [])[1] || 'application/octet-stream';
+    const bin = atob(dataUrl.slice(comma + 1));
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type: mime });
+  }
+  /** Resize an image data URL to <=1568px on the long edge (JPEG q0.85) when it's
+   *  large; returns the original unchanged when already small or on any failure. */
+  async function downscaleImageDataUrl(dataUrl) {
+    if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return dataUrl;
+    if (typeof createImageBitmap !== 'function') return dataUrl;
+    const approxBytes = dataUrl.length * 0.75;
+    let bmp;
+    try { bmp = await createImageBitmap(dataUrlToBlob(dataUrl)); } catch { return dataUrl; }
+    const maxSide = 1568;
+    if (Math.max(bmp.width, bmp.height) <= maxSide && approxBytes <= 800_000) return dataUrl;
+    const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+    const w = Math.max(1, Math.round(bmp.width * scale));
+    const h = Math.max(1, Math.round(bmp.height * scale));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    if (!ctx) return dataUrl;
+    ctx.drawImage(bmp, 0, 0, w, h);
+    return await new Promise((resolve) => {
+      c.toBlob((blob) => {
+        if (!blob) { resolve(dataUrl); return; }
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => resolve(dataUrl);
+        r.readAsDataURL(blob);
+      }, 'image/jpeg', 0.85);
+    });
   }
   function showComposerStatus(text) {
     const s = document.getElementById('footer');
@@ -3030,7 +3191,7 @@ import { handleToolStatus } from './handlers/toolStatus';
   // (otherwise unchanged) render logic below writes into the right session's DOM regardless of
   // which session is currently being viewed. 'switchSession' is included so its case body can
   // use the returned `existed` flag to tell a brand-new pane from an already-live one.
-  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'ocSessionDiffList', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
+  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'ocSessionDiffList', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
 
   // ---------- inbound messages ----------
   window.addEventListener('message', (event) => {
@@ -3163,6 +3324,16 @@ import { handleToolStatus } from './handlers/toolStatus';
         t.failoverEl.textContent = '↻ Routing to the best available model…';
         t.failoverEl.title = `Switched models ${t.failoverCount}× · last: ${msg.from} (${msg.reason})`;
         scrollDown();
+        break;
+      }
+      case 'selectionRationale': {
+        const t = ensureTarget(msg.requestId);
+        // Stash the latest scoring rationale on the turn. Agent turns route many times;
+        // keep the most recent selection. It surfaces as a (?) on the message footer,
+        // which is built later at assistantDone. If the footer already exists (rationale
+        // arrived late), refresh its (?) in place.
+        t.rationale = { picked: msg.picked, entries: msg.entries };
+        if (t.footActs) attachWhyBtn(t.footActs, t.rationale);
         break;
       }
       case 'keyRotated': {
@@ -3636,7 +3807,9 @@ import { handleToolStatus } from './handlers/toolStatus';
           const startedAt = t.startedAt ?? startTimes.get(msg.requestId);
           const secs = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
           const durStr = secs != null ? `  ·  ${secs}s` : '';
-          t.el.appendChild(assistantFooter(t.el, (t.model || '') + usageStr + durStr, Date.now(), msg.requestId));
+          const foot = assistantFooter(t.el, (t.model || '') + usageStr + durStr, Date.now(), msg.requestId, t.rationale);
+          t.footActs = foot._acts; // so a late-arriving selectionRationale can still attach its (?)
+          t.el.appendChild(foot);
         }
         // The run stopped before finishing (step cap or a model dropping out). Offer a
         // one-click resume — it picks up with full memory, so no work is repeated.
@@ -3665,11 +3838,24 @@ import { handleToolStatus } from './handlers/toolStatus';
         // via postCheckpoints() when you switch to them.
         if (!msg.sessionId || msg.sessionId === viewedSessionId) renderChangedBar(msg);
         break;
-      case 'attachmentAdded':
-        pendingAttachments.push(msg.attachment);
-        renderChips();
-        warnIfImageUnsupported(msg.attachment.kind);
+      case 'attachmentAdded': {
+        const att = msg.attachment;
+        if (att && att.kind === 'image' && att.dataUrl) {
+          // Workspace-picked / host-forwarded images arrive full-resolution — shrink
+          // before storing so every downstream hop carries the small version.
+          downscaleImageDataUrl(att.dataUrl).then((du) => {
+            const shrunk = du !== att.dataUrl;
+            pendingAttachments.push(shrunk ? { ...att, dataUrl: du, mime: 'image/jpeg' } : att);
+            renderChips();
+            warnIfImageUnsupported(att.kind);
+          });
+        } else {
+          pendingAttachments.push(att);
+          renderChips();
+          warnIfImageUnsupported(att.kind);
+        }
         break;
+      }
       case 'mentionResults':
         if (acMode === 'mention' && msg.queryId === acQueryId) {
           (msg.items && msg.items.length) ? renderAc(msg.items) : closeAc();

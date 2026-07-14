@@ -1,6 +1,6 @@
 # Smart Auto Routing Engine — Implementation Steps
 
-> **Status (2026-07-14):** Steps 1–6, 8, 9 complete and verified (typecheck clean, `npm run build` clean, `npm run test:e2e:scoring` → 8/8 pass). Step 7: the dev-facing **TierMux Router** output channel + per-model rationale is live; the in-chat webview "Why this model?" card is the remaining optional follow-up (the `onSelectionRationale` callback is already plumbed in `RouteOptions` for it).
+> **Status (2026-07-14):** Steps 1–6, 8, 9 complete and verified (typecheck clean, `npm run build` clean, `npm run test:e2e:scoring` → 8/8 pass, `npm run test:e2e:smart-routing` → full-router slow-demotion proof passes). Step 7: the dev-facing **TierMux Router** output channel + per-model rationale is live; the in-chat webview "Why this model?" card is the remaining optional follow-up (the `onSelectionRationale` callback is already plumbed in `RouteOptions` for it).
 
 Reference design: see the approved plan (Capability × Runtime × Preference, learned per-task metrics, Wilson confidence, typed failures, dual baselines, provider+model levels, explainable, configurable, bounded storage).
 
@@ -100,8 +100,9 @@ Replace the fixed `SLOW_LATENCY_MS = 8_000` trigger: a model is marked slow only
 ### Step 9 — Verify
 1. Run the unit/selftest cases from Step 4.
 2. **Run the extension** (F5): send chat turns, open the **TierMux Router** output channel — confirm per-turn rationale (chosen + why-not for others, with values). 4xx-spam a model → watch reliability/health fall and get named in rationale.
-3. `scripts/scoring.e2e.ts` — fake providers returning slow/fail/429; assert demotion + provider collapse + rationale fires.
-4. Toggle `smartScoring` off → today's `orderForTask` behavior restored unchanged.
+3. `scripts/scoring.e2e.ts` (`npm run test:e2e:scoring`) — engine in isolation with fake metrics; assert demotion + provider collapse + rationale fires (7 cases).
+4. `scripts/smartRouting.e2e.ts` (`npm run test:e2e:smart-routing`) — full `Router.route()` loop with a faked provider + virtual clock: a real route() captures latency into the real `MetricsStore`, then an AUTO route uses the real `ScoringEngine` to rank the fast model above a slow one that is HIGHER priority. Cold-start control proves the demotion is driven by learned metrics, not order.
+5. Toggle `smartScoring` off → legacy fixed-priority *ranking* restored (baseline-relative slow marking stays; it is global by design — see Step 6).
 
 ---
 
@@ -109,6 +110,7 @@ Replace the fixed `SLOW_LATENCY_MS = 8_000` trigger: a model is marked slow only
 - All 7 scoring unit cases pass.
 - Extension runs; TierMux Router channel shows a correct rationale per turn.
 - 4xx-spam demotes a model and it's named in "why not selected".
-- `smartScoring` off = byte-for-byte today's behavior.
+- `smartScoring` **on by default** → slow/degraded models are demoted automatically (verified end-to-end by `test:e2e:smart-routing`). Overcoming slowness is the default, not an opt-in.
+- `smartScoring` off = legacy fixed-priority **ranking** restored. (Baseline-relative slow marking is global by design and stays on — so behavior is *not* byte-for-byte identical to the pre-engine build; the ranking is.)
 - No magic constants outside `SCORING_CONFIG`; no hardcoded provider names/ms anywhere.
 - globalState stays bounded (aggregates only, pruning works).

@@ -14,6 +14,7 @@
 import { ScoringEngine } from '../src/router/scoring';
 import { MetricsStore } from '../src/router/metricsStore';
 import { SCORING_CONFIG } from '../src/router/scoringConfig';
+import { VISION_BLIND } from '../src/agent/answerQuality';
 import type { Catalog } from '../src/catalog/catalog';
 import type { CatalogModel, FallbackEntry, Platform } from '../src/shared/types';
 import type * as vscode from 'vscode';
@@ -211,6 +212,48 @@ function test_explorationDeterministic(): void {
   assert(ordered[0].modelId === 'a', 'rng=0 keeps clear winner first');
 }
 
+function test_visionPrefersStrongDirectModel(): void {
+  console.log('8. vision: strong direct model beats weak-but-fast and aggregator, text-only excluded');
+  const models = [
+    model('openrouter', 'auto', { supportsVision: true, intelligenceRank: 1, speedRank: 1, tags: ['router'] }), // aggregator claims vision
+    model('g', 'weak-vlm', { supportsVision: true, intelligenceRank: 5, speedRank: 1 }),   // fast but weak
+    model('o', 'strong-vlm', { supportsVision: true, intelligenceRank: 1, speedRank: 4 }), // slower but smart
+    model('t', 'text-only', { supportsVision: false, intelligenceRank: 1, speedRank: 1 }), // no vision
+  ];
+  const { engine } = freshEngine(models);
+  const entries = [entry('openrouter', 'auto'), entry('g', 'weak-vlm'), entry('o', 'strong-vlm'), entry('t', 'text-only')];
+  // capable mirrors buildSelectionContext for a vision turn: only supportsVision models are capable.
+  const runtime = new Map(entries.map((e) => {
+    const m = models.find((x) => x.platform === e.platform && x.modelId === e.modelId)!;
+    return [`${e.platform}::${e.modelId}`, rt({ capable: !!m.supportsVision })] as const;
+  }));
+  const ordered = rank(engine, 'vision', entries, runtime, false, true);
+  assert(ordered[0].modelId === 'strong-vlm', 'strong direct vision model wins (intelligence-weighted)');
+  assert(ordered[0].modelId !== 'auto', 'aggregator does not win vision');
+  assert(ordered[ordered.length - 1].modelId === 'text-only', 'text-only vision-incapable model ranked last');
+}
+
+function test_visionBlindDemotes(): void {
+  console.log('9. vision-blind: VISION_BLIND regex + recorded vision failures demote the model');
+  assert(VISION_BLIND.test("I'm sorry, but I can't see the image you attached."), 'matches "can\'t see the image"');
+  assert(VISION_BLIND.test('As a text-based AI, I cannot view screenshots.'), 'matches "text-based AI"');
+  assert(VISION_BLIND.test('My capabilities are limited to text, so I cannot interpret the picture.'), 'matches "limited to text"');
+  assert(!VISION_BLIND.test('The screenshot shows a Store Settings page with a Store-Managed Delivery toggle enabled.'), 'does NOT match a real image description');
+  // Learned demotion: router.ts records ok:false for vision-blind completions — a model that
+  // keeps doing so must rank below a clean vision model on the next vision turn.
+  const models = [
+    model('a', 'blind-vlm', { supportsVision: true, intelligenceRank: 1, speedRank: 1 }),
+    model('b', 'clean-vlm', { supportsVision: true, intelligenceRank: 1, speedRank: 1 }),
+  ];
+  const { engine, metrics } = freshEngine(models);
+  seed(metrics, 'a', 'blind-vlm', 'vision', 20, { okPct: 0.2 }); // repeated vision-blind failures
+  seed(metrics, 'b', 'clean-vlm', 'vision', 20, { okPct: 0.99 });
+  const entries = [entry('a', 'blind-vlm'), entry('b', 'clean-vlm')];
+  const runtime = new Map(entries.map((e) => [`${e.platform}::${e.modelId}`, rt()] as const));
+  const ordered = rank(engine, 'vision', entries, runtime, false, true);
+  assert(ordered[0].modelId === 'clean-vlm', 'vision-blind model demoted below the clean vision model');
+}
+
 // ---- run ----
 
 console.log(`SCORING_CONFIG: minSamples=${SCORING_CONFIG.minSamples} speedFloorRatio=${SCORING_CONFIG.speedFloorRatio} explorationMargin=${SCORING_CONFIG.explorationMargin}\n`);
@@ -221,6 +264,8 @@ test_providerCollapse();
 test_toolUnsupportedCodingOnly();
 test_smallSampleConfidence();
 test_explorationDeterministic();
+test_visionPrefersStrongDirectModel();
+test_visionBlindDemotes();
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

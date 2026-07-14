@@ -202,6 +202,13 @@ export function buildOcConfig(opts: OcConfigOptions): string {
           + 'a one-line fix, an explicitly detailed instruction) — just do those directly.\n'
           + clarifyFormat('no edits')
           + 'Otherwise skip the block and proceed with the task.\n'
+          + 'UI/DESIGN TASKS: when the task touches visual UI (HTML/CSS/webview/components), produce '
+          + 'modern, polished results: reuse the project\'s existing design tokens/theme variables '
+          + '(grep for them first) instead of hard-coding colors; consistent 4/8px spacing scale; one '
+          + 'accent color + neutrals; subtle depth (small radii, 1px low-contrast borders); hover and '
+          + 'focus-visible states on every interactive element; theme-safe colors (light AND dark). '
+          + 'When modifying existing working UI, keep its layout — restyle minimally. For a full '
+          + 'design pass the user can run /design.\n'
           + 'TODOS: if you create a todo list with todowrite, keep it synchronized with your progress. '
           + 'Before finishing, either complete every item or explain why it cannot be completed — do not '
           + 'stop silently while items remain pending or in-progress.',

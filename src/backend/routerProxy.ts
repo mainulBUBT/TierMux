@@ -8,6 +8,7 @@ import type {
   ChatToolDefinition,
   ChatToolChoice,
   ReasoningEffort,
+  Platform,
 } from '../shared/types';
 import { AllModelsFailedError, NoVisionModelError } from '../router/router';
 import { classifyTask, attachmentKindsFromContent, type TaskKind } from '../agent/routing';
@@ -22,6 +23,17 @@ export interface RoutedModel { platform: string; model: string; runtimeName?: st
 let lastRouted: RoutedModel | undefined;
 export function getLastRoutedModel(): RoutedModel | undefined {
   return lastRouted;
+}
+
+/** The Router serving this proxy, for whole-turn outcome recording (set in startRouterProxy). */
+let activeRouter: Router | undefined;
+/** Record a whole-turn outcome against the model that actually served it (the last routed
+ *  model of the run). Used by the agent layer when a turn HTTP-succeeded but produced no
+ *  usable answer, which the per-completion metrics can't see. No-op if nothing routed yet. */
+export function noteTurnOutcome(taskKind: TaskKind, ok: boolean, totalMs: number): void {
+  if (activeRouter && lastRouted?.model) {
+    activeRouter.noteTurnOutcome(lastRouted.platform as Platform, lastRouted.model, taskKind, ok, totalMs);
+  }
 }
 
 /**
@@ -88,6 +100,29 @@ export function setRouteFailoverListener(fn: ((from: string, reason: string) => 
   routeFailoverListenerForRun = fn;
 }
 
+/** Flattened Smart Auto scoring rationale for a single route() — the "why this model?" surface. */
+export interface RouteRationaleInfo {
+  taskKind: string;
+  /** `${platform}::${modelId}` of the winner, if any. */
+  picked?: string;
+  entries: Array<{
+    model: string; // `${platform}::${modelId}`
+    selected: boolean;
+    score: number;
+    capability: number;
+    runtime: number;
+    preference: number;
+    confidence: number;
+    reason: string;
+    skip?: string;
+  }>;
+}
+
+let routeRationaleListenerForRun: ((info: RouteRationaleInfo) => void) | undefined;
+export function setRouteRationaleListener(fn: ((info: RouteRationaleInfo) => void) | undefined): void {
+  routeRationaleListenerForRun = fn;
+}
+
 let forcedReasoningEffortForRun: ReasoningEffort | undefined;
 export function setForcedReasoningEffort(e: ReasoningEffort | undefined): void {
   forcedReasoningEffortForRun = e && e !== 'off' ? e : undefined;
@@ -105,6 +140,7 @@ export interface RouterProxyServer {
  * The caller (OC launcher) writes this `baseURL` into the opencode provider config.
  */
 export function startRouterProxy(router: Router): Promise<RouterProxyServer> {
+  activeRouter = router;
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => handle(req, res, router));
     server.on('error', reject);
@@ -251,6 +287,21 @@ async function handleChatCompletion(
     requireTools: !!(body.tools && body.tools.length),
     hasRawPdfPart,
     onFailover: (info) => routeFailoverListenerForRun?.(`${info.from.platform}::${info.from.modelId}`, info.reason),
+    onSelectionRationale: (info) => routeRationaleListenerForRun?.({
+      taskKind: info.taskKind,
+      picked: info.picked ? `${info.picked.platform}::${info.picked.modelId}` : undefined,
+      entries: info.rationale.map((r) => ({
+        model: `${r.platform}::${r.modelId}`,
+        selected: r.selected,
+        score: r.score,
+        capability: r.capability,
+        runtime: r.runtimeMultiplier,
+        preference: r.userPreference,
+        confidence: r.confidence,
+        reason: r.reason,
+        skip: r.skip,
+      })),
+    }),
   };
 
   if (stream) {
@@ -261,7 +312,6 @@ async function handleChatCompletion(
       'X-Accel-Buffering': 'no',
     });
 
-    let buffered = '';
     const chunks: string[] = [];
     routeOpts.onChunk = (delta) => {
       chunks.push(delta);
@@ -271,7 +321,6 @@ async function handleChatCompletion(
     try {
       const result = await router.route(messages, routeOpts);
       lastRouted = { platform: result.platform, model: result.model, runtimeName: result.runtimeName };
-      buffered = chunks.join('');
       const choice = result.response.choices?.[0];
       const msg = choice?.message;
 
@@ -299,8 +348,13 @@ async function handleChatCompletion(
       res.write('data: [DONE]\n\n');
       res.end();
     } catch (err) {
-
-      if (buffered) {
+      // Headers were already sent by writeHead(200) above (streaming started), so an HTTP
+      // error status can't be set now — emit the failure as an SSE error event and close the
+      // stream cleanly. The old guard keyed off `buffered`: when route() threw BEFORE any chunk
+      // streamed (e.g. AllModelsFailedError), buffered was empty and the code called
+      // res.writeHead() a second time, throwing "Cannot write headers after they are sent to the
+      // client" — which crashed the request and surfaced to the user as an empty answer.
+      if (res.headersSent) {
         sendSSE(res, makeErrorChunk(err));
         res.write('data: [DONE]\n\n');
         res.end();

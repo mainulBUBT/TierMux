@@ -24,13 +24,27 @@ export function flattenMessageContent(messages: ChatMessage[]): ChatMessage[] {
   return messages.map((m) => ({ ...m, content: contentToString(m.content) as ChatContent }));
 }
 
-/** A visual/file attachment reduced to the fields every consumer actually needs —
- *  mime and filename are always already known (threaded from `Attachment` at
- *  attach time), never re-derived by parsing the `url`. */
+/** A visual/file attachment reduced to the fields every consumer actually needs.
+ *  `mime` is threaded from `Attachment` at attach time when known, but is recovered
+ *  from the `data:` URL header when the block carries an empty/missing/generic mime —
+ *  otherwise an image attached without a mime mis-routes as a text `doc` and the
+ *  vision path (model choice + per-turn re-injection) never fires. */
 export interface AttachmentBlock {
   mime: string;
   filename?: string;
   url: string;
+}
+
+/** Recover a MIME type from a `data:<mime>;base64,...` URL header; '' if not a data URL. */
+function mimeFromDataUrl(url: unknown): string {
+  return typeof url === 'string' ? (url.match(/^data:([^;,]+)/)?.[1] ?? '') : '';
+}
+
+/** Most-specific MIME available: an explicit, non-empty, non-generic value wins;
+ *  otherwise recover it from the data-URL header; else generic octet-stream. */
+function resolveMime(explicit: unknown, url: unknown): string {
+  if (typeof explicit === 'string' && explicit && explicit !== 'application/octet-stream') return explicit;
+  return mimeFromDataUrl(url) || 'application/octet-stream';
 }
 
 /**
@@ -48,13 +62,13 @@ export function normalizeAttachmentBlocks(content: ChatContent): AttachmentBlock
     const b = block as { type?: string; image_url?: { url?: unknown; mime?: unknown; filename?: unknown }; file?: { file_data?: unknown; mime?: unknown; filename?: unknown } };
     if (b.type === 'image_url' && typeof b.image_url?.url === 'string') {
       out.push({
-        mime: typeof b.image_url.mime === 'string' ? b.image_url.mime : 'application/octet-stream',
+        mime: resolveMime(b.image_url.mime, b.image_url.url),
         filename: typeof b.image_url.filename === 'string' ? b.image_url.filename : undefined,
         url: b.image_url.url,
       });
     } else if (b.type === 'file' && typeof b.file?.file_data === 'string') {
       out.push({
-        mime: typeof b.file.mime === 'string' ? b.file.mime : 'application/octet-stream',
+        mime: resolveMime(b.file.mime, b.file.file_data),
         filename: typeof b.file.filename === 'string' ? b.file.filename : undefined,
         url: b.file.file_data,
       });

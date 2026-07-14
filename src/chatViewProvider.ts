@@ -1198,7 +1198,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           kind: 'image',
           name: m.name,
           mime: m.mime || mimeForName(m.name),
-          dataUrl: `data:${m.mime || mimeForName(m.name)};base64,${bytes.toString('base64')}`,
+          // Forward the original data URL as-is — the webview downscales it on receipt,
+          // so re-encoding the full-resolution bytes here is redundant synchronous work.
+          dataUrl: m.dataUrl,
           source: m.source,
         };
         this.post({ type: 'attachmentAdded', attachment });
@@ -2000,6 +2002,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const platformId = sep >= 0 ? from.slice(0, sep) : from;
         const modelId = sep >= 0 ? from.slice(sep + 2) : '';
         this.post({ type: 'failoverNotice', sessionId: s.id, requestId, from: `${displayNameForEntry({ platform: platformId, modelId }, this.deps)}/${modelId}`, reason });
+      },
+      onSelectionRationale: (info) => {
+        if (!live()) return;
+        const toName = (key: string): string => {
+          const sep = key.indexOf('::');
+          const platformId = sep >= 0 ? key.slice(0, sep) : key;
+          const modelId = sep >= 0 ? key.slice(sep + 2) : '';
+          return `${displayNameForEntry({ platform: platformId, modelId }, this.deps)}/${modelId}`;
+        };
+        this.post({
+          type: 'selectionRationale', sessionId: s.id, requestId,
+          taskKind: info.taskKind,
+          picked: info.picked ? toName(info.picked) : undefined,
+          entries: info.entries.map((e) => ({ ...e, model: toName(e.model) })),
+        });
       },
       onKeyRotated: (info) => {
         if (!live()) return;

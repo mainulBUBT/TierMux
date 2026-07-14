@@ -302,6 +302,7 @@ export type OutMessage =
   | { type: 'approvalDismissed'; sessionId: string; id: string }
   | { type: 'todos'; sessionId: string; requestId: string; todos: TodoItem[]; followingPlan?: boolean }
   | { type: 'failoverNotice'; sessionId: string; requestId: string; from: string; reason: string }
+  | { type: 'selectionRationale'; sessionId: string; requestId: string; taskKind: string; picked?: string; entries: Array<{ model: string; selected: boolean; score: number; capability: number; runtime: number; preference: number; confidence: number; reason: string; skip?: string }> }
   | { type: 'keyRotated'; sessionId: string; requestId: string; platform: string; platformName: string; keyIndex: number; keyTotal: number }
   | { type: 'attachmentAdded'; attachment: Attachment }
   | { type: 'mentionResults'; queryId: number; items: MentionItem[] }

@@ -6,8 +6,9 @@ import type { ChatMessage, TodoItem, ReasoningEffort } from '../shared/types';
 import type { IProfilerService } from '../profiler/profilerService';
 import type { OcConnection } from '../backend/ocLauncher';
 import { OcClient, toOcParts } from '../backend/ocClient';
-import { getLastRoutedModel, setForcedModel, setForcedTaskKind, setForcedAttachments, setForcedReasoningEffort, setRouteFailoverListener } from '../backend/routerProxy';
+import { getLastRoutedModel, setForcedModel, setForcedTaskKind, setForcedAttachments, setForcedReasoningEffort, setRouteFailoverListener, setRouteRationaleListener, noteTurnOutcome, type RouteRationaleInfo } from '../backend/routerProxy';
 import { classifyTask, attachmentKindsFromContent, type TaskKind } from './routing';
+import { VISION_BLIND } from './answerQuality';
 import { assessAnswerQuality } from './answerQuality';
 import { contentToString, collectSessionAttachmentBlocks } from './content';
 import { findReplayBoundary, formatTranscriptForReplay } from './sessionReplay';
@@ -84,6 +85,8 @@ export interface AgentOpts {
   onReasoning: (text: string) => void;
   onModel: (platform: string, model: string, runtimeName?: string) => void;
   onFailover: (from: string, reason: string) => void;
+  /** Smart Auto scoring rationale for a route() this run triggered — "why this model?". */
+  onSelectionRationale?: (info: RouteRationaleInfo) => void;
   onKeyRotated?: (info: { platform: string; keyIndex: number; keyTotal: number }) => void;
   onStep: (phase: string, label: string) => void;
   onTodos: (todos: TodoItem[]) => void;
@@ -228,6 +231,14 @@ const FALLBACK_CHAIN: Record<'chat' | 'agent' | 'plan', string[]> = {
  * fetches the session messages as a fallback so we always return *something* when OC did
  * produce output.
  */
+/** Prepended on every vision turn. Language-agnostic and intent-agnostic on purpose: the
+ *  underlying model is multilingual and reads the user's actual request (in whatever language)
+ *  to decide whether it's a question or a build task — so we don't classify that ourselves
+ *  (a hardcoded English regex would mis-handle a Banglish/Bengali "banao"). We only tell the
+ *  model how to TREAT the image: use it, and don't go grepping the repo for text read off it. */
+const VISION_DIRECTIVE =
+  'An image (screenshot, photo, mockup, or diagram) is attached and is central to this request. Base your response on what the image actually shows: if the request is a question about it, answer directly from the image; if it asks you to build, recreate, or change something from it, treat the image as the design/spec and implement it with the file tools. Do not search or grep the codebase for text you read off the image unless the request is genuinely about existing code.';
+
 async function runViaOc(
   opts: AgentOpts,
   _retryCount = 0,
@@ -303,6 +314,7 @@ async function runViaOc(
 
   setForcedReasoningEffort(opts.effort);
   setRouteFailoverListener((from, reason) => opts.onFailover(from, reason));
+  setRouteRationaleListener((info) => opts.onSelectionRationale?.(info));
 
   const profiler = opts.profiler;
   const turnId = profiler?.beginTurn({
@@ -372,6 +384,7 @@ async function runViaOc(
       setForcedAttachments(undefined);
       setForcedReasoningEffort(undefined);
       setRouteFailoverListener(undefined);
+      setRouteRationaleListener(undefined);
 
       throw new Error(`TierMux engine failed to start a session: ${err instanceof Error ? err.message : err}`);
     }
@@ -388,6 +401,7 @@ async function runViaOc(
       setForcedAttachments(undefined);
       setForcedReasoningEffort(undefined);
       setRouteFailoverListener(undefined);
+      setRouteRationaleListener(undefined);
       throw new Error('TierMux engine could not start a session. Raw response logged to DevTools console.');
     }
     ocSessions.set(key, ocId);
@@ -432,6 +446,15 @@ async function runViaOc(
     const finish = (r: AgentResult) => {
       if (done) return;
       done = true;
+      // Learned vision demotion: record whether this vision turn produced a USABLE answer
+      // against the model that served it. Two useless outcomes both count as failures so the
+      // model self-demotes: (a) empty — the runaway-tool-loop burn-out; (b) "I can't see images"
+      // (VISION_BLIND) — the image was dropped upstream (an aggregator delegated to a text model
+      // / a gateway stripped it), which is fluent but non-empty and would otherwise score as OK.
+      if (taskKind === 'vision' && promptSentAt > 0 && !opts.abortSignal?.aborted) {
+        const usable = !!r.text.trim() && !VISION_BLIND.test(r.text);
+        noteTurnOutcome('vision', usable, Date.now() - promptSentAt);
+      }
       if (turnId) {
         const routedNowFor = getLastRoutedModel();
         const estTokens = Math.ceil(r.text.length / 4);
@@ -448,6 +471,7 @@ async function runViaOc(
       setForcedAttachments(undefined);
       setForcedReasoningEffort(undefined);
       setRouteFailoverListener(undefined);
+      setRouteRationaleListener(undefined);
 
       intentionallyAbortedOcIds.delete(ocId);
 
@@ -473,6 +497,7 @@ async function runViaOc(
       setForcedAttachments(undefined);
       setForcedReasoningEffort(undefined);
       setRouteFailoverListener(undefined);
+      setRouteRationaleListener(undefined);
       intentionallyAbortedOcIds.delete(ocId);
       for (const k of [...prewarmedSessions.keys()]) if (k.startsWith(`${key}:`)) prewarmedSessions.delete(k);
       reject(err);
@@ -922,9 +947,15 @@ async function runViaOc(
     prewarmNextHop();
     promptSentAt = Date.now();
 
-    const parts = firstPromptOverride
+    const baseParts = firstPromptOverride
       ? [{ type: 'text' as const, text: firstPromptOverride }, ...toOcParts(lastUser?.content ?? '').filter((p) => p.type === 'file')]
       : toOcParts(lastUser?.content ?? '');
+    // Vision steering: remind the model to actually USE the attached image and not run off
+    // grepping the repo for text it read off a screenshot. One directive for all cases — the
+    // multilingual model decides question-vs-build from the user's own words.
+    const parts = taskKind === 'vision'
+      ? [{ type: 'text' as const, text: VISION_DIRECTIVE }, ...baseParts]
+      : baseParts;
     const promptP = client.prompt(ocId, { parts, agent, model: { providerID: 'tiermux', modelID: ocModelID } }, opts.abortSignal);
 
     const routedNow = getLastRoutedModel();

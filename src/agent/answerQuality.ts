@@ -37,7 +37,7 @@ export const QUALITY_WEIGHTS: Record<QualitySignal, number> = {
  * Matched only when taskKind === 'vision', so text turns can freely discuss image
  * processing without tripping it.
  */
-const VISION_BLIND = /\b(?:can(?:no|')?t|cannot|unable to|not able to)\s+(?:actually\s+)?(?:"?see"?|view|interpret|process|analyz\w*|read)\b[^.\n]{0,60}\b(?:image|picture|screenshot|photo|visual)s?\b|\b(?:capabilit(?:y|ies)|i)\s+(?:am|are|is)?\s*limited to (?:processing |interpreting )?text\b|\bas a text-(?:only|based) (?:ai|model|assistant)\b/i;
+export const VISION_BLIND = /\b(?:can(?:no|')?t|cannot|unable to|not able to)\s+(?:actually\s+)?(?:"?see"?|view|interpret|process|analyz\w*|read)\b[^.\n]{0,60}\b(?:image|picture|screenshot|photo|visual)s?\b|\b(?:capabilit(?:y|ies)|i)\s+(?:am|are|is)?\s*limited to (?:processing |interpreting )?text\b|\bas a text-(?:only|based) (?:ai|model|assistant)\b/i;
 
 /** A run scores at or above this is considered weak and escalated. */
 export const WEAK_THRESHOLD = 40;

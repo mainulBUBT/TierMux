@@ -648,6 +648,8 @@
     "test:e2e:replay": "esbuild scripts/sessionReplay.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/sessionReplay.e2e.cjs && node dist/sessionReplay.e2e.cjs",
     "test:e2e:hedge": "esbuild scripts/chatHedging.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/chatHedging.e2e.cjs && node dist/chatHedging.e2e.cjs",
     "test:e2e:scoring": "esbuild scripts/scoring.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/scoring.e2e.cjs && node dist/scoring.e2e.cjs",
+    "test:e2e:smart-routing": "esbuild scripts/smartRouting.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/smartRouting.e2e.cjs && node dist/smartRouting.e2e.cjs",
+    "test:e2e:vision-classify": "esbuild scripts/visionClassify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/visionClassify.e2e.cjs && node dist/visionClassify.e2e.cjs",
     "test:e2e:attachments": "esbuild scripts/attachmentParts.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/attachmentParts.e2e.cjs && node dist/attachmentParts.e2e.cjs",
     "test:e2e:concurrent": "esbuild scripts/concurrentSessions.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/concurrentSessions.e2e.cjs && node dist/concurrentSessions.e2e.cjs",
     "bench": "esbuild scripts/bench/runBench.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bench.cjs && node dist/bench.cjs",

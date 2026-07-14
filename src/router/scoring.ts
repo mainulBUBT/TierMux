@@ -334,7 +334,16 @@ function capabilityRaw(kind: TaskKind, m: CatalogModelLike): number {
     case 'agent': return intel + tools + coding * 0.5 + speed * 0.3;
     case 'plan': return intel + reason + speed * 0.4;
     case 'longContext': return -ctx; // bigger window = lower(raw better)
-    case 'vision': return (m.supportsVision ? 0 : 1e6) + intel * 0.4 + speed * 0.3;
+    case 'vision': {
+      if (!m.supportsVision) return 1e6; // hard-exclude text-only models from vision turns
+      // Curated "Frontier" preference (cf. Kilo Code's Auto Frontier): among vision-capable
+      // models, comprehension tracks raw INTELLIGENCE — weight it heavily so a merely-fast,
+      // weak model (e.g. a small VLM) can't monopolize vision on speed. Aggregator 'router'
+      // endpoints claim vision but delegate to arbitrary, often text-only models that drop
+      // the image — demote them below any direct vision model.
+      const aggregator = (m.tags ?? []).includes('router') ? 4 : 0;
+      return aggregator + intel * 1.5 + speed * 0.1;
+    }
     default: return intel + speed;
   }
 }

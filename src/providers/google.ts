@@ -145,6 +145,12 @@ async function userContentToParts(content: ChatMessage['content']): Promise<Gemi
     }
   }
   if (parts.length === 0) parts.push({ text: '' });
+  const imgBlocks = Array.isArray(content)
+    ? content.filter((b) => { const t = (b as { type?: string })?.type; return t === 'image_url' || t === 'image' || t === 'file'; }).length
+    : 0;
+  if (imgBlocks > 0) {
+    console.log(`[tiermux][DBG] gemini userParts: imageBlocks=${imgBlocks} inlineDataBuilt=${parts.filter((p) => p.inlineData).length} textChars=${text.length}`);
+  }
   return parts;
 }
 

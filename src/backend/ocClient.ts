@@ -5,6 +5,16 @@ import type { OcConnection } from './ocLauncher';
 import type { ChatContent } from '../shared/types';
 import { normalizeAttachmentBlocks } from '../agent/content';
 
+/** Stringify a request body for logging WITHOUT emitting embedded base64 / data-URI
+ *  payloads. A single attached image can be ~11 MB; `JSON.stringify` + `console.log`
+ *  of that on every prompt() is pure hot-path overhead (large string alloc + sync IO).
+ *  Long strings are elided to a short marker; structure is preserved for debugging. */
+function previewJson(obj: unknown): string {
+  return JSON.stringify(obj, (_k, v) =>
+    typeof v === 'string' && v.length > 256 ? `${v.slice(0, 96)}…[${v.length} chars elided]` : v,
+  );
+}
+
 /** A user-message part OC understands ({ type: 'text', text }). */
 interface TextPart { type: 'text'; text: string }
 
@@ -102,7 +112,7 @@ export class OcClient {
    * `modelID` here returns 400 BadRequest and the whole run dies at session creation.
    */
   async createSession(opts?: { agent?: string; model?: { providerID: string; id: string }; title?: string }): Promise<OcSessionInfo> {
-    console.log(`[tiermux] OC session.create body=${JSON.stringify(opts ?? {})}`);
+    console.log(`[tiermux] OC session.create body=${previewJson(opts ?? {})}`);
 
     const { data } = await this.client.session.create({ body: (opts ?? {}) as any });
     console.log(`[tiermux] OC createSession returned:`, JSON.stringify(data));
@@ -116,7 +126,7 @@ export class OcClient {
    * completion. The optional `signal` (the run's cancel token) aborts it on user-stop.
    */
   async prompt(sessionId: string, body: PromptBody, signal?: AbortSignal): Promise<void> {
-    console.log(`[tiermux] OC session.prompt(${sessionId}) body=${JSON.stringify(body)}`);
+    console.log(`[tiermux] OC session.prompt(${sessionId}) body=${previewJson(body)}`);
     try {
       await this.client.session.prompt({
         path: { id: sessionId },
@@ -274,7 +284,7 @@ export class OcClient {
    */
   async fork(sessionId: string, messageId?: string): Promise<OcSessionInfo> {
     const body = messageId ? { messageID: messageId } : {};
-    console.log(`[tiermux] OC session.fork(${sessionId}) body=${JSON.stringify(body)}`);
+    console.log(`[tiermux] OC session.fork(${sessionId}) body=${previewJson(body)}`);
     const { data } = await this.client.session.fork({ path: { id: sessionId }, body });
     console.log(`[tiermux] OC fork() returned:`, JSON.stringify(data));
     return data as OcSessionInfo;

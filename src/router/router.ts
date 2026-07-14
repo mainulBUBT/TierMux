@@ -12,6 +12,8 @@ import { resolveProvider } from '../providers';
 import type { CompletionOptions } from '../providers/options';
 import { fitMessages, inputBudget, estimateTokens, estimateMessagesTokens } from '../agent/budget';
 import { orderForTask, type TaskKind } from '../agent/routing';
+import { contentToString } from '../agent/content';
+import { VISION_BLIND } from '../agent/answerQuality';
 import type { SecretStore } from '../config/secrets';
 import type { SettingsStore } from '../config/settingsStore';
 import type { Catalog } from '../catalog/catalog';
@@ -349,6 +351,17 @@ export class Router {
     return this.catalog.find(platform, modelId)?.intelligenceRank;
   }
 
+  /** Record a whole-turn quality outcome against a model's per-taskKind reliability. The
+   *  agent layer calls this when a turn HTTP-succeeded but produced no usable answer (empty
+   *  after a long tool loop) — the per-completion metrics count every tool-call round as a
+   *  success and would otherwise never learn that the turn as a whole failed. `totalMs` is
+   *  the turn wall-clock, so a slow burn also dents the speed signal. */
+  noteTurnOutcome(platform: Platform, modelId: string, taskKind: TaskKind, ok: boolean, totalMs: number): void {
+    this.metrics?.record(platform, modelId, taskKind, {
+      ok, failureType: ok ? undefined : 'other', totalMs: Math.max(0, totalMs), rateLimited: false,
+    });
+  }
+
   /** Capability of the top-priority enabled model — used to decide weak-model scaffolding
    *  (core toolset, compact prompt, single-model path). Undefined if nothing is enabled. */
   topModelProfile(): { intelligenceRank: number; supportsReasoning: boolean } | undefined {
@@ -629,6 +642,11 @@ export class Router {
       const modelKey = `${entry.platform}::${entry.modelId}`;
       const retryCount = triedModels.get(modelKey) || 0;
 
+      if (opts.taskKind === 'vision') {
+        const m = this.catalog.find(entry.platform, entry.modelId);
+        console.log(`[tiermux][DBG] vision attempt: ${entry.platform}/${entry.modelId} supportsVision=${!!m?.supportsVision} tags=[${(m?.tags ?? []).join(',')}]`);
+      }
+
       if (retryCount >= MAX_RETRIES) {
         failures.push({ platform: entry.platform, model: entry.modelId, reason: `tried ${MAX_RETRIES} times` });
         continue;
@@ -762,6 +780,12 @@ export class Router {
           if (!forced && !responseContent && !hasToolCalls) {
             this.markHealth(entry.platform, entry.modelId, 'bad', 'empty_response');
             this.secrets.setStatus(entry.platform, 'error');
+            // An empty completion is a real reliability failure — record it (this path
+            // previously skipped metrics, so a model that kept returning nothing never
+            // learned a lower success rate and kept getting picked).
+            this.metrics?.record(entry.platform, entry.modelId, opts.taskKind ?? 'chat', {
+              ok: false, failureType: 'other', totalMs: Date.now() - t0, rateLimited: false,
+            } satisfies MetricSample);
             failures.push({ platform: entry.platform, model: entry.modelId, reason: 'empty_response' });
             opts.onFailover?.({ from: entry, reason: 'empty_response' });
             continue candidates;
@@ -771,9 +795,15 @@ export class Router {
           const ttftMs = firstChunkAt !== null ? firstChunkAt - t0 : undefined;
           this.latencyTracker.record(entry.platform, entry.modelId, elapsedMs);
           const kind = opts.taskKind ?? 'chat';
-          this.metrics?.record(entry.platform, entry.modelId, kind, {
-            ok: true, ttftMs, totalMs: elapsedMs, rateLimited: false,
-          } satisfies MetricSample);
+          // Vision-quality demotion: a fluent completion that nonetheless says the model
+          // can't see images means the image was dropped upstream (aggregator delegated to a
+          // text model, provider flattened the content, …). HTTP succeeded, so it would not
+          // otherwise dent reliability — record it as a vision failure so the model self-
+          // demotes for future vision turns (the learned complement to the curated ordering).
+          const visionBlind = kind === 'vision' && VISION_BLIND.test(contentToString(responseContent));
+          this.metrics?.record(entry.platform, entry.modelId, kind, (visionBlind
+            ? { ok: false, failureType: 'other', totalMs: elapsedMs, rateLimited: false }
+            : { ok: true, ttftMs, totalMs: elapsedMs, rateLimited: false }) satisfies MetricSample);
           this.maybeMarkSlow(entry.platform, entry.modelId, kind, elapsedMs, ttftMs);
           this.usage.add(response.usage);
           this.usageStore?.addRequest(entry.platform, entry.modelId, response.usage?.prompt_tokens || 0, response.usage?.completion_tokens || 0, response.usage?.reasoning_tokens);

@@ -323,6 +323,38 @@ details[open].tool-more summary { opacity: .6; }
 .diff-add { color: var(--vscode-diffEditor-insertedTextBackground, #57a64a); background: color-mix(in srgb, #57a64a 8%, transparent); padding: 0 6px; white-space: pre-wrap; }
 .notice { font-size: 11px; opacity: .7; font-style: italic; }
 
+/* Custom hover tooltip (native `title` isn't rendered by some webview hosts). */
+.hover-tip {
+  position: fixed; z-index: 50; max-width: 260px; pointer-events: none;
+  padding: 4px 8px; font-size: 11px; line-height: 1.4;
+  background: var(--vscode-editorHoverWidget-background, var(--vscode-editorWidget-background, #252526));
+  color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
+  border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-panel-border));
+  border-radius: 5px; box-shadow: 0 3px 10px rgba(0,0,0,.3);
+  opacity: 0; transition: opacity .1s ease;
+}
+.hover-tip.show { opacity: 1; }
+
+/* Smart Auto "Why this model?" — a (?) on the message footer opens this popover. */
+.rationale-pop {
+  position: fixed; z-index: 40; max-width: min(340px, 90vw); max-height: 50vh; overflow-y: auto;
+  padding: 8px 10px; font-size: 11px; line-height: 1.45;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+  border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.28);
+  opacity: 0; transform: translateY(2px); transition: opacity .12s ease, transform .12s ease;
+}
+.rationale-pop.show { opacity: 1; transform: translateY(0); }
+.rationale-pop-head { font-weight: 600; margin-bottom: 6px; }
+.rationale-row { border-left: 2px solid transparent; padding: 2px 0 2px 6px; margin-bottom: 3px; }
+.rationale-row.selected { border-left-color: var(--vscode-charts-green, #57a64a); }
+.rationale-model { font-weight: 600; }
+.rationale-meta { opacity: .85; margin-top: 1px; font-variant-numeric: tabular-nums; }
+.rationale-metric { cursor: help; white-space: nowrap; }
+.rationale-metric b { font-weight: 600; opacity: .75; border-bottom: 1px dotted currentColor; }
+.rationale-why { opacity: .65; margin-top: 1px; }
+
 /* Final-answer reasoning disclosure */
 details.reasoning {
   border-left: 2px solid var(--vscode-panel-border); padding: 2px 0 2px 9px; font-size: 12px;
