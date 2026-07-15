@@ -1227,7 +1227,7 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
   function loadComposer(id) {
     const c = composerState.get(id);
     input.value = c ? c.draft : '';
-    setMode(c ? c.mode : 'chat');
+    setMode(c ? c.mode : currentMode);
     currentModel = c ? c.model : 'auto';
     rebuildModelPicker(); // syncs the model button label + reasoning availability to currentModel
     reasoningSel.value = c ? c.reasoning : 'off';

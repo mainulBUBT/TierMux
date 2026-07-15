@@ -175,6 +175,12 @@ function extractOcError(p: any): string {
  *  go straight to escalation): context-length/overflow, auth/key, and provider-side rejections. */
 const NON_RETRYABLE = /context\s*length|token\s*limit|maximum\s*context|too\s+(long|large|many\s*tokens)|rate\s*limit|quota|unauthorized|invalid\s+api\s?key|forbidden|\b401\b|\b403\b/i;
 
+/** Malformed tool-call errors (bad schema/arguments, calling a tool not offered) are usually a
+ *  one-off glitch from a weak/free model rather than proof the model is broken — escalating
+ *  immediately forks the session and forces the next model to redo prior exploration from
+ *  scratch. Give these a second same-model attempt before falling back to the chain. */
+const TOOL_CALL_ERROR = /tool\s*call|tool\s*schema|invalid\s*argument|arguments?\s+provided|unavailable\s*tool|tried\s+to\s+call/i;
+
 let ocClient: OcClient | undefined;
 /** TierMux session id → OC session id (OC accumulates conversation history server-side). */
 const ocSessions = new Map<string, string>();
@@ -933,12 +939,13 @@ async function runViaOc(
           return;
         }
 
-        if (_retryCount === 0 && !NON_RETRYABLE.test(errMsg)) {
-          console.log(`[tiermux] OC session.error (no output, transient) — dropping session ${ocId}, retrying`);
+        const retryBudget = TOOL_CALL_ERROR.test(errMsg) ? 1 : 0;
+        if (_retryCount <= retryBudget && !NON_RETRYABLE.test(errMsg)) {
+          console.log(`[tiermux] OC session.error (no output, transient) — dropping session ${ocId}, retrying (attempt ${_retryCount + 1}/${retryBudget + 1})`);
           clearSession(key);
           unsub();
           clearTimeout(watchdog);
-          void runViaOc(opts, 1, chainIndex, ocId, undefined, taskKind).then(finish, fail);
+          void runViaOc(opts, _retryCount + 1, chainIndex, ocId, undefined, taskKind).then(finish, fail);
           return;
         }
 

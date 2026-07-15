@@ -253,11 +253,10 @@ async function handleChatCompletion(
   // in its agent loop. We must NOT inject or intercept webfetch here — doing so
   // hijacks OC's tool_call (OC never sees it) and replaces its fetch with a worse one.
   //
-  // The "NEVER make more than 2 webfetch calls in one turn" rule in ocConfig.ts is
-  // a prompt instruction, which models don't reliably obey. Enforce it deterministically:
-  // once the model has already made 2 webfetch calls since the last user turn, drop
-  // webfetch from the tools list so it's no longer callable for the rest of this turn.
-  const tools = capWebFetchAfterLimit(messages, body.tools, 2);
+  // Previously capped webfetch at 2 calls/turn by deterministically stripping the tool
+  // definition once the limit was hit. Dropped: it diverged from OC-native behavior and
+  // could strip a tool the model had just been told (mid-turn) it still had.
+  const tools = body.tools;
 
   const stream = body.stream === true;
   const lastUserText = extractLastUserText(body.messages);
@@ -398,31 +397,6 @@ function extractLastUserText(messages: unknown[]): string {
     }
   }
   return '';
-}
-
-/**
- * Deterministically enforces the "at most N webfetch calls per turn" budget from
- * ocConfig.ts's system prompt, which the model can't be trusted to obey on its own.
- * Counts webfetch tool_calls in the messages since the last user turn; once that
- * count reaches `limit`, strips the webfetch definition from the tools list sent
- * upstream so the model has no way to call it again until the next user turn.
- */
-function capWebFetchAfterLimit(
-  messages: ChatMessage[],
-  tools: ChatToolDefinition[] | undefined,
-  limit: number,
-): ChatToolDefinition[] | undefined {
-  if (!tools?.some((t) => t.function?.name === 'webfetch')) return tools;
-
-  let count = 0;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'user') break;
-    for (const call of messages[i].tool_calls ?? []) {
-      if (call.function?.name === 'webfetch') count++;
-    }
-  }
-  if (count < limit) return tools;
-  return tools.filter((t) => t.function?.name !== 'webfetch');
 }
 
 /**

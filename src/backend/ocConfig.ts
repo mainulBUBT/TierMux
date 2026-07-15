@@ -58,7 +58,7 @@ export function buildOcConfig(opts: OcConfigOptions): string {
     + '- webfetch/websearch → only for current info you can\'t find locally.\n\n'
     + 'RESEARCH BUDGET:\n'
     + '- Spend the FEWEST tool calls that let you answer confidently. 1–2 targeted calls is ideal '
-    + 'for a question; only an edit task justifies more. NEVER make more than 2 webfetch calls in one turn.\n'
+    + 'for a question; only an edit task justifies more. Avoid excessive webfetch calls in one turn.\n'
     + '- Do NOT read whole directories file-by-file. Search (glob/grep) to pick the 1–3 files that '
     + 'matter, then read just those.\n'
     + '- If a search returns nothing after one good-faith attempt, STOP searching and say so.\n\n'
@@ -195,11 +195,6 @@ export function buildOcConfig(opts: OcConfigOptions): string {
           + '- Make the smallest correct change. Re-use existing patterns and helpers over new code.\n'
           + '- After editing: verify — grep for other call sites that the change might break; run '
           + 'typecheck/tests when feasible.\n'
-          + 'PLAN FIRST WHEN IT MATTERS: if the task is non-trivial (touches multiple files, involves '
-          + 'an architectural/design choice, or the right approach isn\'t obvious), read enough to '
-          + 'understand the task, then reply with a short numbered plan as TEXT and STOP — do not edit '
-          + 'yet. Wait for the user to confirm before acting. Skip this for small/obvious asks (a typo, '
-          + 'a one-line fix, an explicitly detailed instruction) — just do those directly.\n'
           + clarifyFormat('no edits')
           + 'Otherwise skip the block and proceed with the task.\n'
           + 'UI/DESIGN TASKS: when the task touches visual UI (HTML/CSS/webview/components), produce '
@@ -215,7 +210,7 @@ export function buildOcConfig(opts: OcConfigOptions): string {
         permission: {
           read: 'allow', list: 'allow', glob: 'allow', grep: 'allow',
           webfetch: 'allow', websearch: 'allow',
-          write: 'allow', edit: 'allow', bash: 'ask',
+          write: 'allow', edit: 'allow', bash: 'allow',
           move: 'allow', remove: 'allow', task: 'allow', todowrite: 'allow',
         },
       },
