@@ -40,6 +40,26 @@ export function setHedging(on: boolean): void {
 }
 
 /**
+ * Watchdog thresholds (observability only — see the "watchdog is observability, not recovery"
+ * design). Two independent, fixed points: `warning` is informational, `actionable` is where the
+ * UI offers Continue Waiting / Restart Request / Switch Model / Accept Current Output. Neither
+ * threshold ever triggers an automatic action by itself. Overridable so tests don't need to
+ * edit these production constants directly.
+ */
+let watchdogWarningMs = 90_000;
+let watchdogWarningToolMs = 150_000;
+let watchdogActionableMs = 180_000;
+let watchdogActionableToolMs = 300_000;
+export function setWatchdogThresholds(overrides: {
+  warningMs?: number; warningToolMs?: number; actionableMs?: number; actionableToolMs?: number;
+}): void {
+  if (typeof overrides.warningMs === 'number') watchdogWarningMs = overrides.warningMs;
+  if (typeof overrides.warningToolMs === 'number') watchdogWarningToolMs = overrides.warningToolMs;
+  if (typeof overrides.actionableMs === 'number') watchdogActionableMs = overrides.actionableMs;
+  if (typeof overrides.actionableToolMs === 'number') watchdogActionableToolMs = overrides.actionableToolMs;
+}
+
+/**
  * Configured `compaction.tailTurns` (from `tiermux.engine.compaction`), used only to make
  * the `session.compacted` user notice informative ("…last ~N turns preserved"). Defaults to
  * OC's built-in 15 when TierMux doesn't override it. Purely cosmetic — compaction itself is
@@ -99,8 +119,25 @@ export interface AgentOpts {
   /** Soft, non-blocking notice (e.g. "stream ended early") — used when a run produced a
    *  usable answer despite a mid-stream error, instead of a hard red error. */
   onWarning?: (message: string) => void;
+  /**
+   * Watchdog — observability only, never recovery. These three are strictly one-way: the SDK
+   * emits them and never receives a decision   back. A user-clicked "Restart Request"/"Switch
+   * Model"/"Accept Current Output" is a UI command handled by the caller (chatViewProvider)
+   * through the existing cancel/re-invoke path, not through a callback into this file.
+   */
+  onWatchdogWarning?: (info: { elapsedMs: number; lastActivity?: WatchdogActivity }) => void;
+  onWatchdogActionable?: (info: { elapsedMs: number; lastActivity?: WatchdogActivity; hasPartialOutput: boolean }) => void;
+  /** A real protocol event arrived — hide any warning/actionable UI, no user input needed. */
+  onWatchdogDismissed?: () => void;
   /** Profiler service — always called (NoopProfiler when disabled). */
   profiler?: IProfilerService;
+}
+
+/** Last activity is protocol-derived only — never inferred from timers, polling, or local
+ *  bookkeeping. See the watchdog event list in `runViaOc` for exactly which events qualify. */
+export interface WatchdogActivity {
+  label: string;
+  atMs: number;
 }
 
 type ToolSet = Record<string, any>;
@@ -174,6 +211,19 @@ export function isOcEngineActive(): boolean {
  *  `condenseHistory` is a no-op for its actual OC-side token usage (see summarizeOcSession). */
 export function hasOcSession(sessionId: string): boolean {
   return ocSessions.has(sessionId);
+}
+
+/**
+ * Drop cached OC session bookkeeping for a TierMux chat session. Pure cache cleanup — does NOT
+ * cancel an in-flight run, start a new one, or notify anyone; callers own those steps separately
+ * (e.g. `chatViewProvider`'s watchdog "Restart Request"/"Switch Model" actions cancel first, then
+ * call this, then re-invoke the normal run path). Also used internally wherever this file already
+ * drops the same three maps (model/mode change, escalation, network retry).
+ */
+export function clearSession(sessionId: string): void {
+  ocSessions.delete(sessionId);
+  ocSessionModels.delete(sessionId);
+  ocSessionAgents.delete(sessionId);
 }
 
 /**
@@ -272,9 +322,7 @@ async function runViaOc(
   if (ocId && ocSessionModels.get(key) !== modelID) {
     console.log(`[tiermux] model changed (${ocSessionModels.get(key)} → ${modelID}), resetting OC session`);
     forkSourceOcId = ocId;
-    ocSessions.delete(key);
-    ocSessionModels.delete(key);
-    ocSessionAgents.delete(key);
+    clearSession(key);
     ocId = undefined;
   }
 
@@ -286,9 +334,7 @@ async function runViaOc(
     // into one text blob (indirect-reference hallucination).
     console.log(`[tiermux] mode changed (${ocSessionAgents.get(key)} → ${agent}), forking OC session to preserve history`);
     forkSourceOcId = ocId;
-    ocSessions.delete(key);
-    ocSessionModels.delete(key);
-    ocSessionAgents.delete(key);
+    clearSession(key);
     ocId = undefined;
   }
 
@@ -344,14 +390,22 @@ async function runViaOc(
   }
 
   let firstPromptOverride: string | undefined;
+  // Set when we forked a stale session that has NO fully-settled prior turn (a mid-turn chain
+  // escalation, e.g. tryEscalate() handing off before the user's first turn ever completed) —
+  // the forked session already contains the current turn's user message plus whatever tool
+  // calls it ran, so the next prompt must nudge the new model to continue, not restate the task.
+  let midTurnForkNudge = false;
 
   const priorUserTurnCount = opts.messages.filter((m) => m.role === 'user').length - 1;
-  if (!ocId && forkSourceOcId && priorUserTurnCount > 0) {
+  if (!ocId && forkSourceOcId) {
     try {
       const oldMessages = await client.messages(forkSourceOcId);
 
       if (oldMessages.length === 0) throw new Error('messages() returned no history — refusing an unbounded fork');
-      const boundary = findReplayBoundary(oldMessages as any, priorUserTurnCount);
+      const midTurn = priorUserTurnCount <= 0;
+      // Mid-turn: fork with no boundary so ALL of the old session's history — including the
+      // in-flight tool calls and the current turn's own user message — carries over intact.
+      const boundary = midTurn ? undefined : findReplayBoundary(oldMessages as any, priorUserTurnCount);
       const forked = await client.fork(forkSourceOcId, boundary);
       const forkedId = (forked as any)?.id ?? (forked as any)?.sessionID ?? (forked as any)?.sessionId ?? (forked as any)?.ID;
       if (typeof forkedId === 'string' && forkedId.length > 0) {
@@ -359,7 +413,8 @@ async function runViaOc(
         ocSessions.set(key, ocId);
         ocSessionModels.set(key, modelID);
         ocSessionAgents.set(key, agent);
-        console.log(`[tiermux] forked OC session id=${ocId} (history replay) for model=${modelID}`);
+        if (midTurn) midTurnForkNudge = true;
+        console.log(`[tiermux] forked OC session id=${ocId} (${midTurn ? 'mid-turn, full history' : 'history replay'}) for model=${modelID}`);
       } else {
         throw new Error('fork returned no session id');
       }
@@ -419,12 +474,12 @@ async function runViaOc(
   const model = modelID;
 
   // Fix 3 — todo completion guard state (per run). `latestTodos` is a snapshot only; the
-  // authoritative list is re-fetched from `session.todo` at each idle. The stall detector
-  // compares the open-todo signature across idles; `askedBlocker` guarantees termination.
+  // authoritative list is re-fetched from `session.todo` at each idle. `unchangedCount` /
+  // `prevOpenSig` are informational telemetry only (see the idle handler below) — they never
+  // drive a decision or escalation.
   let latestTodos: TodoItem[] = [];
   let prevOpenSig = '';
   let unchangedCount = 0;
-  let askedBlocker = false;
   const TODO_STALL_THRESHOLD = 2;
   // Fix 5 — serialize the idle → todo-check → continue/finish flow so an overlapping
   // `session.idle` (or a late `todo.updated`) can't double-fire a continuation or race finish().
@@ -516,9 +571,7 @@ async function runViaOc(
       console.log(`[tiermux] OC run ${detail} on ${modelID} — handing off to ${nextProfile}`);
       opts.onFailover(`tiermux/${profile}`, `${detail} → escalating to ${nextProfile}`);
       if (turnId) profiler?.addFallback(turnId, `tiermux/${profile}`, detail);
-      ocSessions.delete(key);
-      ocSessionModels.delete(key);
-      ocSessionAgents.delete(key);
+      clearSession(key);
       unsub();
       clearTimeout(watchdog);
 
@@ -591,34 +644,52 @@ async function runViaOc(
       ? (raw: string) => { try { traceSink!(raw); } catch { /* swallow */ } }
       : undefined;
 
-    const INACTIVITY_MS = 3 * 60_000;
-    const TOOL_INACTIVITY_MS = 5 * 60_000;
-    const FAST_FAIL_MS = 45_000;
+    // Watchdog — observability only, never recovery. It only ever emits `onWatchdogWarning` /
+    // `onWatchdogActionable` (both non-blocking, purely informational) and never itself calls
+    // tryEscalate()/finish(). Recovery stays exclusively in the objective-failure paths elsewhere
+    // in this function (network errors, session.error, explicit abort).
+    //
+    // Invariants:
+    //  - Only inactivity timers may emit watchdog warning/actionable events. Protocol events
+    //    never emit watchdog warnings directly.
+    //  - Only actual protocol events may dismiss watchdog UI. Timers never dismiss timers.
     let toolActive = false;
     let watchdog: ReturnType<typeof setTimeout>;
-    const resetWatchdog = () => {
+    let watchdogTier: 'healthy' | 'warning' | 'actionable' = 'healthy';
+    let lastActivity: WatchdogActivity = { label: 'Started', atMs: Date.now() };
+
+    const scheduleWatchdog = () => {
       clearTimeout(watchdog);
-      // Capability-based (Fix 2): only fast-fail when there's a MEANINGFULLY DIFFERENT next
-      // hop to escalate to. chat's `fast→smart` race escalates to a different tier → 45s
-      // fast-fail is wanted. agent's `smart→smart` escalates to the SAME tier (pointless —
-      // would just destroy in-progress work and restart) → use the normal 3/5-min window.
-      // Future-proof: a `smart→smarter→max` chain fast-fails only where the next tier differs.
-      const nextProfile = chain[hop + 1];
-      const canEscalate = !isFinalHop && !!nextProfile && nextProfile !== profile;
-      const windowMs = canEscalate ? FAST_FAIL_MS : toolActive ? TOOL_INACTIVITY_MS : INACTIVITY_MS;
+      const warningMs = toolActive ? watchdogWarningToolMs : watchdogWarningMs;
+      const actionableMs = toolActive ? watchdogActionableToolMs : watchdogActionableMs;
+      const nextMs = watchdogTier === 'healthy' ? warningMs
+        : watchdogTier === 'warning' ? Math.max(1000, actionableMs - warningMs)
+        : actionableMs; // stays 'actionable': keep re-emitting while silence continues, so a
+                         // client-dismissed card reappears if the run really is still quiet.
       watchdog = setTimeout(() => {
-        void (async () => {
-          try {
-            const msgs = await client.messages(ocId!);
-            const text = extractLastAssistantText(msgs);
-            if (text && !out) { out = text; opts.onChunk(text); }
-          } catch { /* ignore */ }
-          if (tryEscalate()) return;
-          finish({ text: out, platform, model, taskKind: opts.taskKind });
-        })();
-      }, windowMs);
+        const elapsedMs = Date.now() - lastActivity.atMs;
+        if (watchdogTier !== 'actionable') {
+          watchdogTier = watchdogTier === 'healthy' ? 'warning' : 'actionable';
+        }
+        console.log(`[tiermux][watchdog] ${watchdogTier} elapsedMs=${elapsedMs} sessionKey=${key}`);
+        if (watchdogTier === 'warning') opts.onWatchdogWarning?.({ elapsedMs, lastActivity });
+        else opts.onWatchdogActionable?.({ elapsedMs, lastActivity, hasPartialOutput: !!out.trim() });
+        scheduleWatchdog();
+      }, nextMs);
     };
-    resetWatchdog();
+    scheduleWatchdog();
+
+    /** Call only from the precise protocol-event list documented at each call site below —
+     *  never from a timer, poll, heartbeat, or local UI refresh. */
+    const noteActivity = (label: string): void => {
+      lastActivity = { label, atMs: Date.now() };
+      if (watchdogTier !== 'healthy') {
+        console.log(`[tiermux][watchdog] dismissed reason=${label} sessionKey=${key}`);
+        watchdogTier = 'healthy';
+        opts.onWatchdogDismissed?.();
+      }
+      scheduleWatchdog();
+    };
 
     const unsub = client.subscribe((ev) => {
 
@@ -628,7 +699,8 @@ async function runViaOc(
       const evSession = p.sessionID ?? p.sessionId ?? p.info?.id;
       if (evSession !== ocId) return;
 
-      resetWatchdog(); // an event confirmed as OURS = this run is alive; keep it going
+      // No blanket "any event resets the watchdog" here — only the specific protocol events
+      // enumerated at each call site below (`noteActivity(...)`) count as evidence of life.
 
       const t = (payload as any).type ?? (ev as any).type ?? '';
 
@@ -643,8 +715,10 @@ async function runViaOc(
 
         if (roleOfPart(p.part ?? p, p) === 'user') return;
         if (field === 'reasoning' || p.partID && partKind.get(p.partID) === 'reasoning') {
+          noteActivity('Reasoning');
           opts.onReasoning(delta);
         } else {
+          noteActivity('Streaming response');
           if (textChannel === 'updated') return; // updated channel owns text — avoid double emit
           textChannel = 'delta';
           out += delta;
@@ -683,7 +757,8 @@ async function runViaOc(
             const status = stObj?.status ?? (typeof st === 'string' ? st : 'running');
 
             toolActive = mapToolStatus(status) === 'running';
-            resetWatchdog();
+            const toolLabel = normalizeToolName(part.tool ?? part.name ?? 'tool');
+            noteActivity(`Tool: ${toolLabel}${toolActive ? '' : ' (done)'}`);
             opts.onTool({
               toolCallId: partId,
               name: normalizeToolName(part.tool ?? part.name ?? 'tool'),
@@ -709,6 +784,7 @@ async function runViaOc(
         if (partKind.get(partId) === 'reasoning' && typeof part.text === 'string') {
           const prev = lastReasoningByPart.get(partId) ?? '';
           if (part.text.length > prev.length && part.text.startsWith(prev)) {
+            noteActivity('Reasoning');
             opts.onReasoning(part.text.slice(prev.length));
           }
           lastReasoningByPart.set(partId, part.text);
@@ -720,6 +796,7 @@ async function runViaOc(
           const prev = lastTextByPart.get(partId) ?? '';
           if (part.text.length > prev.length && part.text.startsWith(prev)) {
             const delta = part.text.slice(prev.length);
+            noteActivity('Streaming response');
             out += delta;
             announceResponding();
             if (!firstChunkReceived && promptSentAt && turnId) {
@@ -734,6 +811,7 @@ async function runViaOc(
           const prev = lastReasoningByPart.get(partId) ?? '';
           if (part.reasoning.length > prev.length && part.reasoning.startsWith(prev)) {
             const delta = part.reasoning.slice(prev.length);
+            noteActivity('Reasoning');
             opts.onReasoning(delta);
           }
           lastReasoningByPart.set(partId, part.reasoning);
@@ -746,7 +824,10 @@ async function runViaOc(
         const stObj = st && typeof st === 'object' ? st : null;
         const status = stObj?.status ?? (typeof st === 'string' ? st : 'running');
         toolActive = mapToolStatus(status) === 'running';
-        resetWatchdog();
+        {
+          const toolLabel = normalizeToolName(p.name ?? p.tool ?? 'tool');
+          noteActivity(`Tool: ${toolLabel}${toolActive ? '' : ' (done)'}`);
+        }
         opts.onTool({
           toolCallId: p.id ?? p.callID ?? '',
           name: normalizeToolName(p.name ?? p.tool ?? 'tool'),
@@ -767,6 +848,8 @@ async function runViaOc(
       }
 
       if (t === 'todo.updated' || t === 'todo') {
+        // Deliberately NOT a watchdog activity signal — a todo refresh is TierMux asking OC a
+        // question, not evidence the model itself is alive/working.
         try {
           const todos = p.todos ?? (Array.isArray(p) ? p : null);
           if (Array.isArray(todos)) {
@@ -787,7 +870,7 @@ async function runViaOc(
         const title: string = p.title ?? (command ? `Run: ${command}` : patterns ? `${p.permission ?? 'tool'}: ${patterns.join(', ')}` : `OC wants to use ${p.permission ?? 'a tool'}`);
         if (!permissionID) return;
 
-        clearTimeout(watchdog);
+        noteActivity('Permission requested'); // OC surfacing an ask IS evidence it's alive
         void (async () => {
           const response = opts.onPermissionAsk
             ? await opts.onPermissionAsk({ title, pattern: patterns, command }).catch(() => 'reject' as const)
@@ -795,21 +878,21 @@ async function runViaOc(
           await client.replyPermission(ocId!, permissionID, response).catch((err) => {
             console.error(`[tiermux] replyPermission failed:`, err);
           });
-          resetWatchdog(); // resume normal inactivity detection now that OC can proceed
+          noteActivity('Permission resolved');
         })();
         return;
       }
 
       if (t === 'session.status' || t === 'status') {
-        // Busy status is a live signal — the top-of-callback resetWatchdog() already kept
-        // the run alive; surface OC's status line so the UI shows current activity.
+        // Deliberately NOT a watchdog activity signal — this is a status/busy ping, not one of
+        // the enumerated protocol events; treating it as life would reintroduce the exact
+        // false-liveness problem the watchdog redesign removes.
         opts.onStep('working', p?.status?.message ?? p?.message ?? 'Working…');
         return;
       }
 
       if (t === 'session.compacted' || t === 'session.compaction') {
-        // Fix 1/4: OC compacted the conversation server-side. Keep the run alive (the
-        // top-of-callback resetWatchdog() already did) and tell the user + engine channel.
+        // Fix 1/4: OC compacted the conversation server-side. Tell the user + engine channel.
         // `compactionTailTurns` is the configured tail (cosmetic — for the "N turns kept" line).
         const msg = `Context compacted by engine — older turns summarized; last ~${compactionTailTurns} turns preserved.`;
         console.log(`[tiermux] ${msg} (session=${ocId})`);
@@ -824,6 +907,7 @@ async function runViaOc(
       }
 
       if (t === 'session.error' || t === 'error') {
+        noteActivity('Session error'); // objective failure — also clears any pending watchdog UI
         const extracted = extractOcError(p);
         let errMsg = extracted;
         if (!extracted) {
@@ -851,9 +935,7 @@ async function runViaOc(
 
         if (_retryCount === 0 && !NON_RETRYABLE.test(errMsg)) {
           console.log(`[tiermux] OC session.error (no output, transient) — dropping session ${ocId}, retrying`);
-          ocSessions.delete(key);
-          ocSessionModels.delete(key);
-          ocSessionAgents.delete(key);
+          clearSession(key);
           unsub();
           clearTimeout(watchdog);
           void runViaOc(opts, 1, chainIndex, ocId, undefined, taskKind).then(finish, fail);
@@ -874,13 +956,17 @@ async function runViaOc(
         // NEXT idle, so the legitimate next cycle still runs.
         if (idleBusy) return;
         idleBusy = true;
+        noteActivity('Idle'); // idleBusy guards this to a one-time transition, not a repeat ping
 
         void (async () => {
           try {
-            // Fix 3: before accepting the finish, check for unfinished todos (agent mode).
-            // `session.todo` is the source of truth — `latestTodos` is only a fallback. One
-            // continuation per idle; stall → one "explain the blocker" turn → finish.
-            if (opts.mode === 'agent' && !askedBlocker) {
+            // Before accepting the finish, check for unfinished todos (agent mode). `session.todo`
+            // is the source of truth — `latestTodos` is only a fallback. Unchanged todos across
+            // repeated idles are weaker evidence than silence (a model can legitimately churn on
+            // one todo for minutes without touching the list) — so this is telemetry only, never
+            // a decision/escalation trigger. Keep nudging indefinitely; no auto "explain the
+            // blocker" prompt, no auto-finish from a stalled-looking todo list.
+            if (opts.mode === 'agent') {
               let todos: any[] = [];
               try { todos = await client.todo(ocId!); }
               catch { todos = latestTodos; }
@@ -891,18 +977,8 @@ async function runViaOc(
                 const sig = open.map((td) => `${td.id ?? td.content ?? ''}:${td.status}`).sort().join('|');
                 unchangedCount = sig === prevOpenSig ? unchangedCount + 1 : 0;
                 prevOpenSig = sig;
-
                 if (unchangedCount >= TODO_STALL_THRESHOLD) {
-                  // Stalled — one final turn to explain the blocker, then finish regardless.
-                  askedBlocker = true;
-                  opts.onStep('working', 'Wrapping up stalled todos…');
-                  console.log(`[tiermux] todos stalled (${open.length} unchanged for ${unchangedCount} idles) — asking for a blocker explanation, then finishing`);
-                  void client.prompt(ocId!, {
-                    parts: [{ type: 'text' as const, text:
-                      `These todos are still unfinished after repeated attempts:\n${open.map((td: any) => `- [${td.status}] ${td.content ?? td.title ?? ''}`).join('\n')}\nBriefly explain what blocked them (1–2 sentences), then stop.` }],
-                    agent, model: { providerID: 'tiermux', modelID: ocModelID },
-                  }, opts.abortSignal).catch((e) => console.log(`[tiermux] stall-explain prompt failed: ${e instanceof Error ? e.message : e}`));
-                  return; // next idle: askedBlocker true → falls through to finish
+                  console.log(`[tiermux] todos unchanged for ${unchangedCount} idles (${open.length} open) — informational only, continuing to nudge`);
                 }
 
                 opts.onStep('working', `Resuming ${open.length} unfinished task(s)…`);
@@ -949,7 +1025,12 @@ async function runViaOc(
 
     const baseParts = firstPromptOverride
       ? [{ type: 'text' as const, text: firstPromptOverride }, ...toOcParts(lastUser?.content ?? '').filter((p) => p.type === 'file')]
-      : toOcParts(lastUser?.content ?? '');
+      : midTurnForkNudge
+        // Restate the actual task, not just "continue" — a vague nudge lets a model that
+        // just finished an exploration phase (e.g. reading docs) mistake what it learned for
+        // the deliverable and answer with a summary instead of resuming the requested build.
+        ? [{ type: 'text' as const, text: `Continue the task below using the file-editing tools to actually produce the requested output — do not just describe or summarize what you've found so far.\n\nTask: ${userText}` }, ...toOcParts(lastUser?.content ?? '').filter((p) => p.type === 'file')]
+        : toOcParts(lastUser?.content ?? '');
     // Vision steering: remind the model to actually USE the attached image and not run off
     // grepping the repo for text it read off a screenshot. One directive for all cases — the
     // multilingual model decides question-vs-build from the user's own words.
@@ -975,9 +1056,7 @@ async function runViaOc(
         const isNetwork = /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|socket hang up|other side closed|terminated|network error/i.test(msg);
         if ((is5xx || isNetwork) && _retryCount === 0) {
           console.log(`[tiermux] OC prompt() ${is5xx ? '5xx' : 'network error'} — dropping session ${ocId}, retrying with a fresh session`);
-          ocSessions.delete(key);
-          ocSessionModels.delete(key);
-          ocSessionAgents.delete(key);
+          clearSession(key);
           unsub();
           clearTimeout(watchdog);
 

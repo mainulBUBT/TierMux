@@ -175,6 +175,9 @@ export type InMessage =
   | { type: 'commandApprovalResponse'; id: string; approved: boolean; sessionId?: string }
   | { type: 'editApprovalResponse'; id: string; approved: boolean; sessionId?: string }
   | { type: 'permissionAskResponse'; id: string; response: 'once' | 'always' | 'reject'; sessionId?: string }
+  /** Watchdog action button click. `continueWaiting` is a client-side dismissal + log only —
+   *  the SDK never receives a decision back (see sdk.ts's watchdog design). */
+  | { type: 'watchdogAction'; requestId: string; action: 'continueWaiting' | 'restartRequest' | 'switchModel' | 'acceptCurrentOutput'; sessionId?: string }
   | { type: 'openOcDiff'; sessionId: string; file: string }
   | { type: 'switchSession'; sessionId: string }
   | { type: 'requestConfig' }
@@ -302,6 +305,12 @@ export type OutMessage =
   | { type: 'approvalDismissed'; sessionId: string; id: string }
   | { type: 'todos'; sessionId: string; requestId: string; todos: TodoItem[]; followingPlan?: boolean }
   | { type: 'failoverNotice'; sessionId: string; requestId: string; from: string; reason: string }
+  /** Watchdog — observability only. Warning/actionable are non-blocking; `hasPartialOutput`
+   *  gates whether "Accept Current Output" is offered. `dismissed` means real activity resumed
+   *  and any warning/actionable UI for this request should be removed immediately. */
+  | { type: 'watchdogWarning'; sessionId: string; requestId: string; elapsedMs: number; lastActivityLabel?: string; lastActivityAgeMs?: number }
+  | { type: 'watchdogActionable'; sessionId: string; requestId: string; elapsedMs: number; lastActivityLabel?: string; lastActivityAgeMs?: number; hasPartialOutput: boolean }
+  | { type: 'watchdogDismissed'; sessionId: string; requestId: string }
   | { type: 'selectionRationale'; sessionId: string; requestId: string; taskKind: string; picked?: string; entries: Array<{ model: string; selected: boolean; score: number; capability: number; runtime: number; preference: number; confidence: number; reason: string; skip?: string }> }
   | { type: 'keyRotated'; sessionId: string; requestId: string; platform: string; platformName: string; keyIndex: number; keyTotal: number }
   | { type: 'attachmentAdded'; attachment: Attachment }

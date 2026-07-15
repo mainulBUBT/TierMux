@@ -399,6 +399,20 @@ details[open].think-block > details > summary::before { content: '▾ '; }
   color: var(--vscode-errorForeground);
 }
 
+/* Watchdog — observability only. `.watchdog-notice` (warning: text-only, like .notice) and
+ * `.watchdog-card` (actionable: buttons) share one element per request, swapped in place. */
+.watchdog-notice { font-size: 11px; opacity: .7; font-style: italic; padding: 2px 0; }
+.watchdog-card {
+  display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; margin: 4px 0;
+  border-radius: 8px; border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.12));
+  font-size: 12px;
+}
+.watchdog-card-title { opacity: .9; }
+.watchdog-card-meta { font-size: 11px; opacity: .65; }
+.watchdog-card-note { font-size: 11px; opacity: .7; }
+.watchdog-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+
 /* Transient toasts for quick actions (copy / like / unlike) — anchored at the click */
 .toast {
   position: fixed; z-index: 60; pointer-events: none; white-space: nowrap;

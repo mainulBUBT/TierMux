@@ -595,6 +595,12 @@ export class Router {
 
     let cands = this.candidates(opts);
     const forced = !!(opts.model && opts.model !== 'auto');
+    // Set when Smart Auto scoring ran, so the eventual winning candidate can be checked against
+    // the rationale reported below — the rationale reflects the ranking's top pick BEFORE the
+    // candidates loop tries anything; if that pick fails (health/rate-limit/empty response/error)
+    // and a lower-ranked candidate ends up serving the request, the UI must not keep showing the
+    // original top pick as "selected". See the `pickedRank` correction at the loop's success path.
+    let pickedRank: { taskKind: TaskKind; rationale: import('./scoring').RationaleEntry[]; top: FallbackEntry } | undefined;
     if (!forced && cands.length > 1) {
       // Context-window fit is a hard constraint in both modes — fitting models first.
       const convoTokens = estimateMessagesTokens(messages);
@@ -611,6 +617,7 @@ export class Router {
         const ctx = this.buildSelectionContext(opts.taskKind, cands, opts);
         const rank = this.scoring!.rank(ctx);
         cands = rank.ordered;
+        pickedRank = { taskKind: opts.taskKind, rationale: rank.rationale, top: rank.ordered[0] };
         opts.onSelectionRationale?.({ taskKind: opts.taskKind, picked: rank.ordered[0], rationale: rank.rationale });
         this.rationaleSink?.({ taskKind: opts.taskKind, rationale: rank.rationale });
       } else {
@@ -818,6 +825,13 @@ export class Router {
             }
           }
           opts.onProviderAttempt?.({ platform: entry.platform, model: entry.modelId, status: 'ok', latencyMs: Date.now() - t0 });
+          // The rationale reported above (if any) reflects the ranking's top pick, taken before
+          // the candidates loop ran — if the actually-served model differs (the top pick failed
+          // health/rate-limit/empty-response/error and the loop fell through), re-notify with the
+          // real winner so "Why this model?" doesn't keep pointing at a model that never answered.
+          if (pickedRank && (pickedRank.top.platform !== entry.platform || pickedRank.top.modelId !== entry.modelId)) {
+            opts.onSelectionRationale?.({ taskKind: pickedRank.taskKind, picked: entry, rationale: pickedRank.rationale });
+          }
           return { response, platform: entry.platform, model: entry.modelId, runtimeName: (provider as any).runtimeName };
         } catch (err) {
           const { reason, failoverable, retryAfterMs, detail } = classify(err);

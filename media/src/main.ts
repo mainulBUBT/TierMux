@@ -17,6 +17,7 @@ import { handleTodos } from './handlers/todos';
 import { handleAssistantStart } from './handlers/assistantStart';
 import { handleAgentStep } from './handlers/agentStep';
 import { handleToolStatus } from './handlers/toolStatus';
+import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismissed } from './handlers/watchdog';
 
 (function () {
   let state = { catalog: [], fallback: [], platforms: [] };
@@ -3191,7 +3192,7 @@ import { handleToolStatus } from './handlers/toolStatus';
   // (otherwise unchanged) render logic below writes into the right session's DOM regardless of
   // which session is currently being viewed. 'switchSession' is included so its case body can
   // use the returned `existed` flag to tell a brand-new pane from an already-live one.
-  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'ocSessionDiffList', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
+  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'watchdogWarning', 'watchdogActionable', 'watchdogDismissed', 'todos', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'ocSessionDiffList', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
 
   // ---------- inbound messages ----------
   window.addEventListener('message', (event) => {
@@ -3309,6 +3310,21 @@ import { handleToolStatus } from './handlers/toolStatus';
       case 'toolStatus': {
         const ctx = createHandlerContext();
         handleToolStatus(ctx, msg);
+        break;
+      }
+      case 'watchdogWarning': {
+        const ctx = createHandlerContext();
+        handleWatchdogWarning(ctx, msg);
+        break;
+      }
+      case 'watchdogActionable': {
+        const ctx = createHandlerContext();
+        handleWatchdogActionable(ctx, msg);
+        break;
+      }
+      case 'watchdogDismissed': {
+        const ctx = createHandlerContext();
+        handleWatchdogDismissed(ctx, msg);
         break;
       }
       case 'failoverNotice': {

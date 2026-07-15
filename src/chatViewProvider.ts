@@ -6,7 +6,7 @@ import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
 import type { UsageStore } from './config/usageStore';
 import type { Mode } from './shared/types';
-import { runChatStream, runAgentStream, runPlanStream, getOcSessionDiff, findTextViaOc, isOcEngineActive, hasOcSession, summarizeOcSession, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
+import { runChatStream, runAgentStream, runPlanStream, getOcSessionDiff, findTextViaOc, isOcEngineActive, hasOcSession, summarizeOcSession, clearSession, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
 import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
 import { SETTINGS_META, defaultForSetting } from './settingsMeta';
@@ -135,6 +135,10 @@ interface Session {
   reasoningEffort?: ReasoningEffort;
   /** Last token usage from an OpenCode-driven run, surfaced via SSE event. */
   lastUsage?: UsagePayload;
+  /** Set by the `watchdogAction` handler ('restartRequest'/'switchModel'), consumed by the send
+   *  handler's retry loop right after the aborted run settles — reusing the same in-flight
+   *  request instead of pushing a new user turn. Cleared once consumed. */
+  pendingWatchdogRetry?: 'restart' | 'switch';
 }
 
 interface StoredSession {
@@ -784,6 +788,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.approvalNotified.delete(`${s.id}:${s.activeRequestId ?? ''}`);
           if (s.activeRequestId) this.setStatus(s.id, 'running');
         }
+        break;
+      }
+      case 'watchdogAction': {
+        // Watchdog itself is one-way (observability only) — this is where the UI's chosen
+        // action actually happens, reusing existing capabilities rather than new SDK plumbing.
+        const s = this.sessions.get(m.sessionId ?? this.viewedSessionId);
+        if (!s || s.activeRequestId !== m.requestId) break; // stale click — run already moved on
+        console.log(`[tiermux][watchdog] action=${m.action} sessionId=${s.id} requestId=${m.requestId}`);
+        if (m.action === 'continueWaiting') break; // purely informational — nothing to do
+        if (m.action === 'acceptCurrentOutput') {
+          s.cancel?.cancel(); // aborts the in-flight OC call only; finalizes with whatever streamed so far
+          break;
+        }
+        // restartRequest / switchModel: drop the cached OC session (a clean restart is expected
+        // to lose in-flight tool-call context — unlike the silent mid-turn escalation bug this
+        // is a deliberate, user-requested restart) and abort the current attempt; the send
+        // handler's retry loop picks `pendingWatchdogRetry` up once the abort settles.
+        clearSession(s.id);
+        s.pendingWatchdogRetry = m.action === 'switchModel' ? 'switch' : 'restart';
+        s.cancel?.cancel();
         break;
       }
       case 'openOcDiff': {
@@ -1502,6 +1526,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           ? await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {})
           : await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
 
+      // Watchdog "Restart Request" / "Switch Model": the button handler aborted the run above
+      // and left `pendingWatchdogRetry` set — re-invoke the SAME request (same requestId, same
+      // history — no new user turn) instead of finalizing with whatever partial text streamed.
+      while (s.pendingWatchdogRetry && this.isActiveRun(s, m.requestId)) {
+        const retryKind = s.pendingWatchdogRetry;
+        s.pendingWatchdogRetry = undefined;
+        console.log(`[tiermux][watchdog] action=${retryKind === 'switch' ? 'switchModel' : 'restartRequest'} re-invoking requestId=${m.requestId}`);
+        s.cancel?.dispose();
+        s.cancel = new vscode.CancellationTokenSource();
+        const retryModel = retryKind === 'switch' ? 'auto' : m.model;
+        result = sdkMode === 'chat'
+          ? await runChatStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, retryModel))
+          : sdkMode === 'plan'
+            ? await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, retryModel), {})
+            : await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, retryModel), {});
+      }
+
       if (!this.isActiveRun(s, m.requestId)) return;
 
       if (m.mode === 'plan') {
@@ -2031,6 +2072,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
         if (!live()) return;
         this.post({ type: 'notice', sessionId: s.id, text: message });
+      },
+      onWatchdogWarning: (info) => {
+        if (!live()) return;
+        this.post({ type: 'watchdogWarning', sessionId: s.id, requestId, elapsedMs: info.elapsedMs, lastActivityLabel: info.lastActivity?.label, lastActivityAgeMs: info.lastActivity ? Date.now() - info.lastActivity.atMs : undefined });
+      },
+      onWatchdogActionable: (info) => {
+        if (!live()) return;
+        this.post({ type: 'watchdogActionable', sessionId: s.id, requestId, elapsedMs: info.elapsedMs, lastActivityLabel: info.lastActivity?.label, lastActivityAgeMs: info.lastActivity ? Date.now() - info.lastActivity.atMs : undefined, hasPartialOutput: info.hasPartialOutput });
+      },
+      onWatchdogDismissed: () => {
+        if (!live()) return;
+        this.post({ type: 'watchdogDismissed', sessionId: s.id, requestId });
       },
     };
   }
