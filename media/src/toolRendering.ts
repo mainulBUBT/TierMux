@@ -39,7 +39,7 @@ export function buildReasoningBlock(text: string, tc?: string): HTMLElement {
  * Handles both reasoning blocks (delegates to buildReasoningBlock) and regular tool calls.
  * Requires currentMode to determine expansion behavior.
  */
-export function buildToolCard(step: ToolStep, currentMode: 'chat' | 'plan' | 'agent'): HTMLElement {
+export function buildToolCard(step: ToolStep): HTMLElement {
   // Reasoning blocks are handled separately
   if (step.name === 'reasoning') {
     const block = buildReasoningBlock(step.detail || '', step.toolCallId);
@@ -107,8 +107,7 @@ export function buildToolCard(step: ToolStep, currentMode: 'chat' | 'plan' | 'ag
     if (body.trim()) {
       pre.textContent = body;
       more.classList.remove('hidden');
-      // Chat mode stays compact; agent/plan expand by default
-      (more as HTMLDetailsElement).open = currentMode !== 'chat';
+      (more as HTMLDetailsElement).open = true;
     }
   }
 

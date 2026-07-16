@@ -499,55 +499,63 @@ details[open].think-block > details > summary::before { content: '▾ '; }
 .cmd-approval-actions { display: flex; gap: 8px; margin-top: 8px; }
 .cmd-approval-note { font-size: 11px; opacity: .7; margin-top: 6px; }
 
-/* Clarifying questions the planner asks before producing a plan (Plan mode) */
-.clarify { display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--vscode-focusBorder); border-radius: 8px; padding: 10px 12px; }
-.clarify-intro { font-size: 12px; font-weight: 600; color: var(--vscode-textLink-foreground, #4daafc); }
-.clarify-q-text { font-size: 13px; font-weight: 600; margin: 2px 0 4px; }
-.clarify-opts { display: flex; flex-direction: column; gap: 6px; }
-.clarify-opt {
-  display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left; cursor: pointer;
-  background: var(--vscode-input-background); color: var(--vscode-foreground);
-  border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 9px 11px;
+/* Clarifying questions the planner asks before producing a plan (Plan mode) —
+   Cursor-style clean list, matching the .plan-* card language below rather than
+   a heavy accent-bordered box. */
+.clarify {
+  display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 10px 12px;
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.12));
 }
-.clarify-opt:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); border-color: var(--vscode-focusBorder); }
-.clarify-opt.selected { border-color: var(--vscode-focusBorder); background: var(--vscode-list-activeSelectionBackground); }
+.clarify-intro { font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; opacity: .5; }
+.clarify-q-text { font-size: 13px; font-weight: 600; margin: 2px 0 4px; opacity: .95; }
+.clarify-opts { display: flex; flex-direction: column; gap: 1px; }
+.clarify-opt {
+  display: flex; align-items: flex-start; gap: 8px; width: 100%; text-align: left; cursor: pointer;
+  background: none; color: var(--vscode-foreground);
+  border: none; border-radius: 5px; padding: 6px 6px;
+  transition: background .1s;
+}
+.clarify-opt:hover:not(:disabled) { background: var(--vscode-list-hoverBackground, rgba(127,127,127,.08)); }
+.clarify-opt.selected { background: var(--vscode-list-activeSelectionBackground); }
 .clarify-opt:disabled { cursor: default; opacity: .6; }
-.clarify-opt-num { flex: 0 0 auto; min-width: 14px; opacity: .5; font-size: 12px; line-height: 1.5; }
+.clarify-opt-num { flex: 0 0 22px; text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; opacity: .35; padding-top: 2px; }
 .clarify-radio { flex: 0 0 auto; width: 14px; height: 14px; margin-top: 3px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--vscode-descriptionForeground, #888); }
 .clarify-opt.selected .clarify-radio { border-color: var(--vscode-focusBorder); background: radial-gradient(circle, var(--vscode-focusBorder) 0 45%, transparent 50%); }
 .clarify-opt-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .clarify-opt-title { font-size: 12.5px; font-weight: 600; }
-.clarify-opt-desc { font-size: 11px; opacity: .65; line-height: 1.4; }
+.clarify-opt-desc { font-size: 11px; opacity: .6; line-height: 1.4; }
 .clarify-custom {
   width: 100%; box-sizing: border-box; margin-top: 2px; font-size: 12px; outline: none;
   background: var(--vscode-input-background); color: var(--vscode-input-foreground);
-  border: 1px solid var(--vscode-focusBorder); border-radius: 6px; padding: 7px 10px;
+  border: 1px solid var(--vscode-panel-border); border-radius: 5px; padding: 6px 8px;
 }
+.clarify-custom:focus { border-color: var(--vscode-focusBorder); }
 /* Named tabs */
-.clarify-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.clarify-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
 .clarify-tab {
   flex: 0 0 auto; cursor: pointer; font-size: 11px; font-weight: 600; line-height: 1;
-  background: var(--vscode-input-background); color: var(--vscode-foreground);
-  border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 6px 10px;
+  background: none; color: inherit; opacity: .55;
+  border: none; border-radius: 5px; padding: 5px 8px;
 }
-.clarify-tab:hover { border-color: var(--vscode-focusBorder); }
-.clarify-tab.active { background: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff); border-color: transparent; }
-.clarify-tab.done:not(.active) { border-color: var(--vscode-focusBorder); }
-.clarify-tab.done::before { content: '✓ '; opacity: .8; }
+.clarify-tab:hover { opacity: .85; background: var(--vscode-list-hoverBackground, rgba(127,127,127,.08)); }
+.clarify-tab.active { opacity: 1; background: var(--vscode-list-activeSelectionBackground); }
+.clarify-tab.done:not(.active) { opacity: .75; }
+.clarify-tab.done::before { content: '✓ '; }
 .clarify-step { display: flex; flex-direction: column; gap: 6px; }
-.clarify-counter { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .55; }
+.clarify-counter { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .5; }
 .clarify-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
 .clarify-nav { display: flex; gap: 8px; }
-.clarify-meta { display: flex; align-items: center; gap: 4px; font-size: 11px; opacity: .7; }
+.clarify-meta { display: flex; align-items: center; gap: 4px; font-size: 11px; opacity: .65; }
 .clarify-meta-count { font-variant-numeric: tabular-nums; }
-.clarify-dismiss { background: none; border: none; padding: 0; cursor: pointer; font-size: 11px; color: var(--vscode-textLink-foreground, #4daafc); }
-.clarify-dismiss:hover { text-decoration: underline; }
+.clarify-dismiss { background: none; border: none; padding: 0; cursor: pointer; font-size: 11px; opacity: .55; color: inherit; }
+.clarify-dismiss:hover { opacity: 1; text-decoration: underline; }
 /* Collapsed "submitted / dismissed" recap shown in place of the question form once the
    user answers, so the card clearly reflects that the input was accepted (not stale). */
-.clarify.done { border-style: dashed; opacity: .92; }
+.clarify.done { opacity: .85; }
 .clarify-recap { display: flex; flex-direction: column; gap: 3px; margin-top: 2px; }
 .clarify-recap-row { display: flex; gap: 6px; font-size: 12px; line-height: 1.4; }
-.clarify-recap-q { flex: 0 0 auto; opacity: .6; }
+.clarify-recap-q { flex: 0 0 auto; opacity: .55; }
 .clarify-recap-a { font-weight: 600; min-width: 0; word-break: break-word; }
 
 /* Plan → Agent handoff */

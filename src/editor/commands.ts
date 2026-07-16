@@ -13,7 +13,7 @@ interface Action {
 const ACTIONS: Action[] = [
   {
     command: 'tiermux.explainSelection',
-    mode: 'chat',
+    mode: 'plan',
     build: (c) => `Explain this ${c.lang} code from \`${c.path}\`:\n\n\`\`\`${c.lang}\n${c.code}\n\`\`\``,
   },
   {

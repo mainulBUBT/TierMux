@@ -266,11 +266,10 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
 
   // Mode picker (custom dropdown: button shows the short name, list shows name + description).
   const MODES = [
-    { value: 'chat', label: 'Ask', desc: 'Read-only. Answers questions and explains code — never edits files or runs commands.' },
-    { value: 'plan', label: 'Plan', desc: 'Researches the code, proposes a plan (professional or team discussion), then edits only after you approve.' },
+    { value: 'plan', label: 'Plan', desc: 'Researches the code (may run commands to investigate), proposes a plan, then edits only after you approve.' },
     { value: 'agent', label: 'Agent', desc: 'Full agent — reads, edits files, runs commands, and tracks a live task list.' },
   ];
-  let currentMode = 'chat';
+  let currentMode = 'plan';
   const modeBtn = $('#mode-btn');
   const modeBtnLabel = $('.mode-label', modeBtn);
   const modePop = $('#mode-pop');
@@ -1149,12 +1148,6 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
 
     t.flow.insertBefore(det, workNodes[0]);
     workNodes.forEach((n) => det.appendChild(n));
-    // Chat: collapse each tool step's output inside the summary so expanding the summary
-    // shows compact steps (icon + label + status), each individually expandable on click.
-    // Agent/plan are left as-is (fully expanded for transparency).
-    if (currentMode === 'chat') {
-      det.querySelectorAll('.tool-more').forEach((m) => { m.open = false; });
-    }
     scrollDown();
   }
 
@@ -1750,16 +1743,14 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
       pre.className = 'diff-view';
       pre.appendChild(buildInlineDiff(editArgs.old_string, editArgs.new_string));
       more.classList.remove('hidden');
-      if (msg.state === 'done' && currentMode !== 'chat') more.open = true;
+      if (msg.state === 'done') more.open = true;
     } else if (msg.detail) {
       pre.className = '';
       pre.textContent = msg.detail;
       more.classList.remove('hidden');
-      // Always expand when done — CSS max-height keeps it from taking over the screen.
+      // Always expand — CSS max-height keeps it from taking over the screen.
       // While running, expand so partial output streams in visibly.
-      // Chat mode stays compact (collapsed): the answer is the focus, not the tool log —
-      // the user can click any step to expand it. Agent/plan keep the verbose live view.
-      if (currentMode !== 'chat') more.open = true;
+      more.open = true;
     } else {
       more.classList.add('hidden');
     }
@@ -3144,7 +3135,7 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
     statusTimers: Map<string, number>;
     userTargets: Map<string, HTMLElement>;
     currentTurn: HTMLElement | null;
-    currentMode: 'chat' | 'plan' | 'agent';
+    currentMode: 'plan' | 'agent';
     viewedSessionId: string | null;
     // DOM elements
     thread: HTMLElement;

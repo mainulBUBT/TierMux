@@ -83,11 +83,15 @@ export interface OcEvent { type: string; properties: any }
 
 export class OcClient {
   private readonly client: OpencodeClient;
+  private readonly baseUrl: string;
+  private readonly authHeader: string;
 
   constructor(conn: OcConnection) {
     const auth = `Basic ${Buffer.from(`opencode:${conn.password}`).toString('base64')}`;
+    this.baseUrl = conn.baseURL.replace(/\/$/, '');
+    this.authHeader = auth;
     this.client = createOpencodeClient({
-      baseUrl: conn.baseURL.replace(/\/$/, ''),
+      baseUrl: this.baseUrl,
       headers: { Authorization: auth },
 
       throwOnError: true,
@@ -167,6 +171,24 @@ export class OcClient {
       path: { id: sessionId, permissionID },
       body: { response },
     });
+  }
+
+  /**
+   * Reply to OC's native `question` tool call (POST /question/{requestID}/reply). Verified
+   * live against a running 1.17.11 server's GET /doc — the server supports this route, but
+   * the generated `@opencode-ai/sdk` client (pinned to the same 1.17.11) has no typed method
+   * for it yet, so this goes over raw fetch using the same base URL/auth as the typed client.
+   * `answers` is one array-of-selected-labels per question, in the same order as the
+   * question.asked event's `questions` array.
+   */
+  async replyQuestion(requestId: string, answers: string[][]): Promise<void> {
+    console.log(`[tiermux] OC question.reply(${requestId}) answers=${previewJson(answers)}`);
+    const res = await fetch(`${this.baseUrl}/question/${requestId}/reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: this.authHeader },
+      body: JSON.stringify({ answers }),
+    });
+    if (!res.ok) throw new Error(`OC question.reply failed: ${res.status} ${await res.text().catch(() => '')}`);
   }
 
   /**

@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { runChatStream, type AgentOpts, type ToolEvent } from '../agent/sdk';
+import { runPlanStream, type AgentOpts, type ToolEvent } from '../agent/sdk';
 import type { Router } from '../router/router';
 
 const TEST_QUESTIONS = [
@@ -60,7 +60,7 @@ async function runOne(
 
   const opts: AgentOpts = {
     messages: [{ role: 'user', content: question }],
-    mode: 'chat',
+    mode: 'plan',
     effort: 'medium',
     sessionId: `verify-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     onChunk: () => {},
@@ -74,7 +74,7 @@ async function runOne(
     onError: (e) => { errors.push(typeof e === 'string' ? e : (e as any)?.message ?? JSON.stringify(e)); },
   };
 
-  const result = await runChatStream(router, opts);
+  const result = await runPlanStream(router, opts, {});
   const text = result.text || '';
 
   const distinctTools = new Map<string, ToolEvent>();

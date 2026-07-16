@@ -22,8 +22,6 @@ export const SETTINGS_META: SettingMeta[] = [
     desc: 'Escalate to the next model when an answer is weak (refusal, repetition, truncation) instead of accepting it.' },
   { key: 'agent.hotStandby', label: 'Hot standby', type: 'boolean',
     desc: 'Pre-create the next fallback model\'s session in the background so escalation starts faster.' },
-  { key: 'agent.chatHedging', label: 'Chat hedging', type: 'boolean',
-    desc: 'Race the fast and smart models simultaneously on the first chat turn and take whichever answers first.' },
   { key: 'agent.smartScoring', label: 'Smart Auto scoring', type: 'boolean',
     desc: 'Route Auto requests by learned, per-model runtime metrics (success rate, TTFT vs own baseline, provider health) instead of fixed priority. Slower models adapt within minutes; turn off to restore priority-only routing.' },
   { key: 'agent.scoringTrace', label: 'Trace Smart Auto', type: 'boolean',

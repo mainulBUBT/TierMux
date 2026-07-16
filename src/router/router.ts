@@ -830,7 +830,22 @@ export class Router {
           // health/rate-limit/empty-response/error and the loop fell through), re-notify with the
           // real winner so "Why this model?" doesn't keep pointing at a model that never answered.
           if (pickedRank && (pickedRank.top.platform !== entry.platform || pickedRank.top.modelId !== entry.modelId)) {
-            opts.onSelectionRationale?.({ taskKind: pickedRank.taskKind, picked: entry, rationale: pickedRank.rationale });
+            // The rationale's `selected` flags were stamped for the ranking's top pick, which
+            // never served the request — move the flag (and its "Selected —"/"Not selected"
+            // wording) onto the entry that actually served, so the UI's checkmark matches the
+            // model shown in the footer instead of the abandoned original pick.
+            const rationale = pickedRank.rationale.map((r) => {
+              const isRealWinner = r.platform === entry.platform && r.modelId === entry.modelId;
+              if (isRealWinner === r.selected) return r;
+              return {
+                ...r,
+                selected: isRealWinner,
+                reason: isRealWinner
+                  ? `Selected — served the request (ranked lower; the top pick failed to serve)`
+                  : `Not selected: ranked #1 but failed to serve`,
+              };
+            });
+            opts.onSelectionRationale?.({ taskKind: pickedRank.taskKind, picked: entry, rationale });
           }
           return { response, platform: entry.platform, model: entry.modelId, runtimeName: (provider as any).runtimeName };
         } catch (err) {

@@ -107,13 +107,14 @@ function boundaryPlugin() {
       build.onResolve({ filter: /.*/ }, (args) => {
         const importer = args.importer || '';
         if (!importer.replace(/\\/g, '/').includes('media/src/')) return null;
-        const path = (args.path || '').replace(/\\/g, '/');
-        // Relative imports resolve within media/src naturally — only flag paths
-        // that reach OUT of media/src into the rest of src/.
-        if (!path.startsWith('../') && !path.startsWith('/')) return null;
-        // Resolve what it actually points to, then check the allow-list.
+        const spec = args.path || '';
         // Bare specifiers (node_modules / vendor globals) are allowed.
-        if (ALLOWED_PREFIXES.some((p) => path.includes(`/${p}`) || path.includes(`\\${p}`))) return null;
+        if (!spec.startsWith('.') && !spec.startsWith('/')) return null;
+        // Resolve the import against the IMPORTING FILE's directory (not the literal
+        // specifier string) — "../bridge" from media/src/handlers/watchdog.ts stays
+        // inside media/src/ and must not be flagged just because it starts with "../".
+        const resolved = path.resolve(args.resolveDir || path.dirname(importer), spec).replace(/\\/g, '/');
+        if (ALLOWED_PREFIXES.some((p) => resolved.includes(`/${p}`))) return null;
         return {
           errors: [{
             text: `Webview import boundary violation: media/src/** may only import from media/src/** or src/shared/** (type-only). Saw import of "${args.path}" from ${importer}.`,

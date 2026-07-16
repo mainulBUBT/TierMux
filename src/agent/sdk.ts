@@ -33,12 +33,6 @@ export function setHotStandby(on: boolean): void {
   hotStandbyEnabled = on;
 }
 
-let hedgingEnabled = true;
-/** Setter for `extension.ts` to wire `tiermux.agent.chatHedging` (refreshed on config change). */
-export function setHedging(on: boolean): void {
-  hedgingEnabled = on;
-}
-
 /**
  * Watchdog thresholds (observability only — see the "watchdog is observability, not recovery"
  * design). Two independent, fixed points: `warning` is informational, `actionable` is where the
@@ -92,7 +86,7 @@ export interface AgentResult {
 
 export interface AgentOpts {
   messages: ChatMessage[];
-  mode: 'chat' | 'agent' | 'plan';
+  mode: 'agent' | 'plan';
   effort: ReasoningEffort;
   abortSignal?: AbortSignal;
   pinnedModel?: string;
@@ -186,21 +180,12 @@ let ocClient: OcClient | undefined;
 const ocSessions = new Map<string, string>();
 /** TierMux session id → model id the OC session was created with (to detect model changes). */
 const ocSessionModels = new Map<string, string>();
-/** TierMux session id → OC agent ('chat'/'planx'/'build') the OC session was created with
- *  (to detect a Ask/Plan/Agent mode switch mid-tab — see the reset check in runViaOc). */
+/** TierMux session id → OC agent ('plan'/'build', OC's own native agents) the OC session
+ *  was created with (to detect a Plan/Agent mode switch mid-tab — see the reset check in runViaOc). */
 const ocSessionAgents = new Map<string, string>();
 /** `${sessionId}:${hop}` → OC session id, created ahead of time while the prior hop is still
  *  running so escalation can reuse it instead of blocking on a fresh createSession(). */
 const prewarmedSessions = new Map<string, string>();
-/** OC session ids we deliberately called `client.abort()` on (chat hedging's losing leg —
- *  see runChatHedged's flushWinner). OC reports that as a `session.error: "Aborted"` event,
- *  indistinguishable on the wire from a genuine transient failure — without this set, the
- *  session.error handler's "no output yet, retry once" path would resurrect the leg we just
- *  intentionally killed: a whole new session + full tool-calling loop running to completion
- *  in the background after the hedge already picked a winner, silently burning a free-tier
- *  request quota and re-triggering onStep/onTool UI updates on the already-finalized turn. */
-const intentionallyAbortedOcIds = new Set<string>();
-
 /** Called by extension.ts once the OC backend is up (or undefined when it's gone). */
 export function setOcEngine(conn: OcConnection | undefined): void {
   ocClient = conn ? new OcClient(conn) : undefined;
@@ -266,13 +251,10 @@ export async function getOcSessionDiff(sessionId: string): Promise<Array<{ file:
 
 /**
  * Ordered routing profiles (virtual models the router proxy exposes) per TierMux mode.
- * `runViaOc` walks this chain left-to-right on empty-answer failures — chat starts on the
- * free/fast tier and hands off to `smart` once; agent/plan already start on `smart` so
- * there's nowhere cheaper to try first.
+ * `runViaOc` walks this chain left-to-right on empty-answer failures — agent/plan already
+ * start on `smart` so there's nowhere cheaper to try first.
  */
-const FALLBACK_CHAIN: Record<'chat' | 'agent' | 'plan', string[]> = {
-  chat: ['fast', 'smart'],
-
+const FALLBACK_CHAIN: Record<'agent' | 'plan', string[]> = {
   agent: ['smart', 'smart'],
   plan: ['smart'],
 };
@@ -312,7 +294,7 @@ async function runViaOc(
 
   const key = opts.sessionId ?? '__default__';
 
-  const agent = opts.mode === 'chat' ? 'chat' : opts.mode === 'plan' ? 'planx' : 'build';
+  const agent = opts.mode === 'plan' ? 'plan' : 'build';
 
   const pinned = opts.pinnedModel && opts.pinnedModel !== 'auto' ? opts.pinnedModel : undefined;
   const chain = pinned ? [pinned] : (FALLBACK_CHAIN[opts.mode] ?? ['smart']);
@@ -333,7 +315,7 @@ async function runViaOc(
   }
 
   if (ocId && ocSessionAgents.get(key) !== undefined && ocSessionAgents.get(key) !== agent) {
-    // Fix 4: mode changed (e.g. Plan→Agent, Ask→Agent). Fork the existing session so the
+    // Fix 4: mode changed (e.g. Plan→Agent). Fork the existing session so the
     // full native history (roles, tool calls, reasoning) carries over — mirroring the
     // model-change block above. Previously this dropped the session WITHOUT forking, which
     // forced the lossy formatTranscriptForReplay() path and flattened the whole conversation
@@ -534,8 +516,6 @@ async function runViaOc(
       setRouteFailoverListener(undefined);
       setRouteRationaleListener(undefined);
 
-      intentionallyAbortedOcIds.delete(ocId);
-
       for (const k of [...prewarmedSessions.keys()]) if (k.startsWith(`${key}:`)) prewarmedSessions.delete(k);
 
       const routed = getLastRoutedModel();
@@ -559,7 +539,6 @@ async function runViaOc(
       setForcedReasoningEffort(undefined);
       setRouteFailoverListener(undefined);
       setRouteRationaleListener(undefined);
-      intentionallyAbortedOcIds.delete(ocId);
       for (const k of [...prewarmedSessions.keys()]) if (k.startsWith(`${key}:`)) prewarmedSessions.delete(k);
       reject(err);
     };
@@ -757,6 +736,10 @@ async function runViaOc(
           else if (part.type === 'text') partKind.set(partId, 'text');
           else if (part.type === 'tool' || part.tool) {
             partKind.set(partId, 'other');
+            // The native `question` tool is already surfaced as a real interactive card via
+            // the dedicated `question.asked` event handler above — showing it again here too
+            // would duplicate it as an ugly generic "Question" tool-call card.
+            if ((part.tool ?? part.name) === 'question') return;
 
             const st = part.state;
             const stObj = st && typeof st === 'object' ? st : null;
@@ -826,6 +809,8 @@ async function runViaOc(
       }
 
       if (t === 'tool.updated' || t === 'tool') {
+        // Same dedup as the message.part.updated tool branch above.
+        if ((p.name ?? p.tool) === 'question') return;
         const st = p.state;
         const stObj = st && typeof st === 'object' ? st : null;
         const status = stObj?.status ?? (typeof st === 'string' ? st : 'running');
@@ -889,6 +874,30 @@ async function runViaOc(
         return;
       }
 
+      if (t === 'question.asked') {
+        // OC's native `question` tool (verified live against a running 1.17.11 server's
+        // GET /doc — not a TierMux text protocol). Reuses the existing onAskUser/askUserPrompt
+        // card unchanged: one question at a time, answered in order, then replied in one shot.
+        const requestID: string = p.id ?? '';
+        const questions: Array<{ question: string; options?: Array<{ label: string }> }> = Array.isArray(p.questions) ? p.questions : [];
+        if (!requestID || !questions.length) return;
+
+        noteActivity('Question asked'); // OC pausing on a native question IS evidence it's alive
+        void (async () => {
+          const answers: string[][] = [];
+          for (const q of questions) {
+            const optionLabels = (q.options ?? []).map((o) => o.label);
+            const answer = await opts.onAskUser(q.question, optionLabels.length ? optionLabels : undefined).catch(() => '');
+            answers.push([answer]);
+          }
+          await client.replyQuestion(requestID, answers).catch((err) => {
+            console.error(`[tiermux] replyQuestion failed:`, err);
+          });
+          noteActivity('Question resolved');
+        })();
+        return;
+      }
+
       if (t === 'session.status' || t === 'status') {
         // Deliberately NOT a watchdog activity signal — this is a status/busy ping, not one of
         // the enumerated protocol events; treating it as life would reintroduce the exact
@@ -926,13 +935,6 @@ async function runViaOc(
         }
 
         console.log(`[tiermux] OC session.error: ${errMsg} (outLen=${out.trim().length} model=${modelID} hop=${hop})`);
-
-        if (ocId && intentionallyAbortedOcIds.delete(ocId)) {
-          unsub();
-          clearTimeout(watchdog);
-          fail(new Error('Session intentionally aborted (superseded by the winning hedge leg)'));
-          return;
-        }
 
         if (out.trim()) {
           finish({ text: out, platform, model, taskKind: opts.taskKind });
@@ -1160,184 +1162,6 @@ function extractLastAssistantText(msgs: unknown): string {
     }
   }
   return '';
-}
-
-/**
- * Chat mode: a question answered with **read-only tool access**. Runs through OC's custom
- * `chat` agent (defined in ocConfig.ts) over `tiermux/fast` — the agent may inspect the
- * project (read/list/glob/grep) and fetch current info (webfetch/websearch), but cannot
- * edit/write files or run commands. The OC session is keyed by TierMux session id so prior
- * turns are retained server-side, just like agent/plan mode.
- *
- * (Previously this streamed straight through the Router with no tools — fast, but the model
- * could neither see the project nor reach the web. Routed through OC now so chat can answer
- * codebase and realtime questions; the lean tool set keeps trivial questions to ~one round-trip.)
- */
-export async function runChatStream(router: Router, opts: AgentOpts): Promise<AgentResult> {
-  const full: AgentOpts = { ...opts, mode: 'chat' };
-
-  const lastUser = [...full.messages].reverse().find((m) => m.role === 'user');
-  const userText = contentToString(lastUser?.content);
-  const taskKind = classifyTask(userText, { attachmentKinds: attachmentKindsFromContent(lastUser?.content ?? '') });
-
-  if (taskKind === 'trivial' && full.messages.length > 0) {
-    const profiler = opts.profiler;
-    const turnId = profiler?.beginTurn({
-      sessionId: opts.sessionId ?? '__default__', mode: 'chat',
-      promptLength: userText.length, taskKind,
-      containsMentions: /@\w/.test(userText),
-      containsAttachments: opts.messages.some(
-        (m) => Array.isArray(m.content) && m.content.some((p: any) => p?.type === 'image_url'),
-      ),
-    });
-    if (turnId) profiler?.setModel(turnId, 'direct', 0);
-    opts.onStep('thinking', 'Thinking…');
-    profiler?.timerStart(turnId!, 'Provider');
-    let firstChunkMs = 0;
-    const routeStartMs = Date.now();
-    let responded = false;
-    let buffer = '';
-    try {
-      const result = await router.route(full.messages, {
-        model: opts.pinnedModel ?? 'auto', taskKind, temperature: 0.2, max_tokens: 4096,
-        onChunk: (text) => {
-          if (!firstChunkMs) {
-            firstChunkMs = Date.now();
-            profiler?.recordTTFT(turnId!, Math.round(firstChunkMs - routeStartMs));
-          }
-          if (!responded) {
-            responded = true;
-            opts.onStep('synthesizing', 'Responding…');
-          }
-          buffer += text;
-          opts.onChunk(text);
-        },
-      });
-      opts.onModel(result.platform, result.model);
-      const text = buffer || contentToString(result.response.choices[0]?.message.content) || '';
-      profiler?.timerEnd(turnId!, 'Provider');
-      profiler?.endTurn(turnId!, {
-        model: `${result.platform}::${result.model}`, hop: 0,
-        tokens: {
-          prompt: result.response.usage?.prompt_tokens ?? Math.ceil(userText.length / 4),
-          completion: result.response.usage?.completion_tokens ?? Math.ceil(text.length / 4),
-          total: result.response.usage?.total_tokens ?? Math.ceil((userText.length + text.length) / 4),
-        },
-      });
-      return { text, platform: result.platform, model: result.model, taskKind };
-    } catch (err) {
-      profiler?.timerEnd(turnId!, 'Provider');
-      profiler?.endTurn(turnId!, { model: 'error', hop: 0, tokens: { prompt: 0, completion: 0, total: 0 } });
-      throw err;
-    }
-  }
-
-  return isHedgeEligible(full) ? runChatHedged(full) : runViaOc(full);
-}
-
-const HEDGE_MAX_CHARS = 300;
-
-/**
- * Hedging only applies to the FIRST turn of a brand-new chat session (no existing OC
- * session for this key yet). A fresh challenger session has no server-side history —
- * OC scopes history per session id — so racing every turn would require replaying the
- * whole prior transcript into the challenger, which risks a fluent-but-context-blind
- * answer "winning" the quality gate despite being wrong. Turn 1 has no such risk: the
- * latest message IS the whole context, so both legs start on equal footing.
- */
-function isHedgeEligible(opts: AgentOpts): boolean {
-  if (!hedgingEnabled || opts.mode !== 'chat') return false;
-  if (opts.pinnedModel && opts.pinnedModel !== 'auto') return false; // nothing to race
-  const key = opts.sessionId ?? '__default__';
-  if (ocSessions.has(key)) return false; // only the first turn of a new session
-  const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
-  const text = contentToString(lastUser?.content);
-  if (!text || text.length > HEDGE_MAX_CHARS) return false;
-  const kind = classifyTask(text, { attachmentKinds: attachmentKindsFromContent(lastUser?.content ?? '') });
-  return kind === 'chat' || kind === 'trivial';
-}
-
-/**
- * Races `fast` and `smart` concurrently for a short first turn, taking whichever
- * produces a good (quality-gate-passing) answer first. Each leg runs as a PINNED model
- * (`runViaOc` then treats it as a length-1 chain, `isFinalHop=true`), so neither leg
- * escalates or pre-warms internally — this function is the only orchestration layer.
- * Chunks are buffered per leg (never forwarded live) since two concurrent streams can't
- * be interleaved into one chat bubble without garbling; the winner's buffered text is
- * flushed in one shot once chosen.
- */
-async function runChatHedged(opts: AgentOpts): Promise<AgentResult> {
-  const key = opts.sessionId ?? '__default__';
-  const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
-  const userText = contentToString(lastUser?.content);
-  const taskKind = classifyTask(userText, { attachmentKinds: attachmentKindsFromContent(lastUser?.content ?? '') });
-
-  type Profile = 'fast' | 'smart';
-  interface LegState { buffered: string; modelID?: string; runtimeName?: string; platform?: string; ocId?: string; result?: AgentResult; err?: Error }
-  const legs: Record<Profile, LegState> = { fast: { buffered: '' }, smart: { buffered: '' } };
-  let winner: Profile | undefined;
-
-  const flushWinner = (which: Profile): void => {
-    if (winner) return;
-    winner = which;
-    const other: Profile = which === 'fast' ? 'smart' : 'fast';
-    if (legs[which].buffered) opts.onChunk(legs[which].buffered); // one flush — no live token streaming during the race
-    if (legs[which].platform && legs[which].modelID) {
-      opts.onModel(legs[which].platform!, legs[which].modelID!, legs[which].runtimeName);
-    }
-    ocSessions.set(key, legs[which].ocId!);
-    ocSessionModels.set(key, legs[which].modelID ?? which);
-    ocSessionAgents.set(key, 'chat'); // hedging only ever races chat-mode legs (fast/smart)
-    if (legs[other].ocId) {
-      intentionallyAbortedOcIds.add(legs[other].ocId);
-      void ocClient?.abort(legs[other].ocId);
-    }
-  };
-
-  const runLeg = async (which: Profile): Promise<void> => {
-    const leg = legs[which];
-
-    const decidedAgainst = (): boolean => !!winner && winner !== which;
-    const legOpts: AgentOpts = {
-      ...opts,
-      pinnedModel: which,
-      onChunk: (t) => { leg.buffered += t; if (winner === which) opts.onChunk(t); },
-      onModel: (p, m, rt) => { leg.platform = p; leg.modelID = m; leg.runtimeName = rt; if (winner === which) opts.onModel(p, m, rt); },
-      onFailover: () => {}, // a hedge leg is a length-1 chain (isFinalHop) — nothing to escalate to, nothing to report
-      onStep: (phase, label) => { if (!decidedAgainst()) opts.onStep(phase, label); },
-      onTool: (e) => { if (!decidedAgainst()) opts.onTool(e); },
-      onReasoning: (t) => { if (!decidedAgainst()) opts.onReasoning(t); },
-      onTodos: (todos) => { if (!decidedAgainst()) opts.onTodos(todos); },
-      onKeyRotated: (info) => { if (!decidedAgainst()) opts.onKeyRotated?.(info); },
-      onError: (message) => { if (!decidedAgainst()) opts.onError(message); },
-      onWarning: (message) => { if (!decidedAgainst()) opts.onWarning?.(message); },
-      onAskUser: async (question, options) => (decidedAgainst() ? '' : opts.onAskUser(question, options)),
-    };
-    try {
-      const r = await runViaOc(legOpts, 0, 0, undefined, (id) => {
-        leg.ocId = id;
-
-        if (winner && winner !== which) {
-          intentionallyAbortedOcIds.add(id);
-          void ocClient?.abort(id);
-        }
-      });
-      leg.result = r;
-      const q = assessAnswerQuality(r.text, taskKind);
-      if (!q.weak) flushWinner(which);
-    } catch (err) {
-      leg.err = err as Error;
-    }
-  };
-
-  await Promise.allSettled([runLeg('fast'), runLeg('smart')]);
-  if (!winner) {
-
-    const pick: Profile | undefined = legs.smart.result ? 'smart' : legs.fast.result ? 'fast' : undefined;
-    if (pick) { flushWinner(pick); return legs[pick].result!; }
-    throw legs.smart.err ?? legs.fast.err ?? new Error('Both hedge legs failed');
-  }
-  return legs[winner].result!;
 }
 
 /** Agent mode: full tool loop via OC `build` over `tiermux/smart`. */

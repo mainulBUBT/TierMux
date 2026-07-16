@@ -6,7 +6,7 @@ import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
 import type { UsageStore } from './config/usageStore';
 import type { Mode } from './shared/types';
-import { runChatStream, runAgentStream, runPlanStream, getOcSessionDiff, findTextViaOc, isOcEngineActive, hasOcSession, summarizeOcSession, clearSession, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
+import { runAgentStream, runPlanStream, getOcSessionDiff, findTextViaOc, isOcEngineActive, hasOcSession, summarizeOcSession, clearSession, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
 import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
 import { SETTINGS_META, defaultForSetting } from './settingsMeta';
@@ -110,7 +110,7 @@ interface Session {
   pendingPlanUser?: ChatContent;
   /** URI of the plan MD file saved at proposal time — updated if the user edits steps before approving. */
   pendingPlanFile?: { uri: vscode.Uri; title: string };
-  pendingClarify?: { requestId: string; userContent: ChatContent; prompt: string; questions: ClarifyingQuestion[]; mode: 'plan' | 'agent' | 'chat' };
+  pendingClarify?: { requestId: string; userContent: ChatContent; prompt: string; questions: ClarifyingQuestion[]; mode: 'plan' | 'agent' };
   /** In-flight `askUser` tool calls, keyed by OpenAI tool_call_id, awaiting a webview answer. */
   pendingAskUser: Map<string, (answer: string) => void>;
   /** True while an approved plan is being executed in Agent mode — drives the "Following the approved plan" header. */
@@ -1519,12 +1519,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     try {
       const cbk = this.agentCallbacks(s, m.requestId, m.mode as Mode);
-      const sdkMode = m.mode as 'chat' | 'agent' | 'plan';
-      let result = sdkMode === 'chat'
-        ? await runChatStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model))
-        : sdkMode === 'plan'
-          ? await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {})
-          : await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
+      const sdkMode = m.mode as 'agent' | 'plan';
+      let result = sdkMode === 'plan'
+        ? await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {})
+        : await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
 
       // Watchdog "Restart Request" / "Switch Model": the button handler aborted the run above
       // and left `pendingWatchdogRetry` set — re-invoke the SAME request (same requestId, same
@@ -1536,11 +1534,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.cancel?.dispose();
         s.cancel = new vscode.CancellationTokenSource();
         const retryModel = retryKind === 'switch' ? 'auto' : m.model;
-        result = sdkMode === 'chat'
-          ? await runChatStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, retryModel))
-          : sdkMode === 'plan'
-            ? await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, retryModel), {})
-            : await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, retryModel), {});
+        result = sdkMode === 'plan'
+          ? await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, retryModel), {})
+          : await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, retryModel), {});
       }
 
       if (!this.isActiveRun(s, m.requestId)) return;
@@ -1609,7 +1605,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: pinned, paused: result.paused, noFooter: hasQuestions });
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
       if (hasQuestions) {
-        s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: agentClar.questions!, mode: m.mode as 'plan' | 'agent' | 'chat' };
+        s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: agentClar.questions!, mode: m.mode as 'plan' | 'agent' };
         this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: agentClar.questions! });
       }
     } catch (e) {
@@ -1940,7 +1936,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private makeAgentOpts(
     s: Session,
     _requestId: string,
-    mode: 'chat' | 'agent' | 'plan',
+    mode: 'agent' | 'plan',
     effort: ReasoningEffort,
     callbacks: ReturnType<typeof this.agentCallbacks>,
     pinnedModel?: string,
@@ -2181,7 +2177,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .map((q, i) => `Q: ${q.text}\nA: ${m.answers[i] ?? '(no answer)'}`)
       .join('\n');
 
-    if (ctx.mode === 'agent' || ctx.mode === 'chat') {
+    if (ctx.mode === 'agent') {
       const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       await this.handleSend({ type: 'sendMessage', requestId, text: qa, mode: ctx.mode, model: s.model ?? 'auto', reasoningEffort: s.reasoningEffort ?? 'medium' });
       return;

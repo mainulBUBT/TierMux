@@ -21,7 +21,7 @@ import type { McpServerConfig } from '../mcp/mcpClient';
  * additions), with rules/memory/skills appended last. Falls back to a minimal inline
  * string if the directory is missing or unreadable.
  */
-export async function loadAgentInstructions(extensionPath: string, log: (m: string) => void, workspaceRoot?: string): Promise<string> {
+export async function loadAgentInstructions(extensionPath: string, log: (m: string) => void, workspaceRoot?: string): Promise<{ agentPrompt: string; instructions: string }> {
   const agentDir = path.join(extensionPath, '.tiermux', 'agent');
   let base: string;
   try {
@@ -43,22 +43,35 @@ export async function loadAgentInstructions(extensionPath: string, log: (m: stri
   const memory = await loadUserMemory().catch(() => '');
   const rules = await loadProjectRules().catch(() => '');
   const skills = skillIndexPrompt(extensionPath, workspaceRoot);
-  return [base, rules, memory, skills].filter(Boolean).join('\n\n');
+  // `base` (the .tiermux/agent scaffolding) becomes the agents' `prompt` so it LEADS the
+  // system prompt and replaces OC's "You are opencode…" preamble. Dynamic per-workspace
+  // context (project rules, user memory, skills index) stays in the appended instructions
+  // file. Splitting the two avoids double-injecting `base` and keeps the prompt compact.
+  return {
+    agentPrompt: base,
+    instructions: [rules, memory, skills].filter(Boolean).join('\n\n'),
+  };
 }
 
-/** Write the assembled agent instructions to a temp file so OC can load them via --instructions. */
-async function writeInstructionsFile(extensionPath: string, cacheDir: string | undefined, workspaceRoot: string | undefined, log: (m: string) => void): Promise<string | undefined> {
+/** Write the dynamic instructions (rules/memory/skills) to a temp file so OC can load them
+ *  via the `instructions` config. Returns the file path plus the core agent scaffolding to
+ *  set as the agents' `prompt`. */
+async function writeInstructionsFile(extensionPath: string, cacheDir: string | undefined, workspaceRoot: string | undefined, log: (m: string) => void): Promise<{ file?: string; agentPrompt?: string }> {
   try {
-    const content = await loadAgentInstructions(extensionPath, log, workspaceRoot);
-    const dir = cacheDir ?? os.tmpdir();
-    fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, 'tiermux-instructions.md');
-    fs.writeFileSync(file, content, 'utf8');
-    log(`[tiermux] wrote agent instructions (${content.length} chars) → ${file}`);
-    return file;
+    const { agentPrompt, instructions } = await loadAgentInstructions(extensionPath, log, workspaceRoot);
+    let file: string | undefined;
+    if (instructions.trim()) {
+      const dir = cacheDir ?? os.tmpdir();
+      fs.mkdirSync(dir, { recursive: true });
+      file = path.join(dir, 'tiermux-instructions.md');
+      fs.writeFileSync(file, instructions, 'utf8');
+      log(`[tiermux] wrote dynamic instructions (${instructions.length} chars) → ${file}`);
+    }
+    log(`[tiermux] agent prompt scaffolding: ${agentPrompt.length} chars (set as build/plan prompt)`);
+    return { file, agentPrompt };
   } catch (err) {
     log(`could not write instructions file: ${err instanceof Error ? err.message : err}`);
-    return undefined;
+    return {};
   }
 }
 
@@ -123,10 +136,11 @@ export async function launchOpenCode(opts: OcLaunchOptions): Promise<OcConnectio
   log(`binary resolved: ${binary}`);
 
   const password = newPassword();
-  const instructionsFile = await writeInstructionsFile(opts.extensionPath, opts.cacheDir, opts.workspaceRoot, log);
+  const { file: instructionsFile, agentPrompt } = await writeInstructionsFile(opts.extensionPath, opts.cacheDir, opts.workspaceRoot, log);
   const configContent = buildOcConfig({
     routerProxyBaseURL: opts.routerProxyBaseURL,
     apiKey: 'local',
+    agentPrompt,
     instructionsPaths: instructionsFile ? [instructionsFile] : undefined,
     extraModelIds: opts.enabledModelIds,
     mcpServers: opts.mcpServers,

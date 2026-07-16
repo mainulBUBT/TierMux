@@ -19,7 +19,7 @@ import { CommandGate, type CommandApproval } from './edits/commandGate';
 import { registerCheckpointContentProvider } from './edits/checkpoints';
 import { registerOcSessionDiffContentProvider } from './edits/ocSessionDiff';
 
-import { setOcEngine, setOcTrace, setQualityGate, setHotStandby, setHedging, setCompactionTailTurns } from './agent/sdk';
+import { setOcEngine, setOcTrace, setQualityGate, setHotStandby, setCompactionTailTurns } from './agent/sdk';
 import { McpManager } from './mcp/mcpManager';
 import { normalizeMcpServerConfig, type McpServerConfig } from './mcp/mcpClient';
 import { ChatViewProvider } from './chatViewProvider';
@@ -304,8 +304,6 @@ export function activate(context: vscode.ExtensionContext): void {
 
   setHotStandby(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('hotStandby', true));
 
-  setHedging(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('chatHedging', true));
-
   setSmartScoring(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('smartScoring', true));
   let scoringTraceOn = vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('scoringTrace', false);
   let routerLog: vscode.OutputChannel | undefined;
@@ -411,9 +409,6 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       if (e.affectsConfiguration('tiermux.agent.hotStandby')) {
         setHotStandby(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('hotStandby', true));
-      }
-      if (e.affectsConfiguration('tiermux.agent.chatHedging')) {
-        setHedging(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('chatHedging', true));
       }
       if (e.affectsConfiguration('tiermux.agent.smartScoring')) {
         setSmartScoring(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('smartScoring', true));
