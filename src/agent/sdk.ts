@@ -86,7 +86,7 @@ export interface AgentResult {
 
 export interface AgentOpts {
   messages: ChatMessage[];
-  mode: 'agent' | 'plan';
+  mode: 'agent' | 'plan' | 'ask';
   effort: ReasoningEffort;
   abortSignal?: AbortSignal;
   pinnedModel?: string;
@@ -254,9 +254,10 @@ export async function getOcSessionDiff(sessionId: string): Promise<Array<{ file:
  * `runViaOc` walks this chain left-to-right on empty-answer failures — agent/plan already
  * start on `smart` so there's nowhere cheaper to try first.
  */
-const FALLBACK_CHAIN: Record<'agent' | 'plan', string[]> = {
+const FALLBACK_CHAIN: Record<'agent' | 'plan' | 'ask', string[]> = {
   agent: ['smart', 'smart'],
   plan: ['smart'],
+  ask: ['smart'],
 };
 
 /**
@@ -294,7 +295,7 @@ async function runViaOc(
 
   const key = opts.sessionId ?? '__default__';
 
-  const agent = opts.mode === 'plan' ? 'plan' : 'build';
+  const agent = opts.mode === 'plan' ? 'plan' : opts.mode === 'ask' ? 'ask' : 'build';
 
   const pinned = opts.pinnedModel && opts.pinnedModel !== 'auto' ? opts.pinnedModel : undefined;
   const chain = pinned ? [pinned] : (FALLBACK_CHAIN[opts.mode] ?? ['smart']);
@@ -1172,6 +1173,11 @@ export async function runAgentStream(_router: Router, opts: AgentOpts, _tools: T
 /** Plan mode: read-only OC `plan` agent over `tiermux/smart`. */
 export async function runPlanStream(_router: Router, opts: AgentOpts, _tools: ToolSet): Promise<AgentResult> {
   return runViaOc({ ...opts, mode: 'plan' });
+}
+
+/** Ask mode: read-only OC `ask` agent over `tiermux/smart` — pure Q&A, no edits, no bash. */
+export async function runAskStream(_router: Router, opts: AgentOpts, _tools: ToolSet): Promise<AgentResult> {
+  return runViaOc({ ...opts, mode: 'ask' });
 }
 
 /** Session title: one-shot completion straight through the Router (no agent loop). */

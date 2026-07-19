@@ -266,6 +266,7 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
 
   // Mode picker (custom dropdown: button shows the short name, list shows name + description).
   const MODES = [
+    { value: 'ask', label: 'Ask', desc: 'Read-only Q&A — answers your question using the code it can read/search. Cannot edit files or run commands.' },
     { value: 'plan', label: 'Plan', desc: 'Researches the code (may run commands to investigate), proposes a plan, then edits only after you approve.' },
     { value: 'agent', label: 'Agent', desc: 'Full agent — reads, edits files, runs commands, and tracks a live task list.' },
   ];

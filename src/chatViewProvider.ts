@@ -6,7 +6,7 @@ import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
 import type { UsageStore } from './config/usageStore';
 import type { Mode } from './shared/types';
-import { runAgentStream, runPlanStream, getOcSessionDiff, findTextViaOc, isOcEngineActive, hasOcSession, summarizeOcSession, clearSession, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
+import { runAgentStream, runPlanStream, runAskStream, getOcSessionDiff, findTextViaOc, isOcEngineActive, hasOcSession, summarizeOcSession, clearSession, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
 import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
 import { SETTINGS_META, defaultForSetting } from './settingsMeta';
@@ -1519,10 +1519,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     try {
       const cbk = this.agentCallbacks(s, m.requestId, m.mode as Mode);
-      const sdkMode = m.mode as 'agent' | 'plan';
-      let result = sdkMode === 'plan'
-        ? await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {})
-        : await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
+      const sdkMode = m.mode as 'agent' | 'plan' | 'ask';
+      const runner = sdkMode === 'plan' ? runPlanStream : sdkMode === 'ask' ? runAskStream : runAgentStream;
+      let result = await runner(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
 
       // Watchdog "Restart Request" / "Switch Model": the button handler aborted the run above
       // and left `pendingWatchdogRetry` set — re-invoke the SAME request (same requestId, same
@@ -1534,9 +1533,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.cancel?.dispose();
         s.cancel = new vscode.CancellationTokenSource();
         const retryModel = retryKind === 'switch' ? 'auto' : m.model;
-        result = sdkMode === 'plan'
-          ? await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, retryModel), {})
-          : await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, retryModel), {});
+        result = await runner(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, retryModel), {});
       }
 
       if (!this.isActiveRun(s, m.requestId)) return;
@@ -1563,7 +1560,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       const autoContinueOn = vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('autoContinue', true);
-      if (m.mode !== 'plan') {
+      if (m.mode === 'agent') {
         for (let ac = 0; result.paused && autoContinueOn && ac < 3 && this.isActiveRun(s, m.requestId); ac++) {
 
           this.persistAgentTurn(s, result);
@@ -1936,7 +1933,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private makeAgentOpts(
     s: Session,
     _requestId: string,
-    mode: 'agent' | 'plan',
+    mode: 'agent' | 'plan' | 'ask',
     effort: ReasoningEffort,
     callbacks: ReturnType<typeof this.agentCallbacks>,
     pinnedModel?: string,

@@ -163,7 +163,7 @@ export interface MentionItem {
 // Webview -> Extension
 export type InMessage =
   | { type: 'ready' }
-  | { type: 'sendMessage'; requestId: string; text: string; mode: 'plan' | 'agent'; model: string; reasoningEffort: ReasoningEffort; attachments?: Attachment[]; attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'> }
+  | { type: 'sendMessage'; requestId: string; text: string; mode: 'plan' | 'agent' | 'ask'; model: string; reasoningEffort: ReasoningEffort; attachments?: Attachment[]; attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'> }
   | { type: 'approvePlan'; requestId: string; approved: boolean; steps: string }
   | { type: 'deferPlan'; requestId: string; steps: string }
   | { type: 'answerClarifying'; requestId: string; answers: string[] }

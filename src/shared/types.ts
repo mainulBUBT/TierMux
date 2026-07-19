@@ -29,8 +29,8 @@ export type Platform =
 
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
 
-/** TierMux's two chat modes, mapped directly onto OC's own native `plan`/`build` agents. */
-export type Mode = 'plan' | 'agent';
+/** TierMux's chat modes, mapped directly onto OC's own native `plan`/`build`/`ask` agents. */
+export type Mode = 'plan' | 'agent' | 'ask';
 
 interface ChatToolCallFunction {
   name: string;

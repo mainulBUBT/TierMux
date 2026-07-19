@@ -63,6 +63,16 @@ const PLAN_MODE_TAIL =
   + 'For a trivial message (a greeting like "hi", small talk, or a simple question), just '
   + 'reply briefly and directly — do NOT fabricate a plan for it.';
 
+const ASK_MODE_TAIL =
+  '\n\n## Ask mode\n'
+  + 'You are in READ-ONLY Ask mode: you cannot edit files or run commands. Answer the '
+  + "user's question directly. If it's about this project, read/search the files to ground "
+  + 'your answer. If it is a general-knowledge or current-events question unrelated to the '
+  + 'project (news, sports scores, weather, prices, anything time-sensitive), use the '
+  + 'webfetch/websearch tools to look it up and answer directly — you DO have live web access '
+  + 'through those tools, so never claim you lack real-time information without first trying '
+  + 'them. Do not propose a plan or list steps to execute; just answer.';
+
 /**
  * Returns a JSON string OC parses as its config. See OC's ProviderConfig schema
  * (config/provider.ts): `npm` selects the SDK adapter, `options.baseURL`/`apiKey`
@@ -131,6 +141,11 @@ export function buildOcConfig(opts: OcConfigOptions): string {
           agent: {
             build: { mode: 'primary', prompt: opts.agentPrompt + BUILD_MODE_TAIL },
             plan: { mode: 'primary', prompt: opts.agentPrompt + PLAN_MODE_TAIL },
+            ask: {
+              mode: 'primary',
+              prompt: opts.agentPrompt + ASK_MODE_TAIL,
+              permission: { edit: 'deny', bash: 'deny' },
+            },
           },
         }
       : {}),

@@ -121,6 +121,33 @@ function newPassword(): string {
 }
 
 /**
+ * Env vars OC/models.dev auto-detects to register its own default providers (openai,
+ * anthropic, google, etc.) independent of our config JSON's `provider` block. The OC
+ * child inherits the full host env (needed for PATH, HOME, proxies, ...), so any of
+ * these left set — e.g. ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL from a Claude Code
+ * session — leaks a second provider into OC's own model picker alongside `tiermux`.
+ * Stripped before spawn so the only provider OC ever sees is the one we define.
+ */
+const PROVIDER_CREDENTIAL_ENV_VARS = [
+  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
+  'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ORGANIZATION',
+  'GOOGLE_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS',
+  'GROQ_API_KEY', 'MISTRAL_API_KEY', 'COHERE_API_KEY', 'OPENROUTER_API_KEY',
+  'DEEPSEEK_API_KEY', 'XAI_API_KEY', 'TOGETHER_API_KEY', 'FIREWORKS_API_KEY',
+  'PERPLEXITY_API_KEY', 'AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_ENDPOINT',
+  'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_PROFILE',
+  'VERTEXAI_PROJECT', 'VERTEXAI_LOCATION',
+];
+
+/** Host env, minus any provider credentials OC could use to auto-register its own
+ *  providers/models. Everything else (PATH, HOME, proxy vars, ...) passes through. */
+function sanitizedEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of PROVIDER_CREDENTIAL_ENV_VARS) delete env[key];
+  return env;
+}
+
+/**
  * Spawn `opencode serve` and resolve once it prints its listening URL.
  * Rejects if no binary is available or the server fails to come up — the caller
  * is expected to catch and continue without the OC engine.
@@ -156,7 +183,7 @@ export async function launchOpenCode(opts: OcLaunchOptions): Promise<OcConnectio
     cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {
-      ...process.env,
+      ...sanitizedEnv(),
       OPENCODE_CONFIG_CONTENT: configContent,
       OPENCODE_SERVER_PASSWORD: password,
     },
