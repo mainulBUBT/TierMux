@@ -58,10 +58,21 @@ const BUILD_MODE_TAIL =
 const PLAN_MODE_TAIL =
   '\n\n## Plan mode\n'
   + 'You are in READ-ONLY plan mode: you cannot edit files or run commands. For a real task '
-  + 'or change request, investigate the relevant files first, then reply with a concise, '
-  + 'numbered, step-by-step plan as TEXT — each step naming the file/symbol it touches. '
+  + 'or change request, investigate the relevant files first, then reply with a concise plan '
+  + 'as TEXT, using numbered or bulleted steps — each step naming the file/symbol it touches. '
+  + 'If the work naturally splits into different priority/effort tiers (e.g. quick wins vs '
+  + 'larger changes), group steps under short headings for that instead of one flat list — '
+  + 'but keep the actual steps under each heading as a numbered/bulleted list, not prose, so '
+  + 'they can still be reviewed and approved individually. '
   + 'For a trivial message (a greeting like "hi", small talk, or a simple question), just '
-  + 'reply briefly and directly — do NOT fabricate a plan for it.';
+  + 'reply briefly and directly — do NOT fabricate a plan for it. '
+  + 'If you need to ask the user something before you can plan, use ONLY the '
+  + '???QUESTIONS???...???END??? text block (see the ask-format instructions) — do NOT call '
+  + 'an interactive question/ask tool for this. That block is the single clarifying-question '
+  + 'channel for plan mode; calling a tool on top of it asks the same thing twice through two '
+  + 'different UI cards, which is confusing. Once the user has answered a ???QUESTIONS??? '
+  + 'round, treat that as final — proceed to produce the plan using their answers and your own '
+  + 'best judgment for anything still unspecified, rather than asking again.';
 
 const ASK_MODE_TAIL =
   '\n\n## Ask mode\n'
@@ -129,9 +140,8 @@ export function buildOcConfig(opts: OcConfigOptions): string {
     model: 'tiermux/auto',
 
     // Override the `prompt` on OC's built-in `build`/`plan` agents so the TierMux scaffolding
-    // LEADS the system prompt and replaces OC's generic "You are opencode…" preamble. Only
-    // `prompt` (and `mode`) is set — tools and permissions are intentionally left to OC's
-    // native build (full) / plan (read-only) defaults, per the OC-native-permissions design.
+    // LEADS the system prompt and replaces OC's generic "You are opencode…" preamble. `build`
+    // keeps OC's native full-tool defaults untouched, per the OC-native-permissions design.
     // Each agent gets a short mode-specific tail on top of the shared scaffolding: without a
     // plan-specific tail, plan == build and behavior.md's "never reply with a greeting — get
     // to work" makes read-only plan mode fabricate a plan even for "hi". The tails restore the
@@ -140,6 +150,20 @@ export function buildOcConfig(opts: OcConfigOptions): string {
       ? {
           agent: {
             build: { mode: 'primary', prompt: opts.agentPrompt + BUILD_MODE_TAIL },
+            // Plan mode already has its OWN clarifying-question channel (the
+            // ???QUESTIONS???...???END??? text sentinel, parsed by parseClarifying and
+            // rendered as the `clarifyingQuestions` card). OC's native `question` tool is
+            // otherwise wired unconditionally for every mode (agentCallbacks isn't mode-gated
+            // — see chatViewProvider.ts), so a model can in principle ask via the sentinel AND
+            // via the tool for the same plan, producing two near-identical interactive cards.
+            // PLAN_MODE_TAIL prompts against this. Tried also hard-disabling the tool via
+            // `tools: { question: false }` (OC's per-agent tool-enable map) — reverted: it does
+            // NOT remove `question` from what's offered to the model, it just rejects the call
+            // at execution time with an "unavailable tool" error (confirmed via the
+            // pre-existing TOOL_CALL_ERROR regex in sdk.ts, added before this change to handle
+            // exactly that OC error class). A model that still tries calling it now gets a hard
+            // error + retry instead of a redundant card — worse than the bug being fixed. Prompt
+            // enforcement only, until a real tool-removal mechanism is confirmed.
             plan: { mode: 'primary', prompt: opts.agentPrompt + PLAN_MODE_TAIL },
             ask: {
               mode: 'primary',

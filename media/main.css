@@ -462,6 +462,18 @@ details[open].think-block > details > summary::before { content: '▾ '; }
 .plan-discuss:hover { opacity: 1; text-decoration: underline; }
 .plan-reject { font-size: 11px; opacity: .45; background: none; border: none; cursor: pointer; padding: 5px 8px; color: inherit; margin-left: auto; }
 .plan-reject:hover { opacity: .8; color: var(--vscode-errorForeground); }
+.plan-summary { font-size: 12px; opacity: .7; margin-bottom: 4px; }
+/* The model's own plan text, rendered as markdown — headings, bold, code spans, and any
+   priority/effort grouping it chose all come through as-is, matching OC's raw output style. */
+.plan-rendered { font-size: 13px; line-height: 1.55; margin-bottom: 6px; }
+.plan-rendered :first-child { margin-top: 0; }
+.plan-rendered :last-child { margin-bottom: 0; }
+.plan-details-toggle {
+  font-size: 11px; opacity: .6; background: none; border: none; cursor: pointer;
+  padding: 2px 0; margin-bottom: 4px; color: inherit;
+}
+.plan-details-toggle:hover { opacity: 1; text-decoration: underline; }
+.plan-details.hidden { display: none; }
 
 /* Live task checklist (TodoWrite-style) */
 .todo-list {
@@ -522,6 +534,10 @@ details[open].think-block > details > summary::before { content: '▾ '; }
 .clarify-opt-num { flex: 0 0 22px; text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; opacity: .35; padding-top: 2px; }
 .clarify-radio { flex: 0 0 auto; width: 14px; height: 14px; margin-top: 3px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--vscode-descriptionForeground, #888); }
 .clarify-opt.selected .clarify-radio { border-color: var(--vscode-focusBorder); background: radial-gradient(circle, var(--vscode-focusBorder) 0 45%, transparent 50%); }
+/* Multi-select ("select all that apply") variant — square checkbox instead of radio dot. */
+.clarify-checkbox { flex: 0 0 auto; width: 14px; height: 14px; margin-top: 3px; border-radius: 3px; box-sizing: border-box; border: 1.5px solid var(--vscode-descriptionForeground, #888); }
+.clarify-opt.selected .clarify-checkbox { border-color: var(--vscode-focusBorder); background: var(--vscode-focusBorder); }
+.clarify-multi-hint { font-size: 11px; opacity: .55; margin: -2px 0 4px; font-style: italic; }
 .clarify-opt-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .clarify-opt-title { font-size: 12.5px; font-weight: 600; }
 .clarify-opt-desc { font-size: 11px; opacity: .6; line-height: 1.4; }
@@ -851,6 +867,10 @@ button#model-btn .mb-label { overflow: hidden; text-overflow: ellipsis; white-sp
 .mode-item-desc { font-size: 11px; opacity: .7; margin-top: 2px; line-height: 1.35; }
 .mode-item.selected .mode-item-desc { opacity: .9; }
 button#mode-btn .mode-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button#mode-btn.executing .mode-label {
+  color: var(--vscode-textLink-foreground, #4daafc);
+  animation: state-pulse 1.2s ease-in-out infinite;
+}
 
 .model-picker { position: relative; min-width: 0; }
 .model-pop {
@@ -910,6 +930,11 @@ button#mode-btn .mode-label { overflow: hidden; text-overflow: ellipsis; white-s
   text-align: center; font-size: 11px; opacity: .7; margin: 6px auto; padding: 4px 10px;
   border-top: 1px dashed var(--vscode-panel-border); border-bottom: 1px dashed var(--vscode-panel-border);
 }
+/* When rendered as a <button> (clickable notice, e.g. "open plan file") — reset button
+   chrome so it still reads as a plain divider, with just a pointer + underline on hover. */
+button.compact-divider { background: none; font: inherit; display: block; width: 100%; }
+.compact-divider-link { cursor: pointer; }
+.compact-divider-link:hover { opacity: 1; text-decoration: underline; }
 .send-btn {
   background: var(--vscode-button-background); color: var(--vscode-button-foreground);
   border: none; cursor: pointer; border-radius: 50%; width: 30px; height: 30px; flex: 0 0 auto;

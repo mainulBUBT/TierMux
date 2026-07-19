@@ -32,7 +32,7 @@ import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense } from './agent/condense';
 import { parseClarifying, type ClarifyingQuestion } from './agent/clarify';
-import { deriveTitleFrom, looksLikeActionablePlan, planStepsToTodos, sanitizeTitle } from './session/titles';
+import { deriveTitleFrom, extractSubjectTerms, looksLikeActionablePlan, mentionsSubject, planStepsToTodos, sanitizeTitle } from './session/titles';
 
 import { loadSkills } from './context/skills';
 
@@ -658,6 +658,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'switchSession', sessionId: id, messages: s.transcript });
     this.post({ type: 'busy', sessionId: id, busy: !!s.activeRequestId });
 
+    this.postLiveRunState(s);
+    this.postCheckpoints(s);
+    void this.sendConfig();
+    this.updateViewTitle();
+  }
+
+  /**
+   * Re-send everything needed to reconstruct the currently-viewed session's live UI state: a
+   * still-running turn's assistantStart/step/todos, and any pending interactive cards (plan
+   * proposal, clarifying questions, approvals). The extension host's in-memory `Session`
+   * survives both a tab switch (openSession) AND a webview-only reload (the 'ready' handler,
+   * e.g. Cmd+R) — only the *rendered* webview is gone in the latter case — so both paths need
+   * this same resync or a mid-run reload silently drops the plan/clarify card and live status.
+   */
+  private postLiveRunState(s: Session): void {
     if (s.activeRequestId) {
       const rid = s.activeRequestId;
       this.post({ type: 'assistantStart', sessionId: s.id, requestId: rid, platform: s.livePlatform ?? '', model: s.liveModel ?? '' });
@@ -665,9 +680,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (s.lastTodos && s.lastTodos.length) this.post({ type: 'todos', sessionId: s.id, requestId: rid, todos: s.lastTodos, followingPlan: !!s.executingPlan });
     }
     for (const card of s.cards) this.post(card);
-    this.postCheckpoints(s);
-    void this.sendConfig();
-    this.updateViewTitle();
   }
 
   /**
@@ -717,7 +729,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.flushQueue();
         await this.sendConfig();
         this.postSessionList();
-        { const s = this.current(); this.post({ type: 'switchSession', sessionId: s.id, messages: s.transcript }); this.post({ type: 'busy', sessionId: s.id, busy: !!s.activeRequestId }); this.postCheckpoints(s); }
+        {
+          const s = this.current();
+          this.post({ type: 'switchSession', sessionId: s.id, messages: s.transcript });
+          this.post({ type: 'busy', sessionId: s.id, busy: !!s.activeRequestId });
+          this.postLiveRunState(s);
+          this.postCheckpoints(s);
+        }
         break;
       case 'switchSession':
         this.openSession(m.sessionId);
@@ -814,6 +832,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const files = await getOcSessionDiff(m.sessionId);
         const f = files.find((x) => x.file === m.file);
         if (f) await openOcFileDiff(f.file, f.before, f.after);
+        break;
+      }
+      case 'openPlanFile': {
+        await vscode.window.showTextDocument(vscode.Uri.parse(m.uri));
         break;
       }
       case 'vote': {
@@ -1538,11 +1560,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       if (!this.isActiveRun(s, m.requestId)) return;
 
+      // Deterministic relevance check, not just a prompt hope: a reply that never engages
+      // with anything the user actually named (e.g. a generic whole-project overview when
+      // a specific feature was asked about) is a known failure mode on weaker/free models
+      // that ignore "answer exactly what was asked" prompt instructions. One bounded
+      // corrective retry — re-run with the miss called out explicitly — before falling
+      // through to whatever the model produces. `extraHistoryPushed` tracks the correction
+      // message so the plan-mode "not committed yet" pop() below removes both, not just one.
+      let extraHistoryPushed = 0;
+      if (sdkMode === 'plan') {
+        const subjectTerms = extractSubjectTerms(prompt);
+        if (!mentionsSubject(result.text, subjectTerms)) {
+          s.history.push({ role: 'user', content: `Your last reply didn't address "${subjectTerms.slice(0, 5).join(', ')}" at all — it read like a generic project summary instead of investigating what was actually asked. Grep for those terms, read the relevant files, and answer ONLY about that.` });
+          extraHistoryPushed = 1;
+          result = await runner(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
+          if (!this.isActiveRun(s, m.requestId)) return;
+        }
+      }
+
       if (m.mode === 'plan') {
         const clar = parseClarifying(result.text);
         if (clar.questions && clar.questions.length) {
 
-          s.history.pop();
+          s.history.length -= 1 + extraHistoryPushed;
           s.pendingPlanUser = userContent;
           s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: clar.questions, mode: 'plan' };
           this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: clar.questions });
@@ -1550,10 +1590,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
 
         if (looksLikeActionablePlan(clar.text)) {
-          s.history.pop(); // not committed yet — re-added on approval
+          s.history.length -= 1 + extraHistoryPushed; // not committed yet — re-added on approval
           s.pendingPlanUser = userContent;
           this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
-          void this.savePlan(s, prompt, clar.text);
+          this.preparePlanFile(s, prompt);
           return;
         }
 
@@ -1731,9 +1771,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.postCheckpoints(s);
   }
 
-  /** Persist a proposed plan as a visible markdown checklist file in the workspace.
-   *  Stores the file URI on the session so edits before approval can overwrite it. */
-  private async savePlan(s: Session, title: string, steps: string): Promise<void> {
+  /** Compute (but do NOT write) the file this plan will be saved to if approved. Stores the
+   *  URI on the session so handleApprovePlan's writePlanFile call has a stable destination —
+   *  nothing touches disk until the user actually approves and runs the plan. */
+  private preparePlanFile(s: Session, title: string): void {
     const cfg = vscode.workspace.getConfiguration('tiermux.plan');
     if (!cfg.get<boolean>('saveToFile', true)) return;
     const ws = vscode.workspace.workspaceFolders?.[0];
@@ -1746,7 +1787,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const dir = vscode.Uri.joinPath(ws.uri, ...folder.split('/'));
     const fileUri = vscode.Uri.joinPath(dir, `${stamp}-${clean}.md`);
     s.pendingPlanFile = { uri: fileUri, title: title || 'Untitled' };
-    await this.writePlanFile(s, steps);
   }
 
   /** Write (or overwrite) the plan MD file for the session with the current steps. */
@@ -1761,7 +1801,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(uri, '..'));
       await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(body));
-      this.post({ type: 'notice', sessionId: this.viewedSessionId, text: `📄 Plan saved to ${vscode.workspace.asRelativePath(uri)}` });
+      // Pass the URI directly on the notice (not looked up via s.pendingPlanFile at click
+      // time) so the click still works after approval clears pendingPlanFile.
+      this.post({ type: 'notice', sessionId: this.viewedSessionId, text: `📄 Plan saved to ${vscode.workspace.asRelativePath(uri)}`, action: { kind: 'openPlanFile', uri: uri.toString() } });
     } catch (e) {
       this.post({ type: 'notice', sessionId: this.viewedSessionId, text: `Could not save plan file: ${e instanceof Error ? e.message : String(e)}` });
     }
@@ -1770,8 +1812,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * "Keep discussing": release the plan gate without executing or discarding. The user wants to
    * refine first — so drop the pending-plan state (the next message is a clean discussion turn),
-   * keep any edits they made to the steps, and mark the card so it replays without re-gating. The
-   * saved .md plan and the still-available "Approve & Run" let them build it when ready.
+   * keep any edits they made to the steps, and mark the card so it replays without re-gating.
+   * Nothing is written to disk here — the plan only touches the filesystem once approved
+   * (handleApprovePlan), so an edited-but-never-run plan never leaves a stray .md behind.
    */
   private handleDeferPlan(m: Extract<InMessage, { type: 'deferPlan' }>): void {
     const s = this.current();
@@ -1782,8 +1825,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         (c as { deferred?: boolean }).deferred = true;
       }
     }
-
-    if (m.steps) void this.writePlanFile(s, m.steps);
   }
 
   private async handleApprovePlan(m: Extract<InMessage, { type: 'approvePlan' }>): Promise<void> {
@@ -1814,6 +1855,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const release = await this.acquireRunSlot(s.id);
     if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
     this.post({ type: 'busy', sessionId: s.id, busy: true });
+    this.post({ type: 'planExecuting', sessionId: s.id, requestId: m.requestId, executing: true });
     const stepCount = planStepsToTodos(m.steps).length;
     this.post({ type: 'agentStep', sessionId: s.id, requestId: m.requestId, phase: 'thinking', label: stepCount > 0 ? `▶ Executing approved plan (${stepCount} steps)` : '▶ Executing approved plan' });
 
@@ -1856,6 +1898,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.finishCheckpoint(s, m.requestId);
         this.persist(s.id);
         this.post({ type: 'busy', sessionId: s.id, busy: false });
+        this.post({ type: 'planExecuting', sessionId: s.id, requestId: m.requestId, executing: false });
         this.setStatus(s.id, 'finished');
         await this.maybeAutoCompact(s);
         void this.maybeGenerateTitle(s);
@@ -2182,7 +2225,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const base = s.history.length;
     s.history.push({ role: 'user', content: ctx.userContent });
-    s.history.push({ role: 'user', content: `Clarifications from the user:\n${qa}\n\nUsing these answers, produce the step-by-step plan now.` });
+    s.history.push({ role: 'user', content: `Clarifications from the user:\n${qa}\n\nUsing these answers, produce the step-by-step plan now. Do not ask any further questions — through the ???QUESTIONS??? block or any tool — use your best judgment for anything still unspecified.` });
 
     s.cancel?.dispose();
     s.cancel = new vscode.CancellationTokenSource();
@@ -2191,13 +2234,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
     this.post({ type: 'busy', sessionId: s.id, busy: true });
     await s.checkpoints.begin(m.requestId, 'Plan (clarified)');
+    const sentAt = Date.now();
     try {
       const cbk5 = this.agentCallbacks(s, m.requestId, 'plan');
-      const result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});
+      let result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});
       if (!this.isActiveRun(s, m.requestId)) return;
+      // Same deterministic relevance check as the initial propose path (handleSend) — a
+      // resumed run can drift into a generic answer just as easily as the first one.
+      const subjectTerms = extractSubjectTerms(ctx.prompt);
+      if (!mentionsSubject(result.text, subjectTerms)) {
+        s.history.push({ role: 'user', content: `Your last reply didn't address "${subjectTerms.slice(0, 5).join(', ')}" at all — it read like a generic project summary instead of investigating what was actually asked. Grep for those terms, read the relevant files, and answer ONLY about that.` });
+        result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});
+        if (!this.isActiveRun(s, m.requestId)) return;
+      }
       const clar = parseClarifying(result.text);
-      this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
-      void this.savePlan(s, ctx.prompt, clar.text);
+      if (looksLikeActionablePlan(clar.text)) {
+        this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
+        this.preparePlanFile(s, ctx.prompt);
+      } else if (clar.text.trim()) {
+        // Not actionable steps — the model needs more from the user (a clarification or
+        // discussion reply) rather than a plan to run. Show it as a normal answer instead of
+        // squashing the whole prose into a broken one-item "plan" card (duplicating it visually
+        // alongside the plain text render above).
+        this.pushAssistantTurn(s, m.requestId, result, sentAt);
+        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: clar.text, reasoning: result.reasoning, platform: result.runtimeName ?? result.platform, model: result.model, paused: result.paused });
+      } else {
+        // The resumed run returned nothing usable (e.g. all of result.text was consumed by a
+        // stray ???QUESTIONS??? block parseClarifying stripped) — posting an empty planProposed
+        // card renders as a broken "0 steps" card with nothing to run. Surface it as an error
+        // instead so the user knows to retry rather than staring at an empty plan.
+        this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: "The agent didn't return a plan for those answers — try again or rephrase your request." });
+      }
 
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return;

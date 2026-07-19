@@ -64,3 +64,45 @@ export function looksLikeActionablePlan(text: string): boolean {
   const actionable = steps.filter((s) => PLAN_EDIT_VERB.test(s) || PLAN_PATHISH.test(s)).length;
   return actionable >= Math.ceil(steps.length / 2);
 }
+
+const SUBJECT_STOPWORDS = new Set([
+  'a', 'an', 'the', 'this', 'that', 'these', 'those', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+  'how', 'can', 'could', 'would', 'should', 'will', 'shall', 'do', 'does', 'did', 'done',
+  'we', 'you', 'i', 'it', 'they', 'he', 'she', 'them', 'us', 'my', 'your', 'our', 'their',
+  'to', 'of', 'for', 'in', 'on', 'at', 'with', 'by', 'from', 'into', 'onto', 'about', 'as', 'and', 'or', 'but', 'not',
+  'more', 'most', 'some', 'any', 'all', 'no', 'none', 'etc', 'stuff', 'things', 'thing',
+  'upgrade', 'upgraded', 'upgrading', 'optimize', 'optimized', 'optimizing', 'optimise', 'optimising',
+  'improve', 'improved', 'improving', 'fix', 'fixed', 'fixing', 'add', 'added', 'adding', 'update', 'updated', 'updating',
+  'change', 'changed', 'changing', 'make', 'made', 'making', 'build', 'built', 'building', 'create', 'created', 'creating',
+  'help', 'please', 'need', 'want', 'give', 'tell', 'explain', 'show', 'let', 'get', 'got',
+  'project', 'codebase', 'code', 'app', 'application', 'system', 'repo', 'repository', 'file', 'files',
+  'what', 'why', 'when', 'where', 'which', 'who', 'whom',
+  'good', 'better', 'best', 'well', 'also', 'just', 'really', 'very', 'so', 'then', 'now', 'more', 'multiple',
+]);
+
+/**
+ * Extract the meaningful "subject" words from a user message — what it's actually ABOUT,
+ * stripped of request-shaped filler ("how can we", "and etc", "upgrade", "optimize"). Used
+ * to check whether a reply actually engaged with what was asked instead of drifting into an
+ * unrelated generic answer (e.g. a whole-project overview when a specific feature was named).
+ */
+export function extractSubjectTerms(message: string): string[] {
+  const words = (message || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  const terms = words.filter((w) => w.length >= 4 && !SUBJECT_STOPWORDS.has(w));
+  return Array.from(new Set(terms));
+}
+
+/**
+ * True if `text` engages with at least one subject term (loose substring match, so
+ * "prize"/"prizes" or "role"/"roles" count). Empty `terms` — a genuinely subject-less
+ * message like "give an overview" — always passes; there's nothing to have missed.
+ */
+export function mentionsSubject(text: string, terms: string[]): boolean {
+  if (!terms.length) return true;
+  const lower = (text || '').toLowerCase();
+  return terms.some((t) => lower.includes(t));
+}

@@ -179,6 +179,7 @@ export type InMessage =
    *  the SDK never receives a decision back (see sdk.ts's watchdog design). */
   | { type: 'watchdogAction'; requestId: string; action: 'continueWaiting' | 'restartRequest' | 'switchModel' | 'acceptCurrentOutput'; sessionId?: string }
   | { type: 'openOcDiff'; sessionId: string; file: string }
+  | { type: 'openPlanFile'; uri: string }
   | { type: 'switchSession'; sessionId: string }
   | { type: 'requestConfig' }
   | { type: 'setFallbackConfig'; entries: FallbackEntry[] }
@@ -320,7 +321,10 @@ export type OutMessage =
   | { type: 'setInput'; text: string; attachments?: Attachment[] }
   | { type: 'toggleSettings' }
   | { type: 'toggleHistory' }
-  | { type: 'notice'; sessionId: string; text: string }
+  | { type: 'notice'; sessionId: string; text: string; action?: { kind: 'openPlanFile'; uri: string } }
+  /** Visual-only: an approved plan's execution window, keyed by requestId so an overlapping
+   *  or stale `executing:false` from a different run can never clear the wrong indicator. */
+  | { type: 'planExecuting'; sessionId: string; requestId: string; executing: boolean }
   | { type: 'error'; sessionId?: string; requestId?: string; message: string }
   | { type: 'busy'; sessionId: string; busy: boolean }
   /** First-run engine onboarding: binary download progress → verify → ready/error.

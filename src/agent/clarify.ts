@@ -11,6 +11,9 @@ export interface ClarifyingQuestion {
   /** Short 1–3 word tab label (e.g. "Interview Type"); falls back to the question number. */
   label?: string;
   options: ClarifyOption[];
+  /** True for a `Q*[Label]:` question — "select all that apply" (checkboxes) instead of a
+   *  single choice (radio). */
+  multi?: boolean;
 }
 
 interface ParsedClarifying {
@@ -61,7 +64,7 @@ function detectFreeformQuestions(text: string): ClarifyingQuestion[] | null {
  *   Q: <question>
  *   - option a
  *   - option b
- *   Q: <another question>
+ *   Q*: <a "select all that apply" question — checkboxes, not radio>
  *   - option a
  *   - option b
  *   ???END???
@@ -90,12 +93,13 @@ export function parseClarifying(input: string): ParsedClarifying {
     const line = raw.replace(/\*\*/g, '').replace(/^#+\s*/, '').trim();
     if (!line) continue;
 
-    const q = line.match(/^Q(?:\s*\[([^\]]+)\])?(?:\s*[:.)]?\s*(.+))?$/i);
-    if (q && (q[1] || q[2])) {
+    const q = line.match(/^Q(\*)?(?:\s*\[([^\]]+)\])?(?:\s*[:.)]?\s*(.+))?$/i);
+    if (q && (q[2] || q[3])) {
       if (current) questions.push(current); // push even with 0 options (free-form question)
-      const label = q[1]?.trim() || undefined;
-      const text = q[2]?.trim() || label || 'Choose an option';
-      current = { text, label, options: [] };
+      const multi = !!q[1];
+      const label = q[2]?.trim() || undefined;
+      const text = q[3]?.trim() || label || 'Choose an option';
+      current = { text, label, options: [], ...(multi ? { multi: true } : {}) };
       continue;
     }
 

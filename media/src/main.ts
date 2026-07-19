@@ -297,6 +297,27 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
   function closeModePop() { modePop.classList.add('hidden'); }
   modeBtn.addEventListener('click', (e) => { e.stopPropagation(); modePop.classList.contains('hidden') ? openModePop() : closeModePop(); });
 
+  // Visual-only "executing an approved plan" state on the mode pill — never touches
+  // `currentMode` (the user's next-message mode selection is untouched). Keyed by
+  // requestId so a stale/mismatched `executing:false` from a different run (or a leftover
+  // one from a superseded session view) can't clear an indicator for a still-running plan.
+  let executingPlanRequestId = null;
+  function setPlanExecuting(requestId, executing) {
+    if (executing) {
+      executingPlanRequestId = requestId;
+      modeBtn.classList.add('executing');
+      modeBtnLabel.textContent = 'Agent ⚡';
+      modeBtn.title = 'Executing approved plan…';
+    } else {
+      if (executingPlanRequestId !== requestId) return;
+      executingPlanRequestId = null;
+      modeBtn.classList.remove('executing');
+      const m = MODES.find((x) => x.value === currentMode) || MODES[0];
+      modeBtnLabel.textContent = m.label;
+      modeBtn.title = m.desc;
+    }
+  }
+
   // Auto-approve toggle: when on, the agent runs commands and applies edits without a
   // prompt (dangerous commands still confirm). State is owned by the extension and
   // restored from the config message; this just reflects and flips it.
@@ -1055,6 +1076,12 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
     if (opts.tool) t.toolRunning = true;
     if (opts.done) t.toolRunning = false;
     if (text != null) {
+      // A real label is being written — force the row visible again in case an earlier
+      // clarifyingQuestions/planProposed/askUserPrompt card hid it via stopStatusTimer(id,
+      // true) and nothing since has un-hidden it (e.g. a plan-mode clarify continuation that
+      // resumes the same requestId inline). Guarded on `text != null` so this never unhides
+      // an empty row on an opts.done-only call.
+      if (t.statusEl) t.statusEl.classList.remove('hidden');
       if (IDLE_LABELS.has(text)) {
         // Engage the rolling whimsical verb for the thinking phase; startStatusTimer
         // rotates it every 2–5s until a tool verb or "Responding…" takes over. The verb
@@ -3488,11 +3515,39 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         head.innerHTML = `<span class="plan-head-icon">◈</span><span>Plan</span>`;
         t.body.appendChild(head);
         // A replayed or already-decided card (session switch, kept after Discard/Keep-discussing) —
-        // show a read-only checklist, no edit controls, no action row.
+        // show the same rendered-markdown read view, no edit controls, no action row.
         const settled = !!(msg.discarded || msg.deferred);
-        const listEl = renderPlanChecklist(parsePlanSteps(msg.steps), !settled);
-        t.body.appendChild(listEl);
-        if (settled) { scrollDown(); break; }
+        const items = parsePlanSteps(msg.steps);
+        const listEl = renderPlanChecklist(items, !settled);
+        if (settled) {
+          const rendered = document.createElement('div'); rendered.className = 'plan-rendered';
+          rendered.appendChild(renderMarkdown(msg.steps));
+          t.body.appendChild(rendered);
+          scrollDown(); break;
+        }
+        // Active proposal: lead with a compact count + the model's own plan text rendered as
+        // markdown — headings, bold, code spans, and whatever priority/effort grouping the
+        // model chose (e.g. "Easy wins" / "Larger features") all come through as-is, matching
+        // how OC's own raw output reads, instead of forcing everything into one flat checklist.
+        // The existing editable checklist is still built once here and only toggled via a
+        // `.hidden` class below (never re-rendered), for hand-editing step wording before running.
+        const fileCount = new Set(items.flatMap(detectStepFiles)).size;
+        const summary = document.createElement('div'); summary.className = 'plan-summary';
+        summary.textContent = `${items.length} step${items.length === 1 ? '' : 's'}` + (fileCount ? ` · ${fileCount} file${fileCount === 1 ? '' : 's'}` : '');
+        t.body.appendChild(summary);
+        const rendered = document.createElement('div'); rendered.className = 'plan-rendered';
+        rendered.appendChild(renderMarkdown(msg.steps));
+        t.body.appendChild(rendered);
+        const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'plan-details-toggle';
+        toggle.textContent = 'Edit steps ▾';
+        const details = document.createElement('div'); details.className = 'plan-details hidden';
+        details.appendChild(listEl);
+        toggle.addEventListener('click', () => {
+          const nowHidden = details.classList.toggle('hidden');
+          toggle.textContent = nowHidden ? 'Edit steps ▾' : 'Hide editor ▴';
+        });
+        t.body.appendChild(toggle);
+        t.body.appendChild(details);
         const collect = () => collectPlanSteps(listEl);
         const actions = document.createElement('div'); actions.className = 'plan-actions';
         const approve = document.createElement('button'); approve.className = 'primary plan-run'; approve.textContent = '▶  Run plan';
@@ -3503,7 +3558,7 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         discuss.addEventListener('click', () => {
           discuss.remove(); reject.remove();
           const note = document.createElement('div'); note.className = 'plan-note';
-          note.textContent = 'Kept for discussion — edit steps above or the saved plan, then Run when ready.';
+          note.textContent = 'Kept for discussion — edit steps above, then Run when ready.';
           t.body.appendChild(note);
           send({ type: 'deferPlan', requestId: msg.requestId, steps: collect() });
         });
@@ -3614,7 +3669,10 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         t.flow.innerHTML = '';
         t.body.innerHTML = '';
         const qs = msg.questions;
-        const selected = qs.map(() => null); // chosen option index per question; q.options.length === "type your own"
+        // Single-select question: selected[qi] is a chosen option index (or null); q.options.length
+        // is the pseudo-index for "type your own". Multi-select (q.multi): selected[qi] is an array
+        // of chosen indices (possibly including the "type your own" pseudo-index too).
+        const selected = qs.map((q) => (q.multi ? [] : null));
         const custom = qs.map(() => '');      // free-text answer per question, used when "type your own" is chosen
         let cur = 0;
 
@@ -3636,7 +3694,15 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         card.appendChild(intro); card.appendChild(tabsEl); card.appendChild(qbox); card.appendChild(footer);
 
         const CUSTOM = (qi) => qs[qi].options.length; // pseudo-index for the "type your own" row
-        const answered = (qi) => selected[qi] !== null && (selected[qi] !== CUSTOM(qi) || custom[qi].trim().length > 0);
+        const isPicked = (qi, oi) => qs[qi].multi ? selected[qi].includes(oi) : selected[qi] === oi;
+        const answered = (qi) => {
+          if (qs[qi].multi) {
+            const sel = selected[qi];
+            if (!sel.length) return false;
+            return !sel.includes(CUSTOM(qi)) || custom[qi].trim().length > 0;
+          }
+          return selected[qi] !== null && (selected[qi] !== CUSTOM(qi) || custom[qi].trim().length > 0);
+        };
         const isLast = () => cur === qs.length - 1;
         const allAnswered = () => qs.every((q, qi) => answered(qi));
         function updateNav() {
@@ -3657,6 +3723,15 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
           });
         }
         function choose(oi) {
+          if (qs[cur].multi) {
+            // Toggle membership; never auto-advance — the user needs to pick everything that
+            // applies before moving on, unlike a single-select row's implicit "done" signal.
+            const sel = selected[cur];
+            const idx = sel.indexOf(oi);
+            if (idx === -1) sel.push(oi); else sel.splice(idx, 1);
+            renderStep();
+            return;
+          }
           selected[cur] = oi;
           renderStep();
           // Auto-advance only for a concrete option — the free-text row needs the user to type first.
@@ -3669,12 +3744,14 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
           const counter = document.createElement('div'); counter.className = 'clarify-counter';
           counter.textContent = q.label ? `${q.label} · Question ${cur + 1} of ${qs.length}` : `Question ${cur + 1} of ${qs.length}`;
           const qt = document.createElement('div'); qt.className = 'clarify-q-text'; qt.textContent = q.text;
+          const hint = q.multi ? document.createElement('div') : null;
+          if (hint) { hint.className = 'clarify-multi-hint'; hint.textContent = 'Select all that apply'; }
           const opts = document.createElement('div'); opts.className = 'clarify-opts';
           const mkRow = (oi, title, desc) => {
             const row = document.createElement('button'); row.type = 'button';
-            row.className = 'clarify-opt' + (selected[cur] === oi ? ' selected' : '');
+            row.className = 'clarify-opt' + (isPicked(cur, oi) ? ' selected' : '');
             const num = document.createElement('span'); num.className = 'clarify-opt-num'; num.textContent = `${oi + 1}.`;
-            const radio = document.createElement('span'); radio.className = 'clarify-radio';
+            const radio = document.createElement('span'); radio.className = q.multi ? 'clarify-checkbox' : 'clarify-radio';
             const body = document.createElement('span'); body.className = 'clarify-opt-body';
             const tEl = document.createElement('span'); tEl.className = 'clarify-opt-title'; tEl.textContent = title; body.appendChild(tEl);
             if (desc) { const dEl = document.createElement('span'); dEl.className = 'clarify-opt-desc'; dEl.textContent = desc; body.appendChild(dEl); }
@@ -3684,8 +3761,8 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
           };
           q.options.forEach((opt, oi) => mkRow(oi, opt.title, opt.description));
           mkRow(CUSTOM(cur), 'Type your own answer', '');
-          // Reveal a free-text input when the "type your own" row is the current selection.
-          if (selected[cur] === CUSTOM(cur)) {
+          // Reveal a free-text input when the "type your own" row is picked.
+          if (isPicked(cur, CUSTOM(cur))) {
             const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'clarify-custom';
             inp.placeholder = 'Type your answer…'; inp.value = custom[cur];
             inp.addEventListener('input', () => { custom[cur] = inp.value; updateNav(); renderTabs(); });
@@ -3693,7 +3770,9 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
             opts.appendChild(inp);
             setTimeout(() => inp.focus(), 0);
           }
-          qbox.appendChild(counter); qbox.appendChild(qt); qbox.appendChild(opts);
+          qbox.appendChild(counter); qbox.appendChild(qt);
+          if (hint) qbox.appendChild(hint);
+          qbox.appendChild(opts);
           updateNav();
           scrollDown();
         }
@@ -3715,13 +3794,28 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
             });
             card.appendChild(recap);
           }
+          // Relocate the recap from t.body into t.flow. A plan-mode clarify answer resumes
+          // the SAME target inline (chatViewProvider.ts handleAnswerClarifying), and any
+          // further tool calls/text append into t.flow — which sits BEFORE t.body/statusEl
+          // in the DOM (see ensureTarget). Leaving the recap in body would make it render
+          // AFTER that later work even though answering happened first, reading as if the
+          // agent's follow-up research preceded the answer instead of resuming from it.
+          t.flow.appendChild(card);
           scrollDown();
         }
         back.addEventListener('click', () => { if (cur > 0) { cur--; renderStep(); } });
         next.addEventListener('click', () => {
           if (!isLast()) { if (answered(cur)) { cur++; renderStep(); } return; }
           if (!allAnswered()) return;
-          const answers = qs.map((q, qi) => selected[qi] === CUSTOM(qi) ? custom[qi].trim() : q.options[selected[qi]].title);
+          const answers = qs.map((q, qi) => {
+            if (q.multi) {
+              return selected[qi]
+                .map((oi) => oi === CUSTOM(qi) ? custom[qi].trim() : q.options[oi].title)
+                .filter(Boolean)
+                .join(', ');
+            }
+            return selected[qi] === CUSTOM(qi) ? custom[qi].trim() : q.options[selected[qi]].title;
+          });
           markClarifyDone('✓ Answers submitted — resuming…', answers);
           send({ type: 'answerClarifying', requestId: msg.requestId, answers });
         });
@@ -3884,11 +3978,19 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
           else renderMcpItems(msg.items || []);
         }
         break;
+      case 'planExecuting': {
+        setPlanExecuting(msg.requestId, msg.executing);
+        break;
+      }
       case 'notice': {
         clearEmpty();
-        const d = document.createElement('div');
+        const d = document.createElement(msg.action ? 'button' : 'div');
         d.className = 'compact-divider';
         d.textContent = msg.text;
+        if (msg.action?.kind === 'openPlanFile') {
+          d.classList.add('compact-divider-link');
+          d.addEventListener('click', () => send({ type: 'openPlanFile', uri: msg.action.uri }));
+        }
         (currentTurn || activeThreadEl).appendChild(d);
         scrollDown();
         break;
@@ -4018,6 +4120,28 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
     return items;
   }
 
+  // Count distinct file-like paths referenced in the plan text for the summary line. Any
+  // backtick span is a candidate — narrowing to a fixed extension regex would miss
+  // extensionless names (Dockerfile, artisan) and dotfiles (.env.example) — then a loose
+  // "looks like a path" heuristic (has a slash, or a dotted extension, or a leading dot)
+  // filters out backtick spans that are clearly just inline code/identifiers.
+  const EXTENSIONLESS_FILENAMES = new Set(['dockerfile', 'makefile', 'rakefile', 'gemfile', 'procfile', 'artisan', 'license', 'changelog']);
+  // File-like backtick spans referenced in one step's text (order-preserving, first match wins
+  // as the step's "primary" file for grouping). Same broadened heuristic as before: any
+  // backtick span counts as a candidate, narrowed by "looks like a path" (has a slash, a
+  // dotted extension, a leading dot, or is a known extensionless filename).
+  function detectStepFiles(text) {
+    const files = [];
+    const spans = String(text || '').match(/`([^`]+)`/g) || [];
+    for (const span of spans) {
+      const inner = span.slice(1, -1).trim();
+      if (!inner || /\s/.test(inner)) continue;
+      const base = inner.split('/').pop() || inner;
+      const looksLikePath = inner.includes('/') || /^\.\w/.test(inner) || /\w\.\w+$/.test(inner) || EXTENSIONLESS_FILENAMES.has(base.toLowerCase());
+      if (looksLikePath) files.push(inner);
+    }
+    return files;
+  }
   function addPlanRow(listEl, text, focus) {
     const row = document.createElement('div'); row.className = 'plan-row';
     const rows = listEl.querySelectorAll('.plan-row');

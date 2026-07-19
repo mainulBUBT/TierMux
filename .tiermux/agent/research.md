@@ -26,10 +26,21 @@ retrying blindly.
 ## Project questions ("how does X work", "explain this file", "what is this project",
 ## "give an overview")
 
-1. `grep`/`glob`/`list` the project root and relevant directories to find where things live.
-2. Read the actual implementation files you found — package manifest, entry points, main
-   modules — not just one file in isolation.
-3. Explain what the code says, not what a project like this generally looks like elsewhere.
+The scope of "X" here is whatever the question actually named — a specific feature/
+system/file ("how does the contribution flow work", "what about notifications") stays
+scoped to THAT, using steps 1-4 below to find and read only its relevant files. Only a
+genuinely subject-less question ("what is this project", "give an overview") warrants
+steps 1-4 across the whole project root. A vague trailing "and etc"/"and stuff" after a
+named subject does not widen the scope to the whole project.
+
+1. `grep`/`glob`/`list` the relevant directories (project root only for a subject-less
+   question) to find where the named thing — or, for a subject-less question, the
+   project's main pieces — actually live.
+2. Read the actual implementation files you found — for a named subject, its
+   models/services/routes/controllers; for a subject-less question, the package
+   manifest, entry points, main modules — not just one file in isolation.
+3. Explain what the code says, not what a project/feature like this generally looks like
+   elsewhere.
 4. If you cannot find something, say so plainly — do not substitute a plausible-sounding
    but unverified answer, and never answer about a different project or an unrelated file
    you happened to recall.
