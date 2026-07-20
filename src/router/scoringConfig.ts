@@ -59,8 +59,14 @@ export interface ScoringConfig {
   speedFloorRatio: number;
   /** Cap on how much the reliability signal can lift a model (balance rule). */
   reliabilityCap: number;
-  /** Exploration fires only when top-2 scores are within this fraction. */
+  /** Exploration considers every candidate scoring within this fraction of the top. */
   explorationMargin: number;
+  /** Probability that a turn explores instead of taking the top-scored candidate. */
+  explorationRate: number;
+  /** Multiplier for a fully-consumed model. Bounded so quota nudges order, never gates. */
+  headroomFloor: number;
+  /** Worst-case density penalty for the busiest provider in the pool (0 = spreading off). */
+  densityPenalty: number;
   /** Exponent on the reliability multiplier — how hard low success rate bites. */
   reliabilityPow: number;
   /** Exponent on the provider-health multiplier — how hard a sick gateway bites all its models. */
@@ -86,7 +92,10 @@ export const SCORING_CONFIG: ScoringConfig = {
   driftMultiplier: 1.75,
   speedFloorRatio: 3.0,
   reliabilityCap: 0.92,
-  explorationMargin: 0.05,
+  explorationMargin: 0.15,
+  explorationRate: 0.2,
+  headroomFloor: 0.7,
+  densityPenalty: 0.2,
   reliabilityPow: 1.5,
   providerHealthPow: 1.5,
 
@@ -115,6 +124,10 @@ export interface TaskWeights {
   availability: number;
   speed: number;
   providerHealth: number;
+  /** Remaining-quota emphasis — how hard a near-exhausted model yields to an idle peer. */
+  headroom: number;
+  /** Load-spreading emphasis — how hard a provider already carrying traffic is penalized. */
+  density: number;
   /** TTFT share within the speed signal (rest is total latency). */
   ttftShare: number;
 }
@@ -125,6 +138,8 @@ const BASE_WEIGHTS: TaskWeights = {
   availability: 1,
   speed: 1,
   providerHealth: 1,
+  headroom: 1,
+  density: 0.6,
   ttftShare: 0.7,
 };
 

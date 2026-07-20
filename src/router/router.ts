@@ -25,7 +25,7 @@ import { SLOW_LATENCY_MS } from '../config/slowModel';
 import { RateTracker } from './rateTracker';
 import { LatencyTracker } from './latencyTracker';
 import type { MetricsStore, MetricSample } from './metricsStore';
-import { ScoringEngine, type SelectionContext, type HealthState, type RationaleEntry } from './scoring';
+import { ScoringEngine, type SelectionContext, type HealthState, type RationaleEntry, type CandidateRuntime } from './scoring';
 import type { FailureType } from './scoringConfig';
 import { SCORING_CONFIG } from './scoringConfig';
 
@@ -387,18 +387,26 @@ export class Router {
    * for missing keys, so `hasKey` defaults optimistic.
    */
   private buildSelectionContext(kind: TaskKind, entries: FallbackEntry[], opts: RouteOptions): SelectionContext {
-    const runtime = new Map<string, { health: HealthState; canSend: boolean; hasKey: boolean; capable: boolean }>();
+    const runtime = new Map<string, CandidateRuntime>();
+    const loadByPlatform = new Map<string, number>();
     for (const e of entries) {
       const m = this.catalog.find(e.platform, e.modelId);
       const h = this.healthOf(e.platform, e.modelId);
       const health: HealthState = h === 'bad' ? 'bad' : h === 'half-open' ? 'half-open' : 'ok';
       const canSend = m ? this.rateTracker.canSend(e.platform, e.modelId, m.rpmLimit, m.rpdLimit) : true;
+      const headroom = m ? this.rateTracker.headroom(e.platform, e.modelId, m.rpmLimit, m.rpdLimit) : 1;
+      // Per-platform, so cache it — recentLoad scans every tracked key.
+      let providerLoad = loadByPlatform.get(e.platform);
+      if (providerLoad === undefined) {
+        providerLoad = this.rateTracker.recentLoad(e.platform);
+        loadByPlatform.set(e.platform, providerLoad);
+      }
       const capable = opts.requireTools
         ? m?.supportsTools !== false && !this.secrets.isToolIncompatible(e.platform, e.modelId)
         : kind === 'vision'
           ? !!m?.supportsVision
           : true;
-      runtime.set(`${e.platform}::${e.modelId}`, { health, canSend, hasKey: true, capable });
+      runtime.set(`${e.platform}::${e.modelId}`, { health, canSend, hasKey: true, capable, headroom, providerLoad });
     }
     return { taskKind: kind, entries, runtime, requireTools: !!opts.requireTools, isVision: kind === 'vision' };
   }

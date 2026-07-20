@@ -34,6 +34,10 @@ export interface CandidateRuntime {
   hasKey: boolean;
   /** True if the model supports capabilities required for this turn (tools/vision). */
   capable: boolean;
+  /** Remaining quota against the tightest declared limit [0..1]; 1 when none declared. */
+  headroom: number;
+  /** Requests this model's provider served in the last minute — normalized in rank(). */
+  providerLoad: number;
 }
 
 export interface SelectionContext {
@@ -59,6 +63,8 @@ export interface SignalBreakdown {
   availability: number;
   speed: number;
   providerHealth: number;
+  headroom: number;
+  density: number;
 }
 
 export interface RationaleEntry {
@@ -110,6 +116,15 @@ export class ScoringEngine {
       if (raw > capMax) capMax = raw;
     }
 
+    // ---- Precompute the busiest provider in this pool (for the density signal) ----
+    // Relative, not absolute: penalizing "more than N requests/min" would need a hardcoded
+    // rate that's wrong for every provider. Normalizing against the busiest peer means the
+    // signal is neutral when load is even and only bites when one provider is carrying the pool.
+    let maxLoad = 0;
+    for (const e of entries) {
+      maxLoad = Math.max(maxLoad, ctx.runtime.get(rtKey(e.platform, e.modelId))?.providerLoad ?? 0);
+    }
+
     // ---- Precompute the fastest peer TTFT (for the balance rule) ----
     let minPeerTtft = Infinity;
     const ttfts = new Map<string, number>();
@@ -156,13 +171,23 @@ export class ScoringEngine {
       const provConf = shrinkageFactor(this.metrics.sampleCount(provAgg), SCORING_CONFIG.shrinkageK);
       const providerHealth = lerp(1, provSuccess, provConf);
 
-      const signals: SignalBreakdown = { reliability, health, availability, speed, providerHealth };
+      // Quota headroom → bounded multiplier. Floored (not zeroed) on purpose: exhaustion is
+      // `canSend`'s job via availability, and double-punishing it here would drop a merely
+      // busy model below models that are outright broken.
+      const headroomRaw = rt?.headroom ?? 1;
+      const headroom = SCORING_CONFIG.headroomFloor + (1 - SCORING_CONFIG.headroomFloor) * headroomRaw;
+
+      // Load spreading, relative to the busiest provider in this pool.
+      const loadShare = maxLoad > 0 ? (rt?.providerLoad ?? 0) / maxLoad : 0;
+      const density = 1 - SCORING_CONFIG.densityPenalty * loadShare;
+
+      const signals: SignalBreakdown = { reliability, health, availability, speed, providerHealth, headroom, density };
 
       // RuntimeMultiplier = structural geo(health, availability, speed) × reliability^pow × providerHealth^pow.
       // Reliability and provider health are direct multipliers (not soft geo members) so a
       // 20%-success gateway collapses decisively — "excellent model, temporarily unhealthy".
-      const structWeights = [w.health, w.availability, w.speed];
-      const structVals = [health, availability, speed];
+      const structWeights = [w.health, w.availability, w.speed, w.headroom, w.density];
+      const structVals = [health, availability, speed, headroom, density];
       const structSum = structWeights.reduce((a, b) => a + b, 0) || 1;
       let structLog = 0;
       for (let i = 0; i < structVals.length; i++) structLog += (structWeights[i] / structSum) * Math.log(Math.max(1e-6, structVals[i]));
@@ -215,12 +240,28 @@ export class ScoringEngine {
     // ---- Order by score desc ----
     const sorted = [...scored].sort((a, b) => b.score - a.score);
 
-    // ---- Margin-gated exploration: only perturb a statistical tie (top-2 within margin). ----
-    if (sorted.length >= 2) {
+    // ---- Margin-gated exploration: promote a random statistically-tied candidate. ----
+    // Deliberately spans the whole tied band rather than just index 1. Swapping only the
+    // top-2 made every model at rank 3+ unreachable *by construction* — with a 91-model
+    // catalog that permanently exercised two entries per task kind while the rest of the
+    // free-tier quota sat idle and unmeasured (a model that never runs never earns the
+    // samples that would let it rank). Gated candidates can't be explored into: `skip`
+    // covers unhealthy/no-key/missing-capability, and the rate-limited 0.05× demotion
+    // drops a model far outside any sane margin.
+    if (sorted.length >= 2 && rng() < SCORING_CONFIG.explorationRate) {
       const top = sorted[0].score;
-      const second = sorted[1].score;
-      if (top > 0 && Math.abs(top - second) / top <= SCORING_CONFIG.explorationMargin && rng() < 0.2) {
-        [sorted[0], sorted[1]] = [sorted[1], sorted[0]];
+      if (top > 0) {
+        // Collect eligible indices, stepping *over* gated candidates rather than stopping at
+        // them — a single unhealthy model at index 1 must not hide the healthy peers behind it.
+        const band: number[] = [];
+        for (let i = 1; i < sorted.length; i++) {
+          if ((top - sorted[i].score) / top > SCORING_CONFIG.explorationMargin) break;
+          if (!sorted[i].skip) band.push(i);
+        }
+        if (band.length > 0) {
+          const [chosen] = sorted.splice(band[Math.floor(rng() * band.length)], 1);
+          sorted.unshift(chosen);
+        }
       }
     }
 

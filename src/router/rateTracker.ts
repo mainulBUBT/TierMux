@@ -27,6 +27,34 @@ export class RateTracker {
     this.ts.set(key, stamps);
   }
 
+  /**
+   * Remaining quota as a fraction [0..1] against the *tightest* declared limit — 1 = untouched,
+   * 0 = at the cap. Unlike `canSend` (a cliff that only fires once you've already hit the wall)
+   * this is a gradient, so a model at 90% of its daily allowance yields to an idle peer before
+   * either one is exhausted. Models with no declared limit report 1 (neutral, not "infinite
+   * headroom") so they neither gain nor lose against limited peers.
+   */
+  headroom(platform: string, modelId: string, rpmLimit: number | null, rpdLimit: number | null): number {
+    if (!rpmLimit && !rpdLimit) return 1;
+    const now = Date.now();
+    const stamps = this.prune(`${platform}::${modelId}`, now);
+    let used = 0;
+    if (rpmLimit) used = Math.max(used, stamps.filter((t) => now - t < MIN_MS).length / rpmLimit);
+    if (rpdLimit) used = Math.max(used, stamps.filter((t) => now - t < DAY_MS).length / rpdLimit);
+    return Math.max(0, 1 - used);
+  }
+
+  /** Requests sent to any model on this platform within `windowMs` — raw load, for spreading. */
+  recentLoad(platform: string, windowMs = MIN_MS): number {
+    const now = Date.now();
+    let count = 0;
+    for (const key of this.ts.keys()) {
+      if (!key.startsWith(`${platform}::`)) continue;
+      count += this.prune(key, now).filter((t) => now - t < windowMs).length;
+    }
+    return count;
+  }
+
   /** How many ms until this model is under its RPM limit again (0 = ready now). */
   rpmCooldownMs(platform: string, modelId: string, rpmLimit: number | null): number {
     if (!rpmLimit) return 0;
