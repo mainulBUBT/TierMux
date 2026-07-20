@@ -45,10 +45,26 @@ export class SettingsStore {
     );
     const known = new Set(kept.map((e) => `${e.platform}::${e.modelId}`));
 
+    // A model the catalog gained since last reconcile goes live on its own — the user
+    // opted into the *provider*, and re-opting into each model it later adds is exactly
+    // the manual curation this is meant to avoid. Models on providers the user hasn't
+    // enabled are still filtered out downstream by enabledByPriority, so this cannot
+    // flood routing with a provider they never chose. Staged rows (ready === false) and
+    // an explicit opt-out both keep the old off-by-default behavior.
+    const autoEnable = vscode.workspace
+      .getConfiguration('tiermux')
+      .get<boolean>('models.autoEnableNew', true);
     let nextPriority = kept.reduce((mx, e) => Math.max(mx, e.priority), -1) + 1;
     for (const m of catalogModels) {
       const k = `${m.platform}::${m.modelId}`;
-      if (!known.has(k)) kept.push({ platform: m.platform, modelId: m.modelId, enabled: false, priority: nextPriority++ });
+      if (!known.has(k)) {
+        kept.push({
+          platform: m.platform,
+          modelId: m.modelId,
+          enabled: autoEnable && m.ready !== false,
+          priority: nextPriority++,
+        });
+      }
     }
     return kept.sort((a, b) => a.priority - b.priority);
   }

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import type { Platform, FallbackEntry } from './shared/types';
 import { Catalog } from './catalog/catalog';
+import { DISCOVERABLE, fetchProviderModels } from './catalog/discovery';
 import { SecretStore } from './config/secrets';
 import { SettingsStore } from './config/settingsStore';
 import { UsageTracker } from './config/usage';
@@ -454,6 +455,56 @@ export function activate(context: vscode.ExtensionContext): void {
       );
       chat.refresh();
       void vscode.window.showInformationMessage('TierMux: model catalog refreshed.');
+    }),
+    vscode.commands.registerCommand('tiermux.syncCatalog', async () => {
+      const report = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'TierMux: syncing model catalog…' },
+        () => catalog.syncFromProviders(context.globalState, () =>
+          Promise.all(
+            DISCOVERABLE.map((p) => {
+              const base = getPlatformInfo(p)?.defaultBaseUrl;
+              return base
+                ? fetchProviderModels(p, base)
+                : Promise.resolve({ platform: p, models: null, error: 'no base URL' });
+            }),
+          ),
+        ),
+      );
+      chat.refresh();
+
+      if (!report.changed) {
+        void vscode.window.showInformationMessage(
+          `TierMux: catalog already up to date${report.skipped.length ? ` (${report.skipped.length} provider(s) unreachable)` : ''}.`,
+        );
+        return;
+      }
+      const parts = [`+${report.added.length} added`, `−${report.removed.length} removed`];
+      if (report.skipped.length) parts.push(`${report.skipped.length} skipped`);
+      const choice = await vscode.window.showInformationMessage(
+        `TierMux catalog synced: ${parts.join(', ')}.`,
+        'Show Details',
+        'Undo',
+      );
+      if (choice === 'Undo') {
+        const ok = await catalog.undoSync(context.globalState);
+        chat.refresh();
+        void vscode.window.showInformationMessage(
+          ok ? 'TierMux: catalog sync undone.' : 'TierMux: nothing to undo.',
+        );
+      } else if (choice === 'Show Details') {
+        const doc = await vscode.workspace.openTextDocument({
+          language: 'markdown',
+          content: [
+            `# TierMux catalog sync`, '',
+            `## Added (${report.added.length})`, ...report.added.map((k) => `- ${k}`), '',
+            `## Removed (${report.removed.length})`, ...report.removed.map((k) => `- ${k}`), '',
+            `## Skipped providers (${report.skipped.length}) — nothing deleted for these`,
+            ...report.skipped.map((s) => `- ${s.platform}: ${s.error}`), '',
+            `Carried over: ${report.updated}`,
+          ].join('\n'),
+        });
+        await vscode.window.showTextDocument(doc, { preview: true });
+      }
     }),
     vscode.commands.registerCommand('tiermux.editMemory', () => openMemoryForEdit()),
     vscode.commands.registerCommand('tiermux.addSkill', async () => {

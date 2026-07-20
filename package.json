@@ -142,6 +142,11 @@
         "icon": "$(sync)"
       },
       {
+        "command": "tiermux.syncCatalog",
+        "title": "Sync Model Catalog from Providers",
+        "category": "TierMux"
+      },
+      {
         "command": "tiermux.generateCommitMessage",
         "title": "Generate Commit Message",
         "category": "TierMux",
@@ -627,6 +632,11 @@
               }
             }
           }
+        },
+        "tiermux.models.autoEnableNew": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically enable models newly discovered in the catalog. Models on providers you haven't enabled stay inactive regardless. Turn off to review each new model manually."
         }
       }
     }

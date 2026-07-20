@@ -4,8 +4,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { CatalogModel, FallbackEntry, Platform } from '../shared/types';
+import { toCatalogModel, type DiscoveredModel, type ProviderFetch } from './discovery';
 
 const CACHE_KEY = 'tiermux.catalogCache';
+/** Snapshot of the list as it was before the last provider sync (one level of undo). */
+const UNDO_KEY = 'tiermux.catalogSyncUndo';
+
+export interface CatalogSyncReport {
+  /** `platform::modelId` keys newly discovered and added. */
+  added: string[];
+  /** `platform::modelId` keys deleted because their provider no longer serves them. */
+  removed: string[];
+  /** Rows carried over (refreshed or untouched). */
+  updated: number;
+  /** Providers skipped because their fetch was unhealthy — nothing was deleted for these. */
+  skipped: Array<{ platform: Platform; error: string }>;
+  changed: boolean;
+}
 
 export class Catalog {
   private bundled: CatalogModel[] = [];
@@ -70,6 +85,82 @@ export class Catalog {
     this._onDidChange.fire();
   }
 
+  /**
+   * Reconcile the catalog against what the keyless providers actually serve right now:
+   * add models that appeared, drop models that vanished, refresh provider-reported facts
+   * on the ones that remain.
+   *
+   * Deletion is real (rows go away) but only for a provider whose fetch came back HEALTHY —
+   * a 401/timeout/garbled body/empty list yields `models: null` and that provider is skipped
+   * entirely. Without that gate one bad response would wipe hand-curated ranks permanently.
+   * The pre-sync list is snapshotted to `UNDO_KEY` so a bad sync is recoverable.
+   *
+   * Curated fields (intelligenceRank, speedRank, tags, rpm/rpdLimit, insight, …) are NEVER
+   * overwritten on an existing row — only provider-reported facts are refreshed. Discovery
+   * knows what exists; it does not know what's good.
+   */
+  async syncFromProviders(
+    mem: vscode.Memento,
+    fetchAll: () => Promise<ProviderFetch[]>,
+  ): Promise<CatalogSyncReport> {
+    const before = this.all();
+    const results = await fetchAll();
+
+    const healthy = results.filter((r) => r.models !== null);
+    const skipped = results.filter((r) => r.models === null).map((r) => ({ platform: r.platform, error: r.error ?? 'unhealthy' }));
+    if (!healthy.length) return { added: [], removed: [], updated: 0, skipped, changed: false };
+
+    const syncedPlatforms = new Set(healthy.map((r) => r.platform));
+    const live = new Map<string, DiscoveredModel>();
+    for (const r of healthy) for (const d of r.models!) live.set(Catalog.key(d.platform, d.modelId), d);
+
+    const next: CatalogModel[] = [];
+    const removed: string[] = [];
+
+    for (const m of before) {
+      const k = Catalog.key(m.platform, m.modelId);
+      // Untouched: this provider wasn't synced (keyed, or its fetch was unhealthy).
+      if (!syncedPlatforms.has(m.platform)) { next.push(m); continue; }
+      const d = live.get(k);
+      if (!d) { removed.push(k); continue; }
+      // Refresh only what the provider is authoritative about; keep curation intact.
+      next.push({
+        ...m,
+        contextWindow: d.contextWindow ?? m.contextWindow,
+        supportsTools: d.supportsTools ?? m.supportsTools,
+        supportsVision: d.supportsVision ?? m.supportsVision,
+        supportsReasoning: d.supportsReasoning ?? m.supportsReasoning,
+        released: m.released ?? d.released,
+      });
+      live.delete(k);
+    }
+
+    // Whatever is left in `live` is genuinely new — rank it from the model name.
+    const added: string[] = [];
+    for (const [k, d] of live) { next.push(toCatalogModel(d)); added.push(k); }
+
+    const updated = next.length - added.length;
+    const changed = added.length > 0 || removed.length > 0 || JSON.stringify(next) !== JSON.stringify(before);
+    if (changed) {
+      await mem.update(UNDO_KEY, before);
+      this.remote = next;
+      await mem.update(CACHE_KEY, next);
+      this._onDidChange.fire();
+    }
+    return { added, removed, updated, skipped, changed };
+  }
+
+  /** Restore the list captured before the last `syncFromProviders`. */
+  async undoSync(mem: vscode.Memento): Promise<boolean> {
+    const prev = mem.get<CatalogModel[]>(UNDO_KEY);
+    if (!Array.isArray(prev) || !prev.length) return false;
+    this.remote = prev;
+    await mem.update(CACHE_KEY, prev);
+    await mem.update(UNDO_KEY, undefined);
+    this._onDidChange.fire();
+    return true;
+  }
+
   /** Active model list: the published sheet is the sole source of truth once a
    *  remote fetch has succeeded — bundled is offline/first-run fallback only. */
   all(): CatalogModel[] {
@@ -96,7 +187,16 @@ export class Catalog {
       a.speedRank - b.speedRank ||
       (b.released ?? '').localeCompare(a.released ?? ''), // newer first among equals
     );
-    return sorted.map((m, i) => ({ platform: m.platform, modelId: m.modelId, enabled: false, priority: i }));
+    // Enabled by default: TierMux is meant to work with zero setup, and a fresh install
+    // where every model is off routes nothing at all. The real gate is provider-level
+    // (getDisabledProviders leaves only DEFAULT_ENABLED_PLATFORM on), so this enables one
+    // keyless gateway's models, not all 22 providers'. Staged rows (ready === false) stay off.
+    return sorted.map((m, i) => ({
+      platform: m.platform,
+      modelId: m.modelId,
+      enabled: m.ready !== false,
+      priority: i,
+    }));
   }
 
   /** Pick a fast model for inline completions among the given enabled entries. */
