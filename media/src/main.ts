@@ -270,7 +270,7 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
     { value: 'plan', label: 'Plan', desc: 'Researches the code by reading and searching it, proposes a plan, then edits only after you approve.' },
     { value: 'agent', label: 'Agent', desc: 'Full agent — reads, edits files, runs commands, and tracks a live task list.' },
   ];
-  let currentMode = 'plan';
+  let currentMode = 'ask';
   const modeBtn = $('#mode-btn');
   const modeBtnLabel = $('.mode-label', modeBtn);
   const modePop = $('#mode-pop');
