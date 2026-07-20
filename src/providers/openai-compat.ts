@@ -23,6 +23,8 @@ export interface OpenAICompatOpts {
   extraHeaders?: Record<string, string>;
   timeoutMs?: number;
   keyless?: boolean;
+  /** Free tier works anonymously, paid tier needs a key — see PlatformInfo.keyOptional. */
+  keyOptional?: boolean;
   forceSingleToolCall?: boolean;
   /** Flatten array/multimodal content to string (Cohere/Cloudflare-style). */
   flattenContent?: boolean;

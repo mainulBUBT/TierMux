@@ -181,6 +181,13 @@ export interface PlatformInfo {
   defaultBaseUrl: string;
   /** True when the free tier needs no API key. */
   keyless: boolean;
+  /**
+   * True when the platform serves a free tier anonymously *and* a paid tier behind a key
+   * (OpenCode Zen: 6 free models answer unauthenticated, its other 49 return 401). Unlike
+   * `keyless` this must not suppress key entry — a stored key is preferred when present
+   * and only falls back to anonymous, so the paid tier stays reachable.
+   */
+  keyOptional?: boolean;
   /** Help URL for obtaining a key. */
   keyUrl?: string;
 }

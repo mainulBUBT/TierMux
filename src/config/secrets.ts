@@ -119,6 +119,11 @@ export class SecretStore {
     for (const k of keys) {
       if (this.keyCooldownRemaining(k) === 0) return k;
     }
+    // A keyOptional platform still serves its free tier anonymously, so "no usable key"
+    // is not a dead end the way it is elsewhere — fall through to the anonymous tier
+    // instead of failing the model over. Checked *after* the pool so a stored key (and
+    // the paid models it unlocks) always wins, which is why this can't just be `keyless`.
+    if (info?.keyOptional) return '';
     return undefined; // all keys cooled
   }
 
