@@ -13,13 +13,21 @@ import { skillIndexPrompt } from '../context/skills';
 import type { McpServerConfig } from '../mcp/mcpClient';
 
 /**
+ * Explicit concatenation order for `.tiermux/agent/*.md` — identity MUST lead ("You are
+ * TierMux…" needs to be the first thing a weaker/free model reads, not buried after other
+ * scaffolding — see the leading-position rationale in ocConfig.ts's OcConfigOptions doc).
+ * Files not listed here (future additions) sort alphabetically after all of these.
+ */
+const AGENT_FILE_ORDER = ['identity.md', 'behavior.md', 'ask-format.md', 'research.md'];
+
+/**
  * Load agent prompt files from `.tiermux/agent/` in the extension directory, plus the
  * workspace's project rule files (AGENTS.md, CLAUDE.md, .cursorrules, ... — see
  * projectRules.ts), `.tiermux/memory.md` (user style/standing instructions), and the
- * installed-skills index, if present. Files are sorted alphabetically and concatenated
- * so the order is predictable (identity.md → behavior.md → ask-format.md → any future
- * additions), with rules/memory/skills appended last. Falls back to a minimal inline
- * string if the directory is missing or unreadable.
+ * installed-skills index, if present. Files are concatenated in `AGENT_FILE_ORDER` (identity.md
+ * → behavior.md → ask-format.md → research.md → any future additions, alphabetically), with
+ * rules/memory/skills appended last. Falls back to a minimal inline string if the directory is
+ * missing or unreadable.
  */
 export async function loadAgentInstructions(extensionPath: string, log: (m: string) => void, workspaceRoot?: string): Promise<{ agentPrompt: string; instructions: string }> {
   const agentDir = path.join(extensionPath, '.tiermux', 'agent');
@@ -27,7 +35,14 @@ export async function loadAgentInstructions(extensionPath: string, log: (m: stri
   try {
     const files = fs.readdirSync(agentDir)
       .filter((f) => f.endsWith('.md'))
-      .sort();
+      .sort((a, b) => {
+        const ia = AGENT_FILE_ORDER.indexOf(a);
+        const ib = AGENT_FILE_ORDER.indexOf(b);
+        if (ia === -1 && ib === -1) return a.localeCompare(b);
+        if (ia === -1) return 1;
+        if (ib === -1) return -1;
+        return ia - ib;
+      });
     if (!files.length) throw new Error('no .md files found');
     base = files
       .map((f) => {

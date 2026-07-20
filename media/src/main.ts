@@ -267,7 +267,7 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
   // Mode picker (custom dropdown: button shows the short name, list shows name + description).
   const MODES = [
     { value: 'ask', label: 'Ask', desc: 'Read-only Q&A — answers your question using the code it can read/search. Cannot edit files or run commands.' },
-    { value: 'plan', label: 'Plan', desc: 'Researches the code (may run commands to investigate), proposes a plan, then edits only after you approve.' },
+    { value: 'plan', label: 'Plan', desc: 'Researches the code by reading and searching it, proposes a plan, then edits only after you approve.' },
     { value: 'agent', label: 'Agent', desc: 'Full agent — reads, edits files, runs commands, and tracks a live task list.' },
   ];
   let currentMode = 'plan';
@@ -3520,6 +3520,14 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         const items = parsePlanSteps(msg.steps);
         const listEl = renderPlanChecklist(items, !settled);
         if (settled) {
+          // Distinguish the two settled outcomes on replay — both used to render identically
+          // (just the head + plan text), giving no way to tell "you rejected this" apart from
+          // "you deferred this for later" once the live discard/defer note (a transient DOM
+          // node from the click handler, never part of the replayed card) is long gone.
+          const statusNote = document.createElement('div');
+          statusNote.className = msg.discarded ? 'plan-discarded' : 'plan-note';
+          statusNote.textContent = msg.discarded ? '✗ Discarded' : '— Kept for discussion, never run —';
+          t.body.appendChild(statusNote);
           const rendered = document.createElement('div'); rendered.className = 'plan-rendered';
           rendered.appendChild(renderMarkdown(msg.steps));
           t.body.appendChild(rendered);
@@ -3542,23 +3550,33 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         toggle.textContent = 'Edit steps ▾';
         const details = document.createElement('div'); details.className = 'plan-details hidden';
         details.appendChild(listEl);
+        // One-way switch, not a toggle: once the checklist is edited, `rendered` (built once
+        // from the ORIGINAL msg.steps and never updated) would silently go stale relative to
+        // those edits if it could be shown again — so switching to the editor hides the
+        // rendered view and removes the button, instead of allowing a toggle back to it.
         toggle.addEventListener('click', () => {
-          const nowHidden = details.classList.toggle('hidden');
-          toggle.textContent = nowHidden ? 'Edit steps ▾' : 'Hide editor ▴';
+          rendered.classList.add('hidden');
+          details.classList.remove('hidden');
+          toggle.remove();
         });
         t.body.appendChild(toggle);
         t.body.appendChild(details);
         const collect = () => collectPlanSteps(listEl);
         const actions = document.createElement('div'); actions.className = 'plan-actions';
-        const approve = document.createElement('button'); approve.className = 'primary plan-run'; approve.textContent = '▶  Run plan';
-        const discuss = document.createElement('button'); discuss.className = 'plan-discuss'; discuss.textContent = 'Discuss';
+        // Explicit verbs, not "Run"/"Discuss" alone — makes clear that approving both saves
+        // the .md file AND switches into Agent mode to execute it step by step, versus staying
+        // in Plan mode with nothing saved or run yet.
+        const approve = document.createElement('button'); approve.className = 'primary plan-run'; approve.textContent = '💾  Save & Run';
+        approve.title = 'Save the plan file and execute it in Agent mode, step by step';
+        const discuss = document.createElement('button'); discuss.className = 'plan-discuss'; discuss.textContent = 'Continue to discuss';
+        discuss.title = 'Keep talking about this plan — nothing is saved or run yet';
         const reject = document.createElement('button'); reject.className = 'plan-reject'; reject.textContent = 'Discard';
         approve.addEventListener('click', () => { actions.remove(); send({ type: 'approvePlan', requestId: newId(), approved: true, steps: collect() }); });
         reject.addEventListener('click', () => { actions.remove(); send({ type: 'approvePlan', requestId: newId(), approved: false, steps: collect() }); });
         discuss.addEventListener('click', () => {
           discuss.remove(); reject.remove();
           const note = document.createElement('div'); note.className = 'plan-note';
-          note.textContent = 'Kept for discussion — edit steps above, then Run when ready.';
+          note.textContent = 'Kept for discussion — nothing saved or run yet. Edit steps above, then Save & Run when ready.';
           t.body.appendChild(note);
           send({ type: 'deferPlan', requestId: msg.requestId, steps: collect() });
         });
@@ -3582,58 +3600,35 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         break;
       }
       case 'askUserPrompt': {
+        // OC's native `question` tool — rendered through the SAME rich card as our own
+        // clarifyingQuestions, so the two are visually identical. Reply path stays distinct:
+        // this resumes OC's paused turn via `askUserResponse` (callId → pending promise),
+        // NOT a new run. OC's question tool is single-question, so one entry; its flat
+        // string[] options map to titled rows (or a free-text row when there are none).
         const t = ensureTarget(msg.requestId);
         stopStatusTimer(msg.requestId, true);
         finalizeWork(msg.requestId);
         t.body.innerHTML = '';
-        const card = document.createElement('div'); card.className = 'ask-card';
-        card.dataset.callId = msg.callId;
-        const intro = document.createElement('div'); intro.className = 'ask-intro';
-        intro.textContent = 'The agent has a quick question:';
-        const q = document.createElement('div'); q.className = 'ask-q-text'; q.textContent = msg.question;
-        card.appendChild(intro); card.appendChild(q);
-        const hasOptions = Array.isArray(msg.options) && msg.options.length >= 2;
-        let answer = '';
-        if (hasOptions) {
-          const opts = document.createElement('div'); opts.className = 'ask-opts';
-          msg.options.forEach((opt) => {
-            const b = document.createElement('button'); b.type = 'button';
-            b.className = 'ask-opt'; b.textContent = opt;
-            b.addEventListener('click', () => { submit(opt); });
-            opts.appendChild(b);
-          });
-          card.appendChild(opts);
-        } else {
-          const input = document.createElement('textarea'); input.className = 'ask-input';
-          input.rows = 3; input.placeholder = 'Type your answer…';
-          input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(input.value); }
-          });
-          const submitBtn = document.createElement('button'); submitBtn.type = 'button';
-          submitBtn.className = 'primary'; submitBtn.textContent = 'Submit';
-          submitBtn.addEventListener('click', () => submit(input.value));
-          card.appendChild(input); card.appendChild(submitBtn);
-          setTimeout(() => input.focus(), 0);
-        }
-        const submit = (text) => {
-          answer = (text || '').trim() || '(no answer)';
-          card.querySelectorAll('button, textarea').forEach((el) => { el.disabled = true; });
-          const note = document.createElement('div'); note.className = 'ask-answer';
-          note.textContent = '✓ ' + answer;
-          card.appendChild(note);
-          send({ type: 'askUserResponse', requestId: msg.requestId, callId: msg.callId, answer });
-        };
-        t.body.appendChild(card);
-        scrollDown();
+        const options = (Array.isArray(msg.options) ? msg.options : []).map((o) => ({ title: o }));
+        renderQuestionCard(t, {
+          questions: [{ text: msg.question, options }],
+          intro: 'The agent has a quick question:',
+          callId: msg.callId,
+          submitTitle: '✓ Answer submitted',
+          dismissTitle: '— skipped —',
+          onSubmit: (answers) => send({ type: 'askUserResponse', requestId: msg.requestId, callId: msg.callId, answer: answers[0] || '(no answer)' }),
+          onDismiss: () => send({ type: 'askUserResponse', requestId: msg.requestId, callId: msg.callId, answer: '', cancelled: true }),
+        });
         break;
       }
       case 'askUserDismissed': {
         // The host drained this in-flight askUser (e.g. user cancelled or started a new turn).
-        // Find the matching card in the DOM and disable it so it can't be submitted.
-        activeThreadEl.querySelectorAll('.ask-card').forEach((card) => {
-          if (card.dataset.callId === msg.callId) {
-            card.querySelectorAll('button, textarea').forEach((el) => { el.disabled = true; });
-            const note = document.createElement('div'); note.className = 'ask-answer';
+        // The card is now the unified `.clarify` card tagged with the callId; disable its
+        // still-open form (skip if it's already settled — `.done`).
+        activeThreadEl.querySelectorAll('.clarify[data-call-id]').forEach((card) => {
+          if (card.dataset.callId === msg.callId && !card.classList.contains('done')) {
+            card.querySelectorAll('button, textarea, input').forEach((el) => { el.disabled = true; });
+            const note = document.createElement('div'); note.className = 'clarify-intro';
             note.textContent = '— skipped —';
             card.appendChild(note);
           }
@@ -3668,167 +3663,12 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         // card that's about to replace it as this turn's canonical representation.
         t.flow.innerHTML = '';
         t.body.innerHTML = '';
-        const qs = msg.questions;
-        // Single-select question: selected[qi] is a chosen option index (or null); q.options.length
-        // is the pseudo-index for "type your own". Multi-select (q.multi): selected[qi] is an array
-        // of chosen indices (possibly including the "type your own" pseudo-index too).
-        const selected = qs.map((q) => (q.multi ? [] : null));
-        const custom = qs.map(() => '');      // free-text answer per question, used when "type your own" is chosen
-        let cur = 0;
-
-        const card = document.createElement('div'); card.className = 'clarify';
-        const intro = document.createElement('div'); intro.className = 'clarify-intro';
-        intro.textContent = 'A couple of quick questions before I plan:';
-        const tabsEl = document.createElement('div'); tabsEl.className = 'clarify-tabs';
-        const qbox = document.createElement('div'); qbox.className = 'clarify-step';
-        const nav = document.createElement('div'); nav.className = 'clarify-nav';
-        const back = document.createElement('button'); back.type = 'button'; back.className = 'secondary'; back.textContent = 'Back';
-        const next = document.createElement('button'); next.type = 'button'; next.className = 'primary'; next.textContent = 'Next →';
-        nav.appendChild(back); nav.appendChild(next);
-        const meta = document.createElement('div'); meta.className = 'clarify-meta';
-        const metaCount = document.createElement('span'); metaCount.className = 'clarify-meta-count';
-        const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'clarify-dismiss'; dismiss.textContent = 'Dismiss';
-        meta.appendChild(metaCount); meta.appendChild(document.createTextNode(' · ')); meta.appendChild(dismiss);
-        const footer = document.createElement('div'); footer.className = 'clarify-footer';
-        footer.appendChild(nav); footer.appendChild(meta);
-        card.appendChild(intro); card.appendChild(tabsEl); card.appendChild(qbox); card.appendChild(footer);
-
-        const CUSTOM = (qi) => qs[qi].options.length; // pseudo-index for the "type your own" row
-        const isPicked = (qi, oi) => qs[qi].multi ? selected[qi].includes(oi) : selected[qi] === oi;
-        const answered = (qi) => {
-          if (qs[qi].multi) {
-            const sel = selected[qi];
-            if (!sel.length) return false;
-            return !sel.includes(CUSTOM(qi)) || custom[qi].trim().length > 0;
-          }
-          return selected[qi] !== null && (selected[qi] !== CUSTOM(qi) || custom[qi].trim().length > 0);
-        };
-        const isLast = () => cur === qs.length - 1;
-        const allAnswered = () => qs.every((q, qi) => answered(qi));
-        function updateNav() {
-          back.disabled = cur === 0;
-          metaCount.textContent = `${cur + 1}/${qs.length}`;
-          if (isLast()) { next.textContent = 'Submit answers'; next.disabled = !allAnswered(); }
-          else { next.textContent = 'Next →'; next.disabled = !answered(cur); }
-        }
-        function renderTabs() {
-          tabsEl.innerHTML = '';
-          qs.forEach((q, i) => {
-            const tb = document.createElement('button'); tb.type = 'button';
-            tb.className = 'clarify-tab' + (i === cur ? ' active' : '') + (answered(i) ? ' done' : '');
-            tb.textContent = q.label || `Q${i + 1}`;
-            tb.title = q.text;
-            tb.addEventListener('click', () => { cur = i; renderStep(); });
-            tabsEl.appendChild(tb);
-          });
-        }
-        function choose(oi) {
-          if (qs[cur].multi) {
-            // Toggle membership; never auto-advance — the user needs to pick everything that
-            // applies before moving on, unlike a single-select row's implicit "done" signal.
-            const sel = selected[cur];
-            const idx = sel.indexOf(oi);
-            if (idx === -1) sel.push(oi); else sel.splice(idx, 1);
-            renderStep();
-            return;
-          }
-          selected[cur] = oi;
-          renderStep();
-          // Auto-advance only for a concrete option — the free-text row needs the user to type first.
-          if (oi !== CUSTOM(cur) && !isLast()) setTimeout(() => { cur++; renderStep(); }, 180);
-        }
-        function renderStep() {
-          renderTabs();
-          qbox.innerHTML = '';
-          const q = qs[cur];
-          const counter = document.createElement('div'); counter.className = 'clarify-counter';
-          counter.textContent = q.label ? `${q.label} · Question ${cur + 1} of ${qs.length}` : `Question ${cur + 1} of ${qs.length}`;
-          const qt = document.createElement('div'); qt.className = 'clarify-q-text'; qt.textContent = q.text;
-          const hint = q.multi ? document.createElement('div') : null;
-          if (hint) { hint.className = 'clarify-multi-hint'; hint.textContent = 'Select all that apply'; }
-          const opts = document.createElement('div'); opts.className = 'clarify-opts';
-          const mkRow = (oi, title, desc) => {
-            const row = document.createElement('button'); row.type = 'button';
-            row.className = 'clarify-opt' + (isPicked(cur, oi) ? ' selected' : '');
-            const num = document.createElement('span'); num.className = 'clarify-opt-num'; num.textContent = `${oi + 1}.`;
-            const radio = document.createElement('span'); radio.className = q.multi ? 'clarify-checkbox' : 'clarify-radio';
-            const body = document.createElement('span'); body.className = 'clarify-opt-body';
-            const tEl = document.createElement('span'); tEl.className = 'clarify-opt-title'; tEl.textContent = title; body.appendChild(tEl);
-            if (desc) { const dEl = document.createElement('span'); dEl.className = 'clarify-opt-desc'; dEl.textContent = desc; body.appendChild(dEl); }
-            row.appendChild(num); row.appendChild(radio); row.appendChild(body);
-            row.addEventListener('click', () => choose(oi));
-            opts.appendChild(row);
-          };
-          q.options.forEach((opt, oi) => mkRow(oi, opt.title, opt.description));
-          mkRow(CUSTOM(cur), 'Type your own answer', '');
-          // Reveal a free-text input when the "type your own" row is picked.
-          if (isPicked(cur, CUSTOM(cur))) {
-            const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'clarify-custom';
-            inp.placeholder = 'Type your answer…'; inp.value = custom[cur];
-            inp.addEventListener('input', () => { custom[cur] = inp.value; updateNav(); renderTabs(); });
-            inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); next.click(); } });
-            opts.appendChild(inp);
-            setTimeout(() => inp.focus(), 0);
-          }
-          qbox.appendChild(counter); qbox.appendChild(qt);
-          if (hint) qbox.appendChild(hint);
-          qbox.appendChild(opts);
-          updateNav();
-          scrollDown();
-        }
-        // Collapse the question form into a compact recap so it's obvious the input was
-        // accepted — otherwise the disabled form sits there looking stale/unsubmitted.
-        function markClarifyDone(title, answers) {
-          card.classList.add('done');
-          card.innerHTML = '';
-          const h = document.createElement('div'); h.className = 'clarify-intro'; h.textContent = title;
-          card.appendChild(h);
-          if (answers) {
-            const recap = document.createElement('div'); recap.className = 'clarify-recap';
-            qs.forEach((q, qi) => {
-              const row = document.createElement('div'); row.className = 'clarify-recap-row';
-              const ql = document.createElement('span'); ql.className = 'clarify-recap-q'; ql.textContent = (q.label || `Q${qi + 1}`) + ':';
-              const al = document.createElement('span'); al.className = 'clarify-recap-a'; al.textContent = answers[qi];
-              row.appendChild(ql); row.appendChild(al);
-              recap.appendChild(row);
-            });
-            card.appendChild(recap);
-          }
-          // Relocate the recap from t.body into t.flow. A plan-mode clarify answer resumes
-          // the SAME target inline (chatViewProvider.ts handleAnswerClarifying), and any
-          // further tool calls/text append into t.flow — which sits BEFORE t.body/statusEl
-          // in the DOM (see ensureTarget). Leaving the recap in body would make it render
-          // AFTER that later work even though answering happened first, reading as if the
-          // agent's follow-up research preceded the answer instead of resuming from it.
-          t.flow.appendChild(card);
-          scrollDown();
-        }
-        back.addEventListener('click', () => { if (cur > 0) { cur--; renderStep(); } });
-        next.addEventListener('click', () => {
-          if (!isLast()) { if (answered(cur)) { cur++; renderStep(); } return; }
-          if (!allAnswered()) return;
-          const answers = qs.map((q, qi) => {
-            if (q.multi) {
-              return selected[qi]
-                .map((oi) => oi === CUSTOM(qi) ? custom[qi].trim() : q.options[oi].title)
-                .filter(Boolean)
-                .join(', ');
-            }
-            return selected[qi] === CUSTOM(qi) ? custom[qi].trim() : q.options[selected[qi]].title;
-          });
-          markClarifyDone('✓ Answers submitted — resuming…', answers);
-          send({ type: 'answerClarifying', requestId: msg.requestId, answers });
+        renderQuestionCard(t, {
+          questions: msg.questions,
+          intro: 'A couple of quick questions before I plan:',
+          onSubmit: (answers) => send({ type: 'answerClarifying', requestId: msg.requestId, answers }),
+          onDismiss: () => send({ type: 'answerClarifying', requestId: msg.requestId, answers: msg.questions.map(() => '(no preference — use your best judgment)') }),
         });
-        dismiss.addEventListener('click', () => {
-          // Let the planner proceed on its own best judgment for every question.
-          const answers = qs.map(() => '(no preference — use your best judgment)');
-          markClarifyDone('✗ Dismissed — proceeding with sensible defaults.', null);
-          send({ type: 'answerClarifying', requestId: msg.requestId, answers });
-        });
-
-        renderStep();
-        t.body.appendChild(card);
-        scrollDown();
         break;
       }
       case 'assistantChunk': {
@@ -4078,6 +3918,176 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
     bar.appendChild(head);
   }
 
+  // Shared interactive question card — the single visual component behind BOTH the
+  // `clarifyingQuestions` card (our ???QUESTIONS??? sentinel) and the `askUserPrompt` card
+  // (OC's native question tool). The two have fundamentally different REPLY mechanisms (one
+  // starts a new run, the other resumes a paused OC turn), so the reply is injected via
+  // opts.onSubmit/onDismiss rather than hard-coded here — but the look, multi-question tabs,
+  // single/multi-select, "type your own" input, and answered-recap are identical for both.
+  //   opts: { questions, intro, callId?, submitTitle?, dismissTitle?, onSubmit(answers), onDismiss() }
+  function renderQuestionCard(t, opts) {
+    const qs = opts.questions;
+    const submitTitle = opts.submitTitle || '✓ Answers submitted — resuming…';
+    const dismissTitle = opts.dismissTitle || '✗ Dismissed — proceeding with sensible defaults.';
+    // Single-select: selected[qi] is a chosen option index (or null); q.options.length is the
+    // pseudo-index for "type your own". Multi-select (q.multi): selected[qi] is an array of
+    // indices. A question with NO options starts on the "type your own" row so its free-text
+    // input shows immediately (a pure free-text ask shouldn't need a click to reveal the box).
+    const selected = qs.map((q) => q.multi ? [] : (q.options.length === 0 ? q.options.length : null));
+    const custom = qs.map(() => '');
+    let cur = 0;
+
+    const card = document.createElement('div'); card.className = 'clarify';
+    if (opts.callId) card.dataset.callId = opts.callId;
+    const intro = document.createElement('div'); intro.className = 'clarify-intro';
+    intro.textContent = opts.intro;
+    const tabsEl = document.createElement('div'); tabsEl.className = 'clarify-tabs';
+    const qbox = document.createElement('div'); qbox.className = 'clarify-step';
+    const nav = document.createElement('div'); nav.className = 'clarify-nav';
+    const back = document.createElement('button'); back.type = 'button'; back.className = 'secondary'; back.textContent = 'Back';
+    const next = document.createElement('button'); next.type = 'button'; next.className = 'primary'; next.textContent = 'Next →';
+    nav.appendChild(back); nav.appendChild(next);
+    const meta = document.createElement('div'); meta.className = 'clarify-meta';
+    const metaCount = document.createElement('span'); metaCount.className = 'clarify-meta-count';
+    const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'clarify-dismiss'; dismiss.textContent = 'Dismiss';
+    meta.appendChild(metaCount); meta.appendChild(document.createTextNode(' · ')); meta.appendChild(dismiss);
+    const footer = document.createElement('div'); footer.className = 'clarify-footer';
+    footer.appendChild(nav); footer.appendChild(meta);
+    // Single-question card (typical for askUserPrompt): the tabs strip and the "1/1" counter
+    // are noise — hide the tabs, and updateNav/renderStep skip the counter when there's one Q.
+    card.appendChild(intro);
+    if (qs.length > 1) card.appendChild(tabsEl);
+    card.appendChild(qbox);
+    card.appendChild(footer);
+
+    const CUSTOM = (qi) => qs[qi].options.length;
+    const isPicked = (qi, oi) => qs[qi].multi ? selected[qi].includes(oi) : selected[qi] === oi;
+    const answered = (qi) => {
+      if (qs[qi].multi) {
+        const sel = selected[qi];
+        if (!sel.length) return false;
+        return !sel.includes(CUSTOM(qi)) || custom[qi].trim().length > 0;
+      }
+      return selected[qi] !== null && (selected[qi] !== CUSTOM(qi) || custom[qi].trim().length > 0);
+    };
+    const isLast = () => cur === qs.length - 1;
+    const allAnswered = () => qs.every((q, qi) => answered(qi));
+    function updateNav() {
+      back.disabled = cur === 0;
+      metaCount.textContent = qs.length > 1 ? `${cur + 1}/${qs.length}` : '';
+      if (isLast()) { next.textContent = qs.length > 1 ? 'Submit answers' : 'Submit'; next.disabled = !allAnswered(); }
+      else { next.textContent = 'Next →'; next.disabled = !answered(cur); }
+    }
+    function renderTabs() {
+      tabsEl.innerHTML = '';
+      if (qs.length <= 1) return;
+      qs.forEach((q, i) => {
+        const tb = document.createElement('button'); tb.type = 'button';
+        tb.className = 'clarify-tab' + (i === cur ? ' active' : '') + (answered(i) ? ' done' : '');
+        tb.textContent = q.label || `Q${i + 1}`;
+        tb.title = q.text;
+        tb.addEventListener('click', () => { cur = i; renderStep(); });
+        tabsEl.appendChild(tb);
+      });
+    }
+    function choose(oi) {
+      if (qs[cur].multi) {
+        const sel = selected[cur];
+        const idx = sel.indexOf(oi);
+        if (idx === -1) sel.push(oi); else sel.splice(idx, 1);
+        renderStep();
+        return;
+      }
+      selected[cur] = oi;
+      renderStep();
+      if (oi !== CUSTOM(cur) && !isLast()) setTimeout(() => { cur++; renderStep(); }, 180);
+    }
+    function renderStep() {
+      renderTabs();
+      qbox.innerHTML = '';
+      const q = qs[cur];
+      const counter = qs.length > 1 ? document.createElement('div') : null;
+      if (counter) { counter.className = 'clarify-counter'; counter.textContent = q.label ? `${q.label} · Question ${cur + 1} of ${qs.length}` : `Question ${cur + 1} of ${qs.length}`; }
+      const qt = document.createElement('div'); qt.className = 'clarify-q-text'; qt.textContent = q.text;
+      const hint = q.multi ? document.createElement('div') : null;
+      if (hint) { hint.className = 'clarify-multi-hint'; hint.textContent = 'Select all that apply'; }
+      const optsEl = document.createElement('div'); optsEl.className = 'clarify-opts';
+      const mkRow = (oi, title, desc) => {
+        const row = document.createElement('button'); row.type = 'button';
+        row.className = 'clarify-opt' + (isPicked(cur, oi) ? ' selected' : '');
+        const num = document.createElement('span'); num.className = 'clarify-opt-num'; num.textContent = `${oi + 1}.`;
+        const radio = document.createElement('span'); radio.className = q.multi ? 'clarify-checkbox' : 'clarify-radio';
+        const body = document.createElement('span'); body.className = 'clarify-opt-body';
+        const tEl = document.createElement('span'); tEl.className = 'clarify-opt-title'; tEl.textContent = title; body.appendChild(tEl);
+        if (desc) { const dEl = document.createElement('span'); dEl.className = 'clarify-opt-desc'; dEl.textContent = desc; body.appendChild(dEl); }
+        row.appendChild(num); row.appendChild(radio); row.appendChild(body);
+        row.addEventListener('click', () => choose(oi));
+        optsEl.appendChild(row);
+      };
+      q.options.forEach((opt, oi) => mkRow(oi, opt.title, opt.description));
+      mkRow(CUSTOM(cur), q.options.length ? 'Type your own answer' : 'Your answer', '');
+      if (isPicked(cur, CUSTOM(cur))) {
+        const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'clarify-custom';
+        inp.placeholder = 'Type your answer…'; inp.value = custom[cur];
+        inp.addEventListener('input', () => { custom[cur] = inp.value; updateNav(); renderTabs(); });
+        inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); next.click(); } });
+        optsEl.appendChild(inp);
+        setTimeout(() => inp.focus(), 0);
+      }
+      if (counter) qbox.appendChild(counter);
+      qbox.appendChild(qt);
+      if (hint) qbox.appendChild(hint);
+      qbox.appendChild(optsEl);
+      updateNav();
+      scrollDown();
+    }
+    function markClarifyDone(title, answers) {
+      card.classList.add('done');
+      card.innerHTML = '';
+      const h = document.createElement('div'); h.className = 'clarify-intro'; h.textContent = title;
+      card.appendChild(h);
+      if (answers) {
+        const recap = document.createElement('div'); recap.className = 'clarify-recap';
+        qs.forEach((q, qi) => {
+          const row = document.createElement('div'); row.className = 'clarify-recap-row';
+          const ql = document.createElement('span'); ql.className = 'clarify-recap-q'; ql.textContent = (q.label || (qs.length > 1 ? `Q${qi + 1}` : 'You')) + ':';
+          const al = document.createElement('span'); al.className = 'clarify-recap-a'; al.textContent = answers[qi];
+          row.appendChild(ql); row.appendChild(al);
+          recap.appendChild(row);
+        });
+        card.appendChild(recap);
+      }
+      // Relocate the settled card into t.flow so it renders BEFORE any work the resumed turn
+      // streams next (t.flow sits before t.body in the DOM — see ensureTarget). Applies to
+      // both sources: a plan clarify starts a new run, an OC question resumes the paused turn,
+      // and either way subsequent output lands in t.flow.
+      t.flow.appendChild(card);
+      scrollDown();
+    }
+    back.addEventListener('click', () => { if (cur > 0) { cur--; renderStep(); } });
+    next.addEventListener('click', () => {
+      if (!isLast()) { if (answered(cur)) { cur++; renderStep(); } return; }
+      if (!allAnswered()) return;
+      const answers = qs.map((q, qi) => {
+        if (q.multi) {
+          return selected[qi].map((oi) => oi === CUSTOM(qi) ? custom[qi].trim() : q.options[oi].title).filter(Boolean).join(', ');
+        }
+        return selected[qi] === CUSTOM(qi) ? custom[qi].trim() : q.options[selected[qi]].title;
+      });
+      markClarifyDone(submitTitle, answers);
+      opts.onSubmit(answers);
+    });
+    dismiss.addEventListener('click', () => {
+      markClarifyDone(dismissTitle, null);
+      opts.onDismiss();
+    });
+
+    renderStep();
+    t.body.appendChild(card);
+    scrollDown();
+    return card;
+  }
+
   // Live task checklist for a turn (TodoWrite-style). Rendered above the answer
   // bubble and updated in place as the agent advances each item. When `followingPlan`
   // is true (Plan → Agent handoff), prepend a small header so the user sees these
@@ -4126,10 +4136,10 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
   // "looks like a path" heuristic (has a slash, or a dotted extension, or a leading dot)
   // filters out backtick spans that are clearly just inline code/identifiers.
   const EXTENSIONLESS_FILENAMES = new Set(['dockerfile', 'makefile', 'rakefile', 'gemfile', 'procfile', 'artisan', 'license', 'changelog']);
-  // File-like backtick spans referenced in one step's text (order-preserving, first match wins
-  // as the step's "primary" file for grouping). Same broadened heuristic as before: any
-  // backtick span counts as a candidate, narrowed by "looks like a path" (has a slash, a
-  // dotted extension, a leading dot, or is a known extensionless filename).
+  // File-like backtick spans referenced in one step's text — used to count distinct files
+  // across the whole plan for the summary line. Any backtick span counts as a candidate,
+  // narrowed by "looks like a path" (has a slash, a dotted extension, a leading dot, or is a
+  // known extensionless filename).
   function detectStepFiles(text) {
     const files = [];
     const spans = String(text || '').match(/`([^`]+)`/g) || [];

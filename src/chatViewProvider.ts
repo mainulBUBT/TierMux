@@ -32,7 +32,7 @@ import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense } from './agent/condense';
 import { parseClarifying, type ClarifyingQuestion } from './agent/clarify';
-import { deriveTitleFrom, extractSubjectTerms, looksLikeActionablePlan, mentionsSubject, planStepsToTodos, sanitizeTitle } from './session/titles';
+import { deriveTitleFrom, extractSubjectTerms, looksLikeActionablePlan, looksLikeGroundedAnswer, offTopicCorrection, planStepsToTodos, sanitizeTitle } from './session/titles';
 
 import { loadSkills } from './context/skills';
 
@@ -1570,16 +1570,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       let extraHistoryPushed = 0;
       if (sdkMode === 'plan') {
         const subjectTerms = extractSubjectTerms(prompt);
-        if (!mentionsSubject(result.text, subjectTerms)) {
-          s.history.push({ role: 'user', content: `Your last reply didn't address "${subjectTerms.slice(0, 5).join(', ')}" at all — it read like a generic project summary instead of investigating what was actually asked. Grep for those terms, read the relevant files, and answer ONLY about that.` });
+        if (!looksLikeGroundedAnswer(result.text, subjectTerms)) {
+          s.history.push({ role: 'user', content: offTopicCorrection(subjectTerms) });
           extraHistoryPushed = 1;
           result = await runner(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
           if (!this.isActiveRun(s, m.requestId)) return;
         }
       }
 
+      // Hoisted so the fallthrough below (plan mode, neither a clarify question nor an
+      // actionable plan) can reuse this instead of re-parsing the identical `result.text`.
+      let planClar: ReturnType<typeof parseClarifying> | undefined;
       if (m.mode === 'plan') {
         const clar = parseClarifying(result.text);
+        planClar = clar;
         if (clar.questions && clar.questions.length) {
 
           s.history.length -= 1 + extraHistoryPushed;
@@ -1618,7 +1622,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         totalTokens: after.totalTokens - before.totalTokens,
       };
 
-      const agentClar = !result.paused ? parseClarifying(result.text) : { questions: null, text: result.text };
+      const agentClar = planClar ?? (!result.paused ? parseClarifying(result.text) : { questions: null, text: result.text });
 
       const displayText = agentClar.text;
 
@@ -1957,6 +1961,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const qi = this.runQueue.findIndex((q) => q.sessionId === sessionId);
     if (qi >= 0) { this.runQueue.splice(qi, 1)[0].resolve(); }
+    // Capture before clearing — handleApprovePlan's own `finally` only posts
+    // `planExecuting:false` when `isActiveRun` is still true, which Stop/cancel deliberately
+    // breaks by nulling `activeRequestId` right below. Without this, cancelling mid-plan-
+    // execution left the mode pill permanently stuck on "Agent ⚡" until some other plan
+    // happened to run (which merely reassigns the stuck state, never clears it).
+    const wasExecutingPlan = s.executingPlan;
+    const executingRequestId = s.activeRequestId;
     s.cancel?.cancel();
     s.activeRequestId = undefined; // invalidates the run's liveness guard (isActiveRun)
     this.settlePendingApprovals(s, false); // unblock any command/edit awaiting a click
@@ -1966,6 +1977,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.executingPlan = false;
     s.cards = [];
     this.setStatus(sessionId, 'idle');
+
+    if (wasExecutingPlan && executingRequestId) {
+      this.post({ type: 'planExecuting', sessionId, requestId: executingRequestId, executing: false });
+    }
 
     if (rebuild && this.viewedSessionId === sessionId) {
       this.post({ type: 'switchSession', sessionId, messages: s.transcript });
@@ -2235,6 +2250,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'busy', sessionId: s.id, busy: true });
     await s.checkpoints.begin(m.requestId, 'Plan (clarified)');
     const sentAt = Date.now();
+    // Set true only by the "show as a normal answer" branch below — that reply is real
+    // conversation the model needs to remember next turn, unlike the plan-proposal branches
+    // (not committed until approval) or the empty/error branches (nothing happened). Gates
+    // the blanket `s.history.length = base` reset in `finally` so this one case survives it.
+    let committed = false;
     try {
       const cbk5 = this.agentCallbacks(s, m.requestId, 'plan');
       let result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});
@@ -2242,13 +2262,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Same deterministic relevance check as the initial propose path (handleSend) — a
       // resumed run can drift into a generic answer just as easily as the first one.
       const subjectTerms = extractSubjectTerms(ctx.prompt);
-      if (!mentionsSubject(result.text, subjectTerms)) {
-        s.history.push({ role: 'user', content: `Your last reply didn't address "${subjectTerms.slice(0, 5).join(', ')}" at all — it read like a generic project summary instead of investigating what was actually asked. Grep for those terms, read the relevant files, and answer ONLY about that.` });
+      if (!looksLikeGroundedAnswer(result.text, subjectTerms)) {
+        s.history.push({ role: 'user', content: offTopicCorrection(subjectTerms) });
         result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});
         if (!this.isActiveRun(s, m.requestId)) return;
       }
       const clar = parseClarifying(result.text);
-      if (looksLikeActionablePlan(clar.text)) {
+      if (clar.questions && clar.questions.length) {
+        // The model re-asked despite being told not to (the "do not ask any further
+        // questions" instruction pushed above) — show the follow-up instead of silently
+        // losing it: parseClarifying strips it out of clar.text either way, so ignoring
+        // clar.questions here would otherwise fall through to the generic "didn't return a
+        // plan" error with the actual question content discarded.
+        s.pendingPlanUser = ctx.userContent;
+        s.pendingClarify = { requestId: m.requestId, userContent: ctx.userContent, prompt: ctx.prompt, questions: clar.questions, mode: 'plan' };
+        this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: clar.questions });
+      } else if (looksLikeActionablePlan(clar.text)) {
         this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
         this.preparePlanFile(s, ctx.prompt);
       } else if (clar.text.trim()) {
@@ -2256,8 +2285,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // discussion reply) rather than a plan to run. Show it as a normal answer instead of
         // squashing the whole prose into a broken one-item "plan" card (duplicating it visually
         // alongside the plain text render above).
+        this.persistAgentTurn(s, result);
         this.pushAssistantTurn(s, m.requestId, result, sentAt);
         this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: clar.text, reasoning: result.reasoning, platform: result.runtimeName ?? result.platform, model: result.model, paused: result.paused });
+        committed = true;
       } else {
         // The resumed run returned nothing usable (e.g. all of result.text was consumed by a
         // stray ???QUESTIONS??? block parseClarifying stripped) — posting an empty planProposed
@@ -2274,7 +2305,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       release();
       if (this.isActiveRun(s, m.requestId)) {
 
-        s.history.length = base;
+        if (!committed) s.history.length = base;
         s.activeRequestId = undefined;
         this.settlePendingAskUser(s);
         await this.finishCheckpoint(s, m.requestId);

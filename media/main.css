@@ -468,6 +468,7 @@ details[open].think-block > details > summary::before { content: '▾ '; }
 .plan-rendered { font-size: 13px; line-height: 1.55; margin-bottom: 6px; }
 .plan-rendered :first-child { margin-top: 0; }
 .plan-rendered :last-child { margin-bottom: 0; }
+.plan-rendered.hidden { display: none; }
 .plan-details-toggle {
   font-size: 11px; opacity: .6; background: none; border: none; cursor: pointer;
   padding: 2px 0; margin-bottom: 4px; color: inherit;
@@ -528,9 +529,8 @@ details[open].think-block > details > summary::before { content: '▾ '; }
   border: none; border-radius: 5px; padding: 6px 6px;
   transition: background .1s;
 }
-.clarify-opt:hover:not(:disabled) { background: var(--vscode-list-hoverBackground, rgba(127,127,127,.08)); }
+.clarify-opt:hover { background: var(--vscode-list-hoverBackground, rgba(127,127,127,.08)); }
 .clarify-opt.selected { background: var(--vscode-list-activeSelectionBackground); }
-.clarify-opt:disabled { cursor: default; opacity: .6; }
 .clarify-opt-num { flex: 0 0 22px; text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; opacity: .35; padding-top: 2px; }
 .clarify-radio { flex: 0 0 auto; width: 14px; height: 14px; margin-top: 3px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--vscode-descriptionForeground, #888); }
 .clarify-opt.selected .clarify-radio { border-color: var(--vscode-focusBorder); background: radial-gradient(circle, var(--vscode-focusBorder) 0 45%, transparent 50%); }
@@ -578,17 +578,8 @@ details[open].think-block > details > summary::before { content: '▾ '; }
 .todo-plan-head { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; opacity: .6; margin-bottom: 4px; }
 .plan-discarded { margin-top: 6px; font-size: 11px; opacity: .65; font-style: italic; }
 
-/* In-chat askUser card (Plan + Agent modes) */
-.ask-card { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--vscode-panel-border); background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.12)); }
-.ask-intro { font-size: 12px; opacity: .8; }
-.ask-q-text { font-size: 13px; font-weight: 600; }
-.ask-opts { display: flex; flex-direction: column; gap: 4px; }
-.ask-opt { text-align: left; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--vscode-panel-border); background: transparent; color: inherit; cursor: pointer; font: inherit; }
-.ask-opt:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
-.ask-opt:disabled { cursor: default; opacity: .6; }
-.ask-input { width: 100%; resize: vertical; min-height: 56px; font: inherit; color: inherit; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 6px; padding: 6px 8px; box-sizing: border-box; }
-.ask-input:disabled { opacity: .6; }
-.ask-answer { font-size: 12px; opacity: .85; }
+/* OC-native askUser questions now render through the shared `.clarify` card (see
+   renderQuestionCard in main.ts) — the old bespoke `.ask-*` card styles are retired. */
 
 /* Changed-files review under a command */
 .checkpoint { margin-top: 6px; font-size: 12px; }
@@ -932,8 +923,11 @@ button#mode-btn.executing .mode-label {
 }
 /* When rendered as a <button> (clickable notice, e.g. "open plan file") — reset button
    chrome so it still reads as a plain divider, with just a pointer + underline on hover. */
-button.compact-divider { background: none; font: inherit; display: block; width: 100%; }
-.compact-divider-link { cursor: pointer; }
+/* `color: inherit` is required here — a bare <button> falls back to the browser's UA
+   default text color (often black) instead of the theme foreground, which is why this
+   rendered unreadable-dark-on-dark before this was added. */
+button.compact-divider { background: none; font: inherit; color: inherit; display: block; width: 100%; }
+.compact-divider-link { cursor: pointer; color: var(--vscode-textLink-foreground, #4daafc); opacity: .85; }
 .compact-divider-link:hover { opacity: 1; text-decoration: underline; }
 .send-btn {
   background: var(--vscode-button-background); color: var(--vscode-button-foreground);

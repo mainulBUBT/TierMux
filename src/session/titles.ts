@@ -87,13 +87,19 @@ const SUBJECT_STOPWORDS = new Set([
  * unrelated generic answer (e.g. a whole-project overview when a specific feature was named).
  */
 export function extractSubjectTerms(message: string): string[] {
-  const words = (message || '')
+  const raw = message || '';
+  // Acronyms/identifiers (2-6 consecutive capitals — "API", "DB", "UI", "PDF") are always a
+  // meaningful subject regardless of length; the >=4 filter below would otherwise drop them
+  // and silently defeat the relevance check for exactly this class of short-named question
+  // ("how can we improve the API?" would yield zero subject terms without this).
+  const acronyms = (raw.match(/\b[A-Z]{2,6}\b/g) || []).map((w) => w.toLowerCase());
+  const words = raw
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
     .split(/\s+/)
     .filter(Boolean);
   const terms = words.filter((w) => w.length >= 4 && !SUBJECT_STOPWORDS.has(w));
-  return Array.from(new Set(terms));
+  return Array.from(new Set([...acronyms, ...terms]));
 }
 
 /**
@@ -105,4 +111,49 @@ export function mentionsSubject(text: string, terms: string[]): boolean {
   if (!terms.length) return true;
   const lower = (text || '').toLowerCase();
   return terms.some((t) => lower.includes(t));
+}
+
+// Markers of a WHOLE-PROJECT overview response: broad stack/tooling enumeration and
+// overview-shaped section headers. A genuine answer to a specific question ("optimize the
+// role system") would never enumerate the entire tech stack — it stays on its subject. A
+// weak model that ignores the question and dumps a project summary hits many of these at once.
+const OVERVIEW_MARKERS = [
+  'tech stack', 'architecture', 'key features', 'core features', 'project overview', 'what is this',
+  'request flow', 'business logic lives', 'primary keys', 'front door', 'both front',
+  'laravel', 'sanctum', 'eloquent', 'composer.json', 'tailwind', 'vite', 'bootstrap', 'socialite',
+  'sqlite', 'mysql', 'php 8', 'spatie', 'maatwebsite', 'blade',
+];
+// Subject terms that ARE overview-ish — if the user genuinely asked about the architecture/
+// stack/structure, an overview-shaped answer is correct and must not be flagged.
+const OVERVIEWISH_TERMS = new Set(['architecture', 'stack', 'structure', 'overview', 'layout', 'setup']);
+
+/** True when `text` reads like a broad whole-project overview (>=5 distinct overview markers) —
+ *  a tech-stack enumeration + overview section headers, regardless of what was asked. */
+export function looksLikeGenericOverview(text: string): boolean {
+  const lower = (text || '').toLowerCase();
+  let hits = 0;
+  for (const m of OVERVIEW_MARKERS) if (lower.includes(m)) hits++;
+  return hits >= 5;
+}
+
+/**
+ * True if `text` looks like a genuinely investigated answer to a SPECIFIC named subject, rather
+ * than a generic whole-project overview that merely name-drops the subject once. The strong
+ * tell is not "did it cite a file" (a generic overview cites project-structure files too) but
+ * "does it read like a project overview" — enumerating the whole stack while a specific subject
+ * was named. Empty `terms` (a genuinely subject-less question like "give an overview") always
+ * passes; so does the case where the subject itself is overview-ish (architecture/stack/…).
+ */
+export function looksLikeGroundedAnswer(text: string, terms: string[]): boolean {
+  if (!terms.length) return true;
+  if (!mentionsSubject(text, terms)) return false;
+  if (terms.some((t) => OVERVIEWISH_TERMS.has(t))) return true; // an overview WAS what was asked
+  return !looksLikeGenericOverview(text);
+}
+
+/** The corrective instruction pushed for the one bounded relevance-check retry (see
+ *  handleSend/handleAnswerClarifying in chatViewProvider.ts) — kept in one place so the two
+ *  call sites can't drift apart. */
+export function offTopicCorrection(subjectTerms: string[]): string {
+  return `Your last reply was a generic whole-project overview — it did NOT actually answer about "${subjectTerms.slice(0, 5).join(', ')}". Do not summarize the project or its tech stack again. Instead: grep the codebase for those terms, read the specific files that implement them, and answer ONLY about "${subjectTerms.slice(0, 5).join(', ')}", citing the real files/lines you find.`;
 }
