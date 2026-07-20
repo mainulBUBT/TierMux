@@ -344,7 +344,14 @@ async function runViaOc(
   const attachmentBlocks = collectSessionAttachmentBlocks(opts.messages);
   const taskKind: TaskKind = taskKindHint ?? classifyTask(userText, { attachmentKinds: attachmentKindsFromContent(attachmentBlocks) });
 
-  setForcedTaskKind(taskKind === 'vision' ? 'vision' : undefined);
+  // Plan mode forces taskKind 'plan' so its comparator (routing.ts) and weight profile
+  // (scoringConfig.ts) are actually reachable — classifyTask never emits 'plan' (it reads
+  // the message text, and "plan" is a mode the user picked, not something the text says),
+  // so both were dead code. Vision still wins: a plan turn about a screenshot must route to
+  // a model that can see it, or the plan is written about nothing.
+  const forcedKind: TaskKind | undefined =
+    taskKind === 'vision' ? 'vision' : opts.mode === 'plan' ? 'plan' : undefined;
+  setForcedTaskKind(forcedKind);
   setForcedAttachments(taskKind === 'vision' ? attachmentBlocks : undefined);
 
   setForcedReasoningEffort(opts.effort);

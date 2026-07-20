@@ -164,7 +164,17 @@ export function buildOcConfig(opts: OcConfigOptions): string {
             // exactly that OC error class). A model that still tries calling it now gets a hard
             // error + retry instead of a redundant card — worse than the bug being fixed. Prompt
             // enforcement only, until a real tool-removal mechanism is confirmed.
-            plan: { mode: 'primary', prompt: opts.agentPrompt + PLAN_MODE_TAIL },
+            // Explicit permissions rather than inheriting OC's native `plan` defaults:
+            // PLAN_MODE_TAIL already tells the model it cannot edit or run commands, but
+            // prompt text is a request, not a guarantee. Without this block the actual
+            // enforcement was whatever OC happened to default to, so the read-only promise
+            // in the mode picker was unbacked. Research still works — read/grep/glob/list
+            // and webfetch are unaffected; only mutation and shell are denied.
+            plan: {
+              mode: 'primary',
+              prompt: opts.agentPrompt + PLAN_MODE_TAIL,
+              permission: { edit: 'deny', bash: 'deny' },
+            },
             ask: {
               mode: 'primary',
               prompt: opts.agentPrompt + ASK_MODE_TAIL,
