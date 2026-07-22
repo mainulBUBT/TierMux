@@ -3,6 +3,8 @@
 import * as vscode from 'vscode';
 import { spawn } from 'child_process';
 import type { RunContext } from '../agent/runContext';
+import { isReadOnlyCommand } from './commandClassify';
+import type { PersistentShellManager } from './persistentShell';
 
 export type CommandApproval = 'always' | 'allowlist' | 'never';
 
@@ -54,6 +56,9 @@ export class CommandGate {
   private confirmViaUi?: (command: string, cwd?: string) => Promise<boolean>;
   /** Session toggle (from the composer): when true, skip the prompt for non-dangerous commands. */
   private autoApprove?: () => boolean;
+  /** When set (and `ctx.sessionId` is present), commands run in that session's persistent
+   *  terminal instead of a fresh one-shot spawn, so `cd`/env vars carry over between calls. */
+  private shellManager?: PersistentShellManager;
 
   constructor(
     private readonly policy: () => CommandApproval,
@@ -69,6 +74,12 @@ export class CommandGate {
   /** Provide a live read of the session Auto-approve toggle. */
   setAutoApprove(fn: () => boolean): void {
     this.autoApprove = fn;
+  }
+
+  /** Wire in a persistent-shell manager (native engine only). Pass undefined to revert to
+   *  always spawning fresh, e.g. if shell integration turns out to be unavailable. */
+  setShellManager(mgr?: PersistentShellManager): void {
+    this.shellManager = mgr;
   }
 
   private root(): vscode.Uri {
@@ -99,6 +110,11 @@ export class CommandGate {
     const policy = this.policy();
     if (policy === 'never') return false;
     if (policy === 'allowlist' && this.isAllowlisted(command)) return true;
+    // A confidently read-only command (ls, cat, git status/diff/log, grep, ...) doesn't need
+    // the same approval friction as a mutating one — skip the ask-flow regardless of policy.
+    // isReadOnlyCommand() fails closed (returns false) on anything it can't confidently
+    // classify, so this can never be the reason a mutating command slips through.
+    if (isReadOnlyCommand(command) && !isDangerous(command)) return true;
 
     const autoApprove = ctx ? ctx.autoApprove() : this.autoApprove?.();
     if (autoApprove && !isDangerous(command)) return true;
@@ -122,12 +138,39 @@ export class CommandGate {
     if (!(await this.approve(cmd, cwd, ctx))) {
       return { exitCode: null, stdout: '', stderr: '', error: 'User declined to run the command.' };
     }
+    return this.execute(cmd, cwd, ctx);
+  }
 
+  /**
+   * Runs a command whose approval decision was already made by an external gate (the engine's
+   * `toolApproval` policy) — skips `approve()` entirely so the user is never asked twice for the
+   * same call. Still respects the hard `commandApproval: 'never'` off-switch as a safety net.
+   */
+  async runApproved(command: string, cwd?: string, ctx?: RunContext): Promise<CommandResult> {
+    const cmd = command.trim();
+    if (!cmd) return { exitCode: null, stdout: '', stderr: '', error: 'Empty command.' };
+    if (this.policy() === 'never') {
+      return { exitCode: null, stdout: '', stderr: '', error: 'Command execution is disabled (tiermux.agent.commandApproval = "never").' };
+    }
+    return this.execute(cmd, cwd, ctx);
+  }
+
+  private async execute(cmd: string, cwd: string | undefined, ctx: RunContext | undefined): Promise<CommandResult> {
     let workdir: string;
     try {
       workdir = this.resolveCwd(cwd);
     } catch (e) {
       return { exitCode: null, stdout: '', stderr: '', error: e instanceof Error ? e.message : String(e) };
+    }
+
+    if (this.shellManager && ctx?.sessionId) {
+      try {
+        const { stdout, exitCode } = await this.shellManager.run(ctx.sessionId, cmd, cwd ? workdir : undefined, this.timeoutMs());
+        return { exitCode, stdout: truncate(stdout), stderr: '' };
+      } catch {
+        // Shell integration unavailable/never activated for this terminal — fall through to a
+        // plain one-shot spawn below, exactly like Pochi's own PTY-then-spawn fallback.
+      }
     }
 
     return new Promise<CommandResult>((resolve) => {

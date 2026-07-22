@@ -51,8 +51,11 @@ Always run `npm run typecheck` before committing — the bundler does not type-c
 src/
   extension.ts          # activation: constructs everything and wires it together
   chatViewProvider.ts   # hosts the webview chat, handles its messages
-  agent/                # agent engine bridge (sdk.ts), task classification (routing.ts)
-  backend/              # openCode proxy integration (routerProxy.ts, ocLauncher.ts)
+  agent/                # agent.ts (stable contract) + core/ (the AI SDK-based agent
+                         #   engine: loop.ts, routerProvider.ts, tools/, policies/,
+                         #   middleware/ — see docs/ARCHITECTURE.md), routing.ts (task
+                         #   classification)
+  backend/              # groundingVerify.ts (manual Plan-mode grounding check)
   router/router.ts      # multi-provider router: failover, cooldown, quarantine
   providers/            # provider adapters: base, openai-compat, google, cohere, cloudflare
   catalog/              # loads media/catalog.json into the model catalog

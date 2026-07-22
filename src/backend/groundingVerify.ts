@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { runPlanStream, type AgentOpts, type ToolEvent } from '../agent/sdk';
+import { runPlanStream, type AgentOpts, type ToolEvent } from '../agent/agent';
 import type { Router } from '../router/router';
 
 const TEST_QUESTIONS = [

@@ -74,6 +74,16 @@ export class EditGate {
     }
   }
 
+  /** Shows the diff, purely informational — no confirmation asked. Used by the `*Approved`
+   *  entry points, where an external gate (the engine's `toolApproval` policy) already made the
+   *  decision; showing the diff is still worth doing so the user can see what changed. */
+  private async previewOnly(uri: vscode.Uri, current: string, proposed: string, title: string): Promise<void> {
+    const name = vscode.workspace.asRelativePath(uri);
+    const leftUri = this.provider.set(this.token(`current/${name}`), current);
+    const rightUri = this.provider.set(this.token(`proposed/${name}`), proposed);
+    await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, title, { preview: true });
+  }
+
   /** Show a diff between current and proposed content and (optionally) confirm. */
   private async previewAndConfirm(uri: vscode.Uri, current: string, proposed: string, title: string, ctx?: RunContext): Promise<boolean> {
     if (!this.requireConfirm()) return true;
@@ -96,6 +106,22 @@ export class EditGate {
       'Apply',
     );
     return choice === 'Apply';
+  }
+
+  /** Applies `content` without asking — the caller's `toolApproval` decision already stands in
+   *  for the confirm click. Still shows the diff and records a checkpoint. */
+  private async applyDirect(uri: vscode.Uri, content: string, title: string, ctx?: RunContext): Promise<EditResult> {
+    const beforeRaw = await this.readIfExists(uri);
+    await this.previewOnly(uri, beforeRaw ?? '', content, title);
+    const recorder = ctx ? (u: vscode.Uri, b: string | null) => ctx.checkpoints.record(u, b) : this.recorder;
+    recorder?.(uri, beforeRaw ?? null);
+    const edit = new vscode.WorkspaceEdit();
+    const exists = beforeRaw !== undefined;
+    if (!exists) edit.createFile(uri, { ignoreIfExists: true });
+    edit.replace(uri, new vscode.Range(0, 0, Number.MAX_SAFE_INTEGER, 0), content);
+    const applied = await vscode.workspace.applyEdit(edit);
+    if (applied) await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(content));
+    return { applied };
   }
 
   async write(uri: vscode.Uri, content: string, ctx?: RunContext): Promise<EditResult> {
@@ -125,6 +151,38 @@ export class EditGate {
     if (idx === -1) return { applied: false, error: 'Search text not found in file.' };
     const proposed = current.slice(0, idx) + replace + current.slice(idx + search.length);
     return this.write(uri, proposed, ctx);
+  }
+
+  /** Approved-already variants — the engine's `toolApproval` policy made the decision; these
+   *  skip straight to applying (still showing the diff / recording a checkpoint). */
+  async writeApproved(uri: vscode.Uri, content: string, ctx?: RunContext): Promise<EditResult> {
+    return this.applyDirect(uri, content, `Write ${vscode.workspace.asRelativePath(uri)}`, ctx);
+  }
+
+  async createApproved(uri: vscode.Uri, content: string, ctx?: RunContext): Promise<EditResult> {
+    if ((await this.readIfExists(uri)) !== undefined) return { applied: false, error: 'File already exists.' };
+    return this.writeApproved(uri, content, ctx);
+  }
+
+  async editApproved(uri: vscode.Uri, search: string, replace: string, ctx?: RunContext): Promise<EditResult> {
+    const current = await this.readIfExists(uri);
+    if (current === undefined) return { applied: false, error: 'File not found.' };
+    const idx = current.indexOf(search);
+    if (idx === -1) return { applied: false, error: 'Search text not found in file.' };
+    const proposed = current.slice(0, idx) + replace + current.slice(idx + search.length);
+    return this.writeApproved(uri, proposed, ctx);
+  }
+
+  async removeApproved(uri: vscode.Uri, ctx?: RunContext): Promise<EditResult> {
+    const current = await this.readIfExists(uri);
+    if (current === undefined) return { applied: false, error: 'File not found.' };
+    await this.previewOnly(uri, current, '', `Delete ${vscode.workspace.asRelativePath(uri)}`);
+    const recorder = ctx ? (u: vscode.Uri, b: string | null) => ctx.checkpoints.record(u, b) : this.recorder;
+    recorder?.(uri, current);
+    const edit = new vscode.WorkspaceEdit();
+    edit.deleteFile(uri, { ignoreIfNotExists: true });
+    const applied = await vscode.workspace.applyEdit(edit);
+    return { applied };
   }
 
   async remove(uri: vscode.Uri, ctx?: RunContext): Promise<EditResult> {

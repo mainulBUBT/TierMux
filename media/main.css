@@ -1261,3 +1261,57 @@ body.vscode-light .empty-recent-card { background: var(--vscode-editorWidget-bac
   text-decoration: underline;
 }
 .engine-onboard-skip:hover { color: var(--vscode-foreground); }
+
+/* ============================================================================
+ * ui/primitives/** — TierMux's own framework-free component layer (Layer 2).
+ * Styling for the reusable factories in media/src/ui/primitives/. Existing
+ * elements (.bubble, .chip, .todo-spin, …) are NOT migrated to these classes
+ * yet — that's a later, separate pass; these rules only back new call sites.
+ * ============================================================================ */
+
+/* Card — generic bordered panel with an optional title/body/footer split and a
+   collapsible (<details>-backed) variant (see ui/primitives/Card.ts). */
+.tm-card {
+  padding: 8px 10px;
+  border-radius: var(--tm-radius-lg);
+  border: 1px solid var(--tm-border);
+  background: var(--tm-surface-panel);
+}
+.tm-card-title { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+.tm-card-body { font-size: 12px; }
+.tm-card-footer { display: flex; gap: 8px; margin-top: 8px; font-size: 11px; }
+/* Collapsible variant renders as <details><summary>title</summary>body+footer</details> —
+   the title/body spacing above doesn't apply the same way, so the summary carries its own. */
+.tm-card-collapsible { padding: 2px 0 2px 9px; border: none; border-left: 2px solid var(--tm-border); border-radius: 0; background: none; }
+.tm-card-collapsible > summary { cursor: pointer; list-style: none; opacity: .7; font-size: 12px; }
+.tm-card-collapsible > summary::-webkit-details-marker { display: none; }
+.tm-card-collapsible > summary::before { content: '▸ '; font-size: 9px; }
+details[open].tm-card-collapsible > summary::before { content: '▾ '; }
+.tm-card-collapsible > .tm-card-body { margin-top: 4px; }
+/* Accent variants — boxed cards tint their whole border; the collapsible variant (whose
+   only border is the left accent stripe, .tool-card-style) tints just that. */
+.tm-card-accent { border-color: var(--tm-progress); }
+.tm-card-success { border-color: var(--tm-success); }
+.tm-card-error { border-color: var(--tm-error); }
+.tm-card-collapsible.tm-card-accent { border-left-color: var(--tm-progress); }
+.tm-card-collapsible.tm-card-success { border-left-color: var(--tm-success); }
+.tm-card-collapsible.tm-card-error { border-left-color: var(--tm-error); }
+
+/* Badge — generic small pill/label (see ui/primitives/Badge.ts). */
+.tm-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; padding: 1px 6px; border-radius: var(--tm-radius-pill);
+  background: var(--tm-badge-bg); color: var(--tm-fg-badge);
+}
+.tm-badge-accent { background: var(--tm-accent); color: var(--tm-accent-fg); }
+.tm-badge-success { background: color-mix(in srgb, var(--tm-success) 20%, transparent); color: var(--tm-success); }
+.tm-badge-error { background: color-mix(in srgb, var(--tm-error) 20%, transparent); color: var(--tm-error); }
+
+/* Spinner ring — generic bordered rotating ring (see ui/primitives/Spinner.ts).
+   Reuses the existing `idx-spin` keyframe (defined above under Composer) rather
+   than duplicating it. */
+.tm-spinner-ring {
+  display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+  border: 2px solid var(--tm-border); border-top-color: var(--tm-progress);
+  animation: idx-spin .8s linear infinite;
+}

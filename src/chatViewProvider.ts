@@ -6,7 +6,8 @@ import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
 import type { UsageStore } from './config/usageStore';
 import type { Mode } from './shared/types';
-import { runAgentStream, runPlanStream, runAskStream, getOcSessionDiff, findTextViaOc, isOcEngineActive, hasOcSession, summarizeOcSession, clearSession, type AgentResult, type AgentOpts, type ToolEvent } from './agent/sdk';
+import { runAgentStream, runPlanStream, runAskStream, type AgentResult, type AgentOpts, type ToolEvent } from './agent/agent';
+import { findTextInWorkspace } from './context/textSearch';
 import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
 import { SETTINGS_META, defaultForSetting } from './settingsMeta';
@@ -15,12 +16,11 @@ import { AllModelsFailedError } from './router/router';
 import type { McpManager } from './mcp/mcpManager';
 import { CheckpointManager } from './edits/checkpoints';
 import { isDangerous } from './edits/commandGate';
-import { openOcFileDiff } from './edits/ocSessionDiff';
 import type { ModelStatsStore, Vote } from './config/modelStats';
 import type { SlowModelStore } from './config/slowModel';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem, McpServerConfig } from './messages';
-import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, SessionStatus, TranscriptMessage, TranscriptStep, UsagePayload } from './messages';
+import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
 import { normalizeMcpServerConfig } from './mcp/mcpClient';
 import { getNonce } from './util/nonce';
 import { getPlatformInfo } from './providers';
@@ -71,7 +71,7 @@ const WRITE_TOOL_NAMES = new Set(['writeFile', 'createFile', 'editFile', 'delete
 const FILE_WRITE_TOOL_NAMES = new Set(['writeFile', 'createFile', 'editFile', 'deleteFile']);
 
 /** Pull a file path out of a write/edit/create/delete tool call's args, tolerant of the
- *  several key names OC's tools have used (see media/src/toolRendering.ts's own copy of
+ *  several key names OC's tools have used (see media/src/ui/tool/ToolCard.ts's own copy of
  *  this same tolerance for rendering tool-card titles). */
 function extractToolFilePath(args: unknown): string | undefined {
   if (!args || typeof args !== 'object') return undefined;
@@ -133,8 +133,6 @@ interface Session {
   liveSteps: Map<string, TranscriptStep[]>;
   model?: string;
   reasoningEffort?: ReasoningEffort;
-  /** Last token usage from an OpenCode-driven run, surfaced via SSE event. */
-  lastUsage?: UsagePayload;
   /** Set by the `watchdogAction` handler ('restartRequest'/'switchModel'), consumed by the send
    *  handler's retry loop right after the aborted run settles — reusing the same in-flight
    *  request instead of pushing a new user turn. Cleared once consumed. */
@@ -819,19 +817,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           s.cancel?.cancel(); // aborts the in-flight OC call only; finalizes with whatever streamed so far
           break;
         }
-        // restartRequest / switchModel: drop the cached OC session (a clean restart is expected
-        // to lose in-flight tool-call context — unlike the silent mid-turn escalation bug this
-        // is a deliberate, user-requested restart) and abort the current attempt; the send
-        // handler's retry loop picks `pendingWatchdogRetry` up once the abort settles.
-        clearSession(s.id);
+        // restartRequest / switchModel: abort the current attempt; the send handler's retry
+        // loop picks `pendingWatchdogRetry` up once the abort settles. The engine holds no
+        // server-side session to drop (opts.messages + workMessages is the sole state), so a
+        // restart just re-runs the turn fresh.
         s.pendingWatchdogRetry = m.action === 'switchModel' ? 'switch' : 'restart';
         s.cancel?.cancel();
-        break;
-      }
-      case 'openOcDiff': {
-        const files = await getOcSessionDiff(m.sessionId);
-        const f = files.find((x) => x.file === m.file);
-        if (f) await openOcFileDiff(f.file, f.before, f.after);
         break;
       }
       case 'openPlanFile': {
@@ -1377,7 +1368,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  in the autocomplete popup, not a full chat message. */
   private async handleGrepQuery(m: Extract<InMessage, { type: 'grepQuery' }>): Promise<void> {
     try {
-      const items = m.query.trim() ? (await findTextViaOc(m.query.trim())).slice(0, 8) : [];
+      const items = m.query.trim() ? (await findTextInWorkspace(m.query.trim())).slice(0, 8) : [];
       this.post({ type: 'grepResults', queryId: m.queryId, items });
     } catch {
       this.post({ type: 'grepResults', queryId: m.queryId, items: [] });
@@ -1406,29 +1397,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     this.post({ type: 'busy', sessionId: s.id, busy: true });
     try {
-      // condenseHistory only ever shrinks TierMux's own local `s.history` (the UI transcript,
-      // and what direct-API mode replays as context). For an OC-backed session, OC keeps its
-      // OWN server-side conversation and TierMux only forwards the latest message each turn —
-      // so client-side condensing alone never reduces OC's actual token usage. Trigger OC's
-      // native compaction too when this session has a live OC session; best-effort, since it
-      // completes asynchronously (session.compacted SSE event) and shouldn't block the notice.
-      const ocCompacting = hasOcSession(s.id) ? await summarizeOcSession(s.id, this.deps.router) : false;
-
+      // condenseHistory shrinks TierMux's own local `s.history` — the sole source of truth the
+      // engine re-reads every turn (opts.messages + this run's workMessages), so client-side
+      // condensing is the only compaction mechanism needed.
       const r = await condenseHistory(
         s.history,
         this.deps.router,
         s.livePlatform && s.liveModel ? `${s.livePlatform}/${s.liveModel}` : undefined,
       );
       if (!r) {
-        this.post({ type: 'notice', sessionId: s.id, text: ocCompacting ? '🗜 OC is compacting this session in the background.' : 'Compaction produced no summary; context unchanged.' });
+        this.post({ type: 'notice', sessionId: s.id, text: 'Compaction produced no summary; context unchanged.' });
         return;
       }
       const prior = s.history.length;
       s.history = r.messages;
       this.persist(s.id);
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
-      const ocNote = ocCompacting ? ' OC is also compacting its own session context in the background.' : '';
-      this.post({ type: 'notice', sessionId: s.id, text: `🗜 Context compacted — ${prior} → ${r.messages.length} messages. Earlier turns summarized; the last few kept verbatim.${ocNote}` });
+      this.post({ type: 'notice', sessionId: s.id, text: `🗜 Context compacted — ${prior} → ${r.messages.length} messages. Earlier turns summarized; the last few kept verbatim.` });
     } catch (e) {
       this.post({ type: 'error', sessionId: s.id, message: `Compact failed: ${e instanceof Error ? e.message : String(e)}` });
     } finally {
@@ -1468,19 +1453,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: 'Generated a commit message in the Source Control input.' });
       return;
     }
-    if (slash?.name === 'ocdiff') {
-      const s = this.current();
-      const files = await getOcSessionDiff(s.id);
-      if (!files.length) {
-        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: 'No OC-tracked changes in this session yet.' });
-      } else {
-        this.post({
-          type: 'ocSessionDiffList', sessionId: s.id, requestId: m.requestId,
-          files: files.map((f) => ({ file: f.file, additions: f.additions, deletions: f.deletions })),
-        });
-      }
-      return;
-    }
     if (slash?.name === 'grep') {
       const s = this.current();
       if (!slash.rest.trim()) {
@@ -1488,9 +1460,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       }
       const pattern = slash.rest.trim();
-      const matches = await findTextViaOc(pattern);
+      const matches = await findTextInWorkspace(pattern);
       if (!matches.length) {
-        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: isOcEngineActive() ? `No matches for \`${pattern}\`.` : 'OC engine is not running — `/grep` needs it for text search.' });
+        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: `No matches for \`${pattern}\`.` });
       } else {
         const CAP = 20;
         const shown = matches.slice(0, CAP);
@@ -2250,6 +2222,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'busy', sessionId: s.id, busy: true });
     await s.checkpoints.begin(m.requestId, 'Plan (clarified)');
     const sentAt = Date.now();
+    const before = this.deps.usage.get();
     // Set true only by the "show as a normal answer" branch below — that reply is real
     // conversation the model needs to remember next turn, unlike the plan-proposal branches
     // (not committed until approval) or the empty/error branches (nothing happened). Gates
@@ -2285,9 +2258,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // discussion reply) rather than a plan to run. Show it as a normal answer instead of
         // squashing the whole prose into a broken one-item "plan" card (duplicating it visually
         // alongside the plain text render above).
+        const after = this.deps.usage.get();
+        const usage = {
+          promptTokens: after.promptTokens - before.promptTokens,
+          completionTokens: after.completionTokens - before.completionTokens,
+          reasoningTokens: after.reasoningTokens - before.reasoningTokens,
+          totalTokens: after.totalTokens - before.totalTokens,
+        };
         this.persistAgentTurn(s, result);
-        this.pushAssistantTurn(s, m.requestId, result, sentAt);
-        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: clar.text, reasoning: result.reasoning, platform: result.runtimeName ?? result.platform, model: result.model, paused: result.paused });
+        this.pushAssistantTurn(s, m.requestId, result, sentAt, usage);
+        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: clar.text, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: result.model, paused: result.paused });
         committed = true;
       } else {
         // The resumed run returned nothing usable (e.g. all of result.text was consumed by a
@@ -2507,6 +2487,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link href="${uri('vendor/highlight.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('vendor/diff2html.min.css')}" rel="stylesheet" nonce="${nonce}" />
+  <link href="${uri('styles/tokens.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('main.css')}" rel="stylesheet" nonce="${nonce}" />
   <title>${PRODUCT_NAME}</title>
 </head>

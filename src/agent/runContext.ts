@@ -1,6 +1,7 @@
 
 
 import type * as vscode from 'vscode';
+import type { TodoItem } from '../shared/types';
 
 export interface RunContext {
   sessionId: string;
@@ -17,4 +18,8 @@ export interface RunContext {
    *  When set, the agent writes pre-research.jsonl to <outDir>/pre-research.jsonl
    *  so each run's instrumentation lands alongside its telemetry. */
   outDir?: string;
+  /** Native engine only: forwards a `todowrite` tool call's list to the UI. */
+  onTodos?: (todos: TodoItem[]) => void;
+  /** Native engine only: forwards a `question` tool call to the UI's askUser card. */
+  onAskUser?: (question: string, options?: string[]) => Promise<string>;
 }

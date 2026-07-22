@@ -151,7 +151,12 @@ async function main() {
     platform: 'node',
     target: 'node18',
     outfile: 'dist/extension.js',
-    external: ['vscode'],
+    // '@vscode/ripgrep' is external too: its lib/index.js resolves its bundled `rg` binary via
+    // `createRequire(import.meta.url)`, which esbuild's CJS output can't provide (import.meta
+    // becomes `{}` in a bundled CJS build) — inlining it crashes at require-time with
+    // "filename must be ... Received undefined". Left external, Node's real require() loads the
+    // actual package file, where import.meta.url resolves correctly.
+    external: ['vscode', '@vscode/ripgrep'],
     sourcemap: !production,
     minify: production,
     logLevel: 'info',

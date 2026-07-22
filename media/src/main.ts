@@ -12,7 +12,7 @@ import { send } from './bridge';
 import type { RxMessage } from './bridge';
 import { $, escapeHtml, showToast } from './dom';
 import { renderMarkdown } from './markdown';
-import { buildReasoningBlock, buildToolCard, toolLabel, activityFor } from './toolRendering';
+import { buildReasoningBlock, buildToolCard, toolLabel, activityFor } from './ui/tool/ToolCard';
 import { handleTodos } from './handlers/todos';
 import { handleAssistantStart } from './handlers/assistantStart';
 import { handleAgentStep } from './handlers/agentStep';
@@ -381,7 +381,6 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
   // which skills the workspace defines, so never replaced by state.skills.
   const BUILTIN_SLASH_COMMANDS = [
     { name: 'commit', detail: 'Generate a commit message from staged changes' },
-    { name: 'ocdiff', detail: 'List files OC changed this session, with diffs' },
     { name: 'grep', detail: 'Search file contents across the workspace' },
   ];
   function getSlashCommands() {
@@ -3211,7 +3210,7 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
   // (otherwise unchanged) render logic below writes into the right session's DOM regardless of
   // which session is currently being viewed. 'switchSession' is included so its case body can
   // use the returned `existed` flag to tell a brand-new pane from an already-live one.
-  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'watchdogWarning', 'watchdogActionable', 'watchdogDismissed', 'todos', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'ocSessionDiffList', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
+  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'watchdogWarning', 'watchdogActionable', 'watchdogDismissed', 'todos', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
 
   // ---------- inbound messages ----------
   window.addEventListener('message', (event) => {
@@ -3482,26 +3481,6 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         reject.addEventListener('click', () => decide('reject'));
         actions.appendChild(once); actions.appendChild(always); actions.appendChild(reject);
         card.appendChild(actions);
-        t.tools.appendChild(card);
-        scrollDown();
-        break;
-      }
-      case 'ocSessionDiffList': {
-        const t = ensureTarget(msg.requestId);
-        const card = document.createElement('div'); card.className = 'cmd-approval';
-        const head = document.createElement('div'); head.className = 'cmd-approval-head';
-        head.textContent = `${msg.files.length} file${msg.files.length === 1 ? '' : 's'} changed this session`;
-        card.appendChild(head);
-        const list = document.createElement('div'); list.className = 'cmd-approval-actions';
-        list.style.flexDirection = 'column'; list.style.alignItems = 'stretch';
-        for (const f of msg.files) {
-          const row = document.createElement('button');
-          row.className = 'secondary';
-          row.textContent = `${f.file}  +${f.additions} -${f.deletions}`;
-          row.addEventListener('click', () => send({ type: 'openOcDiff', sessionId: msg.sessionId, file: f.file }));
-          list.appendChild(row);
-        }
-        card.appendChild(list);
         t.tools.appendChild(card);
         scrollDown();
         break;

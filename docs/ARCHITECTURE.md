@@ -7,15 +7,19 @@
 free model across 22 LLM providers, with automatic failover, key rotation,
 rate-limit cooldowns, and quality-based escalation.
 
-Agent execution is delegated to **OpenCode** (bundled or auto-downloaded
-binary, spawned unmodified). TierMux exposes its own Router as a single
-OpenAI-compatible `/v1` endpoint that OC points at, so every model call OC
-makes is transparently routed across free tiers.
-
-Pinned OpenCode version: **v1.17.11** (see `scripts/fetch-opencode.mjs`).
+Agent execution runs **in-process**, built directly on the **AI SDK**
+(`ai@^7.0.34` + `@ai-sdk/provider@^4.0.3` — referred to generically as "the
+AI SDK," never by vendor name) — `streamText()` is the actual execution
+engine (loop, step orchestration, tool lifecycle, streaming, retry, stop
+conditions, tool-approval gate). TierMux owns routing, provider adapters,
+permission policy, and VS Code integration; it does not implement its own
+agent loop. (OpenCode — a separate, external-process agent CLI TierMux
+used to spawn and route through an HTTP proxy — was fully removed 2026-07;
+see "History" below.)
 
 ```
-OpenCode → Router Proxy → TierMux Router → 22+ Free Providers
+chatViewProvider.ts → agent.ts → core/loop.ts (streamText) →
+  core/routerProvider.ts → TierMux Router → 22+ Free Providers
 ```
 
 ---
@@ -26,25 +30,39 @@ OpenCode → Router Proxy → TierMux Router → 22+ Free Providers
 ┌────────────────────────────────────────────────────────────────────┐
 │                       TierMux VS Code Extension                    │
 │                                                                    │
-│  ┌──────────────┐  ┌────────────────┐  ┌────────────────────────┐  │
-│  │ TierMux UI   │  │ OcClient       │  │ Router Proxy           │  │
-│  │ (webview)    │──│ (HTTP + SSE)   │──│ (HTTP bridge, loopback)│  │
-│  └──────┬───────┘  └────────┬───────┘  └────────────┬───────────┘  │
-│         │                   │                        │              │
-│  ┌──────▼───────────────────▼────────────────────────▼───────────┐  │
-│  │  agent/sdk.ts  (engine boundary — single entry point)         │  │
-│  │  runChatStream / runAgentStream / runPlanStream              │  │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │ TierMux UI (webview) ── postMessage/onDidReceiveMessage       │  │
+│  └────────────────────────────────┬─────────────────────────────┘  │
+│                                   │                                │
+│  ┌────────────────────────────────▼─────────────────────────────┐  │
+│  │  chatViewProvider.ts (VS Code integration, session state)     │  │
+│  └────────────────────────────────┬─────────────────────────────┘  │
+│                                   │                                │
+│  ┌────────────────────────────────▼─────────────────────────────┐  │
+│  │  agent.ts (stable contract — AgentOpts/AgentResult/ToolEvent) │  │
+│  │  runAgentStream / runPlanStream / runAskStream                │  │
 │  │  generateSessionTitle (direct Router)                        │  │
-│  └────────────────────────┬─────────────────────────────────────┘  │
-│                           │                                        │
-│  ┌────────────────────────▼─────────────────────────────────────┐  │
-│  │  TierMux Router (src/router/router.ts)                       │  │
+│  └────────────────────────────────┬─────────────────────────────┘  │
+│                                   │ dynamic import (vscode-free      │
+│                                   │ above this line)                │
+│  ┌────────────────────────────────▼─────────────────────────────┐  │
+│  │  agent/core/  — the AI-SDK-based agent engine                │  │
+│  │  loop.ts          runTurn(): builds the streamText() call     │  │
+│  │  routerProvider.ts  Router → LanguageModelV4 protocol adapter │  │
+│  │  policies/        the toolApproval permission policy          │  │
+│  │  middleware/       telemetry (wrapLanguageModel)               │  │
+│  │  tools/**          filesystem/shell/workspace/ui/mcp factories│  │
+│  └────────────────────────────────┬─────────────────────────────┘  │
+│                                   │ AI SDK types stop here          │
+│  ┌────────────────────────────────▼─────────────────────────────┐  │
+│  │  TierMux Router (src/router/router.ts) — AI-SDK-agnostic     │  │
 │  │  - multi-provider failover with key rotation                 │  │
 │  │  - per-platform + per-key rate-limit cooldown                │  │
 │  │  - 1-minute preflight health cache + 1-token ping            │  │
 │  │  - tool-incompatible + 404-deprecated quarantine             │  │
 │  │  - quality-based escalation (exclude list, intel floor)      │  │
 │  │  - complexity-aware latency preference                       │  │
+│  │  - Smart Auto scoring (src/router/scoring.ts)                │  │
 │  └────────────────────────┬─────────────────────────────────────┘  │
 │                           │                                        │
 │  ┌────────────────────────▼─────────────────────────────────────┐  │
@@ -53,35 +71,22 @@ OpenCode → Router Proxy → TierMux Router → 22+ Free Providers
 │  │  Cloudflare + Cohere + custom OpenAI-compatible endpoints    │  │
 │  └─────────────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────┘
-                             │ HTTP
-┌────────────────────────────▼───────────────────────────────────────┐
-│  opencode serve (bundled binary, loopback)                         │
-│  Agent loop │ Tool execution │ Context building │ Session mgmt     │
-│  Provider:  http://127.0.0.1:<proxyPort>/v1 (the Router Proxy)    │
-└────────────────────────────────────────────────────────────────────┘
 ```
+
+**Layering boundary**: AI SDK types (`streamText`, `LanguageModel`, `Tool`,
+`ToolSet`, `ToolApprovalStatus`, …) are used *inside* `agent/core/` only.
+`agent.ts` exposes just TierMux's own `AgentOpts`/`AgentResult`/`ToolEvent`
+— nothing above it (`chatViewProvider.ts`, the webview) ever imports an AI
+SDK type. `Router` itself never imports an AI SDK type either — it exposes
+`route(messages, opts): RouteResult` and knows nothing about
+`LanguageModel`/`Tool`/`streamText`. If a future AI SDK major version
+changes its APIs, only `agent/core/` changes.
 
 ---
 
 ## Shipped components
 
-### Router Proxy — `src/backend/routerProxy.ts`
-
-Dumb HTTP bridge. No session state, no retry, no SSE state machine — those
-belong to the Router and to OC respectively. Pure protocol translation.
-
-- `GET /v1/models` — returns virtual routing profiles (`tiermux/auto|fast|smart`)
-  + every enabled catalog model as `platform::modelId`.
-- `POST /v1/chat/completions` — accepts OpenAI shape, calls
-  `router.route()`, streams the response back as SSE.
-- Profile mapping: `tiermux/auto` → auto-routing, `tiermux/fast` → chat
-  profile (fastest), `tiermux/smart` → agent profile (smartest tool-capable).
-- Binds to `127.0.0.1:0` (OS-assigned ephemeral port). CORS `*` (loopback
-  only).
-- 5 min launch timeout in `ocLauncher.ts` covers slow first-run binary
-  downloads on poor networks.
-
-### TierMux Router — `src/router/router.ts` (the heart, 648 LOC)
+### TierMux Router — `src/router/router.ts` (the heart)
 
 - **Candidates pipeline:** `enabledByPriority()` → pin if specified → drop
   tool-incompatible / quarantined / deprecated → drop `exclude` set
@@ -97,87 +102,63 @@ belong to the Router and to OC respectively. Pure protocol translation.
   and emitted as one chunk.
 - **On `AllModelsFailedError`:** throws with a detailed message naming which
   providers failed and why (key missing, rate-limited, deprecated, rejected
-  key, etc.); the proxy maps it to 503. The OC layer re-throws it on a
-  terminal 503 so the free-model recommendation fires (see Engine boundary).
+  key, etc.) — `chatViewProvider.ts`'s catch handler (`maybeRecommendModels`)
+  turns this into a concrete "enable these free models" prompt instead of a
+  bare error.
 
 ### Provider adapters — `src/providers/*.ts`
 
 18 OpenAI-compat providers (Groq, Mistral, Cerebras, OpenRouter, etc.) +
 bespoke adapters for Google Gemini and Cloudflare Workers AI + Cohere +
-arbitrary `custom` OpenAI-compatible endpoints. No file deletion happened
-during the v7 migration; adapters are unchanged from prior versions.
+arbitrary `custom` OpenAI-compatible endpoints. Untouched by the OpenCode
+removal / AI SDK migration — the Router calls them exactly as before.
 
-### OpenCode integration — `src/backend/`
+### Agent core — `src/agent/core/`
 
-- `ocBinary.ts` — resolver: `OPENCODE_BIN` env → bundled
-  `resources/bin/{os}/{arch}/opencode[.exe]` → cached
-  `globalStorage/bin/opencode` → first-run download (10-min timeout) →
-  system PATH.
-- `ocLauncher.ts` — spawns `opencode serve --port 0 --hostname 127.0.0.1`;
-  resolves on stdout regex `opencode server listening on (https?://\S+)`;
-  5-min launch timeout; SIGTERM → SIGKILL on shutdown.
-- `ocConfig.ts` — builds the JSON injected via `OPENCODE_CONFIG_CONTENT` env:
-  one `tiermux` provider using `@ai-sdk/openai-compatible` with `auto`,
-  `fast`, `smart` virtual models.
-- `ocClient.ts` — raw `fetch` HTTP/SSE client. Centralized `PATHS` map for
-  REST endpoints. SSE reader splits on `\n\n` frames, reconnects with 1.5 s
-  backoff on transient errors.
-- `ocDiagnostics.ts` — `tiermux.testOcBridge` command: probes the proxy
-  (`/v1/models`, `/v1/chat/completions`) and OC paths, reports a
-  pass/fail summary.
-- `engineLog` — Output channel "TierMux Engine" surfaces proxy URL,
-  download progress, OC stdout/stderr, startup errors, and (when
-  `tiermux.engine.traceOcEvents` is on) raw SSE frames.
+The in-process agent engine, built directly on the AI SDK. Nothing above
+this layer (`agent.ts`, `chatViewProvider.ts`, the webview) ever imports an
+AI SDK type — see the Layering boundary note above.
 
-### Engine boundary — `src/agent/sdk.ts`
+- **`loop.ts`** — `runTurn(router, opts)`, the one place `streamText()` is
+  called. Deliberately a thin, direct function — not wrapped in a
+  `TierMuxAgentRunner`/`ExecutionManager`/`LoopManager` class. Consumes
+  `result.fullStream` directly (text-delta/reasoning-delta/tool-call/
+  tool-result/tool-error parts), mapping each to the existing `AgentOpts`
+  callbacks (`onChunk`, `onReasoning`, `onTool`, …). Also forwards two SDK
+  lifecycle callbacks (`onStart`/`onStepStart`) to `opts.onStep` as a thin
+  projection — no new phase-tracking state of its own.
+- **`routerProvider.ts`** — `createRouterProvider(router, opts)`: a *pure*
+  protocol adapter implementing `LanguageModelV4` (`doGenerate`/`doStream`)
+  by translating to/from `Router.route()`. No routing decisions, no scoring,
+  no failover logic here — that's entirely `Router.route()`'s job. Also
+  forwards `onFailover`/`onKeyRotated`/`onSelectionRationale` (Smart Auto's
+  "why this model?" rationale) straight through from `RouteOptions`.
+- **`policies/permission.ts`** — `createToolApproval(opts)`, passed as
+  `streamText`'s native `toolApproval` option (the AI SDK's own tool-
+  execution gate — a denied verdict means the tool's `execute()` never runs
+  at all, not just that its effect is discarded). Mode gate, live read-only
+  command classification, dangerous-pattern override, then the existing
+  `onPermissionAsk` UI callback.
+- **`middleware/telemetry.ts`** — `createTelemetryMiddleware({profiler,
+  traceId})`, profiler instrumentation via `wrapLanguageModel()` instead of
+  manual timer calls.
+- **`tools/**`** — one `create*Tool()` factory per tool
+  (`filesystem/{read,write,edit,delete}`, `shell/bash`, `workspace/
+  {list,glob,grep}`, `ui/{todo,question}`, `mcp/mcp`), assembled by
+  `tools/index.ts`'s `createToolSet(opts, mcp)` into the mode's actual tool
+  set (see "Three modes" below). MCP tools are registered as ordinary
+  `tool()` objects — nothing in the loop/tool-set builder can tell an
+  MCP-backed tool apart from a built-in one.
+  Tools capture session data (session id, `onTodos`, `onAskUser`) via
+  closures rather than the AI SDK's `runtimeContext`/`ToolExecutionOptions.
+  context` — that mechanism was verified empirically **not** to propagate
+  as documented in `ai@7.0.34` (see the comment in `tools/index.ts` and
+  `docs/sdk-upgrade.md`, which also has the full upgrade checklist).
 
-The only file `chatViewProvider` calls for an agent run. Public API
-preserved from prior versions: `runChatStream`, `runAgentStream`,
-`runPlanStream`, `generateSessionTitle`. All three `run*Stream` functions
-funnel through `runViaOc`, which:
-
-- Creates or reuses an OC session keyed by TierMux session id (OC holds
-  history server-side).
-- Subscribes to `/global/event`, filters by sessionID, maps the event
-  stream to `AgentOpts` callbacks.
-- Handles `message.part.delta` (streaming), `message.part.updated` (full
-  content), `tool.updated`, `todo.updated`, `session.status`,
-  `session.error`, `session.idle`.
-- On `session.idle` with no accumulated text, fetches session messages as
-  a fallback so we always return *something* when OC did produce output.
-
-**Profile fallback chain** (`FALLBACK_CHAIN`, in-process, not OC-aware): each
-`run*Stream` mode walks an ordered list of virtual profiles left-to-right on
-failure. A pinned user model collapses to a length-1 chain (no hand-off).
-
-| Mode | Chain | Why |
-|---|---|---|
-| Ask | `fast → smart` | free tier first, escalate to strong once |
-| Agent | `smart → smart` | two fresh `smart` hops — full quality preserved, no downgrade to `fast` |
-| Plan | `smart` | single hop |
-
-**Failure escalation** (two paths, both bounded by `isFinalHop`):
-
-- *Empty-answer takeover* — `session.idle` / `session.error` / watchdog fire
-  with no accumulated text → drop the OC session, re-run on the next hop.
-- *Network-error recovery* — `prompt()` rejects with a transport-layer failure
-  (`fetch failed`, `ECONNRESET`, `ETIMEDOUT`, `ENOTFOUND`, … — classified by
-  regex, mirroring the Router's `network` bucket) → retry once on the same hop
-  with a fresh session, then force-escalate to the next hop. 5xx from a broken
-  OC session gets the same retry-once treatment. Only when every hop is
-  exhausted does the error surface via `onError`.
-
-**Watchdog** — an *inactivity* timer (not a total-run cap); every SSE event
-resets it, so a long-but-live run is never cut short. Window depends on state:
-45 s on non-final hops (fail fast to the next link), 3 min plain, 5 min while a
-tool is in-flight (was 15 min — tightened so a dropped mid-tool connection
-hands off instead of hanging).
-
-**Exhaustion → `AllModelsFailedError`** — a terminal 503 from the Router
-(`AllModelsFailedError` mapped to 503 by the proxy) *rejects* the run rather
-than resolving via `onError`, so the `chatViewProvider` catch fires
-`maybeRecommendModels()` and the user gets a concrete "enable these free
-models" prompt instead of a bare 503.
+`agent.ts` is the stable contract above `core/`: `AgentOpts`/`AgentResult`/
+`ToolEvent`, and `runAgentStream`/`runPlanStream`/`runAskStream` (each just
+sets `mode` and dynamically imports `core/loop.ts` — dynamic so `agent.ts`
+itself stays `vscode`-free and independently testable).
 
 ### Settings + secrets — `src/config/`
 
@@ -196,40 +177,44 @@ models" prompt instead of a bare 503.
 1. User types in the webview.
 2. webview postMessage → chatViewProvider.handleSend(m).
 3. handleSend builds AgentOpts and dispatches to
-   runChatStream | runAgentStream | runPlanStream (sdk.ts).
-4. sdk.ts:runViaOc → OcClient.createSession + OcClient.prompt
-   (POST /session/{id}/prompt).
-5. Concurrent: OcClient.subscribe connects to GET /global/event (SSE).
-6. OC's build/plan agent calls our tiermux provider
-   (POST /v1/chat/completions on the Router Proxy).
-7. Router Proxy → Router.route() → 1+ provider adapter calls
-   (with failover/rotation/cooling).
-8. Stream back as SSE chunks through the Router Proxy → OC → SSE bus.
-9. sdk.ts maps OC event frames to AgentOpts callbacks
-   (onChunk, onTool, onReasoning, onTodos, onStep, onError).
-10. on idle: finish with accumulated text. Token usage → UsageTracker
-    + UsageStore. Title generation fires in the background.
+   runAgentStream | runPlanStream | runAskStream (agent.ts).
+4. agent.ts dynamically imports core/loop.ts and calls runTurn(router, opts).
+5. runTurn() calls streamText({ model: wrapLanguageModel(createRouterProvider(router, …)),
+   tools: createToolSet(opts, mcp), toolApproval: createToolApproval(opts), … }).
+6. Each doGenerate/doStream call inside the provider adapter calls
+   Router.route() → 1+ provider adapter calls (with failover/rotation/cooling) —
+   entirely in-process, no HTTP hop.
+7. runTurn() consumes result.fullStream directly, mapping text-delta/
+   reasoning-delta/tool-call/tool-result/tool-error parts onto the AgentOpts
+   callbacks (onChunk, onTool, onReasoning, onTodos, onStep, onError).
+8. On stream end: finish with accumulated text. Token usage → UsageTracker
+   (incremented inside Router.route() itself, independent of the AI SDK
+   layer) + UsageStore. Title generation fires in the background.
 ```
 
 ---
 
 ## Three modes
 
-| Mode | Profile sent to OC | OC agent | Streaming? | Tools? |
-|---|---|---|---|---|
-| Ask | `tiermux/fast` | `build` | yes | no |
-| Plan | `tiermux/smart` | `plan` | yes | no (read-only) |
-| Agent | `tiermux/smart` | `build` | yes | yes |
+| Mode | Tools attached | Streaming via Router? | Notes |
+|---|---|---|---|
+| Ask | 0 (none) | yes | Pure conversational Q&A — no file/tool access at all (see `ASK_MODE_TAIL` in `promptBuilder.ts`). |
+| Plan | 6 (read-only + `todowrite` + `question`) | no (tools non-empty) | Read-only: no `writeFile`/`createFile`/`editFile`/`deleteFile`/`runCommand`. Also has its own `???QUESTIONS???` text-sentinel pre-flight clarify channel, independent of the `question` tool. |
+| Agent | 11 (full set) | no (tools non-empty) | Everything, including MCP tools if configured. |
 
-Profiles are virtual; the profile *sent* to OC is the first hop. Internal
-escalation may re-run on a later hop (Agent: `smart → smart`) — see the
-fallback chain under Engine boundary.
+`Router.route()`'s `wantsStream` gate (`router.ts`) only streams when
+`tools` is empty — Plan/Agent always have tools attached, so they always
+take the buffered path; Ask, since it now carries zero tools, is the only
+mode that streams through Router. The buffered path has a token-estimate
+fallback (`estimateMessagesTokens`/`estimateTokens`) for providers that
+omit or zero-fill `usage` on their response, matching the one the
+streaming path already had.
 
 ---
 
 ## Async utilities (shipped, no agent involvement)
 
-These bypass OC and call `Router.route` directly:
+These bypass the agent core entirely and call `Router.route()` directly:
 
 - `inlineChat` (Cmd+I) — edit selection via `EditGate`.
 - `commitMessage` (git SCM) — generate commit message from diff.
@@ -246,11 +231,6 @@ Settings (`package.json:contributes.configuration`):
 - `tiermux.endpoints` — per-platform base URL overrides.
 - `tiermux.disabledProviders` — excluded providers.
 - `tiermux.customEndpoints` — custom OpenAI-compatible endpoints.
-- `tiermux.useOpenCodeEngine` (default `true`, `[EXPERIMENTAL]`) — flip to
-  disable OC. With OC off, chat/agent runs do not work in v7 (the built-in
-  agent loop was removed).
-- `tiermux.engine.traceOcEvents` (default `false`) — log raw OC SSE frames
-  to the "TierMux Engine" output channel. Useful for debugging.
 - `tiermux.agent.{maxIterations, maxConcurrentRuns, requireWriteConfirmation,
   commandApproval, commandTimeoutMs, commandAllowlist, autoCompactThreshold}`.
 - `tiermux.context.{includeOpenEditors, ambientSliceRadius, ambientMaxChars,
@@ -307,39 +287,61 @@ Three tables built after real usage patterns emerge:
 | `runtime_health` | cooldown, latency, success_rate, 429 count | Router on every call |
 | `benchmark_scores` | Offline eval scores | Bench command |
 
-The v7 in-memory state (`Router.lastGood`, `health` map, `rateTracker`,
+The current in-memory state (`Router.lastGood`, `health` map, `rateTracker`,
 `latencyTracker`) is the Phase 1 stand-in.
 
-### Built-in agent loop (v6 and prior)
+### History — three agent execution eras
 
-Removed in v7.0. OpenCode supplies agent prompts, tool definitions
-(grep/glob/readFile/writeFile/editFile/runCommand/webSearch/webFetch/
-todowrite/askuserquestion/getDiagnostics), and session management. The
-legacy `src/agent/{agent,tools,toolSpecs,tiermuxProvider,lspTools,
-editLock,templates,textToolProtocol}.ts` files were deleted during the v7
-migration.
+1. **v6 and prior** — a hand-rolled, in-process agent loop (`src/agent/
+   {agent,tools,toolSpecs,tiermuxProvider,lspTools,editLock,templates,
+   textToolProtocol}.ts`) built and maintained entirely by TierMux.
+2. **v7** — that loop was removed in favor of **OpenCode**: a separate,
+   external-process agent CLI (bundled/auto-downloaded binary), spawned
+   unmodified and routed to TierMux's own free-tier providers via an HTTP
+   bridge (`src/backend/routerProxy.ts`) that exposed the Router as an
+   OpenAI-compatible `/v1` endpoint. This traded owning the agent loop for
+   OpenCode's session/tool management "for free."
+3. **v8 (current)** — OpenCode was fully removed (2026-07). The bet in v7
+   didn't pay off: OC's HTTP round-trip was lossy (a global forced-model
+   race condition living in module-level singletons, permission state
+   snapshotted once per turn and unable to react mid-turn) and each issue
+   needed a hand-rolled workaround. Rather than replace one external agent
+   with another, TierMux now builds directly on the **AI SDK** in-process
+   (see "Agent core" above) — the same trade-off as v7 (don't reimplement
+   the loop yourself) without the external-process/HTTP-bridge cost, and a
+   direct in-process provider adapter passes model/task-kind/attachments/
+   reasoning-effort as real per-call arguments, closing the v7 race-
+   condition class by construction rather than patching it again.
 
 ---
 
 ## Key design decisions
 
-1. **OpenCode unmodified** — bundled binary, never fork. Updates = replace
-   the binary in `resources/bin/`. Currently pinned to v1.17.11.
-2. **Router Proxy is dumb** — no logic, just HTTP translation. The Router
-   owns failover, not the proxy.
-3. **One engine** — TierMux's built-in agent loop was removed in v7. OC is
-   the only agent engine. Disabling it via `tiermux.useOpenCodeEngine =
-   false` will leave chat/agent runs non-functional in v7.
-4. **Provider is an implementation detail** — the Router only sees
-   catalog entries; adapters are pluggable.
-5. **OC is session source of truth** — `sdk.ts` keeps a `TierMux sessionId
-   → OC sessionId` map; the chat view's `s.history` mirrors what the
-   webview persists (user/assistant text), not the full tool rounds.
+1. **Prefer extension over replacement** — AI SDK capabilities are composed
+   through providers, middleware, tools, callbacks, and policies before
+   introducing new infrastructure. When a new AI SDK release grows an
+   equivalent capability, the custom implementation is removed in favor of
+   the SDK's (see `docs/sdk-upgrade.md`'s checklist).
+2. **Dependency rule** — every layer depends only on the layer directly
+   beneath it. UI never calls Router directly. Tools never call providers
+   directly. `Router` never knows VS Code APIs *or* AI SDK APIs — it
+   exposes `route(request): RouteResult` and nothing about
+   `LanguageModel`/`Tool`/`streamText` leaks into it.
+3. **AI SDK owns execution, TierMux owns orchestration and routing** — the
+   agent core configures the AI SDK (`streamText`, `toolApproval`,
+   `wrapLanguageModel`) rather than reproducing its control flow. `runTurn()`
+   stays a thin, direct call into `streamText()` — no wrapper class.
+4. **Provider is an implementation detail** — the Router only sees catalog
+   entries; adapters are pluggable.
+5. **Closures over `runtimeContext`** — the AI SDK's `runtimeContext`/
+   `ToolExecutionOptions.context` doesn't propagate as documented (verified
+   empirically against `ai@7.0.34`); tools capture session data via
+   closures instead. Re-check on every AI SDK upgrade (`docs/sdk-upgrade.md`).
 6. **Local SecretStorage for keys** — keys live in `vscode.SecretStorage`,
-   per VS Code install. No account, no cross-device sync, no managed keys
-   in v7.
-7. **Loopback only** — Router Proxy binds to `127.0.0.1`. There is no
-   remote-TierMux option in v7.
-8. **Legacy code removed only after parity confirmed** — the v7 migration
-   deletes the legacy `src/agent/{agent,tools,…}.ts` and `src/bench/` only
-   after the OC bridge is verified end-to-end.
+   per VS Code install. No account, no cross-device sync, no managed keys.
+7. **In-process, no loopback bridge** — v7's Router Proxy (HTTP, bound to
+   `127.0.0.1`) no longer exists; the AI SDK calls `Router.route()` directly
+   in the same process. There is still no remote-TierMux option.
+8. **No rollback to OpenCode** — the v8 removal was deliberate and total
+   (no dual-engine toggle, no "native" naming implying an alternative
+   engine still exists). There is no flip-back-to-OpenCode path.

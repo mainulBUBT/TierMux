@@ -733,11 +733,14 @@ export class Router {
 
           this.rateTracker.record(entry.platform, entry.modelId);
 
-          const wantsStream = !!(opts.onChunk && !opts.tools?.length);
+          const wantsStream = !!opts.onChunk;
           let firstChunkAt: number | null = null; // TTFT — time to first emitted content
           if (wantsStream) {
             const chunks: string[] = [];
-            let toolCalls: import('../shared/types').ChatToolCall[] | undefined;
+            // OpenAI-wire tool_call deltas arrive fragmented across chunks, keyed by `index`:
+            // the first fragment carries id/name, later ones carry only incremental `arguments`
+            // slices — they must be merged, not overwritten, or the accumulated JSON is corrupt.
+            const toolCallsByIndex = new Map<number, import('../shared/types').ChatToolCall>();
             let finalUsage: import('../shared/types').TokenUsage | undefined;
             const thinkStrip = new ThinkStripper();
             for await (const chunk of provider.streamChatCompletion(apiKey, fitted, entry.modelId, completionOpts)) {
@@ -752,7 +755,24 @@ export class Router {
                   opts.onChunk!(clean);
                 }
               }
-              if (delta.tool_calls?.length) toolCalls = delta.tool_calls;
+              for (const [pos, tcDelta] of (delta.tool_calls ?? []).entries()) {
+                // Real OpenAI-wire streams fragment one call per chunk with an explicit `index`;
+                // providers that fake streaming as a single chunk (e.g. Google) omit it and send
+                // the full array at once, so fall back to array position, not a shared 0.
+                const idx = (tcDelta as unknown as { index?: number }).index ?? pos;
+                const existing = toolCallsByIndex.get(idx);
+                if (!existing) {
+                  toolCallsByIndex.set(idx, {
+                    id: tcDelta.id ?? `call_${idx}`,
+                    type: 'function',
+                    function: { name: tcDelta.function?.name ?? '', arguments: tcDelta.function?.arguments ?? '' },
+                  });
+                } else {
+                  if (tcDelta.id) existing.id = tcDelta.id;
+                  if (tcDelta.function?.name) existing.function.name = tcDelta.function.name;
+                  if (tcDelta.function?.arguments) existing.function.arguments += tcDelta.function.arguments;
+                }
+              }
             }
             const tail = thinkStrip.flush();
             if (tail) {
@@ -760,6 +780,9 @@ export class Router {
               opts.onChunk!(tail);
             }
             const fullText = chunks.join('');
+            const toolCalls = toolCallsByIndex.size
+              ? [...toolCallsByIndex.entries()].sort(([a], [b]) => a - b).map(([, tc]) => tc)
+              : undefined;
 
             const promptTokens = finalUsage?.prompt_tokens ?? estimateMessagesTokens(fitted);
             const completionTokens = finalUsage?.completion_tokens ?? estimateTokens(fullText);
@@ -779,6 +802,25 @@ export class Router {
             };
           } else {
             response = await provider.chatCompletion(apiKey, fitted, entry.modelId, completionOpts);
+            // Same estimate fallback as the streaming branch above — some providers omit (or
+            // zero-fill) `usage` on their completion response. Tools are attached in every mode
+            // now (even ask/plan keep read-only tools), so `wantsStream` is false far more often
+            // than it used to be — this path, not just the streaming one, needs the fallback so
+            // the footer/UsageTracker never silently reads as "0 in · 0 out" for those providers.
+            if (!response.usage || (!response.usage.prompt_tokens && !response.usage.completion_tokens)) {
+              const fullText = contentToString(response.choices?.[0]?.message?.content ?? '');
+              const promptTokens = response.usage?.prompt_tokens || estimateMessagesTokens(fitted);
+              const completionTokens = response.usage?.completion_tokens || estimateTokens(fullText);
+              response = {
+                ...response,
+                usage: {
+                  prompt_tokens: promptTokens,
+                  completion_tokens: completionTokens,
+                  total_tokens: response.usage?.total_tokens || promptTokens + completionTokens,
+                  ...(response.usage?.reasoning_tokens !== undefined ? { reasoning_tokens: response.usage.reasoning_tokens } : {}),
+                },
+              };
+            }
           }
 
           if (response.choices?.[0]?.message?.content && typeof response.choices[0].message.content === 'string') {
@@ -787,7 +829,16 @@ export class Router {
 
           const responseContent = response.choices?.[0]?.message?.content;
           const hasToolCalls = !!(response.choices?.[0]?.message?.tool_calls?.length);
-          if (!forced && !responseContent && !hasToolCalls) {
+          if (!responseContent && !hasToolCalls) {
+            // Was `!forced && ...` — a pinned/forced model has exactly one candidate
+            // (candidates() returns a single-entry list, line ~444), so this used to let an
+            // empty HTTP-200 response sail through as a "successful" completion whenever a
+            // specific model was selected instead of Auto: `continue candidates` immediately
+            // exhausts the one-entry loop and throws AllModelsFailedError below, which is what
+            // actually surfaces a real error to the user instead of a silently blank reply.
+            // Auto mode already treated this as a failure and moved to the next candidate;
+            // pinned mode has nowhere to move to, but "nowhere to move to" must still mean
+            // "report an error", not "call it a success".
             this.markHealth(entry.platform, entry.modelId, 'bad', 'empty_response');
             this.secrets.setStatus(entry.platform, 'error');
             // An empty completion is a real reliability failure — record it (this path

@@ -1,6 +1,6 @@
 # TierMux — Project Roadmap
 
-**Last updated:** 2026-07-11
+**Last updated:** 2026-07-22
 
 ---
 
@@ -10,7 +10,7 @@
 ```
 [x] Streaming responses
 [x] Multi-provider failover
-[x] Agent tool calling (OpenCode integration)
+[x] Agent tool calling (in-process, built on the AI SDK — OpenCode fully removed 2026-07)
 [x] Diff approval & Terminal approval gates
 [x] Checkpoints & Revert capabilities
 [x] Session replay / History
@@ -38,7 +38,7 @@ Custom:   user-defined OpenAI-compatible endpoints
 
 ### Architecture — 🚧 Next Steps
 ```
-[x] Headless agent loop integration (OpenCode)
+[x] Headless agent loop (AI SDK `streamText()` + a custom Router-backed provider — see docs/ARCHITECTURE.md)
 [x] Telemetry profiler (live + noop)
 [ ] Test Coverage: Benchmark harness execution
 [ ] Technical Debt: Remove @ts-nocheck in webview
@@ -60,5 +60,5 @@ Custom:   user-defined OpenAI-compatible endpoints
 
 1. **Measurable Changes:** Any new retrieval logic or model capability must prove itself via benchmarks before merging.
 2. **Free-Tier First:** TierMux routes heavily through free LLM tiers. Architecture must remain resilient to sudden rate limits, 500s, and API changes.
-3. **No Lock-in:** Ensure the Router Proxy design remains provider-agnostic.
+3. **No Lock-in:** Ensure the Router stays provider-agnostic and AI-SDK-agnostic — it exposes `route()` and knows nothing about `LanguageModel`/`Tool`/`streamText`.
 

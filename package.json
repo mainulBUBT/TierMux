@@ -11,7 +11,7 @@
   },
   "icon": "media/icon.png",
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.93.0"
   },
   "categories": [
     "Machine Learning",
@@ -184,11 +184,6 @@
         "category": "TierMux"
       },
       {
-        "command": "tiermux.testOcBridge",
-        "title": "Test OC Bridge",
-        "category": "TierMux"
-      },
-      {
         "command": "tiermux.verifyGrounding",
         "title": "Verify Grounding",
         "category": "TierMux"
@@ -214,26 +209,6 @@
       {
         "command": "tiermux.bench",
         "title": "Run Benchmark",
-        "category": "TierMux"
-      },
-      {
-        "command": "tiermux.testOcBridge",
-        "title": "Test OC Bridge",
-        "category": "TierMux"
-      },
-      {
-        "command": "tiermux.showEngineLog",
-        "title": "Show Engine Log",
-        "category": "TierMux"
-      },
-      {
-        "command": "tiermux.resetEngineOnboarding",
-        "title": "Reset Engine Onboarding (dev)",
-        "category": "TierMux"
-      },
-      {
-        "command": "tiermux.toggleOcTrace",
-        "title": "Toggle OC Trace",
         "category": "TierMux"
       },
       {
@@ -513,52 +488,6 @@
           "default": 350,
           "description": "Debounce (ms) before requesting an inline completion."
         },
-        "tiermux.useOpenCodeEngine": {
-          "type": "boolean",
-          "default": true,
-          "description": "[EXPERIMENTAL] Use the bundled TierMux engine instead of the legacy built-in agent."
-        },
-        "tiermux.engine.traceOcEvents": {
-          "type": "boolean",
-          "default": false,
-          "description": "Log every raw TierMux engine event to the 'TierMux Engine' output channel. Use this to debug chat issues — turn on, send a chat, then check View → Output → TierMux Engine."
-        },
-        "tiermux.engine.compaction": {
-          "type": "object",
-          "default": {
-            "auto": true,
-            "tailTurns": 12,
-            "preserveRecentTokens": 8000,
-            "reserved": 4096
-          },
-          "markdownDescription": "Lets the TierMux engine (OpenCode) compact long conversations server-side *before* they hit a provider context-length error. Older turns are summarized; the most recent turns are kept verbatim. Tune only if a model's context window is being exhausted.",
-          "properties": {
-            "auto": {
-              "type": "boolean",
-              "default": true,
-              "description": "Compact automatically as the conversation grows past the model's context window."
-            },
-            "tailTurns": {
-              "type": "number",
-              "default": 12,
-              "minimum": 1,
-              "description": "Number of the most recent full turns always kept verbatim (not summarized)."
-            },
-            "preserveRecentTokens": {
-              "type": "number",
-              "default": 8000,
-              "minimum": 0,
-              "description": "Token budget reserved for the most recent content when compacting."
-            },
-            "reserved": {
-              "type": "number",
-              "default": 4096,
-              "minimum": 0,
-              "description": "Tokens reserved for the model's response when compacting."
-            }
-          },
-          "additionalProperties": false
-        },
         "tiermux.catalog.url": {
           "type": "string",
           "default": "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ0gOSMeX5RCp4zJIZxZRSr74Ro8jYFFlsPqMSm3Uw4hLa4-telxqDwvxxdO6JaXAWL3UM9BaQCTUF5/pub?output=csv",
@@ -644,32 +573,27 @@
   "scripts": {
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
-    "check:oc-version": "node scripts/check-oc-sdk-version.mjs",
-    "pretypecheck": "npm run check:oc-version",
     "typecheck": "tsc --noEmit",
-    "test:e2e": "esbuild scripts/qualityGate.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/qualityGate.e2e.cjs && node dist/qualityGate.e2e.cjs",
-    "test:e2e:prewarm": "esbuild scripts/hotStandby.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/hotStandby.e2e.cjs && node dist/hotStandby.e2e.cjs",
     "test:e2e:circuit": "esbuild scripts/circuitBreaker.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/circuitBreaker.e2e.cjs && node dist/circuitBreaker.e2e.cjs",
-    "test:e2e:replay": "esbuild scripts/sessionReplay.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/sessionReplay.e2e.cjs && node dist/sessionReplay.e2e.cjs",
     "test:e2e:scoring": "esbuild scripts/scoring.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/scoring.e2e.cjs && node dist/scoring.e2e.cjs",
     "test:e2e:smart-routing": "esbuild scripts/smartRouting.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/smartRouting.e2e.cjs && node dist/smartRouting.e2e.cjs",
     "test:e2e:vision-classify": "esbuild scripts/visionClassify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/visionClassify.e2e.cjs && node dist/visionClassify.e2e.cjs",
-    "test:e2e:attachments": "esbuild scripts/attachmentParts.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/attachmentParts.e2e.cjs && node dist/attachmentParts.e2e.cjs",
-    "test:e2e:concurrent": "esbuild scripts/concurrentSessions.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/concurrentSessions.e2e.cjs && node dist/concurrentSessions.e2e.cjs",
+    "test:e2e:core": "esbuild scripts/coreLoop.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/coreLoop.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/coreLoop.e2e.cjs",
+    "test:e2e:command-classify": "esbuild scripts/commandClassify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/commandClassify.e2e.cjs && node dist/commandClassify.e2e.cjs",
+    "test:e2e:terminal-util": "esbuild scripts/terminalUtil.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/terminalUtil.e2e.cjs && node dist/terminalUtil.e2e.cjs",
     "bench": "esbuild scripts/bench/runBench.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bench.cjs && node dist/bench.cjs",
     "bench:compare": "esbuild scripts/bench/compare.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/benchCompare.cjs && node dist/benchCompare.cjs",
     "bench:dataset": "esbuild scripts/bench/dataset.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/benchDataset.cjs && node dist/benchDataset.cjs",
     "package": "vsce package --no-dependencies",
     "sync:catalog": "node scripts/sync-catalog.mjs",
-    "fetch:binaries": "node scripts/fetch-opencode.mjs",
-    "package:full": "npm run fetch:binaries && npm run build && vsce package --no-dependencies",
     "publish": "npm run build && vsce publish --no-dependencies && ovsx publish --no-dependencies -p \"$OVSX_PAT\"",
     "prepare": "husky"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/pdf-parse": "^1.1.5",
-    "@types/vscode": "^1.90.0",
+    "@types/shell-quote": "^1.7.5",
+    "@types/vscode": "^1.93.0",
     "@vscode/vsce": "^2.32.0",
     "esbuild": "^0.23.0",
     "highlight.js": "^11.10.0",
@@ -679,10 +603,14 @@
     "typescript": "^5.5.4"
   },
   "dependencies": {
-    "@opencode-ai/sdk": "1.17.11",
+    "@ai-sdk/provider": "^4.0.3",
+    "@vscode/ripgrep": "^1.18.0",
+    "ai": "^7.0.34",
     "diff2html": "^3.4.56",
     "duck-duck-scrape": "^2.2.7",
     "mammoth": "^1.12.0",
-    "pdf-parse": "^2.4.5"
+    "pdf-parse": "^2.4.5",
+    "shell-quote": "^1.10.0",
+    "zod": "^4.4.3"
   }
 }

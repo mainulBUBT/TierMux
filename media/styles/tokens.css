@@ -1,0 +1,79 @@
+/* TierMux design tokens — Layer 1 of the webview's own (framework-free) design system.
+ *
+ * These are semantic *aliases* over VS Code's theme variables, not new colors — every
+ * value here already exists somewhere in main.css as a raw `var(--vscode-*)` call. This
+ * file exists so new UI (media/src/ui/**) has stable, meaningful names to build on
+ * instead of re-deriving the same var(--vscode-…, fallback) chains at every call site.
+ *
+ * Purely additive: nothing in main.css has been migrated to consume these yet, so
+ * removing this file would currently change nothing. New components should use these
+ * tokens; existing main.css rules migrate opportunistically, not in one pass.
+ *
+ * Loaded before main.css (see chatViewProvider.ts's getHtml()) so these are always
+ * defined by the time any other stylesheet or inline style references them.
+ */
+:root {
+  /* Surfaces */
+  --tm-surface: var(--vscode-editor-background);
+  --tm-surface-alt: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  --tm-surface-input: var(--vscode-input-background);
+  --tm-surface-widget: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  --tm-surface-hover-widget: var(--vscode-editorHoverWidget-background, var(--vscode-editorWidget-background));
+  --tm-surface-panel: var(--vscode-editor-inactiveSelectionBackground, rgba(127, 127, 127, .12));
+  --tm-surface-dropdown: var(--vscode-dropdown-background);
+  --tm-surface-code: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, .18));
+  --tm-surface-notification: var(--vscode-notifications-background, var(--vscode-editorWidget-background));
+
+  /* Text */
+  --tm-fg: var(--vscode-foreground);
+  --tm-fg-muted: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  --tm-fg-link: var(--vscode-textLink-foreground);
+  --tm-fg-link-active: var(--vscode-textLink-activeForeground);
+  --tm-fg-error: var(--vscode-errorForeground);
+  --tm-fg-input: var(--vscode-input-foreground);
+  --tm-fg-badge: var(--vscode-badge-foreground);
+  --tm-fg-dropdown: var(--vscode-dropdown-foreground);
+
+  /* Borders */
+  --tm-border: var(--vscode-panel-border);
+  --tm-border-input: var(--vscode-input-border, var(--vscode-panel-border));
+  --tm-border-focus: var(--vscode-focusBorder);
+  --tm-border-dropdown: var(--vscode-dropdown-border, var(--vscode-panel-border));
+  --tm-border-widget: var(--vscode-editorWidget-border, var(--vscode-panel-border));
+
+  /* Accent / status */
+  --tm-accent: var(--vscode-button-background);
+  --tm-accent-fg: var(--vscode-button-foreground);
+  --tm-badge-bg: var(--vscode-badge-background);
+  --tm-progress: var(--vscode-progressBar-background, #0a84ff);
+  --tm-success: var(--vscode-testing-iconPassed, #2e7d32);
+  --tm-error: var(--vscode-errorForeground, #c33);
+  --tm-warning: var(--vscode-charts-yellow, #cca700);
+  --tm-info: var(--vscode-charts-blue, #3794ff);
+
+  /* Interaction states */
+  --tm-hover: var(--vscode-list-hoverBackground);
+  --tm-hover-toolbar: var(--vscode-toolbar-hoverBackground);
+  --tm-selection-active: var(--vscode-list-activeSelectionBackground);
+
+  /* Radius — --radius/--gap (main.css) are kept as the values of record; these are
+     just additional named steps around them so components can pick a scale. */
+  --tm-radius-sm: 4px;
+  --tm-radius-md: var(--radius, 8px);
+  --tm-radius-lg: 10px;
+  --tm-radius-pill: 999px;
+
+  /* Spacing */
+  --tm-space-xs: 2px;
+  --tm-space-sm: 6px;
+  --tm-space-md: var(--gap, 10px);
+  --tm-space-lg: 14px;
+
+  /* Type */
+  --tm-font-code: var(--vscode-editor-font-family, monospace);
+  --tm-font-ui: var(--vscode-font-family);
+
+  /* Elevation */
+  --tm-shadow-sm: 0 2px 10px rgba(0, 0, 0, .35);
+  --tm-shadow-md: 0 4px 14px rgba(0, 0, 0, .28);
+}

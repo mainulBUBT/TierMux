@@ -58,9 +58,6 @@ export const SETTINGS_META: SettingMeta[] = [
     desc: 'Collect per-turn performance traces (latency, tokens, fallbacks).' },
   { key: 'profiler.ringSize', label: 'Profiler ring size', type: 'number', min: 10, max: 10000,
     desc: 'Maximum number of recent turns to keep in the profiler\'s ring buffer.' },
-  // -- Engine --
-  { key: 'engine.traceOcEvents', label: 'Trace OC events', type: 'boolean',
-    desc: 'Log every raw TierMux engine event to the output channel.' },
   // -- Other --
   { key: 'requestTimeoutMs', label: 'Request timeout (ms)', type: 'number', min: 1000, max: 300000,
     desc: 'Per-provider request timeout before failing over to the next model.' },

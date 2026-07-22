@@ -178,7 +178,6 @@ export type InMessage =
   /** Watchdog action button click. `continueWaiting` is a client-side dismissal + log only —
    *  the SDK never receives a decision back (see sdk.ts's watchdog design). */
   | { type: 'watchdogAction'; requestId: string; action: 'continueWaiting' | 'restartRequest' | 'switchModel' | 'acceptCurrentOutput'; sessionId?: string }
-  | { type: 'openOcDiff'; sessionId: string; file: string }
   | { type: 'openPlanFile'; uri: string }
   | { type: 'switchSession'; sessionId: string }
   | { type: 'requestConfig' }
@@ -282,7 +281,6 @@ export type OutMessage =
   | { type: 'commandApproval'; sessionId: string; requestId: string; id: string; command: string; cwd?: string }
   | { type: 'editApproval'; sessionId: string; requestId: string; id: string; path: string; title: string; kind: 'write' | 'delete' }
   | { type: 'permissionAsk'; sessionId: string; requestId: string; id: string; title: string; pattern?: string | string[] }
-  | { type: 'ocSessionDiffList'; sessionId: string; requestId: string; files: Array<{ file: string; additions: number; deletions: number }> }
   | { type: 'clarifyingQuestions'; sessionId: string; requestId: string; questions: ClarifyingQuestion[] }
   | { type: 'sessionTitle'; sessionId: string; title: string }
   // `noFooter`: true when a clarifyingQuestions card immediately follows this message for the
