@@ -11,7 +11,8 @@ import type {
 import { BaseProvider, providerHttpError } from './base';
 import type { CompletionOptions } from './options';
 import { repairToolArguments, rescueInlineToolCalls, toolSchemaMap, sanitizeToolName, stripHarmonyTokens } from '../agent/toolArgs';
-import { flattenMessageContent, stripFileBlocks } from '../agent/content';
+import { flattenMessageContent, stripFileBlocks, contentToString } from '../agent/content';
+import { diagLog } from '../util/diag';
 
 /** How a provider expects the reasoning-effort knob to be expressed. */
 type ReasoningStyle = 'none' | 'effort' | 'openrouter';
@@ -83,7 +84,10 @@ export class OpenAICompatProvider extends BaseProvider {
   }
 
   private authHeader(apiKey: string): Record<string, string> {
-    return this.keyless ? {} : { Authorization: `Bearer ${apiKey}` };
+    // Send no Authorization header when there's no key. `keyless` platforms always have none,
+    // and `keyOptional` platforms (e.g. OpenCode Zen) resolve to '' on their free tier — sending
+    // `Bearer ` (empty) there gets a 401 from servers that accept fully anonymous requests.
+    return (this.keyless || !apiKey) ? {} : { Authorization: `Bearer ${apiKey}` };
   }
 
   private resolveParallelToolCalls(options?: CompletionOptions): boolean | undefined {
@@ -151,6 +155,7 @@ export class OpenAICompatProvider extends BaseProvider {
       headers: { ...this.authHeader(apiKey), 'Content-Type': 'application/json', ...this.extraHeaders },
       body: this.buildBody(messages, modelId, options, false),
     }, options?.timeoutMs ?? this.timeoutMs);
+    diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options)} modelId=${modelId} stream=false status=${res.status}`);
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -185,6 +190,7 @@ export class OpenAICompatProvider extends BaseProvider {
     if (data.usage && raw.usage?.completion_tokens_details?.reasoning_tokens !== undefined) {
       data.usage.reasoning_tokens = raw.usage.completion_tokens_details.reasoning_tokens;
     }
+    diagLog('provider.response', `${this.platform} modelId=${modelId} status=ok usage=${JSON.stringify(data.usage)} contentLen=${contentToString(data.choices?.[0]?.message?.content).length}`);
     normalizeChoices(data);
     data._routed_via = { platform: this.platform, model: modelId };
     return data;
@@ -201,6 +207,7 @@ export class OpenAICompatProvider extends BaseProvider {
       headers: { ...this.authHeader(apiKey), 'Content-Type': 'application/json', ...this.extraHeaders },
       body: this.buildBody(messages, modelId, options, true),
     }, options?.timeoutMs ?? this.timeoutMs);
+    diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options)} modelId=${modelId} stream=true status=${res.status}`);
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));

@@ -18,6 +18,7 @@ import { createTelemetryMiddleware } from './middleware/telemetry';
 import { createToolApproval } from './policies/permission';
 import { createToolSet } from './tools';
 import { getMcpManager } from './tools/mcp/manager';
+import { diagLog } from '../../util/diag';
 
 /** AI SDK ModelMessage shape (loosely typed here — the SDK validates the real shape). */
 type CoreMessage = { role: string; content: unknown };
@@ -53,8 +54,17 @@ function toUserContent(content: ChatMessage['content']): unknown {
   return parts.length ? parts : contentToString(content);
 }
 
+/** True only for a genuine cancellation/abort — NOT for provider or validation errors
+ *  that happen to coincide with an aborted signal. Used by the catch in runTurn so a
+ *  real failure surfaces instead of vanishing as a silent empty turn. */
+function isAbortError(err: unknown): boolean {
+  if (err instanceof Error && err.name === 'AbortError') return true;
+  const code = (err as { code?: unknown })?.code;
+  return code === 'aborted' || code === 20 /* DOMException.ABORT_ERR */ || /abort/i.test((err as { message?: string })?.message ?? '');
+}
+
 function toCoreMessages(messages: ChatMessage[]): CoreMessage[] {
-  return messages.map((m): CoreMessage => {
+  const mapped = messages.map((m): CoreMessage => {
     if (m.role === 'assistant' && m.tool_calls?.length) {
       const parts: unknown[] = [];
       const text = contentToString(m.content);
@@ -74,6 +84,53 @@ function toCoreMessages(messages: ChatMessage[]): CoreMessage[] {
     }
     return { role: m.role, content: contentToString(m.content) };
   });
+  return sanitizeCoreMessages(mapped);
+}
+
+/** Enforce the AI SDK's history invariant: every assistant `tool-call` part MUST have a
+ *  matching `tool-result`, and every `tool` message MUST reference a preceding tool-call.
+ *  History persisted from an interrupted/paused/condensed turn can violate this — e.g. an
+ *  assistant `tool_calls` entry whose run was cut before any tool result came back. The SDK
+ *  throws on such input, which (via the abort path) surfaced as a silent "0 in / 0 out"
+ *  turn on every secondary send. Repair by dropping orphaned tool-call parts and lone tool
+ *  messages so streamText always gets well-formed input. */
+function sanitizeCoreMessages(msgs: CoreMessage[]): CoreMessage[] {
+  // Pass 1: collect every toolCallId that HAS a result somewhere in the history.
+  const idsWithResult = new Set<string>();
+  for (const m of msgs) {
+    if (m.role !== 'tool' || !Array.isArray(m.content)) continue;
+    for (const p of m.content as Array<{ type?: string; toolCallId?: unknown }>) {
+      if (p?.type === 'tool-result' && typeof p.toolCallId === 'string') idsWithResult.add(p.toolCallId);
+    }
+  }
+  // Pass 2: drop orphan tool-call parts (and lone tool messages), removing any assistant
+  // message left empty as a result. `seenCalls` tracks ids actually emitted so a tool message
+  // with no preceding call is dropped too.
+  const seenCalls = new Set<string>();
+  const out: CoreMessage[] = [];
+  for (const m of msgs) {
+    if (m.role === 'assistant' && Array.isArray(m.content)) {
+      const filtered = (m.content as Array<{ type?: string; toolCallId?: string; text?: string }>)
+        .filter((p) => {
+          if (p?.type !== 'tool-call') return true;
+          if (!idsWithResult.has(p.toolCallId ?? '')) return false; // orphan — no result anywhere
+          seenCalls.add(p.toolCallId ?? '');
+          return true;
+        });
+      if (filtered.length === 0) continue; // assistant msg became empty — drop it
+      out.push({ role: 'assistant', content: filtered });
+      continue;
+    }
+    if (m.role === 'tool' && Array.isArray(m.content)) {
+      const filtered = (m.content as Array<{ type?: string; toolCallId?: string }>)
+        .filter((p) => p?.type === 'tool-result' && seenCalls.has(p.toolCallId ?? ''));
+      if (filtered.length === 0) continue; // result for a call we dropped above
+      out.push({ role: 'tool', content: filtered });
+      continue;
+    }
+    out.push(m);
+  }
+  return out;
 }
 
 export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentResult> {
@@ -100,13 +157,16 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   });
 
   const system = await buildSystemPrompt(opts.mode);
+  diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · buildSystemPrompt done`);
   const tools = createToolSet(opts, getMcpManager());
+  diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · createToolSet done (${Object.keys(tools).length} tools)`);
 
   let text = '';
   let reasoning = '';
   const workMessages: ChatMessage[] = [];
 
   try {
+    diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · streamText starting`);
     const result = streamText({
       model: languageModel,
       system,
@@ -145,6 +205,15 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       }
     }
 
+    // Read the finish reason AFTER consuming the full stream — the SDK resolves this
+    // Promise only once all parts (including tool results) have been emitted.
+    // 'max-steps' means stopWhen:isStepCount() fired before the model finished naturally
+    // — the caller (chatViewProvider's auto-continue loop + Resume button) needs paused:true
+    // to know the run was cut short and can be continued rather than treating it as done.
+    let finishReason: string | undefined;
+    try { finishReason = await (result as any).finishReason; } catch { /* ignore — non-fatal */ }
+    const paused = finishReason === 'max-steps';
+
     const steps: any[] = (await (result as any).steps) ?? [];
     for (const step of steps) {
       const calls: any[] = step.toolCalls ?? [];
@@ -167,11 +236,20 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       model,
       runtimeName,
       taskKind,
+      paused,
       workMessages: workMessages.length ? workMessages : undefined,
     };
   } catch (err) {
-    if (opts.abortSignal?.aborted) return { text, reasoning: reasoning.trim() || undefined, platform, model, runtimeName };
+    diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · CAUGHT aborted=${!!opts.abortSignal?.aborted} isAbort=${isAbortError(err)} err=${err instanceof Error ? err.message : String(err)}`);
+    // Only treat as a clean abort if the error is GENUINELY an abort. A real failure
+    // (provider rejection, message-shape validation, empty response) that merely
+    // coincides with an aborted signal used to vanish here as an empty, error-less
+    // turn — the "0 in / 0 out / 0s" silent-idle symptom on follow-up sends. Surface
+    // every other error so the user sees what actually went wrong.
+    if (opts.abortSignal?.aborted && isAbortError(err)) {
+      return { text, reasoning: reasoning.trim() || undefined, platform, model, runtimeName, paused: false };
+    }
     opts.onError(err instanceof Error ? err.message : String(err));
-    return { text, reasoning: reasoning.trim() || undefined, platform, model, runtimeName };
+    return { text, reasoning: reasoning.trim() || undefined, platform, model, runtimeName, paused: false };
   }
 }

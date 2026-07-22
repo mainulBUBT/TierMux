@@ -1175,6 +1175,13 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
 
     t.flow.insertBefore(det, workNodes[0]);
     workNodes.forEach((n) => det.appendChild(n));
+    // Keep all streamed answer text BELOW the collapsed tool summary (Claude-Code-style:
+    // tools on top, answer beneath). Without this, text segments that streamed between
+    // tool calls stay at their stream position — above some tools, below others — so the
+    // answer appears scattered through the tool feed instead of beneath it.
+    Array.from(t.flow.children)
+      .filter((el) => el.classList.contains('flow-text'))
+      .forEach((el) => t.flow.appendChild(el));
     scrollDown();
   }
 
@@ -1615,12 +1622,21 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
       addModelItem(opt.value, opt.label, opt.model);
       if (opt.value === currentModel) selectedLabel = opt.label;
     });
-    // If the selected model was unchecked/removed, fall back to Auto.
+    // A pinned model is honored as-is — the message goes to THAT model only (the router
+    // isolates it to a single candidate). Only 'auto' triggers smart routing. Previously a
+    // pinned model that fell out of the enabled set (provider toggled, catalog refresh, …)
+    // was silently rewritten to 'auto', which then rerouted the turn to whatever Auto ranked
+    // first — surfacing as a different provider name than the one picked. Keep the pin and
+    // surface the unavailability instead, so the user re-picks deliberately.
     const enabledValues = new Set(options.map((opt) => opt.value));
-    if (currentModel !== 'auto' && !enabledValues.has(currentModel)) currentModel = 'auto';
+    if (currentModel !== 'auto' && !enabledValues.has(currentModel)) {
+      const bare = currentModel.split('::').slice(1).join('::') || currentModel;
+      showComposerStatus(`${bare} is no longer in the enabled set — still pinned (Auto routing off). Re-pick or switch to Auto.`);
+    }
     // Keep the button label in sync with the current selection.
     if (currentModel === 'auto') { modelBtnLabel.textContent = 'Auto'; modelBtn.title = 'Auto (smart routing)'; }
     else if (selectedLabel) { modelBtnLabel.textContent = selectedLabel; modelBtn.title = selectedLabel; }
+    else { const bare = currentModel.split('::').slice(1).join('::') || currentModel; modelBtnLabel.textContent = bare; modelBtn.title = bare; }
     updateReasoningAvailability();
   }
 
@@ -3354,9 +3370,13 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
           t.failoverEl.className = 'notice';
           t.tools.appendChild(t.failoverEl);
         }
-        // Neutral, non-alarming wording — failover is normal routing, not an error.
-        t.failoverEl.textContent = '↻ Routing to the best available model…';
-        t.failoverEl.title = `Switched models ${t.failoverCount}× · last: ${msg.from} (${msg.reason})`;
+        // Neutral, non-alarming wording. A pinned-model rate limit is a *wait + retry of the
+        // same model*, not a switch — say so honestly instead of "routing to another model".
+        const isRetry = /rate_limited|retrying|cooldown/i.test(msg.reason || '');
+        t.failoverEl.textContent = isRetry
+          ? `⏳ Rate-limited on ${msg.from} — waiting and retrying…`
+          : '↻ Routing to the best available model…';
+        t.failoverEl.title = `${isRetry ? 'Retrying' : 'Switched models ' + t.failoverCount + '×'} · last: ${msg.from} (${msg.reason})`;
         scrollDown();
         break;
       }

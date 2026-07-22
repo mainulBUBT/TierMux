@@ -7,6 +7,7 @@
 import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4GenerateResult, LanguageModelV4StreamResult, LanguageModelV4StreamPart, LanguageModelV4FunctionTool } from '@ai-sdk/provider';
 import type { Router, RouteOptions } from '../../router/router';
 import type { ChatMessage, ChatToolDefinition, ReasoningEffort } from '../../shared/types';
+import { diagLog } from '../../util/diag';
 
 /** One scored candidate as reported to AgentOpts.onSelectionRationale — `model` is a
  *  "platform::modelId" key (matching onFailover's `from` shape), not a display name;
@@ -128,9 +129,11 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         onKeyRotated: providerOpts.onKeyRotated ? (info) => providerOpts.onKeyRotated!({ platform: info.platform, keyIndex: info.keyIndex, keyTotal: info.keyTotal }) : undefined,
         onSelectionRationale: toRationaleCallback(providerOpts.onSelectionRationale),
       };
+      diagLog('ai-sdk.doGenerate', `pinnedModel="${providerOpts.pinnedModel ?? '<auto>'}" → routeOpts.model="${routeOpts.model}" msgs=${messages.length} tools=${tools?.length ?? 0}`);
 
       const result = await router.route(messages, routeOpts);
       providerOpts.onModelSelected?.(result.platform, result.model, result.runtimeName);
+      diagLog('ai-sdk.doGenerate.served', `result=${result.platform}::${result.model} runtimeName="${result.runtimeName ?? ''}" usage=${JSON.stringify(result.response.usage)}`);
 
       const msg = result.response.choices?.[0]?.message;
       const content: LanguageModelV4GenerateResult['content'] = [];
@@ -184,9 +187,11 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         onKeyRotated: providerOpts.onKeyRotated ? (info) => providerOpts.onKeyRotated!({ platform: info.platform, keyIndex: info.keyIndex, keyTotal: info.keyTotal }) : undefined,
         onSelectionRationale: toRationaleCallback(providerOpts.onSelectionRationale),
       };
+      diagLog('ai-sdk.doStream', `pinnedModel="${providerOpts.pinnedModel ?? '<auto>'}" → routeOpts.model="${routeOpts.model}" msgs=${messages.length} tools=${tools?.length ?? 0}`);
 
       router.route(messages, routeOpts).then((result) => {
         providerOpts.onModelSelected?.(result.platform, result.model, result.runtimeName);
+        diagLog('ai-sdk.doStream.served', `result=${result.platform}::${result.model} runtimeName="${result.runtimeName ?? ''}" usage=${JSON.stringify(result.response.usage)} chunks=${chunkCount}`);
         const msg = result.response.choices?.[0]?.message;
         const hasToolCalls = !!msg?.tool_calls?.length;
 

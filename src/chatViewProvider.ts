@@ -23,6 +23,7 @@ import type { McpRegistryItem, McpServerConfig } from './messages';
 import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
 import { normalizeMcpServerConfig } from './mcp/mcpClient';
 import { getNonce } from './util/nonce';
+import { diagLog } from './util/diag';
 import { getPlatformInfo } from './providers';
 import { parseSlash, resolveMentions, searchMentions } from './context/mentions';
 import { contentToString } from './agent/content';
@@ -203,6 +204,28 @@ function displayNameForEntry(entry: { platform: string; modelId: string }, deps:
     return endpoint?.name ?? 'Custom';
   }
   return entry.platform;
+}
+
+/**
+ * Source-of-truth provider label for a turn's footer. Prefers the name the router reported for
+ * the run; falls back to the pinned model's platform when the run produced no metadata (empty
+ * or errored turn) so the footer never goes blank as `/modelId` — the user always sees which
+ * provider their pinned selection targeted, even when it failed to respond.
+ */
+function turnPlatformLabel(pinnedModel: string | undefined, reported: { runtimeName?: string; platform?: string } | undefined, deps: ChatDeps): string {
+  if (reported?.runtimeName) return reported.runtimeName;
+  if (reported?.platform) {
+    if (reported.platform === 'custom') return 'Custom';
+    return getPlatformInfo(reported.platform as import('./shared/types').Platform)?.name ?? reported.platform;
+  }
+  // No run metadata — use the pinned platform (the model the user actually picked).
+  const pinned = pinnedModel && pinnedModel !== 'auto' ? pinnedModel.split('::')[0] : undefined;
+  if (!pinned) return '';
+  if (pinned === 'custom') {
+    const epId = (pinnedModel!.split('::')[1] || '').split('::')[0];
+    return deps.settings.getCustomEndpoint(epId)?.name ?? 'Custom';
+  }
+  return getPlatformInfo(pinned as import('./shared/types').Platform)?.name ?? pinned;
 }
 
 /**
@@ -1488,13 +1511,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const s = this.current();
     s.model = m.model;
     s.reasoningEffort = m.reasoningEffort;
+    diagLog('sendMessage', `requestId=${m.requestId} mode=${m.mode} pinnedModel="${m.model ?? '<none>'}" reasoningEffort=${m.reasoningEffort ?? '<none>'}`);
     const contextText = await resolveMentions(prompt).catch(() => '');
+    diagLog('send.gate', `requestId=${m.requestId} · resolveMentions done`);
     const userContent = this.buildUserContent(prompt, contextText, m.attachments);
     s.history.push({ role: 'user', content: userContent });
     s.transcript.push({ role: 'user', text: prompt, requestId: m.requestId, ts: Date.now(), historyLen: s.history.length - 1, attachments: m.attachments });
     s.updatedAt = Date.now();
     void this.maybeGenerateTitle(s); // title from the user's message right away (e.g. "hi" -> "Greetings")
 
+    // Cancel the previous run BEFORE replacing the token. CancellationTokenSource.dispose()
+    // only drops listeners — it does NOT abort — so without cancel() a pre-empted in-flight
+    // run keeps executing its model call in the background, wasting tokens and racing the
+    // new run (a root cause of follow-up sends landing as silent "0 in / 0 out" turns).
+    s.cancel?.cancel();
     s.cancel?.dispose();
     s.cancel = new vscode.CancellationTokenSource();
     s.activeRequestId = m.requestId;
@@ -1503,19 +1533,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.executingPlan = false;
 
     const release = await this.acquireRunSlot(s.id);
+    diagLog('send.gate', `requestId=${m.requestId} · slot acquired`);
 
-    if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
+    if (s.activeRequestId !== m.requestId) { release(); diagLog('send.gate', `requestId=${m.requestId} · SUPERSEDED, aborting before runner`); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
 
     this.post({ type: 'busy', sessionId: s.id, busy: true });
     const before = this.deps.usage.get();
     await s.checkpoints.begin(m.requestId, prompt.slice(0, 60));
+    diagLog('send.gate', `requestId=${m.requestId} · checkpoint begun`);
     const sentAt = Date.now();
 
     try {
       const cbk = this.agentCallbacks(s, m.requestId, m.mode as Mode);
       const sdkMode = m.mode as 'agent' | 'plan' | 'ask';
       const runner = sdkMode === 'plan' ? runPlanStream : sdkMode === 'ask' ? runAskStream : runAgentStream;
+      diagLog('send.gate', `requestId=${m.requestId} · invoking ${sdkMode} runner`);
       let result = await runner(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
+      diagLog('send.gate', `requestId=${m.requestId} · runner returned paused=${result.paused} textLen=${result.text?.length ?? 0}`);
 
       // Watchdog "Restart Request" / "Switch Model": the button handler aborted the run above
       // and left `pendingWatchdogRetry` set — re-invoke the SAME request (same requestId, same
@@ -1615,7 +1649,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         : result.model;
       const hasQuestions = !!(agentClar.questions && agentClar.questions.length);
 
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: pinned, paused: result.paused, noFooter: hasQuestions });
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: pinned, paused: result.paused, noFooter: hasQuestions });
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
       if (hasQuestions) {
         s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: agentClar.questions!, mode: m.mode as 'plan' | 'agent' };
@@ -1824,6 +1858,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (original) s.history.push({ role: 'user', content: original });
     s.history.push({ role: 'user', content: `Execute this plan step by step:\n\n${m.steps}` });
 
+    // Cancel the previous run BEFORE replacing the token. CancellationTokenSource.dispose()
+    // only drops listeners — it does NOT abort — so without cancel() a pre-empted in-flight
+    // run keeps executing its model call in the background, wasting tokens and racing the
+    // new run (a root cause of follow-up sends landing as silent "0 in / 0 out" turns).
+    s.cancel?.cancel();
     s.cancel?.dispose();
     s.cancel = new vscode.CancellationTokenSource();
     s.activeRequestId = m.requestId;
@@ -1858,7 +1897,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: result.model, paused: result.paused });
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: result.model, paused: result.paused });
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return;
@@ -2001,7 +2040,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.livePlatform = platform;
         s.liveModel = pinned;
         s.liveRuntimeName = runtimeName;
-        this.post({ type: 'assistantStart', sessionId: s.id, requestId, platform: runtimeName ?? platform, model: pinned });
+        this.post({ type: 'assistantStart', sessionId: s.id, requestId, platform: (runtimeName ?? platform) || turnPlatformLabel(s.model, undefined, this.deps), model: pinned });
       },
       onTool: (e: ToolEvent) => {
         if (!live()) return;
@@ -2142,6 +2181,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       role: 'user',
       content: 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.',
     });
+    // Cancel the previous run BEFORE replacing the token. CancellationTokenSource.dispose()
+    // only drops listeners — it does NOT abort — so without cancel() a pre-empted in-flight
+    // run keeps executing its model call in the background, wasting tokens and racing the
+    // new run (a root cause of follow-up sends landing as silent "0 in / 0 out" turns).
+    s.cancel?.cancel();
     s.cancel?.dispose();
     s.cancel = new vscode.CancellationTokenSource();
     s.activeRequestId = m.requestId;
@@ -2168,7 +2212,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: result.model, paused: result.paused });
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: result.model, paused: result.paused });
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return;
@@ -2214,6 +2258,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.history.push({ role: 'user', content: ctx.userContent });
     s.history.push({ role: 'user', content: `Clarifications from the user:\n${qa}\n\nUsing these answers, produce the step-by-step plan now. Do not ask any further questions — through the ???QUESTIONS??? block or any tool — use your best judgment for anything still unspecified.` });
 
+    // Cancel the previous run BEFORE replacing the token. CancellationTokenSource.dispose()
+    // only drops listeners — it does NOT abort — so without cancel() a pre-empted in-flight
+    // run keeps executing its model call in the background, wasting tokens and racing the
+    // new run (a root cause of follow-up sends landing as silent "0 in / 0 out" turns).
+    s.cancel?.cancel();
     s.cancel?.dispose();
     s.cancel = new vscode.CancellationTokenSource();
     s.activeRequestId = m.requestId;
@@ -2267,7 +2316,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         };
         this.persistAgentTurn(s, result);
         this.pushAssistantTurn(s, m.requestId, result, sentAt, usage);
-        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: clar.text, reasoning: result.reasoning, usage, platform: result.runtimeName ?? result.platform, model: result.model, paused: result.paused });
+        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: clar.text, reasoning: result.reasoning, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: result.model, paused: result.paused });
         committed = true;
       } else {
         // The resumed run returned nothing usable (e.g. all of result.text was consumed by a

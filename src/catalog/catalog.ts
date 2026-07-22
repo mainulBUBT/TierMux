@@ -63,26 +63,41 @@ export class Catalog {
    *  and differs from the current list. Best-effort: any failure (offline, bad
    *  URL, empty/garbled CSV) silently keeps the cached/bundled list. Fires
    *  onDidChange only when the active list actually changes. */
-  async refresh(url: string | undefined, mem: vscode.Memento): Promise<void> {
+  async refresh(url: string | undefined, mem: vscode.Memento): Promise<CatalogSyncReport | null> {
     const target = (url ?? '').trim();
-    if (!target) return;
+    if (!target) return null;
     let text: string;
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 8000);
       const res = await fetch(target, { signal: ctrl.signal });
       clearTimeout(timer);
-      if (!res.ok) return;
+      if (!res.ok) return null;
       text = await res.text();
     } catch {
-      return; // offline / timeout / bad URL → keep what we have
+      return null; // offline / timeout / bad URL → keep what we have
     }
     const models = parseCsvCatalog(text);
-    if (!models.length) return; // empty or unparseable → ignore
-    if (JSON.stringify(models) === JSON.stringify(this.remote)) return; // unchanged
+    if (!models.length) return null; // empty or unparseable → ignore
+
+    const before = this.all();
+    if (JSON.stringify(models) === JSON.stringify(before)) {
+      return { added: [], removed: [], updated: before.length, skipped: [], changed: false };
+    }
+
+    const beforeKeys = new Set(before.map((m) => Catalog.key(m.platform, m.modelId)));
+    const nextKeys = new Set(models.map((m) => Catalog.key(m.platform, m.modelId)));
+
+    const added = models.filter((m) => !beforeKeys.has(Catalog.key(m.platform, m.modelId))).map((m) => Catalog.key(m.platform, m.modelId));
+    const removed = before.filter((m) => !nextKeys.has(Catalog.key(m.platform, m.modelId))).map((m) => Catalog.key(m.platform, m.modelId));
+    const updated = models.length - added.length;
+
+    await mem.update(UNDO_KEY, before);
     this.remote = models;
     await mem.update(CACHE_KEY, models);
     this._onDidChange.fire();
+
+    return { added, removed, updated, skipped: [], changed: true };
   }
 
   /**

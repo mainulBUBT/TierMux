@@ -231,12 +231,49 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('tiermux.addSelectionToChat', () => chat.addSelectionToChat()),
     vscode.commands.registerCommand('tiermux.reconnectMcp', async () => { await mcp.reconnect(); void vscode.window.showInformationMessage('Reconnected MCP servers.'); }),
     vscode.commands.registerCommand('tiermux.refreshModels', async () => {
-      await catalog.refresh(
-        vscode.workspace.getConfiguration('tiermux').get<string>('catalog.url', ''),
-        context.globalState,
+      const report = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'TierMux: refreshing model catalog from sheet…' },
+        () => catalog.refresh(
+          vscode.workspace.getConfiguration('tiermux').get<string>('catalog.url', ''),
+          context.globalState,
+        ),
       );
       chat.refresh();
-      void vscode.window.showInformationMessage('TierMux: model catalog refreshed.');
+
+      if (!report) {
+        void vscode.window.showWarningMessage('TierMux: could not refresh model catalog (offline, bad URL, or invalid sheet format).');
+        return;
+      }
+
+      if (!report.changed) {
+        void vscode.window.showInformationMessage('TierMux: catalog already up to date with Google Sheet.');
+        return;
+      }
+
+      const parts = [`+${report.added.length} added`, `−${report.removed.length} removed`];
+      const choice = await vscode.window.showInformationMessage(
+        `TierMux catalog refreshed from sheet: ${parts.join(', ')}.`,
+        'Show Details',
+        'Undo',
+      );
+      if (choice === 'Undo') {
+        const ok = await catalog.undoSync(context.globalState);
+        chat.refresh();
+        void vscode.window.showInformationMessage(
+          ok ? 'TierMux: catalog refresh undone.' : 'TierMux: nothing to undo.',
+        );
+      } else if (choice === 'Show Details') {
+        const doc = await vscode.workspace.openTextDocument({
+          language: 'markdown',
+          content: [
+            `# TierMux sheet catalog sync`, '',
+            `## Added (${report.added.length})`, ...report.added.map((k) => `- ${k}`), '',
+            `## Removed (${report.removed.length})`, ...report.removed.map((k) => `- ${k}`), '',
+            `Carried over: ${report.updated}`,
+          ].join('\n'),
+        });
+        await vscode.window.showTextDocument(doc, { preview: true });
+      }
     }),
     vscode.commands.registerCommand('tiermux.syncCatalog', async () => {
       const report = await vscode.window.withProgress(

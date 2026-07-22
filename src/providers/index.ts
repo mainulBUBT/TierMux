@@ -20,7 +20,7 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'kilo', name: 'Kilo Gateway', baseUrl: 'https://api.kilo.ai/api/gateway/v1', keyless: true },
   { platform: 'pollinations', name: 'Pollinations', baseUrl: 'https://text.pollinations.ai/openai/v1', keyless: true },
   { platform: 'llm7', name: 'LLM7', baseUrl: 'https://api.llm7.io/v1', keyUrl: 'https://llm7.io' },
-  { platform: 'opencode', name: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen/v1', keyOptional: true, keyUrl: 'https://opencode.ai/auth' },
+  { platform: 'opencode', name: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen/v1', keyless: true, skipPreflight: true, keyUrl: 'https://opencode.ai/auth' },
   { platform: 'ovh', name: 'OVH AI Endpoints', baseUrl: 'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1', keyless: true },
   { platform: 'agnes', name: 'Agnes AI', baseUrl: 'https://apihub.agnes-ai.com/v1', timeoutMs: 120000, skipPreflight: true, keyUrl: 'https://platform.agnes-ai.com' },
   { platform: 'sambanova', name: 'SambaNova', baseUrl: 'https://api.sambanova.ai/v1', keyUrl: 'https://cloud.sambanova.ai/apis' },

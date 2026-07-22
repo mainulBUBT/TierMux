@@ -13,6 +13,7 @@ import type { CompletionOptions } from '../providers/options';
 import { fitMessages, inputBudget, estimateTokens, estimateMessagesTokens } from '../agent/budget';
 import { orderForTask, type TaskKind } from '../agent/routing';
 import { contentToString } from '../agent/content';
+import { diagLog } from '../util/diag';
 import { VISION_BLIND } from '../agent/answerQuality';
 import type { SecretStore } from '../config/secrets';
 import type { SettingsStore } from '../config/settingsStore';
@@ -127,6 +128,27 @@ export function stripThinkTags(text: string): string {
   return result.trim();
 }
 
+/**
+ * Extract a reasoning/thinking delta from a streamed chunk's `delta`. Providers disagree on the
+ * field: DeepSeek/OpenRouter use `reasoning_content`, some send `reasoning`, and OpenAI/OpenCode
+ * Zen send an array `reasoning_details` of `{ type: 'reasoning.text', text }`. Returns '' if the
+ * chunk carries no reasoning.
+ */
+function reasoningFromDelta(delta: Record<string, unknown>): string {
+  if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) return delta.reasoning_content;
+  if (typeof delta.reasoning === 'string' && delta.reasoning) return delta.reasoning;
+  const details = delta.reasoning_details;
+  if (Array.isArray(details)) {
+    let out = '';
+    for (const d of details) {
+      const t = (d as { text?: unknown }).text;
+      if (typeof t === 'string') out += t;
+    }
+    if (out) return out;
+  }
+  return '';
+}
+
 export interface RouteOptions extends CompletionOptions {
   /** Force a specific model (platform::modelId or 'auto'). */
   model?: string;
@@ -160,6 +182,10 @@ export interface RouteOptions extends CompletionOptions {
    * raw JSON fragments is not useful and confuses the UI.
    */
   onChunk?: (text: string) => void;
+  /** Live reasoning/thinking tokens streamed by reasoning models (big-pickle, qwen3, glm, …).
+   *  Many providers put the actual output in `reasoning_content` / `reasoning` while `content`
+   *  stays empty; without this channel those turns render blank (0 tokens, no answer). */
+  onReasoning?: (text: string) => void;
   /** Profiler: notified per provider attempt (ok or fail). Not emitted for preflight skips. */
   onProviderAttempt?: (info: { platform: string; model: string; status: 'ok' | 'fail'; latencyMs: number; errorType?: string; reason?: string }) => void;
 }
@@ -228,7 +254,10 @@ function classify(err: unknown): { reason: string; failoverable: boolean; retryA
   const detail = err instanceof Error && err.message ? err.message : undefined;
   if (err instanceof ProviderHttpError) {
     const s = err.status;
-    const retryAfterMs = err.retryAfterMs;
+    // Retry-After isn't always an HTTP header — Groq/OpenRouter/Cohere put it in the body
+    // ("try again in 35.64s", "retry after 30 seconds"). Fall back to parsing the body text so
+    // the wait+retry honors the real cooldown for every provider, not just header-senders.
+    const retryAfterMs = err.retryAfterMs ?? (s === 429 && detail ? parseRetryFromBody(detail) : undefined);
     if (s === 429) return { reason: 'rate_limited', failoverable: true, retryAfterMs, detail };
     if (s === 401 || s === 403) return { reason: 'auth', failoverable: true, detail };
     if (s === 408) return { reason: 'timeout', failoverable: true, detail };
@@ -242,6 +271,23 @@ function classify(err: unknown): { reason: string; failoverable: boolean; retryA
   }
 
   return { reason: 'network', failoverable: true, detail };
+}
+
+/**
+ * Extract a retry-after duration from an error body, since many providers omit the HTTP
+ * `Retry-After` header and state the cooldown in prose: "try again in 35.64s", "retry after
+ * 30 seconds", "retry-after: 60", "please wait 2 minutes". Returns ms, or undefined.
+ */
+function parseRetryFromBody(text: string): number | undefined {
+  const re = /(?:try again|retry[^a-z]*(?:after|in)|wait)[^0-9]*([\d.]+)\s*(ms|millis(?:econds?)?|s|sec(?:onds?)?|m|min(?:utes?)?)/i;
+  const m = re.exec(text);
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  const unit = m[2].toLowerCase();
+  if (unit.startsWith('ms')) return n;
+  if (unit.startsWith('s')) return n * 1000;
+  return n * 60_000; // minutes
 }
 
 export class Router {
@@ -441,6 +487,7 @@ export class Router {
       const modelId = rest.join('::');
 
       const forced = list.find((e) => e.platform === platform && e.modelId === modelId);
+      diagLog('router.candidates', `forced model="${opts.model}" → platform=${platform} modelId=${modelId} foundInCatalog=${!!forced}`);
       return [forced ?? { platform: platform as Platform, modelId, enabled: true, priority: -1 }];
     }
     if (opts.requireTools) {
@@ -737,6 +784,7 @@ export class Router {
           let firstChunkAt: number | null = null; // TTFT — time to first emitted content
           if (wantsStream) {
             const chunks: string[] = [];
+            const reasoningChunks: string[] = [];
             // OpenAI-wire tool_call deltas arrive fragmented across chunks, keyed by `index`:
             // the first fragment carries id/name, later ones carry only incremental `arguments`
             // slices — they must be merged, not overwritten, or the accumulated JSON is corrupt.
@@ -754,6 +802,13 @@ export class Router {
                   chunks.push(clean);
                   opts.onChunk!(clean);
                 }
+              }
+              // Reasoning models stream their real output in reasoning channels while `content`
+              // is empty or lags behind. Capture every variant so the turn isn't silently blank.
+              const rDelta = reasoningFromDelta(delta as Record<string, unknown>);
+              if (rDelta) {
+                reasoningChunks.push(rDelta);
+                opts.onReasoning?.(rDelta);
               }
               for (const [pos, tcDelta] of (delta.tool_calls ?? []).entries()) {
                 // Real OpenAI-wire streams fragment one call per chunk with an explicit `index`;
@@ -779,10 +834,15 @@ export class Router {
               chunks.push(tail);
               opts.onChunk!(tail);
             }
-            const fullText = chunks.join('');
+            // Fold reasoning into the answer when the model emitted no `content` (mirrors the
+            // non-streaming fold in openai-compat.normalizeChoices). Without this, a pure-reasoning
+            // reply or one cut off mid-think (finish_reason: length) renders as an empty turn.
+            const reasoningText = reasoningChunks.join('');
+            const fullText = chunks.join('') || reasoningText;
             const toolCalls = toolCallsByIndex.size
               ? [...toolCallsByIndex.entries()].sort(([a], [b]) => a - b).map(([, tc]) => tc)
               : undefined;
+            diagLog('router.stream-done', `${entry.platform}::${entry.modelId} fittedMsgs=${fitted.length} fittedChars=${fitted.reduce((n, mm) => n + (typeof mm.content === 'string' ? mm.content.length : 0), 0)} chunks=${chunks.length} reasoningChunks=${reasoningChunks.length} textLen=${fullText.length} folded=${!chunks.length && !!reasoningText} toolCalls=${toolCallsByIndex.size} finalUsage=${JSON.stringify(finalUsage)}`);
 
             const promptTokens = finalUsage?.prompt_tokens ?? estimateMessagesTokens(fitted);
             const completionTokens = finalUsage?.completion_tokens ?? estimateTokens(fullText);
@@ -830,7 +890,7 @@ export class Router {
           const responseContent = response.choices?.[0]?.message?.content;
           const hasToolCalls = !!(response.choices?.[0]?.message?.tool_calls?.length);
           if (!responseContent && !hasToolCalls) {
-            // Was `!forced && ...` — a pinned/forced model has exactly one candidate
+            diagLog('router.empty', `${entry.platform}::${entry.modelId} returned empty content with no tool_calls (http ok) → treating as failure`);            // Was `!forced && ...` — a pinned/forced model has exactly one candidate
             // (candidates() returns a single-entry list, line ~444), so this used to let an
             // empty HTTP-200 response sail through as a "successful" completion whenever a
             // specific model was selected instead of Auto: `continue candidates` immediately
@@ -906,9 +966,11 @@ export class Router {
             });
             opts.onSelectionRationale?.({ taskKind: pickedRank.taskKind, picked: entry, rationale });
           }
+          diagLog('router.served', `${entry.platform}::${entry.modelId} runtimeName="${(provider as any).runtimeName ?? ''}" usage=${JSON.stringify(response.usage)} contentLen=${contentToString(responseContent).length}`);
           return { response, platform: entry.platform, model: entry.modelId, runtimeName: (provider as any).runtimeName };
         } catch (err) {
           const { reason, failoverable, retryAfterMs, detail } = classify(err);
+          diagLog('router.catch', `${entry.platform}::${entry.modelId} reason=${reason} failoverable=${!!failoverable} detail=${detail ?? ''} err=${err instanceof Error ? err.message : String(err)}`);
 
           if (reason === 'http_413' && sentTools && !triedTrim) {
             triedTrim = true;
@@ -931,7 +993,10 @@ export class Router {
             this.secrets.setCooldown(entry.platform, retryAfterMs ?? this.rateLimitCooldownMs());
 
             if (forced && retryCount < MAX_RETRIES) {
-              const waitMs = Math.min(retryAfterMs ?? this.rateLimitCooldownMs(), 15_000);
+              // Honor the server's Retry-After (Groq/free tiers often ask for 20-40s) instead of
+              // capping at 15s and re-429'ing until the retry budget is spent. Cap at 60s so a
+              // pathologically long cooldown never hangs the turn indefinitely.
+              const waitMs = Math.min(retryAfterMs ?? this.rateLimitCooldownMs(), 60_000);
               opts.onFailover?.({ from: entry, reason: `rate_limited — retrying in ${Math.ceil(waitMs / 1000)}s (${retryCount + 1}/${MAX_RETRIES})` });
               await new Promise((resolve) => setTimeout(resolve, waitMs));
               triedModels.set(modelKey, retryCount + 1);
@@ -971,6 +1036,7 @@ export class Router {
         }
       }
     }
+    diagLog('router.all-failed', `no candidate served · failures=${failures.map((f) => `${f.platform}::${f.model}(${f.reason})`).join(', ')}`);
     throw new AllModelsFailedError(failures);
   }
 }

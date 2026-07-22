@@ -362,6 +362,11 @@
           "default": false,
           "description": "Log the per-turn Smart Auto scoring rationale (why each model was selected or skipped, with per-signal scores) to the \"TierMux Router\" output channel."
         },
+        "tiermux.agent.diagTrace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log the model's path from picker → router → provider → AI SDK (pinned value, resolved candidate, runtimeName, raw usage) to the \"TierMux Diag\" output channel. Temporary diagnostic for the wrong-provider-name / 0-token issue."
+        },
         "tiermux.agent.commandApproval": {
           "type": "string",
           "enum": [
