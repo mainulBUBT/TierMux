@@ -331,6 +331,16 @@
           "default": 25,
           "description": "Maximum tool-call iterations per agent task before pausing to check in. Higher values let the agent complete multi-step tasks without stopping."
         },
+        "tiermux.agent.pruneAtTokens": {
+          "type": "number",
+          "default": 12000,
+          "description": "During a long agent turn, once the running context passes this many tokens, older tool outputs and reasoning are pruned before each step so the model stops re-sending stale grep/read dumps. Lower = leaner context (cheaper, better for small free-tier windows); 0 disables pruning."
+        },
+        "tiermux.agent.maxTurnTokens": {
+          "type": "number",
+          "default": 0,
+          "description": "Hard token ceiling for a single agent turn (0 = no limit). If the turn's cumulative token usage exceeds this, the loop stops instead of running to the iteration cap — a safety brake against a runaway loop draining free-tier quota."
+        },
         "tiermux.agent.maxConcurrentRuns": {
           "type": "number",
           "default": 3,

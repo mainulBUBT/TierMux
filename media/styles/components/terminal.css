@@ -1,0 +1,292 @@
+/* AI Elements-inspired Terminal Component
+ * 
+ * Terminal output display with ANSI color support
+ * Following AI Elements Terminal component design patterns
+ */
+
+/* Terminal Container */
+.tm-terminal {
+  background: #1e1e1e;
+  border: 1px solid #333;
+  border-radius: var(--tm-radius-lg);
+  margin: var(--tm-gap-md) 0;
+  overflow: hidden;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono', 'Source Code Pro', monospace;
+}
+
+/* Terminal Header */
+.tm-terminal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--tm-gap-sm) var(--tm-gap-md);
+  background: #252526;
+  border-bottom: 1px solid #333;
+}
+
+.tm-terminal-title {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-sm);
+  font-size: var(--tm-text-xs);
+  color: #ccc;
+  font-weight: 500;
+}
+
+.tm-terminal-icon {
+  width: 12px;
+  height: 12px;
+  border-radius: var(--tm-radius-full);
+}
+
+.tm-terminal-icon.success {
+  background: #4ec9b0;
+}
+
+.tm-terminal-icon.error {
+  background: #f14c4c;
+}
+
+.tm-terminal-icon.running {
+  background: #3794ff;
+}
+
+.tm-terminal-actions {
+  display: flex;
+  gap: var(--tm-gap-xs);
+}
+
+.tm-terminal-btn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #888;
+  border-radius: var(--tm-radius-sm);
+  cursor: pointer;
+  transition: all var(--tm-transition-fast);
+  font-size: var(--tm-text-sm);
+}
+
+.tm-terminal-btn:hover {
+  background: #3c3c3c;
+  color: #ccc;
+}
+
+/* Terminal Content */
+.tm-terminal-content {
+  padding: var(--tm-gap-md);
+  max-height: 400px;
+  overflow-y: auto;
+  font-size: var(--tm-text-xs);
+  line-height: 1.5;
+  color: #cccccc;
+}
+
+/* Terminal output with ANSI colors */
+.tm-terminal-output {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ANSI Color Codes */
+.tm-terminal-fg-black { color: #000000; }
+.tm-terminal-fg-red { color: #cd3131; }
+.tm-terminal-fg-green { color: #0dbc79; }
+.tm-terminal-fg-yellow { color: #e5e510; }
+.tm-terminal-fg-blue { color: #2472c8; }
+.tm-terminal-fg-magenta { color: #bc3fbc; }
+.tm-terminal-fg-cyan { color: #11a8cd; }
+.tm-terminal-fg-white { color: #e5e5e5; }
+.tm-terminal-fg-bright-black { color: #666666; }
+.tm-terminal-fg-bright-red { color: #f14c4c; }
+.tm-terminal-fg-bright-green { color: #23d18b; }
+.tm-terminal-fg-bright-yellow { color: #f5f543; }
+.tm-terminal-fg-bright-blue { color: #3b8eea; }
+.tm-terminal-fg-bright-magenta { color: #d670d6; }
+.tm-terminal-fg-bright-cyan { color: #29b8db; }
+.tm-terminal-fg-bright-white { color: #ffffff; }
+
+.tm-terminal-bg-black { background-color: #000000; }
+.tm-terminal-bg-red { background-color: #cd3131; }
+.tm-terminal-bg-green { background-color: #0dbc79; }
+.tm-terminal-bg-yellow { background-color: #e5e510; }
+.tm-terminal-bg-blue { background-color: #2472c8; }
+.tm-terminal-bg-magenta { background-color: #bc3fbc; }
+.tm-terminal-bg-cyan { background-color: #11a8cd; }
+.tm-terminal-bg-white { background-color: #e5e5e5; }
+
+/* ANSI Text Styles */
+.tm-terminal-bold { font-weight: bold; }
+.tm-terminal-dim { opacity: 0.7; }
+.tm-terminal-italic { font-style: italic; }
+.tm-terminal-underline { text-decoration: underline; }
+.tm-terminal-blink { animation: tm-terminal-blink 1s infinite; }
+.tm-terminal-reverse { background-color: #cccccc; color: #1e1e1e; }
+.tm-terminal-hidden { display: none; }
+.tm-terminal-strikethrough { text-decoration: line-through; }
+
+@keyframes tm-terminal-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Terminal Line Numbers */
+.tm-terminal-line {
+  display: flex;
+  gap: var(--tm-gap-sm);
+  padding: 2px 0;
+}
+
+.tm-terminal-line-num {
+  width: 30px;
+  text-align: right;
+  color: #858585;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.tm-terminal-line-content {
+  flex: 1;
+}
+
+/* Terminal Search/Filter */
+.tm-terminal-search {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-sm);
+  padding: var(--tm-gap-sm) var(--tm-gap-md);
+  background: #2d2d2d;
+  border-bottom: 1px solid #333;
+}
+
+.tm-terminal-search-input {
+  flex: 1;
+  padding: var(--tm-gap-xs) var(--tm-gap-sm);
+  background: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: var(--tm-radius-sm);
+  color: #cccccc;
+  font-size: var(--tm-text-xs);
+  font-family: inherit;
+}
+
+.tm-terminal-search-input:focus {
+  outline: none;
+  border-color: #3794ff;
+}
+
+.tm-terminal-search-count {
+  font-size: var(--tm-text-xs);
+  color: #888;
+}
+
+/* Terminal Status Bar */
+.tm-terminal-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--tm-gap-xs) var(--tm-gap-md);
+  background: #2d2d2d;
+  border-top: 1px solid #333;
+  font-size: var(--tm-text-xs);
+  color: #888;
+}
+
+.tm-terminal-status-left {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-md);
+}
+
+.tm-terminal-status-right {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-md);
+}
+
+.tm-terminal-status-item {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-xs);
+}
+
+/* Terminal Scrollbar */
+.tm-terminal-content::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.tm-terminal-content::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+.tm-terminal-content::-webkit-scrollbar-thumb {
+  background: #424242;
+  border-radius: var(--tm-radius-sm);
+}
+
+.tm-terminal-content::-webkit-scrollbar-thumb:hover {
+  background: #4f4f4f;
+}
+
+/* Terminal Command Input */
+.tm-terminal-input-line {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-sm);
+  padding: var(--tm-gap-sm) 0;
+  border-top: 1px solid #333;
+  margin-top: var(--tm-gap-sm);
+}
+
+.tm-terminal-prompt {
+  color: #4ec9b0;
+  font-weight: bold;
+}
+
+.tm-terminal-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #cccccc;
+  font-size: var(--tm-text-xs);
+  font-family: inherit;
+  outline: none;
+}
+
+/* Terminal Progress Bar */
+.tm-terminal-progress {
+  height: 2px;
+  background: #3c3c3c;
+  overflow: hidden;
+  margin: var(--tm-gap-xs) 0;
+}
+
+.tm-terminal-progress-bar {
+  height: 100%;
+  background: #3794ff;
+  transition: width var(--tm-transition-base);
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .tm-terminal-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--tm-gap-xs);
+  }
+  
+  .tm-terminal-actions {
+    align-self: flex-end;
+  }
+  
+  .tm-terminal-status {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--tm-gap-xs);
+  }
+}

@@ -2518,7 +2518,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private getHtml(webview: vscode.Webview): string {
+   private getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
     const uri = (f: string) => webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', f));
     const csp = [
@@ -2537,6 +2537,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <link href="${uri('vendor/highlight.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('vendor/diff2html.min.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/tokens.css')}" rel="stylesheet" nonce="${nonce}" />
+  <link href="${uri('styles/ai-elements-tokens.css')}" rel="stylesheet" nonce="${nonce}" />
+  <link href="${uri('styles/components/plan.css')}" rel="stylesheet" nonce="${nonce}" />
+  <link href="${uri('styles/components/queue.css')}" rel="stylesheet" nonce="${nonce}" />
+  <link href="${uri('styles/components/checkpoint.css')}" rel="stylesheet" nonce="${nonce}" />
+  <link href="${uri('styles/components/tool-card.css')}" rel="stylesheet" nonce="${nonce}" />
+  <link href="${uri('styles/components/chain-of-thought.css')}" rel="stylesheet" nonce="${nonce}" />
+  <link href="${uri('styles/components/reasoning.css')}" rel="stylesheet" nonce="${nonce}" />
+  <link href="${uri('styles/components/terminal.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('main.css')}" rel="stylesheet" nonce="${nonce}" />
   <title>${PRODUCT_NAME}</title>
 </head>

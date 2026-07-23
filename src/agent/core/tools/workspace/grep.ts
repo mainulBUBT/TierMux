@@ -5,6 +5,7 @@ import { spawn } from 'child_process';
 import { rgPath } from '@vscode/ripgrep';
 import { tool } from 'ai';
 import { z } from 'zod';
+import { capToolOutput } from '../capOutput';
 
 const MAX_OUTPUT = 20 * 1024;
 const TIMEOUT_MS = 15_000;
@@ -42,7 +43,7 @@ export function createGrepTool() {
           clearTimeout(timer);
           if (code === 1 && !out) { resolve('(no matches)'); return; }
           if (code !== 0 && code !== 1) { reject(new Error(err || `ripgrep exited with code ${code}`)); return; }
-          resolve(out.trim() || '(no matches)');
+          resolve(capToolOutput(out.trim() || '(no matches)', MAX_OUTPUT, 'Add a "path" or "glob" filter, or a more specific pattern, to narrow results.'));
         });
       });
     },

@@ -17,6 +17,7 @@
 import type { ToolSet } from 'ai';
 import type { AgentOpts } from '../../agent';
 import type { McpManager } from '../../../mcp/mcpManager';
+import type { Router } from '../../../router/router';
 import { MUTATING_TOOLS } from '../policies/permission';
 import { createReadTool } from './filesystem/read';
 import { createWriteFileTool } from './filesystem/write';
@@ -29,8 +30,9 @@ import { createGrepTool } from './workspace/grep';
 import { createTodoWriteTool } from './ui/todo';
 import { createQuestionTool } from './ui/question';
 import { createMcpTools } from './mcp/mcp';
+import { createExploreTool } from './explore';
 
-export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined): ToolSet {
+export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, router: Router): ToolSet {
   // Ask mode: no tools at all, not even read-only ones. Two reasons, not one:
   // 1. Router.route()'s `wantsStream` gate (router.ts) only streams when `tools` is empty —
   //    with Ask mode carrying tools like agent/plan did, it always took the buffered path,
@@ -50,6 +52,7 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined): Too
     listDir: createListDirTool(),
     glob: createGlobTool(),
     grep: createGrepTool(),
+    explore: createExploreTool(router, opts.abortSignal),
     todowrite: createTodoWriteTool(opts.onTodos),
     question: createQuestionTool(opts.onAskUser),
     ...createMcpTools(mcp),

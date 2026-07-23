@@ -92,16 +92,45 @@ export function renderMarkdown(md: string): HTMLElement {
   return pre;
 }
 
-// Give every remaining fenced code block (anything diff2html didn't already replace)
-// a per-block copy button, wrapped so it can be absolutely positioned in the corner.
+// Pull a human-readable language name off a fenced block's <code> element. marked emits
+// `language-xxx`; highlight.js may add its own `hljs` + detected-language class. Returns '' when
+// the fence had no language (a bare ``` block) so the header can fall back to a neutral label.
+function codeLangOf(pre: HTMLElement): string {
+  const code = pre.querySelector('code');
+  const cls = code?.className || '';
+  const m = /(?:^|\s)language-([\w+#.-]+)/i.exec(cls);
+  return (m?.[1] || '').toLowerCase();
+}
+
+const LANG_LABEL: Record<string, string> = {
+  ts: 'TypeScript', typescript: 'TypeScript', tsx: 'TSX',
+  js: 'JavaScript', javascript: 'JavaScript', jsx: 'JSX',
+  py: 'Python', python: 'Python', rb: 'Ruby', php: 'PHP', go: 'Go', rs: 'Rust',
+  sh: 'Shell', bash: 'Bash', zsh: 'Shell', json: 'JSON', yaml: 'YAML', yml: 'YAML',
+  html: 'HTML', css: 'CSS', scss: 'SCSS', sql: 'SQL', md: 'Markdown', diff: 'Diff',
+  java: 'Java', c: 'C', cpp: 'C++', cs: 'C#', kt: 'Kotlin', swift: 'Swift',
+};
+
+// Give every remaining fenced code block (anything diff2html didn't already replace) an AI-SDK-
+// Elements-style header bar: a language label on the left and a copy button on the right, above
+// the code. Wrapped so the header + pre read as one rounded card.
 function addCodeCopyButtons(div: HTMLElement): void {
   div.querySelectorAll('pre').forEach((pre) => {
     if (pre.parentElement?.classList.contains('code-block-wrap')) return;
     const code = pre.textContent || '';
+    const lang = codeLangOf(pre);
+
     const wrap = document.createElement('div');
     wrap.className = 'code-block-wrap';
     pre.replaceWith(wrap);
-    wrap.appendChild(pre);
+
+    const head = document.createElement('div');
+    head.className = 'code-block-head';
+    const label = document.createElement('span');
+    label.className = 'code-lang';
+    label.textContent = lang ? (LANG_LABEL[lang] || lang) : 'Code';
+    head.appendChild(label);
+
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'code-copy-btn';
@@ -113,6 +142,9 @@ function addCodeCopyButtons(div: HTMLElement): void {
       setTimeout(() => btn.classList.remove('ok'), 1000);
       showToast('Copied', btn);
     });
-    wrap.appendChild(btn);
+    head.appendChild(btn);
+
+    wrap.appendChild(head);
+    wrap.appendChild(pre);
   });
 }

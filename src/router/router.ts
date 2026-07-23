@@ -646,7 +646,10 @@ export class Router {
     const toolsTokens = sentTools ? estimateTokens(JSON.stringify(opts.tools)) : 0;
 
     const triedModels = new Map<string, number>();
-    const MAX_RETRIES = 3;
+    // One retry, not three: a rate-limited free model rarely recovers within a single turn's
+    // patience, so a second wait+retry is usually just dead latency. After one attempt, move on
+    // (fail over in Auto, or surface the error for a pinned model).
+    const MAX_RETRIES = 1;
 
     let cands = this.candidates(opts);
     const forced = !!(opts.model && opts.model !== 'auto');

@@ -1,0 +1,264 @@
+/* AI Elements-inspired Plan Component
+ * 
+ * Collapsible plan sections with task management
+ * Following AI Elements Plan component design patterns
+ */
+
+/* Plan Container */
+.tm-plan {
+  background: var(--tm-card-surface);
+  border: 1px solid var(--tm-card-border);
+  border-radius: var(--tm-radius-lg);
+  margin: var(--tm-gap-lg) 0;
+  overflow: hidden;
+  transition: border-color var(--tm-transition-base);
+}
+
+.tm-plan:hover {
+  border-color: var(--tm-border-focus);
+}
+
+/* Plan Header */
+.tm-plan-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--tm-gap-md) var(--tm-gap-lg);
+  background: var(--tm-surface-alt);
+  border-bottom: 1px solid var(--tm-card-border);
+  cursor: pointer;
+  transition: background var(--tm-transition-fast);
+}
+
+.tm-plan-header:hover {
+  background: var(--tm-hover);
+}
+
+.tm-plan-title {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-md);
+  font-weight: 600;
+  font-size: var(--tm-text-base);
+  color: var(--tm-fg);
+}
+
+.tm-plan-title-icon {
+  color: var(--tm-accent);
+  transition: transform var(--tm-transition-base);
+}
+
+.tm-plan[open] .tm-plan-title-icon {
+  transform: rotate(90deg);
+}
+
+.tm-plan-stats {
+  display: flex;
+  gap: var(--tm-gap-lg);
+  font-size: var(--tm-text-sm);
+  color: var(--tm-fg-muted);
+}
+
+.tm-plan-stat {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-xs);
+}
+
+.tm-plan-stat-value {
+  font-weight: 600;
+  color: var(--tm-fg);
+}
+
+/* Plan Sections */
+.tm-plan-sections {
+  padding: var(--tm-gap-md);
+}
+
+.tm-plan-section {
+  margin-bottom: var(--tm-gap-md);
+  border: 1px solid var(--tm-card-border);
+  border-radius: var(--tm-radius-md);
+  overflow: hidden;
+}
+
+.tm-plan-section:last-child {
+  margin-bottom: 0;
+}
+
+/* Plan Section Header */
+.tm-plan-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--tm-gap-sm) var(--tm-gap-md);
+  background: var(--tm-surface-panel);
+  cursor: pointer;
+  transition: background var(--tm-transition-fast);
+}
+
+.tm-plan-section-header:hover {
+  background: var(--tm-hover);
+}
+
+.tm-plan-section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-sm);
+  font-size: var(--tm-text-sm);
+  font-weight: 500;
+  color: var(--tm-fg);
+}
+
+.tm-plan-section-count {
+  background: var(--tm-badge-bg);
+  color: var(--tm-fg-badge);
+  padding: 1px 6px;
+  border-radius: var(--tm-radius-full);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+}
+
+/* Plan Tasks */
+.tm-plan-tasks {
+  padding: var(--tm-gap-sm);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.tm-plan-task {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--tm-gap-sm);
+  padding: var(--tm-gap-sm);
+  border-radius: var(--tm-radius-sm);
+  transition: background var(--tm-transition-fast);
+  cursor: pointer;
+}
+
+.tm-plan-task:hover {
+  background: var(--tm-hover);
+}
+
+/* Task Checkbox */
+.tm-plan-task-checkbox {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--tm-border);
+  border-radius: var(--tm-radius-sm);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--tm-transition-fast);
+}
+
+.tm-plan-task-checkbox.checked {
+  background: var(--tm-status-done);
+  border-color: var(--tm-status-done);
+}
+
+.tm-plan-task-checkbox.checked::after {
+  content: '✓';
+  color: white;
+  font-size: 10px;
+  font-weight: bold;
+}
+
+/* Task Content */
+.tm-plan-task-content {
+  flex: 1;
+  font-size: var(--tm-text-sm);
+  color: var(--tm-fg);
+  line-height: 1.4;
+}
+
+.tm-plan-task.completed .tm-plan-task-content {
+  text-decoration: line-through;
+  color: var(--tm-fg-muted);
+}
+
+.tm-plan-task.pending .tm-plan-task-checkbox {
+  border-color: var(--tm-status-pending);
+}
+
+.tm-plan-task.error .tm-plan-task-checkbox {
+  border-color: var(--tm-status-error);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* Plan Actions */
+.tm-plan-actions {
+  display: flex;
+  gap: var(--tm-gap-sm);
+  padding: var(--tm-gap-md);
+  border-top: 1px solid var(--tm-card-border);
+  background: var(--tm-surface-alt);
+}
+
+.tm-plan-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-xs);
+  padding: var(--tm-gap-sm) var(--tm-gap-md);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-surface-input);
+  color: var(--tm-fg);
+  font-size: var(--tm-text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--tm-transition-fast);
+}
+
+.tm-plan-btn:hover {
+  background: var(--tm-hover);
+  border-color: var(--tm-border-focus);
+}
+
+.tm-plan-btn.primary {
+  background: var(--tm-accent);
+  color: var(--tm-accent-fg);
+  border-color: var(--tm-accent);
+}
+
+.tm-plan-btn.primary:hover {
+  opacity: 0.9;
+}
+
+/* Plan Progress */
+.tm-plan-progress {
+  height: 3px;
+  background: var(--tm-surface-panel);
+  border-radius: var(--tm-radius-full);
+  overflow: hidden;
+  margin: var(--tm-gap-md) 0;
+}
+
+.tm-plan-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--tm-status-done), var(--tm-accent));
+  transition: width var(--tm-transition-slow);
+  border-radius: var(--tm-radius-full);
+}
+
+/* Animations */
+@keyframes tm-plan-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.tm-plan-task.running .tm-plan-task-checkbox {
+  animation: tm-plan-pulse 2s infinite;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .tm-plan-stats {
+    display: none;
+  }
+  
+  .tm-plan-actions {
+    flex-direction: column;
+  }
+}

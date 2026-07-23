@@ -1,0 +1,283 @@
+/* AI Elements-inspired Queue/Task Component
+ * 
+ * Task queue management with pending/completed sections
+ * Following AI Elements Queue component design patterns
+ */
+
+/* Queue Container */
+.tm-queue {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-gap-md);
+  background: var(--tm-card-surface);
+  border: 1px solid var(--tm-card-border);
+  border-radius: var(--tm-radius-lg);
+  padding: var(--tm-gap-md);
+  margin: var(--tm-gap-lg) 0;
+}
+
+/* Queue Header */
+.tm-queue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--tm-gap-sm) 0;
+  border-bottom: 1px solid var(--tm-card-border);
+  margin-bottom: var(--tm-gap-sm);
+}
+
+.tm-queue-title {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-sm);
+  font-weight: 600;
+  font-size: var(--tm-text-base);
+  color: var(--tm-fg);
+}
+
+.tm-queue-count {
+  background: var(--tm-badge-bg);
+  color: var(--tm-fg-badge);
+  padding: 2px 8px;
+  border-radius: var(--tm-radius-full);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+}
+
+.tm-queue-actions {
+  display: flex;
+  gap: var(--tm-gap-sm);
+}
+
+/* Queue Sections */
+.tm-queue-section {
+  margin-bottom: var(--tm-gap-md);
+}
+
+.tm-queue-section:last-child {
+  margin-bottom: 0;
+}
+
+.tm-queue-section-header {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-sm);
+  padding: var(--tm-gap-sm) var(--tm-gap-md);
+  background: var(--tm-surface-panel);
+  border-radius: var(--tm-radius-md);
+  margin-bottom: var(--tm-gap-sm);
+  font-size: var(--tm-text-sm);
+  font-weight: 500;
+  color: var(--tm-fg-muted);
+}
+
+.tm-queue-section-header-icon {
+  color: var(--tm-status-pending);
+}
+
+.tm-queue-section-header.completed .tm-queue-section-header-icon {
+  color: var(--tm-status-done);
+}
+
+/* Task Items */
+.tm-queue-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-gap-sm);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.tm-queue-task {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-sm);
+  padding: var(--tm-gap-sm) var(--tm-gap-md);
+  background: var(--tm-surface-input);
+  border: 1px solid var(--tm-card-border);
+  border-radius: var(--tm-radius-md);
+  transition: all var(--tm-transition-fast);
+}
+
+.tm-queue-task:hover {
+  background: var(--tm-hover);
+  border-color: var(--tm-border-focus);
+}
+
+.tm-queue-task.running {
+  border-color: var(--tm-status-running);
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.tm-queue-task.completed {
+  border-color: var(--tm-status-done);
+  opacity: 0.7;
+}
+
+.tm-queue-task.error {
+  border-color: var(--tm-status-error);
+  background: rgba(239, 68, 68, 0.05);
+}
+
+/* Task Status Indicator */
+.tm-queue-task-status {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.tm-queue-task-status.pending {
+  color: var(--tm-status-pending);
+}
+
+.tm-queue-task-status.running {
+  color: var(--tm-status-running);
+  animation: tm-queue-spin 1s linear infinite;
+}
+
+.tm-queue-task-status.completed {
+  color: var(--tm-status-done);
+}
+
+.tm-queue-task-status.error {
+  color: var(--tm-status-error);
+}
+
+/* Task Content */
+.tm-queue-task-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.tm-queue-task-title {
+  font-size: var(--tm-text-sm);
+  font-weight: 500;
+  color: var(--tm-fg);
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tm-queue-task-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-sm);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-fg-muted);
+}
+
+.tm-queue-task-time {
+  font-family: var(--tm-font-code);
+}
+
+/* Task Progress */
+.tm-queue-task-progress {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.tm-queue-task-progress-bar {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--tm-radius-full);
+  border: 2px solid var(--tm-card-border);
+  position: relative;
+}
+
+.tm-queue-task-progress-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--tm-radius-full);
+  border: 2px solid transparent;
+  border-top-color: var(--tm-status-running);
+  animation: tm-queue-spin 1s linear infinite;
+}
+
+/* Task Actions */
+.tm-queue-task-actions {
+  display: flex;
+  gap: var(--tm-gap-xs);
+  opacity: 0;
+  transition: opacity var(--tm-transition-fast);
+}
+
+.tm-queue-task:hover .tm-queue-task-actions {
+  opacity: 1;
+}
+
+.tm-queue-task-btn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--tm-fg-muted);
+  border-radius: var(--tm-radius-sm);
+  cursor: pointer;
+  transition: all var(--tm-transition-fast);
+}
+
+.tm-queue-task-btn:hover {
+  background: var(--tm-hover);
+  color: var(--tm-fg);
+}
+
+/* Empty State */
+.tm-queue-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--tm-gap-2xl);
+  text-align: center;
+  color: var(--tm-fg-muted);
+  font-size: var(--tm-text-sm);
+}
+
+.tm-queue-empty-icon {
+  font-size: 24px;
+  margin-bottom: var(--tm-gap-sm);
+  opacity: 0.5;
+}
+
+/* Animations */
+@keyframes tm-queue-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes tm-queue-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.tm-queue-task.running .tm-queue-task-status {
+  animation: tm-queue-pulse 1.5s infinite;
+}
+
+/* Scrollbar styling */
+.tm-queue-tasks::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tm-queue-tasks::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tm-queue-tasks::-webkit-scrollbar-thumb {
+  background: var(--tm-border);
+  border-radius: var(--tm-radius-full);
+}
+
+.tm-queue-tasks::-webkit-scrollbar-thumb:hover {
+  background: var(--tm-fg-muted);
+}

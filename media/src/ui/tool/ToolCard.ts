@@ -4,6 +4,8 @@
  * "already partially separated," now built on the ui/primitives/Collapse factory for
  * its two <details><summary>…</summary>…</details> blocks instead of hand-rolling that
  * structure twice. Output markup/classes are unchanged from before this move.
+ * 
+ * Enhanced with AI Elements design patterns for better UX and visual hierarchy.
  */
 
 import { renderMarkdown } from '../../markdown';
@@ -13,29 +15,59 @@ import { createCollapse } from '../primitives/Collapse';
 // ========== Constants ==========
 
 const STATE_ICON = { running: null, done: '✓', error: '✗' } as const;
+const STATE_LABEL = { 
+  running: 'Running', 
+  done: 'Completed', 
+  error: 'Error',
+  pending: 'Pending'
+} as const;
 type StateIcon = typeof STATE_ICON;
+type StateLabel = typeof STATE_LABEL;
 
 // ========== Structure ==========
 
-/** The `.tool-head` row: icon + title + hint + state indicator. No "footer" section
- *  exists in the tool-card design (unlike Card's title/body/footer) — the collapsible
- *  output block below is its own distinct piece, handled by createToolBody(). */
-function createToolHeader(icon: string, title: string, hint: string, state: 'running' | 'done' | 'error'): HTMLElement {
+/** The `.tm-tool-card-header` row: icon + title + hint + state indicator + actions.
+ *  Enhanced with AI Elements patterns for better visual hierarchy and UX. */
+function createToolHeader(icon: string, title: string, hint: string, state: 'running' | 'done' | 'error' | 'pending', onRetry?: () => void, onCancel?: () => void): HTMLElement {
   const stateIcon = STATE_ICON[state];
-  return el('div', { class: 'tool-head' },
-    el('span', { class: 'tool-ic' }, icon),
-    el('span', { class: 'tool-title' }, title),
-    el('span', { class: 'tool-hint' }, hint || ''),
-    el('span', { class: 'state ' + state }, stateIcon ?? ''),
+  const stateLabel = STATE_LABEL[state];
+  
+  return el('div', { class: 'tm-tool-card-header' },
+    el('div', { class: 'tm-tool-card-info' },
+      el('span', { class: 'tm-tool-card-icon' }, icon),
+      el('span', { class: 'tm-tool-card-title' }, title),
+      hint ? el('span', { class: 'tm-tool-card-hint' }, hint) : null
+    ),
+    el('div', { class: 'tm-tool-card-status' },
+      el('div', { class: `tm-tool-card-state ${state}` }, stateIcon || ''),
+      el('span', { class: 'tm-tool-card-state-label' }, stateLabel)
+    ),
+    el('div', { class: 'tm-tool-card-actions' },
+      state === 'error' && onRetry ? el('button', { 
+        class: 'tm-tool-card-btn',
+        title: 'Retry',
+        onClick: onRetry
+      }, '↻') : null,
+      state === 'running' && onCancel ? el('button', { 
+        class: 'tm-tool-card-btn',
+        title: 'Cancel',
+        onClick: onCancel
+      }, '✕') : null
+    )
   );
 }
 
-/** The collapsible `.tool-more` output/diff block. Returns both the <details> element
+/** The collapsible `.tm-tool-card-body` output/diff block. Returns both the <details> element
  *  (to append to the card) and its inner <pre> (for the diff/output content the caller
- *  fills in afterward — the exact content depends on the tool, decided by buildToolCard). */
-function createToolBody(): { el: HTMLDetailsElement; pre: HTMLPreElement } {
+ *  fills in afterward — the exact content depends on the tool, decided by buildToolCard).
+ *  Enhanced with AI Elements patterns for better UX. */
+function createToolBody(): { el: HTMLDetailsElement; pre: HTMLPreElement; } {
   const pre = el('pre');
-  const more = createCollapse({ className: 'tool-more hidden', summary: 'output', body: pre });
+  const more = createCollapse({ 
+    className: 'tm-tool-card-body hidden', 
+    summary: 'View output',
+    body: pre 
+  });
   return { el: more, pre };
 }
 
@@ -44,17 +76,49 @@ function createToolBody(): { el: HTMLDetailsElement; pre: HTMLPreElement } {
 /**
  * Build a reasoning/thinking block for display in the tool flow.
  * Used for both live "Thinking" blocks and static "Thought" cards.
+ * Enhanced with AI Elements Reasoning component patterns.
  */
-export function buildReasoningBlock(text: string, tc?: string): HTMLElement {
-  const block = el('div', { class: 'think-block', dataset: { live: '1', ...(tc ? { tc } : {}) } });
+export function buildReasoningBlock(text: string, tc?: string, isStreaming?: boolean): HTMLElement {
+  const block = el('div', { 
+    class: `tm-reasoning ${isStreaming ? 'streaming' : ''}`, 
+    dataset: { live: isStreaming ? '1' : '0', ...(tc ? { tc } : {}) } 
+  });
 
-  // A DocumentFragment, not a wrapping element — <summary>'s CSS flex-aligns these two
-  // spans as direct children/siblings; an extra wrapper would break that layout.
-  const summary = document.createDocumentFragment();
-  summary.append(el('span', { class: 'think-ic' }, '◌'), el('span', { class: 'think-cap' }, 'Thinking'));
-  const body = el('div', { class: 'think-body' }, renderMarkdown(text || ''));
+  // AI Elements-style header with icon and streaming indicator
+  const header = el('div', { class: 'tm-reasoning-header' },
+    el('div', { class: 'tm-reasoning-title' },
+      el('span', { class: 'tm-reasoning-icon' }, isStreaming ? '◌' : '◉'),
+      isStreaming ? 'Thinking' : 'Thought'
+    ),
+    isStreaming ? el('div', { class: 'tm-reasoning-streaming' },
+      el('span', { class: 'tm-reasoning-streaming-dots' },
+        el('span'),
+        el('span'),
+        el('span')
+      ),
+      'Thinking'
+    ) : el('div', { class: 'tm-reasoning-duration' }, 'Completed')
+  );
+  
+  block.appendChild(header);
 
-  block.appendChild(createCollapse({ summary, body }));
+  // Collapsible content area
+  const content = el('div', { class: 'tm-reasoning-content' });
+  const body = el('div', { class: 'tm-reasoning-body tm-reasoning-text' }, renderMarkdown(text || ''));
+  
+  content.appendChild(body);
+  block.appendChild(content);
+
+  // Add click handler for toggling
+  header.addEventListener('click', () => {
+    block.classList.toggle('open');
+  });
+
+  // Auto-expand when streaming
+  if (isStreaming) {
+    block.classList.add('open');
+  }
+
   return block;
 }
 
@@ -62,25 +126,25 @@ export function buildReasoningBlock(text: string, tc?: string): HTMLElement {
  * Build a tool card from a step object.
  * Handles both reasoning blocks (delegates to buildReasoningBlock) and regular tool calls.
  * Requires currentMode to determine expansion behavior.
+ * Enhanced with AI Elements Tool component patterns.
  */
-export function buildToolCard(step: ToolStep): HTMLElement {
+export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: () => void): HTMLElement {
   // Reasoning blocks are handled separately
   if (step.name === 'reasoning') {
-    const block = buildReasoningBlock(step.detail || '', step.toolCallId);
-    // Static re-render: reasoning is done, show as collapsed "Thought"
-    block.dataset.live = '0';
-    const cap = block.querySelector('.think-cap');
-    if (cap) cap.textContent = 'Thought';
-    const ic = block.querySelector('.think-ic');
-    if (ic) ic.textContent = '◉';
-    return block;
+    const isStreaming = step.state === 'running';
+    return buildReasoningBlock(step.detail || '', step.toolCallId, isStreaming);
   }
 
   const state = step.state || 'done';
   const { icon, title, hint } = toolLabel(step.name, step.args, step.detail);
 
-  const card = el('div', { class: 'tool-card state-' + state, dataset: step.toolCallId ? { tc: step.toolCallId } : undefined });
-  card.appendChild(createToolHeader(icon, title, hint || '', state));
+  const card = el('div', { 
+    class: `tm-tool-card ${state}`, 
+    dataset: step.toolCallId ? { tc: step.toolCallId } : undefined 
+  });
+  
+  // AI Elements-style header with actions
+  card.appendChild(createToolHeader(icon, title, hint || '', state, onRetry, onCancel));
 
   const { el: more, pre } = createToolBody();
   card.appendChild(more);
@@ -90,7 +154,7 @@ export function buildToolCard(step: ToolStep): HTMLElement {
     String(step.args && typeof step.args === 'object' ? ((step.args as Record<string, unknown>).command ?? JSON.stringify(step.args)) : step.args || '')
   );
   if (isValidationStatic) {
-    card.className += ' validation';
+    card.classList.add('validation');
   }
 
   // Handle edit/operation diffs
@@ -98,8 +162,10 @@ export function buildToolCard(step: ToolStep): HTMLElement {
   const editArgsStatic = isEditStatic && step.args && typeof step.args === 'object' ? step.args as Record<string, unknown> : null;
 
   if (editArgsStatic && 'old_string' in editArgsStatic && 'new_string' in editArgsStatic) {
-    pre.className = 'diff-view';
+    pre.className = 'tm-tool-card-output diff-view';
     pre.appendChild(buildInlineDiff(String(editArgsStatic.old_string), String(editArgsStatic.new_string)));
+    more.classList.remove('hidden');
+    card.classList.add('open');
     more.open = true;
   } else {
     const argStr = (step.args && typeof step.args === 'object') ? JSON.stringify(step.args, null, 2) : String(step.args || '');
@@ -109,10 +175,28 @@ export function buildToolCard(step: ToolStep): HTMLElement {
     const body = parts.join('\n\n');
 
     if (body.trim()) {
+      pre.className = 'tm-tool-card-output';
       pre.textContent = body;
       more.classList.remove('hidden');
+      card.classList.add('open');
       more.open = true;
     }
+  }
+
+  // Add progress bar for running tools
+  if (state === 'running') {
+    const progress = el('div', { class: 'tm-tool-card-progress' },
+      el('div', { class: 'tm-tool-card-progress-bar' })
+    );
+    card.insertBefore(progress, more);
+  }
+
+  // Add click handler for header toggling
+  const header = card.querySelector('.tm-tool-card-header');
+  if (header) {
+    header.addEventListener('click', () => {
+      card.classList.toggle('open');
+    });
   }
 
   return card;

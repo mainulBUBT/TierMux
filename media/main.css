@@ -157,7 +157,7 @@ body {
    segments stack in event order. Text segments reuse .bubble typography. */
 .flow { display: flex; flex-direction: column; gap: 6px; }
 .flow > .flow-text { margin: 2px 0; }
-.flow > .tool-card, .flow > .think-block { margin: 1px 0; }
+.flow > .tool-card, .flow > .think-block, .flow > .tm-tool-card, .flow > .tm-reasoning { margin: 1px 0; }
 
 /* Collapsed work summary — wraps tool cards + think-blocks after run completes */
 .work-summary { margin: 2px 0 4px; }
@@ -171,7 +171,15 @@ body {
 .work-sum-label::before { content: '▸ '; font-size: 9px; transition: transform .15s; }
 details[open].work-summary > .work-sum-label::before { content: '▾ '; }
 details[open].work-summary > .work-sum-label { opacity: .7; }
-.work-summary > .tool-card, .work-summary > .think-block { margin: 1px 0; }
+.work-summary > .tool-card, .work-summary > .think-block, .work-summary > .tm-tool-card, .work-summary > .tm-reasoning { margin: 1px 0; }
+/* Interim "thinking out loud" text that streamed between tool calls (weak free models emit it
+   as content). Inside the collapsed timeline it's working notes, not the answer — mute it and
+   indent so it reads as a step, distinct from the clean answer below the summary. */
+.work-summary > .flow-text {
+  margin: 1px 0; padding-left: 9px;
+  font-size: 12px; opacity: .6;
+  border-left: 1px solid var(--vscode-panel-border, rgba(128,128,128,.25));
+}
 
 .work { font-size: 12px; }
 .work > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px; opacity: .75; }
@@ -228,26 +236,59 @@ details[open].work-summary > .work-sum-label { opacity: .7; }
 .agent-model { flex: 1 1 auto; min-width: 0; margin-left: 8px; opacity: .55; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-model:empty { display: none; }
 .agent-elapsed { flex: 0 0 auto; opacity: .6; font-variant-numeric: tabular-nums; font-size: 11px; }
+/* AI-SDK-Elements-style code card: header bar (lang + copy) sits directly on top of the code,
+   the two share one rounded border so they read as a single block. */
+.code-block-wrap {
+  margin: 10px 0; border-radius: 8px; overflow: hidden;
+  border: 1px solid var(--vscode-panel-border);
+}
+.code-block-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 5px 8px 5px 12px;
+  background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background, #252526));
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+.code-block-head .code-lang {
+  font-size: 11px; font-weight: 500; letter-spacing: .02em;
+  color: var(--vscode-descriptionForeground, #9aa0a6);
+  text-transform: none; user-select: none;
+}
+/* Base <pre> look (also the fallback for any unwrapped code block). */
 .bubble pre {
   background: var(--vscode-textCodeBlock-background, #1e1e1e);
   padding: 10px 12px; border-radius: 6px; overflow-x: auto;
   margin: 8px 0; line-height: 1.45;
   border: 1px solid var(--vscode-panel-border);
 }
+/* Inside the header card the wrap owns the border/radius, so the pre drops its own. */
+.code-block-wrap pre { margin: 0; border: none; border-radius: 0; }
 .bubble pre code { font-size: 12px; background: none; padding: 0; }
-.code-block-wrap { position: relative; }
-.code-block-wrap .code-copy-btn {
-  position: absolute; top: 14px; right: 10px;
+.code-block-head .code-copy-btn {
   display: flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; padding: 0; border-radius: 4px;
-  border: 1px solid var(--vscode-panel-border);
-  background: var(--vscode-editor-background, rgba(30,30,30,.8));
+  border: 1px solid transparent; background: transparent;
   color: var(--vscode-icon-foreground, #ccc);
-  cursor: pointer; opacity: 0; transition: opacity .12s ease;
+  cursor: pointer; opacity: .7; transition: opacity .12s ease, background .12s ease;
 }
-.code-block-wrap:hover .code-copy-btn { opacity: .85; }
-.code-block-wrap .code-copy-btn:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,.1)); }
-.code-block-wrap .code-copy-btn.ok { color: var(--vscode-terminal-ansiGreen, #4caf50); border-color: var(--vscode-terminal-ansiGreen, #4caf50); opacity: 1; }
+.code-block-wrap:hover .code-copy-btn { opacity: 1; }
+.code-block-head .code-copy-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,.1)); }
+.code-block-head .code-copy-btn.ok { color: var(--vscode-terminal-ansiGreen, #4caf50); opacity: 1; }
+
+/* Streaming cursor: a soft blinking block trailing the last streamed token, the AI SDK Elements
+   "Response is still writing" affordance. renderMarkdown wraps content in a <div>, so target the
+   last trailing text block *inside* it to keep the cursor inline with the final line. */
+.flow-text.streaming p:last-child::after,
+.flow-text.streaming li:last-child::after,
+.flow-text.streaming h1:last-child::after,
+.flow-text.streaming h2:last-child::after,
+.flow-text.streaming h3:last-child::after,
+.flow-text.streaming h4:last-child::after {
+  content: '▍'; display: inline-block; margin-left: 1px;
+  color: var(--vscode-editorCursor-foreground, currentColor);
+  opacity: .7; animation: stream-cursor 1s steps(1) infinite;
+  font-weight: 400; vertical-align: baseline;
+}
+@keyframes stream-cursor { 0%, 50% { opacity: .7; } 50.01%, 100% { opacity: 0; } }
 .bubble code { font-family: var(--vscode-editor-font-family, monospace); }
 /* inline code */
 .bubble :not(pre) > code {
@@ -277,35 +318,36 @@ details[open].work-summary > .work-sum-label { opacity: .7; }
 .usage-tag { font-size: 10px; opacity: .6; }
 
 /* Tool rows — slim left-accent style, no heavy box */
-.tool-card {
+/* Support both old and new class names for backward compatibility */
+.tool-card, .tm-tool-card {
   display: flex; flex-direction: column; gap: 0;
   border-left: 2px solid var(--vscode-panel-border);
   padding: 2px 0 2px 9px; font-size: 12px;
   transition: border-color .15s;
 }
-.tool-card.state-running { border-color: var(--vscode-progressBar-background, #0a84ff); background: color-mix(in srgb, var(--vscode-progressBar-background, #0a84ff) 5%, transparent); }
-.tool-card.state-done    { border-color: var(--vscode-testing-iconPassed, #57a64a); }
-.tool-card.state-error   { border-color: var(--vscode-errorForeground, #c33); }
-.tool-card.validation[data-val-result="pass"] { border-color: var(--vscode-testing-iconPassed, #57a64a); }
-.tool-card.validation[data-val-result="fail"] { border-color: var(--vscode-errorForeground, #c33); }
-.tool-head { display: flex; gap: 5px; align-items: center; min-width: 0; flex-wrap: nowrap; }
-.tool-ic { flex: 0 0 14px; font-size: 11px; opacity: .55; text-align: center; }
-.tool-title {
+.tool-card.state-running, .tm-tool-card.running { border-color: var(--vscode-progressBar-background, #0a84ff); background: color-mix(in srgb, var(--vscode-progressBar-background, #0a84ff) 5%, transparent); }
+.tool-card.state-done, .tm-tool-card.done    { border-color: var(--vscode-testing-iconPassed, #57a64a); }
+.tool-card.state-error, .tm-tool-card.error   { border-color: var(--vscode-errorForeground, #c33); }
+.tool-card.validation[data-val-result="pass"], .tm-tool-card.validation[data-val-result="pass"] { border-color: var(--vscode-testing-iconPassed, #57a64a); }
+.tool-card.validation[data-val-result="fail"], .tm-tool-card.validation[data-val-result="fail"] { border-color: var(--vscode-errorForeground, #c33); }
+.tool-head, .tm-tool-card-header { display: flex; gap: 5px; align-items: center; min-width: 0; flex-wrap: nowrap; }
+.tool-ic, .tm-tool-card-icon { flex: 0 0 14px; font-size: 11px; opacity: .55; text-align: center; }
+.tool-title, .tm-tool-card-title {
   flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 12px; opacity: .9;
 }
 .tool-title .count { opacity: .55; font-weight: 400; }
-.tool-hint { flex: 0 0 auto; font-size: 10.5px; opacity: .45; white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
-.tool-card .state {
+.tool-hint, .tm-tool-card-hint { flex: 0 0 auto; font-size: 10.5px; opacity: .45; white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.tool-card .state, .tm-tool-card-state {
   flex: 0 0 auto; font-size: 11px; line-height: 1;
 }
-.state.running {
+.state.running, .tm-tool-card-state.running {
   display: inline-block; width: 7px; height: 7px; border-radius: 50%;
   background: var(--vscode-progressBar-background, #0a84ff);
   animation: state-pulse 1.2s ease-in-out infinite;
 }
-.state.done   { color: var(--vscode-testing-iconPassed, #57a64a); }
-.state.error  { color: var(--vscode-errorForeground, #c33); }
+.state.done, .tm-tool-card-state.done   { color: var(--vscode-testing-iconPassed, #57a64a); }
+.state.error, .tm-tool-card-state.error  { color: var(--vscode-errorForeground, #c33); }
 @keyframes state-pulse { 0%,100% { opacity: .4; } 50% { opacity: 1; } }
 @keyframes fadeSlideIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 .tool-more { margin-top: 2px; }
@@ -365,31 +407,32 @@ details.reasoning summary::before { content: '▸ '; }
 details[open].reasoning summary::before { content: '▾ '; }
 
 /* Per-step thinking block — collapsible, shown before each step's tools. */
-.think-block {
+/* Support both old and new class names for backward compatibility */
+.think-block, .tm-reasoning {
   border-left: 2px solid var(--vscode-panel-border);
   padding: 0; font-size: 12px;
 }
-.think-block > details { padding: 2px 0 2px 9px; }
-.think-block > details > summary {
+.think-block > details, .tm-reasoning > .tm-reasoning-content { padding: 2px 0 2px 9px; }
+.think-block > details > summary, .tm-reasoning > .tm-reasoning-header {
   cursor: pointer; list-style: none; display: flex; gap: 6px; align-items: center;
   opacity: .6; font-size: 11px;
 }
 .think-block > details > summary::-webkit-details-marker { display: none; }
 .think-block > details > summary::before { content: '▸ '; }
 details[open].think-block > details > summary::before { content: '▾ '; }
-.think-block[data-live='1'] {
+.think-block[data-live='1'], .tm-reasoning.streaming {
   border-color: var(--vscode-progressBar-background, #0a84ff);
   background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--vscode-progressBar-background, #0a84ff) 5%, transparent) 50%, transparent 100%);
   background-size: 200% 100%;
   animation: think-shimmer 2.4s linear infinite;
 }
-.think-block[data-live='1'] > details > summary { opacity: .8; }
+.think-block[data-live='1'] > details > summary, .tm-reasoning.streaming > .tm-reasoning-header { opacity: .8; }
 @keyframes think-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-.think-ic { flex: 0 0 auto; font-size: 11px; }
-.think-cap { letter-spacing: .01em; }
-.think-body { margin-top: 4px; opacity: .75; font-style: italic; font-size: 11.5px; }
-.think-body p { margin: 2px 0; }
+.think-ic, .tm-reasoning-icon { flex: 0 0 auto; font-size: 11px; }
+.think-cap, .tm-reasoning-title { letter-spacing: .01em; }
+.think-body, .tm-reasoning-text { margin-top: 4px; opacity: .75; font-style: italic; font-size: 11.5px; }
+.think-body p, .tm-reasoning-text p { margin: 2px 0; }
 .think-body :is(pre, code) { font-style: normal; }
 
 .error { color: var(--vscode-errorForeground); }

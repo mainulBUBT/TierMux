@@ -1,0 +1,258 @@
+/* AI Elements-inspired Chain of Thought Component
+ * 
+ * Collapsible reasoning display with step-by-step visualization
+ * Following AI Elements ChainOfThought component design patterns
+ */
+
+/* Chain of Thought Container */
+.tm-chain-of-thought {
+  background: var(--tm-card-surface);
+  border: 1px solid var(--tm-card-border);
+  border-radius: var(--tm-radius-lg);
+  margin: var(--tm-gap-md) 0;
+  overflow: hidden;
+  transition: all var(--tm-transition-base);
+}
+
+.tm-chain-of-thought:hover {
+  border-color: var(--tm-border-focus);
+  box-shadow: var(--tm-shadow-sm);
+}
+
+/* Chain of Thought Header */
+.tm-chain-of-thought-header {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-sm);
+  padding: var(--tm-gap-sm) var(--tm-gap-md);
+  background: var(--tm-surface-alt);
+  border-bottom: 1px solid var(--tm-card-border);
+  cursor: pointer;
+  transition: background var(--tm-transition-fast);
+  font-size: var(--tm-text-sm);
+  font-weight: 500;
+  color: var(--tm-fg);
+}
+
+.tm-chain-of-thought-header:hover {
+  background: var(--tm-hover);
+}
+
+.tm-chain-of-thought-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--tm-radius-full);
+  color: var(--tm-status-running);
+  transition: transform var(--tm-transition-base);
+}
+
+.tm-chain-of-thought[open] .tm-chain-of-thought-icon {
+  transform: rotate(90deg);
+}
+
+.tm-chain-of-thought.streaming .tm-chain-of-thought-icon {
+  animation: tm-cot-pulse 1.5s infinite;
+}
+
+/* Chain of Thought Content */
+.tm-chain-of-thought-content {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height var(--tm-transition-slow);
+}
+
+.tm-chain-of-thought[open] .tm-chain-of-thought-content {
+  max-height: 800px;
+  overflow-y: auto;
+}
+
+.tm-chain-of-thought-body {
+  padding: var(--tm-gap-md);
+  font-size: var(--tm-text-sm);
+  line-height: 1.5;
+  color: var(--tm-fg);
+}
+
+/* Chain of Thought Steps */
+.tm-cot-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-gap-sm);
+}
+
+.tm-cot-step {
+  display: flex;
+  gap: var(--tm-gap-sm);
+  padding: var(--tm-gap-sm);
+  border-radius: var(--tm-radius-md);
+  transition: background var(--tm-transition-fast);
+}
+
+.tm-cot-step:hover {
+  background: var(--tm-surface-panel);
+}
+
+.tm-cot-step-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--tm-radius-full);
+  font-size: var(--tm-text-xs);
+}
+
+.tm-cot-step.complete .tm-cot-step-icon {
+  background: var(--tm-status-done);
+  color: white;
+}
+
+.tm-cot-step.active .tm-cot-step-icon {
+  background: var(--tm-status-running);
+  color: white;
+  animation: tm-cot-pulse 1.5s infinite;
+}
+
+.tm-cot-step.pending .tm-cot-step-icon {
+  background: var(--tm-status-pending);
+  color: white;
+}
+
+.tm-cot-step-content {
+  flex: 1;
+}
+
+.tm-cot-step-label {
+  font-weight: 500;
+  margin-bottom: 2px;
+  color: var(--tm-fg);
+}
+
+.tm-cot-step-description {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-fg-muted);
+}
+
+/* Chain of Thought Search Results */
+.tm-cot-search-results {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-gap-xs);
+  padding: var(--tm-gap-sm);
+  background: var(--tm-surface-panel);
+  border-radius: var(--tm-radius-md);
+  margin-top: var(--tm-gap-sm);
+}
+
+.tm-cot-search-result {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-gap-xs);
+  padding: 2px 8px;
+  background: var(--tm-badge-bg);
+  color: var(--tm-fg-badge);
+  border-radius: var(--tm-radius-full);
+  font-size: var(--tm-text-xs);
+  font-weight: 500;
+}
+
+/* Chain of Thought Images */
+.tm-cot-image {
+  margin: var(--tm-gap-sm) 0;
+  border-radius: var(--tm-radius-md);
+  overflow: hidden;
+  background: var(--tm-surface-code);
+}
+
+.tm-cot-image img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.tm-cot-image-caption {
+  padding: var(--tm-gap-sm);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-fg-muted);
+  text-align: center;
+  background: var(--tm-surface-panel);
+}
+
+/* Chain of Thought Progress */
+.tm-cot-progress {
+  height: 4px;
+  background: var(--tm-surface-panel);
+  border-radius: var(--tm-radius-full);
+  overflow: hidden;
+  margin: var(--tm-gap-sm) 0;
+}
+
+.tm-cot-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--tm-status-running), var(--tm-accent));
+  transition: width var(--tm-transition-base);
+  border-radius: var(--tm-radius-full);
+}
+
+.tm-cot-progress-bar.complete {
+  background: var(--tm-status-done);
+}
+
+/* Animations */
+@keyframes tm-cot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(0.95); }
+}
+
+/* Streaming indicator */
+.tm-cot-streaming-indicator {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-xs);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-fg-muted);
+  padding: var(--tm-gap-xs) 0;
+}
+
+.tm-cot-streaming-dots {
+  display: flex;
+  gap: 2px;
+}
+
+.tm-cot-streaming-dots span {
+  width: 4px;
+  height: 4px;
+  background: var(--tm-status-running);
+  border-radius: var(--tm-radius-full);
+  animation: tm-cot-dot 1.4s infinite;
+}
+
+.tm-cot-streaming-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.tm-cot-streaming-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes tm-cot-dot {
+  0%, 80%, 100% { transform: scale(0); }
+  40% { transform: scale(1); }
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .tm-cot-step {
+    flex-direction: column;
+    gap: var(--tm-gap-xs);
+  }
+  
+  .tm-cot-step-icon {
+    width: 16px;
+    height: 16px;
+  }
+}

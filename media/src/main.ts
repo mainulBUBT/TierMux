@@ -19,6 +19,14 @@ import { handleAgentStep } from './handlers/agentStep';
 import { handleToolStatus } from './handlers/toolStatus';
 import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismissed } from './handlers/watchdog';
 
+// AI Elements state constants
+const STATE_LABEL = { 
+  running: 'Running', 
+  done: 'Completed', 
+  error: 'Error',
+  pending: 'Pending'
+} as const;
+
 (function () {
   let state = { catalog: [], fallback: [], platforms: [] };
   let pendingAttachments = [];
@@ -911,20 +919,18 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
 
     // Reasoning block goes first (it preceded the work, like in live runs).
     if (hasReasoning) {
-      const det = document.createElement('details'); det.className = 'think-block';
-      det.innerHTML = `<summary>Reasoning</summary>`;
-      det.appendChild(renderMarkdown(details.reasoning));
-      flow.appendChild(det);
+      const reasoningBlock = buildReasoningBlock(details.reasoning, undefined, false);
+      reasoningBlock.classList.remove('streaming'); // Static render
+      flow.appendChild(reasoningBlock);
     }
 
     // Tool cards and text segments interleaved in recorded step order.
     // Each step is either a tool card or (for reasoning-named steps) a think-block.
     steps.forEach((step) => {
       if (step.name === 'reasoning' && step.content) {
-        const det = document.createElement('details'); det.className = 'think-block';
-        det.innerHTML = `<summary>Reasoning</summary>`;
-        det.appendChild(renderMarkdown(step.content));
-        flow.appendChild(det);
+        const reasoningBlock = buildReasoningBlock(step.content, step.toolCallId, false);
+        reasoningBlock.classList.remove('streaming'); // Static render
+        flow.appendChild(reasoningBlock);
       } else {
         flow.appendChild(buildToolCard(step));
       }
@@ -1153,18 +1159,41 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
 
     if (t.flow.children.length === 0) { t.flow.remove(); return; }
 
-    const workNodes = Array.from(t.flow.children).filter(
-      (el) => el.classList.contains('tool-card') || el.classList.contains('think-block')
-    );
-    if (!workNodes.length) return;
+    // Split the flow at the LAST tool card / reasoning block. Everything up to and including it
+    // is the "working timeline" (tools + the model's interim thinking-as-text — noise that weak
+    // free models stream as content, not a real reasoning channel). Everything AFTER it is the
+    // clean final answer. This is the Cursor/Copilot model: a collapsed step-by-step timeline
+    // with the answer beneath it — as opposed to dumping ALL streamed text below the tools,
+    // which buried the real answer under paragraphs of the model thinking out loud.
+    const children = Array.from(t.flow.children);
+    let lastWorkIdx = -1;
+    for (let i = 0; i < children.length; i++) {
+      if (children[i].classList.contains('tool-card') || children[i].classList.contains('think-block')) lastWorkIdx = i;
+    }
+    // No tools and no reasoning ran — this is a plain text answer, leave it exactly as is.
+    if (lastWorkIdx === -1) return;
 
-    const toolCount = workNodes.filter((el) => el.classList.contains('tool-card')).length;
-    const thinkCount = workNodes.filter((el) => el.classList.contains('think-block')).length;
+    // The final answer is the LAST text segment in the flow. It must ALWAYS stay visible, never be
+    // swept into the collapsed timeline — even when a tool-card or reasoning block streamed AFTER
+    // it (weak free models interleave text and reasoning, so the answer often precedes the last
+    // work node). Bug: slicing the prefix `children[0..lastWorkIdx]` blindly buried that answer
+    // inside the collapsed <details>, leaving the chat panel showing only "Worked for Ns".
+    let answerNode = null;
+    for (let i = children.length - 1; i >= 0; i--) {
+      if (children[i].classList.contains('flow-text') && children[i].textContent.trim()) { answerNode = children[i]; break; }
+    }
+
+    // The timeline is the chronological prefix through the last work node, minus the final answer.
+    const timelineNodes = children.slice(0, lastWorkIdx + 1).filter((el) => el !== answerNode);
+    // Nothing left to collapse once the answer is excluded — leave the flow as-is.
+    if (!timelineNodes.length) return;
+    const toolCount = timelineNodes.filter((el) => el.classList.contains('tool-card')).length;
+    const thinkCount = timelineNodes.filter((el) => el.classList.contains('think-block')).length;
     const elapsed = t.startedAt ? Math.round((Date.now() - t.startedAt) / 1000) : null;
     const parts = [];
     if (elapsed != null) parts.push(`Worked for ${elapsed}s`);
     if (toolCount) parts.push(`${toolCount} tool use${toolCount !== 1 ? 's' : ''}`);
-    if (thinkCount && !toolCount) parts.push(`${thinkCount} thought${thinkCount !== 1 ? 's' : ''}`);
+    if (thinkCount) parts.push(`${thinkCount} thought${thinkCount !== 1 ? 's' : ''}`);
 
     const det = document.createElement('details');
     det.className = 'work-summary';
@@ -1173,15 +1202,13 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
     sum.textContent = parts.join('  ·  ') || 'Worked';
     det.appendChild(sum);
 
-    t.flow.insertBefore(det, workNodes[0]);
-    workNodes.forEach((n) => det.appendChild(n));
-    // Keep all streamed answer text BELOW the collapsed tool summary (Claude-Code-style:
-    // tools on top, answer beneath). Without this, text segments that streamed between
-    // tool calls stay at their stream position — above some tools, below others — so the
-    // answer appears scattered through the tool feed instead of beneath it.
-    Array.from(t.flow.children)
-      .filter((el) => el.classList.contains('flow-text'))
-      .forEach((el) => t.flow.appendChild(el));
+    // Preserve chronological order inside the timeline: tools and interim text stay interleaved
+    // exactly as they streamed, so expanding the summary reads as a real step-by-step trace.
+    t.flow.insertBefore(det, timelineNodes[0]);
+    timelineNodes.forEach((n) => det.appendChild(n));
+    // Re-anchor the final answer BELOW the collapsed timeline so it's always the visible, bottom
+    // element — even if it originally streamed before the last tool/reasoning node.
+    if (answerNode) t.flow.appendChild(answerNode);
     scrollDown();
   }
 
@@ -1752,51 +1779,117 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
     }
     let card = t.tools.querySelector(`[data-tc="${msg.toolCallId}"]`);
     if (!card) {
+      // Create AI Elements-style tool card structure
       card = document.createElement('div');
-      card.className = 'tool-card';
+      card.className = 'tm-tool-card';
       card.dataset.tc = msg.toolCallId;
-      card.innerHTML = `<div class="tool-head"><span class="tool-ic"></span><span class="tool-title"></span><span class="tool-hint"></span><span class="state"></span></div><details class="tool-more hidden"><summary>output</summary><pre></pre></details>`;
+      
+      // AI Elements header structure
+      const header = document.createElement('div');
+      header.className = 'tm-tool-card-header';
+      header.innerHTML = `
+        <div class="tm-tool-card-info">
+          <span class="tm-tool-card-icon"></span>
+          <span class="tm-tool-card-title"></span>
+          <span class="tm-tool-card-hint"></span>
+        </div>
+        <div class="tm-tool-card-status">
+          <div class="tm-tool-card-state"></div>
+          <span class="tm-tool-card-state-label"></span>
+        </div>
+        <div class="tm-tool-card-actions"></div>
+      `;
+      
+      // AI Elements body structure
+      const body = document.createElement('div');
+      body.className = 'tm-tool-card-body hidden';
+      body.innerHTML = `<pre class="tm-tool-card-output"></pre>`;
+      
+      card.appendChild(header);
+      card.appendChild(body);
       t.tools.appendChild(card);
     }
+    
     const { icon, title, hint } = toolLabel(msg.name, msg.args, msg.detail);
-    card.querySelector('.tool-ic').textContent = icon;
-    card.querySelector('.tool-title').textContent = title;
-    const hintEl = card.querySelector('.tool-hint');
+    
+    // Update AI Elements header
+    card.querySelector('.tm-tool-card-icon').textContent = icon;
+    card.querySelector('.tm-tool-card-title').textContent = title;
+    const hintEl = card.querySelector('.tm-tool-card-hint');
     if (hintEl) hintEl.textContent = hint || '';
-    const st = card.querySelector('.state');
-    st.className = 'state ' + msg.state;
+    
+    // Update AI Elements state
+    const stateLabel = STATE_LABEL[msg.state] || msg.state;
+    card.querySelector('.tm-tool-card-state-label').textContent = stateLabel;
+    const stateEl = card.querySelector('.tm-tool-card-state');
+    stateEl.className = `tm-tool-card-state ${msg.state}`;
     const icon2 = STATE_ICON[msg.state];
-    if (icon2 === null) { st.textContent = ''; } // CSS handles running dot
-    else st.textContent = icon2 != null ? icon2 : msg.state;
-    // State class on card for left-border colour
+    stateEl.textContent = icon2 || '';
+    
+    // State class on card for styling
     const isValidation = msg.name === 'runCommand' && /\b(tsc|eslint|prettier|lint|typecheck|check|jest|vitest|mocha|pytest|go\s+test|cargo\s+(check|test)|npm\s+test|yarn\s+test|pnpm\s+test)\b/.test(
       String(msg.args && typeof msg.args === 'object' ? (msg.args.command ?? JSON.stringify(msg.args)) : msg.args || '')
     );
-    let cls = 'tool-card state-' + msg.state;
+    let cls = `tm-tool-card ${msg.state}`;
     if (isValidation) cls += ' validation';
     card.className = cls;
     card.dataset.tc = msg.toolCallId;
-    const more = card.querySelector('.tool-more');
-    const pre = more.querySelector('pre');
+    
+    const body = card.querySelector('.tm-tool-card-body');
+    const pre = card.querySelector('.tm-tool-card-output');
     const isEdit = msg.name === 'editFile' || msg.name === 'writeFile' || msg.name === 'createFile';
     const editArgs = isEdit && msg.args && typeof msg.args === 'object' ? msg.args : null;
+    
     if (editArgs && editArgs.old_string != null && editArgs.new_string != null) {
       // Inline diff for patch-style edits
       pre.textContent = '';
-      pre.className = 'diff-view';
+      pre.className = 'tm-tool-card-output diff-view';
       pre.appendChild(buildInlineDiff(editArgs.old_string, editArgs.new_string));
-      more.classList.remove('hidden');
-      if (msg.state === 'done') more.open = true;
+      body.classList.remove('hidden');
+      if (msg.state === 'done') {
+        body.classList.add('open');
+        card.classList.add('open');
+      }
     } else if (msg.detail) {
-      pre.className = '';
+      pre.className = 'tm-tool-card-output';
       pre.textContent = msg.detail;
-      more.classList.remove('hidden');
+      body.classList.remove('hidden');
       // Always expand — CSS max-height keeps it from taking over the screen.
       // While running, expand so partial output streams in visibly.
-      more.open = true;
+      body.classList.add('open');
+      card.classList.add('open');
     } else {
-      more.classList.add('hidden');
+      body.classList.add('hidden');
     }
+    
+    // Add progress bar for running tools
+    const existingProgress = card.querySelector('.tm-tool-card-progress');
+    if (msg.state === 'running' && !existingProgress) {
+      const progress = document.createElement('div');
+      progress.className = 'tm-tool-card-progress';
+      progress.innerHTML = '<div class="tm-tool-card-progress-bar"></div>';
+      card.insertBefore(progress, body);
+    } else if (msg.state !== 'running' && existingProgress) {
+      existingProgress.remove();
+    }
+    
+    // Toggle card class for expanded state
+    if (body.classList.contains('open')) {
+      card.classList.add('open');
+    } else {
+      card.classList.remove('open');
+    }
+    
+    // Add header click handler for toggling
+    const header = card.querySelector('.tm-tool-card-header');
+    if (header && !header.hasAttribute('data-has-handler')) {
+      header.setAttribute('data-has-handler', 'true');
+      header.addEventListener('click', () => {
+        card.classList.toggle('open');
+        body.classList.toggle('open');
+      });
+    }
+    
     // Validation result: add pass/fail attribute when done so CSS can colour it
     if (isValidation && msg.state === 'done') {
       const exitMatch = String(msg.detail || '').match(/exit\s*(?:code\s*)?(\d+)/i);
@@ -3362,22 +3455,11 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         break;
       }
       case 'failoverNotice': {
+        // Intentionally silent. Retrying and model failover are internal routing mechanics; the
+        // user asked not to see "waiting and retrying…" / "routing to another model" chatter in
+        // chat. Still tracked for the tooltip count, but nothing is rendered.
         const t = ensureTarget(msg.requestId);
-        // Collapse the cascade into one rolling line instead of a line per failure.
         t.failoverCount = (t.failoverCount || 0) + 1;
-        if (!t.failoverEl) {
-          t.failoverEl = document.createElement('div');
-          t.failoverEl.className = 'notice';
-          t.tools.appendChild(t.failoverEl);
-        }
-        // Neutral, non-alarming wording. A pinned-model rate limit is a *wait + retry of the
-        // same model*, not a switch — say so honestly instead of "routing to another model".
-        const isRetry = /rate_limited|retrying|cooldown/i.test(msg.reason || '');
-        t.failoverEl.textContent = isRetry
-          ? `⏳ Rate-limited on ${msg.from} — waiting and retrying…`
-          : '↻ Routing to the best available model…';
-        t.failoverEl.title = `${isRetry ? 'Retrying' : 'Switched models ' + t.failoverCount + '×'} · last: ${msg.from} (${msg.reason})`;
-        scrollDown();
         break;
       }
       case 'selectionRationale': {
@@ -3718,11 +3800,10 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         // Fold-up 💭 Reasoning disclosure only when no live 🧠 Thinking block already
         // captured it inline — otherwise the same reasoning would show twice. Placed at the
         // top of the flow (it preceded the work).
-        if (msg.reasoning && !t.flow.querySelector('.think-block')) {
-          const det = document.createElement('details'); det.className = 'reasoning';
-          det.innerHTML = `<summary>Reasoning</summary>`;
-          det.appendChild(renderMarkdown(msg.reasoning));
-          t.flow.insertBefore(det, t.flow.firstChild);
+        if (msg.reasoning && !t.flow.querySelector('.tm-reasoning')) {
+          const reasoningBlock = buildReasoningBlock(msg.reasoning, undefined, false);
+          reasoningBlock.classList.remove('streaming'); // Static render
+          t.flow.insertBefore(reasoningBlock, t.flow.firstChild);
         }
         t.el._copyText = msg.text;
         // Streamed turns already show their text interleaved in the flow — don't re-render

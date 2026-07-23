@@ -1,0 +1,59 @@
+/* AI Elements-inspired design tokens for VSCode Extension
+ * 
+ * Following AI Elements design system adapted for VSCode theming
+ * Layer 2: Component-specific tokens built on base VS Code theme variables
+ */
+
+:root {
+  /* AI Elements Status Colors */
+  --tm-status-running: var(--vscode-charts-blue, #3b82f6);
+  --tm-status-done: var(--vscode-testing-iconPassed, #10b981);
+  --tm-status-error: var(--vscode-errorForeground, #ef4444);
+  --tm-status-pending: var(--vscode-charts-yellow, #f59e0b);
+  --tm-status-cancelled: var(--vscode-descriptionForeground, #6b7280);
+
+  /* AI Elements Component Surfaces */
+  --tm-card-surface: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  --tm-card-hover: var(--vscode-editorHoverWidget-background, var(--vscode-editor-background));
+  --tm-card-border: var(--vscode-panel-border, rgba(127, 127, 127, 0.2));
+  
+  /* AI Elements Spacing System */
+  --tm-gap-xs: 2px;
+  --tm-gap-sm: 4px;
+  --tm-gap-md: 8px;
+  --tm-gap-lg: 12px;
+  --tm-gap-xl: 16px;
+  --tm-gap-2xl: 20px;
+  --tm-gap-3xl: 24px;
+
+  /* AI Elements Typography */
+  --tm-text-xs: 11px;
+  --tm-text-sm: 12px;
+  --tm-text-base: 13px;
+  --tm-text-lg: 14px;
+  --tm-text-xl: 16px;
+  --tm-text-2xl: 18px;
+
+  /* AI Elements Border Radius */
+  --tm-radius-sm: 4px;
+  --tm-radius-md: 6px;
+  --tm-radius-lg: 8px;
+  --tm-radius-xl: 10px;
+  --tm-radius-full: 999px;
+
+  /* AI Elements Shadows */
+  --tm-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --tm-shadow-md: 0 2px 4px rgba(0, 0, 0, 0.1);
+  --tm-shadow-lg: 0 4px 6px rgba(0, 0, 0, 0.15);
+
+  /* AI Elements Transitions */
+  --tm-transition-fast: 150ms ease;
+  --tm-transition-base: 200ms ease;
+  --tm-transition-slow: 300ms ease;
+
+  /* AI Elements Component Heights */
+  --tm-height-sm: 28px;
+  --tm-height-md: 32px;
+  --tm-height-lg: 40px;
+  --tm-height-xl: 48px;
+}

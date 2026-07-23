@@ -57,7 +57,12 @@ const AGENT_MODE_TAIL =
   + 'You can edit/write files and run commands. First check what the message actually asks: '
   + 'if it is only a question or a greeting, answer in text — do NOT edit files just because '
   + 'you can. Only modify files when the user asks you to change, fix, add, remove, or '
-  + 'implement something.';
+  + 'implement something.\n\n'
+  + 'When you need to LOCATE code or UNDERSTAND how part of the codebase works before acting '
+  + '(e.g. "where is X handled", "how does Y flow", "which files touch Z"), prefer the `explore` '
+  + 'tool over running many grep/read calls yourself: it delegates the search to a fast '
+  + 'read-only sub-agent and returns a compact findings summary (files, symbols, line numbers), '
+  + 'keeping your context small. Use direct grep/read for a single known file or a quick check.';
 
 const PLAN_MODE_TAIL =
   '\n\n## Plan mode\n'

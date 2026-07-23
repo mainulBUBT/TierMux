@@ -1,0 +1,318 @@
+/* AI Elements-inspired Enhanced Tool Card Component
+ * 
+ * Enhanced tool cards with AI Elements design patterns
+ * Building on existing tool card styles with improved UX
+ */
+
+/* Enhanced Tool Card Container */
+.tm-tool-card {
+  background: var(--tm-card-surface);
+  border: 1px solid var(--tm-card-border);
+  border-radius: var(--tm-radius-lg);
+  margin: var(--tm-gap-md) 0;
+  overflow: hidden;
+  transition: all var(--tm-transition-base);
+}
+
+.tm-tool-card:hover {
+  border-color: var(--tm-border-focus);
+  box-shadow: var(--tm-shadow-sm);
+}
+
+/* Tool Card Header */
+.tm-tool-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--tm-gap-sm) var(--tm-gap-md);
+  background: var(--tm-surface-alt);
+  border-bottom: 1px solid var(--tm-card-border);
+  cursor: pointer;
+  transition: background var(--tm-transition-fast);
+}
+
+.tm-tool-card-header:hover {
+  background: var(--tm-hover);
+}
+
+.tm-tool-card-info {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-sm);
+  flex: 1;
+  min-width: 0;
+}
+
+.tm-tool-card-icon {
+  font-size: var(--tm-text-lg);
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tm-tool-card-title {
+  font-size: var(--tm-text-sm);
+  font-weight: 600;
+  color: var(--tm-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tm-tool-card-hint {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 300px;
+}
+
+/* Tool Card Status */
+.tm-tool-card-status {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-sm);
+}
+
+.tm-tool-card-state {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--tm-radius-full);
+  font-weight: bold;
+  font-size: var(--tm-text-xs);
+  transition: all var(--tm-transition-fast);
+}
+
+/* Running State */
+.tm-tool-card.running .tm-tool-card-state {
+  color: var(--tm-status-running);
+  animation: tm-tool-spin 1s linear infinite;
+}
+
+.tm-tool-card.running .tm-tool-card-icon {
+  color: var(--tm-status-running);
+}
+
+/* Done State */
+.tm-tool-card.done .tm-tool-card-state {
+  background: var(--tm-status-done);
+  color: white;
+}
+
+.tm-tool-card.done .tm-tool-card-icon {
+  color: var(--tm-status-done);
+}
+
+/* Error State */
+.tm-tool-card.error .tm-tool-card-state {
+  background: var(--tm-status-error);
+  color: white;
+}
+
+.tm-tool-card.error .tm-tool-card-icon {
+  color: var(--tm-status-error);
+}
+
+/* Pending State */
+.tm-tool-card.pending .tm-tool-card-state {
+  background: var(--tm-status-pending);
+  color: white;
+}
+
+/* Tool Card Progress */
+.tm-tool-card-progress {
+  height: 3px;
+  background: var(--tm-surface-panel);
+  overflow: hidden;
+  display: none;
+}
+
+.tm-tool-card.running .tm-tool-card-progress {
+  display: block;
+}
+
+.tm-tool-card-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--tm-status-running), var(--tm-accent));
+  width: 0%;
+  transition: width var(--tm-transition-base);
+  animation: tm-tool-progress 2s ease-in-out infinite;
+}
+
+/* Tool Card Actions */
+.tm-tool-card-actions {
+  display: flex;
+  gap: var(--tm-gap-xs);
+  opacity: 0;
+  transition: opacity var(--tm-transition-fast);
+}
+
+.tm-tool-card:hover .tm-tool-card-actions {
+  opacity: 1;
+}
+
+.tm-tool-card-btn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--tm-fg-muted);
+  border-radius: var(--tm-radius-sm);
+  cursor: pointer;
+  transition: all var(--tm-transition-fast);
+}
+
+.tm-tool-card-btn:hover {
+  background: var(--tm-hover);
+  color: var(--tm-fg);
+}
+
+/* Tool Card Body */
+.tm-tool-card-body {
+  padding: var(--tm-gap-md);
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height var(--tm-transition-base), padding var(--tm-transition-base);
+}
+
+.tm-tool-card.open .tm-tool-card-body {
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+/* Tool Card Output */
+.tm-tool-card-output {
+  background: var(--tm-surface-code);
+  border: 1px solid var(--tm-card-border);
+  border-radius: var(--tm-radius-md);
+  padding: var(--tm-gap-sm);
+  font-family: var(--tm-font-code);
+  font-size: var(--tm-text-sm);
+  color: var(--tm-fg);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Diff View */
+.tm-tool-card-output.diff-view {
+  background: var(--tm-surface-code);
+  font-family: var(--tm-font-code);
+  font-size: var(--tm-text-sm);
+}
+
+.tm-tool-card-output .diff-del {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--tm-status-error);
+  padding: 2px 4px;
+  margin: 2px 0;
+  border-radius: var(--tm-radius-sm);
+}
+
+.tm-tool-card-output .diff-add {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--tm-status-done);
+  padding: 2px 4px;
+  margin: 2px 0;
+  border-radius: var(--tm-radius-sm);
+}
+
+/* Tool Card Meta */
+.tm-tool-card-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-md);
+  padding: var(--tm-gap-sm) var(--tm-gap-md);
+  background: var(--tm-surface-panel);
+  border-top: 1px solid var(--tm-card-border);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-fg-muted);
+}
+
+.tm-tool-card-meta-item {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-gap-xs);
+}
+
+.tm-tool-card-meta-time {
+  font-family: var(--tm-font-code);
+}
+
+/* Validation Tool Cards */
+.tm-tool-card.validation {
+  border-left: 3px solid var(--tm-status-done);
+}
+
+.tm-tool-card.validation.error {
+  border-left-color: var(--tm-status-error);
+}
+
+/* Tool Card Badges */
+.tm-tool-card-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-gap-xs);
+  padding: 2px 6px;
+  background: var(--tm-badge-bg);
+  color: var(--tm-fg-badge);
+  border-radius: var(--tm-radius-full);
+  font-size: var(--tm-text-xs);
+  font-weight: 500;
+}
+
+.tm-tool-card-badge.success {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--tm-status-done);
+}
+
+.tm-tool-card-badge.error {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--tm-status-error);
+}
+
+.tm-tool-card-badge.warning {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--tm-status-pending);
+}
+
+/* Animations */
+@keyframes tm-tool-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes tm-tool-progress {
+  0% { width: 0%; }
+  50% { width: 70%; }
+  100% { width: 100%; }
+}
+
+@keyframes tm-tool-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.tm-tool-card.running .tm-tool-card-icon {
+  animation: tm-tool-pulse 1.5s infinite;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .tm-tool-card-hint {
+    max-width: 150px;
+  }
+  
+  .tm-tool-card-actions {
+    opacity: 1;
+  }
+}
