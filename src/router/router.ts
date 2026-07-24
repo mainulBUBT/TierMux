@@ -794,6 +794,23 @@ export class Router {
             const toolCallsByIndex = new Map<number, import('../shared/types').ChatToolCall>();
             let finalUsage: import('../shared/types').TokenUsage | undefined;
             const thinkStrip = new ThinkStripper();
+            // Inline tool-call suppression: weak models (e.g. Cloudflare llama) emit a tool call as
+            // plain content text ({"type":"function",...}) when they don't speak the tools API. To
+            // avoid streaming that JSON blob into the chat bubble, hold back text that LOOKS like a
+            // tool call (starts with `{` while tools are offered) into a side buffer instead of
+            // forwarding it live. At stream end we either rescue it as a real tool call, or flush it
+            // as normal text if it turned out not to be a tool call after all.
+            const toolsOffered = !!opts.tools?.length;
+            let holdingToolText = false;
+            let heldText = '';
+            const flushHeld = () => {
+              if (heldText) {
+                if (firstChunkAt === null) firstChunkAt = Date.now();
+                chunks.push(heldText);
+                opts.onChunk!(heldText);
+                heldText = '';
+              }
+            };
             for await (const chunk of provider.streamChatCompletion(apiKey, fitted, entry.modelId, completionOpts)) {
               if (chunk.usage) finalUsage = chunk.usage;
               const delta = chunk.choices?.[0]?.delta;
@@ -801,9 +818,21 @@ export class Router {
               if (delta.content) {
                 const clean = thinkStrip.feed(delta.content);
                 if (clean) {
-                  if (firstChunkAt === null) firstChunkAt = Date.now();
-                  chunks.push(clean);
-                  opts.onChunk!(clean);
+                  if (toolsOffered && !holdingToolText && (heldText + clean).trimStart().startsWith('{')) {
+                    // First non-whitespace char is `{` while tools are offered — this could be an
+                    // inline tool call. Hold it back from the live stream until we know.
+                    holdingToolText = true;
+                  }
+                  if (holdingToolText) {
+                    heldText += clean;
+                    // If it no longer looks like a tool call (e.g. has a paragraph break that JSON
+                    // wouldn't), release the held text and stream normally from here on.
+                    if (heldText.includes('\n\n')) { flushHeld(); holdingToolText = false; }
+                  } else {
+                    if (firstChunkAt === null) firstChunkAt = Date.now();
+                    chunks.push(clean);
+                    opts.onChunk!(clean);
+                  }
                 }
               }
               // Reasoning models stream their real output in reasoning channels while `content`
@@ -834,14 +863,26 @@ export class Router {
             }
             const tail = thinkStrip.flush();
             if (tail) {
-              chunks.push(tail);
-              opts.onChunk!(tail);
+              if (holdingToolText) { heldText += tail; }
+              else { chunks.push(tail); opts.onChunk!(tail); }
+            }
+            // Stream ended. If we were holding potential-tool-call text and NO real tool_calls
+            // arrived, the held text is still pending — the rescue in routerProvider.doStream will
+            // scan `fullText` (which includes heldText via the content assembly below) and convert
+            // it to a real tool-call if it matches. We do NOT flush it to onChunk here unless real
+            // tool_calls arrived (in which case the held text was narration and is dropped).
+            if (holdingToolText && toolCallsByIndex.size > 0) {
+              heldText = ''; // real tool calls arrived — held text was narration, drop it
             }
             // Fold reasoning into the answer when the model emitted no `content` (mirrors the
             // non-streaming fold in openai-compat.normalizeChoices). Without this, a pure-reasoning
             // reply or one cut off mid-think (finish_reason: length) renders as an empty turn.
             const reasoningText = reasoningChunks.join('');
-            const fullText = chunks.join('') || reasoningText;
+            // fullText must include heldText (the inline-tool-call JSON we held back from the live
+            // stream) so the rescue in routerProvider.doStream can scan it and convert it to a real
+            // tool-call. If no rescue match, heldText is flushed as normal text by flushHeld() above
+            // only when real tool_calls arrived; otherwise it stays here for the rescue to consume.
+            const fullText = (chunks.join('') + heldText) || reasoningText;
             const toolCalls = toolCallsByIndex.size
               ? [...toolCallsByIndex.entries()].sort(([a], [b]) => a - b).map(([, tc]) => tc)
               : undefined;

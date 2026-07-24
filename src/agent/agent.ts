@@ -59,6 +59,10 @@ export interface AgentOpts {
   sessionId?: string;
 
   onChunk: (text: string) => void;
+  /** Retract the live text draft: a tentative chat reply turned out to be tool-planning narration
+   *  (a tool call arrived in the same step), so the draft bubble must be cleared — that text is
+   *  re-routed to the Chain-of-Thought block via `onReasoning`. */
+  onRetractDraft?: () => void;
   onTool: (e: ToolEvent) => void;
   onReasoning: (text: string) => void;
   onModel: (platform: string, model: string, runtimeName?: string) => void;

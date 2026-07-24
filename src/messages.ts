@@ -288,9 +288,13 @@ export type OutMessage =
   // (a new requestId, once the user answers) instead of showing on the question-asking turn.
   | { type: 'assistantMessage'; sessionId: string; requestId: string; text: string; reasoning?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean; noFooter?: boolean }
   | { type: 'assistantChunk'; sessionId: string; requestId: string; text: string }
+  // Retract the live text draft: text that streamed as a tentative chat reply turned out to be
+  // narration from a tool-planning step (a tool call just arrived in the same step). The webview
+  // clears the draft bubble; that text is re-routed to the Chain-of-Thought block via reasoning.
+  | { type: 'clearDraft'; sessionId: string; requestId: string }
   | { type: 'usageTotals'; totals: UsageTotals }
   | { type: 'checkpoint'; sessionId: string; requestId: string; id: string; files: CheckpointFile[] }
-  | { type: 'toolStatus'; sessionId: string; requestId: string; toolCallId: string; name: string; args: unknown; state: 'running' | 'done' | 'error'; detail?: string }
+  | { type: 'toolStatus'; sessionId: string; requestId: string; toolCallId: string; name: string; args: unknown; state: 'running' | 'done' | 'error'; detail?: string; durationMs?: number }
   | { type: 'changedFiles'; sessionId: string; id: string; files: CheckpointFile[] }
   | { type: 'agentStep'; sessionId: string; requestId: string; phase: 'thinking' | 'synthesizing' | 'done'; label: string }
   /** Result of fetchCustomEndpointModels: the model IDs discovered at the endpoint (or an error). */
@@ -303,6 +307,13 @@ export type OutMessage =
   // is actually rendered without needing to know which.
   | { type: 'approvalDismissed'; sessionId: string; id: string }
   | { type: 'todos'; sessionId: string; requestId: string; todos: TodoItem[]; followingPlan?: boolean }
+  /** AI Elements Plan component — the rich, sectioned progress card shown while an approved
+   *  plan executes (plan mode). Derived from the same `TodoItem[]` source as `todos`, so the
+   *  two stay in sync; the webview picks Plan vs legacy todo-list by current mode. */
+  | { type: 'planData'; sessionId: string; requestId: string; data: PlanDataPayload }
+  /** AI Elements Queue component — the live tool-execution queue (agent mode). One task per
+   *  tool call, cycling pending→running→done/error. Emitted alongside each `toolStatus`. */
+  | { type: 'queueData'; sessionId: string; requestId: string; data: QueueDataPayload }
   | { type: 'failoverNotice'; sessionId: string; requestId: string; from: string; reason: string }
   /** Watchdog — observability only. Warning/actionable are non-blocking; `hasPartialOutput`
    *  gates whether "Accept Current Output" is offered. `dismissed` means real activity resumed
@@ -330,3 +341,31 @@ export type OutMessage =
    *  `tiermux.onboardedEngine` global state) — returning users never see this. */
   | { type: 'engineStatus'; state: 'downloading' | 'starting' | 'verifying' | 'ready' | 'error'; message?: string; percent?: number }
   | { type: 'newModelsAvailable'; message: string };
+
+/** Payload for the AI Elements Plan component — mirrors `PlanData` in media/src/ui/components/Plan.ts. */
+export interface PlanDataPayload {
+  id: string;
+  title: string;
+  sections: Array<{
+    id: string;
+    title: string;
+    tasks: Array<{ id: string; title: string; completed: boolean; pending?: boolean; error?: boolean; running?: boolean }>;
+  }>;
+  createdAt: number;
+  completedTasks: number;
+  totalTasks: number;
+}
+
+/** Payload for the AI Elements Queue component — mirrors `QueueData` in media/src/ui/components/Queue.ts. */
+export interface QueueDataPayload {
+  id: string;
+  sections: Array<{
+    id: string;
+    title: string;
+    status: 'pending' | 'completed';
+    tasks: Array<{ id: string; title: string; status: 'pending' | 'running' | 'completed' | 'error'; startTime?: number; endTime?: number; progress?: number; meta?: string }>;
+  }>;
+  totalTasks: number;
+  completedTasks: number;
+  runningTasks: number;
+}

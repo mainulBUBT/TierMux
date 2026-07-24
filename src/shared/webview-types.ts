@@ -17,4 +17,6 @@ export type {
   McpServerInfo,
   CheckpointFile,
   KeyStatusInfo,
+  PlanDataPayload,
+  QueueDataPayload,
 } from '../messages';

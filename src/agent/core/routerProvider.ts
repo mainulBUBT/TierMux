@@ -8,6 +8,7 @@ import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4Genera
 import type { Router, RouteOptions } from '../../router/router';
 import type { ChatMessage, ChatToolDefinition, ReasoningEffort } from '../../shared/types';
 import { diagLog } from '../../util/diag';
+import { rescueInlineToolCalls, repairToolArguments, toolSchemaMap } from '../toolArgs';
 
 /** One scored candidate as reported to AgentOpts.onSelectionRationale — `model` is a
  *  "platform::modelId" key (matching onFailover's `from` shape), not a display name;
@@ -195,26 +196,45 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         const msg = result.response.choices?.[0]?.message;
         const hasToolCalls = !!msg?.tool_calls?.length;
 
-        if (chunkCount === 0 && msg?.content) {
+        // Rescue inline tool calls emitted as text by weak models (e.g. Cloudflare's llama-3.3
+        // emits `{"type":"function","name":"explore","parameters":{...}}` as content because it
+        // doesn't speak the tools API). Without this, the tool-call JSON would show as chat text.
+        let rescuedToolCalls: { id: string; name: string; arguments: string }[] = [];
+        if (!hasToolCalls && tools?.length) {
+          const fullText = typeof msg?.content === 'string' ? msg.content
+            : (msg?.content ? JSON.stringify(msg.content) : '');
+          const toolNames = new Set(tools.map((t) => t.function.name));
+          const rescue = rescueInlineToolCalls(fullText, toolNames);
+          if (rescue.detected) {
+            rescuedToolCalls = rescue.calls.map((c, i) => ({
+              id: `call_rescued_${i + 1}`, name: c.name, arguments: repairToolArguments(c.arguments, toolSchemaMap(tools).get(c.name)),
+            }));
+          }
+        }
+        const effectiveToolCalls = hasToolCalls
+          ? msg!.tool_calls!.map((tc) => ({ id: tc.id, name: tc.function.name, arguments: tc.function.arguments ?? '{}' }))
+          : rescuedToolCalls;
+        const hasEffectiveToolCalls = effectiveToolCalls.length > 0;
+
+        if (chunkCount === 0 && msg?.content && !hasEffectiveToolCalls) {
           if (!textStarted) { textStarted = true; streamController.enqueue({ type: 'text-start', id: textId }); }
           const fullText = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
           streamController.enqueue({ type: 'text-delta', id: textId, delta: fullText });
         }
         if (textStarted) streamController.enqueue({ type: 'text-end', id: textId });
 
-        if (hasToolCalls) {
-          for (const tc of msg!.tool_calls!) {
-            const argsStr = tc.function.arguments ?? '{}';
-            streamController.enqueue({ type: 'tool-input-start', id: tc.id, toolName: tc.function.name });
-            streamController.enqueue({ type: 'tool-input-delta', id: tc.id, delta: argsStr });
+        if (hasEffectiveToolCalls) {
+          for (const tc of effectiveToolCalls) {
+            streamController.enqueue({ type: 'tool-input-start', id: tc.id, toolName: tc.name });
+            streamController.enqueue({ type: 'tool-input-delta', id: tc.id, delta: tc.arguments });
             streamController.enqueue({ type: 'tool-input-end', id: tc.id });
-            streamController.enqueue({ type: 'tool-call', toolCallId: tc.id, toolName: tc.function.name, input: argsStr });
+            streamController.enqueue({ type: 'tool-call', toolCallId: tc.id, toolName: tc.name, input: tc.arguments });
           }
         }
 
         streamController.enqueue({
           type: 'finish',
-          finishReason: { unified: hasToolCalls ? 'tool-calls' : 'stop', raw: hasToolCalls ? 'tool_calls' : 'stop' },
+          finishReason: { unified: hasEffectiveToolCalls ? 'tool-calls' : 'stop', raw: hasEffectiveToolCalls ? 'tool_calls' : 'stop' },
           usage: { inputTokens: { total: result.response.usage?.prompt_tokens }, outputTokens: { total: result.response.usage?.completion_tokens } },
         } as unknown as LanguageModelV4StreamPart);
         streamController.close();

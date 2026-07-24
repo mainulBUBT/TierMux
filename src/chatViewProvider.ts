@@ -20,7 +20,7 @@ import type { ModelStatsStore, Vote } from './config/modelStats';
 import type { SlowModelStore } from './config/slowModel';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem, McpServerConfig } from './messages';
-import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
+import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, PlanDataPayload, QueueDataPayload, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
 import { normalizeMcpServerConfig } from './mcp/mcpClient';
 import { getNonce } from './util/nonce';
 import { diagLog } from './util/diag';
@@ -81,6 +81,61 @@ function extractToolFilePath(args: unknown): string | undefined {
   return typeof v === 'string' && v ? v : undefined;
 }
 
+/** Short human label for a tool call, used as the Queue task title (agent mode). Falls back to a
+ *  generic verb when there's no recognizable argument to name a target. */
+function toolQueueTitle(name: string, args: unknown): string {
+  const a = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
+  const path = String(a.path ?? a.file ?? a.filePath ?? a.filename ?? a.relativePath ?? '').replace(/^\.?\//, '');
+  const query = String(a.query ?? a.pattern ?? a.term ?? '').trim();
+  const cmd = String(a.command ?? a.cmd ?? '').trim().split(/\s+/).slice(0, 4).join(' ');
+  const tail = (s: string) => (s.length > 48 ? s.slice(0, 45) + '…' : s);
+  switch (name) {
+    case 'readFile': return path ? `Read ${tail(path.split('/').slice(-2).join('/'))}` : 'Read file';
+    case 'listDir': return path ? `List ${tail(path)}` : 'List directory';
+    case 'writeFile': case 'createFile': return path ? `Write ${tail(path.split('/').slice(-2).join('/'))}` : 'Write file';
+    case 'editFile': return path ? `Edit ${tail(path.split('/').slice(-2).join('/'))}` : 'Edit file';
+    case 'deleteFile': return path ? `Delete ${tail(path)}` : 'Delete file';
+    case 'grep': case 'searchWorkspace': return query ? `Search "${tail(query)}"` : 'Search workspace';
+    case 'glob': return query ? `Glob ${tail(query)}` : 'Glob files';
+    case 'runCommand': case 'bash': return cmd ? `Run ${tail(cmd)}` : 'Run command';
+    case 'webFetch': return path ? `Fetch ${tail(path)}` : 'Fetch URL';
+    case 'getDiagnostics': case 'lspCheck': return 'Check diagnostics';
+    default: return name.charAt(0).toUpperCase() + name.slice(1);
+  }
+}
+
+/** Build an AI Elements Plan payload from the agent's flat `TodoItem[]` list. The plan is a
+ *  single section (the agent's todos are flat; sections exist for richer future sources) and
+ *  mirrors the running/completed/pending state 1:1. */
+function planDataFromTodos(title: string, todos: TodoItem[]): PlanDataPayload {
+  const tasks = todos.map((t, i) => ({
+    id: `task-${i + 1}`,
+    title: t.content,
+    completed: t.status === 'completed',
+    running: t.status === 'in_progress',
+    pending: t.status === 'pending',
+  }));
+  return {
+    id: `plan-${Date.now()}`,
+    title,
+    createdAt: Date.now(),
+    sections: [{ id: 'plan-steps', title: 'Steps', tasks }],
+    totalTasks: tasks.length,
+    completedTasks: tasks.filter((t) => t.completed).length,
+  };
+}
+
+/** Fold the per-request queue task list into a Queue component payload (one "Tools" section). */
+function queueDataFromTasks(requestId: string, tasks: Session['liveQueue'] extends Map<string, infer T> ? T : never): QueueDataPayload {
+  return {
+    id: `queue-${requestId}`,
+    sections: [{ id: 'tools', title: 'Tools', status: 'completed', tasks }],
+    totalTasks: tasks.length,
+    completedTasks: tasks.filter((t) => t.status === 'completed').length,
+    runningTasks: tasks.filter((t) => t.status === 'running').length,
+  };
+}
+
 /**
  * One chat session's full state — both the persisted conversation (history/transcript/title)
  * and the never-persisted runtime (the in-flight run, approvals, checkpoints, votes). Promoting
@@ -132,6 +187,9 @@ interface Session {
   /** Tool steps accumulated per active requestId, attached to the assistant transcript entry at
    *  turn completion so a re-rendered message (e.g. after "Revert to here") keeps its step list. */
   liveSteps: Map<string, TranscriptStep[]>;
+  /** Per-active-requestId queue tasks for the AI Elements Queue component (agent mode).
+   *  One entry per tool call, cycling pending→running→done/error alongside `toolStatus`. */
+  liveQueue: Map<string, Array<{ id: string; title: string; status: 'pending' | 'running' | 'completed' | 'error'; startTime?: number; endTime?: number; meta?: string }>>;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   /** Set by the `watchdogAction` handler ('restartRequest'/'switchModel'), consumed by the send
@@ -302,6 +360,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       checkpoints: new CheckpointManager(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath),
       lastWindow: 0,
       liveSteps: new Map(),
+      liveQueue: new Map(),
       model: undefined,
       reasoningEffort: undefined,
     };
@@ -326,6 +385,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       checkpoints: new CheckpointManager(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath),
       lastWindow: 0,
       liveSteps: new Map(),
+      liveQueue: new Map(),
       createdAt: s.ts ?? Date.now(),
       updatedAt: s.ts ?? Date.now(),
       model: s.model,
@@ -1544,6 +1604,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const sentAt = Date.now();
 
     try {
+      // Pre-flight vision check: if the user attached an image/PDF, the selected model MUST be
+      // vision-capable or the AI SDK throws a raw error mid-turn ("this model does not support
+      // image input"). Catch it up front with a clear, actionable message instead.
+      const hasVisual = (m.attachmentKinds ?? m.attachments ?? []).some((k) => k === 'image' || k === 'pdf');
+      if (hasVisual && m.model && m.model !== 'auto') {
+        // Resolve the pinned model to a catalog entry to check supportsVision. The model picker
+        // value is "platform::modelId" (or just modelId for the default platform).
+        const [pf, mid] = m.model.includes('::') ? m.model.split('::') : ['', m.model];
+        const cat = this.deps.catalog.find(pf as any, mid) ?? this.deps.catalog.all().find((mm) => mm.modelId === mid);
+        if (cat && !cat.supportsVision) {
+          this.post({ type: 'error', sessionId: s.id, message: `${cat.displayName || mid} doesn't support image input. Switch to a vision-capable model (e.g. Gemini, GPT-4o, Claude) in the model picker, or remove the image attachment.` });
+          s.history.pop(); // undo the user turn we pushed above — nothing ran
+          s.transcript.pop();
+          if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle');
+          this.post({ type: 'busy', sessionId: s.id, busy: false });
+          release();
+          return;
+        }
+      }
       const cbk = this.agentCallbacks(s, m.requestId, m.mode as Mode);
       const sdkMode = m.mode as 'agent' | 'plan' | 'ask';
       const runner = sdkMode === 'plan' ? runPlanStream : sdkMode === 'ask' ? runAskStream : runAgentStream;
@@ -1875,7 +1954,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'agentStep', sessionId: s.id, requestId: m.requestId, phase: 'thinking', label: stepCount > 0 ? `▶ Executing approved plan (${stepCount} steps)` : '▶ Executing approved plan' });
 
     const seeded = planStepsToTodos(m.steps);
-    if (seeded.length) this.post({ type: 'todos', sessionId: s.id, requestId: m.requestId, todos: seeded, followingPlan: true });
+    if (seeded.length) {
+      this.post({ type: 'todos', sessionId: s.id, requestId: m.requestId, todos: seeded, followingPlan: true });
+      // Seed the AI Elements Plan card (plan mode) from the same step list; subsequent onTodos
+      // updates keep it in sync as the agent marks steps in_progress / completed.
+      this.post({ type: 'planData', sessionId: s.id, requestId: m.requestId, data: planDataFromTodos('Approved plan', seeded) });
+    }
     const before = this.deps.usage.get();
     await s.checkpoints.begin(m.requestId, 'Plan execution');
     const sentAt = Date.now();
@@ -1941,6 +2025,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private pushAssistantTurn(s: Session, requestId: string, result: AgentResult, sentAt: number, usage?: { promptTokens: number; completionTokens: number; reasoningTokens?: number; totalTokens: number }): void {
     const steps = s.liveSteps.get(requestId);
     s.liveSteps.delete(requestId);
+    s.liveQueue.delete(requestId);
     s.transcript.push({
       role: 'assistant',
       text: result.text,
@@ -2029,6 +2114,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private agentCallbacks(s: Session, requestId: string, _mode: Mode): Omit<AgentOpts, 'messages' | 'mode' | 'effort' | 'abortSignal' | 'pinnedModel' | 'taskKind'> {
     const live = (): boolean => this.isActiveRun(s, requestId);
 
+    // Reasoning stream state — ONE stable block per request, accumulated (not one block per
+    // delta). The block is born live ('running', auto-opens) and is settled to 'done' with a
+    // duration when the turn finishes (flushReasoningDone), giving the "Thought for Ns" label.
+    const reasoningId = `reason-${requestId}`;
+    let reasoningText = '';
+    let reasoningStart = 0;
+    const flushReasoningDone = () => {
+      if (!reasoningStart || !reasoningText.trim()) return;
+      const durationMs = Date.now() - reasoningStart;
+      this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: reasoningId, name: 'reasoning', args: undefined, state: 'done', detail: reasoningText, durationMs });
+      reasoningStart = 0;
+    };
+
     return {
       onModel: (platform, model, runtimeName) => {
         if (!live()) return;
@@ -2044,6 +2142,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       onTool: (e: ToolEvent) => {
         if (!live()) return;
+        flushReasoningDone(); // reasoning gave way to a tool call — settle the "Thought for Ns" block
 
         const steps = s.liveSteps.get(requestId) ?? [];
         const i = steps.findIndex((st) => st.toolCallId === e.toolCallId);
@@ -2068,24 +2167,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.postSessionList();
         }
         this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: mappedState, detail: e.detail });
+
+        // AI Elements Queue (agent mode): upsert this tool as a queue task and re-emit the
+        // whole queue so the component can reconcile running/completed/error state per tool.
+        const q = s.liveQueue.get(requestId) ?? [];
+        const qi = q.findIndex((t) => t.id === e.toolCallId);
+        const qState: 'running' | 'completed' | 'error' = mappedState === 'running' ? 'running' : mappedState === 'error' ? 'error' : 'completed';
+        const qTask = { id: e.toolCallId, title: toolQueueTitle(e.name, e.args), status: qState, startTime: qi >= 0 ? q[qi].startTime : Date.now(), endTime: qState === 'completed' || qState === 'error' ? Date.now() : undefined, meta: e.detail ? String(e.detail).split('\n')[0].slice(0, 80) : undefined };
+        if (qi >= 0) q[qi] = qTask; else q.push(qTask);
+        s.liveQueue.set(requestId, q);
+        this.post({ type: 'queueData', sessionId: s.id, requestId, data: queueDataFromTasks(requestId, q) });
       },
       onReasoning: (text) => {
         if (!live()) return;
         const t = (text || '').trim();
         if (!t) return;
-
-        const steps = s.liveSteps.get(requestId) ?? [];
-        const id = `reason-${steps.length}`;
-        steps.push({ toolCallId: id, name: 'reasoning', state: 'done', detail: t });
-        s.liveSteps.set(requestId, steps);
-        this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: id, name: 'reasoning', args: undefined, state: 'done', detail: t });
+        if (!reasoningStart) reasoningStart = Date.now();
+        reasoningText += (reasoningText ? '\n' : '') + t;
+        // Always 'running' while the reasoning stream is live; the webview auto-opens the block
+        // and shows "Thinking…". Settled to 'done' (with duration) at turn finalize below.
+        this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: reasoningId, name: 'reasoning', args: undefined, state: 'running', detail: reasoningText });
       },
       onStep: (phase, label) => { if (!live()) return; s.lastStepLabel = label; this.post({ type: 'agentStep', sessionId: s.id, requestId, phase: phase as 'thinking' | 'synthesizing' | 'done', label }); },
-      onTodos: (todos) => { if (!live()) return; s.lastTodos = todos; this.post({ type: 'todos', sessionId: s.id, requestId, todos, followingPlan: !!s.executingPlan }); },
+      onTodos: (todos) => {
+        if (!live()) return;
+        s.lastTodos = todos;
+        this.post({ type: 'todos', sessionId: s.id, requestId, todos, followingPlan: !!s.executingPlan });
+        // Keep the AI Elements Plan card in lockstep with todo progress while a plan executes.
+        if (s.executingPlan && todos.length) this.post({ type: 'planData', sessionId: s.id, requestId, data: planDataFromTodos('Approved plan', todos) });
+      },
       onChunk: (text) => {
         if (!live()) return;
+        flushReasoningDone(); // reasoning gave way to the final answer — settle the "Thought for Ns" block
         if (s.liveActivity !== 'Text change') { s.liveActivity = 'Text change'; this.postSessionList(); }
         this.post({ type: 'assistantChunk', sessionId: s.id, requestId, text });
+      },
+      onRetractDraft: () => {
+        if (!live()) return;
+        this.post({ type: 'clearDraft', sessionId: s.id, requestId });
       },
       onAskUser: async (question, options) => {
         if (!live()) return '';
@@ -2537,12 +2656,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <link href="${uri('vendor/highlight.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('vendor/diff2html.min.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/tokens.css')}" rel="stylesheet" nonce="${nonce}" />
-  <link href="${uri('styles/ai-elements-tokens.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/plan.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/queue.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/checkpoint.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/tool-card.css')}" rel="stylesheet" nonce="${nonce}" />
-  <link href="${uri('styles/components/chain-of-thought.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/reasoning.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/terminal.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('main.css')}" rel="stylesheet" nonce="${nonce}" />

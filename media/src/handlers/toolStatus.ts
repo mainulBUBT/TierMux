@@ -40,6 +40,16 @@ export interface ToolStatusContext {
 
 export function handleToolStatus(ctx: ToolStatusContext, msg: ToolStatusMessage): void {
   const t = ctx.ensureTarget(msg.requestId);
+  // Reasoning is self-displaying: the tm-reasoning block shows its own "Thinking…" / "Thought for
+  // Ns" header. Don't ALSO drive the whimsical rolling-verb status line for it — that duplicated
+  // "Thinking" across two UI regions (the CoT block AND the agent status line) and looked like the
+  // verbs leaked into the chain-of-thought. Only real tools own the status label.
+  if (msg.name === 'reasoning') {
+    const isNew = !t.flow.querySelector(`[data-tc="${msg.toolCallId}"]`);
+    ctx.upsertTool(t, msg);
+    if (isNew) t.currentText = null;
+    return;
+  }
   if (msg.state === 'running') {
     t.activeTool = msg.toolCallId;
     ctx.setStatusLabel(msg.requestId, ctx.activityFor(msg.name, msg.args), { tool: true });

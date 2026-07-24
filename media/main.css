@@ -157,9 +157,9 @@ body {
    segments stack in event order. Text segments reuse .bubble typography. */
 .flow { display: flex; flex-direction: column; gap: 6px; }
 .flow > .flow-text { margin: 2px 0; }
-.flow > .tool-card, .flow > .think-block, .flow > .tm-tool-card, .flow > .tm-reasoning { margin: 1px 0; }
+.flow > .tm-tool-card, .flow > .tm-reasoning { margin: 1px 0; }
 
-/* Collapsed work summary — wraps tool cards + think-blocks after run completes */
+/* Collapsed work summary — wraps tool cards + reasoning blocks after run completes */
 .work-summary { margin: 2px 0 4px; }
 .work-sum-label {
   list-style: none; cursor: pointer;
@@ -171,7 +171,7 @@ body {
 .work-sum-label::before { content: '▸ '; font-size: 9px; transition: transform .15s; }
 details[open].work-summary > .work-sum-label::before { content: '▾ '; }
 details[open].work-summary > .work-sum-label { opacity: .7; }
-.work-summary > .tool-card, .work-summary > .think-block, .work-summary > .tm-tool-card, .work-summary > .tm-reasoning { margin: 1px 0; }
+.work-summary > .tm-tool-card, .work-summary > .tm-reasoning { margin: 1px 0; }
 /* Interim "thinking out loud" text that streamed between tool calls (weak free models emit it
    as content). Inside the collapsed timeline it's working notes, not the answer — mute it and
    indent so it reads as a step, distinct from the clean answer below the summary. */
@@ -406,34 +406,9 @@ details.reasoning summary::-webkit-details-marker { display: none; }
 details.reasoning summary::before { content: '▸ '; }
 details[open].reasoning summary::before { content: '▾ '; }
 
-/* Per-step thinking block — collapsible, shown before each step's tools. */
-/* Support both old and new class names for backward compatibility */
-.think-block, .tm-reasoning {
-  border-left: 2px solid var(--vscode-panel-border);
-  padding: 0; font-size: 12px;
-}
-.think-block > details, .tm-reasoning > .tm-reasoning-content { padding: 2px 0 2px 9px; }
-.think-block > details > summary, .tm-reasoning > .tm-reasoning-header {
-  cursor: pointer; list-style: none; display: flex; gap: 6px; align-items: center;
-  opacity: .6; font-size: 11px;
-}
-.think-block > details > summary::-webkit-details-marker { display: none; }
-.think-block > details > summary::before { content: '▸ '; }
-details[open].think-block > details > summary::before { content: '▾ '; }
-.think-block[data-live='1'], .tm-reasoning.streaming {
-  border-color: var(--vscode-progressBar-background, #0a84ff);
-  background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--vscode-progressBar-background, #0a84ff) 5%, transparent) 50%, transparent 100%);
-  background-size: 200% 100%;
-  animation: think-shimmer 2.4s linear infinite;
-}
-.think-block[data-live='1'] > details > summary, .tm-reasoning.streaming > .tm-reasoning-header { opacity: .8; }
-@keyframes think-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-
-.think-ic, .tm-reasoning-icon { flex: 0 0 auto; font-size: 11px; }
-.think-cap, .tm-reasoning-title { letter-spacing: .01em; }
-.think-body, .tm-reasoning-text { margin-top: 4px; opacity: .75; font-style: italic; font-size: 11.5px; }
-.think-body p, .tm-reasoning-text p { margin: 2px 0; }
-.think-body :is(pre, code) { font-style: normal; }
+/* Reasoning block styling now lives entirely in components/reasoning.css (Vercel AI Elements
+ * "Reasoning" pattern). The legacy .think-block class is no longer emitted by any source, and
+ * the old co-styling here used to override the component CSS because main.css loads last. */
 
 .error { color: var(--vscode-errorForeground); }
 /* Error notice inline in the flow — simpler than a nested bubble */
@@ -468,76 +443,9 @@ details[open].think-block > details > summary::before { content: '▾ '; }
 }
 .toast.show { opacity: 1; }
 
-/* Plan approval */
-.plan-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+/* Resume (paused-turn) action row. The plan approval card now lives in
+   media/styles/components/plan.css (Chain-of-Thought Plan component). */
 .resume-actions { display: flex; gap: 8px; margin-top: 8px; }
-
-/* Plan card — Cursor-style clean numbered list */
-.plan-head {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase;
-  opacity: .5; margin-bottom: 8px;
-}
-.plan-head-icon { font-size: 12px; }
-.plan-list { margin: 4px 0 2px; display: flex; flex-direction: column; gap: 1px; }
-.plan-row {
-  display: flex; align-items: baseline; gap: 8px;
-  font-size: 13px; padding: 4px 6px; border-radius: 5px; line-height: 1.55;
-  transition: background .1s;
-}
-.plan-row:hover { background: var(--vscode-list-hoverBackground, rgba(127,127,127,.08)); }
-.plan-row .plan-ic {
-  flex: 0 0 22px; text-align: right;
-  font-size: 11px; font-variant-numeric: tabular-nums;
-  opacity: .35; padding-top: 2px;
-}
-.plan-row .plan-tx { flex: 1 1 auto; outline: none; border-radius: 3px; padding: 0 2px; white-space: pre-wrap; word-break: break-word; }
-.plan-row .plan-tx[contenteditable]:focus { background: var(--vscode-input-background); box-shadow: 0 0 0 1px var(--vscode-focusBorder); }
-.plan-row .plan-del { flex: 0 0 auto; opacity: 0; cursor: pointer; font-size: 13px; line-height: 1; padding: 0 3px; color: var(--vscode-errorForeground); }
-.plan-row:hover .plan-del { opacity: .35; }
-.plan-row .plan-del:hover { opacity: .8; }
-.plan-add { font-size: 11px; opacity: .5; cursor: pointer; margin-top: 4px; padding: 2px 6px; user-select: none; }
-.plan-add:hover { opacity: .85; }
-.plan-note { font-size: 11px; opacity: .65; margin-top: 8px; font-style: italic; }
-/* Action buttons */
-.plan-run { font-size: 12px; padding: 5px 14px; }
-.plan-discuss { font-size: 11px; opacity: .7; background: none; border: none; cursor: pointer; padding: 5px 8px; color: inherit; }
-.plan-discuss:hover { opacity: 1; text-decoration: underline; }
-.plan-reject { font-size: 11px; opacity: .45; background: none; border: none; cursor: pointer; padding: 5px 8px; color: inherit; margin-left: auto; }
-.plan-reject:hover { opacity: .8; color: var(--vscode-errorForeground); }
-.plan-summary { font-size: 12px; opacity: .7; margin-bottom: 4px; }
-/* The model's own plan text, rendered as markdown — headings, bold, code spans, and any
-   priority/effort grouping it chose all come through as-is, matching OC's raw output style. */
-.plan-rendered { font-size: 13px; line-height: 1.55; margin-bottom: 6px; }
-.plan-rendered :first-child { margin-top: 0; }
-.plan-rendered :last-child { margin-bottom: 0; }
-.plan-rendered.hidden { display: none; }
-.plan-details-toggle {
-  font-size: 11px; opacity: .6; background: none; border: none; cursor: pointer;
-  padding: 2px 0; margin-bottom: 4px; color: inherit;
-}
-.plan-details-toggle:hover { opacity: 1; text-decoration: underline; }
-.plan-details.hidden { display: none; }
-
-/* Live task checklist (TodoWrite-style) */
-.todo-list {
-  margin: 6px 0; padding: 8px 10px; border-radius: 8px;
-  border: 1px solid var(--vscode-panel-border);
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.12));
-}
-.todo-head { font-size: 11px; font-weight: 600; opacity: .75; margin-bottom: 6px; }
-.todo-item { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; padding: 2px 0; line-height: 1.5; }
-.todo-item .todo-ic { flex: 0 0 auto; width: 14px; text-align: center; opacity: .8; }
-.todo-item .todo-tx { flex: 1 1 auto; }
-.todo-item.pending .todo-tx { opacity: .75; }
-.todo-item.in_progress .todo-tx { font-weight: 600; }
-.todo-item.completed .todo-ic { color: var(--vscode-testing-iconPassed, #2e7d32); opacity: 1; }
-.todo-item.completed .todo-tx { opacity: .55; text-decoration: line-through; }
-.todo-spin {
-  display: inline-block; width: 10px; height: 10px; border-radius: 50%;
-  border: 2px solid var(--vscode-panel-border); border-top-color: var(--vscode-progressBar-background, #0a84ff);
-  animation: idx-spin .8s linear infinite; vertical-align: middle;
-}
 
 /* Inline runCommand approval card (shown in chat instead of a native modal) */
 .cmd-approval {
@@ -617,9 +525,8 @@ details[open].think-block > details > summary::before { content: '▾ '; }
 .clarify-recap-q { flex: 0 0 auto; opacity: .55; }
 .clarify-recap-a { font-weight: 600; min-width: 0; word-break: break-word; }
 
-/* Plan → Agent handoff */
-.todo-plan-head { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; opacity: .6; margin-bottom: 4px; }
-.plan-discarded { margin-top: 6px; font-size: 11px; opacity: .65; font-style: italic; }
+/* Plan → Agent handoff styling now lives in media/styles/components/plan.css
+   (Chain-of-Thought Plan component: tm-plan-settled etc.). */
 
 /* OC-native askUser questions now render through the shared `.clarify` card (see
    renderQuestionCard in main.ts) — the old bespoke `.ask-*` card styles are retired. */
@@ -809,8 +716,8 @@ details[open].think-block > details > summary::before { content: '▾ '; }
 .input-wrap {
   position: relative;
   border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
-  border-radius: 8px; background: var(--vscode-input-background);
-  padding: 6px; display: flex; flex-direction: column; gap: 6px;
+  border-radius: 12px; background: var(--vscode-input-background);
+  padding: 8px; display: flex; flex-direction: column; gap: 6px;
   transition: border-color .15s ease, box-shadow .15s ease;
 }
 .input-wrap:focus-within {
@@ -822,17 +729,24 @@ details[open].think-block > details > summary::before { content: '▾ '; }
   background: transparent; color: var(--vscode-input-foreground);
   border: none; outline: none; padding: 2px 4px; font-family: inherit; font-size: inherit;
 }
+.input-wrap textarea::placeholder { color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground)); opacity: .85; }
 .toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .tgroup { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .tgroup.right { margin-left: auto; flex: 0 0 auto; }
 .pill {
-  background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground);
-  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
-  border-radius: 12px; padding: 2px 8px; font-size: 11px; cursor: pointer;
-  max-width: 120px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 5px;
+  background: transparent; color: var(--vscode-foreground);
+  border: 1px solid transparent;
+  border-radius: 14px; padding: 3px 10px; font-size: 11px; cursor: pointer;
+  max-width: 160px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: background .12s ease;
 }
+.pill:hover { background: var(--vscode-toolbar-hoverBackground); }
+.pill:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.pill-icon { flex: 0 0 auto; display: inline-flex; align-items: center; opacity: .8; }
+.pill-icon svg { display: block; }
 button#model-btn {
-  position: relative; max-width: 160px; text-align: left; padding-right: 20px;
+  position: relative; max-width: 180px; text-align: left;
   display: inline-flex; align-items: center;
 }
 /* Auto-approve toggle pill: dim when off, accent-filled when on. */
@@ -875,7 +789,7 @@ button#model-btn {
 [data-tooltip]:hover::after {
   opacity: 1;
 }
-button#model-btn .mb-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
+button#model-btn .mb-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 0; }
 
 /* One shared down-chevron for the mode / model / effort controls so they match.
    Native <select> arrows are removed; the glyph uses currentColor for theme parity. */
@@ -900,7 +814,7 @@ button#model-btn .mb-label { overflow: hidden; text-overflow: ellipsis; white-sp
 .mode-item-label { font-size: 12px; font-weight: 600; }
 .mode-item-desc { font-size: 11px; opacity: .7; margin-top: 2px; line-height: 1.35; }
 .mode-item.selected .mode-item-desc { opacity: .9; }
-button#mode-btn .mode-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button#mode-btn .mode-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 0; }
 button#mode-btn.executing .mode-label {
   color: var(--vscode-textLink-foreground, #4daafc);
   animation: state-pulse 1.2s ease-in-out infinite;
@@ -973,14 +887,17 @@ button.compact-divider { background: none; font: inherit; color: inherit; displa
 .compact-divider-link { cursor: pointer; color: var(--vscode-textLink-foreground, #4daafc); opacity: .85; }
 .compact-divider-link:hover { opacity: 1; text-decoration: underline; }
 .send-btn {
-  background: var(--vscode-button-background); color: var(--vscode-button-foreground);
-  border: none; cursor: pointer; border-radius: 50%; width: 30px; height: 30px; flex: 0 0 auto;
-  display: inline-flex; align-items: center; justify-content: center; font-size: 13px;
+  background: var(--vscode-progressBar-background, #0a84ff); color: #fff;
+  border: none; cursor: pointer; border-radius: 50%; width: 34px; height: 34px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 14px;
+  box-shadow: 0 1px 6px rgba(10, 132, 255, .4);
+  transition: background .12s ease, box-shadow .12s ease, transform .05s ease;
 }
-.send-btn:hover { background: var(--vscode-button-hoverBackground); }
-.send-btn.stopping { background: var(--vscode-errorForeground, #c33); color: #fff; }
-.send-btn:disabled { opacity: .45; cursor: not-allowed; }
-.send-btn:disabled:hover { background: var(--vscode-button-background); }
+.send-btn:hover { background: #3a9dff; box-shadow: 0 2px 8px rgba(10, 132, 255, .5); }
+.send-btn:active { transform: scale(.96); }
+.send-btn.stopping { background: var(--vscode-errorForeground, #c33); color: #fff; box-shadow: none; }
+.send-btn:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
+.send-btn:disabled:hover { background: var(--vscode-progressBar-background, #0a84ff); }
 button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; cursor: pointer; border-radius: 4px; padding: 4px 10px; }
 button.primary:hover { background: var(--vscode-button-hoverBackground); }
 button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: none; cursor: pointer; border-radius: 4px; padding: 4px 10px; }

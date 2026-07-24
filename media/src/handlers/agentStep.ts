@@ -4,7 +4,7 @@
  *
  * Dependencies (via focused AgentStepContext):
  * - ensureTarget: Get or create the Target object for this requestId
- * - setStatusLabel: Set the activity label (e.g. an explicit OC status message)
+ * - setStatusLabel: Set the activity label (e.g. an explicit agent status message)
  * - startStatusTimer: Ensure the elapsed time timer is running
  * - scrollDown: Keep the latest activity in view
  *
@@ -21,7 +21,7 @@
 
 /**
  * Message from the extension host carrying an explicit agent status update.
- * An OpenCode status message wins over the rolling activity verb when present.
+ * An explicit status message wins over the rolling activity verb when present.
  */
 export interface AgentStepMessage {
   type: 'agentStep';
@@ -66,7 +66,7 @@ export interface AgentStepContext {
 /**
  * Handle the 'agentStep' message from the extension host.
  *
- * An explicit OC status message (msg.label) wins over the current activity
+ * An explicit status message (msg.label) wins over the current activity
  * label; otherwise the existing label is left untouched. The timer is ensured
  * running and the view scrolls to the latest activity.
  *
@@ -77,7 +77,7 @@ export function handleAgentStep(ctx: AgentStepContext, msg: AgentStepMessage): v
   // ensureTarget is called for its side-effect (creates the bubble if needed);
   // we don't use the returned Target, so no need to capture it.
   ctx.ensureTarget(msg.requestId);
-  // An explicit OC status message wins; otherwise leave the current activity label.
+  // An explicit status message wins; otherwise leave the current activity label.
   if (msg.label) ctx.setStatusLabel(msg.requestId, msg.label, { force: true });
   ctx.startStatusTimer(msg.requestId);
   ctx.scrollDown();

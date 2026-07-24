@@ -78,48 +78,54 @@ function createToolBody(): { el: HTMLDetailsElement; pre: HTMLPreElement; } {
  * Used for both live "Thinking" blocks and static "Thought" cards.
  * Enhanced with AI Elements Reasoning component patterns.
  */
-export function buildReasoningBlock(text: string, tc?: string, isStreaming?: boolean): HTMLElement {
-  const block = el('div', { 
-    class: `tm-reasoning ${isStreaming ? 'streaming' : ''}`, 
-    dataset: { live: isStreaming ? '1' : '0', ...(tc ? { tc } : {}) } 
+export function buildReasoningBlock(text: string, tc?: string, isStreaming?: boolean, durationMs?: number): HTMLElement {
+  const block = el('div', {
+    class: `tm-reasoning ${isStreaming ? 'streaming open' : ''}`,
+    dataset: { live: isStreaming ? '1' : '0', streaming: isStreaming ? 'true' : 'false', ...(tc ? { tc } : {}) },
   });
 
-  // AI Elements-style header with icon and streaming indicator
+  // Vercel AI Elements "Reasoning" trigger: "Thinking…" + pulsing dot while live,
+  // "Thought for N seconds" once settled (durationMs from the host). Chevron rotates on open.
+  const durationLabel = !isStreaming && durationMs && durationMs > 0
+    ? `Thought for ${Math.max(1, Math.round(durationMs / 1000))}s`
+    : isStreaming ? 'Thinking' : 'Thought';
+
   const header = el('div', { class: 'tm-reasoning-header' },
     el('div', { class: 'tm-reasoning-title' },
-      el('span', { class: 'tm-reasoning-icon' }, isStreaming ? '◌' : '◉'),
-      isStreaming ? 'Thinking' : 'Thought'
+      el('span', { class: `tm-reasoning-pulse ${isStreaming ? 'on' : ''}` }),
+      el('span', { class: 'tm-reasoning-label' }, durationLabel),
     ),
-    isStreaming ? el('div', { class: 'tm-reasoning-streaming' },
-      el('span', { class: 'tm-reasoning-streaming-dots' },
-        el('span'),
-        el('span'),
-        el('span')
-      ),
-      'Thinking'
-    ) : el('div', { class: 'tm-reasoning-duration' }, 'Completed')
+    el('span', { class: 'tm-reasoning-chevron' }, '▾'),
   );
-  
   block.appendChild(header);
 
-  // Collapsible content area
+  // Collapsible content area — the muted reasoning card.
   const content = el('div', { class: 'tm-reasoning-content' });
   const body = el('div', { class: 'tm-reasoning-body tm-reasoning-text' }, renderMarkdown(text || ''));
-  
   content.appendChild(body);
   block.appendChild(content);
 
-  // Add click handler for toggling
-  header.addEventListener('click', () => {
-    block.classList.toggle('open');
-  });
-
-  // Auto-expand when streaming
-  if (isStreaming) {
-    block.classList.add('open');
-  }
+  header.addEventListener('click', () => block.classList.toggle('open'));
 
   return block;
+}
+
+/** Update an existing reasoning block in place: refresh its text, and on done settle the
+ *  streaming state + "Thought for Ns" label. Mirrors how `upsertTool` reconciles tool cards. */
+export function updateReasoningBlock(block: HTMLElement, text: string, done?: boolean, durationMs?: number): void {
+  const body = block.querySelector<HTMLElement>('.tm-reasoning-body');
+  if (body) { body.innerHTML = ''; body.appendChild(renderMarkdown(text || '')); }
+  if (done) {
+    block.classList.remove('streaming', 'open');
+    block.dataset.live = '0';
+    block.dataset.streaming = 'false';
+    const label = block.querySelector<HTMLElement>('.tm-reasoning-label');
+    if (label) {
+      label.textContent = durationMs && durationMs > 0
+        ? `Thought for ${Math.max(1, Math.round(durationMs / 1000))}s`
+        : 'Thought';
+    }
+  }
 }
 
 /**
@@ -164,9 +170,7 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
   if (editArgsStatic && 'old_string' in editArgsStatic && 'new_string' in editArgsStatic) {
     pre.className = 'tm-tool-card-output diff-view';
     pre.appendChild(buildInlineDiff(String(editArgsStatic.old_string), String(editArgsStatic.new_string)));
-    more.classList.remove('hidden');
-    card.classList.add('open');
-    more.open = true;
+    // Body stays collapsed by default (compact chip row); click the header to expand.
   } else {
     const argStr = (step.args && typeof step.args === 'object') ? JSON.stringify(step.args, null, 2) : String(step.args || '');
     const parts: string[] = [];
@@ -177,9 +181,7 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
     if (body.trim()) {
       pre.className = 'tm-tool-card-output';
       pre.textContent = body;
-      more.classList.remove('hidden');
-      card.classList.add('open');
-      more.open = true;
+      // Body stays collapsed by default (compact chip row); click the header to expand.
     }
   }
 

@@ -12,8 +12,8 @@ import { send } from './bridge';
 import type { RxMessage } from './bridge';
 import { $, escapeHtml, showToast } from './dom';
 import { renderMarkdown } from './markdown';
-import { buildReasoningBlock, buildToolCard, toolLabel, activityFor } from './ui/tool/ToolCard';
-import { handleTodos } from './handlers/todos';
+import { buildReasoningBlock, updateReasoningBlock, buildToolCard, toolLabel, activityFor } from './ui/tool/ToolCard';
+import { createPlan, createQueue, createCheckpoint, planDataFromStepText, planDataFromTodos } from './ui/components';
 import { handleAssistantStart } from './handlers/assistantStart';
 import { handleAgentStep } from './handlers/agentStep';
 import { handleToolStatus } from './handlers/toolStatus';
@@ -96,15 +96,15 @@ const STATE_LABEL = {
       <div class="chips" id="chips"></div>
       <div class="input-wrap">
         <div id="ac-pop" class="ac-pop hidden"></div>
-        <textarea id="input" placeholder="Type a message…  (@ for files, / for commands)" title="Enter to send · Shift+Enter for newline · @file · /fix /tests /commit"></textarea>
+        <textarea id="input" placeholder="What would you like to know?" title="Enter to send · Shift+Enter for newline · @ for files · / for commands · /fix /tests /commit"></textarea>
         <div class="toolbar">
           <div class="tgroup">
             <div class="mode-picker">
-              <button type="button" id="mode-btn" class="pill" title="Mode — how the assistant handles your message"><span class="mode-label">Auto</span></button>
+              <button type="button" id="mode-btn" class="pill" title="Mode — how the assistant handles your message"><span class="pill-icon">${ICON.spark}</span><span class="mode-label">Auto</span></button>
               <div id="mode-pop" class="mode-pop hidden"></div>
             </div>
             <div class="model-picker">
-              <button type="button" id="model-btn" class="pill" title="Model"><span class="mb-label">Auto</span></button>
+              <button type="button" id="model-btn" class="pill" title="Model"><span class="pill-icon">${ICON.chip}</span><span class="mb-label">Auto</span></button>
               <div id="model-pop" class="model-pop hidden">
                 <input id="model-search" type="text" placeholder="Search models…" />
                 <div id="model-list"></div>
@@ -1168,7 +1168,7 @@ const STATE_LABEL = {
     const children = Array.from(t.flow.children);
     let lastWorkIdx = -1;
     for (let i = 0; i < children.length; i++) {
-      if (children[i].classList.contains('tool-card') || children[i].classList.contains('think-block')) lastWorkIdx = i;
+      if (children[i].classList.contains('tm-tool-card') || children[i].classList.contains('tm-reasoning')) lastWorkIdx = i;
     }
     // No tools and no reasoning ran — this is a plain text answer, leave it exactly as is.
     if (lastWorkIdx === -1) return;
@@ -1187,8 +1187,8 @@ const STATE_LABEL = {
     const timelineNodes = children.slice(0, lastWorkIdx + 1).filter((el) => el !== answerNode);
     // Nothing left to collapse once the answer is excluded — leave the flow as-is.
     if (!timelineNodes.length) return;
-    const toolCount = timelineNodes.filter((el) => el.classList.contains('tool-card')).length;
-    const thinkCount = timelineNodes.filter((el) => el.classList.contains('think-block')).length;
+    const toolCount = timelineNodes.filter((el) => el.classList.contains('tm-tool-card')).length;
+    const thinkCount = timelineNodes.filter((el) => el.classList.contains('tm-reasoning')).length;
     const elapsed = t.startedAt ? Math.round((Date.now() - t.startedAt) / 1000) : null;
     const parts = [];
     if (elapsed != null) parts.push(`Worked for ${elapsed}s`);
@@ -1415,7 +1415,7 @@ const STATE_LABEL = {
   // The extension host has no canvas/createImageBitmap, so workspace-picked and
   // host-forwarded images arrive full-resolution. Downscale them here — the one
   // place with a canvas — so the small version is what crosses every downstream
-  // hop (OC prompt, router proxy, provider request, per-turn re-injection). Base64
+  // hop (prompt assembly, router proxy, provider request, per-turn re-injection). Base64
   // isn't tokenized, so this is a latency/byte win, not a token-cost one.
   function dataUrlToBlob(dataUrl) {
     const comma = dataUrl.indexOf(',');
@@ -1762,17 +1762,13 @@ const STATE_LABEL = {
   // Turn raw tool calls into a human-readable "what the agent is doing" line.
   function upsertTool(t, msg) {
     if (msg.name === 'reasoning') {
-      let block = t.tools.querySelector(`[data-tc="${msg.toolCallId}"]`);
-      if (!block) { block = buildReasoningBlock(msg.detail || '', msg.toolCallId); t.tools.appendChild(block); }
-      else {
-        const b = block.querySelector('.think-body');
-        if (b) { b.textContent = ''; b.appendChild(renderMarkdown(msg.detail || '')); }
-        // Mark done: remove live highlight, update label
-        if (msg.state === 'done') {
-          block.dataset.live = '0';
-          const cap = block.querySelector('.think-cap'); if (cap) cap.textContent = 'Thought';
-          const ic = block.querySelector('.think-ic'); if (ic) ic.textContent = '◉';
-        }
+      let block = t.tools.querySelector<HTMLElement>(`[data-tc="${msg.toolCallId}"]`);
+      if (!block) {
+        // Born live (streaming) so the block auto-opens and shows "Thinking…" while deltas arrive.
+        block = buildReasoningBlock(msg.detail || '', msg.toolCallId, msg.state !== 'done');
+        t.tools.appendChild(block);
+      } else {
+        updateReasoningBlock(block, msg.detail || '', msg.state === 'done', msg.durationMs);
       }
       scrollDown();
       return;
@@ -2864,7 +2860,7 @@ const STATE_LABEL = {
     settingsContentEl.appendChild(title);
     const hint = document.createElement('div');
     hint.className = 'muted';
-    hint.textContent = 'Tools from configured MCP servers are available to the agent (OpenCode connects to them directly).';
+    hint.textContent = 'Tools from configured MCP servers are available to the agent.';
     settingsContentEl.appendChild(hint);
 
     const actions = document.createElement('div');
@@ -2995,7 +2991,7 @@ const STATE_LABEL = {
 
   /** Add/Edit form for a native-schema MCP server. `existingName` is null for a new
    *  server, or the name of the server being edited (config pre-filled from
-   *  `state.mcpServers[existingName]`). Local vs Remote maps 1:1 to OpenCode's own
+   *  `state.mcpServers[existingName]`). Local vs Remote maps 1:1 to the underlying
    *  McpLocalConfig / McpRemoteConfig — no TierMux-specific fields are added. */
   function renderMcpForm(existingName) {
     const raw = existingName ? (state.mcpServers || {})[existingName] : null;
@@ -3133,7 +3129,7 @@ const STATE_LABEL = {
     // ---- Common fields ----
     const timeoutInput = document.createElement('input');
     timeoutInput.type = 'number';
-    timeoutInput.placeholder = 'ms — blank uses OpenCode\'s default';
+    timeoutInput.placeholder = 'ms — blank uses the default';
     timeoutInput.value = (raw && raw.timeout) || '';
     field('Timeout (ms, optional)', timeoutInput);
 
@@ -3282,7 +3278,6 @@ const STATE_LABEL = {
     scrollDown(): void;
     activityFor(name: string, args: unknown): string;
     upsertTool(t: Target, msg: unknown): void;
-    renderTodos(t: Target, todos: Todo[], followingPlan: boolean): void;
   }
 
   // NOTE(Phase D2): ensureTarget is used by every extracted handler (todos,
@@ -3307,7 +3302,6 @@ const STATE_LABEL = {
       scrollDown,
       activityFor,
       upsertTool,
-      renderTodos,
     };
   }
 
@@ -3319,7 +3313,7 @@ const STATE_LABEL = {
   // (otherwise unchanged) render logic below writes into the right session's DOM regardless of
   // which session is currently being viewed. 'switchSession' is included so its case body can
   // use the returned `existed` flag to tell a brand-new pane from an already-live one.
-  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'watchdogWarning', 'watchdogActionable', 'watchdogDismissed', 'todos', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
+  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'watchdogWarning', 'watchdogActionable', 'watchdogDismissed', 'todos', 'planData', 'queueData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
 
   // ---------- inbound messages ----------
   window.addEventListener('message', (event) => {
@@ -3430,8 +3424,34 @@ const STATE_LABEL = {
         break;
       }
       case 'todos': {
-        const ctx = createHandlerContext();
-        handleTodos(ctx, msg);
+        // Live task list → same Chain-of-Thought Plan component as planData, mounted once at the
+        // top of the flow (t.planEl) and swapped in place as tasks progress.
+        const t = ensureTarget(msg.requestId);
+        const title = msg.followingPlan ? 'Following the approved plan' : 'Tasks';
+        const data = planDataFromTodos(title, msg.todos || []);
+        const next = createPlan({ data, mode: 'live' });
+        if (t.planEl) t.planEl.replaceWith(next); else t.flow.insertBefore(next, t.flow.firstChild);
+        t.planEl = next;
+        scrollDown();
+        break;
+      }
+      case 'planData': {
+        // Plan progress → mount/swap the Plan component at t.planEl (same slot as 'todos').
+        const t = ensureTarget(msg.requestId);
+        const next = createPlan({ data: msg.data, mode: 'live' });
+        if (t.planEl) t.planEl.replaceWith(next); else t.flow.insertBefore(next, t.flow.firstChild);
+        t.planEl = next;
+        scrollDown();
+        break;
+      }
+      case 'queueData': {
+        // AI Elements Queue card (agent mode) — live tool-execution queue, mounted just under the
+        // Plan card (if any) and replaced in place as each tool cycles pending→running→done.
+        const t = ensureTarget(msg.requestId);
+        const next = createQueue({ data: msg.data });
+        const after = t.planEl ? t.planEl.nextSibling : null;
+        if (t.queueEl) t.queueEl.replaceWith(next); else if (after) t.flow.insertBefore(next, after); else t.flow.insertBefore(next, t.flow.firstChild);
+        t.queueEl = next;
         break;
       }
       case 'toolStatus': {
@@ -3556,7 +3576,7 @@ const STATE_LABEL = {
         const t = ensureTarget(msg.requestId);
         const card = document.createElement('div'); card.className = 'cmd-approval'; card.dataset.id = msg.id;
         const head = document.createElement('div'); head.className = 'cmd-approval-head';
-        head.textContent = msg.title || 'OC wants to run a tool';
+        head.textContent = msg.title || 'Approve tool';
         card.appendChild(head);
         if (msg.pattern) {
           const pre = document.createElement('pre'); pre.className = 'cmd-approval-cmd';
@@ -3592,77 +3612,26 @@ const STATE_LABEL = {
         stopStatusTimer(msg.requestId, true);
         finalizeWork(msg.requestId);
         t.body.innerHTML = '';
-        const head = document.createElement('div'); head.className = 'plan-head';
-        head.innerHTML = `<span class="plan-head-icon">◈</span><span>Plan</span>`;
-        t.body.appendChild(head);
-        // A replayed or already-decided card (session switch, kept after Discard/Keep-discussing) —
-        // show the same rendered-markdown read view, no edit controls, no action row.
-        const settled = !!(msg.discarded || msg.deferred);
-        const items = parsePlanSteps(msg.steps);
-        const listEl = renderPlanChecklist(items, !settled);
-        if (settled) {
-          // Distinguish the two settled outcomes on replay — both used to render identically
-          // (just the head + plan text), giving no way to tell "you rejected this" apart from
-          // "you deferred this for later" once the live discard/defer note (a transient DOM
-          // node from the click handler, never part of the replayed card) is long gone.
-          const statusNote = document.createElement('div');
-          statusNote.className = msg.discarded ? 'plan-discarded' : 'plan-note';
-          statusNote.textContent = msg.discarded ? '✗ Discarded' : '— Kept for discussion, never run —';
-          t.body.appendChild(statusNote);
-          const rendered = document.createElement('div'); rendered.className = 'plan-rendered';
-          rendered.appendChild(renderMarkdown(msg.steps));
-          t.body.appendChild(rendered);
-          scrollDown(); break;
-        }
-        // Active proposal: lead with a compact count + the model's own plan text rendered as
-        // markdown — headings, bold, code spans, and whatever priority/effort grouping the
-        // model chose (e.g. "Easy wins" / "Larger features") all come through as-is, matching
-        // how OC's own raw output reads, instead of forcing everything into one flat checklist.
-        // The existing editable checklist is still built once here and only toggled via a
-        // `.hidden` class below (never re-rendered), for hand-editing step wording before running.
-        const fileCount = new Set(items.flatMap(detectStepFiles)).size;
-        const summary = document.createElement('div'); summary.className = 'plan-summary';
-        summary.textContent = `${items.length} step${items.length === 1 ? '' : 's'}` + (fileCount ? ` · ${fileCount} file${fileCount === 1 ? '' : 's'}` : '');
-        t.body.appendChild(summary);
-        const rendered = document.createElement('div'); rendered.className = 'plan-rendered';
-        rendered.appendChild(renderMarkdown(msg.steps));
-        t.body.appendChild(rendered);
-        const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'plan-details-toggle';
-        toggle.textContent = 'Edit steps ▾';
-        const details = document.createElement('div'); details.className = 'plan-details hidden';
-        details.appendChild(listEl);
-        // One-way switch, not a toggle: once the checklist is edited, `rendered` (built once
-        // from the ORIGINAL msg.steps and never updated) would silently go stale relative to
-        // those edits if it could be shown again — so switching to the editor hides the
-        // rendered view and removes the button, instead of allowing a toggle back to it.
-        toggle.addEventListener('click', () => {
-          rendered.classList.add('hidden');
-          details.classList.remove('hidden');
-          toggle.remove();
+        // One Chain-of-Thought-styled Plan component for both states:
+        //  - active proposal → mode 'edit' (editable steps + Save & Run / Discuss / Discard)
+        //  - replayed/decided → mode 'live' + settled flag (read-only, with status note)
+        const settled = msg.discarded ? 'discarded' : msg.deferred ? 'deferred' : undefined;
+        const { data, summary } = planDataFromStepText('Plan', msg.steps);
+        const plan = createPlan({
+          data,
+          mode: settled ? 'live' : 'edit',
+          settled,
+          summary: settled ? undefined : summary,
+          onApprove: (steps) => send({ type: 'approvePlan', requestId: newId(), approved: true, steps }),
+          onDiscard: () => send({ type: 'approvePlan', requestId: newId(), approved: false, steps: '' }),
+          onDefer: (steps) => {
+            const note = document.createElement('div'); note.className = 'tm-plan-note';
+            note.textContent = 'Kept for discussion — edit steps, then Save & Run when ready.';
+            t.body.appendChild(note);
+            send({ type: 'deferPlan', requestId: msg.requestId, steps });
+          },
         });
-        t.body.appendChild(toggle);
-        t.body.appendChild(details);
-        const collect = () => collectPlanSteps(listEl);
-        const actions = document.createElement('div'); actions.className = 'plan-actions';
-        // Explicit verbs, not "Run"/"Discuss" alone — makes clear that approving both saves
-        // the .md file AND switches into Agent mode to execute it step by step, versus staying
-        // in Plan mode with nothing saved or run yet.
-        const approve = document.createElement('button'); approve.className = 'primary plan-run'; approve.textContent = '💾  Save & Run';
-        approve.title = 'Save the plan file and execute it in Agent mode, step by step';
-        const discuss = document.createElement('button'); discuss.className = 'plan-discuss'; discuss.textContent = 'Continue to discuss';
-        discuss.title = 'Keep talking about this plan — nothing is saved or run yet';
-        const reject = document.createElement('button'); reject.className = 'plan-reject'; reject.textContent = 'Discard';
-        approve.addEventListener('click', () => { actions.remove(); send({ type: 'approvePlan', requestId: newId(), approved: true, steps: collect() }); });
-        reject.addEventListener('click', () => { actions.remove(); send({ type: 'approvePlan', requestId: newId(), approved: false, steps: collect() }); });
-        discuss.addEventListener('click', () => {
-          discuss.remove(); reject.remove();
-          const note = document.createElement('div'); note.className = 'plan-note';
-          note.textContent = 'Kept for discussion — nothing saved or run yet. Edit steps above, then Save & Run when ready.';
-          t.body.appendChild(note);
-          send({ type: 'deferPlan', requestId: msg.requestId, steps: collect() });
-        });
-        actions.appendChild(approve); actions.appendChild(discuss); actions.appendChild(reject);
-        t.body.appendChild(actions);
+        t.body.appendChild(plan);
         scrollDown();
         break;
       }
@@ -3681,10 +3650,10 @@ const STATE_LABEL = {
         break;
       }
       case 'askUserPrompt': {
-        // OC's native `question` tool — rendered through the SAME rich card as our own
+        // The agent's native `question` tool — rendered through the SAME rich card as our own
         // clarifyingQuestions, so the two are visually identical. Reply path stays distinct:
-        // this resumes OC's paused turn via `askUserResponse` (callId → pending promise),
-        // NOT a new run. OC's question tool is single-question, so one entry; its flat
+        // this resumes the paused turn via `askUserResponse` (callId → pending promise),
+        // NOT a new run. The question tool is single-question, so one entry; its flat
         // string[] options map to titled rows (or a free-text row when there are none).
         const t = ensureTarget(msg.requestId);
         stopStatusTimer(msg.requestId, true);
@@ -3787,6 +3756,18 @@ const STATE_LABEL = {
         }
         break;
       }
+      case 'clearDraft': {
+        // A tool call just arrived in the same step as text that streamed live as a tentative
+        // reply — that text was narration, not the answer. Drop the live draft bubble so it
+        // doesn't linger in the chat; finish-step re-routes it to the Chain-of-Thought block.
+        const t = ensureTarget(msg.requestId);
+        if (t.currentText) {
+          t.currentText.remove();
+          t.currentText = null;
+        }
+        t.flow.querySelectorAll('.flow-text').forEach((el) => el.remove());
+        break;
+      }
       case 'assistantMessage': {
         const t = ensureTarget(msg.requestId);
         stopStatusTimer(msg.requestId, true);
@@ -3797,6 +3778,19 @@ const STATE_LABEL = {
           t.currentText.innerHTML = '';
           t.currentText.appendChild(renderMarkdown(stripClarifyBlock(t.currentText._buf, true)));
         }
+        // Reconcile draft → canonical reply. The live stream showed every text-delta in ephemeral
+        // `.flow-text` segments — INCLUDING speculative narration the model emitted alongside tool
+        // calls ("Let me search…"). On settle, discard ALL draft text segments and render the
+        // single canonical reply (msg.text — only final-phase text, per the loop's state machine)
+        // as the final bubble. Tool cards, reasoning blocks, and the plan/queue/checkpoint widgets
+        // are not `.flow-text`, so they remain. For non-streamed turns this just appends.
+        t.flow.querySelectorAll('.flow-text').forEach((el) => el.remove());
+        t.currentText = null;
+        {
+          const seg = document.createElement('div'); seg.className = 'flow-text bubble';
+          seg.appendChild(renderMarkdown(stripClarifyBlock(msg.text, true)));
+          t.flow.appendChild(seg);
+        }
         // Fold-up 💭 Reasoning disclosure only when no live 🧠 Thinking block already
         // captured it inline — otherwise the same reasoning would show twice. Placed at the
         // top of the flow (it preceded the work).
@@ -3806,14 +3800,7 @@ const STATE_LABEL = {
           t.flow.insertBefore(reasoningBlock, t.flow.firstChild);
         }
         t.el._copyText = msg.text;
-        // Streamed turns already show their text interleaved in the flow — don't re-render
-        // (that would duplicate). Only render here when nothing streamed (buffered tool turns
-        // / non-streaming providers): append the full answer as a final flow segment.
-        if (!t._wasStreamed) {
-          const seg = document.createElement('div'); seg.className = 'flow-text bubble';
-          seg.appendChild(renderMarkdown(stripClarifyBlock(msg.text, true)));
-          t.flow.appendChild(seg);
-        }
+        // The canonical reply bubble is already rendered above (draft → canonical reconciliation).
         t._wasStreamed = false;
         finalizeWork(msg.requestId);
         // The final message carries the model that actually answered — use it as
@@ -3852,6 +3839,10 @@ const STATE_LABEL = {
         break;
       case 'checkpoint':
         renderCheckpoint(msg);
+        // AI Elements Checkpoint bar (ask mode) — surfaces this turn's changed files as a
+        // restorable snapshot via the new component, alongside the legacy per-file diff list.
+        // `renderCheckpoint` (above) remains the detailed file-by-file list for every mode.
+        if (currentMode === 'ask' && msg.files && msg.files.length) renderCheckpointBar(msg);
         break;
       case 'changedFiles':
         // The pinned "changed files" bar lives in the composer, outside any pane — it only
@@ -3998,10 +3989,46 @@ const STATE_LABEL = {
     bar.appendChild(head);
   }
 
+  // AI Elements Checkpoint component — renders this turn's changed files as a restorable
+  // snapshot strip (ask mode). One snapshot per `checkpoint` message, accumulated on the
+  // target so a multi-checkpoint turn shows a short history. Restore opens the diff of the
+  // snapshot's first changed file; Delete drops it from the list.
+  function renderCheckpointBar(msg) {
+    const t = ensureTarget(msg.requestId);
+    if (!t.el) return;
+    const files = (msg.files || []).filter(Boolean);
+    if (!files.length) return;
+    if (!t.ckptSnapshots) t.ckptSnapshots = [];
+    const existing = t.ckptSnapshots.find((c) => c.id === msg.id);
+    const label = `${files.length} file${files.length > 1 ? 's' : ''} changed`;
+    const snap = { id: msg.id, name: label, description: files.map((f) => f.rel).join(', ').slice(0, 160), timestamp: Date.now(), state: msg };
+    if (existing) Object.assign(existing, snap); else t.ckptSnapshots.push(snap);
+    const hostSel = ':scope > .tm-checkpoint-host';
+    let host = t.el.querySelector(hostSel);
+    const render = () => createCheckpoint({
+      checkpoints: t.ckptSnapshots,
+      activeCheckpointId: t.ckptSnapshots.length ? t.ckptSnapshots[t.ckptSnapshots.length - 1].id : undefined,
+      onRestore: (id) => {
+        const s2 = t.ckptSnapshots.find((c) => c.id === id);
+        const f2 = s2 && s2.state && s2.state.files && s2.state.files[0];
+        if (f2) send({ type: 'diffCheckpointFile', id: s2.state.id, uri: f2.uri });
+      },
+      onDelete: (id) => {
+        t.ckptSnapshots = (t.ckptSnapshots || []).filter((c) => c.id !== id);
+        const el = render();
+        el.classList.add('tm-checkpoint-host');
+        if (host) host.replaceWith(el); else { host = el; t.el.appendChild(el); }
+      },
+    });
+    const el = render();
+    el.classList.add('tm-checkpoint-host');
+    if (host) host.replaceWith(el); else { host = el; t.el.appendChild(el); }
+  }
+
   // Shared interactive question card — the single visual component behind BOTH the
   // `clarifyingQuestions` card (our ???QUESTIONS??? sentinel) and the `askUserPrompt` card
-  // (OC's native question tool). The two have fundamentally different REPLY mechanisms (one
-  // starts a new run, the other resumes a paused OC turn), so the reply is injected via
+  // (the agent's native question tool). The two have fundamentally different REPLY mechanisms (one
+  // starts a new run, the other resumes a paused turn), so the reply is injected via
   // opts.onSubmit/onDismiss rather than hard-coded here — but the look, multi-question tabs,
   // single/multi-select, "type your own" input, and answered-recap are identical for both.
   //   opts: { questions, intro, callId?, submitTitle?, dismissTitle?, onSubmit(answers), onDismiss() }
@@ -4139,7 +4166,7 @@ const STATE_LABEL = {
       }
       // Relocate the settled card into t.flow so it renders BEFORE any work the resumed turn
       // streams next (t.flow sits before t.body in the DOM — see ensureTarget). Applies to
-      // both sources: a plan clarify starts a new run, an OC question resumes the paused turn,
+      // both sources: a plan clarify starts a new run, a tool question resumes the paused turn,
       // and either way subsequent output lands in t.flow.
       t.flow.appendChild(card);
       scrollDown();
@@ -4166,123 +4193,6 @@ const STATE_LABEL = {
     t.body.appendChild(card);
     scrollDown();
     return card;
-  }
-
-  // Live task checklist for a turn (TodoWrite-style). Rendered above the answer
-  // bubble and updated in place as the agent advances each item. When `followingPlan`
-  // is true (Plan → Agent handoff), prepend a small header so the user sees these
-  // todos ARE the approved plan steps.
-  function renderTodos(t, todos, followingPlan) {
-    if (!todos.length) { if (t.todoEl) { t.todoEl.remove(); t.todoEl = null; } return; }
-    if (!t.todoEl) { t.todoEl = document.createElement('div'); t.todoEl.className = 'todo-list'; t.el.insertBefore(t.todoEl, t.body); }
-    t.todoEl.innerHTML = '';
-    if (followingPlan) {
-      const planHead = document.createElement('div'); planHead.className = 'todo-plan-head';
-      planHead.textContent = 'Following the approved plan';
-      t.todoEl.appendChild(planHead);
-    }
-    const done = todos.filter((x) => x.status === 'completed').length;
-    const head = document.createElement('div'); head.className = 'todo-head';
-    head.textContent = `Tasks · ${done}/${todos.length}`;
-    t.todoEl.appendChild(head);
-    todos.forEach((td) => {
-      const row = document.createElement('div'); row.className = 'todo-item ' + td.status;
-      const ic = document.createElement('span'); ic.className = 'todo-ic';
-      if (td.status === 'in_progress') ic.innerHTML = '<span class="todo-spin"></span>';
-      else ic.textContent = td.status === 'completed' ? '✓' : '○';
-      const tx = document.createElement('span'); tx.className = 'todo-tx'; tx.textContent = td.content;
-      row.appendChild(ic); row.appendChild(tx);
-      t.todoEl.appendChild(row);
-    });
-    scrollDown();
-  }
-
-  // ── Structured, editable plan checklist (pre-approval) ───────────────────────────────
-  // Parse plan text into discrete step strings (numbered/bulleted list lines); falls back to
-  // the whole trimmed text as one step if the model didn't use a list.
-  function parsePlanSteps(steps) {
-    const items = [];
-    for (const line of String(steps || '').split('\n')) {
-      const mm = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.*)$/);
-      if (mm) { const tx = mm[1].replace(/\*\*/g, '').trim(); if (tx) items.push(tx); }
-    }
-    if (!items.length) { const t = String(steps || '').trim(); if (t) items.push(t); }
-    return items;
-  }
-
-  // Count distinct file-like paths referenced in the plan text for the summary line. Any
-  // backtick span is a candidate — narrowing to a fixed extension regex would miss
-  // extensionless names (Dockerfile, artisan) and dotfiles (.env.example) — then a loose
-  // "looks like a path" heuristic (has a slash, or a dotted extension, or a leading dot)
-  // filters out backtick spans that are clearly just inline code/identifiers.
-  const EXTENSIONLESS_FILENAMES = new Set(['dockerfile', 'makefile', 'rakefile', 'gemfile', 'procfile', 'artisan', 'license', 'changelog']);
-  // File-like backtick spans referenced in one step's text — used to count distinct files
-  // across the whole plan for the summary line. Any backtick span counts as a candidate,
-  // narrowed by "looks like a path" (has a slash, a dotted extension, a leading dot, or is a
-  // known extensionless filename).
-  function detectStepFiles(text) {
-    const files = [];
-    const spans = String(text || '').match(/`([^`]+)`/g) || [];
-    for (const span of spans) {
-      const inner = span.slice(1, -1).trim();
-      if (!inner || /\s/.test(inner)) continue;
-      const base = inner.split('/').pop() || inner;
-      const looksLikePath = inner.includes('/') || /^\.\w/.test(inner) || /\w\.\w+$/.test(inner) || EXTENSIONLESS_FILENAMES.has(base.toLowerCase());
-      if (looksLikePath) files.push(inner);
-    }
-    return files;
-  }
-  function addPlanRow(listEl, text, focus) {
-    const row = document.createElement('div'); row.className = 'plan-row';
-    const rows = listEl.querySelectorAll('.plan-row');
-    const ic = document.createElement('span'); ic.className = 'plan-ic';
-    ic.textContent = (rows.length + 1) + '.';
-    const tx = document.createElement('span'); tx.className = 'plan-tx'; tx.contentEditable = 'plaintext-only'; tx.textContent = text || '';
-    tx.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); addPlanRow(listEl, '', true); }
-      else if (e.key === 'Backspace' && !tx.textContent && listEl.querySelectorAll('.plan-row').length > 1) {
-        e.preventDefault();
-        const prev = row.previousElementSibling; row.remove();
-        renumberPlanRows(listEl);
-        const p = prev && prev.querySelector ? prev.querySelector('.plan-tx') : null; if (p) p.focus();
-      }
-    });
-    const del = document.createElement('span'); del.className = 'plan-del'; del.title = 'Remove';
-    del.innerHTML = '&times;';
-    del.addEventListener('click', () => { if (listEl.querySelectorAll('.plan-row').length > 1) { row.remove(); renumberPlanRows(listEl); } });
-    row.appendChild(ic); row.appendChild(tx); row.appendChild(del);
-    const addBtn = listEl.querySelector('.plan-add');
-    if (addBtn) listEl.insertBefore(row, addBtn); else listEl.appendChild(row);
-    if (focus) tx.focus();
-    return row;
-  }
-  function renumberPlanRows(listEl) {
-    listEl.querySelectorAll('.plan-row .plan-ic').forEach((ic, i) => { ic.textContent = (i + 1) + '.'; });
-  }
-
-  function renderPlanChecklist(items, editable) {
-    const listEl = document.createElement('div'); listEl.className = 'plan-list';
-    if (editable) {
-      const add = document.createElement('div'); add.className = 'plan-add'; add.textContent = '+ Add step';
-      add.addEventListener('click', () => addPlanRow(listEl, '', true));
-      listEl.appendChild(add);
-      (items.length ? items : ['']).forEach((it) => addPlanRow(listEl, it, false));
-    } else {
-      items.forEach((it, i) => {
-        const row = document.createElement('div'); row.className = 'plan-row';
-        const ic = document.createElement('span'); ic.className = 'plan-ic'; ic.textContent = (i + 1) + '.';
-        const tx = document.createElement('span'); tx.className = 'plan-tx'; tx.textContent = it;
-        row.appendChild(ic); row.appendChild(tx); listEl.appendChild(row);
-      });
-    }
-    return listEl;
-  }
-
-  // Re-serialize the (possibly edited) rows back into a numbered list the host can parse.
-  function collectPlanSteps(listEl) {
-    const out = [];
-    listEl.querySelectorAll('.plan-row .plan-tx').forEach((el) => { const t = (el.textContent || '').trim(); if (t) out.push(t); });
-    return out.map((s, i) => `${i + 1}. ${s}`).join('\n');
   }
 
   // Pinned "changed files" review bar above the composer (Cursor/Kilo-style). Shows

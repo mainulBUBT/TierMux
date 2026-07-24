@@ -31,6 +31,8 @@ import { createTodoWriteTool } from './ui/todo';
 import { createQuestionTool } from './ui/question';
 import { createMcpTools } from './mcp/mcp';
 import { createExploreTool } from './explore';
+import { createDiagnosticsTool } from './workspace/diagnostics';
+import { createFetchUrlTool } from './network/fetchUrl';
 
 export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, router: Router): ToolSet {
   // Ask mode: no tools at all, not even read-only ones. Two reasons, not one:
@@ -52,6 +54,8 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
     listDir: createListDirTool(),
     glob: createGlobTool(),
     grep: createGrepTool(),
+    getDiagnostics: createDiagnosticsTool(),
+    fetchUrl: createFetchUrlTool(),
     explore: createExploreTool(router, opts.abortSignal),
     todowrite: createTodoWriteTool(opts.onTodos),
     question: createQuestionTool(opts.onAskUser),

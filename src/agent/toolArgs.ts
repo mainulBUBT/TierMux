@@ -146,8 +146,20 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
   }
 
   if (calls.length === 0) {
+    // Shape A: {"name":"...","arguments":{...}}  (OpenAI-style inline)
     const blob = /\{\s*"name"\s*:\s*"([a-zA-Z0-9_\-]+)"\s*,\s*"arguments"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
     while ((m = blob.exec(text)) !== null) {
+      const name = m[1];
+      if (toolNames.has(name)) calls.push({ name, arguments: m[2] });
+    }
+  }
+
+  if (calls.length === 0) {
+    // Shape B: {"type":"function","name":"...","parameters":{...}}  (Claude/Anthropic-style
+    // inline tool-call that weak models — e.g. Cloudflare's llama-3.3 — emit as content text
+    // because they don't speak the tools API properly). Parameters map to arguments.
+    const typed = /\{\s*"type"\s*:\s*"function"\s*,\s*"name"\s*:\s*"([a-zA-Z0-9_\-]+)"\s*,\s*"parameters"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
+    while ((m = typed.exec(text)) !== null) {
       const name = m[1];
       if (toolNames.has(name)) calls.push({ name, arguments: m[2] });
     }

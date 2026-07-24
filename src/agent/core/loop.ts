@@ -149,6 +149,54 @@ function roughTokens(messages: CoreMessage[]): number {
   return Math.ceil(chars / 4);
 }
 
+/** System-prompt tail for the forced synthesis turn — tells the model the tool work is done and
+ *  it must now answer the user in plain language. */
+const SYNTH_SUFFIX =
+  '\n\nYou have finished using tools. Using ONLY what you learned from the tool results above, '
+  + 'write your final answer to the user now — clear, plain language, no tool calls. Summarize '
+  + 'what you did and what you found, and directly address the user\'s original request.';
+
+/**
+ * Forced synthesis turn — run after the main loop when the model acted via tools but produced no
+ * final text. Re-invokes the SAME routed model with the full tool transcript plus an explicit
+ * "answer now" instruction, with the tool loop disabled (single step, no tools) so the only way
+ * out is natural-language text. Returns "" if it also yields nothing (caller applies a fallback).
+ *
+ * `onChunk`/`onReasoning` keep streaming the synthesis live into the UI as if it were a normal
+ * answer turn — the user sees "Writing answer…" then the text, not a silent stall.
+ */
+async function forceSynthesis(
+  languageModel: unknown,
+  system: string,
+  opts: AgentOpts,
+  workMessages: ChatMessage[],
+  onChunk: (t: string) => void,
+  onReasoning: (d: string) => void,
+): Promise<string> {
+  opts.onStep('synthesizing', 'Writing answer…');
+  try {
+    const messages = toCoreMessages([...opts.messages, ...workMessages]);
+    messages.push({ role: 'user', content: 'Based on the tool results above, give your final answer now.' });
+    const synth = streamText({
+      model: languageModel as any,
+      system: (system || '') + SYNTH_SUFFIX,
+      messages: messages as any,
+      // No `tools` + single-step stop → the model cannot delegate again, it must answer.
+      stopWhen: [isStepCount(1)],
+      abortSignal: opts.abortSignal,
+    } as any);
+    let out = '';
+    for await (const part of (synth as any).fullStream) {
+      if (part.type === 'text-delta') { const t = part.text ?? part.delta ?? ''; out += t; onChunk(t); }
+      else if (part.type === 'reasoning-delta') { const d = part.text ?? part.delta ?? ''; onReasoning(d); }
+      else if (part.type === 'error') { break; }
+    }
+    return out;
+  } catch {
+    return ''; // synthesis is best-effort — never let it mask the original turn's outcome
+  }
+}
+
 export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentResult> {
   const maxIterations = vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxIterations', 25);
   // Once the running tool-loop context passes this many tokens, prune stale tool outputs and old
@@ -259,21 +307,97 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       onStepStart: () => opts.onStep('thinking', 'Thinking…'),
     } as any);
 
+    let hadToolCalls = false;
+
+    // ── Two-buffer state machine (speculative draft vs canonical reply) ──────────────
+    // A tool call is a MIDDLE step, not a final answer. Text the model emits in a step that ALSO
+    // issues a tool call ("Let me search…") is provisional narration — fine to show live as a
+    // draft, but it must NEVER become the committed assistant message. AI SDK 7 emits
+    // `start-step`/`finish-step` parts, so we know exactly when a step ends and can commit or
+    // discard its text by INTENT rather than by fragile heuristics.
+    //
+    // Phase models the intent the user described:
+    //   idle → text → (tool-call) planning → (tool-result) waiting_final → (text) final
+    // Only text committed in the FINAL phase (a pure-text step after all tool activity) is
+    // eligible to be the permanent reply. liveBuffer streams to the UI as a draft throughout;
+    // the webview reconciles the draft → canonical on `assistantMessage`.
+    //
+    // STREAM ROUTING (the AI SDK "Chain of Thought vs chat" separation, made concrete):
+    // Text the model emits inside a step that ALSO issues a tool call is provisional narration
+    // ("Let me search…"), NOT chat. We buffer it per-step and decide at `finish-step`: a tool
+    // step's buffered text is routed to `onReasoning` (the CoT block) so it surfaces as thinking,
+    // never as the chat reply; a pure-text step's buffered text is the answer and streams live to
+    // `onChunk`. This is exactly how the AI SDK keeps reasoning out of the message bubble.
+    type Phase = 'idle' | 'text' | 'planning' | 'waiting_final' | 'final';
+    let phase: Phase = 'idle';
+    let finalBuffer = '';    // canonical reply — last pure-text (final-answer) step only
+    let stepText = '';       // text accumulated in the CURRENT step (provisional until finish-step)
+    let stepHasTool = false; // current step issued a tool call → its text is narration
+    // Per-step live streaming: once we've SEEN a tool call in the current step, further text in
+    // this step is narration being generated alongside the tool call — route to reasoning. We
+    // can only route text emitted BEFORE the tool call retroactively, at finish-step.
+    let streamedThisStep = false; // did we already stream this step's text live to onChunk?
+
     for await (const part of (result as any).fullStream) {
-      if (part.type === 'text-delta') { text += part.text ?? part.delta ?? ''; opts.onChunk(part.text ?? part.delta ?? ''); }
-      else if (part.type === 'reasoning-delta') { const d = part.text ?? part.delta ?? ''; reasoning += d; opts.onReasoning(d); }
-      else if (part.type === 'tool-call') {
+      if (part.type === 'start-step') {
+        stepText = ''; stepHasTool = false; streamedThisStep = false;
+      } else if (part.type === 'finish-step') {
+        // Commit/discard by intent. A pure-text step (no tool call) is an answer step — its text
+        // is canonical; the LAST such step wins (earlier ones, if any, are superseded). A tool
+        // step's text was narration → route it to reasoning (CoT) instead of the chat reply.
+        if (stepHasTool) {
+          if (stepText.trim()) {
+            // Retrospective routing: this text streamed live to the chat bubble as a draft, but
+            // the step turned out to be a tool-planning step. Treat it as thinking instead. The
+            // webview's toolStatus/reasoning path will render it in the CoT block, and the
+            // assistantMessage reconciliation drops the draft bubble.
+            reasoning += stepText;
+            opts.onReasoning(stepText);
+          }
+        } else if (stepText.trim()) {
+          finalBuffer = stepText;
+          phase = hadToolCalls ? 'final' : 'text';
+        }
+      } else if (part.type === 'text-delta') {
+        const t = part.text ?? part.delta ?? '';
+        stepText += t;
+        // Stream to chat ONLY if we're confident this step won't issue a tool call: i.e. we're
+        // past all tool activity (waiting_final/final), or this is a pure-chat turn (idle/text and
+        // no tool has run yet in the turn). Within the FIRST step of a tool turn we can't yet tell,
+        // so we buffer until finish-step commits it — that's the one case where live streaming is
+        // deferred, and it's exactly the "Let me search…" narration we must not show as chat.
+        if (phase === 'waiting_final' || phase === 'final' || phase === 'text' || (phase === 'idle' && !hadToolCalls)) {
+          streamedThisStep = true;
+          opts.onChunk(t);
+        }
+        if (phase === 'idle') phase = 'text';
+        else if (phase === 'waiting_final') phase = 'final';
+      } else if (part.type === 'reasoning-delta') {
+        const d = part.text ?? part.delta ?? ''; reasoning += d; opts.onReasoning(d);
+      } else if (part.type === 'tool-call') {
+        hadToolCalls = true; stepHasTool = true; phase = 'planning';
+        // If text from THIS step already streamed live to the chat bubble as a tentative reply,
+        // it's now revealed to be narration (a tool call arrived in the same step). Retract the
+        // draft so it doesn't linger in the chat; the finish-step handler re-routes it to reasoning.
+        if (streamedThisStep) opts.onRetractDraft?.();
         opts.onTool({ toolCallId: part.toolCallId, name: part.toolName, args: part.input, state: 'running' });
       } else if (part.type === 'tool-result') {
+        phase = 'waiting_final';
         const detail = typeof part.output === 'string' ? part.output : JSON.stringify(part.output ?? '');
         opts.onTool({ toolCallId: part.toolCallId, name: part.toolName, args: part.input, state: 'done', detail });
       } else if (part.type === 'tool-error') {
+        phase = 'waiting_final';
         const detail = part.error instanceof Error ? part.error.message : String(part.error ?? 'tool error');
         opts.onTool({ toolCallId: part.toolCallId, name: part.toolName, args: part.input, state: 'error', detail });
       } else if (part.type === 'error') {
         opts.onError(part.error instanceof Error ? part.error.message : String(part.error));
       }
     }
+
+    // Canonical reply = the final-answer step's text. A tool turn with no committed answer stays
+    // empty so the forced synthesis turn below fires, rather than showing narration as the answer.
+    text = finalBuffer.trim();
+    void phase;
 
     // Read the finish reason AFTER consuming the full stream — the SDK resolves this
     // Promise only once all parts (including tool results) have been emitted.
@@ -292,6 +416,10 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     }
 
     const steps: any[] = (await (result as any).steps) ?? [];
+
+    // `text` is already the canonical reply (finalBuffer from the state machine above). The steps
+    // loop below only reconstructs the internal work transcript (tool calls + results) for memory —
+    // it does NOT determine the user-visible answer.
     for (const step of steps) {
       const calls: any[] = step.toolCalls ?? [];
       if (calls.length === 0) continue;
@@ -305,6 +433,24 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       }
     }
     if (text.trim()) workMessages.push({ role: 'assistant', content: text });
+
+    // FORCE A SYNTHESIS TURN. A tool call is a MIDDLE step, not a final answer. If the model
+    // acted (one or more tool calls ran) but produced no natural-language text, the turn would
+    // end "silent" — the user sees a queue of ✓ tools and zero words (the exact "agent ended on
+    // a bare tool call" gap). Re-prompt with the tool transcript and an explicit instruction to
+    // ANSWER NOW, with the tool loop disabled (stopWhen: 1 step, no tools) so the model must
+    // produce text. This is the single biggest fix for weak/instruct models that delegate via
+    // tools (e.g. explore) and then stop without synthesizing.
+    if (!text.trim() && hadToolCalls && !paused && !opts.abortSignal?.aborted) {
+      text = await forceSynthesis(languageModel, system, opts, workMessages, (t) => { text += t; opts.onChunk(t); }, (d) => { reasoning += d; opts.onReasoning(d); }) || text;
+      if (text.trim()) workMessages.push({ role: 'assistant', content: text });
+    }
+
+    // Last-resort non-empty guarantee: even if synthesis failed/returned nothing, never hand
+    // back a blank turn — that reads as the old silent "0 out" symptom. Tell the user plainly.
+    if (!text.trim()) {
+      text = 'I looked into this and ran some tools, but couldn\'t produce a final answer. Try rephrasing the request, or switch to a stronger model.';
+    }
 
     return {
       text,
