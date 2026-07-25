@@ -13,7 +13,7 @@ import type { RxMessage } from './bridge';
 import { $, escapeHtml, showToast } from './dom';
 import { renderMarkdown } from './markdown';
 import { buildReasoningBlock, updateReasoningBlock, buildToolCard, toolLabel, activityFor } from './ui/tool/ToolCard';
-import { createPlan, createQueue, createCheckpoint, planDataFromStepText, planDataFromTodos } from './ui/components';
+import { createPlan, createCheckpoint, planDataFromStepText, planDataFromTodos } from './ui/components';
 import { handleAssistantStart } from './handlers/assistantStart';
 import { handleAgentStep } from './handlers/agentStep';
 import { handleToolStatus } from './handlers/toolStatus';
@@ -314,7 +314,7 @@ const STATE_LABEL = {
     if (executing) {
       executingPlanRequestId = requestId;
       modeBtn.classList.add('executing');
-      modeBtnLabel.textContent = 'Agent ⚡';
+      modeBtnLabel.innerHTML = `Agent ${ICON.zap}`;
       modeBtn.title = 'Executing approved plan…';
     } else {
       if (executingPlanRequestId !== requestId) return;
@@ -648,7 +648,7 @@ const STATE_LABEL = {
 
     const logoHtml = window.__LOGO_URI__
       ? `<img class="empty-logo-img" src="${window.__LOGO_URI__}" alt="TierMux" onerror="this.style.display='none'" />`
-      : `<div class="empty-logo">⚡</div>`;
+      : `<div class="empty-logo">${ICON.zap}</div>`;
 
     el.innerHTML = `
       <div class="empty-hero">
@@ -817,7 +817,7 @@ const STATE_LABEL = {
       const now = el.classList.contains('on') ? 'none' : which; // second click un-votes
       el.classList.toggle('on', now === which); other.classList.remove('on');
       if (requestId) send({ type: 'vote', requestId, vote: now });
-      showToast(now === 'up' ? '👍 Liked — prefer this model' : now === 'down' ? '👎 Disliked — avoid this model' : 'Feedback removed', el);
+      showToast(now === 'up' ? 'Liked — prefer this model' : now === 'down' ? 'Disliked — avoid this model' : 'Feedback removed', el);
     };
     const up = iconBtn(ICON.up, 'Like — prefer this model for similar tasks', () => set('up'));
     const down = iconBtn(ICON.down, 'Dislike — avoid this model for similar tasks', () => set('down'));
@@ -1460,10 +1460,8 @@ const STATE_LABEL = {
   }
 
   function iconForKind(k) {
-    if (k === 'image') return '🖼';
-    if (k === 'pdf') return '📕';
-    if (k === 'doc') return '📝';
-    return '📄';
+    if (k === 'image') return ICON.image;
+    return ICON.file;
   }
 
   function renderChips() {
@@ -1718,7 +1716,7 @@ const STATE_LABEL = {
       row.className = 'ac-item' + (i === 0 ? ' active' : '');
       // Slash items' own label already starts with '/' (e.g. "/explain") — no separate icon,
       // or it renders as a redundant double slash ("/ /explain").
-      const icon = it.kind === 'folder' ? '📁' : it.kind === 'symbol' ? '◈' : it.kind === 'slash' ? '' : it.kind === 'grep' ? '🔎' : '📄';
+      const icon = it.kind === 'folder' ? ICON.folder : it.kind === 'symbol' ? '◈' : it.kind === 'slash' ? '' : it.kind === 'grep' ? ICON.search : ICON.file;
       row.innerHTML = `<span class="ac-icon">${icon}</span><span class="ac-label"></span><span class="ac-detail muted"></span>`;
       row.querySelector('.ac-label').textContent = it.label;
       row.querySelector('.ac-detail').textContent = it.detail || '';
@@ -1769,6 +1767,10 @@ const STATE_LABEL = {
         t.tools.appendChild(block);
       } else {
         updateReasoningBlock(block, msg.detail || '', msg.state === 'done', msg.durationMs);
+        // Reasoning resumed after a tool call in between — re-append (moves the EXISTING node,
+        // doesn't clone) so the block floats to the end of the flow, after that tool card, instead
+        // of staying pinned at wherever it first appeared while newer tool cards pile up after it.
+        t.tools.appendChild(block);
       }
       scrollDown();
       return;
@@ -1806,7 +1808,7 @@ const STATE_LABEL = {
       t.tools.appendChild(card);
     }
     
-    const { icon, title, hint } = toolLabel(msg.name, msg.args, msg.detail);
+    const { icon, title, hint } = toolLabel(msg.name, msg.args, msg.detail, msg.state);
     
     // Update AI Elements header
     card.querySelector('.tm-tool-card-icon').textContent = icon;
@@ -3313,7 +3315,7 @@ const STATE_LABEL = {
   // (otherwise unchanged) render logic below writes into the right session's DOM regardless of
   // which session is currently being viewed. 'switchSession' is included so its case body can
   // use the returned `existed` flag to tell a brand-new pane from an already-live one.
-  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'watchdogWarning', 'watchdogActionable', 'watchdogDismissed', 'todos', 'planData', 'queueData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
+  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'watchdogWarning', 'watchdogActionable', 'watchdogDismissed', 'todos', 'planData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
 
   // ---------- inbound messages ----------
   window.addEventListener('message', (event) => {
@@ -3444,16 +3446,6 @@ const STATE_LABEL = {
         scrollDown();
         break;
       }
-      case 'queueData': {
-        // AI Elements Queue card (agent mode) — live tool-execution queue, mounted just under the
-        // Plan card (if any) and replaced in place as each tool cycles pending→running→done.
-        const t = ensureTarget(msg.requestId);
-        const next = createQueue({ data: msg.data });
-        const after = t.planEl ? t.planEl.nextSibling : null;
-        if (t.queueEl) t.queueEl.replaceWith(next); else if (after) t.flow.insertBefore(next, after); else t.flow.insertBefore(next, t.flow.firstChild);
-        t.queueEl = next;
-        break;
-      }
       case 'toolStatus': {
         const ctx = createHandlerContext();
         handleToolStatus(ctx, msg);
@@ -3514,28 +3506,30 @@ const STATE_LABEL = {
       }
       case 'commandApproval': {
         const t = ensureTarget(msg.requestId);
-        const card = document.createElement('div'); card.className = 'cmd-approval'; card.dataset.id = msg.id;
-        const head = document.createElement('div'); head.className = 'cmd-approval-head';
-        head.textContent = 'Run this command?';
-        const pre = document.createElement('pre'); pre.className = 'cmd-approval-cmd';
-        const code = document.createElement('code'); code.textContent = msg.command; pre.appendChild(code);
-        card.appendChild(head); card.appendChild(pre);
-        if (msg.cwd) { const cwd = document.createElement('div'); cwd.className = 'cmd-approval-cwd'; cwd.textContent = 'in ' + msg.cwd; card.appendChild(cwd); }
-        const actions = document.createElement('div'); actions.className = 'cmd-approval-actions';
-        const run = document.createElement('button'); run.className = 'primary'; run.textContent = 'Run';
-        const skip = document.createElement('button'); skip.className = 'secondary'; skip.textContent = 'Skip';
+        const card = document.createElement('div'); card.className = 'tm-approval-card'; card.dataset.id = msg.id;
+        const text = document.createElement('p'); text.className = 'tm-approval-text';
+        text.appendChild(document.createTextNode('This tool wants to run the command '));
+        const code = document.createElement('code'); code.className = 'tm-approval-inline-code'; code.textContent = msg.command;
+        text.appendChild(code);
+        text.appendChild(document.createTextNode('. Do you approve this action?'));
+        card.appendChild(text);
+        if (msg.cwd) { const cwd = document.createElement('div'); cwd.className = 'tm-approval-hint'; cwd.textContent = 'in ' + msg.cwd; card.appendChild(cwd); }
+        const actions = document.createElement('div'); actions.className = 'tm-approval-actions';
+        const skip = document.createElement('button'); skip.className = 'secondary'; skip.textContent = 'Reject';
+        const run = document.createElement('button'); run.className = 'primary'; run.textContent = 'Approve';
         const decide = (approved) => {
           run.disabled = skip.disabled = true;
           actions.remove();
+          card.classList.add(approved ? 'approved' : 'rejected');
           const note = document.createElement('div');
-          note.className = 'cmd-approval-note';
-          note.textContent = approved ? '✓ Approved' : '✗ Skipped';
+          note.className = 'tm-approval-note';
+          note.textContent = approved ? '✓ Approved' : '✗ Rejected';
           card.appendChild(note);
           send({ type: 'commandApprovalResponse', id: msg.id, approved, sessionId: msg.sessionId });
         };
         run.addEventListener('click', () => decide(true));
         skip.addEventListener('click', () => decide(false));
-        actions.appendChild(run); actions.appendChild(skip);
+        actions.appendChild(skip); actions.appendChild(run);
         card.appendChild(actions);
         t.tools.appendChild(card);
         scrollDown();
@@ -3544,29 +3538,30 @@ const STATE_LABEL = {
       case 'editApproval': {
         const t = ensureTarget(msg.requestId);
         const del = msg.kind === 'delete';
-        const card = document.createElement('div'); card.className = 'cmd-approval'; card.dataset.id = msg.id;
-        const head = document.createElement('div'); head.className = 'cmd-approval-head';
-        head.textContent = msg.title || (del ? 'Delete this file?' : 'Apply these changes?');
-        const pre = document.createElement('pre'); pre.className = 'cmd-approval-cmd';
-        const code = document.createElement('code'); code.textContent = msg.path; pre.appendChild(code);
-        const hint = document.createElement('div'); hint.className = 'cmd-approval-cwd';
-        hint.textContent = del ? 'Deletes the file from the workspace.' : 'Review the diff in the editor, then apply or reject.';
-        card.appendChild(head); card.appendChild(pre); card.appendChild(hint);
-        const actions = document.createElement('div'); actions.className = 'cmd-approval-actions';
-        const ok = document.createElement('button'); ok.className = 'primary'; ok.textContent = del ? 'Delete' : 'Apply';
+        const card = document.createElement('div'); card.className = 'tm-approval-card'; card.dataset.id = msg.id;
+        const text = document.createElement('p'); text.className = 'tm-approval-text';
+        text.appendChild(document.createTextNode(del ? 'This tool wants to delete the file ' : 'This tool wants to apply changes to the file '));
+        const code = document.createElement('code'); code.className = 'tm-approval-inline-code'; code.textContent = msg.path;
+        text.appendChild(code);
+        text.appendChild(document.createTextNode('. Do you approve this action?'));
+        card.appendChild(text);
+        if (!del) { const hint = document.createElement('div'); hint.className = 'tm-approval-hint'; hint.textContent = 'Review the diff in the editor before deciding.'; card.appendChild(hint); }
+        const actions = document.createElement('div'); actions.className = 'tm-approval-actions';
         const no = document.createElement('button'); no.className = 'secondary'; no.textContent = del ? 'Keep' : 'Reject';
+        const ok = document.createElement('button'); ok.className = 'primary'; ok.textContent = del ? 'Delete' : 'Approve';
         const decide = (approved) => {
           ok.disabled = no.disabled = true;
           actions.remove();
+          card.classList.add(approved ? 'approved' : 'rejected');
           const note = document.createElement('div');
-          note.className = 'cmd-approval-note';
+          note.className = 'tm-approval-note';
           note.textContent = approved ? (del ? '✓ Deleted' : '✓ Applied') : (del ? '✗ Kept' : '✗ Rejected');
           card.appendChild(note);
           send({ type: 'editApprovalResponse', id: msg.id, approved, sessionId: msg.sessionId });
         };
         ok.addEventListener('click', () => decide(true));
         no.addEventListener('click', () => decide(false));
-        actions.appendChild(ok); actions.appendChild(no);
+        actions.appendChild(no); actions.appendChild(ok);
         card.appendChild(actions);
         t.tools.appendChild(card);
         scrollDown();
@@ -3574,26 +3569,31 @@ const STATE_LABEL = {
       }
       case 'permissionAsk': {
         const t = ensureTarget(msg.requestId);
-        const card = document.createElement('div'); card.className = 'cmd-approval'; card.dataset.id = msg.id;
-        const head = document.createElement('div'); head.className = 'cmd-approval-head';
-        head.textContent = msg.title || 'Approve tool';
-        card.appendChild(head);
+        const card = document.createElement('div'); card.className = 'tm-approval-card'; card.dataset.id = msg.id;
+        // permission.ts sends a lead-in sentence ("This tool wants to delete the file") plus
+        // the path/command as `pattern` — inlined here as a code chip, matching the AI Elements
+        // Confirmation reference ("This tool wants to delete the file `/tmp/example.txt`. Do you
+        // approve this action?") so the user always sees WHICH file/command is affected.
+        const text = document.createElement('p'); text.className = 'tm-approval-text';
+        text.appendChild(document.createTextNode((msg.title || 'This tool wants to run') + ' '));
         if (msg.pattern) {
-          const pre = document.createElement('pre'); pre.className = 'cmd-approval-cmd';
-          const code = document.createElement('code');
+          const code = document.createElement('code'); code.className = 'tm-approval-inline-code';
           code.textContent = Array.isArray(msg.pattern) ? msg.pattern.join(', ') : msg.pattern;
-          pre.appendChild(code);
-          card.appendChild(pre);
+          text.appendChild(code);
+          text.appendChild(document.createTextNode('. '));
         }
-        const actions = document.createElement('div'); actions.className = 'cmd-approval-actions';
-        const once = document.createElement('button'); once.className = 'primary'; once.textContent = 'Once';
-        const always = document.createElement('button'); always.className = 'secondary'; always.textContent = 'Always';
+        text.appendChild(document.createTextNode('Do you approve this action?'));
+        card.appendChild(text);
+        const actions = document.createElement('div'); actions.className = 'tm-approval-actions';
         const reject = document.createElement('button'); reject.className = 'secondary'; reject.textContent = 'Reject';
+        const always = document.createElement('button'); always.className = 'secondary'; always.textContent = 'Always';
+        const once = document.createElement('button'); once.className = 'primary'; once.textContent = 'Approve';
         const decide = (response) => {
           once.disabled = always.disabled = reject.disabled = true;
           actions.remove();
+          card.classList.add(response === 'reject' ? 'rejected' : 'approved');
           const note = document.createElement('div');
-          note.className = 'cmd-approval-note';
+          note.className = 'tm-approval-note';
           note.textContent = response === 'reject' ? '✗ Rejected' : response === 'always' ? '✓ Allowed (always)' : '✓ Allowed (once)';
           card.appendChild(note);
           send({ type: 'permissionAskResponse', id: msg.id, response, sessionId: msg.sessionId });
@@ -3601,7 +3601,7 @@ const STATE_LABEL = {
         once.addEventListener('click', () => decide('once'));
         always.addEventListener('click', () => decide('always'));
         reject.addEventListener('click', () => decide('reject'));
-        actions.appendChild(once); actions.appendChild(always); actions.appendChild(reject);
+        actions.appendChild(reject); actions.appendChild(always); actions.appendChild(once);
         card.appendChild(actions);
         t.tools.appendChild(card);
         scrollDown();
@@ -3689,12 +3689,13 @@ const STATE_LABEL = {
         // The host force-settled a commandApproval/editApproval/permissionAsk card without a
         // click (e.g. the run already ended) — disable it so a stale click is visibly a no-op
         // instead of silently doing nothing.
-        activeThreadEl.querySelectorAll('.cmd-approval').forEach((card) => {
+        activeThreadEl.querySelectorAll('.tm-approval-card').forEach((card) => {
           if (card.dataset.id === msg.id) {
-            const actions = card.querySelector('.cmd-approval-actions');
+            const actions = card.querySelector('.tm-approval-actions');
             if (actions) actions.remove();
+            card.classList.add('rejected');
             const note = document.createElement('div');
-            note.className = 'cmd-approval-note';
+            note.className = 'tm-approval-note';
             note.textContent = '— run ended —';
             card.appendChild(note);
           }
@@ -3758,14 +3759,15 @@ const STATE_LABEL = {
       }
       case 'clearDraft': {
         // A tool call just arrived in the same step as text that streamed live as a tentative
-        // reply — that text was narration, not the answer. Drop the live draft bubble so it
-        // doesn't linger in the chat; finish-step re-routes it to the Chain-of-Thought block.
+        // reply — that text was narration, not the answer. Drop ONLY the segment currently being
+        // streamed (this step's narration); earlier steps already closed their own .flow-text divs
+        // (see toolStatus.ts resetting currentText per tool card) and may hold a legitimately
+        // finalized answer from an earlier step in this same turn — those must stay visible.
         const t = ensureTarget(msg.requestId);
         if (t.currentText) {
           t.currentText.remove();
           t.currentText = null;
         }
-        t.flow.querySelectorAll('.flow-text').forEach((el) => el.remove());
         break;
       }
       case 'assistantMessage': {
@@ -3917,7 +3919,7 @@ const STATE_LABEL = {
         // escalated takeover that also errors) can't stack two identical red marks.
         dest.querySelectorAll('.error-notice').forEach((e) => e.remove());
         const el = document.createElement('div'); el.className = 'error-notice';
-        el.textContent = '⚠ ' + msg.message;
+        el.innerHTML = `${ICON.warning}${escapeHtml(msg.message)}`;
         dest.appendChild(el);
         scrollDown();
         break;

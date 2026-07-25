@@ -43,11 +43,18 @@ export function createToolApproval(opts: AgentOpts) {
     }
 
     if (!opts.onPermissionAsk) return 'approved'; // no gate wired (e.g. a test harness) — allow
-    const title = name === 'runCommand'
-      ? `Run command: ${(toolCall.input as { command?: string })?.command ?? ''}`
-      : `${name} — apply this change?`;
-    const command = name === 'runCommand' ? (toolCall.input as { command?: string })?.command : undefined;
-    const resp = await opts.onPermissionAsk({ title, command });
+    // Lead-in sentence + the command/path shown separately (as `pattern`, rendered as an inline
+    // code chip by the webview) — mirrors the AI Elements Confirmation reference ("This tool
+    // wants to delete the file `path`. Do you approve this action?") instead of a bare
+    // "editFile — apply this change?" that never named WHICH file.
+    const input = toolCall.input as { command?: string; path?: string };
+    const title = name === 'runCommand' ? 'This tool wants to run the command'
+      : name === 'deleteFile' ? 'This tool wants to delete the file'
+      : name === 'editFile' ? 'This tool wants to apply changes to the file'
+      : 'This tool wants to write to the file';
+    const pattern = name === 'runCommand' ? input.command : input.path;
+    const command = name === 'runCommand' ? input.command : undefined;
+    const resp = await opts.onPermissionAsk({ title, pattern, command });
     return resp === 'reject' ? { type: 'denied' } : 'approved';
   };
 }

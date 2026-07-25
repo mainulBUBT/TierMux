@@ -3,7 +3,8 @@
 // Conversation state management with save/restore functionality
 // Following AI Elements Checkpoint component design patterns adapted for vanilla TypeScript
 
-import { el, appendChildren, type ElChild } from '../dom';
+import { el, appendChildren, icon, type ElChild } from '../dom';
+import { ICON } from '../../icons';
 
 // ========== Types ==========
 
@@ -84,7 +85,7 @@ function createCheckpointList(checkpoints: Checkpoint[], activeId: string | unde
   
   if (checkpoints.length === 0) {
     list.appendChild(el('div', { class: 'tm-checkpoint-empty' },
-      el('div', { class: 'tm-checkpoint-empty-icon' }, '💾'),
+      el('div', { class: 'tm-checkpoint-empty-icon' }, icon(ICON.save)),
       'No checkpoints yet'
     ));
     return list;
@@ -102,7 +103,7 @@ function createCheckpointList(checkpoints: Checkpoint[], activeId: string | unde
 
 function createCheckpointHeader(): HTMLElement {
   return el('div', { class: 'tm-checkpoint-header' },
-    el('span', { class: 'tm-checkpoint-header-icon' }, '💾'),
+    el('span', { class: 'tm-checkpoint-header-icon' }, icon(ICON.save)),
     'Checkpoints'
   );
 }
@@ -214,7 +215,7 @@ export function createCheckpointHistory(
   
   if (checkpoints.length === 0) {
     history.appendChild(el('div', { class: 'tm-checkpoint-empty' },
-      el('div', { class: 'tm-checkpoint-empty-icon' }, '📜'),
+      el('div', { class: 'tm-checkpoint-empty-icon' }, icon(ICON.revert)),
       'No checkpoint history'
     ));
     return history;
@@ -250,7 +251,7 @@ export function createCheckpointHistory(
           e.stopPropagation();
           onDelete(checkpoint.id);
         }
-      }, '🗑'));
+      }, icon(ICON.trash)));
     }
     
     appendChildren(item, [info, actions]);

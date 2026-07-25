@@ -413,9 +413,11 @@ details[open].reasoning summary::before { content: '▾ '; }
 .error { color: var(--vscode-errorForeground); }
 /* Error notice inline in the flow — simpler than a nested bubble */
 .error-notice {
+  display: flex; align-items: center; gap: 6px;
   font-size: 12px; opacity: .85; padding: 2px 0;
   color: var(--vscode-errorForeground);
 }
+.error-notice svg { flex: 0 0 auto; }
 
 /* Watchdog — observability only. `.watchdog-notice` (warning: text-only, like .notice) and
  * `.watchdog-card` (actionable: buttons) share one element per request, swapped in place. */
@@ -447,21 +449,9 @@ details[open].reasoning summary::before { content: '▾ '; }
    media/styles/components/plan.css (Chain-of-Thought Plan component). */
 .resume-actions { display: flex; gap: 8px; margin-top: 8px; }
 
-/* Inline runCommand approval card (shown in chat instead of a native modal) */
-.cmd-approval {
-  margin: 6px 0; padding: 8px 10px;
-  border: 1px solid var(--vscode-panel-border); border-radius: 8px;
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.12));
-}
-.cmd-approval-head { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
-.cmd-approval-cmd {
-  margin: 0; padding: 6px 8px; border-radius: 6px; overflow-x: auto;
-  background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.18));
-  font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; white-space: pre-wrap; word-break: break-all;
-}
-.cmd-approval-cwd { font-size: 11px; opacity: .7; margin-top: 4px; }
-.cmd-approval-actions { display: flex; gap: 8px; margin-top: 8px; }
-.cmd-approval-note { font-size: 11px; opacity: .7; margin-top: 6px; }
+/* Inline runCommand/editFile/permission approval card now lives entirely in
+   media/styles/components/approval-card.css (AI Elements look — icon + title header, status
+   accent), matching tool-card.css/reasoning.css instead of this old plain box. */
 
 /* Clarifying questions the planner asks before producing a plan (Plan mode) —
    Cursor-style clean list, matching the .plan-* card language below rather than
@@ -704,7 +694,7 @@ details[open].reasoning summary::before { content: '▾ '; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .chip .chip-thumb { width: 18px; height: 18px; object-fit: cover; border-radius: 4px; flex: 0 0 auto; }
-.chip .chip-icon { flex: 0 0 auto; }
+.chip .chip-icon { flex: 0 0 auto; display: inline-flex; align-items: center; }
 .chip button { background: none; border: none; color: inherit; cursor: pointer; padding: 0; flex: 0 0 auto; }
 
 .composer.drag { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -2px; background: var(--vscode-editorHoverBackground); }
@@ -869,7 +859,7 @@ button#mode-btn.executing .mode-label {
 .ac-pop.hidden { display: none; }
 .ac-item { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }
 .ac-item.active, .ac-item:hover { background: var(--vscode-list-hoverBackground); }
-.ac-item .ac-icon { flex: 0 0 auto; width: 16px; text-align: center; opacity: .8; }
+.ac-item .ac-icon { flex: 0 0 auto; width: 16px; display: inline-flex; align-items: center; justify-content: center; opacity: .8; }
 .ac-item .ac-label { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ac-item .ac-detail { flex: 1 1 auto; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 
@@ -932,7 +922,8 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 
 .empty-hero { display: flex; flex-direction: column; align-items: center; gap: 20px; text-align: center; }
 .empty-logo-img { width: 96px; height: 96px; object-fit: contain; border-radius: 18px; }
-.empty-logo { font-size: 64px; line-height: 1; }
+.empty-logo { display: flex; color: var(--tm-fg-muted, currentColor); }
+.empty-logo svg { width: 64px; height: 64px; }
 .empty-heading { font-weight: 700; font-size: 20px; letter-spacing: -.02em; line-height: 1.25; padding: 0 8px; }
 
 .empty-recents { display: flex; flex-direction: column; gap: 8px; }

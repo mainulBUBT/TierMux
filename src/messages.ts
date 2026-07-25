@@ -311,9 +311,6 @@ export type OutMessage =
    *  plan executes (plan mode). Derived from the same `TodoItem[]` source as `todos`, so the
    *  two stay in sync; the webview picks Plan vs legacy todo-list by current mode. */
   | { type: 'planData'; sessionId: string; requestId: string; data: PlanDataPayload }
-  /** AI Elements Queue component — the live tool-execution queue (agent mode). One task per
-   *  tool call, cycling pending→running→done/error. Emitted alongside each `toolStatus`. */
-  | { type: 'queueData'; sessionId: string; requestId: string; data: QueueDataPayload }
   | { type: 'failoverNotice'; sessionId: string; requestId: string; from: string; reason: string }
   /** Watchdog — observability only. Warning/actionable are non-blocking; `hasPartialOutput`
    *  gates whether "Accept Current Output" is offered. `dismissed` means real activity resumed
@@ -354,18 +351,4 @@ export interface PlanDataPayload {
   createdAt: number;
   completedTasks: number;
   totalTasks: number;
-}
-
-/** Payload for the AI Elements Queue component — mirrors `QueueData` in media/src/ui/components/Queue.ts. */
-export interface QueueDataPayload {
-  id: string;
-  sections: Array<{
-    id: string;
-    title: string;
-    status: 'pending' | 'completed';
-    tasks: Array<{ id: string; title: string; status: 'pending' | 'running' | 'completed' | 'error'; startTime?: number; endTime?: number; progress?: number; meta?: string }>;
-  }>;
-  totalTasks: number;
-  completedTasks: number;
-  runningTasks: number;
 }

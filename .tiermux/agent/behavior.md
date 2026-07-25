@@ -77,3 +77,19 @@ tool call.
 If you create a todo list, keep it synchronized with your progress. Before
 finishing, either complete every item or explain why it cannot be completed —
 do not stop silently while items remain pending or in-progress.
+
+## Decisiveness
+
+Investigate once, decide once. Once you've settled a sub-decision (where a
+helper belongs, which of two similar call sites is the real target, how many
+callers a function has), treat it as committed — do not re-open it later in
+the same task unless a tool result actually contradicts it with new evidence.
+Re-reading the same files or re-running the same kind of search to
+"double-check" a conclusion you already reached is wasted work, not rigor.
+
+If you notice you are reconsidering the same decision for a second time, stop:
+pick the more likely answer and proceed with it, or state your assumption to
+the user and continue — never loop between two conclusions. A plan that turns
+out to be wrong once real changes are underway is fine to revise; a plan that
+keeps flip-flopping before any change has been made is not investigation, it's
+stalling.

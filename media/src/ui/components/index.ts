@@ -6,10 +6,7 @@
 export { createPlan, createPlanFromTasks, updatePlanProgress, togglePlanTask, planDataFromStepText, planDataFromTodos, parsePlanSteps, detectStepFiles } from './Plan';
 export type { PlanTask, PlanSection, PlanData, PlanOptions, PlanStepStatus } from './Plan';
 
-export { createQueue, createQueueFromTasks, updateQueueTask, createQueueDataFromSections, addQueueTask } from './Queue';
-export type { QueueTask, QueueSection, QueueData, QueueOptions } from './Queue';
-
-export { 
+export {
   createCheckpoint, 
   createCheckpointModal, 
   createCheckpointHistory,

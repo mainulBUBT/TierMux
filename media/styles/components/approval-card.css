@@ -1,0 +1,58 @@
+/* Approval card — commandApproval / editApproval / permissionAsk.
+ * Matches the AI Elements "Confirmation" reference component: an alert-style card with one
+ * flowing prose sentence (inline code chip for the path/command), and a right-aligned action
+ * row (Reject as outline, Approve as solid accent) — no icon, no header row, no left accent
+ * border. Markup built by main.ts's commandApproval/editApproval/permissionAsk handlers. */
+
+.tm-approval-card {
+  margin: var(--tm-gap-md) 0;
+  padding: var(--tm-gap-xl) var(--tm-gap-2xl);
+  border: 1px solid var(--tm-card-border);
+  border-radius: var(--tm-radius-xl);
+  background: var(--tm-card-surface);
+}
+
+.tm-approval-text {
+  margin: 0;
+  font-size: var(--tm-text-base);
+  line-height: 1.6;
+  color: var(--tm-fg);
+}
+
+.tm-approval-inline-code {
+  padding: 2px 6px;
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-surface-code);
+  font-family: var(--tm-font-code);
+  font-size: var(--tm-text-sm);
+  word-break: break-all;
+}
+
+.tm-approval-hint {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-fg-muted);
+  margin-top: var(--tm-gap-sm);
+}
+
+.tm-approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--tm-gap-md);
+  margin-top: var(--tm-gap-xl);
+}
+
+.tm-approval-actions button {
+  padding: var(--tm-gap-md) var(--tm-gap-xl);
+  border-radius: var(--tm-radius-md);
+  font-size: var(--tm-text-base);
+  font-weight: 600;
+}
+
+.tm-approval-note {
+  font-size: var(--tm-text-sm);
+  color: var(--tm-fg-muted);
+  margin-top: var(--tm-gap-lg);
+  text-align: right;
+}
+.tm-approval-card.approved .tm-approval-note { color: var(--tm-status-done); }
+.tm-approval-card.rejected .tm-approval-note { color: var(--tm-fg-muted); }

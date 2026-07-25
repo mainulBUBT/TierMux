@@ -174,6 +174,11 @@ export interface RouteOptions extends CompletionOptions {
   exclude?: string[];
   /** Quality-based escalation: only consider models at least this smart (intelligenceRank <= this). */
   maxIntelligenceRank?: number;
+  /** External cancellation (the Stop button, or a sub-agent's own wall-clock ceiling like
+   *  explore.ts's 45s). Forwarded into each provider's fetchWithTimeout so the actual in-flight
+   *  HTTP request is cancelled, not just future retries; also checked between failover attempts
+   *  so route() stops trying more candidates immediately once aborted. */
+  abortSignal?: AbortSignal;
   /**
    * Streaming text callback — called with each text delta as it arrives.
    * When provided the router uses streamChatCompletion instead of chatCompletion,
@@ -638,7 +643,65 @@ export class Router {
     }
   }
 
+  /**
+   * Zero-token dev/test shortcut for ask/plan/agent modes — gated behind
+   * TIERMUX_FAKE_MODEL=1 so it's never active for a real user. Returns a canned
+   * response instead of calling any provider, letting F5 dev-host testing exercise
+   * the real system prompt, tool set, and streamText plumbing for every mode
+   * without spending real API tokens. On the first turn with tools available it
+   * emits one canned tool-call (so the tool round-trip is exercised too); once the
+   * tool result comes back, it finishes with text so the turn doesn't loop forever.
+   */
+  private async fakeRoute(messages: ChatMessage[], opts: RouteOptions): Promise<RouteResult> {
+    diagLog('router.fake', `taskKind=${opts.taskKind ?? '<none>'} tools=${opts.tools?.length ?? 0}`);
+    const lastMessageWasToolResult = messages[messages.length - 1]?.role === 'tool';
+    const firstTool = opts.tools?.[0];
+    const wantsToolCall = !!firstTool && !lastMessageWasToolResult;
+
+    const message: ChatMessage = wantsToolCall
+      ? {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: 'fake_call_1',
+            type: 'function',
+            function: { name: firstTool!.function.name, arguments: this.fakeArgsFor(firstTool!) },
+          }],
+        }
+      : { role: 'assistant', content: `[fake:${opts.taskKind ?? 'chat'}] canned response — no tokens spent.` };
+
+    if (!wantsToolCall && opts.onChunk && typeof message.content === 'string') opts.onChunk(message.content);
+
+    return {
+      response: {
+        id: 'fake-completion',
+        object: 'chat.completion',
+        created: Date.now(),
+        model: 'fake-model',
+        choices: [{ index: 0, message, finish_reason: wantsToolCall ? 'tool_calls' : 'stop' }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      },
+      platform: 'fake' as Platform,
+      model: 'fake-model',
+      runtimeName: 'Fake (no tokens)',
+    };
+  }
+
+  /** Minimal, schema-shaped placeholder args so a canned fake tool-call doesn't fail
+   *  the tool's own input validation — fills required string/number/array properties. */
+  private fakeArgsFor(tool: NonNullable<RouteOptions['tools']>[number]): string {
+    const params = tool.function.parameters as { properties?: Record<string, { type?: string }>; required?: string[] } | undefined;
+    const args: Record<string, unknown> = {};
+    for (const key of params?.required ?? []) {
+      const type = params?.properties?.[key]?.type;
+      args[key] = type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : 'fake';
+    }
+    return JSON.stringify(args);
+  }
+
   async route(messages: ChatMessage[], opts: RouteOptions = {}): Promise<RouteResult> {
+    if (process.env.TIERMUX_FAKE_MODEL === '1') return this.fakeRoute(messages, opts);
+
     const failures: Array<{ platform: Platform; model: string; reason: string; detail?: string }> = [];
     const maxOut = opts.max_tokens ?? 4096;
 
@@ -704,6 +767,14 @@ export class Router {
     }
 
     candidates: for (const entry of cands) {
+      // Once aborted (Stop button, or a sub-agent's own wall-clock ceiling), stop trying MORE
+      // candidates immediately — without this, an abort only cancelled the CURRENTLY in-flight
+      // request (see fetchWithTimeout) but the failover loop kept moving on to the next model,
+      // multiplying the wait by however many more candidates it tried before giving up.
+      if (opts.abortSignal?.aborted) {
+        failures.push({ platform: entry.platform, model: entry.modelId, reason: 'aborted' });
+        break candidates;
+      }
       const modelKey = `${entry.platform}::${entry.modelId}`;
       const retryCount = triedModels.get(modelKey) || 0;
 
@@ -770,6 +841,7 @@ export class Router {
         reasoningEffort: model?.supportsReasoning ? opts.reasoningEffort : undefined,
         baseUrlOverride: this.settings.getEndpoint(entry.platform),
         timeoutMs: opts.timeoutMs ?? this.timeoutMsFor(provider as { timeoutMs?: number }),
+        abortSignal: opts.abortSignal,
       };
 
       let reserved = toolsTokens;
@@ -811,55 +883,83 @@ export class Router {
                 heldText = '';
               }
             };
-            for await (const chunk of provider.streamChatCompletion(apiKey, fitted, entry.modelId, completionOpts)) {
-              if (chunk.usage) finalUsage = chunk.usage;
-              const delta = chunk.choices?.[0]?.delta;
-              if (!delta) continue;
-              if (delta.content) {
-                const clean = thinkStrip.feed(delta.content);
-                if (clean) {
-                  if (toolsOffered && !holdingToolText && (heldText + clean).trimStart().startsWith('{')) {
-                    // First non-whitespace char is `{` while tools are offered — this could be an
-                    // inline tool call. Hold it back from the live stream until we know.
-                    holdingToolText = true;
+            // A hold that never resolves (no blank line, stream never ends because it aborted) must
+            // not grow unbounded — cap how much text can be withheld from live streaming so a false
+            // positive (or an abort mid-hold, see the finally-flush below) never eats a large reply.
+            const MAX_HOLD_CHARS = 800;
+            let loopCompletedNormally = false;
+            try {
+              for await (const chunk of provider.streamChatCompletion(apiKey, fitted, entry.modelId, completionOpts)) {
+                if (chunk.usage) finalUsage = chunk.usage;
+                const delta = chunk.choices?.[0]?.delta;
+                if (!delta) continue;
+                if (delta.content) {
+                  const clean = thinkStrip.feed(delta.content);
+                  if (clean) {
+                    if (holdingToolText) {
+                      heldText += clean;
+                      // If it no longer looks like a tool call (e.g. has a paragraph break that JSON
+                      // wouldn't, or has grown implausibly long), release it and stream normally.
+                      if (heldText.includes('\n\n') || heldText.length > MAX_HOLD_CHARS) { flushHeld(); holdingToolText = false; }
+                    } else if (toolsOffered) {
+                      // Detect a `{` that opens a line — either at the very start of the reply, or
+                      // appearing after narration a weak model emitted first (e.g. "Let me check...\n
+                      // {"type":"function",...}"), possibly within the same delta chunk. Anything
+                      // before the brace is genuine prose and streams live; the brace onward is held.
+                      const braceMatch = /(?:^|\n)[ \t]*\{/.exec(clean);
+                      if (braceMatch) {
+                        const idx = braceMatch.index + braceMatch[0].lastIndexOf('{');
+                        const pre = clean.slice(0, idx);
+                        if (pre) {
+                          if (firstChunkAt === null) firstChunkAt = Date.now();
+                          chunks.push(pre);
+                          opts.onChunk!(pre);
+                        }
+                        holdingToolText = true;
+                        heldText += clean.slice(idx);
+                      } else {
+                        if (firstChunkAt === null) firstChunkAt = Date.now();
+                        chunks.push(clean);
+                        opts.onChunk!(clean);
+                      }
+                    } else {
+                      if (firstChunkAt === null) firstChunkAt = Date.now();
+                      chunks.push(clean);
+                      opts.onChunk!(clean);
+                    }
                   }
-                  if (holdingToolText) {
-                    heldText += clean;
-                    // If it no longer looks like a tool call (e.g. has a paragraph break that JSON
-                    // wouldn't), release the held text and stream normally from here on.
-                    if (heldText.includes('\n\n')) { flushHeld(); holdingToolText = false; }
+                }
+                // Reasoning models stream their real output in reasoning channels while `content`
+                // is empty or lags behind. Capture every variant so the turn isn't silently blank.
+                const rDelta = reasoningFromDelta(delta as Record<string, unknown>);
+                if (rDelta) {
+                  reasoningChunks.push(rDelta);
+                  opts.onReasoning?.(rDelta);
+                }
+                for (const [pos, tcDelta] of (delta.tool_calls ?? []).entries()) {
+                  // Real OpenAI-wire streams fragment one call per chunk with an explicit `index`;
+                  // providers that fake streaming as a single chunk (e.g. Google) omit it and send
+                  // the full array at once, so fall back to array position, not a shared 0.
+                  const idx = (tcDelta as unknown as { index?: number }).index ?? pos;
+                  const existing = toolCallsByIndex.get(idx);
+                  if (!existing) {
+                    toolCallsByIndex.set(idx, {
+                      id: tcDelta.id ?? `call_${idx}`,
+                      type: 'function',
+                      function: { name: tcDelta.function?.name ?? '', arguments: tcDelta.function?.arguments ?? '' },
+                    });
                   } else {
-                    if (firstChunkAt === null) firstChunkAt = Date.now();
-                    chunks.push(clean);
-                    opts.onChunk!(clean);
+                    if (tcDelta.id) existing.id = tcDelta.id;
+                    if (tcDelta.function?.name) existing.function.name = tcDelta.function.name;
+                    if (tcDelta.function?.arguments) existing.function.arguments += tcDelta.function.arguments;
                   }
                 }
               }
-              // Reasoning models stream their real output in reasoning channels while `content`
-              // is empty or lags behind. Capture every variant so the turn isn't silently blank.
-              const rDelta = reasoningFromDelta(delta as Record<string, unknown>);
-              if (rDelta) {
-                reasoningChunks.push(rDelta);
-                opts.onReasoning?.(rDelta);
-              }
-              for (const [pos, tcDelta] of (delta.tool_calls ?? []).entries()) {
-                // Real OpenAI-wire streams fragment one call per chunk with an explicit `index`;
-                // providers that fake streaming as a single chunk (e.g. Google) omit it and send
-                // the full array at once, so fall back to array position, not a shared 0.
-                const idx = (tcDelta as unknown as { index?: number }).index ?? pos;
-                const existing = toolCallsByIndex.get(idx);
-                if (!existing) {
-                  toolCallsByIndex.set(idx, {
-                    id: tcDelta.id ?? `call_${idx}`,
-                    type: 'function',
-                    function: { name: tcDelta.function?.name ?? '', arguments: tcDelta.function?.arguments ?? '' },
-                  });
-                } else {
-                  if (tcDelta.id) existing.id = tcDelta.id;
-                  if (tcDelta.function?.name) existing.function.name = tcDelta.function.name;
-                  if (tcDelta.function?.arguments) existing.function.arguments += tcDelta.function.arguments;
-                }
-              }
+              loopCompletedNormally = true;
+            } finally {
+              // The stream threw (including an abort) while text was being withheld from onChunk —
+              // flush it now rather than silently discarding content the model already produced.
+              if (!loopCompletedNormally && holdingToolText) flushHeld();
             }
             const tail = thinkStrip.flush();
             if (tail) {

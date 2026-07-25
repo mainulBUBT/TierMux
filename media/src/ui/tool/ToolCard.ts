@@ -111,20 +111,36 @@ export function buildReasoningBlock(text: string, tc?: string, isStreaming?: boo
 }
 
 /** Update an existing reasoning block in place: refresh its text, and on done settle the
- *  streaming state + "Thought for Ns" label. Mirrors how `upsertTool` reconciles tool cards. */
+ *  streaming state + "Thought for Ns" label. Mirrors how `upsertTool` reconciles tool cards.
+ *
+ *  The whole turn shares ONE reasoning block (same toolCallId, `reason-${requestId}` — see
+ *  chatViewProvider's onReasoning/flushReasoningDone), so reasoning that resumes after a tool
+ *  call lands here as `done: false` again on an already-"done" block. Without re-entering the
+ *  live state, that block would sit collapsed showing a stale "Thought for Ns" while new text
+ *  quietly streams into its (hidden) body — reading as broken/stalled rather than one continuous
+ *  train of thought. Re-opening + re-pulsing on resume keeps it visibly one live block start to
+ *  finish, only settling to "Thought for Ns" when the reasoning is ACTUALLY done for the turn. */
 export function updateReasoningBlock(block: HTMLElement, text: string, done?: boolean, durationMs?: number): void {
   const body = block.querySelector<HTMLElement>('.tm-reasoning-body');
   if (body) { body.innerHTML = ''; body.appendChild(renderMarkdown(text || '')); }
+  const label = block.querySelector<HTMLElement>('.tm-reasoning-label');
+  const pulse = block.querySelector<HTMLElement>('.tm-reasoning-pulse');
   if (done) {
     block.classList.remove('streaming', 'open');
     block.dataset.live = '0';
     block.dataset.streaming = 'false';
-    const label = block.querySelector<HTMLElement>('.tm-reasoning-label');
+    pulse?.classList.remove('on');
     if (label) {
       label.textContent = durationMs && durationMs > 0
         ? `Thought for ${Math.max(1, Math.round(durationMs / 1000))}s`
         : 'Thought';
     }
+  } else {
+    block.classList.add('streaming', 'open');
+    block.dataset.live = '1';
+    block.dataset.streaming = 'true';
+    pulse?.classList.add('on');
+    if (label) label.textContent = 'Thinking';
   }
 }
 
@@ -142,7 +158,7 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
   }
 
   const state = step.state || 'done';
-  const { icon, title, hint } = toolLabel(step.name, step.args, step.detail);
+  const { icon, title, hint } = toolLabel(step.name, step.args, step.detail, state);
 
   const card = el('div', { 
     class: `tm-tool-card ${state}`, 
@@ -204,11 +220,21 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
   return card;
 }
 
+/** Mutating tools whose title must NOT say the past-tense verb while `state` is still
+ *  'running' — unlike read tools (readFile/grep/…), these can sit in 'running' for an
+ *  indefinite, user-controlled time while awaiting approval (see permission.ts's
+ *  toolApproval), so "Edited path"/"Deleted path" while nothing has happened yet reads as a
+ *  bug (the card claiming the action already completed). Read tools keep the existing
+ *  always-past-tense wording — they finish in milliseconds and never wait on a human. */
+const PRESENT_TENSE_WHILE_RUNNING: Record<string, string> = {
+  writeFile: 'Writing', createFile: 'Creating', editFile: 'Editing', deleteFile: 'Deleting', runCommand: 'Running',
+};
+
 /**
  * Generate a human-readable label and icon for a tool call.
  * Returns icon, title, and optional hint text.
  */
-export function toolLabel(name: string, args: unknown, detail?: string): ToolLabel {
+export function toolLabel(name: string, args: unknown, detail?: string, state?: 'queued' | 'running' | 'done' | 'error'): ToolLabel {
   // Special case: step progress
   if (name === 'step' && args && typeof args === 'object') {
     const stepArgs = args as { step?: number; of?: number; task?: string };
@@ -275,6 +301,16 @@ export function toolLabel(name: string, args: unknown, detail?: string): ToolLab
 
   if (M[name]) {
     const hint = (name === 'runCommand' || name === 'getDiagnostics') && firstLine ? firstLine : '';
+    // Pending approval (or actively running) — say so in the present tense instead of the
+    // past-tense title below, which would otherwise claim "Edited/Deleted/Ran…" before the
+    // user has even clicked Approve/Reject.
+    if ((state === 'running' || state === 'queued') && PRESENT_TENSE_WHILE_RUNNING[name]) {
+      const verb = PRESENT_TENSE_WHILE_RUNNING[name];
+      const title = name === 'runCommand'
+        ? (argFirst ? `${verb} ${argFirst.split(/\s+/).slice(0, 6).join(' ')}` : `${verb} a command`)
+        : (path ? `${verb} ${path}` : `${verb} a file`);
+      return { icon: M[name][0], title, hint };
+    }
     return { icon: M[name][0], title: M[name][1], hint };
   }
 

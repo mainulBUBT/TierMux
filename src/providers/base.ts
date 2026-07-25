@@ -77,11 +77,16 @@ export abstract class BaseProvider {
     );
   }
 
+  /** `init.signal`, if the caller set one (see CompletionOptions.abortSignal), is combined with
+   *  our own timeout-based controller — previously it was silently overwritten below, so an
+   *  external cancellation (Stop button, a sub-agent's own timeout) never reached the actual
+   *  in-flight request and only stopped FUTURE calls, not the one currently hanging. */
   protected async fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 60000): Promise<Response> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const signal = init.signal ? AbortSignal.any([init.signal as AbortSignal, controller.signal]) : controller.signal;
     try {
-      return await fetch(url, { ...init, signal: controller.signal });
+      return await fetch(url, { ...init, signal });
     } catch (e) {
       if (controller.signal.aborted) {
         throw new ProviderHttpError(`${this.name} request timed out after ${timeoutMs}ms`, 408);

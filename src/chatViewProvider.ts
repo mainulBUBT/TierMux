@@ -20,7 +20,7 @@ import type { ModelStatsStore, Vote } from './config/modelStats';
 import type { SlowModelStore } from './config/slowModel';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem, McpServerConfig } from './messages';
-import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, PlanDataPayload, QueueDataPayload, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
+import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, PlanDataPayload, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
 import { normalizeMcpServerConfig } from './mcp/mcpClient';
 import { getNonce } from './util/nonce';
 import { diagLog } from './util/diag';
@@ -33,6 +33,7 @@ import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense } from './agent/condense';
 import { parseClarifying, type ClarifyingQuestion } from './agent/clarify';
+import { structurePlanSteps } from './agent/planStructurer';
 import { deriveTitleFrom, extractSubjectTerms, looksLikeActionablePlan, looksLikeGroundedAnswer, offTopicCorrection, planStepsToTodos, sanitizeTitle } from './session/titles';
 
 import { loadSkills } from './context/skills';
@@ -81,29 +82,6 @@ function extractToolFilePath(args: unknown): string | undefined {
   return typeof v === 'string' && v ? v : undefined;
 }
 
-/** Short human label for a tool call, used as the Queue task title (agent mode). Falls back to a
- *  generic verb when there's no recognizable argument to name a target. */
-function toolQueueTitle(name: string, args: unknown): string {
-  const a = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
-  const path = String(a.path ?? a.file ?? a.filePath ?? a.filename ?? a.relativePath ?? '').replace(/^\.?\//, '');
-  const query = String(a.query ?? a.pattern ?? a.term ?? '').trim();
-  const cmd = String(a.command ?? a.cmd ?? '').trim().split(/\s+/).slice(0, 4).join(' ');
-  const tail = (s: string) => (s.length > 48 ? s.slice(0, 45) + '…' : s);
-  switch (name) {
-    case 'readFile': return path ? `Read ${tail(path.split('/').slice(-2).join('/'))}` : 'Read file';
-    case 'listDir': return path ? `List ${tail(path)}` : 'List directory';
-    case 'writeFile': case 'createFile': return path ? `Write ${tail(path.split('/').slice(-2).join('/'))}` : 'Write file';
-    case 'editFile': return path ? `Edit ${tail(path.split('/').slice(-2).join('/'))}` : 'Edit file';
-    case 'deleteFile': return path ? `Delete ${tail(path)}` : 'Delete file';
-    case 'grep': case 'searchWorkspace': return query ? `Search "${tail(query)}"` : 'Search workspace';
-    case 'glob': return query ? `Glob ${tail(query)}` : 'Glob files';
-    case 'runCommand': case 'bash': return cmd ? `Run ${tail(cmd)}` : 'Run command';
-    case 'webFetch': return path ? `Fetch ${tail(path)}` : 'Fetch URL';
-    case 'getDiagnostics': case 'lspCheck': return 'Check diagnostics';
-    default: return name.charAt(0).toUpperCase() + name.slice(1);
-  }
-}
-
 /** Build an AI Elements Plan payload from the agent's flat `TodoItem[]` list. The plan is a
  *  single section (the agent's todos are flat; sections exist for richer future sources) and
  *  mirrors the running/completed/pending state 1:1. */
@@ -122,17 +100,6 @@ function planDataFromTodos(title: string, todos: TodoItem[]): PlanDataPayload {
     sections: [{ id: 'plan-steps', title: 'Steps', tasks }],
     totalTasks: tasks.length,
     completedTasks: tasks.filter((t) => t.completed).length,
-  };
-}
-
-/** Fold the per-request queue task list into a Queue component payload (one "Tools" section). */
-function queueDataFromTasks(requestId: string, tasks: Session['liveQueue'] extends Map<string, infer T> ? T : never): QueueDataPayload {
-  return {
-    id: `queue-${requestId}`,
-    sections: [{ id: 'tools', title: 'Tools', status: 'completed', tasks }],
-    totalTasks: tasks.length,
-    completedTasks: tasks.filter((t) => t.status === 'completed').length,
-    runningTasks: tasks.filter((t) => t.status === 'running').length,
   };
 }
 
@@ -187,15 +154,18 @@ interface Session {
   /** Tool steps accumulated per active requestId, attached to the assistant transcript entry at
    *  turn completion so a re-rendered message (e.g. after "Revert to here") keeps its step list. */
   liveSteps: Map<string, TranscriptStep[]>;
-  /** Per-active-requestId queue tasks for the AI Elements Queue component (agent mode).
-   *  One entry per tool call, cycling pending→running→done/error alongside `toolStatus`. */
-  liveQueue: Map<string, Array<{ id: string; title: string; status: 'pending' | 'running' | 'completed' | 'error'; startTime?: number; endTime?: number; meta?: string }>>;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   /** Set by the `watchdogAction` handler ('restartRequest'/'switchModel'), consumed by the send
    *  handler's retry loop right after the aborted run settles — reusing the same in-flight
    *  request instead of pushing a new user turn. Cleared once consumed. */
   pendingWatchdogRetry?: 'restart' | 'switch';
+  /** Incremental snapshot of the CURRENTLY RUNNING turn's tool transcript, updated after every
+   *  tool completion (see agentCallbacks' onTool) and persisted immediately so a crash mid-turn
+   *  (extension host restart) doesn't lose in-progress work. Cleared by clearInProgressTurn()
+   *  once the run finishes normally — persistAgentTurn() has already committed the authoritative
+   *  transcript into `history` by then, so this is purely a crash-recovery fallback. */
+  inProgressTurn?: { requestId: string; workMessages: ChatMessage[] };
 }
 
 interface StoredSession {
@@ -205,6 +175,14 @@ interface StoredSession {
   transcript: TranscriptMessage[];
   model?: string;
   reasoningEffort?: string;
+  /** Full model-facing conversation history. Persisted (in addition to `transcript`, the UI
+   *  display log) so the model's actual memory of the conversation survives a VSCode/extension
+   *  restart — without this, every session reload wiped the LLM-facing history back to empty
+   *  even though the user still saw their past messages onscreen. */
+  history?: ChatMessage[];
+  /** Present only if the last run for this session never finished (e.g. the extension host
+   *  crashed mid-turn). Recovered into `history` on the next hydrate — see hydrateSession(). */
+  inProgressTurn?: { requestId: string; workMessages: ChatMessage[] };
 }
 
 /**
@@ -360,7 +338,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       checkpoints: new CheckpointManager(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath),
       lastWindow: 0,
       liveSteps: new Map(),
-      liveQueue: new Map(),
       model: undefined,
       reasoningEffort: undefined,
     };
@@ -368,12 +345,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return s;
   }
 
-  /** Rehydrate a persisted session with empty runtime state. */
+  /** Rehydrate a persisted session with empty runtime state. If the last run never finished
+   *  (an `inProgressTurn` was left behind — a crash mid-turn), its partial tool transcript is
+   *  merged into `history` so the agent's memory of that work isn't silently lost, and a visible
+   *  transcript note tells the user what happened. */
   private hydrateSession(s: StoredSession): Session {
+    const recovered = s.inProgressTurn?.workMessages;
+    const transcript = s.transcript ?? [];
+    if (recovered?.length) {
+      transcript.push({
+        role: 'assistant',
+        text: `⚠️ The previous run in this chat didn't finish (the extension likely restarted mid-task). Recovered ${recovered.length} tool step(s) from before the interruption — you can continue from here.`,
+        ts: Date.now(),
+      });
+    }
     return {
       id: s.id,
-      history: [],
-      transcript: s.transcript ?? [],
+      history: recovered?.length ? [...(s.history ?? []), ...recovered] : (s.history ?? []),
+      transcript,
       title: s.title,
       titleGenerated: !!s.title || (s.transcript?.some((t) => t.role === 'user') ?? false),
       pendingApprovals: new Map(),
@@ -385,7 +374,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       checkpoints: new CheckpointManager(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath),
       lastWindow: 0,
       liveSteps: new Map(),
-      liveQueue: new Map(),
       createdAt: s.ts ?? Date.now(),
       updatedAt: s.ts ?? Date.now(),
       model: s.model,
@@ -425,12 +413,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!s) return;
     const others = this.loadSessions().filter((x) => x.id !== sessionId);
     if (s.transcript.length) {
-      others.unshift({ id: s.id, title: s.title ?? this.deriveTitle(s), ts: Date.now(), transcript: s.transcript, model: s.model, reasoningEffort: s.reasoningEffort });
+      others.unshift({
+        id: s.id, title: s.title ?? this.deriveTitle(s), ts: Date.now(), transcript: s.transcript,
+        model: s.model, reasoningEffort: s.reasoningEffort, history: s.history, inProgressTurn: s.inProgressTurn,
+      });
     }
     void this.deps.workspaceState.update(SESSIONS_KEY, others.slice(0, MAX_SESSIONS));
     if (sessionId === this.viewedSessionId) void this.deps.workspaceState.update(CURRENT_KEY, sessionId);
     this.updateViewTitle();
     this.postSessionList();
+  }
+
+  /** Mark a run as in-progress right before invoking the agent runner, so a crash mid-turn can
+   *  be recovered on next load (see hydrateSession()). Every call site pairs this with
+   *  clearInProgressTurn() once the run settles normally. */
+  private beginInProgressTurn(s: Session, requestId: string): void {
+    s.inProgressTurn = { requestId, workMessages: [] };
+  }
+
+  /** Drop the crash-recovery snapshot once a run finishes normally — persistAgentTurn() has
+   *  already committed the authoritative transcript into `history` by this point, so the
+   *  snapshot would otherwise just be redundant (and stale on the NEXT run if left set). Keyed
+   *  on requestId so a superseded/abandoned run's late finally can't clear a newer run's snapshot. */
+  private clearInProgressTurn(s: Session, requestId: string): void {
+    if (s.inProgressTurn?.requestId === requestId) s.inProgressTurn = undefined;
   }
 
   private setStatus(sessionId: string, status: SessionStatus): void {
@@ -1623,6 +1629,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           return;
         }
       }
+      this.beginInProgressTurn(s, m.requestId);
       const cbk = this.agentCallbacks(s, m.requestId, m.mode as Mode);
       const sdkMode = m.mode as 'agent' | 'plan' | 'ask';
       const runner = sdkMode === 'plan' ? runPlanStream : sdkMode === 'ask' ? runAskStream : runAgentStream;
@@ -1745,6 +1752,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       release();
       if (this.isActiveRun(s, m.requestId)) {
         s.activeRequestId = undefined;
+        this.clearInProgressTurn(s, m.requestId);
         this.settlePendingApprovals(s, false); // safety net: never leave a command waiting after the run ends
         this.settlePendingAskUser(s);
         await this.finishCheckpoint(s, m.requestId);
@@ -1950,10 +1958,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
     this.post({ type: 'busy', sessionId: s.id, busy: true });
     this.post({ type: 'planExecuting', sessionId: s.id, requestId: m.requestId, executing: true });
-    const stepCount = planStepsToTodos(m.steps).length;
+
+    // Structured-output pass (best-effort): re-extract the step list via a schema-validated
+    // model call instead of relying solely on the regex bullet/number parser, which can misparse
+    // malformed markdown or steps nested under a heading. Falls back to the regex parser
+    // unchanged if the model doesn't support structured output well or the call fails/times out.
+    const structuredSteps = await structurePlanSteps(this.deps.router, m.steps);
+    const seeded: TodoItem[] = structuredSteps
+      ? structuredSteps.map((content) => ({ content, status: 'pending' as const }))
+      : planStepsToTodos(m.steps);
+    const stepCount = seeded.length;
     this.post({ type: 'agentStep', sessionId: s.id, requestId: m.requestId, phase: 'thinking', label: stepCount > 0 ? `▶ Executing approved plan (${stepCount} steps)` : '▶ Executing approved plan' });
 
-    const seeded = planStepsToTodos(m.steps);
     if (seeded.length) {
       this.post({ type: 'todos', sessionId: s.id, requestId: m.requestId, todos: seeded, followingPlan: true });
       // Seed the AI Elements Plan card (plan mode) from the same step list; subsequent onTodos
@@ -1964,6 +1980,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await s.checkpoints.begin(m.requestId, 'Plan execution');
     const sentAt = Date.now();
     try {
+      this.beginInProgressTurn(s, m.requestId);
       const cbk3 = this.agentCallbacks(s, m.requestId, 'agent');
       const result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk3, s.model), {});
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
@@ -1992,6 +2009,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (this.isActiveRun(s, m.requestId)) {
         s.activeRequestId = undefined;
         s.executingPlan = false;
+        this.clearInProgressTurn(s, m.requestId);
         this.settlePendingApprovals(s, false); // safety net: never leave a command waiting after the run ends
         this.settlePendingAskUser(s);
         await this.finishCheckpoint(s, m.requestId);
@@ -2025,7 +2043,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private pushAssistantTurn(s: Session, requestId: string, result: AgentResult, sentAt: number, usage?: { promptTokens: number; completionTokens: number; reasoningTokens?: number; totalTokens: number }): void {
     const steps = s.liveSteps.get(requestId);
     s.liveSteps.delete(requestId);
-    s.liveQueue.delete(requestId);
     s.transcript.push({
       role: 'assistant',
       text: result.text,
@@ -2168,15 +2185,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: mappedState, detail: e.detail });
 
-        // AI Elements Queue (agent mode): upsert this tool as a queue task and re-emit the
-        // whole queue so the component can reconcile running/completed/error state per tool.
-        const q = s.liveQueue.get(requestId) ?? [];
-        const qi = q.findIndex((t) => t.id === e.toolCallId);
-        const qState: 'running' | 'completed' | 'error' = mappedState === 'running' ? 'running' : mappedState === 'error' ? 'error' : 'completed';
-        const qTask = { id: e.toolCallId, title: toolQueueTitle(e.name, e.args), status: qState, startTime: qi >= 0 ? q[qi].startTime : Date.now(), endTime: qState === 'completed' || qState === 'error' ? Date.now() : undefined, meta: e.detail ? String(e.detail).split('\n')[0].slice(0, 80) : undefined };
-        if (qi >= 0) q[qi] = qTask; else q.push(qTask);
-        s.liveQueue.set(requestId, q);
-        this.post({ type: 'queueData', sessionId: s.id, requestId, data: queueDataFromTasks(requestId, q) });
+        // Crash-recovery snapshot: append this completed/errored tool call to the in-progress
+        // transcript and persist immediately, so a mid-turn extension-host crash loses at most
+        // the tool call currently running, not the whole turn's work so far.
+        if ((mappedState === 'done' || mappedState === 'error') && s.inProgressTurn?.requestId === requestId) {
+          s.inProgressTurn.workMessages.push(
+            { role: 'assistant', content: null, tool_calls: [{ id: e.toolCallId, type: 'function', function: { name: e.name, arguments: JSON.stringify(e.args ?? {}) } }] },
+            { role: 'tool', content: e.detail ?? '', tool_call_id: e.toolCallId },
+          );
+          this.persist(s.id);
+        }
       },
       onReasoning: (text) => {
         if (!live()) return;
@@ -2315,6 +2333,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await s.checkpoints.begin(m.requestId, 'Continue');
     const sentAt = Date.now();
     try {
+      this.beginInProgressTurn(s, m.requestId);
       const cbk4 = this.agentCallbacks(s, m.requestId, 'agent');
       const result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk4, s.model), {});
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
@@ -2343,6 +2362,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       release();
       if (this.isActiveRun(s, m.requestId)) {
         s.activeRequestId = undefined;
+        this.clearInProgressTurn(s, m.requestId);
         this.settlePendingApprovals(s, false);
         this.settlePendingAskUser(s);
         await this.finishCheckpoint(s, m.requestId);
@@ -2397,6 +2417,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // the blanket `s.history.length = base` reset in `finally` so this one case survives it.
     let committed = false;
     try {
+      this.beginInProgressTurn(s, m.requestId);
       const cbk5 = this.agentCallbacks(s, m.requestId, 'plan');
       let result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});
       if (!this.isActiveRun(s, m.requestId)) return;
@@ -2455,6 +2476,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
         if (!committed) s.history.length = base;
         s.activeRequestId = undefined;
+        this.clearInProgressTurn(s, m.requestId);
         this.settlePendingAskUser(s);
         await this.finishCheckpoint(s, m.requestId);
         this.persist(s.id);
@@ -2657,10 +2679,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <link href="${uri('vendor/diff2html.min.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/tokens.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/plan.css')}" rel="stylesheet" nonce="${nonce}" />
-  <link href="${uri('styles/components/queue.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/checkpoint.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/tool-card.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/reasoning.css')}" rel="stylesheet" nonce="${nonce}" />
+  <link href="${uri('styles/components/approval-card.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/terminal.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('main.css')}" rel="stylesheet" nonce="${nonce}" />
   <title>${PRODUCT_NAME}</title>

@@ -12,6 +12,21 @@
         "${workspaceFolder}/dist/**/*.js"
       ],
       "preLaunchTask": "npm: watch"
+    },
+    {
+      "name": "Run Extension (Fake Model — no tokens)",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/dist/**/*.js"
+      ],
+      "preLaunchTask": "npm: watch",
+      "env": {
+        "TIERMUX_FAKE_MODEL": "1"
+      }
     }
   ]
 }

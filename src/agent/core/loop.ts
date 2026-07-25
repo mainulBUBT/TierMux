@@ -10,12 +10,13 @@ import * as vscode from 'vscode';
 import type { Router } from '../../router/router';
 import type { ChatMessage, ChatContentBlock } from '../../shared/types';
 import type { AgentOpts, AgentResult } from '../agent';
-import { classifyTask } from '../routing';
+import { classifyTask, type TaskKind } from '../routing';
+import { assessAnswerQuality } from '../answerQuality';
 import { contentToString } from '../content';
 import { buildSystemPrompt } from '../promptBuilder';
 import { createRouterProvider } from './routerProvider';
 import { createTelemetryMiddleware } from './middleware/telemetry';
-import { createToolApproval } from './policies/permission';
+import { createToolApproval, MUTATING_TOOLS } from './policies/permission';
 import { createToolSet } from './tools';
 import { getMcpManager } from './tools/mcp/manager';
 import { diagLog } from '../../util/diag';
@@ -156,6 +157,16 @@ const SYNTH_SUFFIX =
   + 'write your final answer to the user now — clear, plain language, no tool calls. Summarize '
   + 'what you did and what you found, and directly address the user\'s original request.';
 
+/** System-prompt tail used instead of SYNTH_SUFFIX when the turn ended via stuckStop/budgetStop
+ *  (loop.ts's stopReason) rather than finishing naturally — the model did NOT complete the task,
+ *  so asking it to "give your final answer" would read as false completion. Ask for a progress
+ *  report instead: what it found/concluded, and what's still unresolved. */
+const SYNTH_SUFFIX_STUCK =
+  '\n\nYou were stopped before finishing — you got stuck repeating the same action without making '
+  + 'progress. Using ONLY what you learned from the tool results above, tell the user what you '
+  + 'found/concluded so far and what is still unresolved. Do NOT claim the task is complete — this '
+  + 'is a progress report, not a final answer.';
+
 /**
  * Forced synthesis turn — run after the main loop when the model acted via tools but produced no
  * final text. Re-invokes the SAME routed model with the full tool transcript plus an explicit
@@ -172,14 +183,15 @@ async function forceSynthesis(
   workMessages: ChatMessage[],
   onChunk: (t: string) => void,
   onReasoning: (d: string) => void,
+  stuck?: boolean,
 ): Promise<string> {
-  opts.onStep('synthesizing', 'Writing answer…');
+  opts.onStep('synthesizing', stuck ? 'Summarizing progress so far…' : 'Writing answer…');
   try {
     const messages = toCoreMessages([...opts.messages, ...workMessages]);
-    messages.push({ role: 'user', content: 'Based on the tool results above, give your final answer now.' });
+    messages.push({ role: 'user', content: stuck ? 'You got stuck — summarize your findings and what remains unresolved.' : 'Based on the tool results above, give your final answer now.' });
     const synth = streamText({
       model: languageModel as any,
-      system: (system || '') + SYNTH_SUFFIX,
+      system: (system || '') + (stuck ? SYNTH_SUFFIX_STUCK : SYNTH_SUFFIX),
       messages: messages as any,
       // No `tools` + single-step stop → the model cannot delegate again, it must answer.
       stopWhen: [isStepCount(1)],
@@ -197,19 +209,34 @@ async function forceSynthesis(
   }
 }
 
-export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentResult> {
-  const maxIterations = vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxIterations', 25);
-  // Once the running tool-loop context passes this many tokens, prune stale tool outputs and old
-  // reasoning BEFORE each step so a long, tool-heavy turn stops re-sending megabytes of grep/read
-  // dumps the model no longer needs. 0 disables. Complements the per-result cap in capOutput.ts:
-  // that bounds each result; this evicts whole stale ones from the growing history.
-  const pruneAtTokens = vscode.workspace.getConfiguration('tiermux.agent').get<number>('pruneAtTokens', 12000);
-  // Hard per-turn token ceiling (0 = off). A safety cap against a runaway loop burning the whole
-  // free-tier budget; distinct from maxIterations (which counts steps, not tokens).
-  const maxTurnTokens = vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxTurnTokens', 0);
-  const lastUserText = contentToString([...opts.messages].reverse().find((m) => m.role === 'user')?.content ?? '');
-  const taskKind = classifyTask(lastUserText);
+/** One model attempt at a turn — everything runTurn used to do inline, extracted so a weak/
+ *  stuck attempt can be retried once with a different (excluded/escalated) model. See
+ *  runTurn's escalation orchestration below. */
+interface AttemptResult {
+  text: string;
+  reasoning: string;
+  platform?: string;
+  model?: string;
+  runtimeName?: string;
+  paused: boolean;
+  workMessages: ChatMessage[];
+  stopReason?: 'budget' | 'stuck';
+  hadToolCalls: boolean;
+  /** True if any write/create/edit/delete/runCommand tool call happened this attempt — once
+   *  true, retrying with a different model is unsafe (side effects already occurred), so
+   *  runTurn must not escalate past this attempt. */
+  hadMutatingToolCall: boolean;
+}
 
+async function runAttempt(
+  router: Router,
+  opts: AgentOpts,
+  taskKind: TaskKind,
+  pruneAtTokens: number,
+  maxTurnTokens: number,
+  maxExplorationCalls: number,
+  escalation?: { excludeModels: string[]; maxIntelligenceRank: number },
+): Promise<AttemptResult> {
   // Loop-control stop conditions beyond the step cap. `stopReason` is set by whichever custom
   // condition fires so the finish handling below can treat it as TERMINAL (not paused) — these
   // are "the model is stuck / over budget" stops, and auto-continuing them would just repeat the
@@ -236,6 +263,29 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     }
     return false;
   };
+  // Exact-repeat detection (above) misses the more common weak-model failure: re-searching the
+  // SAME thing with slightly different wording each time ("submitproduct", "submitProduct",
+  // "submit") — never an exact duplicate, so it never trips stuckStop, yet zero real progress
+  // (no mutating tool call) happens. With no step-count cap anymore, this can now run
+  // indefinitely. Cap read-only tool calls made before the FIRST mutating call — past this many,
+  // the model is thrashing on exploration, not investigating.
+  const explorationStop = ({ steps }: { steps: Array<{ toolCalls?: Array<{ toolName?: string }> }> }): boolean => {
+    if (maxExplorationCalls <= 0) return false;
+    let readOnlyCount = 0;
+    for (const s of steps) {
+      for (const tc of s.toolCalls ?? []) {
+        if (!tc.toolName) continue;
+        if (MUTATING_TOOLS.has(tc.toolName)) return false; // real progress happened — no cap
+        readOnlyCount++;
+      }
+    }
+    if (readOnlyCount > maxExplorationCalls) {
+      stopReason = 'stuck';
+      diagLog('turn.stop', `stuck: ${readOnlyCount} read-only tool calls with zero mutating progress`);
+      return true;
+    }
+    return false;
+  };
 
   let platform: string | undefined;
   let model: string | undefined;
@@ -244,7 +294,12 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   const provider = createRouterProvider(router, {
     effort: opts.effort,
     taskKind,
-    pinnedModel: opts.pinnedModel,
+    // An escalation retry must not stay pinned to the model the user (or a prior attempt)
+    // picked — that would just repeat the same weak/stuck answer. Auto-select among the
+    // excluded/higher-tier candidates instead.
+    pinnedModel: escalation ? undefined : opts.pinnedModel,
+    excludeModels: escalation?.excludeModels,
+    maxIntelligenceRank: escalation?.maxIntelligenceRank,
     onFailover: opts.onFailover,
     onKeyRotated: opts.onKeyRotated,
     onModelSelected: (p, m, rt) => { platform = p; model = m; runtimeName = rt; opts.onModel(p, m, rt); },
@@ -255,7 +310,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     middleware: createTelemetryMiddleware({ profiler: opts.profiler, traceId: opts.sessionId as any }),
   });
 
-  const system = await buildSystemPrompt(opts.mode);
+  const system = await buildSystemPrompt(opts.mode, taskKind);
   diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · buildSystemPrompt done`);
   const tools = createToolSet(opts, getMcpManager(), router);
   diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · createToolSet done (${Object.keys(tools).length} tools)`);
@@ -272,7 +327,11 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       messages: toCoreMessages(opts.messages) as any,
       tools: tools as any,
       toolApproval: createToolApproval(opts) as any,
-      stopWhen: [isStepCount(maxIterations), budgetStop, stuckStop],
+      // No hard step-count cap — a long multi-step task no longer pauses just for running past an
+      // arbitrary iteration count (see the Resume-button "paused" path, now unreachable for a
+      // normal in-progress task). budgetStop/stuckStop are the remaining backstops against a
+      // genuinely runaway/stuck turn — the abortSignal (Stop button) is always available too.
+      stopWhen: [budgetStop, stuckStop, explorationStop],
       abortSignal: opts.abortSignal,
       // Per-step context compression (AI SDK native). Runs before each model call in the tool
       // loop; only rewrites history once it exceeds the threshold, so short turns are untouched.
@@ -308,6 +367,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     } as any);
 
     let hadToolCalls = false;
+    let hadMutatingToolCall = false;
 
     // ── Two-buffer state machine (speculative draft vs canonical reply) ──────────────
     // A tool call is a MIDDLE step, not a final answer. Text the model emits in a step that ALSO
@@ -376,6 +436,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
         const d = part.text ?? part.delta ?? ''; reasoning += d; opts.onReasoning(d);
       } else if (part.type === 'tool-call') {
         hadToolCalls = true; stepHasTool = true; phase = 'planning';
+        if (MUTATING_TOOLS.has(part.toolName)) hadMutatingToolCall = true;
         // If text from THIS step already streamed live to the chat bubble as a tentative reply,
         // it's now revealed to be narration (a tool call arrived in the same step). Retract the
         // draft so it doesn't linger in the chat; the finish-step handler re-routes it to reasoning.
@@ -409,11 +470,6 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     // A budget/stuck stop reports 'max-steps' too, but must NOT be paused: auto-continuing a
     // stuck-or-over-budget run just repeats the waste. Only a genuine step-cap hit is resumable.
     const paused = finishReason === 'max-steps' && !stopReason;
-    if (stopReason === 'stuck' && !text.trim()) {
-      // The model looped on the same tool call and produced no answer — say so instead of
-      // returning a blank turn (which reads like the old silent "0 out" symptom).
-      text = 'Stopped: the model kept repeating the same action without making progress. Try rephrasing the request, or switch models.';
-    }
 
     const steps: any[] = (await (result as any).steps) ?? [];
 
@@ -442,25 +498,34 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     // produce text. This is the single biggest fix for weak/instruct models that delegate via
     // tools (e.g. explore) and then stop without synthesizing.
     if (!text.trim() && hadToolCalls && !paused && !opts.abortSignal?.aborted) {
-      text = await forceSynthesis(languageModel, system, opts, workMessages, (t) => { text += t; opts.onChunk(t); }, (d) => { reasoning += d; opts.onReasoning(d); }) || text;
+      text = await forceSynthesis(languageModel, system, opts, workMessages, (t) => opts.onChunk(t), (d) => { reasoning += d; opts.onReasoning(d); }, stopReason === 'stuck') || text;
       if (text.trim()) workMessages.push({ role: 'assistant', content: text });
     }
 
     // Last-resort non-empty guarantee: even if synthesis failed/returned nothing, never hand
     // back a blank turn — that reads as the old silent "0 out" symptom. Tell the user plainly.
-    if (!text.trim()) {
-      text = 'I looked into this and ran some tools, but couldn\'t produce a final answer. Try rephrasing the request, or switch to a stronger model.';
+    // Skip this when paused: a step-cap cutoff mid-task is a normal, resumable state (the caller
+    // shows a Resume button), not a failure — stuffing in "couldn't produce a final answer" would
+    // directly contradict the paused:true flag returned alongside it.
+    if (!text.trim() && !paused) {
+      text = stopReason === 'stuck'
+        ? 'Stopped: the model kept repeating the same action without making progress, and couldn\'t summarize its findings either. Try rephrasing the request, or switch models.'
+        : hadToolCalls
+        ? 'I looked into this and ran some tools, but couldn\'t produce a final answer. Try rephrasing the request, or switch to a stronger model.'
+        : 'I wasn\'t able to produce a response. Try rephrasing the request, or switch to a stronger model.';
     }
 
     return {
       text,
-      reasoning: reasoning.trim() || undefined,
+      reasoning: reasoning.trim(),
       platform,
       model,
       runtimeName,
-      taskKind,
       paused,
-      workMessages: workMessages.length ? workMessages : undefined,
+      workMessages,
+      stopReason,
+      hadToolCalls,
+      hadMutatingToolCall,
     };
   } catch (err) {
     diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · CAUGHT aborted=${!!opts.abortSignal?.aborted} isAbort=${isAbortError(err)} err=${err instanceof Error ? err.message : String(err)}`);
@@ -469,10 +534,62 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     // coincides with an aborted signal used to vanish here as an empty, error-less
     // turn — the "0 in / 0 out / 0s" silent-idle symptom on follow-up sends. Surface
     // every other error so the user sees what actually went wrong.
-    if (opts.abortSignal?.aborted && isAbortError(err)) {
-      return { text, reasoning: reasoning.trim() || undefined, platform, model, runtimeName, paused: false };
+    if (!(opts.abortSignal?.aborted && isAbortError(err))) {
+      opts.onError(err instanceof Error ? err.message : String(err));
     }
-    opts.onError(err instanceof Error ? err.message : String(err));
-    return { text, reasoning: reasoning.trim() || undefined, platform, model, runtimeName, paused: false };
+    return { text, reasoning: reasoning.trim(), platform, model, runtimeName, paused: false, workMessages, hadToolCalls: false, hadMutatingToolCall: false };
   }
+}
+
+export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentResult> {
+  // Once the running tool-loop context passes this many tokens, prune stale tool outputs and old
+  // reasoning BEFORE each step so a long, tool-heavy turn stops re-sending megabytes of grep/read
+  // dumps the model no longer needs. 0 disables. Complements the per-result cap in capOutput.ts:
+  // that bounds each result; this evicts whole stale ones from the growing history.
+  const pruneAtTokens = vscode.workspace.getConfiguration('tiermux.agent').get<number>('pruneAtTokens', 12000);
+  // Hard per-turn token ceiling (0 = off). With the step-count cap removed, this is now the
+  // ONLY backstop against a runaway loop besides stuckStop's exact-repeat detection — hence a
+  // real non-zero default rather than 0/off. A stuck free-model turn was observed burning
+  // ~367k tokens before stuckStop caught it; this caps that kind of run earlier even when
+  // stuckStop's narrower exact-repeat check doesn't fire.
+  const maxTurnTokens = vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxTurnTokens', 500_000);
+  // Cap on read-only tool calls before the first mutating one (see explorationStop above). 0 disables.
+  const maxExplorationCalls = vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxExplorationCalls', 20);
+  const lastUserText = contentToString([...opts.messages].reverse().find((m) => m.role === 'user')?.content ?? '');
+  const taskKind = classifyTask(lastUserText);
+
+  const first = await runAttempt(router, opts, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls);
+  let final = first;
+
+  // Quality-based escalation — restores a pipeline that existed under the old OpenCode-backed
+  // engine (assessAnswerQuality → maybeEscalateWeak → tryEscalate → onFailover) and was lost in
+  // the migration to this native loop. Only safe when NO mutating tool call happened yet: once a
+  // write/edit/delete/command has actually run, retrying with a different model would either
+  // repeat that side effect or silently strand it — never retry past that point.
+  const canEscalate = !first.hadMutatingToolCall && !opts.abortSignal?.aborted && first.platform && first.model;
+  if (canEscalate) {
+    const quality = assessAnswerQuality(first.text, taskKind);
+    if (first.stopReason === 'stuck' || quality.weak) {
+      const excludeKey = `${first.platform}::${first.model}`;
+      diagLog('turn.escalate', `weak/stuck answer from ${excludeKey} (score=${quality.score} signals=${quality.signals.join(',')} stopReason=${first.stopReason ?? 'none'}) — retrying with a different model`);
+      const escalated = await runAttempt(router, opts, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, {
+        excludeModels: [excludeKey],
+        maxIntelligenceRank: 2, // top-tier models only — the point of escalating is a smarter retry
+      });
+      // Keep the escalated attempt only if it actually produced something — an empty/failed
+      // retry is worse than the first attempt's own (already-synthesized) progress report.
+      if (escalated.text.trim()) final = escalated;
+    }
+  }
+
+  return {
+    text: final.text,
+    reasoning: final.reasoning || undefined,
+    platform: final.platform,
+    model: final.model,
+    runtimeName: final.runtimeName,
+    taskKind,
+    paused: final.paused,
+    workMessages: final.workMessages.length ? final.workMessages : undefined,
+  };
 }

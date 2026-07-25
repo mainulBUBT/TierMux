@@ -50,3 +50,13 @@ export function appendChildren(node: Element, children: ElChild[]): void {
     node.append(child instanceof Node ? child : String(child));
   }
 }
+
+/** Wraps an inline SVG icon string (from icons.ts's ICON.*) in a <span> Node so it can be
+ *  passed as an el()/appendChildren() child — string children are inserted as plain text
+ *  (XSS-safe), so raw SVG markup needs an actual Node instead. */
+export function icon(svg: string, className?: string): HTMLElement {
+  const span = document.createElement('span');
+  span.className = className ? `tm-icon ${className}` : 'tm-icon';
+  span.innerHTML = svg;
+  return span;
+}

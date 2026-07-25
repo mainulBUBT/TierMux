@@ -18,5 +18,4 @@ export type {
   CheckpointFile,
   KeyStatusInfo,
   PlanDataPayload,
-  QueueDataPayload,
 } from '../messages';

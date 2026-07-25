@@ -6,6 +6,16 @@ import * as path from 'path';
 import { loadUserMemory } from '../context/userMemory';
 import { loadProjectRules } from '../context/projectRules';
 import { skillIndexPrompt } from '../context/skills';
+import type { TaskKind } from './routing';
+
+/** Scaffolding files that are irrelevant for a lightweight turn and safe to skip — every model
+ *  call pays for the full system prompt in prefill time, and a "hi"/small-talk turn (trivial) or
+ *  a plain Q&A (chat) never needs project-research methodology. identity/behavior/ask-format
+ *  stay in always: they're small and govern tone/interaction-format regardless of task weight. */
+const SKIP_FILES_FOR_TASK_KIND: Partial<Record<TaskKind, string[]>> = {
+  trivial: ['research.md'],
+  chat: ['research.md'],
+};
 
 let extensionPath: string | undefined;
 /** Set once at activation so buildSystemPrompt can locate `.tiermux/agent/*.md`. */
@@ -20,12 +30,13 @@ const AGENT_FILE_ORDER = ['identity.md', 'behavior.md', 'ask-format.md', 'resear
 
 /** Loads `.tiermux/agent/*.md` scaffolding + project rules/memory/skills index, reading fresh
  *  every call (no caching) — editing `.tiermux/memory.md` takes effect on the very next turn. */
-async function loadAgentInstructions(extPath: string, workspaceRoot?: string): Promise<{ agentPrompt: string; instructions: string }> {
+async function loadAgentInstructions(extPath: string, workspaceRoot?: string, taskKind?: TaskKind): Promise<{ agentPrompt: string; instructions: string }> {
   const agentDir = path.join(extPath, '.tiermux', 'agent');
+  const skipFiles = new Set(taskKind ? SKIP_FILES_FOR_TASK_KIND[taskKind] ?? [] : []);
   let base: string;
   try {
     const files = fs.readdirSync(agentDir)
-      .filter((f) => f.endsWith('.md'))
+      .filter((f) => f.endsWith('.md') && !skipFiles.has(f))
       .sort((a, b) => {
         const ia = AGENT_FILE_ORDER.indexOf(a);
         const ib = AGENT_FILE_ORDER.indexOf(b);
@@ -44,7 +55,9 @@ async function loadAgentInstructions(extPath: string, workspaceRoot?: string): P
   }
   const memory = await loadUserMemory().catch(() => '');
   const rules = await loadProjectRules().catch(() => '');
-  const skills = skillIndexPrompt(extPath, workspaceRoot);
+  // Skill index is only useful when the model might reach for a /slash-command skill — never for
+  // a trivial (greeting/small-talk) turn.
+  const skills = taskKind === 'trivial' ? '' : skillIndexPrompt(extPath, workspaceRoot);
   return { agentPrompt: base, instructions: [rules, memory, skills].filter(Boolean).join('\n\n') };
 }
 
@@ -105,11 +118,11 @@ function todayLine(): string {
   return `Today's date is ${today}.`;
 }
 
-export async function buildSystemPrompt(mode: 'agent' | 'plan' | 'ask'): Promise<string> {
+export async function buildSystemPrompt(mode: 'agent' | 'plan' | 'ask', taskKind?: TaskKind): Promise<string> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!extensionPath) {
     return '# Identity\nYou are TierMux, an AI coding assistant.' + modeTail(mode) + `\n\n${todayLine()}`;
   }
-  const { agentPrompt, instructions } = await loadAgentInstructions(extensionPath, workspaceRoot);
+  const { agentPrompt, instructions } = await loadAgentInstructions(extensionPath, workspaceRoot, taskKind);
   return [agentPrompt + modeTail(mode), todayLine(), instructions].filter(Boolean).join('\n\n');
 }

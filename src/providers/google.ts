@@ -241,6 +241,7 @@ export class GoogleProvider extends BaseProvider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
       body: JSON.stringify(this.buildBody(contents, systemInstruction, options, modelId)),
+      signal: options?.abortSignal,
     }, options?.timeoutMs);
 
     if (!res.ok) {

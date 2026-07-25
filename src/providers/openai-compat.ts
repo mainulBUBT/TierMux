@@ -154,6 +154,7 @@ export class OpenAICompatProvider extends BaseProvider {
       method: 'POST',
       headers: { ...this.authHeader(apiKey), 'Content-Type': 'application/json', ...this.extraHeaders },
       body: this.buildBody(messages, modelId, options, false),
+      signal: options?.abortSignal,
     }, options?.timeoutMs ?? this.timeoutMs);
     diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options)} modelId=${modelId} stream=false status=${res.status}`);
 
@@ -206,6 +207,7 @@ export class OpenAICompatProvider extends BaseProvider {
       method: 'POST',
       headers: { ...this.authHeader(apiKey), 'Content-Type': 'application/json', ...this.extraHeaders },
       body: this.buildBody(messages, modelId, options, true),
+      signal: options?.abortSignal,
     }, options?.timeoutMs ?? this.timeoutMs);
     diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options)} modelId=${modelId} stream=true status=${res.status}`);
 

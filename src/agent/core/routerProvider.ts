@@ -33,6 +33,13 @@ export interface RouterProviderOptions {
   onKeyRotated?: (info: { platform: string; keyIndex: number; keyTotal: number }) => void;
   onModelSelected?: (platform: string, model: string, runtimeName?: string) => void;
   onSelectionRationale?: (info: { taskKind: string; picked?: string; entries: RationaleEntryInfo[] }) => void;
+  /** Quality-based escalation (loop.ts): skip these `platform::modelId` keys — forwarded
+   *  straight to Router.route()'s `exclude`, which already implements this filter. */
+  excludeModels?: string[];
+  /** Quality-based escalation: only consider models at least this smart — forwarded to
+   *  Router.route()'s `maxIntelligenceRank` (lower rank number = smarter; already implemented,
+   *  just never set by any caller before loop.ts's escalation retry). */
+  maxIntelligenceRank?: number;
 }
 
 const routeKey = (e: { platform: string; modelId: string }): string => `${e.platform}::${e.modelId}`;
@@ -129,6 +136,9 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         onFailover: providerOpts.onFailover ? (info) => providerOpts.onFailover!(`${info.from.platform}::${info.from.modelId}`, info.reason) : undefined,
         onKeyRotated: providerOpts.onKeyRotated ? (info) => providerOpts.onKeyRotated!({ platform: info.platform, keyIndex: info.keyIndex, keyTotal: info.keyTotal }) : undefined,
         onSelectionRationale: toRationaleCallback(providerOpts.onSelectionRationale),
+        exclude: providerOpts.excludeModels,
+        maxIntelligenceRank: providerOpts.maxIntelligenceRank,
+        abortSignal: options.abortSignal,
       };
       diagLog('ai-sdk.doGenerate', `pinnedModel="${providerOpts.pinnedModel ?? '<auto>'}" → routeOpts.model="${routeOpts.model}" msgs=${messages.length} tools=${tools?.length ?? 0}`);
 
@@ -187,6 +197,9 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         onFailover: providerOpts.onFailover ? (info) => providerOpts.onFailover!(`${info.from.platform}::${info.from.modelId}`, info.reason) : undefined,
         onKeyRotated: providerOpts.onKeyRotated ? (info) => providerOpts.onKeyRotated!({ platform: info.platform, keyIndex: info.keyIndex, keyTotal: info.keyTotal }) : undefined,
         onSelectionRationale: toRationaleCallback(providerOpts.onSelectionRationale),
+        exclude: providerOpts.excludeModels,
+        maxIntelligenceRank: providerOpts.maxIntelligenceRank,
+        abortSignal: options.abortSignal,
       };
       diagLog('ai-sdk.doStream', `pinnedModel="${providerOpts.pinnedModel ?? '<auto>'}" → routeOpts.model="${routeOpts.model}" msgs=${messages.length} tools=${tools?.length ?? 0}`);
 

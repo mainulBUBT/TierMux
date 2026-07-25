@@ -38,6 +38,7 @@ export class CloudflareProvider extends BaseProvider {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: this.body(messages, modelId, options, false),
+      signal: options?.abortSignal,
     }, options?.timeoutMs);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -54,6 +55,7 @@ export class CloudflareProvider extends BaseProvider {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: this.body(messages, modelId, options, true),
+      signal: options?.abortSignal,
     }, options?.timeoutMs);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
