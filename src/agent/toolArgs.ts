@@ -165,5 +165,39 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     }
   }
 
+  if (calls.length === 0) {
+    // Shape C: the XML "tool_call" dialect some weak free models (Qwen/GLM-style chat templates)
+    // emit as plain content when the server doesn't wire the tools API:
+    //   <tool_call>NAME
+    //   <arg_key>limit</arg_key><arg_value>30</arg_value>
+    //   <arg_key>path</arg_key><arg_value>routes/web.php</arg_value>
+    //   </tool_call>
+    // The tool name follows the opening tag; each argument is an <arg_key>/<arg_value> pair.
+    // (A <tool_call>{"name":...,"arguments":...}</tool_call> variant is already covered by the
+    // JSON shapes above, which scan the whole text.) The closing tag is optional to tolerate a
+    // response truncated mid-call. Without this branch the XML streamed straight through as the
+    // final answer and the turn died with no tool ever running.
+    const tcTag = /<tool_call>\s*([a-zA-Z0-9_.\-]+)\s*([\s\S]*?)(?:<\/tool_call>|$)/g;
+    while ((m = tcTag.exec(text)) !== null) {
+      const name = m[1];
+      if (!toolNames.has(name)) continue;
+      const args: Record<string, unknown> = {};
+      const pair = /<arg_key>\s*([\s\S]*?)\s*<\/arg_key>\s*<arg_value>\s*([\s\S]*?)\s*<\/arg_value>/g;
+      let p: RegExpExecArray | null;
+      while ((p = pair.exec(m[2])) !== null) args[p[1]] = coerceInlineArgValue(p[2]);
+      calls.push({ name, arguments: JSON.stringify(args) });
+    }
+  }
+
   return { detected: calls.length > 0, calls };
+}
+
+/** Coerce one <arg_value> payload to a JS value: JSON-parse it so `30`→number, `true`→boolean,
+ *  `["a"]`→array, `{...}`→object; fall back to the raw trimmed string for a plain path/word that
+ *  isn't valid JSON. (repairToolArguments still runs afterward to reconcile against the tool's
+ *  schema, so this only needs to be a sensible first guess.) */
+function coerceInlineArgValue(raw: string): unknown {
+  const t = raw.trim();
+  if (t === '') return t;
+  try { return JSON.parse(t); } catch { return t; }
 }

@@ -54,7 +54,7 @@ export function createToolApproval(opts: AgentOpts) {
       : 'This tool wants to write to the file';
     const pattern = name === 'runCommand' ? input.command : input.path;
     const command = name === 'runCommand' ? input.command : undefined;
-    const resp = await opts.onPermissionAsk({ title, pattern, command });
+    const resp = await opts.onPermissionAsk({ title, pattern, command, toolName: name });
     return resp === 'reject' ? { type: 'denied' } : 'approved';
   };
 }

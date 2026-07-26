@@ -22,6 +22,9 @@ export class SecretStore {
   private keyCooldownUntil = new Map<string, number>();
   /** Epoch-ms until which a `platform::modelId` is treated as tool-incompatible. */
   private toolIncompatUntil = new Map<string, number>();
+  /** Running count of "soft" tool failures (HTTP-200 tool-call misbehavior) per `platform::modelId`,
+   *  with the first-strike timestamp so stale runs reset. See noteToolSoftFailure. */
+  private toolSoftFails = new Map<string, { count: number; first: number }>();
   /** Epoch-ms until which a `platform::modelId` is treated as deprecated/removed (404). */
   private deprecatedUntil = new Map<string, number>();
   private readonly _onChange = new vscode.EventEmitter<void>();
@@ -237,6 +240,32 @@ export class SecretStore {
   isToolIncompatible(platform: Platform, modelId: string): boolean {
     const until = this.toolIncompatUntil.get(`${platform}::${modelId}`);
     return until !== undefined && until > Date.now();
+  }
+
+  /**
+   * Record a "soft" tool failure — the model returned HTTP 200 but misbehaved on tools: it emitted
+   * a tool call as plain text (rescued by rescueInlineToolCalls) or announced an action and called
+   * no tool at all. markToolIncompatible's 400/413 path never catches these (the request
+   * "succeeded"), so weak models kept getting re-selected turn after turn. After `threshold` strikes
+   * within `windowMs`, mark the model tool-incompatible so the router routes around it (time-boxed —
+   * it self-heals). Returns true when this strike tipped it over. Idempotent once already benched.
+   */
+  noteToolSoftFailure(platform: Platform, modelId: string, threshold = 2, windowMs = 600_000): boolean {
+    if (this.isToolIncompatible(platform, modelId)) return false;
+    const key = `${platform}::${modelId}`;
+    const now = Date.now();
+    const rec = this.toolSoftFails.get(key);
+    if (!rec || now - rec.first > windowMs) {
+      this.toolSoftFails.set(key, { count: 1, first: now });
+      return false;
+    }
+    rec.count++;
+    if (rec.count >= threshold) {
+      this.toolSoftFails.delete(key);
+      this.markToolIncompatible(platform, modelId);
+      return true;
+    }
+    return false;
   }
 
   /**

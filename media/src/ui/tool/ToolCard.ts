@@ -14,7 +14,7 @@ import { createCollapse } from '../primitives/Collapse';
 
 // ========== Constants ==========
 
-const STATE_ICON = { running: null, done: '✓', error: '✗' } as const;
+export const STATE_ICON = { running: null, done: '✓', error: '✗' } as const;
 const STATE_LABEL = { 
   running: 'Running', 
   done: 'Completed', 
@@ -113,13 +113,10 @@ export function buildReasoningBlock(text: string, tc?: string, isStreaming?: boo
 /** Update an existing reasoning block in place: refresh its text, and on done settle the
  *  streaming state + "Thought for Ns" label. Mirrors how `upsertTool` reconciles tool cards.
  *
- *  The whole turn shares ONE reasoning block (same toolCallId, `reason-${requestId}` — see
- *  chatViewProvider's onReasoning/flushReasoningDone), so reasoning that resumes after a tool
- *  call lands here as `done: false` again on an already-"done" block. Without re-entering the
- *  live state, that block would sit collapsed showing a stale "Thought for Ns" while new text
- *  quietly streams into its (hidden) body — reading as broken/stalled rather than one continuous
- *  train of thought. Re-opening + re-pulsing on resume keeps it visibly one live block start to
- *  finish, only settling to "Thought for Ns" when the reasoning is ACTUALLY done for the turn. */
+ *  Reasoning is split into per-segment blocks (`reason-${requestId}-${seg}` — see chatViewProvider's
+ *  onReasoning/endReasoningSegment): a tool call ends the current segment and the next thinking burst
+ *  opens a fresh block, giving a think→tool→think timeline. Within a single segment this still updates
+ *  one block in place: refresh its text while streaming, then settle to "Thought for Ns" on done. */
 export function updateReasoningBlock(block: HTMLElement, text: string, done?: boolean, durationMs?: number): void {
   const body = block.querySelector<HTMLElement>('.tm-reasoning-body');
   if (body) { body.innerHTML = ''; body.appendChild(renderMarkdown(text || '')); }

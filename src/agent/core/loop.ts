@@ -10,7 +10,7 @@ import * as vscode from 'vscode';
 import type { Router } from '../../router/router';
 import type { ChatMessage, ChatContentBlock } from '../../shared/types';
 import type { AgentOpts, AgentResult } from '../agent';
-import { classifyTask, type TaskKind } from '../routing';
+import { classifyTask, attachmentKindsFromContent, type TaskKind } from '../routing';
 import { assessAnswerQuality } from '../answerQuality';
 import { contentToString } from '../content';
 import { buildSystemPrompt } from '../promptBuilder';
@@ -166,6 +166,23 @@ const SYNTH_SUFFIX_STUCK =
   + 'progress. Using ONLY what you learned from the tool results above, tell the user what you '
   + 'found/concluded so far and what is still unresolved. Do NOT claim the task is complete — this '
   + 'is a progress report, not a final answer.';
+
+/** A reply that ENDS on an announced action ("…let me read the file and fix it:") — a weak model's
+ *  classic "all talk, no action" turn. Matched only at the tail so a genuine explanation that
+ *  merely mentions an action mid-text doesn't trip it. Combined with hadToolCalls===false in
+ *  runTurn to detect a turn that promised work but called no tool. */
+const ACTION_INTENT_RE = /\b(let me|i'?ll|i will|let'?s|i'?m going to|now i'?ll|i can|i'?d|i should|let me go ahead and)\b[^.!?\n]*\b(read|open|look at|inspect|examine|check|review|fix|edit|update|change|modify|rewrite|replace|implement|create|add|remove|delete|run|execute|search|grep|find|explore|apply|write)\b[^.!?\n]*[:.]?\s*$/i;
+
+/** Nudge appended (as a user turn) when a model announced an action but called no tool. Pushes the
+ *  SAME model to actually invoke the tool this time instead of re-describing the plan. */
+const FORCE_ACTION_NUDGE =
+  'You described what you would do but did NOT use any tool — no file was read or changed, so '
+  + 'nothing actually happened. Do it now: call the appropriate tool to perform the action. Do not '
+  + 'just describe what you will do — actually do it.\n\n'
+  + 'If you cannot emit a native tool call, emit it as text in EXACTLY this format (a real call '
+  + 'will run from it): <function=TOOL_NAME>{"arg": "value"}</function> — for example '
+  + '<function=readFile>{"path": "routes/web.php"}</function>. Put the tag on its own line, not in '
+  + 'backticks, using the real tool name and JSON arguments. Emit the call now, then wait for the result.';
 
 /**
  * Forced synthesis turn — run after the main loop when the model acted via tools but produced no
@@ -555,18 +572,46 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   const maxTurnTokens = vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxTurnTokens', 500_000);
   // Cap on read-only tool calls before the first mutating one (see explorationStop above). 0 disables.
   const maxExplorationCalls = vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxExplorationCalls', 20);
-  const lastUserText = contentToString([...opts.messages].reverse().find((m) => m.role === 'user')?.content ?? '');
-  const taskKind = classifyTask(lastUserText);
+  const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
+  const lastUserText = contentToString(lastUser?.content ?? '');
+  // Feed attachment signals so an image (or a text-less/scanned PDF) upgrades the task to 'vision'
+  // and the router prefers a vision-capable model. Derived from the BUILT content blocks by MIME, so
+  // a doc or a text-extracted PDF (inlined as a text block, not a file block) correctly stays text.
+  // Without this, an attached image under Auto could silently land on a text-only model that can't
+  // see it — attachmentKindsFromContent was dead code until now.
+  const attachmentKinds = lastUser ? attachmentKindsFromContent(lastUser.content) : [];
+  const taskKind = classifyTask(lastUserText, { attachmentKinds, attachments: attachmentKinds.length });
 
   const first = await runAttempt(router, opts, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls);
   let final = first;
+
+  // Force-action retry — a weak model announced an action but called NO tool ("Let me read the
+  // file and fix it:") and then stopped, so nothing happened and the turn died on a coherent-looking
+  // but empty promise (assessAnswerQuality can't catch it — the text is long and well-formed). Only
+  // for action task kinds, only when zero tools ran, and not after a budget/stuck stop or abort.
+  // Re-invoke the SAME model with the model's own promise plus an explicit "actually do it now"
+  // nudge so it follows through instead of re-describing. One retry only; accept whatever it yields.
+  const wantsAction = taskKind === 'agent' || taskKind === 'coding' || taskKind === 'debug' || taskKind === 'longContext';
+  if (wantsAction && !first.hadToolCalls && !first.stopReason && !opts.abortSignal?.aborted && ACTION_INTENT_RE.test(first.text.trim())) {
+    diagLog('turn.forceAction', `announced an action but made no tool call — retrying with an act-now nudge`);
+    // Learn-by-failure: announcing an action but calling no tool is a tool-use failure this model
+    // "succeeded" (HTTP 200) on. Record a strike so repeat offenders get benched from tool routing.
+    router.noteToolSoftFailure(first.platform, first.model);
+    const nudged: AgentOpts = {
+      ...opts,
+      messages: [...opts.messages, { role: 'assistant', content: first.text }, { role: 'user', content: FORCE_ACTION_NUDGE }],
+    };
+    const acted = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls);
+    // Prefer the retry only if it actually acted or produced non-empty text — never regress to blank.
+    if (acted.hadToolCalls || acted.text.trim()) final = acted;
+  }
 
   // Quality-based escalation — restores a pipeline that existed under the old OpenCode-backed
   // engine (assessAnswerQuality → maybeEscalateWeak → tryEscalate → onFailover) and was lost in
   // the migration to this native loop. Only safe when NO mutating tool call happened yet: once a
   // write/edit/delete/command has actually run, retrying with a different model would either
   // repeat that side effect or silently strand it — never retry past that point.
-  const canEscalate = !first.hadMutatingToolCall && !opts.abortSignal?.aborted && first.platform && first.model;
+  const canEscalate = final === first && !first.hadMutatingToolCall && !opts.abortSignal?.aborted && first.platform && first.model;
   if (canEscalate) {
     const quality = assessAnswerQuality(first.text, taskKind);
     if (first.stopReason === 'stuck' || quality.weak) {
@@ -590,6 +635,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     runtimeName: final.runtimeName,
     taskKind,
     paused: final.paused,
+    stopReason: final.stopReason,
     workMessages: final.workMessages.length ? final.workMessages : undefined,
   };
 }

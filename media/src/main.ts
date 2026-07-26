@@ -12,7 +12,7 @@ import { send } from './bridge';
 import type { RxMessage } from './bridge';
 import { $, escapeHtml, showToast } from './dom';
 import { renderMarkdown } from './markdown';
-import { buildReasoningBlock, updateReasoningBlock, buildToolCard, toolLabel, activityFor } from './ui/tool/ToolCard';
+import { buildReasoningBlock, updateReasoningBlock, buildToolCard, toolLabel, activityFor, STATE_ICON } from './ui/tool/ToolCard';
 import { createPlan, createCheckpoint, planDataFromStepText, planDataFromTodos } from './ui/components';
 import { handleAssistantStart } from './handlers/assistantStart';
 import { handleAgentStep } from './handlers/agentStep';
@@ -943,6 +943,11 @@ const STATE_LABEL = {
       flow.appendChild(seg);
     }
 
+    // Collapse tool cards/reasoning into "Worked for Ns" — same treatment the live run got via
+    // finalizeWork. Without this, reopening/switching back to a session showed every tool call as
+    // a flat, uncollapsed list instead of matching what it looked like while live.
+    collapseFlowTimeline(flow, secs, null);
+
     // Only attach flow if it has children (pure-text ask-mode: just the text seg).
     if (flow.children.length) el.appendChild(flow);
 
@@ -1142,22 +1147,22 @@ const STATE_LABEL = {
       if (t && t.statusEl) t.statusEl.classList.add('hidden');
     }
   }
-  // Finalize a turn's flow. Wraps all tool cards and think-blocks into a collapsed
-  // <details> summary so the final answer is immediately visible after the run ends.
-  // Text segments (.flow-text) stay outside so the answer is never hidden.
-  function finalizeWork(requestId) {
-    const t = targets.get(requestId);
-    if (!t) return;
-    t.currentText = null;
-    if (!t.flow) return;
+  // Wraps a flow's tool cards and think-blocks into a collapsed <details> summary so the final
+  // answer is immediately visible, with the step-by-step trace tucked behind "Worked for Ns".
+  // Shared by BOTH the live finish path (finalizeWork) and the static reconstruction path
+  // (renderAssistantStatic, used after closing/reopening or switching sessions) — without this
+  // being shared, a reopened session showed every tool call as a flat, uncollapsed list instead of
+  // matching what the live run looked like, because only the live path used to call it.
+  function collapseFlowTimeline(flow, elapsedSeconds, planEl) {
+    if (!flow) return;
 
     // Drop empty text segments — multiple tool calls each reset currentText, leaving
     // blank .flow-text divs in the flow that create visual whitespace.
-    Array.from(t.flow.children)
+    Array.from(flow.children)
       .filter((el) => el.classList.contains('flow-text') && !el.textContent.trim())
       .forEach((el) => el.remove());
 
-    if (t.flow.children.length === 0) { t.flow.remove(); return; }
+    if (flow.children.length === 0) { flow.remove(); return; }
 
     // Split the flow at the LAST tool card / reasoning block. Everything up to and including it
     // is the "working timeline" (tools + the model's interim thinking-as-text — noise that weak
@@ -1165,7 +1170,7 @@ const STATE_LABEL = {
     // clean final answer. This is the Cursor/Copilot model: a collapsed step-by-step timeline
     // with the answer beneath it — as opposed to dumping ALL streamed text below the tools,
     // which buried the real answer under paragraphs of the model thinking out loud.
-    const children = Array.from(t.flow.children);
+    const children = Array.from(flow.children);
     let lastWorkIdx = -1;
     for (let i = 0; i < children.length; i++) {
       if (children[i].classList.contains('tm-tool-card') || children[i].classList.contains('tm-reasoning')) lastWorkIdx = i;
@@ -1183,15 +1188,18 @@ const STATE_LABEL = {
       if (children[i].classList.contains('flow-text') && children[i].textContent.trim()) { answerNode = children[i]; break; }
     }
 
-    // The timeline is the chronological prefix through the last work node, minus the final answer.
-    const timelineNodes = children.slice(0, lastWorkIdx + 1).filter((el) => el !== answerNode);
-    // Nothing left to collapse once the answer is excluded — leave the flow as-is.
+    // The timeline is the chronological prefix through the last work node, minus the final answer
+    // AND minus the plan/todo list. The todo list (planEl) is mounted at the top of the flow, so a
+    // blind prefix slice would sweep it into the collapsed "Worked for Ns" summary and hide it — but
+    // the plan is a persistent progress overview, not step noise, so it must stay visible (it stays
+    // above the collapsed timeline, matching Cursor's always-visible checklist).
+    const timelineNodes = children.slice(0, lastWorkIdx + 1).filter((el) => el !== answerNode && el !== planEl);
+    // Nothing left to collapse once the answer and plan are excluded — leave the flow as-is.
     if (!timelineNodes.length) return;
     const toolCount = timelineNodes.filter((el) => el.classList.contains('tm-tool-card')).length;
     const thinkCount = timelineNodes.filter((el) => el.classList.contains('tm-reasoning')).length;
-    const elapsed = t.startedAt ? Math.round((Date.now() - t.startedAt) / 1000) : null;
     const parts = [];
-    if (elapsed != null) parts.push(`Worked for ${elapsed}s`);
+    if (elapsedSeconds != null) parts.push(`Worked for ${elapsedSeconds}s`);
     if (toolCount) parts.push(`${toolCount} tool use${toolCount !== 1 ? 's' : ''}`);
     if (thinkCount) parts.push(`${thinkCount} thought${thinkCount !== 1 ? 's' : ''}`);
 
@@ -1204,11 +1212,22 @@ const STATE_LABEL = {
 
     // Preserve chronological order inside the timeline: tools and interim text stay interleaved
     // exactly as they streamed, so expanding the summary reads as a real step-by-step trace.
-    t.flow.insertBefore(det, timelineNodes[0]);
+    flow.insertBefore(det, timelineNodes[0]);
     timelineNodes.forEach((n) => det.appendChild(n));
     // Re-anchor the final answer BELOW the collapsed timeline so it's always the visible, bottom
     // element — even if it originally streamed before the last tool/reasoning node.
-    if (answerNode) t.flow.appendChild(answerNode);
+    if (answerNode) flow.appendChild(answerNode);
+  }
+
+  // Finalize a live turn's flow: collapse it (see collapseFlowTimeline) using the run's actual
+  // elapsed time, then settle the streaming UI state.
+  function finalizeWork(requestId) {
+    const t = targets.get(requestId);
+    if (!t) return;
+    t.currentText = null;
+    if (!t.flow) return;
+    const elapsed = t.startedAt ? Math.round((Date.now() - t.startedAt) / 1000) : null;
+    collapseFlowTimeline(t.flow, elapsed, t.planEl);
     scrollDown();
   }
 

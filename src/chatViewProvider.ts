@@ -103,6 +103,55 @@ function planDataFromTodos(title: string, todos: TodoItem[]): PlanDataPayload {
   };
 }
 
+/** The synthetic user message that drives one round of the autonomous continuation loop. When the
+ *  agent's visible plan still has unfinished todos, spell them out so the model resumes the exact
+ *  remaining work (rather than the old generic "continue" string, which invited re-planning or
+ *  repeating done steps). Falls back to a plain continuation when the loop was triggered by a
+ *  step-cap pause with no todos. */
+function autoContinueMessage(remainingTodos: TodoItem[]): string {
+  if (remainingTodos.length === 0) {
+    return 'Continue from where you left off. Keep going with the remaining steps using the work '
+      + 'already done above — do not restart or repeat completed steps.';
+  }
+  const list = remainingTodos
+    .map((t) => `- ${t.content}${t.status === 'in_progress' ? ' (in progress)' : ''}`)
+    .join('\n');
+  return 'Keep going — your plan still has unfinished items. Continue working through them using '
+    + 'the work already done above; do not restart or repeat completed steps. Update the todo list '
+    + 'as you finish each item, and only stop once every item is completed (or you hit a genuine '
+    + `blocker, which you must state plainly).\n\nRemaining items:\n${list}`;
+}
+
+/** A short, bare "keep going" message — NOT a fresh task. Weak free models often re-plan from
+ *  scratch on such a message (worse if history was compacted), redoing finished work. We detect it
+ *  to splice in explicit resume context (see resumeContextBlock). Kept intentionally narrow: only
+ *  a message that is ESSENTIALLY just a continuation word, so a real instruction like "continue but
+ *  use TypeScript" is left untouched. */
+const CONTINUATION_RE = /^(continue|keep going|go on|carry on|proceed|resume|go ahead|carry on then|finish it|finish|next|keep going please|continue please|yes continue)\b[\s!.]*$/i;
+function isBareContinuation(text: string): boolean {
+  const t = (text || '').trim();
+  return t.length > 0 && t.split(/\s+/).length <= 4 && CONTINUATION_RE.test(t);
+}
+
+/** Resume context spliced into the MODEL-facing copy of a bare "continue" message (the displayed
+ *  transcript still shows only what the user typed). Names the still-unfinished plan items so the
+ *  model picks up exactly where it left off instead of restarting. */
+function resumeContextBlock(remainingTodos: TodoItem[]): string {
+  const list = remainingTodos
+    .map((t) => `- ${t.content}${t.status === 'in_progress' ? ' (in progress)' : ''}`)
+    .join('\n');
+  return '[Resume context: the previous turn left the plan below unfinished. Continue from the work '
+    + 'already done earlier in this conversation — do NOT restart or repeat completed steps. Update '
+    + `the todo list as you finish each item.]\n\nRemaining items:\n${list}`;
+}
+
+/** Append resume context to a user message's content, preserving any attachment blocks. */
+function withResumeContext(content: ChatContent, remainingTodos: TodoItem[]): ChatContent {
+  const block = resumeContextBlock(remainingTodos);
+  if (typeof content === 'string' || content == null) return `${content ?? ''}\n\n${block}`.trim();
+  return [...content, { type: 'text', text: block }];
+}
+
 /**
  * One chat session's full state — both the persisted conversation (history/transcript/title)
  * and the never-persisted runtime (the in-flight run, approvals, checkpoints, votes). Promoting
@@ -125,6 +174,10 @@ interface Session {
   cancel?: vscode.CancellationTokenSource;
   pendingApprovals: Map<string, (approved: boolean) => void>;
   pendingPermissions: Map<string, (response: 'once' | 'always' | 'reject') => void>;
+  /** Tool kinds (e.g. `editFile`, `runCommand`) the user chose "Always" for this session — future
+   *  calls to a listed tool auto-approve without re-asking. Session-scoped and in-memory (resets on
+   *  reload). A dangerous command is NEVER added here, so it keeps prompting even after an "Always". */
+  alwaysAllowTools: Set<string>;
   approvalSeq: number;
   /** Ephemeral interactive cards (approvals / plan / clarifying) awaiting a click, cached so
    *  they re-render when the user switches back to a session whose run is blocked on them. */
@@ -183,6 +236,12 @@ interface StoredSession {
   /** Present only if the last run for this session never finished (e.g. the extension host
    *  crashed mid-turn). Recovered into `history` on the next hydrate — see hydrateSession(). */
   inProgressTurn?: { requestId: string; workMessages: ChatMessage[] };
+  /** The last todo list this session showed, persisted so a "continue" after a reload can still
+   *  splice the remaining items into the resume message (see withResumeContext). */
+  lastTodos?: TodoItem[];
+  /** Tool kinds the user chose "Always" for, persisted so the per-tool allowlist survives a reload
+   *  instead of re-prompting. Stored as an array (Set isn't JSON-serializable). */
+  alwaysAllowTools?: string[];
 }
 
 /**
@@ -331,6 +390,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       updatedAt: now,
       pendingApprovals: new Map(),
       pendingPermissions: new Map(),
+      alwaysAllowTools: new Set(),
       approvalSeq: 0,
       voteCtx: new Map(),
       cards: [],
@@ -367,6 +427,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       titleGenerated: !!s.title || (s.transcript?.some((t) => t.role === 'user') ?? false),
       pendingApprovals: new Map(),
       pendingPermissions: new Map(),
+      alwaysAllowTools: new Set(s.alwaysAllowTools ?? []),
+      lastTodos: s.lastTodos,
       approvalSeq: 0,
       voteCtx: new Map(),
       cards: [],
@@ -416,6 +478,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       others.unshift({
         id: s.id, title: s.title ?? this.deriveTitle(s), ts: Date.now(), transcript: s.transcript,
         model: s.model, reasoningEffort: s.reasoningEffort, history: s.history, inProgressTurn: s.inProgressTurn,
+        lastTodos: s.lastTodos, alwaysAllowTools: s.alwaysAllowTools.size ? [...s.alwaysAllowTools] : undefined,
       });
     }
     void this.deps.workspaceState.update(SESSIONS_KEY, others.slice(0, MAX_SESSIONS));
@@ -1495,14 +1558,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.livePlatform && s.liveModel ? `${s.livePlatform}/${s.liveModel}` : undefined,
       );
       if (!r) {
-        this.post({ type: 'notice', sessionId: s.id, text: 'Compaction produced no summary; context unchanged.' });
+        // condenseHistory already retried once with a different model before giving up (see
+        // condense.ts) — reaching here means two models in a row returned an empty summary, which
+        // usually means the enabled fallback chain is thin (few models, or several rate-limited).
+        this.post({ type: 'notice', sessionId: s.id, text: 'Compaction produced no summary after retrying with a different model; context unchanged. Try again in a moment, or switch/enable another model.' });
         return;
       }
-      const prior = s.history.length;
+      // Report actual TOKEN counts, not just message counts — a session with a couple of huge
+      // tool-result messages in the kept tail can shrink from e.g. 12 → 7 messages while barely
+      // dropping in tokens, which reads as "compact did nothing" even though it genuinely ran.
+      // Showing the real before/after (now that recapTailToolResults also shrinks oversized tool
+      // results within the kept tail — see condense.ts) makes a real reduction visible and provable.
+      const priorMessages = s.history.length;
+      const priorTokens = estimateMessagesTokens(s.history);
       s.history = r.messages;
+      const afterTokens = estimateMessagesTokens(s.history);
       this.persist(s.id);
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
-      this.post({ type: 'notice', sessionId: s.id, text: `🗜 Context compacted — ${prior} → ${r.messages.length} messages. Earlier turns summarized; the last few kept verbatim.` });
+      this.post({ type: 'notice', sessionId: s.id, text: `🗜 Context compacted — ~${Math.round(priorTokens / 1000)}k → ~${Math.round(afterTokens / 1000)}k tokens (${priorMessages} → ${r.messages.length} messages). Earlier turns summarized; the last few kept verbatim.` });
     } catch (e) {
       this.post({ type: 'error', sessionId: s.id, message: `Compact failed: ${e instanceof Error ? e.message : String(e)}` });
     } finally {
@@ -1581,7 +1654,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const contextText = await resolveMentions(prompt).catch(() => '');
     diagLog('send.gate', `requestId=${m.requestId} · resolveMentions done`);
     const userContent = this.buildUserContent(prompt, contextText, m.attachments);
-    s.history.push({ role: 'user', content: userContent });
+    // Deterministic resume: a bare "continue"/"keep going" isn't a fresh task — it means "pick up
+    // the unfinished work". If the agent's visible plan still has open todos, splice them into the
+    // MODEL-facing copy of the message so it resumes precisely instead of re-planning from scratch
+    // (a common weak-model failure, made worse when history compaction dropped the tool transcript).
+    // The DISPLAYED transcript below still shows only what the user typed.
+    const pendingTodos = (m.mode === 'agent' && isBareContinuation(prompt))
+      ? (s.lastTodos ?? []).filter((t) => t.status !== 'completed')
+      : [];
+    const historyContent = pendingTodos.length ? withResumeContext(userContent, pendingTodos) : userContent;
+    s.history.push({ role: 'user', content: historyContent });
     s.transcript.push({ role: 'user', text: prompt, requestId: m.requestId, ts: Date.now(), historyLen: s.history.length - 1, attachments: m.attachments });
     s.updatedAt = Date.now();
     void this.maybeGenerateTitle(s); // title from the user's message right away (e.g. "hi" -> "Greetings")
@@ -1597,6 +1679,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.settlePendingAskUser(s);
     s.executingPlan = false;
+    // Snapshot the todo-list reference at send start. onTodos() reassigns s.lastTodos to a NEW
+    // array on every todowrite call, so `s.lastTodos !== todosAtSendStart` is a reliable "the
+    // agent wrote a plan during THIS send" signal — the autonomous continuation loop below keys
+    // off it so leftover completed/pending todos from a PRIOR turn can't trigger a false continue.
+    const todosAtSendStart = s.lastTodos;
 
     const release = await this.acquireRunSlot(s.id);
     diagLog('send.gate', `requestId=${m.requestId} · slot acquired`);
@@ -1695,12 +1782,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       }
 
-      const autoContinueOn = vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('autoContinue', true);
-      if (m.mode === 'agent') {
-        for (let ac = 0; result.paused && autoContinueOn && ac < 3 && this.isActiveRun(s, m.requestId); ac++) {
+      // ── Autonomous continuation loop (todo-driven) ───────────────────────────────────
+      // Turns the engine from single-response into goal-pursuing: the agent writes a plan via the
+      // `todowrite` tool, and this loop keeps re-invoking the model until every planned item is
+      // `completed` (the "visible plan" IS the completion contract). Two triggers keep going:
+      //   (a) pending todos — the agent's own plan still has unfinished items this send, or
+      //   (b) result.paused — a genuine step-cap cutoff mid-task (legacy resumable state).
+      // Hard stops (autonomy stays safe): result.stopReason (over budget / stuck-repeat / thrash)
+      // HALTS immediately — re-running that just repeats the waste; a per-send round cap
+      // (maxAutoContinueRounds) bounds total autonomy; the Stop button (isActiveRun/abort) always
+      // wins. A plain Q&A turn that never wrote a plan has no pending todos → this never fires, so
+      // simple chats still return in one turn.
+      const agentCfg = vscode.workspace.getConfiguration('tiermux.agent');
+      const autoContinueOn = agentCfg.get<boolean>('autoContinue', true);
+      const maxAutoContinueRounds = agentCfg.get<number>('maxAutoContinueRounds', 25);
+      if (m.mode === 'agent' && autoContinueOn) {
+        for (let ac = 0; ac < maxAutoContinueRounds && this.isActiveRun(s, m.requestId); ac++) {
+          // A guardrail cut this attempt short (over budget / stuck) — do NOT auto-continue.
+          if (result.stopReason) { diagLog('send.autocontinue', `halt: stopReason=${result.stopReason} after round ${ac}`); break; }
+          // Only todos written during THIS send count (see todosAtSendStart) — stale todos from an
+          // earlier turn must not keep a fresh, unrelated turn spinning.
+          const wroteTodosThisSend = s.lastTodos !== todosAtSendStart;
+          const remainingTodos = wroteTodosThisSend ? (s.lastTodos ?? []).filter((t) => t.status !== 'completed') : [];
+          if (!result.paused && remainingTodos.length === 0) break; // goal met (or no plan to pursue)
 
           this.persistAgentTurn(s, result);
-          s.history.push({ role: 'user', content: 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.' });
+          s.history.push({ role: 'user', content: autoContinueMessage(remainingTodos) });
+          diagLog('send.autocontinue', `round ${ac + 1}/${maxAutoContinueRounds} · ${remainingTodos.length} todos left · paused=${result.paused}`);
           result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model), {});
           if (!this.isActiveRun(s, m.requestId)) return;
         }
@@ -2131,17 +2239,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private agentCallbacks(s: Session, requestId: string, _mode: Mode): Omit<AgentOpts, 'messages' | 'mode' | 'effort' | 'abortSignal' | 'pinnedModel' | 'taskKind'> {
     const live = (): boolean => this.isActiveRun(s, requestId);
 
-    // Reasoning stream state — ONE stable block per request, accumulated (not one block per
-    // delta). The block is born live ('running', auto-opens) and is settled to 'done' with a
-    // duration when the turn finishes (flushReasoningDone), giving the "Thought for Ns" label.
-    const reasoningId = `reason-${requestId}`;
+    // Reasoning stream state — ONE block per thinking "burst", not one coalesced block per turn, so
+    // the UI renders a think→tool→think→tool timeline. Each burst carries its own segment id; when a
+    // tool call interrupts, the current burst is settled ('done', with a "Thought for Ns" duration)
+    // and the segment id advances so the NEXT reasoning delta opens a fresh block below the tool
+    // card. Each burst accumulates its own text (reset per segment) rather than the whole turn's.
+    let reasoningSeg = 0;
+    const reasoningId = () => `reason-${requestId}-${reasoningSeg}`;
     let reasoningText = '';
     let reasoningStart = 0;
     const flushReasoningDone = () => {
       if (!reasoningStart || !reasoningText.trim()) return;
       const durationMs = Date.now() - reasoningStart;
-      this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: reasoningId, name: 'reasoning', args: undefined, state: 'done', detail: reasoningText, durationMs });
+      this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: reasoningId(), name: 'reasoning', args: undefined, state: 'done', detail: reasoningText, durationMs });
       reasoningStart = 0;
+    };
+    // A tool call interrupted reasoning: settle the current burst, then advance to a fresh segment
+    // (new id + empty buffer) so reasoning that resumes AFTER the tool renders as its own block.
+    const endReasoningSegment = () => {
+      const had = !!(reasoningStart && reasoningText.trim());
+      flushReasoningDone();
+      if (had) { reasoningSeg++; reasoningText = ''; }
     };
 
     return {
@@ -2159,7 +2277,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       onTool: (e: ToolEvent) => {
         if (!live()) return;
-        flushReasoningDone(); // reasoning gave way to a tool call — settle the "Thought for Ns" block
+        endReasoningSegment(); // reasoning gave way to a tool call — settle this burst, start a new segment
 
         const steps = s.liveSteps.get(requestId) ?? [];
         const i = steps.findIndex((st) => st.toolCallId === e.toolCallId);
@@ -2198,13 +2316,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       onReasoning: (text) => {
         if (!live()) return;
-        const t = (text || '').trim();
-        if (!t) return;
+        if (!text) return;
         if (!reasoningStart) reasoningStart = Date.now();
-        reasoningText += (reasoningText ? '\n' : '') + t;
+        // Append the raw delta — do NOT trim each fragment and join with '\n'. The old join inserted
+        // a newline between EVERY streamed fragment, and since the reasoning body renders markdown
+        // with breaks:true (\n → <br>), that turned each fragment into its own line and produced huge
+        // vertical gaps. Concatenating raw reconstructs the model's own text exactly (mirrors loop.ts's
+        // `reasoning += d`). trimStart only so a leading newline doesn't render as a blank first line.
+        reasoningText = (reasoningText + text).replace(/^\s+/, '');
         // Always 'running' while the reasoning stream is live; the webview auto-opens the block
         // and shows "Thinking…". Settled to 'done' (with duration) at turn finalize below.
-        this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: reasoningId, name: 'reasoning', args: undefined, state: 'running', detail: reasoningText });
+        this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: reasoningId(), name: 'reasoning', args: undefined, state: 'running', detail: reasoningText });
       },
       onStep: (phase, label) => { if (!live()) return; s.lastStepLabel = label; this.post({ type: 'agentStep', sessionId: s.id, requestId, phase: phase as 'thinking' | 'synthesizing' | 'done', label }); },
       onTodos: (todos) => {
@@ -2233,8 +2355,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       onPermissionAsk: async (info) => {
         if (!live()) return 'reject';
 
-        if (this.autoApprove && !(info.command && isDangerous(info.command))) return 'once';
-        return this.requestPermissionAsk(s.id, requestId, info.title, info.pattern);
+        const dangerous = !!(info.command && isDangerous(info.command));
+        // Global Auto-approve toggle: everything proceeds except dangerous commands.
+        if (this.autoApprove && !dangerous) return 'once';
+        // Per-tool session allowlist: the user already clicked "Always" for this tool kind this
+        // session — auto-approve matching calls, but NEVER a dangerous command (those keep asking).
+        if (info.toolName && !dangerous && s.alwaysAllowTools.has(info.toolName)) return 'once';
+
+        const resp = await this.requestPermissionAsk(s.id, requestId, info.title, info.pattern);
+        // "Always" = remember this tool kind for the rest of the session so we stop asking for it.
+        // Skip dangerous commands so a one-off "Always" on a risky command can't disable its gate.
+        if (resp === 'always' && info.toolName && !dangerous) s.alwaysAllowTools.add(info.toolName);
+        return resp;
       },
       onFailover: (from, reason) => {
         if (!live()) return;

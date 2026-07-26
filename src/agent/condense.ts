@@ -4,9 +4,17 @@ import type { ChatMessage } from '../shared/types';
 import type { Router } from '../router/router';
 import { SUMMARY_SYSTEM } from './prompts';
 import { contentToString } from './content';
+import { capToolOutput } from './core/tools/capOutput';
+import { diagLog } from '../util/diag';
 
 /** Number of recent messages kept verbatim (so the active thread of work stays intact). */
 const KEEP_TAIL = 6;
+/** Re-cap ceiling for a tool result surviving in the kept tail. Per-tool caps (capOutput.ts) run
+ *  up to 15-30k chars each — fine for the model mid-task, but by compaction time the model has
+ *  already acted on that result, so keeping it at full size in the "recent, verbatim" tail can
+ *  dwarf the summary and make Ctx barely move even though compaction genuinely ran. Re-capping
+ *  tighter here is what actually makes compaction shrink the context, not just the message count. */
+const TAIL_TOOL_RESULT_CAP = 1500;
 /** Minimum history length before condensing is worth an LLM call. Sessions with several
  *  tool-heavy turns balloon fast (large grep/read results), so compact a little sooner than the
  *  raw message count suggests — but not so soon that short chats pay for a needless summary. */
@@ -38,22 +46,48 @@ export async function condenseHistory(
   while (tailStart < history.length && history[tailStart].role !== 'user') tailStart++;
   if (tailStart >= history.length) return null;
   const prefix = history.slice(0, tailStart);
-  const tail = history.slice(tailStart);
+  const tail = recapTailToolResults(history.slice(tailStart));
   if (prefix.length < 3) return null;
 
+  const summaryRequest = [
+    { role: 'system' as const, content: SUMMARY_SYSTEM },
+    ...prefix,
+    { role: 'user' as const, content: 'Summarize the conversation above so it can continue with minimal context. Keep file names, decisions, and unresolved next steps.' },
+  ];
+
+  // One retry on an empty/whitespace-only summary, EXCLUDING the model that just produced it. A
+  // weak/free utility model can return HTTP-200 with blank or near-blank content (not a thrown
+  // error — router.ts's own empty-content check only catches a fully-falsy string, not whitespace),
+  // which used to surface as "Compaction produced no summary" with no recourse but to try again by
+  // hand. Mirrors the same weak-answer-retry pattern loop.ts already uses for the main turn.
   const model = await router.pickUtilityModel();
-  const result = await router.route(
-    [
-      { role: 'system', content: SUMMARY_SYSTEM },
-      ...prefix,
-      { role: 'user', content: 'Summarize the conversation above so it can continue with minimal context. Keep file names, decisions, and unresolved next steps.' },
-    ],
-    { temperature: 0.2, max_tokens: 1024, model, taskKind: 'chat' },
-  );
-  const summary = contentToString(result.response.choices[0]?.message.content).trim();
-  if (!summary) return null;
+  let result = await router.route(summaryRequest, { temperature: 0.2, max_tokens: 1024, model, taskKind: 'chat' });
+  let summary = contentToString(result.response.choices[0]?.message.content).trim();
+  if (!summary) {
+    const excludeKey = `${result.platform}::${result.model}`;
+    diagLog('condense.retry', `empty summary from ${excludeKey} — retrying with a different model`);
+    result = await router.route(summaryRequest, { temperature: 0.2, max_tokens: 1024, taskKind: 'chat', exclude: [excludeKey] });
+    summary = contentToString(result.response.choices[0]?.message.content).trim();
+  }
+  if (!summary) {
+    diagLog('condense.fail', `empty summary from both ${model ?? 'auto'} and its fallback — giving up`);
+    return null;
+  }
 
   const carry = previousModel ? `\n\n(Continued from a previous model: ${previousModel}.)` : '';
   const summaryMsg: ChatMessage = { role: 'user', content: `Summary of the earlier conversation:\n${summary}${carry}` };
   return { messages: [summaryMsg, ...tail], summary };
+}
+
+/** Re-cap `tool`-role message content in the kept tail down to TAIL_TOOL_RESULT_CAP. A large
+ *  grep/read/bash dump is capped at 15-30k chars at write-time (capOutput.ts) — appropriate while
+ *  the model is actively using it, but by compaction time the model has already acted on it, so
+ *  keeping it at full size in the verbatim tail can single-handedly dwarf the summary and make
+ *  compaction look like a no-op. Only touches `content` (string content); tool_call_id / role are
+ *  untouched, so the call↔result pairing the AI SDK requires stays intact. */
+function recapTailToolResults(tail: ChatMessage[]): ChatMessage[] {
+  return tail.map((m) => {
+    if (m.role !== 'tool' || typeof m.content !== 'string' || m.content.length <= TAIL_TOOL_RESULT_CAP) return m;
+    return { ...m, content: capToolOutput(m.content, TAIL_TOOL_RESULT_CAP, 'Re-run the tool if you need the full output again.') };
+  });
 }

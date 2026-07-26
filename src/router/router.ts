@@ -699,6 +699,13 @@ export class Router {
     return JSON.stringify(args);
   }
 
+  /** Record a "soft" tool failure for the model that just served a turn (emitted a text tool-call,
+   *  or announced an action and called no tool). Passthrough to the SecretStore's strike counter,
+   *  which benches the model from tool routing after repeated strikes. No-op on missing ids. */
+  noteToolSoftFailure(platform?: string, modelId?: string): void {
+    if (platform && modelId) this.secrets.noteToolSoftFailure(platform as Platform, modelId);
+  }
+
   async route(messages: ChatMessage[], opts: RouteOptions = {}): Promise<RouteResult> {
     if (process.env.TIERMUX_FAKE_MODEL === '1') return this.fakeRoute(messages, opts);
 
@@ -874,6 +881,9 @@ export class Router {
             // as normal text if it turned out not to be a tool call after all.
             const toolsOffered = !!opts.tools?.length;
             let holdingToolText = false;
+            // Which opener shape is being held: 'brace' = a `{` (JSON dialect), 'tag' = an XML
+            // dialect (`<tool_call>` / `<function=`). The release heuristics differ (see below).
+            let holdKind: 'brace' | 'tag' | null = null;
             let heldText = '';
             const flushHeld = () => {
               if (heldText) {
@@ -898,17 +908,29 @@ export class Router {
                   if (clean) {
                     if (holdingToolText) {
                       heldText += clean;
-                      // If it no longer looks like a tool call (e.g. has a paragraph break that JSON
-                      // wouldn't, or has grown implausibly long), release it and stream normally.
-                      if (heldText.includes('\n\n') || heldText.length > MAX_HOLD_CHARS) { flushHeld(); holdingToolText = false; }
+                      // Release heuristics differ by shape. A JSON ('brace') hold can't contain a
+                      // blank line, so a `\n\n` means it was prose after all — release it. An XML
+                      // ('tag') dialect legitimately spans blank lines between arg pairs, so only the
+                      // length cap frees it (and a tag opener is a strong enough signal that a false
+                      // positive is unlikely — give it a larger cap before giving up).
+                      const looksNotJson = holdKind === 'brace' && heldText.includes('\n\n');
+                      const cap = holdKind === 'tag' ? 4000 : MAX_HOLD_CHARS;
+                      if (looksNotJson || heldText.length > cap) { flushHeld(); holdingToolText = false; holdKind = null; }
                     } else if (toolsOffered) {
-                      // Detect a `{` that opens a line — either at the very start of the reply, or
-                      // appearing after narration a weak model emitted first (e.g. "Let me check...\n
-                      // {"type":"function",...}"), possibly within the same delta chunk. Anything
-                      // before the brace is genuine prose and streams live; the brace onward is held.
+                      // Detect a tool-call opener — either a `{` opening a line (JSON dialects), or an
+                      // `<tool_call>`/`<function=` XML tag (Qwen/GLM-style dialects) anywhere in the
+                      // chunk. A weak model often emits prose first ("Let me check...") then the tool
+                      // syntax; the earliest opener wins. Anything before it is genuine prose and
+                      // streams live; from the opener onward is held for the stream-end rescue.
                       const braceMatch = /(?:^|\n)[ \t]*\{/.exec(clean);
-                      if (braceMatch) {
-                        const idx = braceMatch.index + braceMatch[0].lastIndexOf('{');
+                      const braceIdx = braceMatch ? braceMatch.index + braceMatch[0].lastIndexOf('{') : -1;
+                      const tagMatch = /<tool_call>|<function=/.exec(clean);
+                      const tagIdx = tagMatch ? tagMatch.index : -1;
+                      let idx = -1;
+                      let kind: 'brace' | 'tag' | null = null;
+                      if (braceIdx >= 0 && (tagIdx < 0 || braceIdx <= tagIdx)) { idx = braceIdx; kind = 'brace'; }
+                      else if (tagIdx >= 0) { idx = tagIdx; kind = 'tag'; }
+                      if (idx >= 0) {
                         const pre = clean.slice(0, idx);
                         if (pre) {
                           if (firstChunkAt === null) firstChunkAt = Date.now();
@@ -916,6 +938,7 @@ export class Router {
                           opts.onChunk!(pre);
                         }
                         holdingToolText = true;
+                        holdKind = kind;
                         heldText += clean.slice(idx);
                       } else {
                         if (firstChunkAt === null) firstChunkAt = Date.now();

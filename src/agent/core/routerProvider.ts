@@ -222,6 +222,9 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
             rescuedToolCalls = rescue.calls.map((c, i) => ({
               id: `call_rescued_${i + 1}`, name: c.name, arguments: repairToolArguments(c.arguments, toolSchemaMap(tools).get(c.name)),
             }));
+            // Learn-by-failure: this model emitted its tool call as plain text (it doesn't speak the
+            // tools API natively). Record a strike so repeated offenders get benched from tool routing.
+            router.noteToolSoftFailure(result.platform, result.model);
           }
         }
         const effectiveToolCalls = hasToolCalls

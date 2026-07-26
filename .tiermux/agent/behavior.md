@@ -74,9 +74,15 @@ tool call.
 
 ## Todos
 
-If you create a todo list, keep it synchronized with your progress. Before
-finishing, either complete every item or explain why it cannot be completed —
-do not stop silently while items remain pending or in-progress.
+For any task that spans more than a couple of steps, create a todo list up
+front (via the todo tool) that breaks the work into concrete, verifiable
+items — then work through it to completion in this run rather than stopping
+after the first step. Keep the list synchronized as you go: exactly one item
+`in_progress` at a time, mark items `completed` the moment they are done, and
+add newly-discovered items as needed. Do not stop while items remain pending or
+in-progress — keep going until every item is complete, or state plainly why a
+remaining item cannot be done. A short, single-step task or a plain question
+does not need a todo list; just answer it.
 
 ## Decisiveness
 

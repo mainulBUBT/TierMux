@@ -26,6 +26,11 @@ export interface AgentResult {
   taskKind?: string;
   workMessages?: ChatMessage[];
   paused?: boolean;
+  /** Set when the turn was TERMINATED by a loop-control guardrail (over budget, or stuck
+   *  repeating/thrashing) rather than finishing naturally. The autonomous continuation loop in
+   *  chatViewProvider uses this to HALT — auto-continuing a budget/stuck stop just repeats the
+   *  waste. Undefined = the model concluded on its own terms (may still have pending todos). */
+  stopReason?: 'budget' | 'stuck';
 }
 
 /** Smart Auto scoring rationale for a route() call this run triggered — "why this model?".
@@ -74,7 +79,7 @@ export interface AgentOpts {
   onAskUser: (question: string, options?: string[]) => Promise<string>;
   /** A tool call is paused pending approval — resolved via the `toolApproval` policy
    *  (see core/policies/permission.ts), not by this file. */
-  onPermissionAsk?: (info: { title: string; pattern?: string | string[]; command?: string }) => Promise<'once' | 'always' | 'reject'>;
+  onPermissionAsk?: (info: { title: string; pattern?: string | string[]; command?: string; toolName?: string }) => Promise<'once' | 'always' | 'reject'>;
   onError: (message: string) => void;
   onWarning?: (message: string) => void;
   /** Watchdog — not wired up yet (see plan's deferred items). Kept optional so

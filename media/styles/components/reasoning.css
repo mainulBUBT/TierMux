@@ -77,9 +77,16 @@
   font-size: var(--tm-text-sm);
   line-height: 1.6;
   color: var(--tm-fg);
-  white-space: pre-wrap;
+  /* Content is markdown-rendered HTML (<p>/<br>), so it already carries its own line breaks.
+     pre-wrap ALSO rendered the literal newlines sitting between those tags, double-spacing the
+     block — use normal so only the markdown structure controls spacing. */
+  white-space: normal;
   word-break: break-word;
 }
+/* Tighten paragraph spacing inside a reasoning block — marked emits <p> with default margins that
+   read as large gaps in this compact card. */
+.tm-reasoning-text p { margin: 0 0 var(--tm-gap-sm); }
+.tm-reasoning-text p:last-child { margin-bottom: 0; }
 .tm-reasoning-text strong { font-weight: 600; }
 .tm-reasoning-text em { font-style: italic; color: var(--tm-fg-muted); }
 
