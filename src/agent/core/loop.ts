@@ -184,6 +184,21 @@ const FORCE_ACTION_NUDGE =
   + '<function=readFile>{"path": "routes/web.php"}</function>. Put the tag on its own line, not in '
   + 'backticks, using the real tool name and JSON arguments. Emit the call now, then wait for the result.';
 
+/** A model declined to look something up and pointed the user elsewhere ("switch to a mode that
+ *  can search the web", "I don't have real-time access", "check FIFA's official site") instead of
+ *  calling the `webSearch`/`fetchUrl` tool it was actually given. Unlike ACTION_INTENT_RE this
+ *  fires for ANY taskKind — a plain chat question is exactly where this happens, since the
+ *  force-action retry below is normally restricted to agent/coding/debug/longContext. */
+const DECLINED_WEBSEARCH_RE = /\b(switch(?:ing)? to (?:a |another )?mode|i (?:don'?t|do not) have (?:access to (?:the )?(?:internet|real-?time|live)|real-?time access|the ability to (?:browse|search))|cannot (?:browse|access) the (?:internet|web)|no internet access|(?:look|search) (?:it |this )?up (?:on|via|using) (?:the )?(?:internet|web|external sources?|a search engine)|external sources? (?:like|such as)|can'?t (?:browse|search) the web|unable to (?:browse|search) the (?:internet|web))\b/i;
+
+const FORCE_WEBSEARCH_NUDGE =
+  'You said you cannot look this up, but you DO have a `webSearch` tool available — use it now '
+  + 'instead of telling the user to switch modes or check an external site themselves. Call '
+  + '`webSearch` with a query for what was asked, then answer from the results.\n\n'
+  + 'If you cannot emit a native tool call, emit it as text in EXACTLY this format (a real call '
+  + 'will run from it): <function=webSearch>{"query": "..."}</function>. Put the tag on its own '
+  + 'line, not in backticks. Emit the call now, then wait for the result.';
+
 /**
  * Forced synthesis turn — run after the main loop when the model acted via tools but produced no
  * final text. Re-invokes the SAME routed model with the full tool transcript plus an explicit
@@ -592,14 +607,22 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // Re-invoke the SAME model with the model's own promise plus an explicit "actually do it now"
   // nudge so it follows through instead of re-describing. One retry only; accept whatever it yields.
   const wantsAction = taskKind === 'agent' || taskKind === 'coding' || taskKind === 'debug' || taskKind === 'longContext';
-  if (wantsAction && !first.hadToolCalls && !first.stopReason && !opts.abortSignal?.aborted && ACTION_INTENT_RE.test(first.text.trim())) {
-    diagLog('turn.forceAction', `announced an action but made no tool call — retrying with an act-now nudge`);
+  const canRetryToolUse = !first.hadToolCalls && !first.stopReason && !opts.abortSignal?.aborted;
+  const announcedNoAction = wantsAction && ACTION_INTENT_RE.test(first.text.trim());
+  // Declined-websearch fires for ANY taskKind (a plain chat question is exactly where a weak
+  // model tells the user to "switch modes" instead of calling the webSearch tool it was given).
+  const declinedWebSearch = canRetryToolUse && DECLINED_WEBSEARCH_RE.test(first.text.trim());
+  if (canRetryToolUse && (announcedNoAction || declinedWebSearch)) {
+    const nudgeText = declinedWebSearch ? FORCE_WEBSEARCH_NUDGE : FORCE_ACTION_NUDGE;
+    diagLog('turn.forceAction', declinedWebSearch
+      ? 'declined to search the web despite having webSearch — retrying with a use-the-tool nudge'
+      : 'announced an action but made no tool call — retrying with an act-now nudge');
     // Learn-by-failure: announcing an action but calling no tool is a tool-use failure this model
     // "succeeded" (HTTP 200) on. Record a strike so repeat offenders get benched from tool routing.
     router.noteToolSoftFailure(first.platform, first.model);
     const nudged: AgentOpts = {
       ...opts,
-      messages: [...opts.messages, { role: 'assistant', content: first.text }, { role: 'user', content: FORCE_ACTION_NUDGE }],
+      messages: [...opts.messages, { role: 'assistant', content: first.text }, { role: 'user', content: nudgeText }],
     };
     const acted = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls);
     // Prefer the retry only if it actually acted or produced non-empty text — never regress to blank.

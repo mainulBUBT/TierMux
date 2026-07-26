@@ -33,6 +33,7 @@ import { createMcpTools } from './mcp/mcp';
 import { createExploreTool } from './explore';
 import { createDiagnosticsTool } from './workspace/diagnostics';
 import { createFetchUrlTool } from './network/fetchUrl';
+import { createWebSearchTool } from './network/webSearch';
 
 export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, router: Router): ToolSet {
   // Ask mode: read-only codebase search only — no edit/write/delete/shell. Router.route()
@@ -45,6 +46,8 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
       glob: createGlobTool(),
       grep: createGrepTool(),
       explore: createExploreTool(router, opts.abortSignal),
+      webSearch: createWebSearchTool(),
+      fetchUrl: createFetchUrlTool(),
     };
   }
 
@@ -60,6 +63,7 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
     grep: createGrepTool(),
     getDiagnostics: createDiagnosticsTool(),
     fetchUrl: createFetchUrlTool(),
+    webSearch: createWebSearchTool(),
     explore: createExploreTool(router, opts.abortSignal),
     todowrite: createTodoWriteTool(opts.onTodos),
     question: createQuestionTool(opts.onAskUser),

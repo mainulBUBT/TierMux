@@ -73,7 +73,11 @@ const AGENT_MODE_TAIL =
   + 'implement something.\n\n'
   + 'When you edit files, use `getDiagnostics` to verify whether your changes introduce '
   + 'TypeScript or linter errors, and automatically fix any errors before finishing.\n\n'
-  + 'When you need external documentation, specs, or web pages, use `fetchUrl` to retrieve them.\n\n'
+  + 'When you need external documentation, specs, or web pages, use `fetchUrl` to retrieve them. '
+  + 'When the question is about something current or general-knowledge that is not answerable from '
+  + 'this codebase (news, current events, a fact about the outside world, a library/API you need to '
+  + 'look up), use `webSearch` instead of grepping the codebase for it — do not search local files '
+  + 'for information that was never going to be in them.\n\n'
   + 'When you need to LOCATE code or UNDERSTAND how part of the codebase works before acting '
   + '(e.g. "where is X handled", "how does Y flow", "which files touch Z"), prefer the `explore` '
   + 'tool over running many grep/read calls yourself: it delegates the search to a fast '
@@ -131,7 +135,12 @@ const ASK_MODE_TAIL =
   + 'You are in Ask mode: read-only Q&A. You can search and read the codebase (readFile, '
   + 'listDir, glob, grep, explore) to ground your answer in the actual project files, but you '
   + 'cannot edit or create files, delete anything, or run commands. Use a tool only when the '
-  + "question actually needs it — a general question doesn't. If a tool call fails or you "
+  + "question actually needs it — a general question doesn't. If the question is about "
+  + 'something current or outside this codebase (news, current events, a general fact, an '
+  + 'external library/API), use `webSearch` instead of grepping local files for it — local '
+  + "search tools cannot answer something that was never going to be in the project's files. "
+  + 'Use `fetchUrl` to read the full content of a promising `webSearch` result (or any URL the '
+  + "user gave you) when the snippet alone isn't enough. If a tool call fails or you "
   + "don't have a tool for what you need, don't dwell on the error or apologize at length: "
   + 'answer from the conversation and your general knowledge instead, noting briefly if the '
   + "answer isn't grounded in the actual files. If the question needs an edit or a command run "

@@ -13,7 +13,8 @@ something, say so.
 - `list` → see a directory's layout before drilling in.
 - `read` → read a SPECIFIC file you already located above, not a guess. Prefer the smallest
   range that answers the question.
-- `webfetch`/`websearch` → only for current info you can't find locally.
+- `fetchUrl`/`webSearch` → only for current info you can't find locally — not a substitute for
+  reading local files, and not something local search tools can substitute for either.
 
 ## Research budget
 
