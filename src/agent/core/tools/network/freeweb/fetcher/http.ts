@@ -1,0 +1,210 @@
+import type { Fetcher, FetcherResult, FetcherOptions, FetcherSource } from "./types";
+import { DEFAULT_FETCHER_OPTIONS, truncateContent } from "./types";
+import { LRUCache, InflightMap } from "../cache";
+import { FREEWEB_CONFIG } from "../config";
+import { safeFetch } from "./safe-fetch";
+
+interface DomNode {
+  textContent: string | null;
+  querySelector(sel: string): DomNode | null;
+  querySelectorAll(sel: string): DomNode[];
+  remove(): void;
+  href?: string;
+}
+interface DomDocument {
+  title: string;
+  body: DomNode | null;
+  querySelector(sel: string): DomNode | null;
+  querySelectorAll(sel: string): DomNode[];
+}
+type JSDOMConstructor = new (html: string) => { window: { document: DomDocument } };
+
+const cache = new LRUCache<FetcherResult>(FREEWEB_CONFIG.cacheMaxEntries, FREEWEB_CONFIG.cacheTTL);
+const inflight = new InflightMap<FetcherResult | null>();
+
+/**
+ * jsdom is large (~15 MB). The fetcher chain usually succeeds via the markdown,
+ * RSS, or github-raw layers and never needs HTML parsing — so jsdom is loaded
+ * lazily on first use, keeping agent cold start small. Loaded via dynamic
+ * import() so esbuild keeps it external (see esbuild.js) and Node resolves it
+ * from the extension's node_modules at runtime.
+ */
+let jsdomCtorPromise: Promise<JSDOMConstructor> | undefined;
+function loadJSDOM(): Promise<JSDOMConstructor> {
+  if (!jsdomCtorPromise) jsdomCtorPromise = import("jsdom").then((m) => m.JSDOM as unknown as JSDOMConstructor);
+  return jsdomCtorPromise;
+}
+
+function normalizeText(text: string): string {
+  return text
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join("\n")
+    .trim();
+}
+
+function stripNoiseNodes(el: DomNode): void {
+  const removeSelectors = [
+    "script", "style", "noscript", "svg", "iframe",
+    "nav", "header", "footer", "aside",
+    '[role="navigation"]', '[role="banner"]', '[role="contentinfo"]',
+    ".nav", ".navbar", ".sidebar", ".toc", ".breadcrumb", ".menu",
+    ".header", ".footer", ".breadcrumbs",
+    ".alert", ".notification", ".toast", ".banner",
+    ".search", ".searchbar", ".cookie", ".gdpr",
+    ".ad", ".ads", ".advertisement",
+    ".edit", ".feedback", ".contributors",
+    ".prev-next", ".pagination",
+    "[aria-hidden='true']", ".sr-only", ".visually-hidden",
+    "button", ".btn", ".button", ".copy", ".copy-button",
+    ".code-example .example-header", ".example-header",
+    ".toolbar", ".code-toolbar", ".language-label",
+    ".on-this-page", ".table-of-contents", ".toc-tree",
+    ".metadata", ".page-metadata", ".article-meta",
+    ".related", ".seealso", ".see-also",
+  ];
+  for (const sel of removeSelectors) {
+    el.querySelectorAll(sel).forEach((n: DomNode) => n.remove());
+  }
+}
+
+function extractMainContent(JSDOM: JSDOMConstructor, html: string): { title: string; text: string; selector: string } | null {
+  try {
+    const dom = new JSDOM(html);
+    const doc = dom.window.document;
+
+    const title = doc.title || "";
+
+    const selectors = [
+      "article", "main", '[role="main"]', "#mw-content-text",
+      ".content", ".post-content", ".article-content",
+      "#content", ".markdown-body", ".readme",
+    ];
+
+    for (const sel of selectors) {
+      const el = doc.querySelector(sel);
+      if (el) {
+        stripNoiseNodes(el);
+        const text = normalizeText(el.textContent || "");
+        if (text.length > 100) {
+          return { title, text, selector: sel };
+        }
+      }
+    }
+
+    if (doc.body) {
+      stripNoiseNodes(doc.body);
+      const bodyText = normalizeText(doc.body.textContent || "");
+      if (bodyText.length > 100) {
+        return { title, text: bodyText, selector: "body" };
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function detectSpa(html: string): boolean {
+  return /__next|data-reactroot|data-v-app|ng-version|<div id="app"/.test(html);
+}
+
+function extractLinksFromHtml(JSDOM: JSDOMConstructor, html: string): { text: string; href: string }[] {
+  try {
+    const dom = new JSDOM(html);
+    const doc = dom.window.document;
+    return Array.from(doc.querySelectorAll("a[href]"))
+      .map((el: DomNode) => ({
+        text: (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 100),
+        href: el.href || "",
+      }))
+      .filter((l) => l.href.startsWith("http") && l.text.length > 2);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Readable-content extraction for arbitrary HTML (jsdom-backed). Exported so the
+ * extraction logic is unit-testable offline with fixture HTML, without going
+ * through the network fetcher. Loads jsdom lazily on first call.
+ */
+export async function extractMainContentFromHtml(html: string): Promise<{ title: string; text: string } | null> {
+  const JSDOM = await loadJSDOM();
+  const result = extractMainContent(JSDOM, html);
+  return result ? { title: result.title, text: result.text } : null;
+}
+
+export const httpFetcher: Fetcher = {
+  name: "http-jsdom",
+  priority: 40,
+
+  canHandle(_url: string): boolean {
+    return true;
+  },
+
+  async fetch(url: string, opts?: FetcherOptions): Promise<FetcherResult | null> {
+    const maxContentLength = opts?.maxContentLength ?? DEFAULT_FETCHER_OPTIONS.maxContentLength;
+    const timeout = opts?.timeout ?? DEFAULT_FETCHER_OPTIONS.timeout;
+    const shouldExtractLinks = opts?.extractLinks ?? DEFAULT_FETCHER_OPTIONS.extractLinks;
+
+    const cached = cache.get(url);
+    if (cached) return cached;
+
+    return inflight.getOrSet(url, async () => {
+      const start = Date.now();
+
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), timeout);
+        const res = await safeFetch(url, {
+          signal: ctrl.signal,
+          headers: {
+            "User-Agent": FREEWEB_CONFIG.userAgent,
+            Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain,*/*;q=0.1",
+            "Accept-Language": "en-US,en;q=0.9",
+          },
+        });
+        clearTimeout(timer);
+
+        if (!res.ok) return null;
+
+        const contentType = res.headers.get("content-type") || "";
+        if (!contentType.includes("text/html") && !contentType.includes("text/plain") && !contentType.includes("application/xhtml")) {
+          return null;
+        }
+
+        const html = await res.text();
+        if (html.length < 200) return null;
+
+        // jsdom loaded lazily — only when we actually have HTML to parse.
+        const JSDOM = await loadJSDOM();
+        const content = extractMainContent(JSDOM, html);
+        if (!content) return null;
+
+        const isSpa = detectSpa(html);
+        const links = shouldExtractLinks ? extractLinksFromHtml(JSDOM, html) : undefined;
+        const ms = Date.now() - start;
+
+        const result: FetcherResult = {
+          url,
+          finalUrl: res.url || url,
+          title: content.title,
+          content: truncateContent(content.text, maxContentLength),
+          isSpa,
+          contentSource: "http-jsdom" as FetcherSource,
+          links,
+          fetcherName: "http-jsdom",
+          ms,
+        };
+
+        cache.set(url, result);
+        return result;
+      } catch {
+        return null;
+      }
+    });
+  },
+};

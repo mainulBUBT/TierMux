@@ -42,6 +42,7 @@ function createToolHeader(icon: string, title: string, hint: string, state: 'run
       el('div', { class: `tm-tool-card-state ${state}` }, stateIcon || ''),
       el('span', { class: 'tm-tool-card-state-label' }, stateLabel)
     ),
+    el('span', { class: 'tm-tool-card-chevron', 'aria-hidden': 'true' }, '▾'),
     el('div', { class: 'tm-tool-card-actions' },
       state === 'error' && onRetry ? el('button', { 
         class: 'tm-tool-card-btn',
@@ -180,9 +181,11 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
   const isEditStatic = step.name === 'editFile' || step.name === 'writeFile' || step.name === 'createFile';
   const editArgsStatic = isEditStatic && step.args && typeof step.args === 'object' ? step.args as Record<string, unknown> : null;
 
+  let hasBody = false;
   if (editArgsStatic && 'old_string' in editArgsStatic && 'new_string' in editArgsStatic) {
     pre.className = 'tm-tool-card-output diff-view';
     pre.appendChild(buildInlineDiff(String(editArgsStatic.old_string), String(editArgsStatic.new_string)));
+    hasBody = true;
     // Body stays collapsed by default (compact chip row); click the header to expand.
   } else {
     const argStr = (step.args && typeof step.args === 'object') ? JSON.stringify(step.args, null, 2) : String(step.args || '');
@@ -194,9 +197,12 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
     if (body.trim()) {
       pre.className = 'tm-tool-card-output';
       pre.textContent = body;
+      hasBody = true;
       // Body stays collapsed by default (compact chip row); click the header to expand.
     }
   }
+  // Only reveal the expand chevron when there's a body to show.
+  if (hasBody) card.classList.add('has-body');
 
   // Add progress bar for running tools
   if (state === 'running') {

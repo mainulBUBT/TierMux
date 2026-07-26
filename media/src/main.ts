@@ -1480,19 +1480,63 @@ const STATE_LABEL = {
 
   function iconForKind(k) {
     if (k === 'image') return ICON.image;
-    return ICON.file;
+    if (k === 'doc') return ICON.doc;
+    return ICON.file; // 'file' and 'pdf' share the document outline; tint + label distinguish them
+  }
+
+  function extOf(name) {
+    const m = /\.([a-z0-9]+)$/i.exec(name || '');
+    return m ? m[1].toUpperCase() : '';
+  }
+
+  /** Readable one-line subtitle for a card, e.g. "PNG image", "PDF document", "MD". */
+  function typeLabelFor(a) {
+    if (a.kind === 'image') { const e = extOf(a.name); return e ? `${e} image` : 'Image'; }
+    if (a.kind === 'pdf') return 'PDF document';
+    if (a.kind === 'doc') return 'Word document';
+    const e = extOf(a.name);
+    return e || 'Text';
   }
 
   function renderChips() {
     chipsEl.innerHTML = '';
     pendingAttachments.forEach((a, idx) => {
-      const chip = document.createElement('span');
-      chip.className = 'chip';
-      let preview = '';
-      if (a.kind === 'image' && a.dataUrl) preview = `<img class="chip-thumb" src="${a.dataUrl}" alt=""/>`;
-      chip.innerHTML = `${preview}<span class="chip-icon">${iconForKind(a.kind)}</span> ${escapeHtml(a.name)} <button title="remove">✕</button>`;
-      chip.querySelector('button').addEventListener('click', () => { pendingAttachments.splice(idx, 1); renderChips(); });
-      chipsEl.appendChild(chip);
+      const card = document.createElement('div');
+      card.className = `att-card ${a.kind || 'file'}`;
+
+      // Tile: real thumbnail for images, type-tinted icon for everything else.
+      const tile = document.createElement('div');
+      tile.className = 'att-tile';
+      if (a.kind === 'image' && a.dataUrl) {
+        const img = document.createElement('img');
+        img.src = a.dataUrl; img.alt = '';
+        tile.appendChild(img);
+      } else {
+        const ic = document.createElement('span');
+        ic.className = 'att-tile-icon';
+        ic.innerHTML = iconForKind(a.kind);
+        tile.appendChild(ic);
+      }
+
+      const meta = document.createElement('div');
+      meta.className = 'att-meta';
+      const name = document.createElement('span');
+      name.className = 'att-name';
+      name.textContent = a.name;
+      const sub = document.createElement('span');
+      sub.className = 'att-sub';
+      sub.textContent = typeLabelFor(a);
+      meta.append(name, sub);
+
+      const rm = document.createElement('button');
+      rm.className = 'att-remove';
+      rm.title = 'Remove';
+      rm.setAttribute('aria-label', 'Remove attachment');
+      rm.innerHTML = ICON.x;
+      rm.addEventListener('click', () => { pendingAttachments.splice(idx, 1); renderChips(); });
+
+      card.append(tile, meta, rm);
+      chipsEl.appendChild(card);
     });
     updateSendEnabled();
   }
@@ -1814,6 +1858,7 @@ const STATE_LABEL = {
           <div class="tm-tool-card-state"></div>
           <span class="tm-tool-card-state-label"></span>
         </div>
+        <span class="tm-tool-card-chevron" aria-hidden="true">▾</span>
         <div class="tm-tool-card-actions"></div>
       `;
       
@@ -1857,27 +1902,27 @@ const STATE_LABEL = {
     const isEdit = msg.name === 'editFile' || msg.name === 'writeFile' || msg.name === 'createFile';
     const editArgs = isEdit && msg.args && typeof msg.args === 'object' ? msg.args : null;
     
+    let hasBody = false;
     if (editArgs && editArgs.old_string != null && editArgs.new_string != null) {
       // Inline diff for patch-style edits
       pre.textContent = '';
       pre.className = 'tm-tool-card-output diff-view';
       pre.appendChild(buildInlineDiff(editArgs.old_string, editArgs.new_string));
       body.classList.remove('hidden');
-      if (msg.state === 'done') {
-        body.classList.add('open');
-        card.classList.add('open');
-      }
+      hasBody = true;
     } else if (msg.detail) {
       pre.className = 'tm-tool-card-output';
       pre.textContent = msg.detail;
       body.classList.remove('hidden');
-      // Always expand — CSS max-height keeps it from taking over the screen.
-      // While running, expand so partial output streams in visibly.
-      body.classList.add('open');
-      card.classList.add('open');
+      hasBody = true;
     } else {
       body.classList.add('hidden');
     }
+    // Collapsed by default — the chip (icon + verb title + hint) summarises the step; the user
+    // clicks the row to expand details. Only reveal the expand chevron when there's a body. We do
+    // NOT auto-open here, so a step with output stays a tidy one-liner until the user opts in.
+    // (card.className was just reset above, so toggle has-body onto the fresh class list.)
+    card.classList.toggle('has-body', hasBody);
     
     // Add progress bar for running tools
     const existingProgress = card.querySelector('.tm-tool-card-progress');

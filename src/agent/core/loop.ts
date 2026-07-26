@@ -241,6 +241,47 @@ async function forceSynthesis(
   }
 }
 
+/**
+ * Continuation turn for a length-truncated answer (finish_reason: 'length'). Re-invokes the SAME
+ * routed model with its own partial answer in context plus a "resume from the cutoff" instruction,
+ * single-step / no tools, and returns the appended text plus the continuation's finish reason so
+ * the caller can keep looping until the answer completes naturally. Mirrors forceSynthesis but
+ * extends an existing reply instead of forcing one. Live-streams into the UI via onChunk so the
+ * user sees the answer resume seamlessly rather than a stall.
+ */
+async function continueAfterTruncation(
+  languageModel: unknown,
+  system: string,
+  opts: AgentOpts,
+  workMessages: ChatMessage[],
+  onChunk: (t: string) => void,
+  onReasoning: (d: string) => void,
+): Promise<{ text: string; finishReason?: string }> {
+  opts.onStep('synthesizing', 'Continuing answer…');
+  try {
+    const messages = toCoreMessages([...opts.messages, ...workMessages]);
+    messages.push({ role: 'user', content: 'Continue your previous answer exactly where it ended. Do not repeat any text already written — resume from the cutoff and complete the response.' });
+    const synth = streamText({
+      model: languageModel as any,
+      system,
+      messages: messages as any,
+      stopWhen: [isStepCount(1)],
+      abortSignal: opts.abortSignal,
+    } as any);
+    let out = '';
+    for await (const part of (synth as any).fullStream) {
+      if (part.type === 'text-delta') { const t = part.text ?? part.delta ?? ''; out += t; onChunk(t); }
+      else if (part.type === 'reasoning-delta') { const d = part.text ?? part.delta ?? ''; onReasoning(d); }
+      else if (part.type === 'error') { break; }
+    }
+    let fr: string | undefined;
+    try { fr = await (synth as any).finishReason; } catch { /* non-fatal */ }
+    return { text: out, finishReason: fr };
+  } catch {
+    return { text: '', finishReason: undefined }; // best-effort — never mask the partial already shown
+  }
+}
+
 /** One model attempt at a turn — everything runTurn used to do inline, extracted so a weak/
  *  stuck attempt can be retried once with a different (excluded/escalated) model. See
  *  runTurn's escalation orchestration below. */
@@ -545,6 +586,32 @@ async function runAttempt(
         : hadToolCalls
         ? 'I looked into this and ran some tools, but couldn\'t produce a final answer. Try rephrasing the request, or switch to a stronger model.'
         : 'I wasn\'t able to produce a response. Try rephrasing the request, or switch to a stronger model.';
+    }
+
+    // A length-truncated turn (finish_reason: 'length') ends mid-answer with NO error — the model
+    // simply ran out of output tokens. Rather than show a clean-looking half-reply (e.g. a plan
+    // table whose last columns are empty), auto-continue: re-prompt "resume from the cutoff" and
+    // stitch the continuation onto the partial so the user sees the FULL answer. Ask mode is hit
+    // hardest — it must emit the whole long-form answer in one stream. Cap continuations so a model
+    // stuck in a length loop can't run forever; only surface a notice if the cap is still reached.
+    if (finishReason === 'length' && !hadToolCalls && !paused && text.trim() && !opts.abortSignal?.aborted) {
+      let guard = 0;
+      while (finishReason === 'length' && guard < 4 && !opts.abortSignal?.aborted) {
+        guard++;
+        const more = await continueAfterTruncation(
+          languageModel, system, opts, workMessages,
+          (t) => { text += t; opts.onChunk(t); },
+          (d) => { reasoning += d; opts.onReasoning(d); },
+        );
+        if (!more.text.trim()) break;
+        // Keep the in-context assistant transcript in sync with the appended continuation.
+        const last = workMessages[workMessages.length - 1];
+        if (last && last.role === 'assistant') last.content = (typeof last.content === 'string' ? last.content : '') + more.text;
+        finishReason = more.finishReason;
+      }
+      if (finishReason === 'length' && guard >= 4 && text.trim() && !/(truncated|cut off|length limit)/i.test(text)) {
+        text = `${text.trim()}\n\n_⚠ Still truncated after several continuations — say "continue" to resume._`;
+      }
     }
 
     return {

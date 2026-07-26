@@ -156,7 +156,7 @@ async function main() {
     // becomes `{}` in a bundled CJS build) — inlining it crashes at require-time with
     // "filename must be ... Received undefined". Left external, Node's real require() loads the
     // actual package file, where import.meta.url resolves correctly.
-    external: ['vscode', '@vscode/ripgrep'],
+    external: ['vscode', '@vscode/ripgrep', 'jsdom'],
     sourcemap: !production,
     minify: production,
     logLevel: 'info',

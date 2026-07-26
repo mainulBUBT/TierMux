@@ -70,6 +70,18 @@
 }
 .tm-tool-card-state-label { display: none; }
 
+/* Expand chevron — only shown when the card has a body to reveal; rotates on open. */
+.tm-tool-card-chevron {
+  flex-shrink: 0;
+  font-size: var(--tm-text-xs);
+  color: var(--tm-fg-muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform var(--tm-transition-fast), opacity var(--tm-transition-fast);
+}
+.tm-tool-card.has-body .tm-tool-card-chevron { opacity: .6; }
+.tm-tool-card.open .tm-tool-card-chevron { transform: rotate(180deg); }
+
 .tm-tool-card.running .tm-tool-card-state {
   background: var(--tm-status-running);
   opacity: 1;

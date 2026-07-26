@@ -155,9 +155,10 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         }
       }
       const hasCalls = !!msg?.tool_calls?.length;
+      const rawFR = result.response.choices?.[0]?.finish_reason;
       return {
         content,
-        finishReason: { unified: hasCalls ? 'tool-calls' : 'stop', raw: hasCalls ? 'tool_calls' : 'stop' },
+        finishReason: { unified: hasCalls ? 'tool-calls' : (rawFR === 'length' ? 'length' : 'stop'), raw: hasCalls ? 'tool_calls' : (rawFR ?? 'stop') },
         usage: {
           inputTokens: { total: result.response.usage?.prompt_tokens },
           outputTokens: { total: result.response.usage?.completion_tokens },
@@ -207,6 +208,7 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         providerOpts.onModelSelected?.(result.platform, result.model, result.runtimeName);
         diagLog('ai-sdk.doStream.served', `result=${result.platform}::${result.model} runtimeName="${result.runtimeName ?? ''}" usage=${JSON.stringify(result.response.usage)} chunks=${chunkCount}`);
         const msg = result.response.choices?.[0]?.message;
+        const rawFR = result.response.choices?.[0]?.finish_reason;
         const hasToolCalls = !!msg?.tool_calls?.length;
 
         // Rescue inline tool calls emitted as text by weak models (e.g. Cloudflare's llama-3.3
@@ -250,7 +252,7 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
 
         streamController.enqueue({
           type: 'finish',
-          finishReason: { unified: hasEffectiveToolCalls ? 'tool-calls' : 'stop', raw: hasEffectiveToolCalls ? 'tool_calls' : 'stop' },
+          finishReason: { unified: hasEffectiveToolCalls ? 'tool-calls' : (rawFR === 'length' ? 'length' : 'stop'), raw: hasEffectiveToolCalls ? 'tool_calls' : (rawFR ?? 'stop') },
           usage: { inputTokens: { total: result.response.usage?.prompt_tokens }, outputTokens: { total: result.response.usage?.completion_tokens } },
         } as unknown as LanguageModelV4StreamPart);
         streamController.close();

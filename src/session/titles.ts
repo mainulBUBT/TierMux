@@ -39,18 +39,33 @@ export function deriveTitleFrom(text: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-/** Turn an approved plan's text into an initial all-pending todo list (list lines only). */
+/** Turn an approved plan's text into an initial all-pending todo list. Accepts three step
+ *  shapes so the plan card opens regardless of which model produced it: bulleted/numbered
+ *  list items (`-`/`*`/`1.`), markdown headings (`## …`), and bold-only heading lines
+ *  (`**…**`). Free/weaker models often emit a heading-per-step plan instead of a clean
+ *  bulleted list; without these the plan card never opens for their output. */
 export function planStepsToTodos(steps: string): TodoItem[] {
   return (steps || '')
     .split('\n')
-    .map((line) => line.match(/^\s*(?:[-*]|\d+[.)])\s+(.*)$/)) // numbered or bulleted list items
-    .filter((mm): mm is RegExpMatchArray => !!mm)
-    .map((mm) => ({ content: mm[1].replace(/\*\*/g, '').trim(), status: 'pending' as const }))
+    .map((line) => {
+      // Numbered or bulleted list item.
+      let m = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.*)$/);
+      if (m) return m[1];
+      // Markdown heading: "## Step", "### Step".
+      m = line.match(/^\s*#{1,6}\s+(.+?)\s*#*\s*$/);
+      if (m) return m[1];
+      // Bold-only heading line: "**Step**".
+      m = line.match(/^\s*\*\*(.+?)\*\*\s*$/);
+      if (m) return m[1];
+      return null;
+    })
+    .filter((c): c is string => c !== null)
+    .map((c) => ({ content: c.replace(/\*\*/g, '').trim(), status: 'pending' as const }))
     .filter((t) => t.content.length > 0)
     .slice(0, 20);
 }
 
-const PLAN_EDIT_VERB = /^(add|create|implement|build|writ|fix|refactor|rename|move|delete|remove|updat|chang|modif|edit|replac|wir|integrat|convert|migrat|install|configur|extract|split|merg|append|insert|expos|export|hook|connect|introduc|switch|drop|bump|upgrad|enabl|disabl|set ?up|scaffold|register|inject|guard|validat)\w*\b/i;
+const PLAN_EDIT_VERB = /^(add|create|implement|build|writ|fix|refactor|rename|move|delete|remove|updat|chang|modif|edit|replac|wir|integrat|convert|migrat|install|configur|extract|split|merg|append|insert|expos|export|hook|connect|introduc|switch|drop|bump|upgrad|enabl|disabl|set ?up|scaffold|register|inject|guard|validat|sync|audit|document|correct|review|ensur|verify|test|apply|enforce|generat|wir)\w*\b/i;
 const PLAN_PATHISH = /[\w./-]+\.[a-z]{1,6}\b|\b[\w-]+\/[\w-]+/;
 
 /**

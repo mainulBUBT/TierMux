@@ -840,7 +840,11 @@ export class Router {
 
       const completionOpts: CompletionOptions = {
         temperature: opts.temperature,
-        max_tokens: opts.max_tokens,
+        // Floor the output budget when the caller didn't set one. Without this, `max_tokens` is
+        // omitted from the request and the provider applies its own (often low) default — a
+        // long single-stream answer (e.g. Ask mode) then hits the cap mid-answer. Matches the
+        // non-streaming sentinel (`opts.max_tokens ?? 4096`) used for context reservation above.
+        max_tokens: opts.max_tokens ?? 4096,
         top_p: opts.top_p,
         tools: opts.tools,
         tool_choice: opts.tool_choice,
@@ -872,6 +876,10 @@ export class Router {
             // slices — they must be merged, not overwritten, or the accumulated JSON is corrupt.
             const toolCallsByIndex = new Map<number, import('../shared/types').ChatToolCall>();
             let finalUsage: import('../shared/types').TokenUsage | undefined;
+            // Real finish_reason from the provider's final SSE chunk. The closing chunk often
+            // carries ONLY finish_reason (no delta); if we never capture it, a length-truncated
+            // turn (model ran out of tokens mid-answer) is silently misreported as a clean 'stop'.
+            let streamFinishReason: string | undefined;
             const thinkStrip = new ThinkStripper();
             // Inline tool-call suppression: weak models (e.g. Cloudflare llama) emit a tool call as
             // plain content text ({"type":"function",...}) when they don't speak the tools API. To
@@ -901,7 +909,9 @@ export class Router {
             try {
               for await (const chunk of provider.streamChatCompletion(apiKey, fitted, entry.modelId, completionOpts)) {
                 if (chunk.usage) finalUsage = chunk.usage;
-                const delta = chunk.choices?.[0]?.delta;
+                const choice0 = chunk.choices?.[0];
+                if (choice0?.finish_reason) streamFinishReason = choice0.finish_reason;
+                const delta = choice0?.delta;
                 if (!delta) continue;
                 if (delta.content) {
                   const clean = thinkStrip.feed(delta.content);
@@ -1009,7 +1019,7 @@ export class Router {
             const toolCalls = toolCallsByIndex.size
               ? [...toolCallsByIndex.entries()].sort(([a], [b]) => a - b).map(([, tc]) => tc)
               : undefined;
-            diagLog('router.stream-done', `${entry.platform}::${entry.modelId} fittedMsgs=${fitted.length} fittedChars=${fitted.reduce((n, mm) => n + (typeof mm.content === 'string' ? mm.content.length : 0), 0)} chunks=${chunks.length} reasoningChunks=${reasoningChunks.length} textLen=${fullText.length} folded=${!chunks.length && !!reasoningText} toolCalls=${toolCallsByIndex.size} finalUsage=${JSON.stringify(finalUsage)}`);
+            diagLog('router.stream-done', `${entry.platform}::${entry.modelId} fittedMsgs=${fitted.length} fittedChars=${fitted.reduce((n, mm) => n + (typeof mm.content === 'string' ? mm.content.length : 0), 0)} chunks=${chunks.length} reasoningChunks=${reasoningChunks.length} textLen=${fullText.length} folded=${!chunks.length && !!reasoningText} toolCalls=${toolCallsByIndex.size} finish=${streamFinishReason ?? 'none'} finalUsage=${JSON.stringify(finalUsage)}`);
 
             const promptTokens = finalUsage?.prompt_tokens ?? estimateMessagesTokens(fitted);
             const completionTokens = finalUsage?.completion_tokens ?? estimateTokens(fullText);
@@ -1019,7 +1029,7 @@ export class Router {
               object: 'chat.completion',
               created: Math.floor(Date.now() / 1000),
               model: entry.modelId,
-              choices: [{ index: 0, message: { role: 'assistant', content: fullText, ...(toolCalls ? { tool_calls: toolCalls } : {}) }, finish_reason: 'stop' }],
+              choices: [{ index: 0, message: { role: 'assistant', content: fullText, ...(toolCalls ? { tool_calls: toolCalls } : {}) }, finish_reason: streamFinishReason ?? 'stop' }],
               usage: {
                 prompt_tokens: promptTokens,
                 completion_tokens: completionTokens,

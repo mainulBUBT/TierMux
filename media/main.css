@@ -686,16 +686,59 @@ details[open].reasoning summary::before { content: '▾ '; }
 .sp-signup { font-size: 11px; cursor: pointer; text-decoration: underline; opacity: .8; }
 .sp-signup:hover { opacity: 1; }
 
-.chips { display: flex; flex-wrap: wrap; gap: 4px; }
-.chip {
-  font-size: 11px; padding: 2px 6px; border-radius: 10px;
-  background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
-  display: inline-flex; gap: 4px; align-items: center; max-width: 100%;
+.chips {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  /* Many attachments must not push the input box down forever — cap and scroll. */
+  max-height: 132px; overflow-y: auto; overflow-x: hidden;
+  scrollbar-width: thin;
+}
+.chips:empty { display: none; }
+
+/* Attachment "rich card" chips — a tile (thumbnail or tinted type icon) + name/type + remove. */
+.att-card {
+  display: flex; align-items: center; gap: 5px;
+  padding: 3px 5px 3px 3px;
+  background: var(--tm-surface-alt);
+  border: 1px solid var(--tm-card-border);
+  border-radius: var(--tm-radius-md);
+  max-width: 220px;
+  transition: background var(--tm-transition-fast), border-color var(--tm-transition-fast);
+}
+.att-card:hover { background: var(--tm-card-hover); border-color: var(--tm-border-focus); }
+
+.att-tile {
+  width: 26px; height: 26px; flex: 0 0 auto;
+  border-radius: var(--tm-radius-sm);
+  display: flex; align-items: center; justify-content: center;
+  background: var(--tm-surface-panel); color: var(--tm-fg-muted);
+  overflow: hidden;
+}
+.att-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.att-tile-icon { display: inline-flex; }
+.att-tile-icon svg { width: 13px; height: 13px; }
+
+/* Per-kind tile tint so file types are scannable at a glance. */
+.att-card.image .att-tile { background: color-mix(in srgb, var(--tm-status-running) 16%, transparent); color: var(--tm-status-running); }
+.att-card.pdf .att-tile    { background: color-mix(in srgb, var(--tm-error) 16%, transparent); color: var(--tm-error); }
+.att-card.doc .att-tile    { background: color-mix(in srgb, var(--tm-info) 16%, transparent); color: var(--tm-info); }
+
+.att-meta { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.att-name {
+  font-size: var(--tm-text-sm); color: var(--tm-fg);
+  max-width: 140px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.chip .chip-thumb { width: 18px; height: 18px; object-fit: cover; border-radius: 4px; flex: 0 0 auto; }
-.chip .chip-icon { flex: 0 0 auto; display: inline-flex; align-items: center; }
-.chip button { background: none; border: none; color: inherit; cursor: pointer; padding: 0; flex: 0 0 auto; }
+.att-sub { font-size: var(--tm-text-xs); color: var(--tm-fg-muted); }
+
+.att-remove {
+  flex: 0 0 auto; width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
+  border: none; background: transparent; color: var(--tm-fg-muted);
+  border-radius: var(--tm-radius-full); cursor: pointer;
+  transition: background var(--tm-transition-fast), color var(--tm-transition-fast);
+}
+.att-remove:hover { background: var(--tm-hover); color: var(--tm-fg); }
+.att-remove svg { width: 9px; height: 9px; }
 
 .composer.drag { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -2px; background: var(--vscode-editorHoverBackground); }
 
