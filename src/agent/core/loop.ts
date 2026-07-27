@@ -210,6 +210,13 @@ const SELF_CORRECT_NUDGE =
   + 'read the surrounding code if you need to, then correct the error with another edit before '
   + 'finishing. Do not just acknowledge the error — actually fix it.';
 
+/** The user's request asks to PRODUCE something (a file/feature/change), not just discuss it.
+ *  Used to detect the "model showed the code in chat but never called writeFile/editFile" failure:
+ *  a create/edit task answered with a code block and no tool call means nothing was actually built,
+ *  so runTurn escalates to a model that will use the tools. Discussion verbs (explain/review/show)
+ *  are deliberately excluded — those legitimately produce text/code without a tool call. */
+const CREATE_TASK_RE = /\b(?:make|create|build|write|add|fix|implement|develop|generate|set ?up|put together|scaffold|generate|produce|write me|build me|create me)\b/i;
+
 /**
  * Forced synthesis turn — run after the main loop when the model acted via tools but produced no
  * final text. Re-invokes the SAME routed model with the full tool transcript plus an explicit
@@ -729,6 +736,18 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     // so a capable model finishes the work — the non-static check the keyword patterns can't do.
     // Skipped when heuristics already flagged it (no point judging a known-bad answer) and for
     // conversational task kinds (chat/ask/vision) where a follow-up question is legitimate.
+    // Deterministic: a create/edit task (make/build/write/fix/… in the request) that the model
+    // answered with a code block in chat but NO tool call — it showed the code instead of writing
+    // the file, so nothing was actually built. Escalate directly to a model that will use the
+    // tools, without spending a judge call. Discussion requests (explain/review/show me) don't
+    // match CREATE_TASK_RE, so a legit "show me an example" reply is left alone.
+    if (!shouldEscalate && !first.hadMutatingToolCall
+        && (taskKind === 'agent' || taskKind === 'coding' || taskKind === 'debug' || taskKind === 'longContext')
+        && first.text.includes('```') && CREATE_TASK_RE.test(lastUserText)) {
+      shouldEscalate = true;
+      escalateWhy = 'showed-code-no-tool';
+      router.noteToolSoftFailure(first.platform, first.model);
+    }
     if (!shouldEscalate && JUDGEABLE_TASK_KINDS.has(taskKind) && first.text.trim()) {
       const excludeKey = `${first.platform}::${first.model}`;
       const judge = await judgeFulfillment(router, lastUserText, first.text, taskKind, excludeKey);

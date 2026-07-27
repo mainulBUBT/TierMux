@@ -59,9 +59,15 @@ export async function judgeFulfillment(
         + 'or asks the user what they want; only describes what it would do without doing it; is '
         + 'off-topic, partial, or plainly wrong; begs clarification it wasn\'t asked for; or says '
         + 'it cannot help. A short but correct answer to a genuine question IS fulfilled. Be '
-        + 'strict: a fluent non-answer is still a non-answer. REASON: one short clause saying why '
-        + '(e.g. "asks user what they want", "does not mention the requested file", "only announces '
-        + 'intent"). When FULFILLED is true, REASON may be empty.',
+        + 'strict: a fluent non-answer is still a non-answer. '
+        + 'CRITICAL for create/edit/build/write tasks: if the user asked to MAKE, CREATE, BUILD, '
+        + 'WRITE, ADD, FIX, or IMPLEMENT something (a file, a feature, a change) and the assistant '
+        + 'only SHOWED the code/content/HTML in its reply (in a code block or inline) without '
+        + 'actually creating or editing the file via a tool, that is NOT FULFILLED — "here is the '
+        + 'code" is a suggestion, not the completed work. '
+        + 'REASON: one short clause saying why (e.g. "showed code but did not write the file", '
+        + '"asks user what they want", "only announces intent"). When FULFILLED is true, REASON '
+        + 'may be empty.',
       prompt:
         + `USER REQUEST:\n${userRequest.slice(0, 4000)}\n\n`
         + `ASSISTANT REPLY:\n${assistantReply.slice(0, 6000)}\n\n`
