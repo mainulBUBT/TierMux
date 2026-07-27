@@ -47,10 +47,6 @@ export const WEAK_THRESHOLD = 40;
  * feeds the `too_short` signal (weight 15) — never a standalone trigger, so a
  * short-but-correct answer (one-line patch, terse rename) is never escalated on
  * length alone. `trivial` is handled by an early short-circuit and has no floor.
- *
- * Note: `plan`'s floor is currently dormant — plan mode is a length-1 chain
- * (isFinalHop from hop 0), so the gate never fires there. Defined for
- * completeness; revisit if plan-mode escalation is enabled later.
  */
 export const TASK_WORD_FLOOR: Record<Exclude<TaskKind, 'trivial'>, number> = {
   chat: 2,

@@ -662,7 +662,12 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // Without this, an attached image under Auto could silently land on a text-only model that can't
   // see it — attachmentKindsFromContent was dead code until now.
   const attachmentKinds = lastUser ? attachmentKindsFromContent(lastUser.content) : [];
-  const taskKind = classifyTask(lastUserText, { attachmentKinds, attachments: attachmentKinds.length });
+  // Plan mode always classifies as 'plan' rather than going through classifyTask — that
+  // classifier can never return 'plan' (it's not one of its outputs), which silently made
+  // the plan-mode quality floor/escalation below unreachable dead code.
+  const taskKind = opts.mode === 'plan'
+    ? 'plan'
+    : classifyTask(lastUserText, { attachmentKinds, attachments: attachmentKinds.length });
 
   const first = await runAttempt(router, opts, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls);
   let final = first;
