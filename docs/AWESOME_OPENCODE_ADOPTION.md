@@ -32,10 +32,8 @@ These are **real gaps**. Listed by effort/value.
 **Do:** In [`permission.ts`](../src/agent/core/policies/permission.ts), deny (or prompt) `readFile`/`glob` reads of `.env*`, `*.pem`, `*.key`, `id_rsa*`, `.npmrc`, `.aws/`, `.ssh/`, `*credentials*`. Allow a "fingerprint" preview (filename + redacted) like Envsitter if user wants.
 **Effort:** Small — one function + pattern list, hook into the existing `toolApproval`.
 
-### 2. Stronger context-pruning knobs (Dynamic Context Pruning)
-**Why:** We prune the tail on compaction only. Obsolete *mid-history* tool outputs still cost tokens.
-**Do:** Add a "drop already-acted-on tool results older than N turns" pass before compaction in [`condense.ts`](../src/agent/condense.ts). Optionally expose a `/ctx`-style summary (Context Analysis).
-**Effort:** Medium.
+### 2. ⛔ SKIPPED — Stronger context-pruning knobs (Dynamic Context Pruning)
+Decided against — not worth the regression risk (a wrongly-dropped mid-history tool result could strand the model without context it still needs) for a pure cost optimization. What exists today (`condense.ts`'s tail re-cap) is considered sufficient.
 
 ### 3. ✅ DONE — Structured plan annotation (open-plan-annotator / Plannotator)
 The per-line accept(default)/reject-toggle/edit/delete UI already existed in `media/src/ui/components/Plan.ts` (`addEditableStep`/`collectSteps`) — it just wasn't fed by `structurePlanSteps`. `chatViewProvider.ts`'s `structurePlanText()` now calls `structurePlanSteps` before posting `planProposed`, falling back to the raw text (today's regex-parsed behavior) on any failure. See `src/agent/planStructurer.ts` (`formatStructuredSteps`) and `scripts/planStructurer.e2e.ts`.
@@ -86,11 +84,10 @@ We already have `src/profiler` + `showTelemetry`. OTLP export is a nice-to-have 
 1. ✅ **Shell-strategy prompt** — tiny, immediate reliability win. (item 5)
 2. ✅ **`.env`/secrets read guard** — small, real safety gap. (item 1)
 3. ✅ **Handoff prompt** — small, high daily value. (item 6)
-4. 🟡 **Mid-history context pruning** — medium, cost reducer. (item 2) — partial, see item 2
+4. ⛔ **Mid-history context pruning** — skipped, decided against. (item 2)
 5. ❌ **Brainstorm→Plan→Implement mode** — medium, makes "more agentic" tangible. (item 4) — not started
 6. ✅ **Plan annotation UI** — medium, polish. (item 3)
 7. ✅ **Self-correct verify loop** — medium, quality. (item 7)
 
-Remaining open work: item 2 (mid-history pruning is still tail-only, not a real "drop stale
-mid-history results" pass) and item 4 (no brainstorm/plan/implement mode switch exists).
+Remaining open work: item 4 only (no brainstorm/plan/implement mode switch exists).
 Subagents (item 8) only as a separate strategic decision.
