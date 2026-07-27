@@ -485,7 +485,7 @@
         },
         "tiermux.requestTimeoutMs": {
           "type": "number",
-          "default": 60000,
+          "default": 30000,
           "description": "Per-provider request timeout (ms) before failing over to the next model."
         },
         "tiermux.rateLimitCooldownMs": {

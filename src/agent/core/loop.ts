@@ -12,6 +12,7 @@ import type { ChatMessage, ChatContentBlock } from '../../shared/types';
 import type { AgentOpts, AgentResult } from '../agent';
 import { classifyTask, attachmentKindsFromContent, type TaskKind } from '../routing';
 import { assessAnswerQuality } from '../answerQuality';
+import { judgeFulfillment, JUDGEABLE_TASK_KINDS } from '../fulfillment';
 import { contentToString } from '../content';
 import { buildSystemPrompt } from '../promptBuilder';
 import { createRouterProvider } from './routerProvider';
@@ -719,9 +720,26 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   const canEscalate = final === first && !first.hadMutatingToolCall && !opts.abortSignal?.aborted && first.platform && first.model;
   if (canEscalate) {
     const quality = assessAnswerQuality(first.text, taskKind);
-    if (first.stopReason === 'stuck' || quality.weak) {
+    let shouldEscalate = first.stopReason === 'stuck' || quality.weak;
+    let escalateWhy = quality.primary ? `quality:${quality.primary}` : (first.stopReason ?? '');
+    // Static heuristics are deliberately conservative (they avoid false positives on terse-but-
+    // correct answers), so a plausible-sounding non-answer can slip past them. When they pass but
+    // the model produced only text with no side effects, run a semantic FULFILLMENT judge on a
+    // different, stronger model: "did this reply actually complete the request?" If not, escalate
+    // so a capable model finishes the work — the non-static check the keyword patterns can't do.
+    // Skipped when heuristics already flagged it (no point judging a known-bad answer) and for
+    // conversational task kinds (chat/ask/vision) where a follow-up question is legitimate.
+    if (!shouldEscalate && JUDGEABLE_TASK_KINDS.has(taskKind) && first.text.trim()) {
       const excludeKey = `${first.platform}::${first.model}`;
-      diagLog('turn.escalate', `weak/stuck answer from ${excludeKey} (score=${quality.score} signals=${quality.signals.join(',')} stopReason=${first.stopReason ?? 'none'}) — retrying with a different model`);
+      const judge = await judgeFulfillment(router, lastUserText, first.text, taskKind, excludeKey);
+      if (!judge.fulfilled) {
+        shouldEscalate = true;
+        escalateWhy = `unfulfilled:${judge.reason.slice(0, 48)}`;
+      }
+    }
+    if (shouldEscalate) {
+      const excludeKey = `${first.platform}::${first.model}`;
+      diagLog('turn.escalate', `${escalateWhy} from ${excludeKey} (score=${quality.score} signals=${quality.signals.join(',')} stopReason=${first.stopReason ?? 'none'}) — retrying with a different model`);
       const escalated = await runAttempt(router, opts, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, {
         excludeModels: [excludeKey],
         maxIntelligenceRank: 2, // top-tier models only — the point of escalating is a smarter retry

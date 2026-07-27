@@ -130,6 +130,42 @@ interface RescuedCall {
   arguments: string;
 }
 
+/** Scan one balanced JSON object out of `text`, starting from the opening `{` at index `start`.
+ *  Walks the string tracking string-literal / escape state so a `}` INSIDE a string value does
+ *  NOT end the capture — writeFile/editFile `content`/`replace` routinely contain code with
+ *  braces, and the old non-greedy regex `\{[\s\S]*?\}` truncated at that first inner `}`,
+ *  yielding invalid JSON, dropping the rescued call, and showing the model's `<function=…>`
+ *  text as chat (the "tool call as text, stuck in loop" symptom). Returns the matched
+ *  substring and the index past the closing `}`, or null if no balanced close is found. */
+function balancedJsonFrom(text: string, start: number): { text: string; end: number } | null {
+  if (text[start] !== '{') return null;
+  let depth = 0;
+  let inStr = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inStr = false;
+    } else if (ch === '"') {
+      inStr = true;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) return { text: text.slice(start, i + 1), end: i + 1 };
+    }
+  }
+  return null; // truncated before the matching close — caller skips
+}
+
+/** First balanced JSON object at or after `from`, or null. */
+function firstBalancedJson(text: string, from: number): { text: string; end: number } | null {
+  const brace = text.indexOf('{', from);
+  return brace === -1 ? null : balancedJsonFrom(text, brace);
+}
+
 /**
  * Best-effort rescue of tool calls a weak model emitted as inline dialect text
  * (e.g. `<function=NAME>{...}</function>` or a bare `{"name":...,"arguments":...}`
@@ -137,36 +173,63 @@ interface RescuedCall {
  */
 export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { detected: boolean; calls: RescuedCall[] } {
   const calls: RescuedCall[] = [];
-
-  const fnTag = /<function=([a-zA-Z0-9_\-]+)\s*>?\s*(\{[\s\S]*?\})\s*(?:<\/function>)?/g;
   let m: RegExpExecArray | null;
-  while ((m = fnTag.exec(text)) !== null) {
+
+  // Shape 1 — the explicit dialect FORCE_ACTION_NUDGE tells weak models to emit when they can't
+  // produce a native call:  <function=NAME>{ ...args... }</function>   (closing tag optional —
+  // tolerate a response truncated mid-call). The `{...}` is captured by BALANCED brace scanning
+  // (balancedJsonFrom), NOT a non-greedy regex: writeFile/editFile payloads routinely hold `}`
+  // inside the `content`/`replace` string (any code with braces), and `\{[\s\S]*?\}` truncated
+  // at that first inner `}` → invalid JSON → the call was dropped and the raw `<function=…>`
+  // text streamed through as the reply → no tool ran → loop. Balance-tracking fixes it.
+  const fnAnchor = /<function=([a-zA-Z0-9_\-]+)[^>]*>/g;
+  while ((m = fnAnchor.exec(text)) !== null) {
     const name = m[1];
-    if (toolNames.has(name)) calls.push({ name, arguments: m[2] });
+    if (!toolNames.has(name)) continue;
+    const obj = firstBalancedJson(text, m.index + m[0].length);
+    if (!obj) continue;
+    calls.push({ name, arguments: obj.text });
+    fnAnchor.lastIndex = obj.end;
   }
 
   if (calls.length === 0) {
-    // Shape A: {"name":"...","arguments":{...}}  (OpenAI-style inline)
-    const blob = /\{\s*"name"\s*:\s*"([a-zA-Z0-9_\-]+)"\s*,\s*"arguments"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
-    while ((m = blob.exec(text)) !== null) {
+    // Shape 2: {"name":"...","arguments":{...}}  (OpenAI-style inline blob a weak model emits
+    // as content / failed_generation). Capture the OUTER object balanced, then lift the inner
+    // `arguments` object so braces inside it survive.
+    const blobAnchor = /\{\s*"name"\s*:\s*"([a-zA-Z0-9_\-]+)"\s*,\s*"arguments"\s*:/g;
+    while ((m = blobAnchor.exec(text)) !== null) {
       const name = m[1];
-      if (toolNames.has(name)) calls.push({ name, arguments: m[2] });
+      if (!toolNames.has(name)) continue;
+      const obj = firstBalancedJson(text, m.index);
+      if (!obj) continue;
+      let parsed: { arguments?: unknown };
+      try { parsed = JSON.parse(obj.text); } catch { blobAnchor.lastIndex = m.index + m[0].length; continue; }
+      const inner = parsed?.arguments;
+      if (inner != null && typeof inner === 'object') calls.push({ name, arguments: JSON.stringify(inner) });
+      blobAnchor.lastIndex = obj.end;
     }
   }
 
   if (calls.length === 0) {
-    // Shape B: {"type":"function","name":"...","parameters":{...}}  (Claude/Anthropic-style
-    // inline tool-call that weak models — e.g. Cloudflare's llama-3.3 — emit as content text
-    // because they don't speak the tools API properly). Parameters map to arguments.
-    const typed = /\{\s*"type"\s*:\s*"function"\s*,\s*"name"\s*:\s*"([a-zA-Z0-9_\-]+)"\s*,\s*"parameters"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
-    while ((m = typed.exec(text)) !== null) {
+    // Shape 3: {"type":"function","name":"...","parameters":{...}}  (Claude/Anthropic-style
+    // inline that weak models — e.g. Cloudflare's llama-3.3 — emit as content because they
+    // don't speak the tools API). Same balanced capture, lifting `parameters`.
+    const typedAnchor = /\{\s*"type"\s*:\s*"function"\s*,\s*"name"\s*:\s*"([a-zA-Z0-9_\-]+)"\s*,\s*"parameters"\s*:/g;
+    while ((m = typedAnchor.exec(text)) !== null) {
       const name = m[1];
-      if (toolNames.has(name)) calls.push({ name, arguments: m[2] });
+      if (!toolNames.has(name)) continue;
+      const obj = firstBalancedJson(text, m.index);
+      if (!obj) continue;
+      let parsed: { parameters?: unknown };
+      try { parsed = JSON.parse(obj.text); } catch { typedAnchor.lastIndex = m.index + m[0].length; continue; }
+      const inner = parsed?.parameters;
+      if (inner != null && typeof inner === 'object') calls.push({ name, arguments: JSON.stringify(inner) });
+      typedAnchor.lastIndex = obj.end;
     }
   }
 
   if (calls.length === 0) {
-    // Shape C: the XML "tool_call" dialect some weak free models (Qwen/GLM-style chat templates)
+    // Shape 4: the XML "tool_call" dialect some weak free models (Qwen/GLM-style chat templates)
     // emit as plain content when the server doesn't wire the tools API:
     //   <tool_call>NAME
     //   <arg_key>limit</arg_key><arg_value>30</arg_value>

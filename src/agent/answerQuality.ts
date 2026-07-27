@@ -19,7 +19,7 @@ export function hasRepeatedLineRun(text: string, count: number): boolean {
   return false;
 }
 
-export type QualitySignal = 'refusal' | 'repetition' | 'truncation' | 'too_short' | 'vision_blind';
+export type QualitySignal = 'refusal' | 'repetition' | 'truncation' | 'too_short' | 'vision_blind' | 'deflection';
 
 /** Contribution of each matched signal to the weakness score (higher = weaker). */
 export const QUALITY_WEIGHTS: Record<QualitySignal, number> = {
@@ -27,6 +27,7 @@ export const QUALITY_WEIGHTS: Record<QualitySignal, number> = {
   vision_blind: 100, // vision turn answered "I can't see images" — the image never reached the model; escalate alone
   repetition: 60,    // strong: escalate alone
   truncation: 50,    // strong: escalate alone
+  deflection: 50,    // strong: escalate alone — model asked the user back / begged clarification instead of doing the task
   too_short: 15,     // weak: never escalates alone, only pushes past threshold with another signal
 };
 
@@ -38,6 +39,18 @@ export const QUALITY_WEIGHTS: Record<QualitySignal, number> = {
  * processing without tripping it.
  */
 export const VISION_BLIND = /\b(?:can(?:no|')?t|cannot|unable to|not able to)\s+(?:actually\s+)?(?:"?see"?|view|interpret|process|analyz\w*|read)\b[^.\n]{0,60}\b(?:image|picture|screenshot|photo|visual)s?\b|\b(?:capabilit(?:y|ies)|i)\s+(?:am|are|is)?\s*limited to (?:processing |interpreting )?text\b|\bas a text-(?:only|based) (?:ai|model|assistant)\b/i;
+
+/** A short reply that deflects the task back to the user — asking what they want, begging
+ *  clarification, or offering options — instead of doing the work. The classic weak-model
+ *  failure on a clear task ("make a landing page"): it replies "What would you like to know?"
+ *  or "Could you clarify what you mean?" and stops. That answer is too_short (weight 15, never
+ *  escalates alone) so the turn used to die on the SAME weak model with no failover. Matched only
+ *  on short replies (< DEFLECTION_MAX_WORDS) so a substantive answer that merely ends with a
+ *  genuine follow-up question is NOT flagged. Legitimate plan-mode clarifying questions use the
+ *  ???QUESTIONS??? block, which parseClarifying strips before this text is ever shown — so a
+ *  question-back left in the visible reply is a deflection, not a structured ask. */
+const DEFLECTION_MAX_WORDS = 40;
+export const DEFLECTION_PHRASE = /\b(?:what (?:would|do|did) you (?:like|want|mean|need|prefer|think)|what (?:exactly )?(?:do|would) you (?:want|need)|which (?:one|ones|approach|option|part)s? (?:do|would|are) you|could you (?:clarify|specify|provide|tell me|elaborate|confirm)|can you (?:clarify|specify|provide|tell me|elaborate|confirm)|please (?:clarify|specify|provide|elaborate|confirm)|let me know (?:what|which|if|how|when)|i need more (?:details|information|context|specifics)|i'?m not sure (?:what|which|how) you|i (?:don'?t|do not) (?:have|know) (?:enough )?(?:details|information|context)|kindly (?:clarify|provide|specify|elaborate))\b/i;
 
 /** A run scores at or above this is considered weak and escalated. */
 export const WEAK_THRESHOLD = 40;
@@ -107,6 +120,12 @@ export function assessAnswerQuality(out: string, taskKind: TaskKind): AnswerQual
 
   if (looksTruncated(t)) {
     signals.push('truncation');
+  }
+
+  // Deflection: a short reply that bounces the task back to the user instead of doing it.
+  // Gated on word count so a real answer ending in a follow-up question isn't flagged.
+  if (words <= DEFLECTION_MAX_WORDS && DEFLECTION_PHRASE.test(t)) {
+    signals.push('deflection');
   }
 
   const floor = TASK_WORD_FLOOR[taskKind as Exclude<TaskKind, 'trivial'>] ?? 12;

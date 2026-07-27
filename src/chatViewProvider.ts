@@ -33,7 +33,7 @@ import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense, generateHandoff } from './agent/condense';
 import { parseClarifying, type ClarifyingQuestion } from './agent/clarify';
-import { structurePlanSteps, formatStructuredSteps } from './agent/planStructurer';
+import { structurePlanSteps, formatStructuredSteps, extractPlanFromProse } from './agent/planStructurer';
 import { deriveTitleFrom, extractSubjectTerms, looksLikeActionablePlan, looksLikeGroundedAnswer, offTopicCorrection, sanitizeTitle } from './session/titles';
 
 import { loadSkills } from './context/skills';
@@ -1811,12 +1811,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           return;
         }
 
-        if (looksLikeActionablePlan(clar.text)) {
+        // Decide whether the reply is a runnable plan. The regex gate (looksLikeActionablePlan)
+        // is the fast path, but it needs a clean numbered/bulleted list — weak free models often
+        // reply in flowing prose instead, which failed the gate and left no plan card ("plan mode
+        // not plan"). Fall back to extractPlanFromProse: an LLM pass that classifies whether the
+        // prose is genuinely an actionable plan and lifts its steps. The isPlan discriminator
+        // keeps a real Q&A/explanation reply as prose (no false plan card).
+        let planStepsText: string | null = looksLikeActionablePlan(clar.text) ? clar.text : null;
+        if (!planStepsText && clar.text.trim()) {
+          const extracted = await extractPlanFromProse(this.deps.router, clar.text);
+          if (!this.isActiveRun(s, m.requestId)) return;
+          if (extracted.isPlan && extracted.steps.length) planStepsText = formatStructuredSteps(extracted.steps);
+        }
+        if (planStepsText) {
           s.history.length -= 1 + extraHistoryPushed; // not committed yet — re-added on approval
           s.pendingPlanUser = userContent;
-          this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
+          this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: planStepsText });
           this.preparePlanFile(s, prompt);
-          this.upgradePlanSteps(s, m.requestId, clar.text);
+          // Only fire-and-forget re-refine when we used the raw regex-parsed text; the extracted
+          // path is already a clean numbered list.
+          if (planStepsText === clar.text) this.upgradePlanSteps(s, m.requestId, clar.text);
           return;
         }
 
@@ -2566,11 +2580,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.pendingPlanUser = ctx.userContent;
         s.pendingClarify = { requestId: m.requestId, userContent: ctx.userContent, prompt: ctx.prompt, questions: clar.questions, mode: 'plan' };
         this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: clar.questions });
-      } else if (looksLikeActionablePlan(clar.text)) {
-        this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
-        this.preparePlanFile(s, ctx.prompt);
-        this.upgradePlanSteps(s, m.requestId, clar.text);
-      } else if (clar.text.trim()) {
+      } else {
+        // Same prose→plan fallback as the initial propose path: weak models that replied to the
+        // clarifying answers in prose (not a clean list) still get a plan card when the LLM
+        // structurer confirms the prose is an actionable plan.
+        let planStepsText: string | null = looksLikeActionablePlan(clar.text) ? clar.text : null;
+        if (!planStepsText && clar.text.trim()) {
+          const extracted = await extractPlanFromProse(this.deps.router, clar.text);
+          if (!this.isActiveRun(s, m.requestId)) return;
+          if (extracted.isPlan && extracted.steps.length) planStepsText = formatStructuredSteps(extracted.steps);
+        }
+        if (planStepsText) {
+          this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: planStepsText });
+          this.preparePlanFile(s, ctx.prompt);
+          if (planStepsText === clar.text) this.upgradePlanSteps(s, m.requestId, clar.text);
+          // Not committed: a planProposed card isn't committed to history until approval, same as
+          // the original looksLikeActionablePlan branch.
+        } else if (clar.text.trim()) {
         // Not actionable steps — the model needs more from the user (a clarification or
         // discussion reply) rather than a plan to run. Show it as a normal answer instead of
         // squashing the whole prose into a broken one-item "plan" card (duplicating it visually
@@ -2592,6 +2618,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // card renders as a broken "0 steps" card with nothing to run. Surface it as an error
         // instead so the user knows to retry rather than staring at an empty plan.
         this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: "The agent didn't return a plan for those answers — try again or rephrase your request." });
+      }
       }
 
     } catch (e) {

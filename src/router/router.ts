@@ -312,7 +312,7 @@ export class Router {
   private health = new Map<string, { state: 'ok' | 'bad'; at: number; reason?: string; failureStreak: number; probing?: boolean }>();
   private static readonly HEALTH_BASE_TTL_MS = 60_000;
   private static readonly HEALTH_MAX_TTL_MS = 10 * 60_000;
-  private static readonly PING_TIMEOUT_MS = 2000;
+  private static readonly PING_TIMEOUT_MS = 1200;
 
   constructor(
     private readonly secrets: SecretStore,
@@ -569,7 +569,7 @@ export class Router {
   }
 
   private timeoutMs(): number {
-    return vscodeConfigNumber('tiermux.requestTimeoutMs', 60000);
+    return vscodeConfigNumber('tiermux.requestTimeoutMs', 30000);
   }
 
   /** Per-provider floor: ZenMux and other queued free routers need more than the 60s default
@@ -640,6 +640,45 @@ export class Router {
       const { reason } = classify(err);
       this.markHealth(platform, modelId, 'bad', reason);
       return { ok: false, reason };
+    }
+  }
+
+  /** How many leading candidates to pre-flight ping concurrently. Cuts the serial-per-candidate
+   *  cold-start tax (each cold model used to add up to PING_TIMEOUT_MS inside the failover loop)
+   *  by overlapping the pings. Small on purpose so a cold session doesn't spam free tiers. */
+  private static readonly PREFLIGHT_WARMUP = 3;
+
+  /**
+   * Fire pre-flight pings for the leading candidates CONCURRENTLY, before the serial failover
+   * loop runs. Each ping's result lands in the `health` cache, which the loop reads unchanged —
+   * so the first cold failover no longer pays a serial ~PING_TIMEOUT_MS wait; the top-K pings
+   * overlap instead. Mirrors the loop's own preflight conditions (only ping unknown/half-open
+   * candidates on their first try, skip providers with `skipPreflight`) and is best-effort:
+   * `preflightPing` already swallows errors into the cache, so this never throws.
+   */
+  private async preflightWarmup(
+    cands: Array<{ platform: Platform; modelId: string; key?: string }>,
+    abortSignal?: AbortSignal,
+  ): Promise<void> {
+    if (abortSignal?.aborted) return;
+    const custom = this.settings.getCustomEndpoints();
+    const toProbe: Array<Promise<{ ok: boolean; reason?: string }>> = [];
+    for (const entry of cands.slice(0, Router.PREFLIGHT_WARMUP)) {
+      const provider = resolveProvider(entry.platform, entry.modelId, custom);
+      if (!provider || provider.skipPreflight) continue;
+      const cached = this.healthOf(entry.platform, entry.modelId);
+      if (cached === 'ok' || cached === 'bad') continue; // only warm unknown / half-open
+      if (cached === 'half-open') this.markProbing(entry.platform, entry.modelId); // claim the trial
+      const apiKey = entry.key
+        ?? await this.secrets.getModelKey(entry.platform, entry.modelId)
+        ?? await this.secrets.resolveKey(entry.platform, entry.modelId);
+      if (apiKey === undefined || (entry.platform === 'custom' && apiKey === '')) continue;
+      if (abortSignal?.aborted) return;
+      toProbe.push(this.preflightPing(provider, apiKey, entry.platform, entry.modelId));
+    }
+    if (toProbe.length > 0) {
+      diagLog('router.warmup', `pre-flight pinging ${toProbe.length} candidate(s) in parallel`);
+      await Promise.allSettled(toProbe);
     }
   }
 
@@ -772,6 +811,12 @@ export class Router {
         }
       }
     }
+
+    // Warm the leading candidates' pre-flight health CONCURRENTLY before the serial failover
+    // loop, so a cold session doesn't pay one serial PING_TIMEOUT_MS per candidate. Best-effort:
+    // results land in the `health` cache the loop already reads, and preflightPing never throws.
+    // Skipped for a forced/pinned model (single candidate — nothing to overlap).
+    if (!forced) await this.preflightWarmup(cands, opts.abortSignal);
 
     candidates: for (const entry of cands) {
       // Once aborted (Stop button, or a sub-agent's own wall-clock ceiling), stop trying MORE
