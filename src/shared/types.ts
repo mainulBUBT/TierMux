@@ -29,7 +29,9 @@ export type Platform =
 
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
 
-/** TierMux's chat modes, mapped directly onto OC's own native `plan`/`build`/`ask` agents. */
+/** TierMux's chat modes: plan (read-only, proposes concrete steps), agent (full read/write/run),
+ *  ask (read-only Q&A — answers a direct lookup, or explores trade-offs in prose for an
+ *  open-ended request; see ASK_MODE_TAIL in promptBuilder.ts). */
 export type Mode = 'plan' | 'agent' | 'ask';
 
 interface ChatToolCallFunction {

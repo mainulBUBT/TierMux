@@ -6,7 +6,7 @@ import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
 import type { UsageStore } from './config/usageStore';
 import type { Mode } from './shared/types';
-import { runAgentStream, runPlanStream, runAskStream, type AgentResult, type AgentOpts, type ToolEvent } from './agent/agent';
+import { runAgentStream, runPlanStream, runAskStream, type AgentResult, type AgentOpts, type AgentMode, type ToolEvent } from './agent/agent';
 import { findTextInWorkspace } from './context/textSearch';
 import { classifyTask } from './agent/routing';
 import { PRODUCT_NAME } from './shared/branding';
@@ -31,10 +31,9 @@ import { getSnapshot as getRetrievalSnapshot } from './context/telemetry';
 import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSupportedAttachmentPath, kindForPath as kindFromName, mimeForPath as mimeForName } from './util/extractAttachments';
 import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
-import { condenseHistory, shouldCondense } from './agent/condense';
+import { condenseHistory, shouldCondense, generateHandoff } from './agent/condense';
 import { parseClarifying, type ClarifyingQuestion } from './agent/clarify';
-import { structurePlanSteps } from './agent/planStructurer';
-import { deriveTitleFrom, extractSubjectTerms, looksLikeActionablePlan, looksLikeGroundedAnswer, offTopicCorrection, planStepsToTodos, sanitizeTitle } from './session/titles';
+import { deriveTitleFrom, extractSubjectTerms, looksLikeActionablePlan, looksLikeGroundedAnswer, offTopicCorrection, sanitizeTitle } from './session/titles';
 
 import { loadSkills } from './context/skills';
 
@@ -765,6 +764,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.handleCompact(this.current());
   }
 
+  /** Write a standalone handoff note for the current session and copy it to the clipboard
+   *  (from the native title bar) — read-only, unlike compact(); the session is untouched. */
+  async handoff(): Promise<void> {
+    await vscode.commands.executeCommand('tiermux.chat.focus');
+    await this.handleHandoff(this.current());
+  }
+
   /** Browse past chats and reopen one (native QuickPick). */
   async showHistory(): Promise<void> {
     await vscode.commands.executeCommand('tiermux.chat.focus');
@@ -1112,7 +1118,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
         this.post({ type: 'usageTotals', totals: this.currentUsageTotals(this.current()) });
         void this.sendConfig();
-        this.post({ type: 'notice', sessionId: this.viewedSessionId, text: '🧹 Usage data cleared.' });
+        this.post({ type: 'notice', sessionId: this.viewedSessionId, text: 'Usage data cleared.', icon: 'trash' });
         break;
       }
       case 'restoreCheckpoint':
@@ -1575,9 +1581,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const afterTokens = estimateMessagesTokens(s.history);
       this.persist(s.id);
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
-      this.post({ type: 'notice', sessionId: s.id, text: `🗜 Context compacted — ~${Math.round(priorTokens / 1000)}k → ~${Math.round(afterTokens / 1000)}k tokens (${priorMessages} → ${r.messages.length} messages). Earlier turns summarized; the last few kept verbatim.` });
+      this.post({ type: 'notice', sessionId: s.id, text: `Context compacted — ~${Math.round(priorTokens / 1000)}k → ~${Math.round(afterTokens / 1000)}k tokens (${priorMessages} → ${r.messages.length} messages). Earlier turns summarized; the last few kept verbatim.`, icon: 'compress' });
     } catch (e) {
       this.post({ type: 'error', sessionId: s.id, message: `Compact failed: ${e instanceof Error ? e.message : String(e)}` });
+    } finally {
+      this.post({ type: 'busy', sessionId: s.id, busy: false });
+    }
+  }
+
+  private async handleHandoff(s: Session): Promise<void> {
+    if (s.history.length < 2) {
+      this.post({ type: 'notice', sessionId: s.id, text: 'Not enough conversation yet to write a handoff note.' });
+      return;
+    }
+    this.post({ type: 'busy', sessionId: s.id, busy: true });
+    try {
+      const note = await generateHandoff(s.history, this.deps.router);
+      if (!note) {
+        this.post({ type: 'notice', sessionId: s.id, text: 'Handoff note generation failed after retrying with a different model; try again in a moment.' });
+        return;
+      }
+      await vscode.env.clipboard.writeText(note);
+      this.post({ type: 'notice', sessionId: s.id, text: 'Handoff note copied to clipboard — paste it into a fresh session or share it with a teammate.', icon: 'clipboard' });
+    } catch (e) {
+      this.post({ type: 'error', sessionId: s.id, message: `Handoff failed: ${e instanceof Error ? e.message : String(e)}` });
     } finally {
       this.post({ type: 'busy', sessionId: s.id, busy: false });
     }
@@ -1718,7 +1745,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       this.beginInProgressTurn(s, m.requestId);
       const cbk = this.agentCallbacks(s, m.requestId, m.mode as Mode);
-      const sdkMode = m.mode as 'agent' | 'plan' | 'ask';
+      const sdkMode = m.mode as AgentMode;
       const runner = sdkMode === 'plan' ? runPlanStream : sdkMode === 'ask' ? runAskStream : runAgentStream;
       diagLog('send.gate', `requestId=${m.requestId} · invoking ${sdkMode} runner`);
       let result = await runner(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
@@ -1952,7 +1979,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.post({ type: 'switchSession', sessionId: s.id, messages: s.transcript });
     this.post({ type: 'setInput', text: removedText, attachments: removedAttachments });
-    if (fileCount) this.post({ type: 'notice', sessionId: s.id, text: `⟲ Reverted ${fileCount} file${fileCount !== 1 ? 's' : ''} to this point.` });
+    if (fileCount) this.post({ type: 'notice', sessionId: s.id, text: `Reverted ${fileCount} file${fileCount !== 1 ? 's' : ''} to this point.`, icon: 'revert' });
     this.persist(s.id);
 
     await this.postCheckpoints(s);
@@ -1972,7 +1999,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
     if (choice !== 'Restore') return;
     const n = await s.checkpoints.restore(id);
-    this.post({ type: 'notice', sessionId: s.id, text: `⟲ Restored ${n} file${n !== 1 ? 's' : ''} to before this message.` });
+    this.post({ type: 'notice', sessionId: s.id, text: `Restored ${n} file${n !== 1 ? 's' : ''} to before this message.`, icon: 'revert' });
     await this.postCheckpoints(s);
   }
 
@@ -2008,7 +2035,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(body));
       // Pass the URI directly on the notice (not looked up via s.pendingPlanFile at click
       // time) so the click still works after approval clears pendingPlanFile.
-      this.post({ type: 'notice', sessionId: this.viewedSessionId, text: `📄 Plan saved to ${vscode.workspace.asRelativePath(uri)}`, action: { kind: 'openPlanFile', uri: uri.toString() } });
+      this.post({ type: 'notice', sessionId: this.viewedSessionId, text: `Plan saved to ${vscode.workspace.asRelativePath(uri)}`, icon: 'save', action: { kind: 'openPlanFile', uri: uri.toString() } });
     } catch (e) {
       this.post({ type: 'notice', sessionId: this.viewedSessionId, text: `Could not save plan file: ${e instanceof Error ? e.message : String(e)}` });
     }
@@ -2045,90 +2072,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    if (m.steps) void this.writePlanFile(s, m.steps);
+    // Build Plan only commits the plan to disk — it does NOT execute it. Plan mode has no
+    // write/edit/run tools by design, so actually carrying it out always needs a manual switch
+    // to Agent mode; auto-running here used to paper over that with an implicit mode hop the
+    // user never asked for.
+    //
+    // No checkpoint wrapping here on purpose: checkpoints are keyed to a `s.transcript` user-turn
+    // requestId (that's what the per-message revert icon looks up), and this Build click has no
+    // transcript entry of its own — a synthetic checkpoint here would be unreachable from the UI.
+    // The file naturally falls under whichever real turn's checkpoint is still open (the Plan
+    // proposal that led here), which already has a working revert affordance — "Revert to here"
+    // on that message correctly undoes the plan file along with everything after it.
+    if (m.steps) await this.writePlanFile(s, m.steps);
     s.pendingPlanFile = undefined;
     this.removeCards(s, (c) => c.type === 'planProposed');
     const original = s.pendingPlanUser;
     s.pendingPlanUser = undefined;
     if (original) s.history.push({ role: 'user', content: original });
-    s.history.push({ role: 'user', content: `Execute this plan step by step:\n\n${m.steps}` });
-
-    // Cancel the previous run BEFORE replacing the token. CancellationTokenSource.dispose()
-    // only drops listeners — it does NOT abort — so without cancel() a pre-empted in-flight
-    // run keeps executing its model call in the background, wasting tokens and racing the
-    // new run (a root cause of follow-up sends landing as silent "0 in / 0 out" turns).
-    s.cancel?.cancel();
-    s.cancel?.dispose();
-    s.cancel = new vscode.CancellationTokenSource();
-    s.activeRequestId = m.requestId;
-    s.executingPlan = true;
-    const release = await this.acquireRunSlot(s.id);
-    if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
-    this.post({ type: 'busy', sessionId: s.id, busy: true });
-    this.post({ type: 'planExecuting', sessionId: s.id, requestId: m.requestId, executing: true });
-
-    // Structured-output pass (best-effort): re-extract the step list via a schema-validated
-    // model call instead of relying solely on the regex bullet/number parser, which can misparse
-    // malformed markdown or steps nested under a heading. Falls back to the regex parser
-    // unchanged if the model doesn't support structured output well or the call fails/times out.
-    const structuredSteps = await structurePlanSteps(this.deps.router, m.steps);
-    const seeded: TodoItem[] = structuredSteps
-      ? structuredSteps.map((content) => ({ content, status: 'pending' as const }))
-      : planStepsToTodos(m.steps);
-    const stepCount = seeded.length;
-    this.post({ type: 'agentStep', sessionId: s.id, requestId: m.requestId, phase: 'thinking', label: stepCount > 0 ? `▶ Executing approved plan (${stepCount} steps)` : '▶ Executing approved plan' });
-
-    if (seeded.length) {
-      this.post({ type: 'todos', sessionId: s.id, requestId: m.requestId, todos: seeded, followingPlan: true });
-      // Seed the AI Elements Plan card (plan mode) from the same step list; subsequent onTodos
-      // updates keep it in sync as the agent marks steps in_progress / completed.
-      this.post({ type: 'planData', sessionId: s.id, requestId: m.requestId, data: planDataFromTodos('Approved plan', seeded) });
-    }
-    const before = this.deps.usage.get();
-    await s.checkpoints.begin(m.requestId, 'Plan execution');
-    const sentAt = Date.now();
-    try {
-      this.beginInProgressTurn(s, m.requestId);
-      const cbk3 = this.agentCallbacks(s, m.requestId, 'agent');
-      const result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk3, s.model), {});
-      if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
-      const after = this.deps.usage.get();
-      const usage = {
-        promptTokens: after.promptTokens - before.promptTokens,
-        completionTokens: after.completionTokens - before.completionTokens,
-        reasoningTokens: after.reasoningTokens - before.reasoningTokens,
-        totalTokens: after.totalTokens - before.totalTokens,
-      };
-      this.persistAgentTurn(s, result);
-      this.pushAssistantTurn(s, m.requestId, result, sentAt, usage);
-      this.rememberWindow(s, result.platform, result.model);
-
-      if (result.taskKind && result.platform && result.model) {
-        s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
-      }
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: result.model, paused: result.paused });
-      this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
-    } catch (e) {
-      if (!this.isActiveRun(s, m.requestId)) return;
-      this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
-      void this.maybeRecommendModels(e);
-    } finally {
-      release();
-      if (this.isActiveRun(s, m.requestId)) {
-        s.activeRequestId = undefined;
-        s.executingPlan = false;
-        this.clearInProgressTurn(s, m.requestId);
-        this.settlePendingApprovals(s, false); // safety net: never leave a command waiting after the run ends
-        this.settlePendingAskUser(s);
-        await this.finishCheckpoint(s, m.requestId);
-        this.persist(s.id);
-        this.post({ type: 'busy', sessionId: s.id, busy: false });
-        this.post({ type: 'planExecuting', sessionId: s.id, requestId: m.requestId, executing: false });
-        this.setStatus(s.id, 'finished');
-        await this.maybeAutoCompact(s);
-        void this.maybeGenerateTitle(s);
-      }
-    }
+    if (m.steps) s.history.push({ role: 'assistant', content: `Approved plan:\n\n${m.steps}` });
+    this.persist(s.id);
+    this.post({ type: 'notice', sessionId: s.id, text: 'Plan approved — switch to Agent mode and send a message to start executing it.', icon: 'check' });
+    if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle');
   }
 
   /**
@@ -2212,7 +2176,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private makeAgentOpts(
     s: Session,
     _requestId: string,
-    mode: 'agent' | 'plan' | 'ask',
+    mode: AgentMode,
     effort: ReasoningEffort,
     callbacks: ReturnType<typeof this.agentCallbacks>,
     pinnedModel?: string,

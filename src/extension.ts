@@ -225,6 +225,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('tiermux.newChat', () => chat.newChat()),
     vscode.commands.registerCommand('tiermux.showHistory', () => chat.showHistory()),
     vscode.commands.registerCommand('tiermux.compactChat', () => chat.compact()),
+    vscode.commands.registerCommand('tiermux.generateHandoff', () => chat.handoff()),
     vscode.commands.registerCommand('tiermux.openModelSettings', () => chat.toggleSettingsPanel()),
     vscode.commands.registerCommand('tiermux.setApiKey', (platformArg?: Platform) => setApiKey(secrets, platformArg)),
     vscode.commands.registerCommand('tiermux.clearApiKey', () => clearApiKey(secrets)),

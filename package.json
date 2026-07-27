@@ -75,6 +75,12 @@
         "icon": "$(fold)"
       },
       {
+        "command": "tiermux.generateHandoff",
+        "title": "Copy Handoff Note",
+        "category": "TierMux",
+        "icon": "$(export)"
+      },
+      {
         "command": "tiermux.openModelSettings",
         "title": "Manage Models & Keys",
         "category": "TierMux",
@@ -251,9 +257,14 @@
           "group": "navigation@3"
         },
         {
-          "command": "tiermux.openModelSettings",
+          "command": "tiermux.generateHandoff",
           "when": "view == tiermux.chat",
           "group": "navigation@4"
+        },
+        {
+          "command": "tiermux.openModelSettings",
+          "when": "view == tiermux.chat",
+          "group": "navigation@5"
         }
       ],
       "editor/context": [

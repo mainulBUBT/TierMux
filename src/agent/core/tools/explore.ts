@@ -40,6 +40,14 @@ const EXPLORE_SYSTEM =
  * every iteration (see capOutput.ts for the complementary per-result cap).
  */
 export function createExploreTool(router: Router, abortSignal?: AbortSignal) {
+  // The AI SDK lets one model step request several tool calls at once — if the model fires two
+  // `explore` calls with the SAME task text in that batch (a known weak-model tic, not a
+  // deliberate parallel investigation), each would otherwise spin up its own redundant nested
+  // 6-step sub-loop. Dedupe concurrent identical tasks by sharing the in-flight promise; cleared
+  // once it settles so a later, genuinely re-asked identical question still gets a fresh answer
+  // reflecting whatever changed in between, instead of a stale cached one.
+  const inFlight = new Map<string, Promise<string>>();
+
   return tool({
     description:
       'Delegate a codebase investigation to a fast, read-only sub-agent. Prefer this over doing '
@@ -52,39 +60,51 @@ export function createExploreTool(router: Router, abortSignal?: AbortSignal) {
     }),
     execute: async ({ task }: { task: string }) => {
       if (!task) throw new Error('Missing required "task" argument.');
+      const existing = inFlight.get(task);
+      if (existing) return existing;
 
-      // undefined pinnedModel → the router auto-routes a cheap model itself.
-      const utility = await router.pickUtilityModel();
-      const provider = createRouterProvider(router, { taskKind: 'reasoning', pinnedModel: utility });
-
-      const tools = {
-        readFile: createReadTool(),
-        grep: createGrepTool(),
-        glob: createGlobTool(),
-        listDir: createListDirTool(),
-      };
-
-      // Bound the sub-agent in time: whichever fires first — the parent turn's abort or our own
-      // 45s ceiling — cancels the nested loop. AbortSignal.any keeps both live.
-      const timeout = AbortSignal.timeout(EXPLORE_TIMEOUT_MS);
-      const signal = abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout;
-
+      const p = runExplore(task);
+      inFlight.set(task, p);
       try {
-        const result = await generateText({
-          model: provider as any,
-          system: EXPLORE_SYSTEM,
-          prompt: task,
-          tools: tools as any,
-          stopWhen: isStepCount(MAX_STEPS),
-          abortSignal: signal,
-        } as any);
-        const text = ((result as any).text ?? '').trim();
-        return text || '(exploration finished but produced no findings)';
-      } catch (err) {
-        // Never throw out of the sub-agent — a failed exploration should degrade to a message the
-        // main agent can react to (e.g. fall back to searching itself), not abort the whole turn.
-        return `Exploration failed: ${err instanceof Error ? err.message : String(err)}. Fall back to searching directly.`;
+        return await p;
+      } finally {
+        inFlight.delete(task);
       }
     },
   });
+
+  async function runExplore(task: string): Promise<string> {
+    // undefined pinnedModel → the router auto-routes a cheap model itself.
+    const utility = await router.pickUtilityModel();
+    const provider = createRouterProvider(router, { taskKind: 'reasoning', pinnedModel: utility });
+
+    const tools = {
+      readFile: createReadTool(),
+      grep: createGrepTool(),
+      glob: createGlobTool(),
+      listDir: createListDirTool(),
+    };
+
+    // Bound the sub-agent in time: whichever fires first — the parent turn's abort or our own
+    // 45s ceiling — cancels the nested loop. AbortSignal.any keeps both live.
+    const timeout = AbortSignal.timeout(EXPLORE_TIMEOUT_MS);
+    const signal = abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout;
+
+    try {
+      const result = await generateText({
+        model: provider as any,
+        system: EXPLORE_SYSTEM,
+        prompt: task,
+        tools: tools as any,
+        stopWhen: isStepCount(MAX_STEPS),
+        abortSignal: signal,
+      } as any);
+      const text = ((result as any).text ?? '').trim();
+      return text || '(exploration finished but produced no findings)';
+    } catch (err) {
+      // Never throw out of the sub-agent — a failed exploration should degrade to a message the
+      // main agent can react to (e.g. fall back to searching itself), not abort the whole turn.
+      return `Exploration failed: ${err instanceof Error ? err.message : String(err)}. Fall back to searching directly.`;
+    }
+  }
 }

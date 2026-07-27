@@ -4,6 +4,7 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import { getEditGate } from '../gates';
 import { resolveWorkspacePath } from '../resolvePath';
+import { verifyNoteFor } from '../workspace/formatDiagnostics';
 
 /** Covers both `writeFile` (overwrite/create) and `createFile` (must not already exist) — same
  *  tool names chatViewProvider.ts's FILE_WRITE_TOOL_NAMES already expects for checkpoint/UI
@@ -23,7 +24,9 @@ export function createWriteFileTool(createOnly: boolean) {
       const gate = getEditGate();
       const result = createOnly ? await gate.createApproved(uri, content) : await gate.writeApproved(uri, content);
       if (!result.applied) throw new Error(result.error ?? 'Edit was not applied.');
-      return `Wrote ${path}.`;
+      // Self-correct loop: surface any NEW error diagnostic in the same tool round instead of
+      // relying on the model to remember a separate getDiagnostics call at the end of the task.
+      return `Wrote ${path}.${await verifyNoteFor(uri)}`;
     },
   });
 }

@@ -47,14 +47,25 @@
 }
 .tm-plan:not(.collapsed) .tm-plan-chevron { transform: rotate(180deg); }
 
+/* Always visible, regardless of collapse state — title/description/status stay readable at a
+ * glance; only .tm-plan-content (steps + actions) below it folds away. */
+.tm-plan-always {
+  padding: 0 var(--tm-gap-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-gap-sm);
+}
+.tm-plan-always:empty { display: none; }
+
 /* Collapsible content. */
 .tm-plan-content {
-  padding: 0 var(--tm-gap-md) var(--tm-gap-md);
+  padding: var(--tm-gap-sm) var(--tm-gap-md) var(--tm-gap-md);
   display: flex;
   flex-direction: column;
   gap: var(--tm-gap-sm);
 }
 .tm-plan.collapsed .tm-plan-content { display: none; }
+.tm-plan.collapsed .tm-plan-always { padding-bottom: var(--tm-gap-md); }
 
 .tm-plan-description {
   margin: 0;
@@ -150,6 +161,30 @@
 .tm-plan-step.editable:hover .tm-plan-step-del { opacity: .4; }
 .tm-plan-step-del:hover { opacity: .85; }
 
+.tm-plan-step-reject {
+  flex: 0 0 auto;
+  opacity: 0;
+  cursor: pointer;
+  font-size: var(--tm-text-xs);
+  line-height: 1;
+  padding: 0 4px;
+  color: var(--tm-fg-muted);
+}
+.tm-plan-step.editable:hover .tm-plan-step-reject { opacity: .4; }
+.tm-plan-step-reject:hover { opacity: .85; }
+.tm-plan-step.rejected .tm-plan-step-reject { opacity: .85; color: var(--tm-status-error); }
+.tm-plan-step.rejected .tm-plan-step-num,
+.tm-plan-step.rejected .tm-plan-step-text {
+  text-decoration: line-through;
+  opacity: .45;
+}
+
+.tm-plan-empty-warning {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-status-error);
+  padding: 4px 0 2px;
+}
+
 .tm-plan-step-add {
   font-size: var(--tm-text-xs);
   color: var(--tm-fg-muted);
@@ -189,4 +224,4 @@
 }
 .tm-plan-action.primary:hover { filter: brightness(1.05); }
 .tm-plan-action.danger { color: var(--tm-status-error); }
-.tm-plan-action-icon { font-size: var(--tm-text-sm); }
+.tm-plan-action-icon { display: inline-flex; flex: 0 0 auto; }

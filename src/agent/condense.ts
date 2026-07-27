@@ -2,7 +2,7 @@
 
 import type { ChatMessage } from '../shared/types';
 import type { Router } from '../router/router';
-import { SUMMARY_SYSTEM } from './prompts';
+import { SUMMARY_SYSTEM, HANDOFF_SYSTEM } from './prompts';
 import { contentToString } from './content';
 import { capToolOutput } from './core/tools/capOutput';
 import { diagLog } from '../util/diag';
@@ -77,6 +77,36 @@ export async function condenseHistory(
   const carry = previousModel ? `\n\n(Continued from a previous model: ${previousModel}.)` : '';
   const summaryMsg: ChatMessage = { role: 'user', content: `Summary of the earlier conversation:\n${summary}${carry}` };
   return { messages: [summaryMsg, ...tail], summary };
+}
+
+/** Minimum history length before a handoff note is worth an LLM call — a session that's barely
+ *  started has nothing to hand off. */
+const MIN_HANDOFF_HISTORY = 2;
+
+/**
+ * Produces a standalone handoff note for the *whole* history — unlike `condenseHistory`, this
+ * never mutates or truncates the session; it's a read-only summary meant to be copied elsewhere
+ * (a fresh session, a teammate, a written note) when the current one is ending or hitting limits.
+ * Returns null when there's too little conversation yet, or the summarizer produced nothing.
+ */
+export async function generateHandoff(history: ChatMessage[], router: Router): Promise<string | null> {
+  if (history.length < MIN_HANDOFF_HISTORY) return null;
+
+  const request = [
+    { role: 'system' as const, content: HANDOFF_SYSTEM },
+    ...history,
+    { role: 'user' as const, content: 'Write the handoff note for the conversation above.' },
+  ];
+
+  const model = await router.pickUtilityModel();
+  let result = await router.route(request, { temperature: 0.2, max_tokens: 1024, model, taskKind: 'chat' });
+  let note = contentToString(result.response.choices[0]?.message.content).trim();
+  if (!note) {
+    const excludeKey = `${result.platform}::${result.model}`;
+    result = await router.route(request, { temperature: 0.2, max_tokens: 1024, taskKind: 'chat', exclude: [excludeKey] });
+    note = contentToString(result.response.choices[0]?.message.content).trim();
+  }
+  return note || null;
 }
 
 /** Re-cap `tool`-role message content in the kept tail down to TAIL_TOOL_RESULT_CAP. A large

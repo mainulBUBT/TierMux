@@ -10,6 +10,7 @@
 // (onApprove/onDefer/onDiscard); no send()/renderMarkdown() directly.
 
 import { el } from '../dom';
+import { ICON } from '../../icons';
 
 // ========== Types ==========
 
@@ -93,7 +94,9 @@ function createBulletStep(task: PlanTask): HTMLElement {
 
 function addEditableStep(host: HTMLElement, text: string, focus: boolean): HTMLElement {
   const row = el('div', { class: 'tm-plan-step editable' });
-  const num = el('span', { class: 'tm-plan-step-num' }, `${host.querySelectorAll('.tm-plan-step').length + 1}.`);
+  // Plain bullet, not an ordinal number — steps get freely added/removed/reordered while
+  // editing, and re-numbering on every change reads as busier than the plain-bullet reference.
+  const num = el('span', { class: 'tm-plan-step-num' }, '•');
   const label = el('span', { class: 'tm-plan-step-text', contenteditable: 'plaintext-only' }, text || '');
   label.addEventListener('keydown', (e: Event) => {
     const ev = e as KeyboardEvent;
@@ -102,33 +105,35 @@ function addEditableStep(host: HTMLElement, text: string, focus: boolean): HTMLE
       ev.preventDefault();
       const prev = row.previousElementSibling as HTMLElement | null;
       row.remove();
-      renumber(host);
       const p = prev && prev.querySelector ? prev.querySelector('.tm-plan-step-text') as HTMLElement | null : null;
       if (p) p.focus();
     }
   });
+  // Reject/restore: strikethrough + excluded from collectSteps() while rejected, without
+  // losing the text — lets a step be reconsidered instead of only a destructive hard-delete.
+  const reject = el('span', { class: 'tm-plan-step-reject', title: 'Reject this step' }, '✗');
+  reject.addEventListener('click', () => {
+    row.classList.toggle('rejected');
+    reject.title = row.classList.contains('rejected') ? 'Restore this step' : 'Reject this step';
+  });
   const del = el('span', { class: 'tm-plan-step-del', title: 'Remove' }, '×');
   del.addEventListener('click', () => {
-    if (host.querySelectorAll('.tm-plan-step').length > 1) { row.remove(); renumber(host); }
+    if (host.querySelectorAll('.tm-plan-step').length > 1) row.remove();
   });
-  row.append(num, label, del);
+  row.append(num, label, reject, del);
   const addBtn = host.querySelector('.tm-plan-step-add');
   if (addBtn) host.insertBefore(row, addBtn); else host.appendChild(row);
   if (focus) label.focus();
   return row;
 }
 
-function renumber(host: HTMLElement): void {
-  host.querySelectorAll('.tm-plan-step .tm-plan-step-num').forEach((ic, i) => {
-    (ic as HTMLElement).textContent = `${i + 1}.`;
-  });
-}
-
-/** Re-serialize the (possibly edited) rows into a numbered list the host can parse. */
+/** Re-serialize the (possibly edited) rows into a numbered list the host can parse. Rejected
+ *  rows are dropped here, not on click, so a step can be un-rejected right up until Build/Discuss. */
 function collectSteps(host: HTMLElement): string {
   const out: string[] = [];
-  host.querySelectorAll('.tm-plan-step .tm-plan-step-text').forEach(elNode => {
-    const t = (elNode.textContent || '').trim();
+  host.querySelectorAll('.tm-plan-step').forEach(row => {
+    if (row.classList.contains('rejected')) return;
+    const t = (row.querySelector('.tm-plan-step-text')?.textContent || '').trim();
     if (t) out.push(t);
   });
   return out.map((s, i) => `${i + 1}. ${s}`).join('\n');
@@ -167,16 +172,43 @@ function tasksFromStepText(stepsText: string): PlanTask[] {
   }));
 }
 
+// Meta-commentary a model writes about the reply itself rather than the plan — stripped from
+// the front of the description regardless of prompt instructions, since those aren't reliably
+// followed by every model. Matched greedily up to the first sentence boundary so "You're in plan
+// mode. This adds dark mode…" becomes "This adds dark mode…", not left half-stripped.
+const META_PREAMBLE = /^(you'?re|you are)\s+in\s+\w+\s+mode\.?\s*|^here'?s?\s+(is\s+)?the\s+plan:?\s*|^this\s+plan\s+will\s*/i;
+
+/** The prose before the first list item, if the model wrote one (a lead-in paragraph
+ *  explaining the plan) — markdown headings/bold stripped. Returns undefined when the plan
+ *  text starts straight into steps, which is common and not an error. */
+function extractPlanDescription(stepsText: string): string | undefined {
+  const lines: string[] = [];
+  for (const line of String(stepsText || '').split('\n')) {
+    if (/^\s*(?:[-*]|\d+[.)])\s+/.test(line)) break; // first step line — everything before is intro
+    const trimmed = line.trim();
+    if (!trimmed || /^#{1,6}\s/.test(trimmed)) continue; // skip blank lines and markdown headings
+    lines.push(trimmed.replace(/\*\*/g, ''));
+  }
+  let description = lines.join(' ').trim();
+  // Strip one or two leading meta-preamble clauses (a model sometimes chains "You're in plan
+  // mode. This plan will X:") and any trailing colon left from a "...the following steps:" lead-in.
+  description = description.replace(META_PREAMBLE, '').replace(META_PREAMBLE, '').trim();
+  description = description.replace(/:\s*$/, '.').trim();
+  if (description) description = description[0].toUpperCase() + description.slice(1);
+  return description || undefined;
+}
+
 /** Build PlanData + a summary line from raw plan text (planProposed.steps). */
 export function planDataFromStepText(title: string, stepsText: string): { data: PlanData; summary: string } {
   const tasks = tasksFromStepText(stepsText);
+  const description = extractPlanDescription(stepsText);
   const fileCount = new Set(tasks.flatMap(t => detectStepFiles(t.title))).size;
   const summary = `${tasks.length} step${tasks.length === 1 ? '' : 's'}` + (fileCount ? ` · ${fileCount} file${fileCount === 1 ? '' : 's'}` : '');
   return {
     summary,
     data: {
       id: `plan-propose-${Date.now()}`,
-      title, createdAt: Date.now(),
+      title, description, createdAt: Date.now(),
       sections: [{ id: 'steps', title: 'Key Steps', tasks }],
       totalTasks: tasks.length, completedTasks: 0,
     },
@@ -203,11 +235,30 @@ export function planDataFromTodos(title: string, todos: { status: 'completed' | 
 
 function createActions(host: HTMLElement, opts: PlanOptions): HTMLElement {
   const actions = el('div', { class: 'tm-plan-actions' });
-  const build = el('button', { class: 'tm-plan-action primary', type: 'button', title: 'Save the plan file and execute it step by step' },
-    'Build', el('span', { class: 'tm-plan-action-icon' }, '↻'));
+  // "Save", not "Build" — this only writes the plan to a file now; it never executes it (see
+  // handleApprovePlan in chatViewProvider.ts). "Build" was the label from when clicking this
+  // also auto-ran the agent; keeping that name after that behavior was removed would be
+  // actively misleading about what the button does.
+  const buildIcon = el('span', { class: 'tm-plan-action-icon' });
+  buildIcon.innerHTML = ICON.save;
+  const build = el('button', { class: 'tm-plan-action primary', type: 'button', title: 'Save the plan to a file — switch to Agent mode to execute it' },
+    'Save', buildIcon);
   const discuss = el('button', { class: 'tm-plan-action', type: 'button', title: 'Keep talking — nothing saved or run yet' }, 'Discuss');
   const discard = el('button', { class: 'tm-plan-action danger', type: 'button' }, 'Discard');
-  build.addEventListener('click', () => { actions.remove(); opts.onApprove?.(collectSteps(host)); });
+  // Every step can now be individually rejected — guard against silently sending an empty plan
+  // (e.g. every step got rejected/deleted) instead of quietly saving a plan with nothing in it.
+  const warnEmpty = () => {
+    if (host.querySelector('.tm-plan-empty-warning')) return;
+    const note = el('div', { class: 'tm-plan-empty-warning' }, 'No steps left — restore or add one before saving.');
+    host.insertAdjacentElement('afterend', note);
+    setTimeout(() => note.remove(), 3000);
+  };
+  build.addEventListener('click', () => {
+    const steps = collectSteps(host);
+    if (!steps.trim()) { warnEmpty(); return; }
+    actions.remove();
+    opts.onApprove?.(steps);
+  });
   discuss.addEventListener('click', () => { discuss.remove(); discard.remove(); opts.onDefer?.(collectSteps(host)); });
   discard.addEventListener('click', () => { actions.remove(); opts.onDiscard?.(); });
   actions.append(build, discuss, discard);
@@ -234,14 +285,18 @@ export function createPlan(opts: PlanOptions): HTMLElement {
   );
   plan.appendChild(header);
 
-  const body = el('div', { class: 'tm-plan-content' });
-
+  // Always visible regardless of collapse state — title + description + status note stay
+  // readable at a glance; only the step list/actions below fold away.
+  const always = el('div', { class: 'tm-plan-always' });
   if (settled) {
-    body.appendChild(el('div', { class: `tm-plan-settled ${settled}` },
+    always.appendChild(el('div', { class: `tm-plan-settled ${settled}` },
       settled === 'discarded' ? '✗ Discarded' : '— Kept for discussion, never run —'));
   }
-  if (description) body.appendChild(el('p', { class: 'tm-plan-description' }, description));
-  if (summary && !settled) body.appendChild(el('div', { class: 'tm-plan-summary' }, summary));
+  if (description) always.appendChild(el('p', { class: 'tm-plan-description' }, description));
+  if (summary && !settled) always.appendChild(el('div', { class: 'tm-plan-summary' }, summary));
+  plan.appendChild(always);
+
+  const body = el('div', { class: 'tm-plan-content' });
 
   // Sections — titled bullet lists (Vercel "Key Steps").
   data.sections.forEach(section => {

@@ -7,6 +7,7 @@ import { loadUserMemory } from '../context/userMemory';
 import { loadProjectRules } from '../context/projectRules';
 import { skillIndexPrompt } from '../context/skills';
 import type { TaskKind } from './routing';
+import type { AgentMode } from './agent';
 
 /** Scaffolding files that are irrelevant for a lightweight turn and safe to skip — every model
  *  call pays for the full system prompt in prefill time, and a "hi"/small-talk turn (trivial) or
@@ -122,7 +123,15 @@ const AGENT_MODE_TAIL =
   + '<function=editFile>{"path": "resources/views/welcome.blade.php", "search": "Laravel", "replace": "Bazardor"}</function>\n'
   + 'Rules for the text form: output the tag on its own, NOT inside backticks or a code fence; use '
   + 'the real tool name and its real arguments (JSON); emit ONE call, then STOP and wait for the '
-  + 'result before deciding the next step. Do not invent tool names — use only the tools you were given.';
+  + 'result before deciding the next step. Do not invent tool names — use only the tools you were given.\n\n'
+  + '### Shell command strategy\n'
+  + '`runCommand` has no terminal attached — it cannot show a pager, prompt for input, or attach to '
+  + 'an interactive session. When you use it: run ONE command per call, not a `&&`/`;`-chained '
+  + 'sequence — if the first part fails you want to see that failure, not a swallowed exit code. '
+  + 'Never invoke a pager (`less`, `more`, `git log` without `--no-pager`) or an interactive/`-i` flag '
+  + '(e.g. `git rebase -i`, `npm init` without `-y`) — the command will hang waiting for input that '
+  + 'never comes. Pipe through `head`/`tail`/`grep` to narrow noisy output instead of letting it dump '
+  + 'unbounded text.';
 
 const PLAN_MODE_TAIL =
   '\n\n## Plan mode\n'
@@ -132,11 +141,18 @@ const PLAN_MODE_TAIL =
   + 'Do NOT use bullet points or numbered lists for these conversational replies — prose only. '
   + 'This ensures your answer is displayed as plain text, not misread as an executable plan.\n\n'
   + '**If the message is a real task or change request** (e.g. "add dark mode", "fix the bug in X", '
-  + '"implement Y"): investigate the relevant files first using your read tools, then reply with a '
-  + 'concise plan using numbered or bulleted steps — each step naming the file/symbol it touches. '
-  + 'If the work splits into priority tiers (quick wins vs larger changes), group steps under short '
-  + 'headings, but keep the actual steps as a numbered/bulleted list under each heading so they can '
-  + 'be reviewed and approved individually.\n\n'
+  + '"implement Y"): investigate the relevant files first using your read tools, then reply with '
+  + 'ONE short lead-in sentence stating what the plan achieves — this becomes the plan card\'s '
+  + 'description, shown on its own with no other context, so it must stand alone. Write it as a '
+  + 'complete, plain sentence ending in a period, e.g. "This adds a dark mode toggle to the admin '
+  + 'panel that persists the user\'s preference." Never start it with meta-commentary about the '
+  + 'mode or the reply itself ("You\'re in plan mode…", "Here is the plan…", "This plan will…:") — '
+  + 'just state what the change does, in past-tense-of-the-outcome or present-tense voice, nothing '
+  + 'else. Always include it, even for a small change. Follow it with a concise plan using numbered '
+  + 'or bulleted steps — each step naming the file/symbol it touches. If the work splits into '
+  + 'priority tiers (quick wins vs larger changes), group steps under short headings, but keep the '
+  + 'actual steps as a numbered/bulleted list under each heading so they can be reviewed and '
+  + 'approved individually.\n\n'
   + 'For a trivial message (a greeting like "hi", small talk), just reply briefly and directly.\n\n'
   + 'If you need to ask the user something before you can plan, use ONLY the '
   + '???QUESTIONS???...???END??? text block (see the ask-format instructions) — do NOT call '
@@ -155,12 +171,27 @@ const ASK_MODE_TAIL =
   + "user gave you) when the snippet alone isn't enough. If a tool call fails or you "
   + "don't have a tool for what you need, don't dwell on the error or apologize at length: "
   + 'answer from the conversation and your general knowledge instead, noting briefly if the '
-  + "answer isn't grounded in the actual files. If the question needs an edit or a command run "
-  + '(making a change, running a build/test), say so and suggest switching to Agent mode. '
-  + 'Do not propose a plan or list steps to execute; just answer.';
+  + "answer isn't grounded in the actual files.\n\n"
+  + '**If the question is a specific, answerable lookup** ("what does X do", "why does Y '
+  + 'break", "where is Z defined"): read whatever you need, then answer it directly.\n\n'
+  + '**If the request is open-ended** ("what should we do about X", "how should we approach '
+  + 'this", "what do you think about Y") — you haven\'t been asked a specific question, you\'ve '
+  + 'been asked to think out loud: read enough to have an informed opinion, then respond like a '
+  + 'conversation, not a report. Flowing prose paragraphs, one idea building on the last — do NOT '
+  + 'use bullet points, numbered lists, or category headings to enumerate options, that '
+  + 'structured-menu format shuts down discussion instead of continuing it. Pick a place to start, '
+  + 'say what you\'d try and why (referencing the real files/symbols you looked at), surface the '
+  + 'one or two trade-offs that actually matter, and ask a clarifying question if the request is '
+  + 'ambiguous. Do not commit to a final numbered plan here — present it as something the user can '
+  + 'redirect, not a decided outcome; if they want it turned into concrete steps, that belongs in '
+  + 'Plan mode.\n\n'
+  + 'Either way: if the question needs an edit or a command run (making a change, running a '
+  + "build/test), say so and suggest switching to Agent mode.";
 
-function modeTail(mode: 'agent' | 'plan' | 'ask'): string {
-  return mode === 'plan' ? PLAN_MODE_TAIL : mode === 'ask' ? ASK_MODE_TAIL : AGENT_MODE_TAIL;
+function modeTail(mode: AgentMode): string {
+  if (mode === 'plan') return PLAN_MODE_TAIL;
+  if (mode === 'ask') return ASK_MODE_TAIL;
+  return AGENT_MODE_TAIL;
 }
 
 /** Grounds the model against its training cutoff — without this, free/local models guess
@@ -171,7 +202,7 @@ function todayLine(): string {
   return `Today's date is ${today}.`;
 }
 
-export async function buildSystemPrompt(mode: 'agent' | 'plan' | 'ask', taskKind?: TaskKind): Promise<string> {
+export async function buildSystemPrompt(mode: AgentMode, taskKind?: TaskKind): Promise<string> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!extensionPath) {
     return '# Identity\nYou are TierMux, an AI coding assistant.' + modeTail(mode) + `\n\n${todayLine()}`;

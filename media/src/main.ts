@@ -274,7 +274,7 @@ const STATE_LABEL = {
 
   // Mode picker (custom dropdown: button shows the short name, list shows name + description).
   const MODES = [
-    { value: 'ask', label: 'Ask', desc: 'Read-only Q&A — answers your question using the code it can read/search. Cannot edit files or run commands.' },
+    { value: 'ask', label: 'Ask', desc: 'Read-only Q&A — answers a direct question, or talks through options and trade-offs for an open-ended one. Cannot edit files or run commands.' },
     { value: 'plan', label: 'Plan', desc: 'Researches the code by reading and searching it, proposes a plan, then edits only after you approve.' },
     { value: 'agent', label: 'Agent', desc: 'Full agent — reads, edits files, runs commands, and tracks a live task list.' },
   ];
@@ -3962,8 +3962,9 @@ const STATE_LABEL = {
       case 'notice': {
         clearEmpty();
         const d = document.createElement(msg.action ? 'button' : 'div');
-        d.className = 'compact-divider';
-        d.textContent = msg.text;
+        d.className = 'compact-divider' + (msg.icon ? ' with-icon' : '');
+        if (msg.icon) d.innerHTML = ICON[msg.icon] + escapeHtml(msg.text);
+        else d.textContent = msg.text;
         if (msg.action?.kind === 'openPlanFile') {
           d.classList.add('compact-divider-link');
           d.addEventListener('click', () => send({ type: 'openPlanFile', uri: msg.action.uri }));

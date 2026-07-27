@@ -919,6 +919,9 @@ button#mode-btn.executing .mode-label {
 button.compact-divider { background: none; font: inherit; color: inherit; display: block; width: 100%; }
 .compact-divider-link { cursor: pointer; color: var(--vscode-textLink-foreground, #4daafc); opacity: .85; }
 .compact-divider-link:hover { opacity: 1; text-decoration: underline; }
+/* Leading SVG icon (TierMux's own stroke-icon style, not an emoji glyph) on a notice divider. */
+.compact-divider.with-icon { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.compact-divider.with-icon svg { flex: 0 0 auto; }
 .send-btn {
   background: var(--vscode-progressBar-background, #0a84ff); color: #fff;
   border: none; cursor: pointer; border-radius: 50%; width: 34px; height: 34px; flex: 0 0 auto;

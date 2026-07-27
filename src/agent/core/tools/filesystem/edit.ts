@@ -4,6 +4,7 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import { getEditGate } from '../gates';
 import { resolveWorkspacePath } from '../resolvePath';
+import { verifyNoteFor } from '../workspace/formatDiagnostics';
 
 /** Exact-string search/replace — no diff library, matches EditGate.edit's existing approach. */
 export function createEditTool() {
@@ -19,7 +20,9 @@ export function createEditTool() {
       const uri = resolveWorkspacePath(path);
       const result = await getEditGate().editApproved(uri, search, replace);
       if (!result.applied) throw new Error(result.error ?? 'Edit was not applied.');
-      return `Edited ${path}.`;
+      // Self-correct loop: surface any NEW error diagnostic in the same tool round instead of
+      // relying on the model to remember a separate getDiagnostics call at the end of the task.
+      return `Edited ${path}.${await verifyNoteFor(uri)}`;
     },
   });
 }

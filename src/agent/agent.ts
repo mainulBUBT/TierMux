@@ -53,9 +53,11 @@ export interface WatchdogActivity {
   atMs: number;
 }
 
+export type AgentMode = 'plan' | 'agent' | 'ask';
+
 export interface AgentOpts {
   messages: ChatMessage[];
-  mode: 'agent' | 'plan' | 'ask';
+  mode: AgentMode;
   effort: ReasoningEffort;
   abortSignal?: AbortSignal;
   pinnedModel?: string;

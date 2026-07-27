@@ -3,6 +3,7 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import { resolveWorkspacePath } from '../resolvePath';
 import { capToolOutput } from '../capOutput';
+import { formatDiagnosticEntries } from './formatDiagnostics';
 
 const MAX_CHARS = 12_000;
 
@@ -24,26 +25,7 @@ export function createDiagnosticsTool() {
         entries = vscode.languages.getDiagnostics();
       }
 
-      const results: string[] = [];
-      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
-
-      for (const [uri, diags] of entries) {
-        if (!diags || diags.length === 0) continue;
-
-        const relPath = workspaceRoot ? uri.fsPath.replace(workspaceRoot + '/', '') : uri.fsPath;
-
-        for (const d of diags) {
-          if (severity === 'error' && d.severity !== vscode.DiagnosticSeverity.Error) continue;
-          if (severity === 'warning' && d.severity !== vscode.DiagnosticSeverity.Warning) continue;
-
-          const sevStr = d.severity === vscode.DiagnosticSeverity.Error ? 'ERROR' : d.severity === vscode.DiagnosticSeverity.Warning ? 'WARNING' : 'INFO';
-          const line = d.range.start.line + 1;
-          const col = d.range.start.character + 1;
-          const codeStr = d.code ? ` [${typeof d.code === 'object' ? d.code.value : d.code}]` : '';
-
-          results.push(`${relPath}:${line}:${col} - ${sevStr}${codeStr}: ${d.message}`);
-        }
-      }
+      const results = formatDiagnosticEntries(entries, severity);
 
       if (results.length === 0) {
         return relativePath

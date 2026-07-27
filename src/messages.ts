@@ -1,5 +1,5 @@
 // Wire protocol between the extension host and the chat webview.
-import type { CatalogModel, FallbackEntry, KeyStatus, Platform, ReasoningEffort, TodoItem } from './shared/types';
+import type { CatalogModel, FallbackEntry, KeyStatus, Mode, Platform, ReasoningEffort, TodoItem } from './shared/types';
 import type { ClarifyingQuestion } from './agent/clarify';
 import type { McpServerConfig } from './mcp/mcpClient';
 export type { McpServerConfig, McpLocalServerConfig, McpRemoteServerConfig, McpOAuthConfig } from './mcp/mcpClient';
@@ -163,7 +163,7 @@ export interface MentionItem {
 // Webview -> Extension
 export type InMessage =
   | { type: 'ready' }
-  | { type: 'sendMessage'; requestId: string; text: string; mode: 'plan' | 'agent' | 'ask'; model: string; reasoningEffort: ReasoningEffort; attachments?: Attachment[]; attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'> }
+  | { type: 'sendMessage'; requestId: string; text: string; mode: Mode; model: string; reasoningEffort: ReasoningEffort; attachments?: Attachment[]; attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'> }
   | { type: 'approvePlan'; requestId: string; approved: boolean; steps: string }
   | { type: 'deferPlan'; requestId: string; steps: string }
   | { type: 'answerClarifying'; requestId: string; answers: string[] }
@@ -327,7 +327,9 @@ export type OutMessage =
   | { type: 'setInput'; text: string; attachments?: Attachment[] }
   | { type: 'toggleSettings' }
   | { type: 'toggleHistory' }
-  | { type: 'notice'; sessionId: string; text: string; action?: { kind: 'openPlanFile'; uri: string } }
+  /** `icon` names a key in the webview's ICON set (media/src/icons.ts) — TierMux's own stroke-SVG
+   *  style, never a raw emoji glyph in `text`. Omit for a plain notice with no leading icon. */
+  | { type: 'notice'; sessionId: string; text: string; icon?: 'check' | 'clipboard' | 'save' | 'compress' | 'trash' | 'revert'; action?: { kind: 'openPlanFile'; uri: string } }
   /** Visual-only: an approved plan's execution window, keyed by requestId so an overlapping
    *  or stale `executing:false` from a different run can never clear the wrong indicator. */
   | { type: 'planExecuting'; sessionId: string; requestId: string; executing: boolean }

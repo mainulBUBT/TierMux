@@ -32,6 +32,33 @@ rename sections, and do not mention the summary/condensing process itself:
 Use terse bullets, not paragraphs. Preserve exact file paths, commands, error strings, and
 identifiers verbatim — never paraphrase these. Output the summary only, no preamble.`;
 
+// Same discipline as SUMMARY_SYSTEM (structured, every section present) but written for a
+// DIFFERENT reader — a fresh session or a different person picking up the work cold, not this
+// same session continuing — so it needs an explicit Goal/open-decisions framing rather than a
+// compact history replacement.
+export const HANDOFF_SYSTEM = `You write a handoff note so someone else (or a fresh session with
+no memory of this conversation) can pick up this coding task with no other context. Output EXACTLY
+this Markdown structure, in this order, with every section present (write "(none)" for an empty
+one) — do not add, remove, or rename sections, and do not mention this handoff process itself:
+
+## Goal
+[what the user is trying to accomplish, one or two sentences]
+
+## Done
+[work already completed, as terse bullets — be specific about files/functions changed]
+
+## Next steps
+[ordered list of what should happen next]
+
+## Open decisions
+[any choice that was made or still needs to be made, and why — only ones that matter if revisited]
+
+## Files & symbols touched
+[workspace-relative paths and the symbols in them that matter, one per line]
+
+Use terse bullets, not paragraphs. Preserve exact file paths, commands, error strings, and
+identifiers verbatim — never paraphrase these. Output the handoff note only, no preamble.`;
+
 export const TITLE_SYSTEM = `You are a developer tool. Generate a 2-4 word title for this chat.
 
 Rules:

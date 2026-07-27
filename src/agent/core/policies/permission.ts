@@ -12,6 +12,26 @@ import { isDangerous } from '../../../edits/commandGate';
  *  tool set entirely (see tools/index.ts) and denied here too as defense in depth. */
 export const MUTATING_TOOLS = new Set(['writeFile', 'createFile', 'editFile', 'deleteFile', 'runCommand']);
 
+/** Content-reading tools that take a workspace path — the ones a secrets read can leak through. */
+const CONTENT_READ_TOOLS = new Set(['readFile', 'grep']);
+
+/** Path patterns that commonly hold secrets. Matched against workspace-relative paths, so this
+ *  catches `.env` at any depth without also matching e.g. `src/env.ts`. */
+const SENSITIVE_PATH_PATTERNS: RegExp[] = [
+  /(^|\/)\.env(\.[^/]+)?$/i,
+  /\.pem$/i,
+  /\.key$/i,
+  /(^|\/)id_rsa(\.[^/]+)?$/i,
+  /(^|\/)\.npmrc$/i,
+  /(^|\/)\.aws\//i,
+  /(^|\/)\.ssh\//i,
+  /credentials/i,
+];
+
+function findSensitivePath(paths: string[]): string | undefined {
+  return paths.find((p) => SENSITIVE_PATH_PATTERNS.some((re) => re.test(p)));
+}
+
 interface ToolApprovalStatusObject { type: 'approved' | 'denied' | 'not-applicable' | 'user-approval'; reason?: string }
 type ToolApprovalStatus = ToolApprovalStatusObject | 'approved' | 'denied' | 'not-applicable' | undefined;
 
@@ -33,6 +53,22 @@ export function createToolApproval(opts: AgentOpts) {
     if (opts.mode !== 'agent' && MUTATING_TOOLS.has(name)) {
       return { type: 'denied', reason: `"${name}" is not available in ${opts.mode} mode.` };
     }
+
+    if (CONTENT_READ_TOOLS.has(name)) {
+      const input = toolCall.input as { path?: string | string[] };
+      const paths = Array.isArray(input?.path) ? input.path : input?.path ? [input.path] : [];
+      const hit = findSensitivePath(paths);
+      if (hit) {
+        if (!opts.onPermissionAsk) return { type: 'denied', reason: `"${hit}" looks like a secrets file.` };
+        const resp = await opts.onPermissionAsk({
+          title: `This tool wants to read the secrets-looking file`,
+          pattern: hit,
+          toolName: name,
+        });
+        return resp === 'reject' ? { type: 'denied', reason: `"${hit}" looks like a secrets file.` } : 'approved';
+      }
+    }
+
     if (!MUTATING_TOOLS.has(name)) return 'approved';
 
     if (name === 'runCommand') {
