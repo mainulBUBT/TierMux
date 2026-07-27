@@ -1,6 +1,6 @@
 # TierMux — Project Roadmap
 
-**Last updated:** 2026-07-22
+**Last updated:** 2026-07-27
 
 ---
 
@@ -16,6 +16,23 @@
 [x] Session replay / History
 [x] Keyless fallback chain
 [x] Custom endpoints
+```
+
+### Reliability/agent-loop features (adopted from an awesome-opencode review) — ✅ Complete
+```
+[x] .env/secrets read guard — deny/prompt readFile/glob on .env*, *.pem, id_rsa*, .npmrc,
+    .aws/, .ssh/, *credentials* (src/agent/core/policies/permission.ts)
+[x] Shell-strategy prompt — no &&-chains, no pagers, no -i flags, one command per step
+    (src/agent/promptBuilder.ts)
+[x] Handoff prompt — tiermux.generateHandoff command, goal/done/next/open-decisions note
+    (src/agent/condense.ts generateHandoff, src/agent/prompts.ts HANDOFF_SYSTEM)
+[x] Plan annotation — structurePlanSteps() wired into Plan mode's turn completion, feeding
+    the existing per-step accept/reject/edit UI (media/src/ui/components/Plan.ts) cleaner,
+    model-structured steps instead of only a regex bullet/number parse; posted non-blocking
+    (plan card shows instantly, upgrades in place) — chatViewProvider.ts upgradePlanSteps()
+[x] Self-correct retry (Ralph-Wiggum-style) — one bounded retry when an edit/write tool's
+    own post-edit diagnostic check finds a NEW error, nudging the model to fix it instead of
+    silently finishing on a broken file (src/agent/core/loop.ts runTurn)
 ```
 
 ### Providers — ✅ 22 Supported
@@ -53,6 +70,7 @@ Custom:   user-defined OpenAI-compatible endpoints
 | 🥇 | **Benchmark Automation** | Turn `BENCHMARK_QUERIES.md` into an executable harness to catch regression during routing/model updates. |
 | 🥈 | **Context Management** | Improve windowing for huge repositories, reducing token usage without losing grounding. |
 | 🥉 | **Webview Tech Debt** | Incrementally migrate the vanilla JS imperative DOM webview to a modern strict TS setup, removing `@ts-nocheck`. |
+| — | **Brainstorm → Plan → Implement mode** | An explicit 3-phase mode switch (no code tools in brainstorm → structured plan → full tools in implement) with session continuity. Not started; mostly prompt + mode-flag wiring on top of the existing plan/agent/ask `AgentMode`. |
 
 ---
 
