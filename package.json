@@ -602,7 +602,7 @@
     "typecheck": "tsc --noEmit",
     "test:e2e:circuit": "esbuild scripts/circuitBreaker.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/circuitBreaker.e2e.cjs && node dist/circuitBreaker.e2e.cjs",
     "test:e2e:scoring": "esbuild scripts/scoring.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/scoring.e2e.cjs && node dist/scoring.e2e.cjs",
-    "test:e2e:freeweb": "esbuild scripts/freeweb.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:jsdom --outfile=dist/freeweb.e2e.cjs && node dist/freeweb.e2e.cjs",
+    "test:e2e:tiermuxWeb": "esbuild scripts/tiermuxWeb.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:jsdom --outfile=dist/tiermuxWeb.e2e.cjs && node dist/tiermuxWeb.e2e.cjs",
     "test:e2e:smart-routing": "esbuild scripts/smartRouting.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/smartRouting.e2e.cjs && node dist/smartRouting.e2e.cjs",
     "test:e2e:vision-classify": "esbuild scripts/visionClassify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/visionClassify.e2e.cjs && node dist/visionClassify.e2e.cjs",
     "test:e2e:core": "esbuild scripts/coreLoop.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/coreLoop.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/coreLoop.e2e.cjs",

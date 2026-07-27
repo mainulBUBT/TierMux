@@ -7,17 +7,17 @@
  */
 import type { WebSearchEngine } from './types';
 import { buildWebSearchUrl } from './url';
-import { FREEWEB_CONFIG } from './config';
+import { TIERMUXWEB_CONFIG } from './config';
 import { parseYahooHtml, parseMarginaliaHtml, parseAskHtml, parseDdgHtml } from './search-html';
 import type { RawSearchResult } from './search-html';
 
-async function fetchHtml(url: string, timeoutMs = FREEWEB_CONFIG.searchTimeout): Promise<string | null> {
+async function fetchHtml(url: string, timeoutMs = TIERMUXWEB_CONFIG.searchTimeout): Promise<string | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(url, {
       signal: ctrl.signal,
-      headers: { 'User-Agent': FREEWEB_CONFIG.userAgent },
+      headers: { 'User-Agent': TIERMUXWEB_CONFIG.userAgent },
     });
     clearTimeout(timer);
     if (!res.ok) return null;

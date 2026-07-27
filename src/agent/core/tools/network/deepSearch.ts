@@ -1,7 +1,7 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 import { capToolOutput } from '../capOutput';
-import { deepSearch } from './freeweb/deep-search';
+import { deepSearch } from './tiermuxWeb/deep-search';
 
 const MAX_CHARS = 8_000;
 

@@ -1,5 +1,5 @@
 /**
- * FreeWeb engine — standalone verification (bundled + run under node, no VS Code).
+ * TierMux web engine — standalone verification (bundled + run under node, no VS Code).
  *
  * Mirrors the scripts/*.e2e.ts convention (esbuild → CJS → node). Two sections:
  *
@@ -16,19 +16,19 @@
  *
  * Run:  npm run test:e2e:f reeweb
  */
-import { parseDdgHtml, parseYahooHtml } from '../src/agent/core/tools/network/freeweb/search-html';
-import { normalizeSearchResultUrl, normalizeComparableUrl } from '../src/agent/core/tools/network/freeweb/url';
+import { parseDdgHtml, parseYahooHtml } from '../src/agent/core/tools/network/tiermuxWeb/search-html';
+import { normalizeSearchResultUrl, normalizeComparableUrl } from '../src/agent/core/tools/network/tiermuxWeb/url';
 import {
   normalizeEngineResults,
   mergeSearchResults,
   scoreSearchResult,
-} from '../src/agent/core/tools/network/freeweb/scoring';
-import { resolveLlmsRoute } from '../src/agent/core/tools/network/freeweb/routing';
-import type { LlmsDocument } from '../src/agent/core/tools/network/freeweb/llms';
-import { extractMainContentFromHtml } from '../src/agent/core/tools/network/freeweb/fetcher/http';
-import { collectWebSearchResults } from '../src/agent/core/tools/network/freeweb/search';
-import { deepSearch } from '../src/agent/core/tools/network/freeweb/deep-search';
-import { browseUrl } from '../src/agent/core/tools/network/freeweb/browse';
+} from '../src/agent/core/tools/network/tiermuxWeb/scoring';
+import { resolveLlmsRoute } from '../src/agent/core/tools/network/tiermuxWeb/routing';
+import type { LlmsDocument } from '../src/agent/core/tools/network/tiermuxWeb/llms';
+import { extractMainContentFromHtml } from '../src/agent/core/tools/network/tiermuxWeb/fetcher/http';
+import { collectWebSearchResults } from '../src/agent/core/tools/network/tiermuxWeb/search';
+import { deepSearch } from '../src/agent/core/tools/network/tiermuxWeb/deep-search';
+import { browseUrl } from '../src/agent/core/tools/network/tiermuxWeb/browse';
 
 let passed = 0;
 let failed = 0;

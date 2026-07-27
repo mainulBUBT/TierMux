@@ -1,7 +1,7 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 import { capToolOutput } from '../capOutput';
-import { collectWebSearchResults, formatWebSearchResults } from './freeweb/search';
+import { collectWebSearchResults, formatWebSearchResults } from './tiermuxWeb/search';
 
 const MAX_CHARS = 8_000;
 const MAX_RESULTS = 8;
@@ -9,7 +9,7 @@ const MAX_RESULTS = 8;
 /**
  * webSearch — searches the public web without API keys.
  *
- * Backed by the freeweb engine: tries Yahoo / DuckDuckGo / Marginalia / Ask in
+ * Backed by TierMux's web engine: tries Yahoo / DuckDuckGo / Marginalia / Ask in
  * order via native fetch() and stops once enough results are found. Returns
  * deduplicated, ranked results with clean URLs. The added optional args
  * (`engine`, `maxResults`, `domain`) all default; a bare `webSearch({ query })`

@@ -1,14 +1,14 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 import { capToolOutput } from '../capOutput';
-import { browseUrl } from './freeweb/browse';
+import { browseUrl } from './tiermuxWeb/browse';
 
 const MAX_CHARS = 15_000;
 
 /**
  * fetchUrl — reads a public URL and returns its readable text content.
  *
- * Backed by the freeweb engine's static-fetch chain: markdown / GitHub-raw /
+ * Backed by TierMux's web engine's static-fetch chain: markdown / GitHub-raw /
  * RSS / HTTP+jsdom main-content extraction / archive.org fallback, with
  * llms.txt-aware routing when the site exposes guidance. The `query` arg is
  * strictly optional and only influences llms.txt routing; a bare

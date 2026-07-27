@@ -5,7 +5,7 @@
  * The engine owns its own in-process LRU cache (see cache.ts) — TierMux has no
  * shared cache abstraction, so this stands alone by design, not oversight.
  */
-export interface FreeWebConfig {
+export interface TierMuxWebConfig {
   /** Engines tried, in order, when the caller doesn't pin one. */
   defaultSearchEngines: string[];
   /** Per-fetch timeout (ms) for the content fetcher chain. */
@@ -20,8 +20,8 @@ export interface FreeWebConfig {
   cacheTTL: number;
 }
 
-export const FREEWEB_CONFIG: FreeWebConfig = {
-  defaultSearchEngines: ['yahoo', 'duckduckgo', 'marginalia', 'ask'],
+export const TIERMUXWEB_CONFIG: TierMuxWebConfig = {
+  defaultSearchEngines: ['duckduckgo', 'yahoo', 'marginalia', 'ask'],
   fetchTimeout: 8000,
   searchTimeout: 8000,
   userAgent:

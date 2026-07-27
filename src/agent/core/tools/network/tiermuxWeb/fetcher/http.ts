@@ -1,7 +1,7 @@
 import type { Fetcher, FetcherResult, FetcherOptions, FetcherSource } from "./types";
 import { DEFAULT_FETCHER_OPTIONS, truncateContent } from "./types";
 import { LRUCache, InflightMap } from "../cache";
-import { FREEWEB_CONFIG } from "../config";
+import { TIERMUXWEB_CONFIG } from "../config";
 import { safeFetch } from "./safe-fetch";
 
 interface DomNode {
@@ -19,7 +19,7 @@ interface DomDocument {
 }
 type JSDOMConstructor = new (html: string) => { window: { document: DomDocument } };
 
-const cache = new LRUCache<FetcherResult>(FREEWEB_CONFIG.cacheMaxEntries, FREEWEB_CONFIG.cacheTTL);
+const cache = new LRUCache<FetcherResult>(TIERMUXWEB_CONFIG.cacheMaxEntries, TIERMUXWEB_CONFIG.cacheTTL);
 const inflight = new InflightMap<FetcherResult | null>();
 
 /**
@@ -162,7 +162,7 @@ export const httpFetcher: Fetcher = {
         const res = await safeFetch(url, {
           signal: ctrl.signal,
           headers: {
-            "User-Agent": FREEWEB_CONFIG.userAgent,
+            "User-Agent": TIERMUXWEB_CONFIG.userAgent,
             Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain,*/*;q=0.1",
             "Accept-Language": "en-US,en;q=0.9",
           },
