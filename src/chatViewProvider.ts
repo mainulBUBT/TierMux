@@ -1803,15 +1803,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (looksLikeActionablePlan(clar.text)) {
           s.history.length -= 1 + extraHistoryPushed; // not committed yet — re-added on approval
           s.pendingPlanUser = userContent;
-          // structurePlanText is a real (multi-second) router round-trip — without a step update
-          // here the UI looks frozen between the turn's own stream ending and the plan card
-          // appearing, which reads as "nothing happened, can't scroll to anything new" even
-          // though the eventual card renders and scrolls into view fine.
-          this.post({ type: 'agentStep', sessionId: s.id, requestId: m.requestId, phase: 'synthesizing', label: 'Refining plan steps…' });
-          const steps = await this.structurePlanText(clar.text);
-          if (!this.isActiveRun(s, m.requestId)) return;
-          this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps });
+          this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
           this.preparePlanFile(s, prompt);
+          this.upgradePlanSteps(s, m.requestId, clar.text);
           return;
         }
 
@@ -2029,15 +2023,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.pendingPlanFile = { uri: fileUri, title: title || 'Untitled' };
   }
 
-  /** Re-parse a confirmed plan's prose into a clean numbered step list via structurePlanSteps'
-   *  schema-validated structured output, before it's posted to the webview's editable plan card
-   *  (Plan.ts's own parsePlanSteps is a regex bullet/number parser — this gives it cleaner input
-   *  to parse instead of replacing it, so a poor-structured-output model still falls back to
-   *  today's exact behavior unchanged). Best-effort: any failure keeps the original text. */
-  private async structurePlanText(planText: string): Promise<string> {
-    const steps = await structurePlanSteps(this.deps.router, planText);
-    if (!steps || !steps.length) return planText;
-    return formatStructuredSteps(steps);
+  /** Fire-and-forget: refine a just-posted plan card's raw-prose steps into a clean, deduplicated
+   *  numbered list via structurePlanSteps' schema-validated structured output, then silently
+   *  re-post the SAME planProposed card to upgrade it in place. Never awaited by the caller — the
+   *  card already shown used Plan.ts's own regex bullet/number parser on the raw text, so the user
+   *  sees a plan instantly with no added latency; this only makes it *nicer* a moment later.
+   *  Skipped entirely if the user has already acted on the plan (approved/deferred/discarded —
+   *  `s.pendingPlanUser` gets cleared by all three) or moved on to a new turn, and does nothing
+   *  on any failure/timeout (structurePlanSteps never throws, returns null instead). */
+  private upgradePlanSteps(s: Session, requestId: string, rawText: string): void {
+    const pendingAtStart = s.pendingPlanUser;
+    void structurePlanSteps(this.deps.router, rawText).then((steps) => {
+      if (!steps || !steps.length) return;
+      if (!this.isActiveRun(s, requestId)) return;
+      if (s.pendingPlanUser !== pendingAtStart) return; // already approved/deferred/discarded
+      this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId, steps: formatStructuredSteps(steps) });
+    });
   }
 
   /** Write (or overwrite) the plan MD file for the session with the current steps. */
@@ -2555,11 +2556,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.pendingClarify = { requestId: m.requestId, userContent: ctx.userContent, prompt: ctx.prompt, questions: clar.questions, mode: 'plan' };
         this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: clar.questions });
       } else if (looksLikeActionablePlan(clar.text)) {
-        this.post({ type: 'agentStep', sessionId: s.id, requestId: m.requestId, phase: 'synthesizing', label: 'Refining plan steps…' });
-        const steps = await this.structurePlanText(clar.text);
-        if (!this.isActiveRun(s, m.requestId)) return;
-        this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps });
+        this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
         this.preparePlanFile(s, ctx.prompt);
+        this.upgradePlanSteps(s, m.requestId, clar.text);
       } else if (clar.text.trim()) {
         // Not actionable steps — the model needs more from the user (a clarification or
         // discussion reply) rather than a plan to run. Show it as a normal answer instead of
