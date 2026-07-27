@@ -141,11 +141,21 @@ function collectSteps(host: HTMLElement): string {
 
 // ========== Parsing helpers (exported for main.ts) ==========
 
+// Edit-verb prefixes and a path detector — mirror titles.ts planStepsToTodos' fourth branch so
+// the card renders the same steps the host detected. Kept inline (not imported) because the
+// webview bundle may only import from media/src/** and src/shared/**.
+const PLAN_EDIT_VERB = /^(add|create|implement|build|writ|fix|refactor|rename|move|delete|remove|updat|chang|modif|edit|replac|wir|integrat|convert|migrat|install|configur|extract|split|merg|append|insert|expos|export|hook|connect|introduc|switch|drop|bump|upgrad|enabl|disabl|set ?up|scaffold|register|inject|guard|validat|sync|audit|document|correct|review|ensur|verify|test|apply|enforce|generat)\w*\b/i;
+const PLAN_PATHISH = /[\w./-]+\.[a-z]{1,6}\b|\b[\w-]+\/[\w-]+/;
+
 export function parsePlanSteps(steps: string): string[] {
   const items: string[] = [];
   for (const line of String(steps || '').split('\n')) {
     const mm = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.*)$/);
-    if (mm) { const tx = mm[1].replace(/\*\*/g, '').trim(); if (tx) items.push(tx); }
+    if (mm) { const tx = mm[1].replace(/\*\*/g, '').trim(); if (tx) items.push(tx); continue; }
+    // Bare imperative paragraph line naming a file — the "Create/Add/Update <file>" plan format
+    // weak models emit with no list markers. Without this the whole plan collapsed into one item.
+    const tr = line.trim();
+    if (tr && PLAN_EDIT_VERB.test(tr) && PLAN_PATHISH.test(tr)) { const tx = tr.replace(/\*\*/g, '').trim(); if (tx) items.push(tx); }
   }
   if (!items.length) { const t = String(steps || '').trim(); if (t) items.push(t); }
   return items;

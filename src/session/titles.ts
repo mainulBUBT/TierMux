@@ -39,11 +39,16 @@ export function deriveTitleFrom(text: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-/** Turn an approved plan's text into an initial all-pending todo list. Accepts three step
+const PLAN_EDIT_VERB = /^(add|create|implement|build|writ|fix|refactor|rename|move|delete|remove|updat|chang|modif|edit|replac|wir|integrat|convert|migrat|install|configur|extract|split|merg|append|insert|expos|export|hook|connect|introduc|switch|drop|bump|upgrad|enabl|disabl|set ?up|scaffold|register|inject|guard|validat|sync|audit|document|correct|review|ensur|verify|test|apply|enforce|generat|wir)\w*\b/i;
+const PLAN_PATHISH = /[\w./-]+\.[a-z]{1,6}\b|\b[\w-]+\/[\w-]+/;
+
+/** Turn an approved plan's text into an initial all-pending todo list. Accepts four step
  *  shapes so the plan card opens regardless of which model produced it: bulleted/numbered
- *  list items (`-`/`*`/`1.`), markdown headings (`## …`), and bold-only heading lines
- *  (`**…**`). Free/weaker models often emit a heading-per-step plan instead of a clean
- *  bulleted list; without these the plan card never opens for their output. */
+ *  list items (`-`/`*`/`1.`), markdown headings (`## …`), bold-only heading lines
+ *  (`**…**`), and — the case free models hit most — bare imperative PARAGRAPH lines that
+ *  name a file ("Create resources/views/landing.blade.php …", "Update routes/web.php:").
+ *  Without that fourth shape a plan written as paragraphs (no list markers) parsed to zero
+ *  steps and the plan card never opened. */
 export function planStepsToTodos(steps: string): TodoItem[] {
   return (steps || '')
     .split('\n')
@@ -57,6 +62,10 @@ export function planStepsToTodos(steps: string): TodoItem[] {
       // Bold-only heading line: "**Step**".
       m = line.match(/^\s*\*\*(.+?)\*\*\s*$/);
       if (m) return m[1];
+      // Imperative paragraph line with no list marker but a clear edit verb AND a file/path
+      // reference — the "Create/Add/Update <file>" plan format weak models emit as prose.
+      const trimmed = line.trim();
+      if (trimmed && PLAN_EDIT_VERB.test(trimmed) && PLAN_PATHISH.test(trimmed)) return trimmed;
       return null;
     })
     .filter((c): c is string => c !== null)
@@ -65,19 +74,29 @@ export function planStepsToTodos(steps: string): TodoItem[] {
     .slice(0, 20);
 }
 
-const PLAN_EDIT_VERB = /^(add|create|implement|build|writ|fix|refactor|rename|move|delete|remove|updat|chang|modif|edit|replac|wir|integrat|convert|migrat|install|configur|extract|split|merg|append|insert|expos|export|hook|connect|introduc|switch|drop|bump|upgrad|enabl|disabl|set ?up|scaffold|register|inject|guard|validat|sync|audit|document|correct|review|ensur|verify|test|apply|enforce|generat|wir)\w*\b/i;
-const PLAN_PATHISH = /[\w./-]+\.[a-z]{1,6}\b|\b[\w-]+\/[\w-]+/;
-
 /**
  * True when plan text reads like ACTIONABLE changes (imperative steps and/or file references)
  * rather than a descriptive answer. Gates the "Approve & Run" UI: a reply to "give me 6 changes"
  * or "how does this work?" is a discussion answer (no run button), not a plan to execute.
+ *
+ * Counts concrete actionable steps: bulleted/heading steps that look like edits, PLUS imperative
+ * paragraph lines naming a file (the no-list-marker plan format). Returns true at ≥2 such steps —
+ * a real plan touches more than one thing, while a prose Q&A answer rarely leads with edit verbs
+ * aimed at files.
  */
 export function looksLikeActionablePlan(text: string): boolean {
-  const steps = planStepsToTodos(text).map((t) => t.content);
-  if (steps.length === 0) return false; // no list items → prose answer, never a runnable plan
-  const actionable = steps.filter((s) => PLAN_EDIT_VERB.test(s) || PLAN_PATHISH.test(s)).length;
-  return actionable >= Math.ceil(steps.length / 2);
+  const t = text || '';
+  const actionables = new Set<string>();
+  for (const step of planStepsToTodos(t).map((s) => s.content)) {
+    if (PLAN_EDIT_VERB.test(step) || PLAN_PATHISH.test(step)) actionables.add(step);
+  }
+  // Also scan raw lines for imperative+path paragraphs (covers the case where planStepsToTodos'
+  // 20-item cap or formatting kept them out, and keeps this independent of the todo builder).
+  for (const line of t.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed && PLAN_EDIT_VERB.test(trimmed) && PLAN_PATHISH.test(trimmed)) actionables.add(trimmed);
+  }
+  return actionables.size >= 2;
 }
 
 const SUBJECT_STOPWORDS = new Set([
