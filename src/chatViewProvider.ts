@@ -1803,6 +1803,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (looksLikeActionablePlan(clar.text)) {
           s.history.length -= 1 + extraHistoryPushed; // not committed yet — re-added on approval
           s.pendingPlanUser = userContent;
+          // structurePlanText is a real (multi-second) router round-trip — without a step update
+          // here the UI looks frozen between the turn's own stream ending and the plan card
+          // appearing, which reads as "nothing happened, can't scroll to anything new" even
+          // though the eventual card renders and scrolls into view fine.
+          this.post({ type: 'agentStep', sessionId: s.id, requestId: m.requestId, phase: 'synthesizing', label: 'Refining plan steps…' });
           const steps = await this.structurePlanText(clar.text);
           if (!this.isActiveRun(s, m.requestId)) return;
           this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps });
@@ -2550,6 +2555,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.pendingClarify = { requestId: m.requestId, userContent: ctx.userContent, prompt: ctx.prompt, questions: clar.questions, mode: 'plan' };
         this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: clar.questions });
       } else if (looksLikeActionablePlan(clar.text)) {
+        this.post({ type: 'agentStep', sessionId: s.id, requestId: m.requestId, phase: 'synthesizing', label: 'Refining plan steps…' });
         const steps = await this.structurePlanText(clar.text);
         if (!this.isActiveRun(s, m.requestId)) return;
         this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps });
