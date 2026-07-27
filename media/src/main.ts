@@ -1224,6 +1224,10 @@ const STATE_LABEL = {
   function finalizeWork(requestId) {
     const t = targets.get(requestId);
     if (!t) return;
+    // Strip the streaming class (not just null the pointer) — otherwise this segment's own
+    // last block keeps matching the CSS blinking-cursor selector forever (see toolStatus.ts's
+    // closeTextSegment for the same fix on the mid-turn tool/reasoning-interrupt path).
+    if (t.currentText) t.currentText.classList.remove('streaming');
     t.currentText = null;
     if (!t.flow) return;
     const elapsed = t.startedAt ? Math.round((Date.now() - t.startedAt) / 1000) : null;

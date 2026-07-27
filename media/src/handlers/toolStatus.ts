@@ -23,7 +23,11 @@ export interface Target {
   el: HTMLElement;
   flow: HTMLElement;
   activeTool: string | null;
-  currentText: string | null;
+  /** The in-progress `.flow-text.streaming` div text is currently accumulating into, or null
+   *  between segments (main.ts creates a fresh one lazily on the next chunk). NOT a string,
+   *  despite the field name — it's the live DOM node so a closed segment's `streaming` class
+   *  (and its CSS-driven blinking cursor) can be stripped when the segment ends. */
+  currentText: HTMLElement | null;
   _wasStreamed: boolean;
 }
 
@@ -34,6 +38,17 @@ export interface ToolStatusContext {
   setStatusLabel(requestId: string, text: string, opts?: { force?: boolean; tool?: boolean; done?: boolean }): boolean;
   activityFor(name: string, args: unknown): string;
   upsertTool(t: Target, msg: ToolStatusMessage): void;
+}
+
+/** Closes the current text segment: strips the `streaming` class (so its CSS-driven blinking
+ *  cursor stops) before dropping the reference. Without the classList removal, a segment closed
+ *  mid-turn (a tool card or reasoning block interrupting the model's narration) stayed in the DOM
+ *  still marked `streaming` forever — each one then blinked its OWN cursor on its own last line,
+ *  which is why a multi-tool-call turn showed a `▍`/`|` on several lines at once, not just the
+ *  true last one. */
+function closeTextSegment(t: Target): void {
+  t.currentText?.classList.remove('streaming');
+  t.currentText = null;
 }
 
 // ----- Handler -------------------------------------------------------------
@@ -47,7 +62,7 @@ export function handleToolStatus(ctx: ToolStatusContext, msg: ToolStatusMessage)
   if (msg.name === 'reasoning') {
     const isNew = !t.flow.querySelector(`[data-tc="${msg.toolCallId}"]`);
     ctx.upsertTool(t, msg);
-    if (isNew) t.currentText = null;
+    if (isNew) closeTextSegment(t);
     return;
   }
   if (msg.state === 'running') {
@@ -59,5 +74,5 @@ export function handleToolStatus(ctx: ToolStatusContext, msg: ToolStatusMessage)
   }
   const isNew = !t.flow.querySelector(`[data-tc="${msg.toolCallId}"]`);
   ctx.upsertTool(t, msg);
-  if (isNew) t.currentText = null;
+  if (isNew) closeTextSegment(t);
 }
