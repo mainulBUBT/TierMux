@@ -39,3 +39,11 @@ export async function structurePlanSteps(router: Router, planText: string): Prom
     return null; // best-effort — the regex parser is the safe fallback
   }
 }
+
+/** Re-serializes a clean step list back into the numbered-list text format the webview's
+ *  Plan.ts (parsePlanSteps) and titles.ts (planStepsToTodos) both already parse — so
+ *  structurePlanSteps' output can be dropped straight into the existing `planProposed.steps`
+ *  string field with no changes needed on the webview side. */
+export function formatStructuredSteps(steps: string[]): string {
+  return steps.map((s, i) => `${i + 1}. ${s}`).join('\n');
+}

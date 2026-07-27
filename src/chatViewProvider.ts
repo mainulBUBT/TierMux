@@ -33,6 +33,7 @@ import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense, generateHandoff } from './agent/condense';
 import { parseClarifying, type ClarifyingQuestion } from './agent/clarify';
+import { structurePlanSteps, formatStructuredSteps } from './agent/planStructurer';
 import { deriveTitleFrom, extractSubjectTerms, looksLikeActionablePlan, looksLikeGroundedAnswer, offTopicCorrection, sanitizeTitle } from './session/titles';
 
 import { loadSkills } from './context/skills';
@@ -1802,7 +1803,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (looksLikeActionablePlan(clar.text)) {
           s.history.length -= 1 + extraHistoryPushed; // not committed yet — re-added on approval
           s.pendingPlanUser = userContent;
-          this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
+          const steps = await this.structurePlanText(clar.text);
+          if (!this.isActiveRun(s, m.requestId)) return;
+          this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps });
           this.preparePlanFile(s, prompt);
           return;
         }
@@ -2019,6 +2022,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const dir = vscode.Uri.joinPath(ws.uri, ...folder.split('/'));
     const fileUri = vscode.Uri.joinPath(dir, `${stamp}-${clean}.md`);
     s.pendingPlanFile = { uri: fileUri, title: title || 'Untitled' };
+  }
+
+  /** Re-parse a confirmed plan's prose into a clean numbered step list via structurePlanSteps'
+   *  schema-validated structured output, before it's posted to the webview's editable plan card
+   *  (Plan.ts's own parsePlanSteps is a regex bullet/number parser — this gives it cleaner input
+   *  to parse instead of replacing it, so a poor-structured-output model still falls back to
+   *  today's exact behavior unchanged). Best-effort: any failure keeps the original text. */
+  private async structurePlanText(planText: string): Promise<string> {
+    const steps = await structurePlanSteps(this.deps.router, planText);
+    if (!steps || !steps.length) return planText;
+    return formatStructuredSteps(steps);
   }
 
   /** Write (or overwrite) the plan MD file for the session with the current steps. */
@@ -2536,7 +2550,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.pendingClarify = { requestId: m.requestId, userContent: ctx.userContent, prompt: ctx.prompt, questions: clar.questions, mode: 'plan' };
         this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: clar.questions });
       } else if (looksLikeActionablePlan(clar.text)) {
-        this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: clar.text });
+        const steps = await this.structurePlanText(clar.text);
+        if (!this.isActiveRun(s, m.requestId)) return;
+        this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps });
         this.preparePlanFile(s, ctx.prompt);
       } else if (clar.text.trim()) {
         // Not actionable steps — the model needs more from the user (a clarification or

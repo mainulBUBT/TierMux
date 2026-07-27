@@ -46,11 +46,15 @@ export function waitForDiagnosticsSettled(uri: vscode.Uri, timeoutMs = 1200): Pr
   });
 }
 
+/** Marker prefixing verifyNoteFor's output — a stable sentinel so callers (loop.ts's self-correct
+ *  retry) can detect a post-edit diagnostic warning in a tool result without re-parsing prose. */
+export const NEW_DIAGNOSTICS_MARKER = '⚠ New diagnostics after this edit:';
+
 /** Errors-only, one-line-per-diagnostic verify note appended to an edit/write tool's own result —
  *  empty string when the file is clean, so a healthy edit's result is unchanged. */
 export async function verifyNoteFor(uri: vscode.Uri): Promise<string> {
   const diags = await waitForDiagnosticsSettled(uri);
   const lines = formatDiagnosticEntries([[uri, diags]], 'error');
   if (!lines.length) return '';
-  return `\n\n⚠ New diagnostics after this edit:\n${lines.join('\n')}`;
+  return `\n\n${NEW_DIAGNOSTICS_MARKER}\n${lines.join('\n')}`;
 }

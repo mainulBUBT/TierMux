@@ -37,10 +37,8 @@ These are **real gaps**. Listed by effort/value.
 **Do:** Add a "drop already-acted-on tool results older than N turns" pass before compaction in [`condense.ts`](../src/agent/condense.ts). Optionally expose a `/ctx`-style summary (Context Analysis).
 **Effort:** Medium.
 
-### 3. Structured plan annotation (open-plan-annotator / Plannotator)
-**Why:** Our `planStructurer` produces a plan; there's no UI to strikethrough/edit/approve lines.
-**Do:** Surface the structured plan in the webview with per-line accept/reject/edit. Reuses existing plan data — UI work only.
-**Effort:** Medium (webview).
+### 3. ✅ DONE — Structured plan annotation (open-plan-annotator / Plannotator)
+The per-line accept(default)/reject-toggle/edit/delete UI already existed in `media/src/ui/components/Plan.ts` (`addEditableStep`/`collectSteps`) — it just wasn't fed by `structurePlanSteps`. `chatViewProvider.ts`'s `structurePlanText()` now calls `structurePlanSteps` before posting `planProposed`, falling back to the raw text (today's regex-parsed behavior) on any failure. See `src/agent/planStructurer.ts` (`formatStructuredSteps`) and `scripts/planStructurer.e2e.ts`.
 
 ### 4. Brainstorm → Plan → Implement workflow (Micode / Agentic)
 **Why:** TierMux has plan + clarify but not an explicit 3-phase mode switch with session continuity.
@@ -57,10 +55,8 @@ These are **real gaps**. Listed by effort/value.
 **Do:** A command that emits a focused handoff prompt (goal, done, next, open decisions) from current session state. We already compute summaries in `condense`.
 **Effort:** Small.
 
-### 7. Ralph-Wiggum self-correct loop (Ralph Wiggum)
-**Why:** Tighten `verifyGrounding`-style loop into an iterative self-correct pass for edits.
-**Do:** After an edit tool call, optionally run a cheap verify step that checks the edit against its stated intent and re-opens if wrong. Guard with budget.
-**Effort:** Medium.
+### 7. ✅ DONE — Ralph-Wiggum self-correct loop (Ralph Wiggum)
+`src/agent/core/loop.ts`'s `runTurn` now retries once (bounded, never loops further) when an edit/write tool result carries `formatDiagnostics.ts`'s `NEW_DIAGNOSTICS_MARKER` — the model gets nudged to fix the error it just introduced instead of silently finishing on a broken file. See `scripts/selfCorrect.e2e.ts`.
 
 ---
 
@@ -87,12 +83,14 @@ We already have `src/profiler` + `showTelemetry`. OTLP export is a nice-to-have 
 
 ## Suggested build order
 
-1. **Shell-strategy prompt** — tiny, immediate reliability win. (item 5)
-2. **`.env`/secrets read guard** — small, real safety gap. (item 1)
-3. **Handoff prompt** — small, high daily value. (item 6)
-4. **Mid-history context pruning** — medium, cost reducer. (item 2)
-5. **Brainstorm→Plan→Implement mode** — medium, makes "more agentic" tangible. (item 4)
-6. **Plan annotation UI** — medium, polish. (item 3)
-7. **Self-correct verify loop** — medium, quality. (item 7)
+1. ✅ **Shell-strategy prompt** — tiny, immediate reliability win. (item 5)
+2. ✅ **`.env`/secrets read guard** — small, real safety gap. (item 1)
+3. ✅ **Handoff prompt** — small, high daily value. (item 6)
+4. 🟡 **Mid-history context pruning** — medium, cost reducer. (item 2) — partial, see item 2
+5. ❌ **Brainstorm→Plan→Implement mode** — medium, makes "more agentic" tangible. (item 4) — not started
+6. ✅ **Plan annotation UI** — medium, polish. (item 3)
+7. ✅ **Self-correct verify loop** — medium, quality. (item 7)
 
+Remaining open work: item 2 (mid-history pruning is still tail-only, not a real "drop stale
+mid-history results" pass) and item 4 (no brainstorm/plan/implement mode switch exists).
 Subagents (item 8) only as a separate strategic decision.

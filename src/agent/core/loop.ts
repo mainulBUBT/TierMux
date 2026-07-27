@@ -19,6 +19,7 @@ import { createTelemetryMiddleware } from './middleware/telemetry';
 import { createToolApproval, MUTATING_TOOLS } from './policies/permission';
 import { createToolSet } from './tools';
 import { getMcpManager } from './tools/mcp/manager';
+import { NEW_DIAGNOSTICS_MARKER } from './tools/workspace/formatDiagnostics';
 import { diagLog } from '../../util/diag';
 
 /** AI SDK ModelMessage shape (loosely typed here — the SDK validates the real shape). */
@@ -198,6 +199,15 @@ const FORCE_WEBSEARCH_NUDGE =
   + 'If you cannot emit a native tool call, emit it as text in EXACTLY this format (a real call '
   + 'will run from it): <function=webSearch>{"query": "..."}</function>. Put the tag on its own '
   + 'line, not in backticks. Emit the call now, then wait for the result.';
+
+/** Nudge appended (as a user turn) when an edit/write tool call's own verifyNoteFor check found a
+ *  NEW diagnostic error right after the edit (Ralph-Wiggum-style self-correct). The diagnostic
+ *  text is already in context (it's part of the tool result in workMessages) — this just tells
+ *  the model to act on it instead of finishing with a broken file. */
+const SELF_CORRECT_NUDGE =
+  'The edit you just made introduced a new error, reported above in the tool result. Fix it now: '
+  + 'read the surrounding code if you need to, then correct the error with another edit before '
+  + 'finishing. Do not just acknowledge the error — actually fix it.';
 
 /**
  * Forced synthesis turn — run after the main loop when the model acted via tools but produced no
@@ -720,6 +730,33 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       // retry is worse than the first attempt's own (already-synthesized) progress report.
       if (escalated.text.trim()) final = escalated;
     }
+  }
+
+  // Self-correct retry (Ralph-Wiggum-style) — an edit/write tool call's own verifyNoteFor check
+  // found a NEW diagnostic error right after the edit, surfaced as text in that tool's result.
+  // Bounded to exactly one retry regardless of outcome — this never loops. Only ever considers
+  // `final`'s OWN mutating tool call: escalation above is mutually exclusive with this (it
+  // requires !hadMutatingToolCall), so there's no risk of double-retrying the same turn.
+  const lastDiagnosticNote = final.hadMutatingToolCall
+    ? [...final.workMessages].reverse().find((m) => m.role === 'tool' && typeof m.content === 'string' && m.content.includes(NEW_DIAGNOSTICS_MARKER))
+    : undefined;
+  const canSelfCorrect = !!lastDiagnosticNote && !opts.abortSignal?.aborted && !final.stopReason;
+  if (canSelfCorrect) {
+    diagLog('turn.selfCorrect', 'edit/write introduced a new diagnostic error — retrying once with a fix-it nudge');
+    const nudged: AgentOpts = {
+      ...opts,
+      messages: [
+        ...opts.messages,
+        ...final.workMessages,
+        ...(final.text.trim() ? [{ role: 'assistant' as const, content: final.text }] : []),
+        { role: 'user', content: SELF_CORRECT_NUDGE },
+      ],
+    };
+    const corrected = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls);
+    // Accept the retry's own outcome whatever it is (fixed, still broken, or gave up) — the
+    // point is one genuine attempt to self-correct, not a guarantee of a clean result. Only
+    // guard against regressing to a totally blank turn.
+    if (corrected.text.trim() || corrected.hadToolCalls) final = corrected;
   }
 
   return {

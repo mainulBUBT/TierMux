@@ -618,6 +618,8 @@
     "test:e2e:vision-classify": "esbuild scripts/visionClassify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/visionClassify.e2e.cjs && node dist/visionClassify.e2e.cjs",
     "test:e2e:core": "esbuild scripts/coreLoop.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/coreLoop.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/coreLoop.e2e.cjs",
     "test:e2e:plan-escalation": "esbuild scripts/planEscalation.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planEscalation.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planEscalation.e2e.cjs",
+    "test:e2e:self-correct": "esbuild scripts/selfCorrect.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/selfCorrect.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/selfCorrect.e2e.cjs",
+    "test:e2e:plan-structurer": "esbuild scripts/planStructurer.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planStructurer.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planStructurer.e2e.cjs",
     "test:e2e:command-classify": "esbuild scripts/commandClassify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/commandClassify.e2e.cjs && node dist/commandClassify.e2e.cjs",
     "test:e2e:terminal-util": "esbuild scripts/terminalUtil.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/terminalUtil.e2e.cjs && node dist/terminalUtil.e2e.cjs",
     "bench": "esbuild scripts/bench/runBench.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bench.cjs && node dist/bench.cjs",
