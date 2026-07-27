@@ -10,6 +10,20 @@
 
 ---
 
+## Contents
+
+- [Why TierMux](#why-tiermux)
+- [How It Works](#how-it-works)
+- [Under the Hood — How the Agent Runs](#under-the-hood--how-the-agent-runs)
+- [Providers & Models](#providers--models)
+- [Modes & Capabilities](#modes--capabilities)
+- [Install & First Run](#install--first-run)
+- [Settings](#settings)
+- [Privacy](#privacy)
+- [License](#license)
+
+---
+
 ## Why TierMux
 
 Free LLM tiers (Groq, Cerebras, Google AI Studio, Mistral, NVIDIA NIM, OpenRouter…) are powerful but unreliable individually — rate limits, downtime, blind spots. TierMux pools them into one self-healing surface. No middleman, no API bill, no babysitting.
@@ -56,13 +70,9 @@ Routing layer         internal OpenAI-compatible endpoint; every model call goes
 Provider router       failover chain across 22+ providers
 ```
 
-### Smart routing options (all configurable in the panel)
+### Smart routing options
 
-| Option | Default | What it does |
-|---|---|---|
-| **Quality gate** | On | If a model gives a weak answer, TierMux automatically retries with a smarter model instead of showing you a bad reply |
-| **Hot standby** | On | The next fallback model is pre-warmed in the background — so escalating to it feels instant, not slow |
-| **Chat hedging** | On | Short messages are sent to a fast and a smart model at the same time; whichever answers well first wins |
+Quality gate, hot standby, and chat hedging all live here — every one is configurable in the panel and on by default. See the full list under [Settings](#settings).
 
 ---
 

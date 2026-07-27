@@ -535,7 +535,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media')],
     };
     view.webview.html = this.getHtml(view.webview);
-    view.webview.onDidReceiveMessage((m: InMessage) => this.onMessage(m));
+    view.webview.onDidReceiveMessage((m: InMessage) => {
+      this.onMessage(m).catch((e) => {
+        // A throw anywhere in a handler (e.g. checkpoints.begin() shelling out to git and
+        // failing) would otherwise become a silent unhandled rejection, leaving the webview's
+        // busy/loading state stuck forever with no way for the user to recover but reloading.
+        console.error('[tiermux] onMessage handler failed', m.type, e);
+        const s = this.current();
+        this.post({ type: 'busy', sessionId: s.id, busy: false });
+        this.post({ type: 'error', sessionId: s.id, message: e instanceof Error ? e.message : String(e) });
+      });
+    });
     this.updateViewTitle();
   }
 
@@ -1719,12 +1729,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (s.activeRequestId !== m.requestId) { release(); diagLog('send.gate', `requestId=${m.requestId} · SUPERSEDED, aborting before runner`); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
 
     this.post({ type: 'busy', sessionId: s.id, busy: true });
-    const before = this.deps.usage.get();
-    await s.checkpoints.begin(m.requestId, prompt.slice(0, 60));
-    diagLog('send.gate', `requestId=${m.requestId} · checkpoint begun`);
-    const sentAt = Date.now();
 
     try {
+      const before = this.deps.usage.get();
+      await s.checkpoints.begin(m.requestId, prompt.slice(0, 60));
+      diagLog('send.gate', `requestId=${m.requestId} · checkpoint begun`);
+      const sentAt = Date.now();
+
       // Pre-flight vision check: if the user attached an image/PDF, the selected model MUST be
       // vision-capable or the AI SDK throws a raw error mid-turn ("this model does not support
       // image input"). Catch it up front with a clear, actionable message instead.
@@ -2445,10 +2456,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const release = await this.acquireRunSlot(s.id);
     if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
     this.post({ type: 'busy', sessionId: s.id, busy: true });
-    const before = this.deps.usage.get();
-    await s.checkpoints.begin(m.requestId, 'Continue');
-    const sentAt = Date.now();
     try {
+      const before = this.deps.usage.get();
+      await s.checkpoints.begin(m.requestId, 'Continue');
+      const sentAt = Date.now();
       this.beginInProgressTurn(s, m.requestId);
       const cbk4 = this.agentCallbacks(s, m.requestId, 'agent');
       const result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk4, s.model), {});
@@ -2524,15 +2535,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const release = await this.acquireRunSlot(s.id);
     if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
     this.post({ type: 'busy', sessionId: s.id, busy: true });
-    await s.checkpoints.begin(m.requestId, 'Plan (clarified)');
-    const sentAt = Date.now();
-    const before = this.deps.usage.get();
     // Set true only by the "show as a normal answer" branch below — that reply is real
     // conversation the model needs to remember next turn, unlike the plan-proposal branches
     // (not committed until approval) or the empty/error branches (nothing happened). Gates
     // the blanket `s.history.length = base` reset in `finally` so this one case survives it.
     let committed = false;
     try {
+      const sentAt = Date.now();
+      const before = this.deps.usage.get();
+      await s.checkpoints.begin(m.requestId, 'Plan (clarified)');
       this.beginInProgressTurn(s, m.requestId);
       const cbk5 = this.agentCallbacks(s, m.requestId, 'plan');
       let result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});

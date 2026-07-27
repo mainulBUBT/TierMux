@@ -2,7 +2,7 @@
   "name": "tiermux",
   "displayName": "TierMux",
   "description": "Free agentic AI coding assistant for VS Code. Multiplexes many free-tier LLM providers into one self-healing surface — auto-routes, auto-fails-over, learns your codebase. Zero setup with keyless providers; bring your own keys anytime.",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "publisher": "mainul-islam",
   "license": "MIT",
   "repository": {
@@ -625,9 +625,9 @@
     "bench": "esbuild scripts/bench/runBench.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bench.cjs && node dist/bench.cjs",
     "bench:compare": "esbuild scripts/bench/compare.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/benchCompare.cjs && node dist/benchCompare.cjs",
     "bench:dataset": "esbuild scripts/bench/dataset.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/benchDataset.cjs && node dist/benchDataset.cjs",
-    "package": "vsce package --no-dependencies",
+    "package": "vsce package",
     "sync:catalog": "node scripts/sync-catalog.mjs",
-    "publish": "npm run build && vsce publish --no-dependencies && ovsx publish --no-dependencies -p \"$OVSX_PAT\"",
+    "publish": "npm run build && vsce publish && ovsx publish -p \"$OVSX_PAT\"",
     "prepare": "husky"
   },
   "devDependencies": {
