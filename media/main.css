@@ -745,7 +745,9 @@ details[open].reasoning summary::before { content: '▾ '; }
 
 .msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .msg-att-img { max-width: 200px; max-height: 200px; border-radius: 6px; object-fit: cover; }
-.msg-att-chip { font-size: 11px; padding: 2px 6px; border-radius: 10px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+.msg-att-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 6px; border-radius: 10px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+.msg-att-chip-icon { display: inline-flex; }
+.msg-att-chip-icon svg { width: 12px; height: 12px; }
 
 .input-wrap {
   position: relative;

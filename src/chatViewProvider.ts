@@ -1372,9 +1372,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const code = useWhole ? editor.document.getText() : editor.document.getText(sel);
     if (!code.trim()) { void vscode.window.showInformationMessage('Nothing selected.'); return; }
     const path = vscode.workspace.asRelativePath(editor.document.uri);
-    const name = useWhole ? path : `${path}:${sel.start.line + 1}-${sel.end.line + 1}`;
+    // Insert as an `@path#start-end` mention (resolved from disk at send time by
+    // resolveMentions), matching how a typed/picked @-mention behaves, instead of a
+    // separate attachment chip.
+    const mention = useWhole ? path : `${path}#${sel.start.line + 1}-${sel.end.line + 1}`;
     await vscode.commands.executeCommand('tiermux.chat.focus');
-    this.post({ type: 'attachmentAdded', attachment: { kind: 'file', name, text: code } });
+    this.post({ type: 'insertMention', text: mention });
   }
 
   /**

@@ -860,7 +860,14 @@ const STATE_LABEL = {
         } else {
           const span = document.createElement('span');
           span.className = 'msg-att-chip';
-          span.textContent = `${iconForKind(a.kind)} ${a.name || ''}`;
+          const ic = document.createElement('span');
+          ic.className = 'msg-att-chip-icon';
+          ic.innerHTML = iconForKind(a.kind);
+          const label = document.createElement('span');
+          label.className = 'msg-att-chip-name';
+          label.textContent = a.name || '';
+          span.appendChild(ic);
+          span.appendChild(label);
           atts.appendChild(span);
         }
       }
@@ -3930,6 +3937,20 @@ const STATE_LABEL = {
         // via postCheckpoints() when you switch to them.
         if (!msg.sessionId || msg.sessionId === viewedSessionId) renderChangedBar(msg);
         break;
+      case 'insertMention': {
+        const caret = input.selectionStart ?? input.value.length;
+        const before = input.value.slice(0, caret);
+        const after = input.value.slice(caret);
+        const sep = before && !/\s$/.test(before) ? ' ' : '';
+        const insert = `${sep}@${msg.text} `;
+        input.value = before + insert + after;
+        const pos = (before + insert).length;
+        input.setSelectionRange(pos, pos);
+        input.focus();
+        autoGrow();
+        updateSendEnabled();
+        break;
+      }
       case 'attachmentAdded': {
         const att = msg.attachment;
         if (att && att.kind === 'image' && att.dataUrl) {

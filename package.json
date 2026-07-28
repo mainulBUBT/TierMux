@@ -329,9 +329,9 @@
       },
       {
         "command": "tiermux.addSelectionToChat",
-        "key": "ctrl+l",
-        "mac": "cmd+l",
-        "when": "editorHasSelection"
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
+        "when": "editorHasSelection && editorTextFocus"
       }
     ],
     "configuration": {

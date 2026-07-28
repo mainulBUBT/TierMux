@@ -321,6 +321,7 @@ export type OutMessage =
   | { type: 'selectionRationale'; sessionId: string; requestId: string; taskKind: string; picked?: string; entries: Array<{ model: string; selected: boolean; score: number; capability: number; runtime: number; preference: number; confidence: number; reason: string; skip?: string }> }
   | { type: 'keyRotated'; sessionId: string; requestId: string; platform: string; platformName: string; keyIndex: number; keyTotal: number }
   | { type: 'attachmentAdded'; attachment: Attachment }
+  | { type: 'insertMention'; text: string }
   | { type: 'mentionResults'; queryId: number; items: MentionItem[] }
   | { type: 'grepResults'; queryId: number; items: Array<{ path: string; lineNumber: number; lineText: string }> }
   | { type: 'mcpRegistryResults'; queryId: number; items: McpRegistryItem[]; error?: string }

@@ -69,22 +69,42 @@ export async function resolveMentions(text: string): Promise<string> {
   return blocks.join('\n\n');
 }
 
-async function resolveOne(target: string): Promise<string | undefined> {
+/** Matches an optional trailing line-range suffix, e.g. `#1-145`, `#L1-145`, `#42`, `#L42`. */
+const LINE_RANGE_RE = /#L?(\d+)(?:-L?(\d+))?$/;
 
-  const files = await vscode.workspace.findFiles(`**/${target}`, '**/node_modules/**', 1);
+function splitLineRange(target: string): { path: string; startLine?: number; endLine?: number } {
+  const m = LINE_RANGE_RE.exec(target);
+  if (!m) return { path: target };
+  const startLine = parseInt(m[1], 10);
+  const endLine = m[2] ? parseInt(m[2], 10) : startLine;
+  return { path: target.slice(0, m.index), startLine, endLine };
+}
+
+async function resolveOne(target: string): Promise<string | undefined> {
+  const { path, startLine, endLine } = splitLineRange(target);
+
+  const files = await vscode.workspace.findFiles(`**/${path}`, '**/node_modules/**', 1);
   if (files.length > 0) {
     try {
       const bytes = await vscode.workspace.fs.readFile(files[0]);
-      const text = new TextDecoder().decode(bytes.slice(0, MAX_MENTION_BYTES));
-      return `Context — file \`${vscode.workspace.asRelativePath(files[0])}\`:\n\`\`\`\n${text}\n\`\`\``;
+      let text = new TextDecoder().decode(bytes.slice(0, MAX_MENTION_BYTES));
+      const rel = vscode.workspace.asRelativePath(files[0]);
+      if (startLine !== undefined) {
+        const lines = text.split('\n');
+        const from = Math.max(1, startLine);
+        const to = Math.min(lines.length, endLine ?? startLine);
+        text = lines.slice(from - 1, to).join('\n');
+        return `Context — file \`${rel}\` (lines ${from}-${to}):\n\`\`\`\n${text}\n\`\`\``;
+      }
+      return `Context — file \`${rel}\`:\n\`\`\`\n${text}\n\`\`\``;
     } catch { /* fall through */ }
   }
 
-  const folder = await resolveFolder(target);
+  const folder = await resolveFolder(path);
   if (folder) return folder;
 
   const symbols = (await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
-    'vscode.executeWorkspaceSymbolProvider', target,
+    'vscode.executeWorkspaceSymbolProvider', path,
   )) ?? [];
   if (symbols.length > 0) {
     const s = symbols[0];
