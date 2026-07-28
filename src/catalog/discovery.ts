@@ -160,6 +160,14 @@ const clampRank = (n: number): number => Math.max(1, Math.min(5, Math.round(n)))
  * nothing but an id. Deliberately conservative — an unrecognizable name lands on the
  * neutral middle rank (3) rather than pretending to a confidence we don't have.
  */
+/**
+ * Well-known open/free vision-model families whose id doesn't contain "vision", "vl",
+ * "multimodal", or "omni" — the generic keyword check below misses these, which was
+ * silently routing image turns away from free models that can actually see them.
+ */
+const KNOWN_VISION_FAMILIES =
+  /llava|moondream|pixtral|cogvlm|cogagent|minicpm-v|idefics|fuyu|florence-?2|glm-?4\.?\d*v\b/;
+
 export function deriveMetadata(d: DiscoveredModel): Pick<
   CatalogModel,
   'intelligenceRank' | 'speedRank' | 'sizeLabel' | 'supportsTools' | 'supportsVision' | 'supportsReasoning' | 'tags'
@@ -196,7 +204,7 @@ export function deriveMetadata(d: DiscoveredModel): Pick<
     // markToolIncompatible on the first bad_request-with-tools, whereas defaulting to
     // false would silently exclude the model from agent mode forever with no way to learn.
     supportsTools: d.supportsTools ?? true,
-    supportsVision: d.supportsVision ?? /vision|vl\b|multimodal|omni/.test(id),
+    supportsVision: d.supportsVision ?? (/vision|vl\b|multimodal|omni/.test(id) || KNOWN_VISION_FAMILIES.test(id)),
     supportsReasoning: d.supportsReasoning ?? /\br1\b|reason|think|\bo[1-4]\b/.test(id),
     tags: tags.length ? tags : undefined,
   };

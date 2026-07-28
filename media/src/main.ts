@@ -13,7 +13,7 @@ import type { RxMessage } from './bridge';
 import { $, escapeHtml, showToast } from './dom';
 import { renderMarkdown } from './markdown';
 import { buildReasoningBlock, updateReasoningBlock, buildToolCard, toolLabel, activityFor, STATE_ICON } from './ui/tool/ToolCard';
-import { createPlan, createCheckpoint, planDataFromStepText, planDataFromTodos } from './ui/components';
+import { createPlan, planDataFromStepText, planDataFromTodos } from './ui/components';
 import { handleAssistantStart } from './handlers/assistantStart';
 import { handleAgentStep } from './handlers/agentStep';
 import { handleToolStatus } from './handlers/toolStatus';
@@ -421,6 +421,21 @@ const STATE_LABEL = {
     needsApproval: 'Needs your approval', finished: 'Finished',
   };
 
+  /** Status indicator for a session tab/history row. `running` gets the real bordered ring
+   *  spinner (`.tm-spinner-ring`, already used elsewhere for loading state) instead of the
+   *  `⟳` glyph — CSS-rotating a reload-arrow character reads as a stuck/broken reload button,
+   *  not a loading spinner. Every other status keeps its static glyph. */
+  function statusDotEl(className, status) {
+    const el = document.createElement('span');
+    if (status === 'running') {
+      el.className = className + ' tm-spinner-ring';
+    } else {
+      el.className = className;
+      el.textContent = STATUS_DOT[status || 'idle'] || '●';
+    }
+    return el;
+  }
+
   let historyOpen = false;
   let historyQuery = '';
   // Tracks which history session row is expanded. Declared explicitly because
@@ -507,9 +522,7 @@ const STATE_LABEL = {
       item.tabIndex = 0;
       const left = document.createElement('div');
       left.className = 'history-item-left';
-      const dot = document.createElement('span');
-      dot.className = 'history-dot';
-      dot.textContent = STATUS_DOT[s.status || 'idle'] || '●';
+      const dot = statusDotEl('history-dot', s.status);
       dot.title = STATUS_TITLE[s.status || 'idle'] || '';
       const lbl = document.createElement('span');
       lbl.className = 'history-label';
@@ -561,9 +574,7 @@ const STATE_LABEL = {
       tab.className = 'session-tab' + (s.id === viewedSessionId ? ' active' : '') + (' status-' + (s.status || 'idle'));
       tab.dataset.sessionId = s.id;
       tab.title = s.title || 'New session';
-      const dot = document.createElement('span');
-      dot.className = 'session-tab-dot';
-      dot.textContent = STATUS_DOT[s.status || 'idle'] || '●';
+      const dot = statusDotEl('session-tab-dot', s.status);
       const lbl = document.createElement('span');
       lbl.className = 'session-tab-label';
       lbl.textContent = s.title || 'New chat';
@@ -3911,10 +3922,6 @@ const STATE_LABEL = {
         break;
       case 'checkpoint':
         renderCheckpoint(msg);
-        // AI Elements Checkpoint bar (ask mode) — surfaces this turn's changed files as a
-        // restorable snapshot via the new component, alongside the legacy per-file diff list.
-        // `renderCheckpoint` (above) remains the detailed file-by-file list for every mode.
-        if (currentMode === 'ask' && msg.files && msg.files.length) renderCheckpointBar(msg);
         break;
       case 'changedFiles':
         // The pinned "changed files" bar lives in the composer, outside any pane — it only
@@ -4060,43 +4067,6 @@ const STATE_LABEL = {
     });
     head.appendChild(list);
     bar.appendChild(head);
-  }
-
-  // AI Elements Checkpoint component — renders this turn's changed files as a restorable
-  // snapshot strip (ask mode). One snapshot per `checkpoint` message, accumulated on the
-  // target so a multi-checkpoint turn shows a short history. Restore opens the diff of the
-  // snapshot's first changed file; Delete drops it from the list.
-  function renderCheckpointBar(msg) {
-    const t = ensureTarget(msg.requestId);
-    if (!t.el) return;
-    const files = (msg.files || []).filter(Boolean);
-    if (!files.length) return;
-    if (!t.ckptSnapshots) t.ckptSnapshots = [];
-    const existing = t.ckptSnapshots.find((c) => c.id === msg.id);
-    const label = `${files.length} file${files.length > 1 ? 's' : ''} changed`;
-    const snap = { id: msg.id, name: label, description: files.map((f) => f.rel).join(', ').slice(0, 160), timestamp: Date.now(), state: msg };
-    if (existing) Object.assign(existing, snap); else t.ckptSnapshots.push(snap);
-    const hostSel = ':scope > .tm-checkpoint-host';
-    let host = t.el.querySelector(hostSel);
-    const render = () => createCheckpoint({
-      checkpoints: t.ckptSnapshots,
-      activeCheckpointId: t.ckptSnapshots.length ? t.ckptSnapshots[t.ckptSnapshots.length - 1].id : undefined,
-      onRestore: (id) => {
-        const s2 = t.ckptSnapshots.find((c) => c.id === id);
-        const f2 = s2 && s2.state && s2.state.files && s2.state.files[0];
-        if (f2) send({ type: 'diffCheckpointFile', id: s2.state.id, uri: f2.uri });
-      },
-      onDelete: (id) => {
-        t.ckptSnapshots = (t.ckptSnapshots || []).filter((c) => c.id !== id);
-        if (!t.ckptSnapshots.length) { if (host) host.remove(); host = undefined; return; }
-        const el = render();
-        el.classList.add('tm-checkpoint-host');
-        if (host) host.replaceWith(el); else { host = el; t.el.appendChild(el); }
-      },
-    });
-    const el = render();
-    el.classList.add('tm-checkpoint-host');
-    if (host) host.replaceWith(el); else { host = el; t.el.appendChild(el); }
   }
 
   // Shared interactive question card — the single visual component behind BOTH the

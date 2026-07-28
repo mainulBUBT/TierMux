@@ -54,7 +54,8 @@ body {
   box-shadow: inset 0 -2px var(--vscode-focusBorder);
 }
 .session-tab-dot { flex: 0 0 auto; font-size: 8px; line-height: 1; opacity: .8; }
-.session-tab.status-running .session-tab-dot { color: var(--vscode-charts-blue, #3794ff); animation: tabspin 1s linear infinite; }
+/* Running status now renders as `.tm-spinner-ring` (a real bordered ring), not this glyph —
+   see statusDotEl() in main.ts. No color/animation override needed here for that state. */
 .session-tab.status-queued .session-tab-dot { color: var(--vscode-charts-yellow, #e2c08d); }
 .session-tab.status-needsApproval .session-tab-dot { color: var(--vscode-charts-orange, #d18616); font-weight: 700; }
 .session-tab.status-finished .session-tab-dot { color: var(--vscode-charts-green, #89d185); }
@@ -1119,7 +1120,8 @@ body.vscode-light .empty-recent-card { background: var(--vscode-editorWidget-bac
 }
 .history-ts { flex: 0 0 auto; font-size: 10px; opacity: .5; white-space: nowrap; }
 .history-dot { flex: 0 0 auto; font-size: 9px; line-height: 1; opacity: .8; }
-.history-item.status-running .history-dot { color: var(--vscode-charts-blue, #3794ff); animation: tabspin 1s linear infinite; }
+/* Running status now renders as `.tm-spinner-ring` (a real bordered ring), not this glyph —
+   see statusDotEl() in main.ts. No color/animation override needed here for that state. */
 .history-item.status-queued .history-dot { color: var(--vscode-charts-yellow, #e2c08d); }
 .history-item.status-needsApproval .history-dot { color: var(--vscode-charts-orange, #d18616); font-weight: 700; }
 .history-item.status-finished .history-dot { color: var(--vscode-charts-green, #89d185); }
@@ -1132,7 +1134,6 @@ body.vscode-light .empty-recent-card { background: var(--vscode-editorWidget-bac
 }
 .history-item:hover .history-delete-btn { opacity: .5; }
 .history-delete-btn:hover { opacity: 1 !important; color: var(--vscode-errorForeground); background: var(--vscode-toolbar-hoverBackground); }
-@keyframes tabspin { to { transform: rotate(360deg); } }
 
 
 
