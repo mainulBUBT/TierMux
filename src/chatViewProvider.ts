@@ -876,7 +876,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
     }
-    this.stopRun(id, false); // cancel only this session's run (no rebuild — we switch away next)
+    this.stopRun(id); // cancel only this session's run — it's about to be deleted
     this.sessions.delete(id);
     this.statusOf.delete(id);
     void this.deps.workspaceState.update(SESSIONS_KEY, this.loadSessions().filter((s) => s.id !== id));
@@ -1993,7 +1993,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const choice = await vscode.window.showWarningMessage(`Revert to this point? ${detail}`, { modal: true }, 'Revert');
     if (choice !== 'Revert') return;
 
-    this.stopRun(s.id, false);
+    this.stopRun(s.id);
 
     if (firstCpId) await s.checkpoints.restore(firstCpId);
     s.checkpoints.dropByRequestIds(removedIds);
@@ -2183,9 +2183,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return s.activeRequestId === requestId;
   }
 
-  /** Cancel a session's in-flight run and detach it so its output can't land anywhere.
-   *  `rebuild=false` skips the thread rebuild (used by deleteSession, which switches away right after). */
-  private stopRun(sessionId: string, rebuild = true): void {
+  /** Cancel a session's in-flight run and detach it so its output can't land anywhere. Does NOT
+   *  touch the webview's DOM: the abandoned turn's streamed text/tool cards/reasoning stay exactly
+   *  as shown — cancelling only means no MORE output arrives, not that what already rendered should
+   *  vanish. (It previously forced a `switchSession` rebuild here, which wiped the pane and replayed
+   *  `s.transcript` — but a cancelled turn is never committed to `s.transcript` (see `isActiveRun`),
+   *  so the rebuild replayed a transcript missing the very turn just abandoned: all partial progress
+   *  visibly disappeared. Callers that DO need a rebuild — e.g. "Revert to here" — send their own
+   *  `switchSession` after truncating the transcript; see revertTo below.) */
+  private stopRun(sessionId: string): void {
     const s = this.sessions.get(sessionId);
     if (!s) return;
 
@@ -2212,9 +2218,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: 'planExecuting', sessionId, requestId: executingRequestId, executing: false });
     }
 
-    if (rebuild && this.viewedSessionId === sessionId) {
-      this.post({ type: 'switchSession', sessionId, messages: s.transcript });
-    }
     this.post({ type: 'busy', sessionId, busy: false });
   }
 

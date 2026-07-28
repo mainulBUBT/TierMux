@@ -189,7 +189,16 @@ const ASK_MODE_TAIL =
   + 'redirect, not a decided outcome; if they want it turned into concrete steps, that belongs in '
   + 'Plan mode.\n\n'
   + 'Either way: if the question needs an edit or a command run (making a change, running a '
-  + "build/test), say so and suggest switching to Agent mode.";
+  + "build/test), say so and suggest switching to Agent mode.\n\n"
+  + 'Always prefer your native tool-calling. But if you cannot emit a native tool call, emit it as '
+  + 'text in EXACTLY this format — a real call will run from it:\n'
+  + '<function=TOOL_NAME>{"arg": "value"}</function>\n'
+  + 'Examples: <function=readFile>{"path": "routes/web.php"}</function> · '
+  + '<function=grep>{"pattern": "Laravel", "path": "resources/views"}</function>\n'
+  + 'Rules for the text form: output the tag on its own, NOT inside backticks or a code fence; use '
+  + 'the real tool name and its real arguments (JSON); emit ONE call, then STOP and wait for the '
+  + 'result before deciding the next step. Do not invent tool names or a made-up tag dialect — use '
+  + 'only the tools you were given, in this exact format.';
 
 function modeTail(mode: AgentMode): string {
   if (mode === 'plan') return PLAN_MODE_TAIL;

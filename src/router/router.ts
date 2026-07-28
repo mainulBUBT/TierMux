@@ -233,7 +233,26 @@ export class AllModelsFailedError extends Error {
         default: return `${who} failed (${f.reason}). Try again, or set the model to Auto.${upstream}`;
       }
     }
-    return `All ${failures.length} model(s) failed: ` + failures.map((f) => `${f.platform}/${f.model} (${f.reason})`).join(', ');
+    // Multi-failure case: the raw `platform/model (reason)` dump is diagnostic noise to a user who
+    // just wants their message to send — nobody reading chat needs to know "poolside/laguna-m.1:free
+    // (rate_limited)" verbatim. Summarize by reason category instead; the full per-model detail still
+    // reaches the log via each candidate's onProviderAttempt callback, so nothing is lost for debugging.
+    const counts = new Map<string, number>();
+    for (const f of failures) counts.set(f.reason, (counts.get(f.reason) ?? 0) + 1);
+    const label = (reason: string, n: number): string => {
+      switch (reason) {
+        case 'rate_limited': return `${n} rate-limited`;
+        case 'auth': return `${n} with a rejected API key`;
+        case 'no_api_key': return `${n} missing an API key`;
+        case 'timeout': return `${n} timed out`;
+        case 'paid_only': return `${n} paid-only/out of quota`;
+        case 'not_found': return `${n} unavailable`;
+        default: return `${n} failed`;
+      }
+    };
+    const parts = [...counts.entries()].map(([reason, n]) => label(reason, n));
+    return `All ${failures.length} configured models are unavailable right now (${parts.join(', ')}). `
+      + 'Try again shortly, or check keys/models in "Manage Models & Keys".';
   }
 }
 
@@ -355,7 +374,10 @@ export class Router {
     const chosen = vscodeConfigString('tiermux.utilityModel', 'auto');
     if (chosen && chosen !== 'auto' && (await this.isReady(chosen))) return chosen;
 
-    const keyless = await pick(['ovh::gpt-oss-120b', 'ovh::Meta-Llama-3_3-70B-Instruct', 'pollinations::openai-fast']);
+    const keyless = await pick([
+      'ovh::gpt-oss-120b', 'ovh::Meta-Llama-3_3-70B-Instruct', 'pollinations::openai-fast',
+      'opencode::deepseek-v4-flash-free', 'kilo::kilo-auto/free',
+    ]);
     if (keyless) return keyless;
 
     const keyed = await pick([
@@ -979,7 +1001,12 @@ export class Router {
                       // streams live; from the opener onward is held for the stream-end rescue.
                       const braceMatch = /(?:^|\n)[ \t]*\{/.exec(clean);
                       const braceIdx = braceMatch ? braceMatch.index + braceMatch[0].lastIndexOf('{') : -1;
-                      const tagMatch = /<tool_call>|<function=/.exec(clean);
+                      // ｜+DSML｜+ matches DeepSeek's `<｜DSML｜tool_calls>`/`<｜DSML｜invoke ...>`
+                      // markup — the fullwidth pipe (｜, U+FF5C) is sometimes doubled by the model
+                      // (｜｜DSML｜｜), so `+` tolerates both. Without this opener, DSML text streamed
+                      // straight through live (see toolArgs.ts Shape 5, which rescues it only AFTER
+                      // the stream ends — too late to un-render what was already shown).
+                      const tagMatch = /<tool_call>|<function=|<｜+DSML｜+(?:tool_calls|invoke)/.exec(clean);
                       const tagIdx = tagMatch ? tagMatch.index : -1;
                       let idx = -1;
                       let kind: 'brace' | 'tag' | null = null;

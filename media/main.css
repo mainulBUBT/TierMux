@@ -923,7 +923,7 @@ button.compact-divider { background: none; font: inherit; color: inherit; displa
 .compact-divider.with-icon { display: flex; align-items: center; justify-content: center; gap: 6px; }
 .compact-divider.with-icon svg { flex: 0 0 auto; }
 .send-btn {
-  background: var(--vscode-progressBar-background, #0a84ff); color: #fff;
+  background: #0a84ff; color: #fff;
   border: none; cursor: pointer; border-radius: 50%; width: 34px; height: 34px; flex: 0 0 auto;
   display: inline-flex; align-items: center; justify-content: center; font-size: 14px;
   box-shadow: 0 1px 6px rgba(10, 132, 255, .4);
@@ -933,7 +933,7 @@ button.compact-divider { background: none; font: inherit; color: inherit; displa
 .send-btn:active { transform: scale(.96); }
 .send-btn.stopping { background: var(--vscode-errorForeground, #c33); color: #fff; box-shadow: none; }
 .send-btn:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
-.send-btn:disabled:hover { background: var(--vscode-progressBar-background, #0a84ff); }
+.send-btn:disabled:hover { background: #0a84ff; }
 button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; cursor: pointer; border-radius: 4px; padding: 4px 10px; }
 button.primary:hover { background: var(--vscode-button-hoverBackground); }
 button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: none; cursor: pointer; border-radius: 4px; padding: 4px 10px; }

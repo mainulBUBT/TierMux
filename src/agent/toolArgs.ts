@@ -252,6 +252,36 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     }
   }
 
+  if (calls.length === 0) {
+    // Shape 5: DeepSeek V3.2/V4's "DSML" tool-call markup, emitted as plain content when the
+    // provider doesn't natively parse the ｜DSML｜ special token:
+    //   <｜DSML｜tool_calls><｜DSML｜invoke name="readFile">
+    //   <｜DSML｜parameter name="path" string="true">README.md</｜DSML｜parameter>
+    //   </｜DSML｜invoke></｜DSML｜tool_calls>
+    // The fullwidth vertical bar (｜, U+FF5C) around DSML is sometimes doubled by the model
+    // (｜｜DSML｜｜) — match one-or-more so both variants parse. `string="true"` on a <parameter>
+    // means "treat as a literal string" (DSML has no other type marker), so it skips JSON coercion.
+    const invokeTag = /<｜+DSML｜+invoke\s+name="([a-zA-Z0-9_\-]+)"[^>]*>/g;
+    while ((m = invokeTag.exec(text)) !== null) {
+      const name = m[1];
+      if (!toolNames.has(name)) { invokeTag.lastIndex = m.index + m[0].length; continue; }
+      const closeRe = /<\/｜+DSML｜+invoke>/g;
+      closeRe.lastIndex = m.index + m[0].length;
+      const close = closeRe.exec(text);
+      const bodyEnd = close ? close.index : text.length;
+      const body = text.slice(m.index + m[0].length, bodyEnd);
+      const args: Record<string, unknown> = {};
+      const paramTag = /<｜+DSML｜+parameter\s+name="([a-zA-Z0-9_\-]+)"([^>]*)>([\s\S]*?)(?:<\/｜+DSML｜+parameter>|$)/g;
+      let p: RegExpExecArray | null;
+      while ((p = paramTag.exec(body)) !== null) {
+        const [, pname, attrs, raw] = p;
+        args[pname] = /string\s*=\s*"true"/.test(attrs) ? raw.trim() : coerceInlineArgValue(raw);
+      }
+      calls.push({ name, arguments: JSON.stringify(args) });
+      invokeTag.lastIndex = close ? close.index + close[0].length : text.length;
+    }
+  }
+
   return { detected: calls.length > 0, calls };
 }
 

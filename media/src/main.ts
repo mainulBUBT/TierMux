@@ -3423,8 +3423,10 @@ const STATE_LABEL = {
         // Exception: the host also pushes switchSession to the CURRENTLY viewed session (never
         // requested by the webview itself, see the `sid !== viewedSessionId` guards on send)
         // to force a clean rebuild after truncating that session's transcript in place — e.g.
-        // "Revert to here" or stopRun's abandoned-turn cleanup. That case must wipe the pane
-        // before replaying, or the stale (now-removed) messages keep showing.
+        // "Revert to here". That case must wipe the pane before replaying, or the stale
+        // (now-removed) messages keep showing. Plain Stop/cancel does NOT truncate the transcript
+        // and no longer sends switchSession at all — the abandoned turn's live content stays
+        // exactly as rendered (see stopRun in chatViewProvider.ts).
         const rebuildInPlace = msg.sessionId === viewedSessionId;
         saveComposer(viewedSessionId); // stash the leaving session's draft/settings
         viewedSessionId = msg.sessionId;
@@ -4086,6 +4088,7 @@ const STATE_LABEL = {
       },
       onDelete: (id) => {
         t.ckptSnapshots = (t.ckptSnapshots || []).filter((c) => c.id !== id);
+        if (!t.ckptSnapshots.length) { if (host) host.remove(); host = undefined; return; }
         const el = render();
         el.classList.add('tm-checkpoint-host');
         if (host) host.replaceWith(el); else { host = el; t.el.appendChild(el); }
