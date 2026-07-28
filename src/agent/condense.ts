@@ -61,7 +61,16 @@ export async function condenseHistory(
   // which used to surface as "Compaction produced no summary" with no recourse but to try again by
   // hand. Mirrors the same weak-answer-retry pattern loop.ts already uses for the main turn.
   const model = await router.pickUtilityModel();
-  let result = await router.route(summaryRequest, { temperature: 0.2, max_tokens: 1024, model, taskKind: 'chat' });
+  // Same forced-model caveat as generateHandoff below: a bad/rejected key on the picked utility
+  // model throws (router.ts never fails over on a forced pick), so catch it and retry unforced.
+  let result;
+  try {
+    result = await router.route(summaryRequest, { temperature: 0.2, max_tokens: 1024, model, taskKind: 'chat' });
+  } catch (e) {
+    if (!model) throw e;
+    diagLog('condense.retry', `${model} failed (${e instanceof Error ? e.message : String(e)}) — retrying with a different model`);
+    result = await router.route(summaryRequest, { temperature: 0.2, max_tokens: 1024, taskKind: 'chat', exclude: [model] });
+  }
   let summary = contentToString(result.response.choices[0]?.message.content).trim();
   if (!summary) {
     const excludeKey = `${result.platform}::${result.model}`;
@@ -99,7 +108,19 @@ export async function generateHandoff(history: ChatMessage[], router: Router): P
   ];
 
   const model = await router.pickUtilityModel();
-  let result = await router.route(request, { temperature: 0.2, max_tokens: 1024, model, taskKind: 'chat' });
+  // The picked utility model can be forced (an explicit `tiermux.utilityModel` setting, not
+  // "auto") — router.ts never fails over on a forced pick, so a rejected/expired key on THAT
+  // model throws straight out of route() instead of trying another already-configured model.
+  // Catch it here and retry unforced (excluding the failed model) exactly like the empty-note
+  // case below, so a bad key on one model doesn't kill the whole handoff.
+  let result;
+  try {
+    result = await router.route(request, { temperature: 0.2, max_tokens: 1024, model, taskKind: 'chat' });
+  } catch (e) {
+    if (!model) throw e;
+    diagLog('handoff.retry', `${model} failed (${e instanceof Error ? e.message : String(e)}) — retrying with a different model`);
+    result = await router.route(request, { temperature: 0.2, max_tokens: 1024, taskKind: 'chat', exclude: [model] });
+  }
   let note = contentToString(result.response.choices[0]?.message.content).trim();
   if (!note) {
     const excludeKey = `${result.platform}::${result.model}`;

@@ -11,7 +11,7 @@ import type { Router } from '../../router/router';
 import type { ChatMessage, ChatContentBlock } from '../../shared/types';
 import type { AgentOpts, AgentResult } from '../agent';
 import { classifyTask, attachmentKindsFromContent, type TaskKind } from '../routing';
-import { assessAnswerQuality } from '../answerQuality';
+import { assessAnswerQuality, TASK_WORD_FLOOR } from '../answerQuality';
 import { judgeFulfillment, JUDGEABLE_TASK_KINDS } from '../fulfillment';
 import { contentToString } from '../content';
 import { buildSystemPrompt } from '../promptBuilder';
@@ -736,6 +736,11 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     // so a capable model finishes the work — the non-static check the keyword patterns can't do.
     // Skipped when heuristics already flagged it (no point judging a known-bad answer) and for
     // conversational task kinds (chat/ask/vision) where a follow-up question is legitimate.
+    // Also skipped for a CLEAN answer (no quality signal at all and comfortably past the word
+    // floor) — spending a full extra top-tier model call to double-check an answer the cheap
+    // heuristics found nothing wrong with is not worth the cost/latency on every single reply.
+    // The judge earns its keep on the borderline cases: some signal fired but not enough to
+    // escalate alone, or the answer is short enough that "plausible but incomplete" is plausible.
     // Deterministic: a create/edit task (make/build/write/fix/… in the request) that the model
     // answered with a code block in chat but NO tool call — it showed the code instead of writing
     // the file, so nothing was actually built. Escalate directly to a model that will use the
@@ -748,7 +753,10 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       escalateWhy = 'showed-code-no-tool';
       router.noteToolSoftFailure(first.platform, first.model);
     }
-    if (!shouldEscalate && JUDGEABLE_TASK_KINDS.has(taskKind) && first.text.trim()) {
+    const judgeFloor = (TASK_WORD_FLOOR[taskKind as Exclude<typeof taskKind, 'trivial'>] ?? 12) * 1.5;
+    const judgeWords = first.text.trim().split(/\s+/).filter(Boolean).length;
+    const borderline = quality.score > 0 || judgeWords < judgeFloor;
+    if (!shouldEscalate && borderline && JUDGEABLE_TASK_KINDS.has(taskKind) && first.text.trim()) {
       const excludeKey = `${first.platform}::${first.model}`;
       const judge = await judgeFulfillment(router, lastUserText, first.text, taskKind, excludeKey);
       if (!judge.fulfilled) {
