@@ -31,6 +31,14 @@ export interface AgentResult {
    *  chatViewProvider uses this to HALT — auto-continuing a budget/stuck stop just repeats the
    *  waste. Undefined = the model concluded on its own terms (may still have pending todos). */
   stopReason?: 'budget' | 'stuck';
+  /** Set when the turn ended via the genuine-error catch path (not abort) — `onError` already
+   *  surfaced a message to the UI. Callers must NOT also render this as a normal completed
+   *  turn (empty text + a real footer reads as a phantom "successful" blank reply). */
+  failed?: boolean;
+  /** The failure message when `failed` is true — same text already sent to `onError`, exposed
+   *  here so the caller can render it as a proper reply bubble instead of leaving the user with
+   *  only the thin error notice and no visible response in the conversation. */
+  errorMessage?: string;
 }
 
 /** Smart Auto scoring rationale for a route() call this run triggered — "why this model?".

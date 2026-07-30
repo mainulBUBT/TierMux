@@ -324,6 +324,18 @@ function turnPlatformLabel(pinnedModel: string | undefined, reported: { runtimeN
 }
 
 /**
+ * Bare modelId for a turn's footer. When the user pinned a specific model (not Auto), strip the
+ * `platform::` prefix so the footer's `${platform}/${model}` never double-prefixes (e.g.
+ * "poolside/poolside::poolside/laguna-xs-2.1"). Falls back to whatever the run reported when
+ * Auto picked the model itself.
+ */
+function turnModelLabel(pinnedModel: string | undefined, reportedModel: string | undefined): string | undefined {
+  return (pinnedModel && pinnedModel !== 'auto')
+    ? pinnedModel.includes('::') ? pinnedModel.split('::').slice(1).join('::') : pinnedModel
+    : reportedModel;
+}
+
+/**
  * If the agent's response ends with a question or an invitation for user input, extract the
  * last paragraph as the prompt text. Covers both `?`-terminated questions and common
  * conversational forms that don't end with a question mark (e.g. "Let me know which step",
@@ -1871,6 +1883,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
 
+      console.error(`[tiermux][TRACE2] pre-failed-check: result.failed=${result.failed} result.text.length=${result.text.length} result.errorMessage="${result.errorMessage ?? '<undefined>'}" isActiveRun=${this.isActiveRun(s, m.requestId)}`);
+      // The turn genuinely failed (router/provider error with no salvageable text or tool
+      // calls) — onError already posted a thin error notice from inside runTurn, but that's
+      // easy to miss in a chat UI. Show a real reply bubble with the failure reason instead —
+      // honest text, no fake usage/footer (there was no completion to report stats for) — and
+      // don't persist it into the model-context history (nothing happened for the model to
+      // remember) or pop the trailing user turn so a retry isn't confused by a dangling one.
+      if (result.failed) {
+        if (s.history[s.history.length - 1]?.role === 'user') s.history.pop();
+        const errorText = result.errorMessage || 'I wasn\'t able to produce a response. Try again, or switch to a different model.';
+        this.pushAssistantTurn(s, m.requestId, { ...result, text: errorText }, sentAt);
+        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: errorText, platform: turnPlatformLabel(s.model, result, this.deps), model: turnModelLabel(s.model, result.model) });
+        return;
+      }
+
       const after = this.deps.usage.get();
       const usage = {
         promptTokens: after.promptTokens - before.promptTokens,
@@ -1891,13 +1918,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      // s.model (when pinned) is the picker's composite `platform::modelId` selector
-      // value — strip the platform prefix so `model` is always a bare modelId, matching
-      // result.model's shape. Otherwise the webview's `${platform}/${model}` footer
-      // double-prefixes (e.g. "poolside/poolside::poolside/laguna-xs-2.1").
-      const pinned = (s.model && s.model !== 'auto')
-        ? s.model.includes('::') ? s.model.split('::').slice(1).join('::') : s.model
-        : result.model;
+      const pinned = turnModelLabel(s.model, result.model);
       const hasQuestions = !!(agentClar.questions && agentClar.questions.length);
 
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: pinned, paused: result.paused, noFooter: hasQuestions });
@@ -2484,6 +2505,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const cbk4 = this.agentCallbacks(s, m.requestId, 'agent');
       const result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk4, s.model), {});
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
+      // See the `result.failed` guard in the main send handler — show a real reply bubble with
+      // the failure reason instead of a phantom blank "successful" turn.
+      if (result.failed) {
+        if (s.history[s.history.length - 1]?.role === 'user') s.history.pop();
+        const errorText = result.errorMessage || 'I wasn\'t able to produce a response. Try again, or switch to a different model.';
+        this.pushAssistantTurn(s, m.requestId, { ...result, text: errorText }, sentAt);
+        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: errorText, platform: turnPlatformLabel(s.model, result, this.deps), model: turnModelLabel(s.model, result.model) });
+        return;
+      }
       const after = this.deps.usage.get();
       const usage = {
         promptTokens: after.promptTokens - before.promptTokens,

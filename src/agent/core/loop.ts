@@ -317,6 +317,12 @@ interface AttemptResult {
    *  true, retrying with a different model is unsafe (side effects already occurred), so
    *  runTurn must not escalate past this attempt. */
   hadMutatingToolCall: boolean;
+  /** Set when the attempt ended via the genuine-error catch path (not abort) with no text —
+   *  `onError` already surfaced a message to the UI; runTurn must not also report success. */
+  failed?: boolean;
+  /** The failure text, same as what went to `onError` — carried through so the caller can show
+   *  it as a real reply bubble instead of leaving the user with only the thin error notice. */
+  errorMessage?: string;
 }
 
 async function runAttempt(
@@ -488,6 +494,8 @@ async function runAttempt(
     // this step is narration being generated alongside the tool call — route to reasoning. We
     // can only route text emitted BEFORE the tool call retroactively, at finish-step.
     let streamedThisStep = false; // did we already stream this step's text live to onChunk?
+    let streamErrored = false; // an 'error' part arrived on fullStream (routerProvider surfaced a router.route() rejection)
+    let streamErrorMessage = '';
 
     for await (const part of (result as any).fullStream) {
       if (part.type === 'start-step') {
@@ -542,7 +550,9 @@ async function runAttempt(
         const detail = part.error instanceof Error ? part.error.message : String(part.error ?? 'tool error');
         opts.onTool({ toolCallId: part.toolCallId, name: part.toolName, args: part.input, state: 'error', detail });
       } else if (part.type === 'error') {
-        opts.onError(part.error instanceof Error ? part.error.message : String(part.error));
+        streamErrored = true;
+        streamErrorMessage = part.error instanceof Error ? part.error.message : String(part.error);
+        opts.onError(streamErrorMessage);
       }
     }
 
@@ -598,7 +608,11 @@ async function runAttempt(
     // Skip this when paused: a step-cap cutoff mid-task is a normal, resumable state (the caller
     // shows a Resume button), not a failure — stuffing in "couldn't produce a final answer" would
     // directly contradict the paused:true flag returned alongside it.
-    if (!text.trim() && !paused) {
+    // Skip this when streamErrored: `onError` already surfaced the REAL failure reason to the
+    // UI (e.g. AllModelsFailedError) — piling a generic "couldn't produce a response" bubble on
+    // top of that duplicates the message with a less useful one. The `failed` flag on the return
+    // below tells the caller to skip rendering a turn at all, same as the thrown-exception path.
+    if (!text.trim() && !paused && !streamErrored) {
       text = stopReason === 'stuck'
         ? 'Stopped: the model kept repeating the same action without making progress, and couldn\'t summarize its findings either. Try rephrasing the request, or switch models.'
         : hadToolCalls
@@ -643,6 +657,8 @@ async function runAttempt(
       stopReason,
       hadToolCalls,
       hadMutatingToolCall,
+      failed: streamErrored && !text.trim() && !hadToolCalls,
+      errorMessage: streamErrored ? streamErrorMessage : undefined,
     };
   } catch (err) {
     diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · CAUGHT aborted=${!!opts.abortSignal?.aborted} isAbort=${isAbortError(err)} err=${err instanceof Error ? err.message : String(err)}`);
@@ -651,10 +667,12 @@ async function runAttempt(
     // coincides with an aborted signal used to vanish here as an empty, error-less
     // turn — the "0 in / 0 out / 0s" silent-idle symptom on follow-up sends. Surface
     // every other error so the user sees what actually went wrong.
-    if (!(opts.abortSignal?.aborted && isAbortError(err))) {
-      opts.onError(err instanceof Error ? err.message : String(err));
+    const genuineFailure = !(opts.abortSignal?.aborted && isAbortError(err));
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (genuineFailure) {
+      opts.onError(errMsg);
     }
-    return { text, reasoning: reasoning.trim(), platform, model, runtimeName, paused: false, workMessages, hadToolCalls: false, hadMutatingToolCall: false };
+    return { text, reasoning: reasoning.trim(), platform, model, runtimeName, paused: false, workMessages, hadToolCalls: false, hadMutatingToolCall: false, failed: genuineFailure && !text.trim(), errorMessage: genuineFailure ? errMsg : undefined };
   }
 }
 
@@ -814,5 +832,10 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     paused: final.paused,
     stopReason: final.stopReason,
     workMessages: final.workMessages.length ? final.workMessages : undefined,
+    // Only meaningful when nothing downstream salvaged the turn — every retry/escalation path
+    // above already overwrites `final` with a candidate that has real text or tool calls, so a
+    // surviving `failed` here means every attempt genuinely came back empty after an error.
+    failed: final.failed && !final.text.trim() && !final.hadToolCalls,
+    errorMessage: final.errorMessage,
   };
 }

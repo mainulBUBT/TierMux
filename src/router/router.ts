@@ -911,7 +911,12 @@ export class Router {
         // omitted from the request and the provider applies its own (often low) default — a
         // long single-stream answer (e.g. Ask mode) then hits the cap mid-answer. Matches the
         // non-streaming sentinel (`opts.max_tokens ?? 4096`) used for context reservation above.
-        max_tokens: opts.max_tokens ?? 4096,
+        // Reasoning models share this budget with their hidden `<think>` output, so the plain
+        // 4096 floor lets thinking alone exhaust it — the answer gets cut to nothing and
+        // ThinkStripper discards the rest, producing a "successful" but empty turn (seen via
+        // gateways like Kilo that don't set a platform-level defaultMaxTokens the way the
+        // dedicated Poolside platform does). Give reasoning models double the room.
+        max_tokens: opts.max_tokens ?? (model?.supportsReasoning ? 8192 : 4096),
         top_p: opts.top_p,
         tools: opts.tools,
         tool_choice: opts.tool_choice,
@@ -1138,7 +1143,16 @@ export class Router {
 
           const responseContent = response.choices?.[0]?.message?.content;
           const hasToolCalls = !!(response.choices?.[0]?.message?.tool_calls?.length);
-          if (!responseContent && !hasToolCalls) {
+          // A gateway can return content that is non-empty by `!x` (a stray zero-width space,
+          // BOM, or other invisible character survives stripThinkTags's .trim()) but has no
+          // actual answer in it — that used to sail past this guard as a "successful" turn
+          // rendered as a blank reply with 0/0 usage. Strip invisible/zero-width characters
+          // before judging emptiness so those are caught the same as a truly empty string.
+          const INVISIBLE_CHARS = /[​-‏‪-‮⁠﻿؜]/g;
+          const visibleContent = typeof responseContent === 'string'
+            ? responseContent.replace(INVISIBLE_CHARS, '').trim()
+            : responseContent;
+          if (!visibleContent && !hasToolCalls) {
             diagLog('router.empty', `${entry.platform}::${entry.modelId} returned empty content with no tool_calls (http ok) → treating as failure`);            // Was `!forced && ...` — a pinned/forced model has exactly one candidate
             // (candidates() returns a single-entry list, line ~444), so this used to let an
             // empty HTTP-200 response sail through as a "successful" completion whenever a
