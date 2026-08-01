@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { CatalogModel, FallbackEntry, Platform } from '../shared/types';
-import { toCatalogModel, type DiscoveredModel, type ProviderFetch } from './discovery';
+import { toCatalogModel, deriveMetadata, type DiscoveredModel, type ProviderFetch } from './discovery';
 
 const CACHE_KEY = 'tiermux.catalogCache';
 /** Snapshot of the list as it was before the last provider sync (one level of undo). */
@@ -77,7 +77,10 @@ export class Catalog {
     } catch {
       return null; // offline / timeout / bad URL → keep what we have
     }
-    const models = parseCsvCatalog(text);
+    // The catalog URL may serve the TierMux worker JSON (nested providers→models) or a
+    // legacy published-sheet CSV. Try the worker shape first; if it isn't JSON in that
+    // shape, fall back to CSV. Either way an empty/unparseable result is ignored.
+    const models = parseWorkerCatalog(text) ?? parseCsvCatalog(text);
     if (!models.length) return null; // empty or unparseable → ignore
 
     const before = this.all();
@@ -223,6 +226,117 @@ export class Catalog {
     withSpeed.sort((a, b) => a.m.speedRank - b.m.speedRank || a.e.priority - b.e.priority);
     return withSpeed[0]?.e;
   }
+}
+
+/**
+ * Worker tag vocabulary → internal tag vocabulary. The router/scorer read a small set of
+ * canonical tags (`coding`, `planner`, `reasoner`, `general`, `router`); the worker uses
+ * `coder`/`planner`/etc. Map them so the new catalog actually feeds routing. `vision` is
+ * dropped because it duplicates the `supportsVision` capability boolean the router already
+ * gates on; aggregator endpoints whose display name says "Router" get tagged `router` so
+ * vision turns can demote them (they claim vision but delegate to arbitrary backends).
+ */
+const WORKER_TAG_MAP: Record<string, string> = {
+  coder: 'coding', coding: 'coding',
+  planner: 'planner', plan: 'planner',
+  reasoner: 'reasoner', reasoning: 'reasoner',
+  general: 'general', router: 'router',
+};
+
+/** Coerce a worker-JSON cell to a finite number, or null when absent/garbled. */
+function wNum(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : Number(v);
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : null;
+}
+/** Coerce a worker-JSON cell to a boolean with a default for missing values. */
+function wBool(v: unknown, def: boolean): boolean {
+  if (v === true || v === 'true' || v === 1 || v === '1') return true;
+  if (v === false || v === 'false' || v === 0 || v === '0') return false;
+  return def;
+}
+
+/**
+ * Parse the TierMux worker catalog JSON ({ providers: [{ provider_id, enabled, models: [...] }] })
+ * into CatalogModels. The worker schema carries no rank columns, so intelligence/speed are
+ * derived from the model id via deriveMetadata (benchmark table → param proxy); capabilities,
+ * limits, pricing, and tags come straight from the catalog. Provider/model `enabled` is
+ * honored — disabled rows are dropped. Returns null when the body is not this JSON shape so
+ * the caller can fall back to CSV.
+ */
+function parseWorkerCatalog(text: string): CatalogModel[] | null {
+  let body: unknown;
+  try { body = JSON.parse(text); } catch { return null; }
+  if (!body || typeof body !== 'object') return null;
+  const providers = (body as Record<string, unknown>).providers;
+  if (!Array.isArray(providers)) return null;
+
+  const out: CatalogModel[] = [];
+  for (const p of providers) {
+    if (!p || typeof p !== 'object' || !wBool((p as Record<string, unknown>).enabled, true)) continue;
+    const platform = String((p as Record<string, unknown>).provider_id ?? '').trim();
+    if (!platform) continue;
+    const models = (p as Record<string, unknown>).models;
+    if (!Array.isArray(models)) continue;
+    for (const m of models) {
+      if (!m || typeof m !== 'object') continue;
+      const row = m as Record<string, unknown>;
+      if (!wBool(row.enabled, true)) continue;
+      const modelId = String(row.model_id ?? '').trim();
+      if (!modelId) continue;
+
+      const caps = row.capabilities && typeof row.capabilities === 'object' ? row.capabilities as Record<string, unknown> : {};
+      const limits = row.limits && typeof row.limits === 'object' ? row.limits as Record<string, unknown> : {};
+      const pricing = row.pricing && typeof row.pricing === 'object' ? row.pricing as Record<string, unknown> : {};
+      const ctx = wNum(row.context_window);
+
+      // Ranks: the worker has none, so derive from the id. Capabilities are authoritative
+      // from the catalog, so we ignore deriveMetadata's capability guesses and keep our own.
+      const derived = deriveMetadata({
+        platform: platform as Platform,
+        modelId,
+        contextWindow: ctx,
+        supportsTools: undefined,
+        supportsVision: undefined,
+        supportsReasoning: undefined,
+      });
+
+      const rawTags = Array.isArray(row.tags)
+        ? row.tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean)
+        : [];
+      const tags: string[] = [];
+      for (const t of rawTags) {
+        if (t === 'vision' || t === 'free') continue;       // vision = supportsVision bool; free handled below
+        const mapped = WORKER_TAG_MAP[t] ?? t;
+        if (!tags.includes(mapped)) tags.push(mapped);
+      }
+      const dispName = String(row.display_name ?? '').toLowerCase();
+      if (dispName.includes('router') && !tags.includes('router')) tags.push('router');
+      if (wBool(pricing.free, false) && !tags.includes('free')) tags.push('free');
+
+      out.push({
+        platform: platform as Platform,
+        modelId,
+        displayName: String(row.display_name ?? '').trim() || modelId,
+        intelligenceRank: derived.intelligenceRank,
+        speedRank: derived.speedRank,
+        sizeLabel: derived.sizeLabel,
+        released: undefined,
+        contextWindow: ctx,
+        rpmLimit: wNum(limits.rpm),
+        rpdLimit: wNum(limits.rpd),
+        monthlyTokenBudget: '',
+        supportsTools: wBool(caps.tools, true),
+        supportsVision: wBool(caps.vision, false),
+        supportsReasoning: wBool(caps.reasoning, false),
+        ready: true,
+        tags: tags.length ? tags : undefined,
+        insight: undefined,
+        origInputPricePer1M: wNum(pricing.input) ?? undefined,
+        origOutputPricePer1M: wNum(pricing.output) ?? undefined,
+      });
+    }
+  }
+  return out;
 }
 
 /** Minimal RFC-4180-ish CSV parser: handles quoted fields, escaped quotes ("")

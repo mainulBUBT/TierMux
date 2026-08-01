@@ -366,14 +366,16 @@ function capabilityRaw(kind: TaskKind, m: CatalogModelLike): number {
   const tools = m.supportsTools ? 0 : 2; // tool-less penalty
   const coding = (m.tags ?? []).includes('coding') ? 0 : 1;
   const reason = m.supportsReasoning ? 0 : 1;
+  const planner = (m.tags ?? []).includes('planner') ? 0 : 1;   // planner-tagged preferred for plan turns
+  const general = (m.tags ?? []).includes('general') ? 0 : 0.5; // mild preference for non-specialized on chat
   const ctx = m.contextWindow ?? 32768;
   switch (kind) {
-    case 'trivial': return speed;
-    case 'chat': return speed + intel * 0.5 + tools;
+    case 'trivial': return speed + general * 0.5;
+    case 'chat': return speed + intel * 0.5 + tools + general;
     case 'coding': return intel + coding + tools + speed * 0.3;
     case 'debug': return intel + coding + tools + reason + speed * 0.3;
     case 'agent': return intel + tools + coding * 0.5 + speed * 0.3;
-    case 'plan': return intel + reason + speed * 0.4;
+    case 'plan': return intel + reason + planner + speed * 0.4;
     case 'longContext': return -ctx; // bigger window = lower(raw better)
     case 'vision': {
       if (!m.supportsVision) return 1e6; // hard-exclude text-only models from vision turns

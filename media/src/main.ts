@@ -910,7 +910,9 @@ const STATE_LABEL = {
   function assistantFooter(el, model, ts, requestId, rationale) {
     const foot = document.createElement('div'); foot.className = 'msg-foot';
     const left = document.createElement('span'); left.className = 'foot-left';
-    left.textContent = (model ? model + '  ·  ' : '') + fmtTime(ts);
+    // Model name only — the time is already shown on the user bubble of this turn, and
+    // stamping it here too made a sub-minute Q+A read "1:02 AM" twice in one bubble.
+    left.textContent = model ? model : '';
     const acts = document.createElement('span'); acts.className = 'foot-acts';
     acts.appendChild(copyBtn(el));
     acts.appendChild(feedbackBtns(requestId));

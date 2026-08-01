@@ -111,6 +111,12 @@ export function orderForTask(
 
   const hasTag = (m: CatalogModel, tag: string): number => Number((m.tags ?? []).includes(tag));
   const codingTag = (a: CatalogModel, b: CatalogModel): number => hasTag(b, 'coding') - hasTag(a, 'coding');
+  // Tag-vocabulary tiebreaks for the worker catalog: `planner` floats planning models up for
+  // plan turns; `general` lightly prefers non-specialized models for low-stakes chat/trivial
+  // turns (don't spend a coder/reasoner on chit-chat). Both run AFTER capability/speed so a
+  // tagged-but-weak model can't leapfrog a stronger one.
+  const plannerTag = (a: CatalogModel, b: CatalogModel): number => hasTag(b, 'planner') - hasTag(a, 'planner');
+  const generalTag = (a: CatalogModel, b: CatalogModel): number => hasTag(b, 'general') - hasTag(a, 'general');
 
   const vision = (a: CatalogModel, b: CatalogModel): number => Number(!!b.supportsVision) - Number(!!a.supportsVision);
 
@@ -120,12 +126,12 @@ export function orderForTask(
   const directFirst = (a: CatalogModel, b: CatalogModel): number => hasTag(a, 'router') - hasTag(b, 'router');
 
   const cmp: Record<TaskKind, (a: CatalogModel, b: CatalogModel) => number> = {
-    trivial: (a, b) => speed(a, b) || recency(a, b) || intel(a, b),                 // cheapest/fastest; smarts irrelevant
-    chat: (a, b) => tools(a, b) || balanced(a, b) || recency(a, b) || intel(a, b),        // tool-capable, then fast+capable, newest among equals
+    trivial: (a, b) => speed(a, b) || recency(a, b) || generalTag(a, b) || intel(a, b),                 // cheapest/fastest; smarts irrelevant
+    chat: (a, b) => tools(a, b) || balanced(a, b) || recency(a, b) || generalTag(a, b) || intel(a, b),        // tool-capable, then fast+capable, newest among equals
     coding: (a, b) => codingTag(a, b) || tools(a, b) || balanced(a, b) || recency(a, b), // coder-tagged, then tools, fast+capable
     agent: (a, b) => tools(a, b) || codingTag(a, b) || balanced(a, b) || recency(a, b),  // tools, then coder-tagged, fast+capable
     debug: (a, b) => tools(a, b) || codingTag(a, b) || balanced(a, b) || reason(a, b) || recency(a, b),
-    plan: (a, b) => balanced(a, b) || reason(a, b) || tools(a, b) || recency(a, b), // fast+capable first, reasoning breaks ties
+    plan: (a, b) => balanced(a, b) || plannerTag(a, b) || reason(a, b) || tools(a, b) || recency(a, b), // fast+capable first, then planner-tagged, reasoning breaks ties
     longContext: (a, b) => ctx(a, b) || balanced(a, b) || recency(a, b),            // biggest window, then fast+capable, then newest
     vision: (a, b) => vision(a, b) || directFirst(a, b) || tools(a, b) || balanced(a, b) || recency(a, b), // must-see models first, direct beats aggregator, then like agent
   };

@@ -389,6 +389,12 @@
           "default": true,
           "description": "Route Auto requests by learned, per-model runtime metrics (success rate, TTFT vs the model's own baseline, provider health, confidence-weighted) instead of fixed priority. Adapts within minutes when a model or gateway degrades. Turn off to restore priority-only routing."
         },
+        "tiermux.agent.mixturePipeline": {
+          "type": "string",
+          "enum": ["auto", "on", "off"],
+          "default": "auto",
+          "description": "Planner→execute mixture: a strong planner-tagged model decomposes the task into a plan (read-only), then a coder/general model executes it with the plan as guidance. 'auto' runs the planner only when the best enabled executor is weak (intelligence rank ≥3); 'on' always plans for action tasks (agent/coding/debug); 'off' disables. Ignored when a model is pinned."
+        },
         "tiermux.agent.scoringTrace": {
           "type": "boolean",
           "default": false,
@@ -527,8 +533,8 @@
         },
         "tiermux.catalog.url": {
           "type": "string",
-          "default": "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ0gOSMeX5RCp4zJIZxZRSr74Ro8jYFFlsPqMSm3Uw4hLa4-telxqDwvxxdO6JaXAWL3UM9BaQCTUF5/pub?output=csv",
-          "description": "URL to a published CSV (e.g. Google Sheets → File → Share → Publish to web → CSV) that supplies the model catalog. Fetched in the background on startup; the last fetch is cached and used offline, falling back to the built-in catalog. Leave blank to use only the built-in catalog."
+          "default": "https://tiermux.mainulislam3057.workers.dev/",
+          "description": "URL that supplies the model catalog. Accepts the TierMux worker JSON ({ providers: [{ provider_id, enabled, models: [...] }] }) or a legacy published-sheet CSV. Fetched in the background on startup; the last fetch is cached and used offline, falling back to the built-in catalog. Leave blank to use only the built-in catalog."
         },
         "tiermux.mcpRegistryUrl": {
           "type": "string",

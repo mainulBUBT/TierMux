@@ -217,6 +217,22 @@ const SELF_CORRECT_NUDGE =
  *  are deliberately excluded — those legitimately produce text/code without a tool call. */
 const CREATE_TASK_RE = /\b(?:make|create|build|write|add|fix|implement|develop|generate|set ?up|put together|scaffold|generate|produce|write me|build me|create me)\b/i;
 
+/** Intelligence rank at/above which an executor counts as "weak" for the planner→execute
+ *  pipeline — rank 3+ means a mid-tier-or-worse model will serve the turn, so a planner step
+ *  that decomposes the task first is worth its latency. Lower = smarter; 1 is frontier. */
+const WEAK_EXECUTOR_RANK = 3;
+
+/** System prompt for the planner step of the mixture pipeline. The planner is a read-only,
+ *  single-step call routed to a `planner`-tagged model (via taskKind 'plan') that decomposes
+ *  the task into an execution plan WITHOUT calling tools or executing anything — its output is
+ *  appended to the executor's system prompt as guidance. Keeping it tool-less is what makes the
+ *  pipeline safe: no side effects, so it can never collide with the no-retry-after-mutation rule. */
+const PLANNER_SYSTEM =
+  'You are a planning model. Decompose the user\'s task into a concise, ordered execution plan: '
+  + 'the goal, the relevant files/paths to touch, concrete steps in order, and edge cases to watch. '
+  + 'Do NOT execute, write code, or call tools — only produce the plan. Be specific and brief.';
+
+
 /**
  * Forced synthesis turn — run after the main loop when the model acted via tools but produced no
  * final text. Re-invokes the SAME routed model with the full tool transcript plus an explicit
@@ -300,6 +316,45 @@ async function continueAfterTruncation(
   }
 }
 
+/** Planner step of the mixture pipeline (see runTurn). Routes a `planner`-tagged model via
+ *  taskKind 'plan' and runs a single tool-less streamText to decompose the task; the returned
+ *  plan is appended to the executor's system prompt. Live-streams into the UI as a reasoning
+ *  block so the user sees the plan form. Best-effort: '' on any failure — never blocks the turn. */
+async function runPlannerStep(router: Router, opts: AgentOpts): Promise<string> {
+  opts.onStep('planning', 'Decomposing task…');
+  try {
+    const provider = createRouterProvider(router, {
+      taskKind: 'plan',
+      pinnedModel: undefined, // always auto-pick the best planner-tagged model
+      onFailover: opts.onFailover,
+      onKeyRotated: opts.onKeyRotated,
+      onModelSelected: (p, m, rt) => opts.onModel(p, m, rt),
+      onSelectionRationale: opts.onSelectionRationale,
+    });
+    const languageModel = wrapLanguageModel({
+      model: provider,
+      middleware: createTelemetryMiddleware({ profiler: opts.profiler, traceId: opts.sessionId as any }),
+    });
+    const result = streamText({
+      model: languageModel,
+      system: PLANNER_SYSTEM,
+      messages: toCoreMessages(opts.messages) as any,
+      // No `tools` + single-step stop → the planner can only produce a plan, not act.
+      stopWhen: [isStepCount(1)],
+      abortSignal: opts.abortSignal,
+    } as any);
+    let out = '';
+    for await (const part of (result as any).fullStream) {
+      if (part.type === 'text-delta') { const t = part.text ?? part.delta ?? ''; out += t; opts.onReasoning(t); }
+      else if (part.type === 'reasoning-delta') { const d = part.text ?? part.delta ?? ''; opts.onReasoning(d); }
+      else if (part.type === 'error') { break; }
+    }
+    return out;
+  } catch {
+    return ''; // planner is best-effort — never let it mask the executor's turn
+  }
+}
+
 /** One model attempt at a turn — everything runTurn used to do inline, extracted so a weak/
  *  stuck attempt can be retried once with a different (excluded/escalated) model. See
  *  runTurn's escalation orchestration below. */
@@ -333,6 +388,7 @@ async function runAttempt(
   maxTurnTokens: number,
   maxExplorationCalls: number,
   escalation?: { excludeModels: string[]; maxIntelligenceRank: number },
+  planGuidance?: string,
 ): Promise<AttemptResult> {
   // Loop-control stop conditions beyond the step cap. `stopReason` is set by whichever custom
   // condition fires so the finish handling below can treat it as TERMINAL (not paused) — these
@@ -407,7 +463,7 @@ async function runAttempt(
     middleware: createTelemetryMiddleware({ profiler: opts.profiler, traceId: opts.sessionId as any }),
   });
 
-  const system = await buildSystemPrompt(opts.mode, taskKind);
+  const system = (await buildSystemPrompt(opts.mode, taskKind)) + (planGuidance ?? '');
   diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · buildSystemPrompt done`);
   const tools = createToolSet(opts, getMcpManager(), router);
   diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · createToolSet done (${Object.keys(tools).length} tools)`);
@@ -705,7 +761,31 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     ? 'plan'
     : classifyTask(lastUserText, { attachmentKinds, attachments: attachmentKinds.length });
 
-  const first = await runAttempt(router, opts, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls);
+  // Planner→execute mixture pipeline: when the best executor for this task is weak (or the user
+  // forces 'on'), first run a read-only planner step that decomposes the task, then hand the plan
+  // to the executor as system-prompt guidance. Skipped for read-only modes (plan/ask already
+  // non-mutating), when a model is pinned (respect the explicit choice), and for trivial/chat/vision
+  // kinds. The planner is tool-less, so it has no side effects and can't violate the no-retry-after-
+  // mutation rule below. Best-effort: a failed/empty planner just yields no plan.
+  const mixture = vscode.workspace.getConfiguration('tiermux.agent').get<string>('mixturePipeline', 'auto');
+  let planGuidance: string | undefined;
+  const mixtureEligible = mixture !== 'off'
+    && opts.mode !== 'plan' && opts.mode !== 'ask'
+    && !opts.pinnedModel
+    && (taskKind === 'agent' || taskKind === 'coding' || taskKind === 'debug' || taskKind === 'longContext');
+  if (mixtureEligible) {
+    const top = router.peekTopSelection(taskKind);
+    const executorRank = top?.model?.intelligenceRank ?? 5;
+    if (mixture === 'on' || executorRank >= WEAK_EXECUTOR_RANK) {
+      diagLog('turn.pipeline', `planner step before execute (executor ${top?.entry.platform}/${top?.entry.modelId ?? '?'} rank ${executorRank}, mode=${mixture})`);
+      const plan = await runPlannerStep(router, opts);
+      if (plan.trim()) {
+        planGuidance = '\n\n## Execution plan (produced by the planner — follow it, adapt as needed)\n' + plan.trim();
+      }
+    }
+  }
+
+  const first = await runAttempt(router, opts, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, undefined, planGuidance);
   let final = first;
 
   // Force-action retry — a weak model announced an action but called NO tool ("Let me read the
@@ -788,7 +868,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       const escalated = await runAttempt(router, opts, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, {
         excludeModels: [excludeKey],
         maxIntelligenceRank: 2, // top-tier models only — the point of escalating is a smarter retry
-      });
+      }, planGuidance);
       // Keep the escalated attempt only if it actually produced something — an empty/failed
       // retry is worse than the first attempt's own (already-synthesized) progress report.
       if (escalated.text.trim()) final = escalated;

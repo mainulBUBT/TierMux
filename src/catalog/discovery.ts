@@ -155,6 +155,68 @@ function paramsB(id: string): number | undefined {
 const clampRank = (n: number): number => Math.max(1, Math.min(5, Math.round(n)));
 
 /**
+ * Measured intelligence ranks (1 = frontier … 5 = weak) for well-known model families, from
+ * public MMLU-Pro / GPQA / HumanEval leaderboards (llm-stats, Open LLM Leaderboard). These
+ * are REAL benchmark scores — not the estimated prices, which we deliberately ignore.
+ *
+ * Checked in order; the FIRST matching pattern wins, so list specific families before
+ * generic ones. Models not matched here fall through to the param-count proxy in
+ * deriveMetadata(). Speed is NOT table-driven — it is physics (tokens/s scales ~1/param
+ * count, memory-bandwidth-bound), so it always derives from params below.
+ *
+ * Keep ranges coarse (±0.5 tier): the goal is correct ordering, not false precision. The
+ * live runtime scorer (reliability/health) breaks ties and self-corrects.
+ */
+const BENCH_INTEL: Array<[RegExp, number]> = [
+  // ---- Frontier / strong reasoning (1–1.5) ----
+  [/nemotron.{0,4}ultra/i, 1],
+  [/deepseek-r1\b/i, 1],
+  [/gpt-4\.1\b(?!.*mini)/i, 1.5],
+  [/gpt-4o\b(?!.*mini)/i, 1.5],
+  [/glm-?5\b|glm-?5\.\d/i, 1.5],
+  [/command-a.{0,3}plus/i, 1.5],
+  [/kimi-k2\.[6-9]/i, 1.5],
+  // ---- Strong (2) ----
+  [/glm-?4\.[7-9]/i, 2],
+  [/deepseek.{0,3}v[3-9]/i, 2],
+  [/qwen3-coder/i, 2],
+  [/gpt-oss-120b/i, 2],
+  [/llama-3\.1-405b/i, 2],
+  [/mistral-large/i, 2],
+  [/command-a\b(?!.*vision)(?!.*reasoning)/i, 2],
+  [/minimax-m2/i, 2],
+  [/step-3\.[7-9]/i, 2],
+  // ---- Capable (2.5) ----
+  [/nemotron.{0,4}super/i, 2.5],
+  [/llama-3\.3-70b/i, 2.5],
+  [/qwen2\.5-coder/i, 2.5],
+  [/qwen2\.5-72b/i, 2.5],
+  [/mistral-medium/i, 2.5],
+  [/pixtral-large/i, 2.5],
+  // ---- Mid (3) ----
+  [/gemma-?4-31b/i, 3],
+  [/qwen3[.\-]?\d?-27b|qwen3[.\-]?\d?-30b/i, 3],
+  [/gpt-oss-20b/i, 3.5],
+  [/ling-3\.0/i, 3],
+  [/codestral/i, 3],
+  [/mistral-small/i, 3.5],
+  // ---- Light (4+) ----
+  [/gpt-4\.1-mini|gpt-4o-mini/i, 4],
+  [/flash-lite/i, 4],
+  [/north-mini/i, 4],
+  [/mimo/i, 4],
+  [/mistral-nemo|open-mistral-nemo/i, 4.5],
+];
+
+/** Measured intelligence rank from public benchmarks, or undefined to defer to the proxy. */
+function benchIntel(id: string): number | undefined {
+  for (const [re, rank] of BENCH_INTEL) {
+    if (re.test(id)) return rank;
+  }
+  return undefined;
+}
+
+/**
  * Derive the curated-looking fields from whatever we have. Names carry most of the signal:
  * size, tier word, and specialty are all encoded there even for providers that return
  * nothing but an id. Deliberately conservative — an unrecognizable name lands on the
@@ -178,11 +240,15 @@ export function deriveMetadata(d: DiscoveredModel): Pick<
   const big = /\b(opus|ultra|pro|large|max|405b|" "|70b|72b|120b|235b|405b|671b)\b/.test(id);
   const small = /\b(mini|flash|lite|small|nano|tiny|instant|turbo|haiku|air)\b/.test(id);
 
-  // Intelligence: params dominate when present, tier words otherwise, context as a nudge.
-  let intel = 3;
-  if (p !== undefined) intel = p >= 200 ? 1 : p >= 70 ? 2 : p >= 30 ? 2.5 : p >= 12 ? 3.5 : 4.5;
-  else if (big) intel = 1.5;
-  else if (small) intel = 4;
+  // Intelligence: prefer a measured benchmark rank when the family is known; otherwise fall
+  // back to the param-count proxy (params dominate, tier word next, context as a nudge).
+  const known = benchIntel(id);
+  let intel = known ?? 3;
+  if (known === undefined) {
+    if (p !== undefined) intel = p >= 200 ? 1 : p >= 70 ? 2 : p >= 30 ? 2.5 : p >= 12 ? 3.5 : 4.5;
+    else if (big) intel = 1.5;
+    else if (small) intel = 4;
+  }
   if ((d.contextWindow ?? 0) >= 1_000_000) intel -= 1;
   else if ((d.contextWindow ?? 0) >= 200_000) intel -= 0.5;
 

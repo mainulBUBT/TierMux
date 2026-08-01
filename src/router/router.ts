@@ -445,6 +445,29 @@ export class Router {
     return { intelligenceRank: m.intelligenceRank, supportsReasoning: m.supportsReasoning };
   }
 
+  /**
+   * Return the model that WOULD be picked for a taskKind, without making any network call —
+   * so callers can gate behavior on the executor's capability (the planner→execute pipeline
+   * plans only when this top model is weak). Reuses the same ranking path as `route()`:
+   * Smart Auto scoring when active, else the legacy `orderForTask` ordering. This is an
+   * approximation of `route()`'s pick (it skips the per-call context-fit + latency tiebreaks),
+   * which is fine for a capability gate — we only need the right quality tier.
+   */
+  peekTopSelection(taskKind: TaskKind): { entry: FallbackEntry; model?: CatalogModel } | undefined {
+    const base = { taskKind } as RouteOptions;
+    let cands = this.candidates(base);
+    if (cands.length === 0) return undefined;
+    if (this.smartScoringActive()) {
+      const ctx = this.buildSelectionContext(taskKind, cands, base);
+      cands = this.scoring!.rank(ctx).ordered;
+    } else {
+      cands = orderForTask(taskKind, cands, this.catalog);
+    }
+    const entry = cands[0];
+    if (!entry) return undefined;
+    return { entry, model: this.catalog.find(entry.platform, entry.modelId) };
+  }
+
   private estimateComplexity(messages: ChatMessage[], taskKind?: string): 'simple' | 'complex' {
     if (taskKind === 'trivial') return 'simple';
     if (taskKind === 'agent' || taskKind === 'debug') return 'complex';
