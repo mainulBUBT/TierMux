@@ -7,6 +7,8 @@
 // permission gate, no custom hook system.
 import { streamText, wrapLanguageModel, isStepCount, pruneMessages } from 'ai';
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import type { Router } from '../../router/router';
 import type { ChatMessage, ChatContentBlock } from '../../shared/types';
 import type { AgentOpts, AgentResult } from '../agent';
@@ -230,8 +232,15 @@ const WEAK_EXECUTOR_RANK = 3;
 const PLANNER_SYSTEM =
   'You are a planning model. Decompose the user\'s task into a concise, ordered execution plan: '
   + 'the goal, the relevant files/paths to touch, concrete steps in order, and edge cases to watch. '
-  + 'Do NOT execute, write code, or call tools — only produce the plan. Be specific and brief.';
-
+  + 'Do NOT execute, write code, or call tools — only produce the plan. Be specific and brief.\n\n'
+  + 'Example — task: "add a loading spinner to the submit button":\n'
+  + 'Goal: show a spinner on the submit button while the form request is in flight.\n'
+  + 'Files: src/components/SubmitButton.tsx, src/components/SubmitButton.css\n'
+  + 'Steps:\n'
+  + '1. Add an `isLoading` prop to SubmitButton and disable the button when true.\n'
+  + '2. Render a spinner element in place of the label when isLoading is true.\n'
+  + '3. Pass isLoading from the form\'s submit-in-flight state into SubmitButton.\n'
+  + 'Edge cases: rapid double-submit while loading; spinner must clear on request failure, not just success.';
 
 /**
  * Forced synthesis turn — run after the main loop when the model acted via tools but produced no
@@ -316,6 +325,31 @@ async function continueAfterTruncation(
   }
 }
 
+/** Extra instruction appended AFTER the plan (not before) in the executor's system prompt when
+ *  the mixture pipeline is active — weak models weight the tail of a system prompt most heavily,
+ *  and the one thing that must not get buried is "one thought, one action per turn", the ReAct
+ *  pattern most consistently credited for tool-call reliability on small/free models. */
+const REACT_SCAFFOLD =
+  '\n\nBefore each action, write one short line starting "Thought:" stating what you are about to '
+  + 'do and why, then either call exactly one tool or give your final answer. Do not describe '
+  + 'multiple future steps in the same turn — one thought, one action.';
+
+/** Scans planner output for file-path-shaped tokens (nested like `src/foo/bar.ts` or bare
+ *  root-level like `package.json`) and returns the ones that don't exist in the workspace —
+ *  the most common small-model planning failure is inventing a plausible-looking path. Pure
+ *  filesystem check, no LLM call, so it costs nothing extra and can't itself hallucinate. */
+function unresolvedPlanPaths(plan: string): string[] {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!root) return [];
+  const candidates = new Set(plan.match(/\b(?:[\w.-]+\/)*[\w.-]+\.\w{1,10}\b/g) ?? []);
+  const missing: string[] = [];
+  for (const p of candidates) {
+    const abs = path.isAbsolute(p) ? p : path.join(root, p);
+    if (!fs.existsSync(abs)) missing.push(p);
+  }
+  return missing;
+}
+
 /** Planner step of the mixture pipeline (see runTurn). Routes a `planner`-tagged model via
  *  taskKind 'plan' and runs a single tool-less streamText to decompose the task; the returned
  *  plan is appended to the executor's system prompt. Live-streams into the UI as a reasoning
@@ -348,6 +382,10 @@ async function runPlannerStep(router: Router, opts: AgentOpts): Promise<string> 
       if (part.type === 'text-delta') { const t = part.text ?? part.delta ?? ''; out += t; opts.onReasoning(t); }
       else if (part.type === 'reasoning-delta') { const d = part.text ?? part.delta ?? ''; opts.onReasoning(d); }
       else if (part.type === 'error') { break; }
+    }
+    const missing = unresolvedPlanPaths(out);
+    if (missing.length) {
+      out += `\n\n(Note: these paths do not currently exist in the workspace — verify whether they are missing or meant to be newly created: ${missing.join(', ')})`;
     }
     return out;
   } catch {
@@ -776,12 +814,19 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   if (mixtureEligible) {
     const top = router.peekTopSelection(taskKind);
     const executorRank = top?.model?.intelligenceRank ?? 5;
-    if (mixture === 'on' || executorRank >= WEAK_EXECUTOR_RANK) {
+    const weak = mixture === 'on' || executorRank >= WEAK_EXECUTOR_RANK;
+    if (weak) {
       diagLog('turn.pipeline', `planner step before execute (executor ${top?.entry.platform}/${top?.entry.modelId ?? '?'} rank ${executorRank}, mode=${mixture})`);
       const plan = await runPlannerStep(router, opts);
+      let guidance = '';
       if (plan.trim()) {
-        planGuidance = '\n\n## Execution plan (produced by the planner — follow it, adapt as needed)\n' + plan.trim();
+        guidance += '\n\n## Execution plan (produced by the planner — follow it, adapt as needed)\n' + plan.trim();
       }
+      // REACT_SCAFFOLD goes LAST, after the plan — weak models weight the tail of a system
+      // prompt most heavily (recency bias), and "one thought, one action" must not get buried
+      // under the plan content.
+      guidance += REACT_SCAFFOLD;
+      planGuidance = guidance;
     }
   }
 

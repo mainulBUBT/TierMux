@@ -452,9 +452,14 @@ export class Router {
    * Smart Auto scoring when active, else the legacy `orderForTask` ordering. This is an
    * approximation of `route()`'s pick (it skips the per-call context-fit + latency tiebreaks),
    * which is fine for a capability gate — we only need the right quality tier.
+   *
+   * `requireTools: true` because every caller of this (the mixture-pipeline gate) only peeks
+   * for task kinds whose real turn always carries the full tool set — without this, a smart
+   * but tool-less model could top the peek, reporting a falsely-strong executor while the
+   * actual (tool-filtered) route() pick is much weaker.
    */
   peekTopSelection(taskKind: TaskKind): { entry: FallbackEntry; model?: CatalogModel } | undefined {
-    const base = { taskKind } as RouteOptions;
+    const base = { taskKind, requireTools: true } as RouteOptions;
     let cands = this.candidates(base);
     if (cands.length === 0) return undefined;
     if (this.smartScoringActive()) {
