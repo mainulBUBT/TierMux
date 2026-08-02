@@ -122,6 +122,27 @@ function autoContinueMessage(remainingTodos: TodoItem[]): string {
     + `blocker, which you must state plainly).\n\nRemaining items:\n${list}`;
 }
 
+/** Deterministic end-of-turn footer built directly from todo state, not trusted to the model's
+ *  self-report. Surfaces whenever the turn ends (stop-guardrail, round-cap, or plain completion)
+ *  while the plan written THIS send still has unfinished items, so the user isn't left assuming
+ *  the task actually finished. */
+function incompleteTodosNote(allTodos: TodoItem[], remainingTodos: TodoItem[]): string {
+  const doneCount = allTodos.length - remainingTodos.length;
+  const list = remainingTodos
+    .map((t) => `- ${t.content}${t.status === 'in_progress' ? ' (in progress)' : ''}`)
+    .join('\n');
+  return `\n\n---\n**Stopped with unfinished work — ${doneCount}/${allTodos.length} steps done.** Remaining:\n${list}`;
+}
+
+/** Companion to {@link incompleteTodosNote}: a short deterministic brief for the success case,
+ *  built the same way (from todo state, not the model's self-report) so a finished plan always
+ *  ends with an explicit "here's what got done" recap instead of relying on the model to
+ *  volunteer one. */
+function completedTodosNote(allTodos: TodoItem[]): string {
+  const list = allTodos.map((t) => `- ${t.content}`).join('\n');
+  return `\n\n---\n**Completed all ${allTodos.length} steps:**\n${list}`;
+}
+
 /** A short, bare "keep going" message — NOT a fresh task. Weak free models often re-plan from
  *  scratch on such a message (worse if history was compacted), redoing finished work. We detect it
  *  to splice in explicit resume context (see resumeContextBlock). Kept intentionally narrow: only
@@ -1908,7 +1929,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       const agentClar = planClar ?? (!result.paused ? parseClarifying(result.text) : { questions: null, text: result.text });
 
-      const displayText = agentClar.text;
+      // Final check, independent of WHY the turn ended (guardrail stop, round-cap exhaustion, or
+      // plain completion): does the plan written this send still have unfinished items? Computed
+      // straight from todo state rather than the model's own text, so it's always accurate.
+      const wroteTodosThisSend = s.lastTodos !== todosAtSendStart;
+      const finalTodos = wroteTodosThisSend ? (s.lastTodos ?? []) : [];
+      const finalRemainingTodos = finalTodos.filter((t) => t.status !== 'completed');
+      const todoNote = agentClar.questions ? ''
+        : finalRemainingTodos.length > 0 ? (!result.paused ? incompleteTodosNote(finalTodos, finalRemainingTodos) : '')
+        : finalTodos.length > 0 ? completedTodosNote(finalTodos)
+        : '';
+
+      const displayText = todoNote ? `${agentClar.text}${todoNote}` : agentClar.text;
 
       const persistedResult: AgentResult = displayText !== result.text ? { ...result, text: displayText } : result;
       this.persistAgentTurn(s, persistedResult);
