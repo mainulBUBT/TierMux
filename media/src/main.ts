@@ -2312,7 +2312,8 @@ const STATE_LABEL = {
     // mechanism as each provider card's switch, just applied to all of them).
     // Disabling all providers mid-run strands the active agent on dead routing, so
     // when an LLM is actively working we also cancel the running turn.
-    const toggleablePlatforms = state.platforms.filter((p) => p.platform !== 'custom');
+    const remoteDisabledSet = new Set(state.remoteDisabledProviders || []);
+    const toggleablePlatforms = state.platforms.filter((p) => p.platform !== 'custom' && !remoteDisabledSet.has(p.platform));
     const disabledSet = new Set(state.disabledProviders || []);
     const allProvidersOn = toggleablePlatforms.length > 0 && toggleablePlatforms.every((p) => !disabledSet.has(p.platform));
     const anyProviderOn = toggleablePlatforms.some((p) => !disabledSet.has(p.platform));
@@ -2354,6 +2355,9 @@ const STATE_LABEL = {
     provs.forEach((p) => {
       // Skip the old 'custom' platform card — we now have a dedicated custom endpoints section
       if (p.platform === 'custom') return;
+      // Skip providers the shared TierMux catalog currently has no models for — showing a
+      // toggle with nothing behind it just confuses ("why is this provider empty?").
+      if (remoteDisabledSet.has(p.platform)) return;
 
       const card = document.createElement('div');
       card.className = 'provider-card';

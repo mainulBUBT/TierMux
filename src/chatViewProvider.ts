@@ -2732,6 +2732,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       autoApprove: this.autoApprove,
       skills: Array.from(this.skills().values(), (sk) => ({ name: sk.name, detail: sk.description })),
       disabledProviders: this.deps.settings.getDisabledProviders(),
+      remoteDisabledProviders: this.deps.catalog.getRemoteDisabledPlatforms(),
       customEndpoints: (await Promise.all(this.deps.settings.getCustomEndpoints().map(async (ep) => ({
         id: ep.id,
         name: ep.name,

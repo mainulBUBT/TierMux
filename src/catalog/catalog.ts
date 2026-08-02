@@ -5,10 +5,13 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import type { CatalogModel, FallbackEntry, Platform } from '../shared/types';
 import { toCatalogModel, deriveMetadata, type DiscoveredModel, type ProviderFetch } from './discovery';
+import { allPlatformInfo } from '../providers';
 
 const CACHE_KEY = 'tiermux.catalogCache';
 /** Snapshot of the list as it was before the last provider sync (one level of undo). */
 const UNDO_KEY = 'tiermux.catalogSyncUndo';
+/** Platforms the shared worker catalog currently reports `enabled: false` for. */
+const REMOTE_DISABLED_KEY = 'tiermux.catalogRemoteDisabled';
 
 export interface CatalogSyncReport {
   /** `platform::modelId` keys newly discovered and added. */
@@ -25,6 +28,7 @@ export interface CatalogSyncReport {
 export class Catalog {
   private bundled: CatalogModel[] = [];
   private remote: CatalogModel[] | undefined;
+  private remoteDisabledPlatforms: Platform[] = [];
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   /** Fires after a remote fetch that actually changed the active model list. */
   readonly onDidChange = this._onDidChange.event;
@@ -57,6 +61,8 @@ export class Catalog {
     }
     const cached = mem.get<CatalogModel[]>(CACHE_KEY);
     if (Array.isArray(cached) && cached.length) this.remote = cached;
+    const disabled = mem.get<Platform[]>(REMOTE_DISABLED_KEY);
+    if (Array.isArray(disabled)) this.remoteDisabledPlatforms = disabled;
   }
 
   /** Fetch the published CSV at `url`, parse it, and adopt it when it has models
@@ -80,8 +86,14 @@ export class Catalog {
     // The catalog URL may serve the TierMux worker JSON (nested providers→models) or a
     // legacy published-sheet CSV. Try the worker shape first; if it isn't JSON in that
     // shape, fall back to CSV. Either way an empty/unparseable result is ignored.
-    const models = parseWorkerCatalog(text) ?? parseCsvCatalog(text);
+    const worker = parseWorkerCatalog(text);
+    const models = worker?.models ?? parseCsvCatalog(text);
     if (!models.length) return null; // empty or unparseable → ignore
+
+    if (worker && JSON.stringify(worker.disabledPlatforms) !== JSON.stringify(this.remoteDisabledPlatforms)) {
+      this.remoteDisabledPlatforms = worker.disabledPlatforms;
+      await mem.update(REMOTE_DISABLED_KEY, worker.disabledPlatforms);
+    }
 
     const before = this.all();
     if (JSON.stringify(models) === JSON.stringify(before)) {
@@ -189,6 +201,14 @@ export class Catalog {
     return this.all().find((m) => m.platform === platform && m.modelId === modelId);
   }
 
+  /** Platforms the shared worker catalog most recently reported `enabled: false` for.
+   *  These already have zero models in `all()` — this is only for surfacing *why*
+   *  in the provider toggle UI, since a locally-enabled provider with no catalog
+   *  models otherwise looks broken rather than remotely disabled. */
+  getRemoteDisabledPlatforms(): Platform[] {
+    return this.remoteDisabledPlatforms;
+  }
+
   /** Key used to identify a model across catalog + fallback entries. */
   static key(platform: string, modelId: string): string {
     return `${platform}::${modelId}`;
@@ -263,7 +283,7 @@ function wBool(v: unknown, def: boolean): boolean {
  * honored — disabled rows are dropped. Returns null when the body is not this JSON shape so
  * the caller can fall back to CSV.
  */
-function parseWorkerCatalog(text: string): CatalogModel[] | null {
+function parseWorkerCatalog(text: string): { models: CatalogModel[]; disabledPlatforms: Platform[] } | null {
   let body: unknown;
   try { body = JSON.parse(text); } catch { return null; }
   if (!body || typeof body !== 'object') return null;
@@ -271,10 +291,17 @@ function parseWorkerCatalog(text: string): CatalogModel[] | null {
   if (!Array.isArray(providers)) return null;
 
   const out: CatalogModel[] = [];
+  const disabledPlatforms: Platform[] = [];
+  const presentPlatforms = new Set<string>();
   for (const p of providers) {
-    if (!p || typeof p !== 'object' || !wBool((p as Record<string, unknown>).enabled, true)) continue;
+    if (!p || typeof p !== 'object') continue;
     const platform = String((p as Record<string, unknown>).provider_id ?? '').trim();
     if (!platform) continue;
+    presentPlatforms.add(platform);
+    if (!wBool((p as Record<string, unknown>).enabled, true)) {
+      disabledPlatforms.push(platform as Platform);
+      continue;
+    }
     const models = (p as Record<string, unknown>).models;
     if (!Array.isArray(models)) continue;
     for (const m of models) {
@@ -336,7 +363,16 @@ function parseWorkerCatalog(text: string): CatalogModel[] | null {
       });
     }
   }
-  return out;
+  // Providers registered locally (they have a baseUrl/auth implementation) but absent
+  // from the worker response entirely aren't reachable through the shared catalog either
+  // — treat them the same as an explicit enabled:false rather than leaving them looking
+  // like an untouched, fully-live toggle.
+  for (const info of allPlatformInfo()) {
+    if (!presentPlatforms.has(info.platform) && !disabledPlatforms.includes(info.platform)) {
+      disabledPlatforms.push(info.platform);
+    }
+  }
+  return { models: out, disabledPlatforms };
 }
 
 /** Minimal RFC-4180-ish CSV parser: handles quoted fields, escaped quotes ("")

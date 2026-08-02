@@ -136,6 +136,11 @@ export interface ConfigPayload {
   autoApprove: boolean;
   /** Providers toggled off at the platform level — models excluded from routing and pickers without losing their enabled flags. */
   disabledProviders: Platform[];
+  /** Platforms the shared worker catalog currently reports `enabled: false` for — surfaced
+   *  in the provider toggle UI so a provider with zero catalog models reads as "disabled
+   *  upstream" rather than "broken". Distinct from `disabledProviders`, which is the user's
+   *  own local on/off choice. */
+  remoteDisabledProviders: Platform[];
   /** User-defined custom OpenAI-compatible endpoints (summary — the webview reads fallback chain for enabled models). */
   customEndpoints: Array<{
     id: string;
