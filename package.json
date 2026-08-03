@@ -2,7 +2,7 @@
   "name": "tiermux",
   "displayName": "TierMux",
   "description": "Free agentic AI coding assistant for VS Code. Multiplexes many free-tier LLM providers into one self-healing surface — auto-routes, auto-fails-over, learns your codebase. Zero setup with keyless providers; bring your own keys anytime.",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "publisher": "mainul-islam",
   "license": "MIT",
   "repository": {
@@ -397,7 +397,11 @@
         },
         "tiermux.agent.mixturePipeline": {
           "type": "string",
-          "enum": ["auto", "on", "off"],
+          "enum": [
+            "auto",
+            "on",
+            "off"
+          ],
           "default": "auto",
           "description": "Planner→execute mixture: a strong planner-tagged model decomposes the task into a plan (read-only), then a coder/general model executes it with the plan as guidance. 'auto' runs the planner only when the best enabled executor is weak (intelligence rank ≥3); 'on' always plans for action tasks (agent/coding/debug); 'off' disables. Ignored when a model is pinned."
         },
