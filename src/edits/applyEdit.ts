@@ -98,6 +98,19 @@ export class EditGate {
     }
   }
 
+  /** Locates `search` in `text`, requiring exactly one occurrence. A non-unique hunk would
+   *  otherwise silently patch whichever occurrence `indexOf` happens to find first — easy to hit
+   *  in files with repeated boilerplate (e.g. duplicated script blocks), and it corrupts the file
+   *  without any error. */
+  private locateUnique(text: string, search: string): { idx: number } | { error: string } {
+    const idx = text.indexOf(search);
+    if (idx === -1) return { error: 'Search text not found in file.' };
+    if (text.indexOf(search, idx + 1) !== -1) {
+      return { error: 'Search text matches multiple locations in file — include more surrounding context to make it unique.' };
+    }
+    return { idx };
+  }
+
   /** Shows the diff, purely informational — no confirmation asked. Used by the `*Approved`
    *  entry points, where an external gate (the engine's `toolApproval` policy) already made the
    *  decision; showing the diff is still worth doing so the user can see what changed. */
@@ -181,9 +194,9 @@ export class EditGate {
     return this.withLock(uri, async () => {
       const current = await this.readIfExists(uri);
       if (current === undefined) return { applied: false, error: 'File not found.' };
-      const idx = current.indexOf(search);
-      if (idx === -1) return { applied: false, error: 'Search text not found in file.' };
-      const proposed = current.slice(0, idx) + replace + current.slice(idx + search.length);
+      const located = this.locateUnique(current, search);
+      if ('error' in located) return { applied: false, error: located.error };
+      const proposed = current.slice(0, located.idx) + replace + current.slice(located.idx + search.length);
       return this.writeCore(uri, proposed, ctx);
     });
   }
@@ -206,9 +219,9 @@ export class EditGate {
     return this.withLock(uri, async () => {
       const current = await this.readIfExists(uri);
       if (current === undefined) return { applied: false, error: 'File not found.' };
-      const idx = current.indexOf(search);
-      if (idx === -1) return { applied: false, error: 'Search text not found in file.' };
-      const proposed = current.slice(0, idx) + replace + current.slice(idx + search.length);
+      const located = this.locateUnique(current, search);
+      if ('error' in located) return { applied: false, error: located.error };
+      const proposed = current.slice(0, located.idx) + replace + current.slice(located.idx + search.length);
       return this.applyDirect(uri, proposed, `Write ${vscode.workspace.asRelativePath(uri)}`, ctx);
     });
   }
@@ -226,9 +239,9 @@ export class EditGate {
       for (let i = 0; i < hunks.length; i++) {
         const { search, replace } = hunks[i];
         if (!search) return { applied: false, error: `Hunk ${i + 1}: missing "search" text.` };
-        const idx = buffer.indexOf(search);
-        if (idx === -1) return { applied: false, error: `Hunk ${i + 1}: search text not found in file.` };
-        buffer = buffer.slice(0, idx) + replace + buffer.slice(idx + search.length);
+        const located = this.locateUnique(buffer, search);
+        if ('error' in located) return { applied: false, error: `Hunk ${i + 1}: ${located.error}` };
+        buffer = buffer.slice(0, located.idx) + replace + buffer.slice(located.idx + search.length);
       }
       return this.applyDirect(uri, buffer, `Write ${vscode.workspace.asRelativePath(uri)}`, ctx);
     });

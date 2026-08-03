@@ -1878,18 +1878,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // `completed` (the "visible plan" IS the completion contract). Two triggers keep going:
       //   (a) pending todos — the agent's own plan still has unfinished items this send, or
       //   (b) result.paused — a genuine step-cap cutoff mid-task (legacy resumable state).
-      // Hard stops (autonomy stays safe): result.stopReason (over budget / stuck-repeat / thrash)
-      // HALTS immediately — re-running that just repeats the waste; a per-send round cap
-      // (maxAutoContinueRounds) bounds total autonomy; the Stop button (isActiveRun/abort) always
-      // wins. A plain Q&A turn that never wrote a plan has no pending todos → this never fires, so
-      // simple chats still return in one turn.
+      // Hard stops: 'stuck' (repeated identical tool calls / thrashing with no mutating progress)
+      // HALTS immediately — a fresh attempt would very likely repeat the exact same loop. 'budget'
+      // (per-attempt token cap, e.g. a large multi-file rewrite) instead gets a bounded number of
+      // continuations (maxBudgetContinuations) — each continuation is a brand-new runTurn call, so
+      // it gets a FRESH token budget rather than raising any ceiling, matching how Claude Code/
+      // Cursor-style agents keep working across turns instead of abandoning a big task mid-way. A
+      // per-send round cap (maxAutoContinueRounds) bounds total autonomy regardless of cause; the
+      // Stop button (isActiveRun/abort) always wins. A plain Q&A turn that never wrote a plan has
+      // no pending todos → this never fires, so simple chats still return in one turn.
       const agentCfg = vscode.workspace.getConfiguration('tiermux.agent');
       const autoContinueOn = agentCfg.get<boolean>('autoContinue', true);
       const maxAutoContinueRounds = agentCfg.get<number>('maxAutoContinueRounds', 25);
+      const maxBudgetContinuations = agentCfg.get<number>('maxBudgetContinuations', 3);
       if (m.mode === 'agent' && autoContinueOn) {
+        let budgetContinuations = 0;
         for (let ac = 0; ac < maxAutoContinueRounds && this.isActiveRun(s, m.requestId); ac++) {
-          // A guardrail cut this attempt short (over budget / stuck) — do NOT auto-continue.
-          if (result.stopReason) { diagLog('send.autocontinue', `halt: stopReason=${result.stopReason} after round ${ac}`); break; }
+          if (result.stopReason === 'stuck') { diagLog('send.autocontinue', `halt: stopReason=stuck after round ${ac}`); break; }
+          if (result.stopReason === 'budget') {
+            if (budgetContinuations >= maxBudgetContinuations) {
+              diagLog('send.autocontinue', `halt: budget cutoff ${budgetContinuations}× in a row (cap ${maxBudgetContinuations}) after round ${ac}`);
+              break;
+            }
+            budgetContinuations++;
+            diagLog('send.autocontinue', `budget cutoff after round ${ac} — continuing with a fresh turn budget (${budgetContinuations}/${maxBudgetContinuations})`);
+          } else {
+            budgetContinuations = 0; // reset the streak once a round completes without hitting the cap
+          }
           // Only todos written during THIS send count (see todosAtSendStart) — stale todos from an
           // earlier turn must not keep a fresh, unrelated turn spinning.
           const wroteTodosThisSend = s.lastTodos !== todosAtSendStart;

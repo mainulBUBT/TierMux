@@ -363,6 +363,12 @@
           "minimum": 1,
           "description": "Hard cap on how many times a single send may auto-continue toward its plan's completion. A per-turn backstop on top of the token budget and stuck-loop detection, so an autonomous run can never loop forever. Lower for tighter free-tier control; higher for longer unattended tasks."
         },
+        "tiermux.agent.maxBudgetContinuations": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "description": "How many consecutive per-turn token-budget cutoffs a single send may auto-continue past (each continuation gets a fresh token budget), so a large multi-file task isn't abandoned mid-way the way it would be if a budget cutoff always halted the run. Separate from maxAutoContinueRounds, which bounds total rounds regardless of cause. Set to 0 to restore the old behavior (halt immediately on a budget cutoff). Stuck-loop cutoffs always halt immediately, budget continuations or not."
+        },
         "tiermux.agent.maxConcurrentRuns": {
           "type": "number",
           "default": 3,

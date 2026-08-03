@@ -477,6 +477,21 @@ async function runAttempt(
     }
     return false;
   };
+  // stuckStop/explorationStop only look at toolCalls, and only run BETWEEN steps — a weak model
+  // that thrashes by repeating the same sentence/line over and over with NO tool calls at all
+  // (observed: "Then I'll check the X controller." repeated hundreds of times) never trips
+  // either one, and since it's all one step, it can run to the provider's own output cap before
+  // stopWhen gets a chance to look. Checked incrementally against the live text-delta buffer
+  // instead (see the text-delta branch below). Cheap streak count, no regex backtracking risk.
+  const hasDegenerateTextRepetition = (text: string): boolean => {
+    const tail = text.slice(-4000);
+    const lines = tail.split(/(?<=[.!?\n])\s+/).map((s) => s.trim()).filter((s) => s.length >= 10);
+    if (lines.length < 4) return false;
+    const last = lines[lines.length - 1];
+    let streak = 1;
+    for (let i = lines.length - 2; i >= 0 && lines[i] === last; i--) streak++;
+    return streak >= 4;
+  };
 
   let platform: string | undefined;
   let model: string | undefined;
@@ -590,10 +605,11 @@ async function runAttempt(
     let streamedThisStep = false; // did we already stream this step's text live to onChunk?
     let streamErrored = false; // an 'error' part arrived on fullStream (routerProvider surfaced a router.route() rejection)
     let streamErrorMessage = '';
+    let lastRepetitionCheckLen = 0; // throttles hasDegenerateTextRepetition to ~every 200 chars, not every delta
 
     for await (const part of (result as any).fullStream) {
       if (part.type === 'start-step') {
-        stepText = ''; stepHasTool = false; streamedThisStep = false;
+        stepText = ''; stepHasTool = false; streamedThisStep = false; lastRepetitionCheckLen = 0;
       } else if (part.type === 'finish-step') {
         // Commit/discard by intent. A pure-text step (no tool call) is an answer step — its text
         // is canonical; the LAST such step wins (earlier ones, if any, are superseded). A tool
@@ -625,6 +641,16 @@ async function runAttempt(
         }
         if (phase === 'idle') phase = 'text';
         else if (phase === 'waiting_final') phase = 'final';
+        // Pure-text thrash guard — only meaningful before any tool call this step (a step that's
+        // already issuing tool calls isn't the degenerate no-progress pattern this catches).
+        if (!stepHasTool && stepText.length - lastRepetitionCheckLen >= 200) {
+          lastRepetitionCheckLen = stepText.length;
+          if (hasDegenerateTextRepetition(stepText)) {
+            stopReason = 'stuck';
+            diagLog('turn.stop', `stuck: degenerate text repetition detected (~${stepText.length} chars, no tool calls)`);
+            break;
+          }
+        }
       } else if (part.type === 'reasoning-delta') {
         const d = part.text ?? part.delta ?? ''; reasoning += d; opts.onReasoning(d);
       } else if (part.type === 'tool-call') {

@@ -8,10 +8,13 @@ export function createTodoWriteTool(onTodos: (todos: TodoItem[]) => void) {
   return tool({
     description: 'Report the current task todo list (replaces the previous list).',
     inputSchema: z.object({
-      todos: z.array(z.object({
-        content: z.string(),
-        status: z.enum(['pending', 'in_progress', 'completed']),
-      })),
+      todos: z.array(z.union([
+        z.string().transform((content) => ({ content, status: 'pending' as const })),
+        z.object({
+          content: z.string(),
+          status: z.enum(['pending', 'in_progress', 'completed']),
+        }),
+      ])),
     }),
     execute: async ({ todos }: { todos: Array<{ content: string; status: TodoItem['status'] }> }) => {
       const list: TodoItem[] = todos.filter((t) => t.content).map((t) => ({ content: t.content, status: t.status }));
