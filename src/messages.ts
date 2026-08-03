@@ -234,6 +234,8 @@ export type InMessage =
   | { type: 'removeCustomModel'; endpointId: string; modelId: string }
   /** Ask the host to GET <baseUrl>/models for an endpoint and stream back the model IDs (Kilo/Cline-style auto-discovery). */
   | { type: 'fetchCustomEndpointModels'; id: string }
+  /** Webview asks the host to (re)fetch tips/announcements from the worker and push them back. */
+  | { type: 'getAnnouncements' }
   /** Onboarding "Retry" button — re-attempt the OC engine startup. */
   | { type: 'retryEngine' };
 
@@ -345,7 +347,17 @@ export type OutMessage =
    *  Only sent while the engine hasn't been successfully onboarded before (see
    *  `tiermux.onboardedEngine` global state) — returning users never see this. */
   | { type: 'engineStatus'; state: 'downloading' | 'starting' | 'verifying' | 'ready' | 'error'; message?: string; percent?: number }
-  | { type: 'newModelsAvailable'; message: string };
+  | { type: 'newModelsAvailable'; message: string }
+  /** Operator-published tips/announcements, fetched from the announcements worker
+   *  (see ChatViewProvider.fetchAnnouncements). Pushed on startup and on icon click. */
+  | { type: 'announcements'; items: AnnouncementItem[]; lastUpdated?: string };
+
+/** A single tip/announcement entry from the announcements worker. */
+export interface AnnouncementItem {
+  id: number;
+  title: string;
+  details: string;
+}
 
 /** Payload for the AI Elements Plan component — mirrors `PlanData` in media/src/ui/components/Plan.ts. */
 export interface PlanDataPayload {

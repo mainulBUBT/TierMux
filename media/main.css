@@ -596,6 +596,39 @@ details[open].reasoning summary::before { content: '▾ '; }
   background: transparent; color: var(--vscode-foreground); border: none; opacity: .6;
 }
 .changed-bar .cb-close:hover, .new-models-bar .cb-close:hover { opacity: 1; }
+/* Announcements "i" button unread dot + full tips page (blog-style feed). */
+.icon-btn .an-dot {
+  position: absolute; top: 1px; right: 1px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--vscode-charts-yellow, #cca700); border: 1px solid var(--vscode-sideBar-background, #fff);
+}
+.icon-btn .an-dot.hidden { display: none; }
+.icon-btn { position: relative; }
+.announcements-page { padding: var(--gap); overflow-y: auto; flex: 1; display: none; }
+.announcements-page.active { display: block; }
+.announcements-page .an-empty { color: var(--vscode-descriptionForeground); font-size: 12px; padding: 24px 4px; }
+.announcements-page .an-feed { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.announcements-page .an-card {
+  padding: 0; border-radius: 8px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.08));
+  overflow: hidden;
+}
+.announcements-page .an-card-title {
+  list-style: none; cursor: pointer; user-select: none;
+  font-size: 12px; font-weight: 600; color: var(--vscode-foreground);
+  padding: 9px 12px; display: flex; align-items: center; gap: 6px;
+}
+.announcements-page .an-card-title::-webkit-details-marker { display: none; }
+.announcements-page .an-card-title::before {
+  content: ''; flex: 0 0 auto; width: 0; height: 0;
+  border-left: 4px solid var(--vscode-descriptionForeground);
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+  transition: transform .12s ease;
+}
+.announcements-page .an-card[open] .an-card-title::before { transform: rotate(90deg); }
+.announcements-page .an-card-title:hover { background: var(--vscode-list-hoverBackground); }
+.announcements-page .an-card-details { font-size: 12px; line-height: 1.5; color: var(--vscode-descriptionForeground); padding: 0 12px 10px 22px; }
+.announcements-page .an-updated { font-size: 10px; opacity: .55; margin-top: 12px; }
 .changed-bar .cb-files { display: flex; flex-wrap: wrap; gap: 4px; max-height: 84px; overflow-y: auto; }
 .changed-bar .cb-file {
   display: inline-flex; align-items: center; gap: 5px; max-width: 100%;

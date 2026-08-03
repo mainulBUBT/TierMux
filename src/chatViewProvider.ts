@@ -20,7 +20,7 @@ import type { ModelStatsStore, Vote } from './config/modelStats';
 import type { SlowModelStore } from './config/slowModel';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem, McpServerConfig } from './messages';
-import type { Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, PlanDataPayload, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
+import type { AnnouncementItem, Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, PlanDataPayload, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
 import { normalizeMcpServerConfig } from './mcp/mcpClient';
 import { getNonce } from './util/nonce';
 import { diagLog } from './util/diag';
@@ -595,6 +595,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'newModelsAvailable', message });
   }
 
+  /** Operator tips/announcements worker. Failures are swallowed (logged) — tips are
+   *  non-critical and must never block the panel or throw unhandled rejections. */
+  private static readonly ANNOUNCEMENTS_URL = 'https://tiermux.mainulislam3057.workers.dev/announcements';
+
+  async fetchAnnouncements(): Promise<void> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const res = await fetch(ChatViewProvider.ANNOUNCEMENTS_URL, {
+        headers: { Accept: 'application/json' },
+        signal: ctrl.signal,
+        redirect: 'follow',
+      });
+      if (!res.ok) return;
+      const body = await res.json().catch(() => undefined) as
+        | { announcements?: unknown; last_updated?: string } | undefined;
+      if (!body) return;
+      const raw = Array.isArray(body.announcements) ? body.announcements : [];
+      const lastUpdated = typeof body.last_updated === 'string' ? body.last_updated : undefined;
+      const items: AnnouncementItem[] = raw
+        .map((e) => {
+          if (!e || typeof e !== 'object') return undefined;
+          const o = e as { id?: unknown; title?: unknown; details?: unknown };
+          return {
+            id: typeof o.id === 'number' ? o.id : Number(o.id) || 0,
+            title: String(o.title ?? '').trim(),
+            details: String(o.details ?? '').trim(),
+          };
+        })
+        .filter((e): e is AnnouncementItem => !!e && (e.title.length > 0 || e.details.length > 0));
+      // Always push — even an empty list tells the webview to render the "no tips" state.
+      this.post({ type: 'announcements', items, lastUpdated });
+    } catch (err) {
+      console.warn('[tiermux] announcements fetch failed:', err);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private post(msg: OutMessage): void {
     if (!this.view || !this.ready) { this.outQueue.push(msg); return; }
     void this.view.webview.postMessage(msg);
@@ -936,12 +975,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.postLiveRunState(s);
           this.postCheckpoints(s);
         }
+        // Fire-and-forget: surface operator tips/announcements once the view is up.
+        void this.fetchAnnouncements();
         break;
       case 'switchSession':
         this.openSession(m.sessionId);
         break;
       case 'requestConfig':
         await this.sendConfig();
+        break;
+      case 'getAnnouncements':
+        void this.fetchAnnouncements();
         break;
       case 'retryEngine':
         this.deps.retryEngine?.();

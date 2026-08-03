@@ -89,6 +89,7 @@ const STATE_LABEL = {
       </div>
       <div class="thread" id="thread"></div>
       <div class="settings" id="settings"></div>
+      <div class="announcements-page" id="announcements-page"></div>
     <div class="composer" id="composer">
       <div class="index-status hidden" id="index-status"></div>
       <div class="new-models-bar hidden" id="new-models-bar"></div>
@@ -122,6 +123,7 @@ const STATE_LABEL = {
             <button type="button" id="auto-btn" class="pill toggle-pill" aria-pressed="false" title="Auto-approve — run commands and apply edits without asking, for an uninterrupted flow. Dangerous commands (rm -rf, force push, sudo…) still ask. Off = review each step." data-tooltip="Auto-approve — run commands and edit files without asking first. Dangerous operations still confirm. Toggle on for an uninterrupted flow.">${ICON.zap}</button>
           </div>
           <div class="tgroup right">
+            <button class="icon-btn" id="btn-announcements" title="Tips & announcements" data-tooltip="Tips & announcements">${ICON.info}<span class="an-dot hidden" id="an-dot"></span></button>
             <button class="icon-btn" id="btn-selection" title="Add editor selection as context" data-tooltip="Add editor selection as context">${ICON.selection}</button>
             <button class="icon-btn" id="btn-attach" title="Attach file or image" data-tooltip="Attach file or image">${ICON.attach}</button>
             <button class="send-btn" id="btn-send" title="Send (Enter)">${ICON.send}</button>
@@ -1339,6 +1341,7 @@ const STATE_LABEL = {
 
   $('#btn-attach').addEventListener('click', () => send({ type: 'attachFromWorkspace' }));
   $('#btn-selection').addEventListener('click', () => send({ type: 'addSelection' }));
+  $('#btn-announcements').addEventListener('click', () => toggleAnnouncements());
   // Close transient popups when the view loses focus or is hidden (e.g. switching tabs).
   window.addEventListener('blur', () => { closeModelPop(); closeModePop(); closeAc(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) { closeModelPop(); closeModePop(); closeAc(); } });
@@ -1998,6 +2001,7 @@ const STATE_LABEL = {
     settingsEl.classList.toggle('active', settingsOpen);
     thread.classList.toggle('hidden', settingsOpen);
     composer.classList.toggle('hidden', settingsOpen);
+    if (settingsOpen && announcementsOpen) toggleAnnouncements(false);
     if (settingsOpen) renderSettings();
   }
 
@@ -3421,6 +3425,12 @@ const STATE_LABEL = {
       case 'newModelsAvailable':
         renderNewModelsBar(msg.message);
         break;
+      case 'announcements':
+        announcementsCache = Array.isArray(msg.items) ? msg.items : [];
+        announcementsLastUpdated = msg.lastUpdated;
+        updateAnnouncementsDot();
+        if (announcementsOpen) renderAnnouncements();
+        break;
       case 'config':
         state = msg.config;
         autoApprove = !!state.autoApprove;
@@ -4291,6 +4301,88 @@ const STATE_LABEL = {
     head.appendChild(icon); head.appendChild(title); head.appendChild(manage); head.appendChild(close);
     bar.appendChild(head);
     bar.classList.remove('hidden');
+  }
+
+  /** Tips & announcements — a full page (blog-style list) opened by the composer "i" icon.
+   *  Data arrives via the 'announcements' OutMessage from ChatViewProvider.fetchAnnouncements()
+   *  and is cached here; opening the page with no cache asks the host to fetch on demand. */
+  let announcementsCache = [];
+  let announcementsLastUpdated;
+  let announcementsOpen = false;
+  const announcementsEl = () => $('#announcements-page');
+
+  function updateAnnouncementsDot() {
+    const dot = $('#an-dot');
+    if (!dot) return;
+    dot.classList.toggle('hidden', announcementsOpen || !announcementsCache.length);
+  }
+
+  function toggleAnnouncements(force) {
+    announcementsOpen = typeof force === 'boolean' ? force : !announcementsOpen;
+    const page = announcementsEl();
+    if (!page) return;
+    page.classList.toggle('active', announcementsOpen);
+    thread.classList.toggle('hidden', announcementsOpen);
+    composer.classList.toggle('hidden', announcementsOpen);
+    if (settingsOpen) { settingsOpen = false; settingsEl.classList.remove('active'); }
+    if (announcementsOpen) {
+      renderAnnouncements();
+      // Refresh from the worker every time the page opens.
+      send({ type: 'getAnnouncements' });
+    }
+    updateAnnouncementsDot();
+  }
+
+  function renderAnnouncements() {
+    const page = announcementsEl();
+    if (!page) return;
+    page.innerHTML = '';
+
+    const bar = document.createElement('div');
+    bar.className = 'settings-bar';
+    const head = document.createElement('span');
+    head.innerHTML = `<b>${ICON.info}</b> &nbsp; Tips &amp; Announcements`;
+    const back = document.createElement('button');
+    back.className = 'secondary';
+    back.textContent = '← Back to chat';
+    back.addEventListener('click', () => toggleAnnouncements(false));
+    bar.appendChild(head); bar.appendChild(back);
+    page.appendChild(bar);
+
+    const list = announcementsCache;
+    if (!list.length) {
+      const empty = document.createElement('div');
+      empty.className = 'an-empty';
+      empty.textContent = 'No tips right now. Check back later.';
+      page.appendChild(empty);
+      return;
+    }
+
+    const feed = document.createElement('div');
+    feed.className = 'an-feed';
+    list.forEach((it) => {
+      const card = document.createElement('details');
+      card.className = 'an-card';
+      const sum = document.createElement('summary');
+      sum.className = 'an-card-title';
+      sum.textContent = it.title || 'Untitled';
+      card.appendChild(sum);
+      if (it.details) {
+        const d = document.createElement('div');
+        d.className = 'an-card-details';
+        d.textContent = it.details;
+        card.appendChild(d);
+      }
+      feed.appendChild(card);
+    });
+    page.appendChild(feed);
+
+    if (announcementsLastUpdated) {
+      const foot = document.createElement('div');
+      foot.className = 'an-updated';
+      foot.textContent = `Last updated ${announcementsLastUpdated}`;
+      page.appendChild(foot);
+    }
   }
 
   function renderChangedBar(msg) {
