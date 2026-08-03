@@ -384,11 +384,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Session Auto-approve: when true, the command/edit gates skip the inline prompt and run
    * unattended (dangerous commands still confirm). Read live by both gates; persisted per workspace.
    * Shared across all sessions — a workspace-level preference.
+   *
+   * Defaults to true so the agent runs commands/edits autonomously like other coding agents
+   * (Claude Code, Cursor): only commands matching the DANGEROUS list (rm -rf, git push --force,
+   * sudo...) still prompt. Users who want per-action confirmation can turn it off in the composer.
    */
-  autoApprove = false;
+  autoApprove = true;
 
   constructor(private readonly extensionUri: vscode.Uri, private readonly deps: ChatDeps) {
-    this.autoApprove = deps.workspaceState.get<boolean>(AUTO_APPROVE_KEY, false);
+    this.autoApprove = deps.workspaceState.get<boolean>(AUTO_APPROVE_KEY, true);
     const stored = this.loadSessions();
 
     for (const s of stored) this.sessions.set(s.id, this.hydrateSession(s));

@@ -332,7 +332,7 @@ const STATE_LABEL = {
   // prompt (dangerous commands still confirm). State is owned by the extension and
   // restored from the config message; this just reflects and flips it.
   const autoBtn = $('#auto-btn');
-  let autoApprove = false;
+  let autoApprove = true;
   function renderAutoApprove() {
     autoBtn.classList.toggle('on', autoApprove);
     autoBtn.setAttribute('aria-pressed', String(autoApprove));
