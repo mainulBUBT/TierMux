@@ -785,13 +785,14 @@ details[open].reasoning summary::before { content: '▾ '; }
 .input-wrap {
   position: relative;
   border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
-  border-radius: 12px; background: var(--vscode-input-background);
-  padding: 8px; display: flex; flex-direction: column; gap: 6px;
+  border-radius: 14px; background: var(--vscode-input-background);
+  padding: 10px 10px 8px; display: flex; flex-direction: column; gap: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .12);
   transition: border-color .15s ease, box-shadow .15s ease;
 }
 .input-wrap:focus-within {
   border-color: var(--vscode-focusBorder);
-  box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder), 0 2px 10px rgba(0, 0, 0, .18);
 }
 .input-wrap textarea {
   width: 100%; resize: none; min-height: 44px; max-height: 220px; overflow-y: auto;
@@ -799,25 +800,39 @@ details[open].reasoning summary::before { content: '▾ '; }
   border: none; outline: none; padding: 2px 4px; font-family: inherit; font-size: inherit;
 }
 .input-wrap textarea::placeholder { color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground)); opacity: .85; }
-.toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
-.tgroup { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+/* The toolbar is a single row that must never wrap: the left group (mode/model/reasoning)
+   shrinks first, the right group (toggles/send) stays fixed-size and pinned to the end. */
+.toolbar { display: flex; align-items: center; flex-wrap: nowrap; gap: 6px; min-width: 0; }
+.tgroup { display: flex; align-items: center; flex-wrap: nowrap; gap: 4px; min-width: 0; }
+.tgroup:not(.right) { flex: 1 1 auto; min-width: 0; }
 .tgroup.right { margin-left: auto; flex: 0 0 auto; }
 .pill {
-  display: inline-flex; align-items: center; gap: 5px;
+  display: inline-flex; align-items: center; gap: 4px;
   background: transparent; color: var(--vscode-foreground);
-  border: 1px solid transparent;
-  border-radius: 14px; padding: 3px 10px; font-size: 11px; cursor: pointer;
-  max-width: 160px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  transition: background .12s ease;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 12px; padding: 3px 8px; font-size: 10.5px; cursor: pointer;
+  flex: 0 1 auto; max-width: 140px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: background .12s ease, border-color .12s ease;
 }
-.pill:hover { background: var(--vscode-toolbar-hoverBackground); }
+.pill:hover { background: var(--vscode-toolbar-hoverBackground); border-color: var(--vscode-focusBorder); }
 .pill:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
 .pill-icon { flex: 0 0 auto; display: inline-flex; align-items: center; opacity: .8; }
 .pill-icon svg { display: block; }
 button#model-btn {
-  position: relative; max-width: 180px; text-align: left;
+  position: relative; max-width: 120px; text-align: left;
   display: inline-flex; align-items: center;
 }
+/* Agent-type (mode) pill reads as the primary control in the toolbar: a filled chip with its
+   own accent tint, rather than the plain outline the other pills use. */
+.agent-type-btn {
+  max-width: 100px; flex-shrink: 0;
+  background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
+  border-color: transparent; font-weight: 600;
+}
+.agent-type-btn:hover { background: var(--vscode-badge-background); filter: brightness(1.1); }
+.agent-type-btn .chev { opacity: .6; margin-left: -1px; }
+.agent-type-btn .chev svg { width: 9px; height: 9px; }
+
 /* Auto-approve toggle pill: dim when off, accent-filled when on. */
 .toggle-pill {
   display: inline-flex; align-items: center; justify-content: center; gap: 0; max-width: none; flex: 0 0 auto;
@@ -829,6 +844,12 @@ button#model-btn {
   border-color: var(--vscode-button-background);
 }
 .toggle-pill.on svg { opacity: 1; }
+/* Compact square variant for icon-only toggle pills (auto-approve). */
+.icon-only-sm { padding: 4px; width: 26px; height: 26px; justify-content: center; border-radius: 8px; }
+/* Slightly tighter icon-btn used for the row of small toolbar glyphs (tips/selection/attach)
+   so they read as one compact cluster next to the auto-approve pill and send button. */
+.icon-btn-sm { padding: 4px; width: 26px; height: 26px; }
+.icon-btn-sm svg { width: 13px; height: 13px; }
 
 /* Instant custom tooltip — appears instantly on hover, no native title delay.
    Elements in the toolbar that need zero-delay descriptions add data-tooltip="…". */
@@ -862,9 +883,9 @@ button#model-btn .mb-label { overflow: hidden; text-overflow: ellipsis; white-sp
 
 /* One shared down-chevron for the mode / model / effort controls so they match.
    Native <select> arrows are removed; the glyph uses currentColor for theme parity. */
-.select-wrap { position: relative; display: inline-flex; min-width: 0; }
+.select-wrap { position: relative; display: inline-flex; min-width: 0; flex: 0 1 64px; }
 /* No dropdown caret — matches the caret-less mode/model pills for a clean, consistent toolbar. */
-.select-wrap > select.pill { appearance: none; -webkit-appearance: none; }
+.select-wrap > select.pill { appearance: none; -webkit-appearance: none; max-width: none; width: 100%; }
 
 /* Custom scrollable, searchable model dropdown */
 /* Mode picker (custom dropdown: short name on the button, name + description in the list) */
@@ -877,9 +898,13 @@ button#model-btn .mb-label { overflow: hidden; text-overflow: ellipsis; white-sp
   border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, .45); padding: 4px;
 }
 .mode-pop.hidden { display: none; }
-.mode-item { padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.mode-item { display: flex; align-items: flex-start; gap: 8px; padding: 7px 8px; border-radius: 6px; cursor: pointer; }
 .mode-item:hover { background: var(--vscode-list-hoverBackground); }
 .mode-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.mode-item-icon { flex: 0 0 auto; display: inline-flex; align-items: center; margin-top: 1px; opacity: .75; }
+.mode-item-icon svg { display: block; }
+.mode-item.selected .mode-item-icon { opacity: 1; }
+.mode-item-body { min-width: 0; }
 .mode-item-label { font-size: 12px; font-weight: 600; }
 .mode-item-desc { font-size: 11px; opacity: .7; margin-top: 2px; line-height: 1.35; }
 .mode-item.selected .mode-item-desc { opacity: .9; }
@@ -926,6 +951,17 @@ button#mode-btn.executing .mode-label {
 
 /* Disabled pill (e.g. reasoning control on a non-reasoning model) */
 .pill:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Responsive composer — VS Code sidebars/panels routinely get docked well under 400px. The
+   toolbar's left group (agent type / model / reasoning) already shrinks continuously via flex
+   as the panel narrows; below this width it also drops the least-used control (reasoning
+   effort) so the primary row (agent type / model / auto-approve / send) never wraps or clips. */
+@media (max-width: 300px) {
+  .select-wrap { display: none; }
+  .agent-type-btn { max-width: 76px; }
+  button#model-btn { max-width: 80px; }
+  .input-wrap { padding: 8px 8px 6px; }
+}
 
 /* @ / / autocomplete popup */
 .ac-pop {

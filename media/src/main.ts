@@ -100,8 +100,10 @@ const STATE_LABEL = {
         <textarea id="input" placeholder="What would you like to know?" title="Enter to send · Shift+Enter for newline · @ for files · / for commands · /fix /tests /commit"></textarea>
         <div class="toolbar">
           <div class="tgroup">
-            <div class="mode-picker">
-              <button type="button" id="mode-btn" class="pill" title="Mode — how the assistant handles your message"><span class="pill-icon">${ICON.spark}</span><span class="mode-label">Auto</span></button>
+            <div class="mode-picker agent-type-picker">
+              <button type="button" id="mode-btn" class="pill agent-type-btn" title="Agent type — how the assistant handles your message">
+                <span class="pill-icon mode-icon">${ICON.spark}</span><span class="mode-label">Ask</span><span class="pill-icon chev">${ICON.chevron}</span>
+              </button>
               <div id="mode-pop" class="mode-pop hidden"></div>
             </div>
             <div class="model-picker">
@@ -120,12 +122,10 @@ const STATE_LABEL = {
                 <option value="xhigh">Very High</option>
               </select>
             </span>
-            <button type="button" id="auto-btn" class="pill toggle-pill" aria-pressed="false" title="Auto-approve — run commands and apply edits without asking, for an uninterrupted flow. Dangerous commands (rm -rf, force push, sudo…) still ask. Off = review each step." data-tooltip="Auto-approve — run commands and edit files without asking first. Dangerous operations still confirm. Toggle on for an uninterrupted flow.">${ICON.zap}</button>
           </div>
           <div class="tgroup right">
-            <button class="icon-btn" id="btn-announcements" title="Tips & announcements" data-tooltip="Tips & announcements">${ICON.info}<span class="an-dot hidden" id="an-dot"></span></button>
-            <button class="icon-btn" id="btn-selection" title="Add editor selection as context" data-tooltip="Add editor selection as context">${ICON.selection}</button>
-            <button class="icon-btn" id="btn-attach" title="Attach file or image" data-tooltip="Attach file or image">${ICON.attach}</button>
+            <button type="button" id="auto-btn" class="pill toggle-pill icon-only-sm" aria-pressed="false" aria-label="Auto-approve — run commands and apply edits without asking, for an uninterrupted flow. Dangerous commands (rm -rf, force push, sudo…) still ask. Off = review each step." data-tooltip="Auto-approve — run commands and edit files without asking first. Dangerous operations still confirm. Toggle on for an uninterrupted flow.">${ICON.zap}</button>
+            <button class="icon-btn icon-btn-sm" id="btn-attach" aria-label="Add files" data-tooltip="Add files">${ICON.addCircle}</button>
             <button class="send-btn" id="btn-send" title="Send (Enter)">${ICON.send}</button>
           </div>
         </div>
@@ -276,22 +276,26 @@ const STATE_LABEL = {
 
   // Mode picker (custom dropdown: button shows the short name, list shows name + description).
   const MODES = [
-    { value: 'ask', label: 'Ask', desc: 'Read-only Q&A — answers a direct question, or talks through options and trade-offs for an open-ended one. Cannot edit files or run commands.' },
-    { value: 'plan', label: 'Plan', desc: 'Researches the code by reading and searching it, proposes a plan, then edits only after you approve.' },
-    { value: 'agent', label: 'Agent', desc: 'Full agent — reads, edits files, runs commands, and tracks a live task list.' },
+    { value: 'ask', label: 'Ask', icon: ICON.search, desc: 'Read-only Q&A — answers a direct question, or talks through options and trade-offs for an open-ended one. Cannot edit files or run commands.' },
+    { value: 'plan', label: 'Plan', icon: ICON.checkSquare, desc: 'Researches the code by reading and searching it, proposes a plan, then edits only after you approve.' },
+    { value: 'agent', label: 'Agent', icon: ICON.zap, desc: 'Full agent — reads, edits files, runs commands, and tracks a live task list.' },
   ];
   let currentMode = 'ask';
   const modeBtn = $('#mode-btn');
   const modeBtnLabel = $('.mode-label', modeBtn);
+  const modeBtnIcon = $('.mode-icon', modeBtn);
   const modePop = $('#mode-pop');
   function buildModePicker() {
     modePop.innerHTML = '';
     MODES.forEach((m) => {
       const item = document.createElement('div');
       item.className = 'mode-item' + (m.value === currentMode ? ' selected' : '');
+      const icon = document.createElement('span'); icon.className = 'mode-item-icon'; icon.innerHTML = m.icon;
+      const body = document.createElement('div'); body.className = 'mode-item-body';
       const lbl = document.createElement('div'); lbl.className = 'mode-item-label'; lbl.textContent = m.label;
       const desc = document.createElement('div'); desc.className = 'mode-item-desc'; desc.textContent = m.desc;
-      item.appendChild(lbl); item.appendChild(desc);
+      body.appendChild(lbl); body.appendChild(desc);
+      item.appendChild(icon); item.appendChild(body);
       item.addEventListener('click', () => setMode(m.value));
       modePop.appendChild(item);
     });
@@ -300,6 +304,7 @@ const STATE_LABEL = {
     const m = MODES.find((x) => x.value === value) || MODES[0];
     currentMode = m.value;
     modeBtnLabel.textContent = m.label;
+    modeBtnIcon.innerHTML = m.icon;
     modeBtn.title = m.desc;
     closeModePop();
   }
@@ -1340,8 +1345,6 @@ const STATE_LABEL = {
   input.addEventListener('input', () => { if (viewedSessionId) saveComposer(viewedSessionId); });
 
   $('#btn-attach').addEventListener('click', () => send({ type: 'attachFromWorkspace' }));
-  $('#btn-selection').addEventListener('click', () => send({ type: 'addSelection' }));
-  $('#btn-announcements').addEventListener('click', () => toggleAnnouncements());
   // Close transient popups when the view loses focus or is hidden (e.g. switching tabs).
   window.addEventListener('blur', () => { closeModelPop(); closeModePop(); closeAc(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) { closeModelPop(); closeModePop(); closeAc(); } });

@@ -1773,7 +1773,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         + `referenced in the instructions below — e.g. references/, scripts/, examples/ — against that directory.)\n\n`;
       prompt = `${dirNote}${skill.prompt}\n\n${slash.rest}`;
     }
-
     const s = this.current();
     s.model = m.model;
     s.reasoningEffort = m.reasoningEffort;
