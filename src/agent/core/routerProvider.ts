@@ -4,7 +4,7 @@
 // (OpenAI wire format, which Router.route() already speaks). No routing decisions, no scoring, no
 // failover logic here — that's all Router.route()'s job. The model being called is still whatever
 // the user picked (GPT/Claude/Qwen/...); this factory does not itself produce "a model."
-import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4GenerateResult, LanguageModelV4StreamResult, LanguageModelV4StreamPart, LanguageModelV4FunctionTool } from '@ai-sdk/provider';
+import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4GenerateResult, LanguageModelV4StreamResult, LanguageModelV4StreamPart, LanguageModelV4FunctionTool, LanguageModelV4FilePart } from '@ai-sdk/provider';
 import type { Router, RouteOptions } from '../../router/router';
 import type { ChatMessage, ChatToolDefinition, ReasoningEffort } from '../../shared/types';
 import { diagLog } from '../../util/diag';
@@ -68,6 +68,28 @@ function toRationaleCallback(
   });
 }
 
+/** Extract a `data:<mediaType>;base64,<...>` URL from an AI SDK v4 file part's tagged
+ *  `SharedV4FileData` union. The AI SDK core (convertToLanguageModelPrompt) always resolves a
+ *  `data:` URL string (what toFilePart in loop.ts hands it) down to `{ type: 'data', data:
+ *  <bare base64 string> }` with `mediaType` lifted to the part's top level — so this has to
+ *  re-wrap the base64 back into a data URL for the router's ChatContent block shape. */
+function filePartToDataUrl(part: LanguageModelV4FilePart): string | undefined {
+  const mediaType = part.mediaType || 'application/octet-stream';
+  const d = part.data as { type?: string; data?: unknown; url?: unknown } | undefined;
+  if (!d || typeof d !== 'object') return undefined;
+  if (d.type === 'data') {
+    if (typeof d.data === 'string') {
+      return d.data.startsWith('data:') ? d.data : `data:${mediaType};base64,${d.data}`;
+    }
+    if (d.data instanceof Uint8Array) {
+      return `data:${mediaType};base64,${Buffer.from(d.data).toString('base64')}`;
+    }
+  } else if (d.type === 'url' && d.url != null) {
+    return String(d.url);
+  }
+  return undefined;
+}
+
 /** Convert AI SDK prompt messages -> TierMux ChatMessage[] (OpenAI-wire format). */
 function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): ChatMessage[] {
   const msgs: ChatMessage[] = [];
@@ -79,7 +101,29 @@ function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): ChatMes
         .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
         .map((p) => p.text)
         .join('');
-      msgs.push({ role: 'user', content: text || '' });
+      // `type:'file'` parts carry the image/PDF attachments (see toFilePart/toUserContent in
+      // loop.ts) — these MUST survive into the router's ChatContent blocks, or a vision turn
+      // reaches the model with the attachment silently gone regardless of which model got picked.
+      const fileParts = msg.content.filter((p): p is LanguageModelV4FilePart => p.type === 'file');
+      diagLog('attach.toRouterMessages', `partTypes=${msg.content.map((p) => p.type).join(',')} fileParts=${fileParts.length}`);
+      if (fileParts.length === 0) {
+        msgs.push({ role: 'user', content: text || '' });
+      } else {
+        const blocks: Array<{ type: string; [key: string]: unknown }> = [];
+        if (text) blocks.push({ type: 'text', text });
+        for (const p of fileParts) {
+          const url = filePartToDataUrl(p);
+          diagLog('attach.toRouterMessages', `file mediaType=${p.mediaType ?? '<none>'} dataType=${(p.data as { type?: string } | undefined)?.type ?? '<none>'} urlResolved=${!!url}`);
+          if (!url) continue;
+          const mime = p.mediaType || 'application/octet-stream';
+          if (mime.startsWith('image/')) {
+            blocks.push({ type: 'image_url', image_url: { url, mime, filename: p.filename } });
+          } else {
+            blocks.push({ type: 'file', file: { filename: p.filename, file_data: url, mime } });
+          }
+        }
+        msgs.push({ role: 'user', content: blocks.length ? blocks : (text || '') });
+      }
     } else if (msg.role === 'assistant') {
       const textParts = msg.content.filter((p): p is { type: 'text'; text: string } => p.type === 'text');
       const toolParts = msg.content.filter((p): p is any => p.type === 'tool-call');
@@ -99,6 +143,21 @@ function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): ChatMes
     }
   }
   return msgs;
+}
+
+/** True when any message carries a raw (unextracted) PDF `type:'file'` block — Router.route()'s
+ *  candidates() uses this to hard-filter to providers that actually forward PDF bytes
+ *  (BaseProvider.carriesRawPdf), instead of picking an image-only vision model whose provider
+ *  silently drops the file. Was previously declared on RouteOptions but never set by any caller. */
+function hasRawPdfPart(messages: ChatMessage[]): boolean {
+  return messages.some((m) => {
+    if (m.role !== 'user' || !Array.isArray(m.content)) return false;
+    return m.content.some((b) => {
+      if (!b || typeof b !== 'object') return false;
+      const block = b as { type?: string; file?: { mime?: string } };
+      return block.type === 'file' && block.file?.mime === 'application/pdf';
+    });
+  });
 }
 
 /** Convert AI SDK tool definitions -> TierMux ChatToolDefinition[]. */
@@ -139,8 +198,9 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         exclude: providerOpts.excludeModels,
         maxIntelligenceRank: providerOpts.maxIntelligenceRank,
         abortSignal: options.abortSignal,
+        hasRawPdfPart: hasRawPdfPart(messages),
       };
-      diagLog('ai-sdk.doGenerate', `pinnedModel="${providerOpts.pinnedModel ?? '<auto>'}" → routeOpts.model="${routeOpts.model}" msgs=${messages.length} tools=${tools?.length ?? 0}`);
+      diagLog('ai-sdk.doGenerate', `pinnedModel="${providerOpts.pinnedModel ?? '<auto>'}" → routeOpts.model="${routeOpts.model}" msgs=${messages.length} tools=${tools?.length ?? 0} hasRawPdfPart=${routeOpts.hasRawPdfPart}`);
 
       const result = await router.route(messages, routeOpts);
       providerOpts.onModelSelected?.(result.platform, result.model, result.runtimeName);
@@ -201,8 +261,9 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         exclude: providerOpts.excludeModels,
         maxIntelligenceRank: providerOpts.maxIntelligenceRank,
         abortSignal: options.abortSignal,
+        hasRawPdfPart: hasRawPdfPart(messages),
       };
-      diagLog('ai-sdk.doStream', `pinnedModel="${providerOpts.pinnedModel ?? '<auto>'}" → routeOpts.model="${routeOpts.model}" msgs=${messages.length} tools=${tools?.length ?? 0}`);
+      diagLog('ai-sdk.doStream', `pinnedModel="${providerOpts.pinnedModel ?? '<auto>'}" → routeOpts.model="${routeOpts.model}" msgs=${messages.length} tools=${tools?.length ?? 0} hasRawPdfPart=${routeOpts.hasRawPdfPart}`);
 
       router.route(messages, routeOpts).then((result) => {
         providerOpts.onModelSelected?.(result.platform, result.model, result.runtimeName);

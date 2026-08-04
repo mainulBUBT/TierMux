@@ -9,6 +9,10 @@ export interface Skill {
   description: string;
   /** Prompt template substituted for the user's message when `/name` is invoked. */
   prompt: string;
+  /** Absolute path to the folder the skill file lives in — lets multi-file skill packages
+   *  (SKILL.md + references/scripts/examples, e.g. the obra/superpowers convention) resolve
+   *  their own relative paths; without it the agent has no way to find sibling files. */
+  dir: string;
 }
 
 function parseSkillFile(raw: string): { description: string; prompt: string } {
@@ -27,7 +31,7 @@ function loadDir(dir: string, into: Map<string, Skill>): void {
     try {
       const raw = fs.readFileSync(path.join(dir, f), 'utf8');
       const { description, prompt } = parseSkillFile(raw);
-      if (prompt) into.set(name, { name, description, prompt });
+      if (prompt) into.set(name, { name, description, prompt, dir });
     } catch { /* skip unreadable file */ }
   }
 }
@@ -46,9 +50,10 @@ function loadUniversalDir(dir: string, into: Map<string, Skill>): void {
     if (!entry.isDirectory()) continue;
     const name = entry.name.toLowerCase();
     try {
-      const raw = fs.readFileSync(path.join(dir, entry.name, 'SKILL.md'), 'utf8');
+      const skillDir = path.join(dir, entry.name);
+      const raw = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8');
       const { description, prompt } = parseSkillFile(raw);
-      if (prompt) into.set(name, { name, description, prompt });
+      if (prompt) into.set(name, { name, description, prompt, dir: skillDir });
     } catch { /* no SKILL.md in this subfolder */ }
   }
 }

@@ -156,7 +156,12 @@ async function main() {
     // becomes `{}` in a bundled CJS build) — inlining it crashes at require-time with
     // "filename must be ... Received undefined". Left external, Node's real require() loads the
     // actual package file, where import.meta.url resolves correctly.
-    external: ['vscode', '@vscode/ripgrep', 'jsdom'],
+    // 'pdf-parse' (wraps pdfjs-dist) is external for the same class of reason: pdfjs sets up its
+    // Node "fake worker" via a dynamic `import('./pdf.worker.mjs')` resolved relative to its own
+    // file. Bundled into dist/extension.js, that path resolves to a nonexistent dist/pdf.worker.mjs
+    // and every PDF text extraction silently fails ("Setting up fake worker failed"). Left
+    // external, Node's real module resolution finds the real pdf.worker.mjs next to pdf-parse.
+    external: ['vscode', '@vscode/ripgrep', 'jsdom', 'pdf-parse'],
     sourcemap: !production,
     minify: production,
     logLevel: 'info',

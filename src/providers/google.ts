@@ -212,6 +212,8 @@ function thinkingConfig(effort?: ReasoningEffort): Record<string, unknown> | und
 export class GoogleProvider extends BaseProvider {
   readonly platform = 'google' as const;
   readonly name = 'Google AI Studio';
+  /** Actually converts `type:'file'` blocks into Gemini `inlineData` parts — see dataUrlToInlineData below. */
+  carriesRawPdf = true;
 
   private buildBody(contents: unknown, systemInstruction: unknown, options?: CompletionOptions, modelId?: string) {
     const tools = toGeminiTools(options?.tools);

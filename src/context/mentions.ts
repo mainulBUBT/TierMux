@@ -1,5 +1,6 @@
 
 
+import * as os from 'os';
 import * as vscode from 'vscode';
 import type { MentionItem } from '../messages';
 
@@ -80,15 +81,58 @@ function splitLineRange(target: string): { path: string; startLine?: number; end
   return { path: target.slice(0, m.index), startLine, endLine };
 }
 
+/** Escape minimatch/glob metacharacters so a literal path segment isn't
+ *  misread as a pattern (e.g. Next.js `[id]` route folders as a char class). */
+function escapeGlob(s: string): string {
+  return s.replace(/[[\]{}()*?,!]/g, (c) => `\\${c}`);
+}
+
+/** Resolve `path` as a literal workspace-relative path (no globbing), so
+ *  filenames containing glob metacharacters still resolve directly. */
+async function resolveLiteralPath(path: string): Promise<vscode.Uri | undefined> {
+  const clean = path.replace(/^\/+/, '');
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const uri = vscode.Uri.joinPath(folder.uri, clean);
+    if (!uri.path.startsWith(folder.uri.path)) continue;
+    try {
+      const stat = await vscode.workspace.fs.stat(uri);
+      if (stat.type === vscode.FileType.File) return uri;
+    } catch { /* not found under this folder */ }
+  }
+  return undefined;
+}
+
+/** Resolve `path` as an absolute filesystem path (or `~`-relative), so
+ *  mentions can pull in files from anywhere on disk, not just the workspace. */
+async function resolveAbsolutePath(path: string): Promise<vscode.Uri | undefined> {
+  let expanded = path;
+  if (expanded === '~' || expanded.startsWith('~/')) {
+    expanded = os.homedir() + expanded.slice(1);
+  } else if (!expanded.startsWith('/')) {
+    return undefined;
+  }
+  const uri = vscode.Uri.file(expanded);
+  try {
+    const stat = await vscode.workspace.fs.stat(uri);
+    if (stat.type === vscode.FileType.File) return uri;
+  } catch { /* not found */ }
+  return undefined;
+}
+
 async function resolveOne(target: string): Promise<string | undefined> {
   const { path, startLine, endLine } = splitLineRange(target);
 
-  const files = await vscode.workspace.findFiles(`**/${path}`, '**/node_modules/**', 1);
-  if (files.length > 0) {
+  let fileUri: vscode.Uri | undefined = await resolveAbsolutePath(path);
+  if (!fileUri) fileUri = await resolveLiteralPath(path);
+  if (!fileUri) {
+    const files = await vscode.workspace.findFiles(`**/${escapeGlob(path)}`, '**/node_modules/**', 1);
+    fileUri = files[0];
+  }
+  if (fileUri) {
     try {
-      const bytes = await vscode.workspace.fs.readFile(files[0]);
+      const bytes = await vscode.workspace.fs.readFile(fileUri);
       let text = new TextDecoder().decode(bytes.slice(0, MAX_MENTION_BYTES));
-      const rel = vscode.workspace.asRelativePath(files[0]);
+      const rel = vscode.workspace.asRelativePath(fileUri);
       if (startLine !== undefined) {
         const lines = text.split('\n');
         const from = Math.max(1, startLine);

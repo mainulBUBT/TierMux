@@ -15,6 +15,7 @@ import { orderForTask, type TaskKind } from '../agent/routing';
 import { contentToString } from '../agent/content';
 import { diagLog } from '../util/diag';
 import { VISION_BLIND } from '../agent/answerQuality';
+import { isLikelyVisionModelId } from '../catalog/discovery';
 import type { SecretStore } from '../config/secrets';
 import type { SettingsStore } from '../config/settingsStore';
 import type { Catalog } from '../catalog/catalog';
@@ -258,16 +259,25 @@ export class AllModelsFailedError extends Error {
 
 /**
  * Thrown when a message carries a visual attachment (an image, or a PDF whose
- * text couldn't be extracted) but no enabled model is vision-capable. Better to
- * stop here with an actionable message than to send a turn a text-only model can
- * never fulfill — the model would just refuse ("I can't read this PDF") after
- * burning a request. See candidates(): the vision filter keys off taskKind==='vision'.
+ * text couldn't be extracted) but no vision-capable model can be found anywhere in the
+ * catalog — not even as a last-resort fallback. Better to stop here with an actionable
+ * message than to send a turn a text-only model can never fulfill — the model would just
+ * refuse ("I can't read this PDF") after burning a request. See candidates(): the vision
+ * filter keys off taskKind==='vision' and widens to the full catalog before giving up, so
+ * this should only fire when the user has no API key configured for any vision provider.
  */
 export class NoVisionModelError extends Error {
-  constructor() {
+  constructor(reason: 'no_vision_model' | 'no_raw_pdf_provider' = 'no_vision_model') {
     super(
-      'This message has an image or PDF attachment, but none of your enabled models can read attachments. ' +
-      'Open "Manage Models & Keys" and enable a vision-capable model (e.g. Gemini, GPT-4o, Claude) to read it.',
+      reason === 'no_raw_pdf_provider'
+        // Only Google (Gemini) actually forwards raw PDF bytes today (BaseProvider.carriesRawPdf) —
+        // other "vision-capable" providers silently drop the file, so the guidance must point at
+        // the one platform that really works rather than a generic vision-model list.
+        ? 'This message has a scanned/image-only PDF, but none of your configured models can actually read raw PDF ' +
+          'bytes (most providers only support images, not PDF files). Open "Manage Models & Keys" and add a Google ' +
+          'AI Studio (Gemini) key to read it.'
+        : 'This message has an image or PDF attachment, but none of your configured models can read attachments. ' +
+          'Open "Manage Models & Keys" and add a key for a vision-capable model (e.g. Gemini, GPT-4o, Claude) to read it.',
     );
     this.name = 'NoVisionModelError';
   }
@@ -542,8 +552,39 @@ export class Router {
       const modelId = rest.join('::');
 
       const forced = list.find((e) => e.platform === platform && e.modelId === modelId);
+      const forcedEntry: FallbackEntry = forced ?? { platform: platform as Platform, modelId, enabled: true, priority: -1 };
       diagLog('router.candidates', `forced model="${opts.model}" → platform=${platform} modelId=${modelId} foundInCatalog=${!!forced}`);
-      return [forced ?? { platform: platform as Platform, modelId, enabled: true, priority: -1 }];
+
+      if (opts.taskKind === 'vision') {
+        // A pinned model that can't actually see this turn's image/PDF must not silently eat the
+        // request — it has nothing to go on and hallucinates an unrelated answer (confirmed in
+        // practice: a pinned text-only model asked to read a scanned PDF invented a description of
+        // a completely different project). Check the pin's real capability before honoring it.
+        const info = this.catalog.find(forcedEntry.platform, forcedEntry.modelId);
+        const canSeeImages = forcedEntry.platform === 'custom'
+          ? isLikelyVisionModelId(forcedEntry.modelId.split('::').slice(1).join('::'))
+          : !!info?.supportsVision;
+        const provider = resolveProvider(forcedEntry.platform, forcedEntry.modelId, this.settings.getCustomEndpoints());
+        const flattens = !!(provider as { flattenContent?: boolean } | undefined)?.flattenContent;
+        const rejectsThisPdf = !!(opts.hasRawPdfPart && info?.rejectsRawPdf);
+        // A raw-PDF turn additionally requires a provider that actually forwards `type:'file'`
+        // blocks (today: only Google) — most providers are vision-capable for images but
+        // silently drop PDF file parts, which otherwise looked "usable" and produced a model
+        // confidently reporting it saw no attachment at all.
+        const dropsThisPdf = !!(opts.hasRawPdfPart && !provider?.carriesRawPdf);
+        const usable = canSeeImages && !flattens && !rejectsThisPdf && !dropsThisPdf;
+
+        if (!usable) {
+          diagLog('router.candidates', `forced model="${opts.model}" can't read this turn's attachment — substituting a vision-capable model for this turn`);
+          // Fall through to the normal (non-forced) candidate pipeline below, which already
+          // filters/widens to vision-capable models for taskKind==='vision'. The user's pin
+          // resumes automatically on the next turn that doesn't carry a visual attachment.
+        } else {
+          return [forcedEntry];
+        }
+      } else {
+        return [forcedEntry];
+      }
     }
     if (opts.requireTools) {
 
@@ -558,8 +599,31 @@ export class Router {
     if (live.length > 0) list = live;
 
     if (opts.taskKind === 'vision') {
-      const visionCapable = list.filter((e) => this.catalog.find(e.platform, e.modelId)?.supportsVision);
-      if (visionCapable.length === 0) throw new NoVisionModelError();
+      // Custom/local endpoints aren't in the built-in catalog, so fall back to the same
+      // name-based heuristic used for freshly-discovered cloud models rather than excluding
+      // them outright (unknown != false) or blindly assuming every local model can see.
+      const isVisionCapable = (e: FallbackEntry): boolean =>
+        e.platform === 'custom'
+          ? isLikelyVisionModelId(e.modelId.split('::').slice(1).join('::'))
+          : !!this.catalog.find(e.platform, e.modelId)?.supportsVision;
+
+      let visionCapable = list.filter(isVisionCapable);
+      if (visionCapable.length === 0) {
+        // The user's manually-enabled models have nothing vision-capable. Rather than fail the
+        // turn outright, widen the search to the FULL catalog (including providers the user has
+        // a key for but never toggled "enabled") — Auto mode is the recommended default and
+        // should just work when a usable vision model exists. This doesn't bypass cost/key
+        // control: candidates without a configured API key still get skipped by the normal
+        // no_api_key failover a few dozen lines below, so this only helps when a real key is
+        // already on file for that provider.
+        const known = new Set(list.map((e) => `${e.platform}::${e.modelId}`));
+        const extra = this.catalog
+          .all()
+          .filter((m) => m.supportsVision && !known.has(`${m.platform}::${m.modelId}`))
+          .map((m): FallbackEntry => ({ platform: m.platform, modelId: m.modelId, enabled: true, priority: 999 }));
+        visionCapable = extra;
+        if (visionCapable.length === 0) throw new NoVisionModelError();
+      }
       list = visionCapable;
 
       // A flattenContent provider (e.g. Cohere's compat endpoint) reduces multimodal
@@ -573,8 +637,18 @@ export class Router {
       if (carriesImages.length > 0) list = carriesImages;
 
       if (opts.hasRawPdfPart) {
-        const acceptsRawPdf = list.filter((e) => !this.catalog.find(e.platform, e.modelId)?.rejectsRawPdf);
-        if (acceptsRawPdf.length > 0) list = acceptsRawPdf;
+        // Unlike the image-carrying preference above, this is a HARD filter, not a
+        // prefer-with-fallback: a provider that doesn't forward `type:'file'` blocks (see
+        // BaseProvider.carriesRawPdf) sends NO pdf bytes at all — falling back to one would
+        // reproduce the original bug (model reports no attachment, or hallucinates). Also drop
+        // models individually flagged as refusing a raw PDF even when their provider forwards it.
+        const acceptsRawPdf = list.filter((e) => {
+          const p = resolveProvider(e.platform, e.modelId, this.settings.getCustomEndpoints());
+          if (!p?.carriesRawPdf) return false;
+          return !this.catalog.find(e.platform, e.modelId)?.rejectsRawPdf;
+        });
+        if (acceptsRawPdf.length === 0) throw new NoVisionModelError('no_raw_pdf_provider');
+        list = acceptsRawPdf;
       }
     }
 
@@ -722,7 +796,7 @@ export class Router {
       const apiKey = entry.key
         ?? await this.secrets.getModelKey(entry.platform, entry.modelId)
         ?? await this.secrets.resolveKey(entry.platform, entry.modelId);
-      if (apiKey === undefined || (entry.platform === 'custom' && apiKey === '')) continue;
+      if (apiKey === undefined) continue;
       if (abortSignal?.aborted) return;
       toProbe.push(this.preflightPing(provider, apiKey, entry.platform, entry.modelId));
     }
@@ -896,7 +970,7 @@ export class Router {
         ?? await this.secrets.getModelKey(entry.platform, entry.modelId)
         ?? await this.secrets.resolveKey(entry.platform, entry.modelId);
 
-      if (apiKey === undefined || (entry.platform === 'custom' && apiKey === '')) {
+      if (apiKey === undefined) {
         failures.push({ platform: entry.platform, model: entry.modelId, reason: 'no_api_key' });
         continue;
       }

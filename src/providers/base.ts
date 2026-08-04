@@ -44,6 +44,14 @@ export abstract class BaseProvider {
   preflightTimeoutMs?: number;
   /** Skip the preflight ping entirely for this provider (e.g. slow platforms where ping costs real time). */
   skipPreflight = false;
+  /**
+   * Whether this provider actually forwards a `type:'file'` content block (raw PDF bytes) to the
+   * underlying API, as opposed to silently dropping it. Distinct from image support — most
+   * OpenAI-compat providers happily forward `image_url` blocks but have no code path for raw
+   * PDF file parts, so `supportsVision` alone is not a safe signal for PDF delivery. Defaults to
+   * false; only providers with real file-block handling should override it to true.
+   */
+  carriesRawPdf = false;
 
   abstract chatCompletion(
     apiKey: string,

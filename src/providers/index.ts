@@ -61,7 +61,9 @@ platformInfo.set('cloudflare', { platform: 'cloudflare', name: 'Cloudflare Worke
 
 for (const c of COMPAT) registerCompat(c);
 
-const CUSTOM_TIMEOUT_MS = 120000;
+// Local LLM servers (llama.cpp, LM Studio, koboldcpp, etc.) are often CPU-bound and
+// can take far longer per turn than cloud APIs, especially for long/agentic completions.
+const CUSTOM_TIMEOUT_MS = 600000;
 
 export function resolveProvider(
   platform: Platform,

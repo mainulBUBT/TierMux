@@ -1351,7 +1351,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           void vscode.window.showWarningMessage('Model ID must be 1-200 characters.');
           break;
         }
-        if (/[\s:]/.test(modelId)) {
+        if (/\s|::/.test(modelId)) {
           void vscode.window.showWarningMessage('Model ID cannot contain whitespace or ::');
           break;
         }
@@ -1721,6 +1721,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         visualBlocks.push({ type: 'file', file: { filename: a.name, file_data: a.dataUrl, mime: a.mime } });
       }
     }
+    diagLog('attach.build', `attachments=${list.length} kinds=${list.map((a) => `${a.kind}${a.dataUrl ? ':dataUrl' : ''}${a.text ? ':text' : ''}`).join(',') || '<none>'} visualBlocks=${visualBlocks.length}`);
     if (visualBlocks.length === 0) return textParts;
 
     return [
@@ -1767,7 +1768,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     let prompt = m.text;
     const skill = slash && this.skills().get(slash.name);
-    if (slash && skill) prompt = `${skill.prompt}\n\n${slash.rest}`;
+    if (slash && skill) {
+      const dirNote = `(This skill's files live at: ${skill.dir}. Resolve any relative paths `
+        + `referenced in the instructions below — e.g. references/, scripts/, examples/ — against that directory.)\n\n`;
+      prompt = `${dirNote}${skill.prompt}\n\n${slash.rest}`;
+    }
 
     const s = this.current();
     s.model = m.model;

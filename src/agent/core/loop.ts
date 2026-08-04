@@ -50,12 +50,14 @@ function toFilePart(block: Extract<ChatContentBlock, object>): { type: 'file'; d
 function toUserContent(content: ChatMessage['content']): unknown {
   if (typeof content === 'string' || content == null) return contentToString(content);
   const parts: unknown[] = [];
+  let fileCount = 0;
   for (const block of content) {
     if (typeof block === 'string') { if (block) parts.push({ type: 'text', text: block }); continue; }
     const filePart = toFilePart(block);
-    if (filePart) { parts.push(filePart); continue; }
+    if (filePart) { parts.push(filePart); fileCount++; continue; }
     if (typeof block.text === 'string' && block.text) parts.push({ type: 'text', text: block.text });
   }
+  diagLog('attach.toUserContent', `inputBlocks=${content.length} outParts=${parts.length} fileParts=${fileCount}`);
   return parts.length ? parts : contentToString(content);
 }
 
