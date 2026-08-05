@@ -348,6 +348,9 @@ export type OutMessage =
    *  `tiermux.onboardedEngine` global state) — returning users never see this. */
   | { type: 'engineStatus'; state: 'downloading' | 'starting' | 'verifying' | 'ready' | 'error'; message?: string; percent?: number }
   | { type: 'newModelsAvailable'; message: string }
+  /** Dismissible "new providers available" banner above the composer — mirrors the
+   *  models banner but fires when a brand-new provider is merged in from the remote catalog. */
+  | { type: 'newProvidersAvailable'; message: string }
   /** Operator-published tips/announcements, fetched from the announcements worker
    *  (see ChatViewProvider.fetchAnnouncements). Pushed on startup and on icon click. */
   | { type: 'announcements'; items: AnnouncementItem[]; lastUpdated?: string };

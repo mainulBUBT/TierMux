@@ -230,7 +230,7 @@ export class AllModelsFailedError extends Error {
           ? `${who} rejected the request (HTTP 401/403). Check the endpoint's API key, base URL, and model ID in "Manage Models & Keys".${upstream}`
           : `${who} rejected the API key. Update it in "Manage Models & Keys".${upstream}`;
         case 'bad_request': return `${who} rejected the request (HTTP 400)${isCustom ? ' — often a wrong model ID or unsupported parameter for this endpoint' : ''}.${upstream}`;
-        case 'paid_only': return `${who} is paid-only or out of free quota on this provider (HTTP 402). Pick a different model, or set the model to Auto.`;
+        case 'paid_only': return `${who} is paid-only or out of free quota on this provider. Add credit/a key in "Manage Models & Keys", pick a different model, or set it to Auto.`;
         default: return `${who} failed (${f.reason}). Try again, or set the model to Auto.${upstream}`;
       }
     }
@@ -293,7 +293,19 @@ function classify(err: unknown): { reason: string; failoverable: boolean; retryA
     // the wait+retry honors the real cooldown for every provider, not just header-senders.
     const retryAfterMs = err.retryAfterMs ?? (s === 429 && detail ? parseRetryFromBody(detail) : undefined);
     if (s === 429) return { reason: 'rate_limited', failoverable: true, retryAfterMs, detail };
-    if (s === 401 || s === 403) return { reason: 'auth', failoverable: true, detail };
+    if (s === 401) return { reason: 'auth', failoverable: true, detail };
+    if (s === 403) {
+      // Some gateways (Token Router / new-api) answer a VALID key whose account is out of
+      // credit/quota with HTTP 403 ("User's credit limit is insufficient, remaining credit
+      // limit: $0.000000"). That is a paid-only/out-of-quota condition, NOT an auth rejection —
+      // classifying it as `auth` produces the misleading "rejected the API key" message and
+      // sends the user to re-enter a key that already works. Sniff the body for credit/quota
+      // language and route it to `paid_only` instead.
+      if (detail && /credit|quota|balance|insufficient|out of (?:credit|quota|funds)|no enough/i.test(detail)) {
+        return { reason: 'paid_only', failoverable: true, detail };
+      }
+      return { reason: 'auth', failoverable: true, detail };
+    }
     if (s === 408) return { reason: 'timeout', failoverable: true, detail };
     if (s === 413) return { reason: 'http_413', failoverable: true, detail };
     if (s === 404) return { reason: 'not_found', failoverable: true, detail };

@@ -599,6 +599,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'newModelsAvailable', message });
   }
 
+  /** Dismissible "new providers available" banner above the composer, mirroring
+   *  postNewModels — fires when a brand-new provider is registered from the catalog. */
+  postNewProviders(message: string): void {
+    this.post({ type: 'newProvidersAvailable', message });
+  }
+
   /** Operator tips/announcements worker. Failures are swallowed (logged) — tips are
    *  non-critical and must never block the panel or throw unhandled rejections. */
   private static readonly ANNOUNCEMENTS_URL = 'https://tiermux.mainulislam3057.workers.dev/announcements';

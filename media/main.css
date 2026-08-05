@@ -948,6 +948,12 @@ button#mode-btn.executing .mode-label {
   flex: 0 0 auto; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
   padding: 1px 5px; border-radius: 3px; color: #fff; background: var(--vscode-editorWarning-foreground, #d18616);
 }
+.model-item.off .mi-label { opacity: .55; }
+.model-item .mi-off {
+  flex: 0 0 auto; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+  padding: 1px 5px; border-radius: 3px; color: var(--vscode-descriptionForeground, #888);
+  background: var(--vscode-badge-background, rgba(128,128,128,.18));
+}
 
 /* Disabled pill (e.g. reasoning control on a non-reasoning model) */
 .pill:disabled { opacity: .45; cursor: not-allowed; }

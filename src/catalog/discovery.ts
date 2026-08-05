@@ -2,27 +2,6 @@
 
 import type { CatalogModel, Platform } from '../shared/types';
 
-/**
- * Provider-list discovery: ask each provider what it currently serves, so the catalog can
- * add models that appeared and drop ones that vanished without a hand edit.
- *
- * Scope is deliberately the keyless providers only. The keyed ones (groq, mistral, cerebras,
- * zhipu, cohere, github, poolside, siliconflow, agnes) answer 401 without auth, and spending
- * a request against the user's key on every sync — plus handling nine auth dialects — buys
- * little when these twelve already cover ~1.3k models.
- *
- * What this CANNOT do: no provider reports `intelligenceRank`, `speedRank`, or `tags`, and
- * only Kenari reports tool support. Those come from `deriveMetadata` below, which reads the
- * model *name* — a signal every provider has, since names encode size ("70b"), tier
- * ("flash", "mini", "pro"), specialty ("coder"), and reasoning ("r1", "thinking").
- */
-
-/** Platforms whose `/models` endpoint answers without an API key (measured, not assumed). */
-export const DISCOVERABLE: Platform[] = [
-  'huggingface', 'kenari', 'kilo', 'llm7', 'llmgateway', 'nvidia',
-  'ollama', 'opencode', 'openrouter', 'ovh', 'sambanova', 'zenmux',
-] as unknown as Platform[];
-
 export interface DiscoveredModel {
   platform: Platform;
   modelId: string;
@@ -34,117 +13,11 @@ export interface DiscoveredModel {
   free?: boolean;
 }
 
-export interface ProviderFetch {
-  platform: Platform;
-  /** null when the fetch was unhealthy — caller must NOT treat this as "provider has no models". */
-  models: DiscoveredModel[] | null;
-  error?: string;
-}
-
-const asArray = (body: unknown): unknown[] | null => {
-  if (Array.isArray(body)) return body;
-  if (body && typeof body === 'object') {
-    const d = (body as Record<string, unknown>).data ?? (body as Record<string, unknown>).models;
-    if (Array.isArray(d)) return d;
-  }
-  return null;
-};
-
-const num = (v: unknown): number | null =>
-  typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.round(v) : null;
-
-/** `created` is a unix seconds stamp on most providers → "YYYY-MM" for the recency tiebreak. */
-function releasedFrom(v: unknown): string | undefined {
-  const secs = typeof v === 'number' ? v : undefined;
-  if (!secs || secs < 946_684_800 || secs > 4_102_444_800) return undefined; // 2000..2100 sanity
-  const d = new Date(secs * 1000);
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
-}
-
-/** Tool support is reported under a different name (or not at all) by every provider. */
-function toolsFrom(m: Record<string, unknown>): boolean | undefined {
-  if (typeof m.tool_call === 'boolean') return m.tool_call;                  // kenari
-  if (typeof m.supports_tools === 'boolean') return m.supports_tools;
-  if (typeof m.function_calling === 'boolean') return m.function_calling;
-  const caps = m.capabilities;                                               // zenmux, llm7
-  if (Array.isArray(caps)) {
-    const s = caps.map((c) => String(c).toLowerCase());
-    if (s.some((c) => c.includes('tool') || c.includes('function'))) return true;
-  }
-  if (caps && typeof caps === 'object') {
-    const c = caps as Record<string, unknown>;
-    if (typeof c.tools === 'boolean') return c.tools;
-    if (typeof c.tool_call === 'boolean') return c.tool_call;
-  }
-  return undefined;
-}
-
-function visionFrom(m: Record<string, unknown>): boolean | undefined {
-  const mod = m.modalities ?? m.architecture;
-  const input =
-    (mod && typeof mod === 'object' ? (mod as Record<string, unknown>).input ?? (mod as Record<string, unknown>).input_modalities : undefined) ??
-    m.input_modalities;
-  if (Array.isArray(input)) return input.map((x) => String(x).toLowerCase()).includes('image');
-  return undefined;
-}
-
-/** Normalize one provider's raw entry. Returns null for rows without a usable id. */
-function normalize(platform: Platform, raw: unknown): DiscoveredModel | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const m = raw as Record<string, unknown>;
-  const modelId = typeof m.id === 'string' ? m.id.trim() : '';
-  if (!modelId) return null;
-
-  const pricing = m.pricing && typeof m.pricing === 'object' ? (m.pricing as Record<string, unknown>) : undefined;
-  const free =
-    typeof m.free === 'boolean' ? m.free
-      : typeof m.isFree === 'boolean' ? m.isFree
-        : typeof pricing?.free === 'boolean' ? (pricing.free as boolean)
-          : modelId.endsWith(':free') || undefined;
-
-  return {
-    platform,
-    modelId,
-    contextWindow: num(m.context_length) ?? num(m.context_window) ?? num(m.max_context_length),
-    supportsTools: toolsFrom(m),
-    supportsVision: visionFrom(m),
-    supportsReasoning: typeof m.reasoning === 'boolean' ? m.reasoning : undefined,
-    released: releasedFrom(m.created),
-    free,
-  };
-}
-
-/** Fetch one provider's list. A non-200, unparseable body, or empty array is UNHEALTHY (null). */
-export async function fetchProviderModels(
-  platform: Platform,
-  baseUrl: string,
-  timeoutMs = 10_000,
-): Promise<ProviderFetch> {
-  const url = `${baseUrl.replace(/\/+$/, '')}/models`;
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    const res = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(timer);
-    if (!res.ok) return { platform, models: null, error: `HTTP ${res.status}` };
-    const arr = asArray(await res.json());
-    if (!arr) return { platform, models: null, error: 'unrecognized body shape' };
-    const models = arr.map((r) => normalize(platform, r)).filter((x): x is DiscoveredModel => !!x);
-    // An empty list is treated as unhealthy, not as "this provider dropped everything" —
-    // deleting a provider's whole catalog on one odd response is exactly the failure mode
-    // the healthy-fetch gate exists to prevent.
-    if (!models.length) return { platform, models: null, error: 'empty list' };
-    return { platform, models };
-  } catch (e) {
-    return { platform, models: null, error: e instanceof Error ? e.message : 'fetch failed' };
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Rank derivation
 // ---------------------------------------------------------------------------
 
-/** Largest parameter count mentioned in a model id, in billions (`8b`, `70b`, `120b-a12b`). */
+/** Largest parameter counts mentioned in a model id, in billions (`8b`, `70b`, `120b-a12b`). */
 function paramsB(id: string): number | undefined {
   const hits = [...id.toLowerCase().matchAll(/(\d+(?:\.\d+)?)\s*b(?![a-z0-9])/g)]
     .map((m) => parseFloat(m[1]))
@@ -175,7 +48,7 @@ const BENCH_INTEL: Array<[RegExp, number]> = [
   [/gpt-4o\b(?!.*mini)/i, 1.5],
   [/glm-?5\b|glm-?5\.\d/i, 1.5],
   [/command-a.{0,3}plus/i, 1.5],
-  [/kimi-k2\.[6-9]/i, 1.5],
+  [/kimi-k2\.[6-9]|kimi-k3/i, 1.5],
   // ---- Strong (2) ----
   [/glm-?4\.[7-9]/i, 2],
   [/deepseek.{0,3}v[3-9]/i, 2],
@@ -278,23 +151,7 @@ export function deriveMetadata(d: DiscoveredModel): Pick<
     // false would silently exclude the model from agent mode forever with no way to learn.
     supportsTools: d.supportsTools ?? true,
     supportsVision: d.supportsVision ?? isLikelyVisionModelId(id),
-    supportsReasoning: d.supportsReasoning ?? /\br1\b|reason|think|\bo[1-4]\b/.test(id),
+    supportsReasoning: d.supportsReasoning ?? /\br1\b|reason|think|\bo[1-4]\b|kimi-k3/i.test(id),
     tags: tags.length ? tags : undefined,
-  };
-}
-
-/** Build a full CatalogModel for a newly discovered model. */
-export function toCatalogModel(d: DiscoveredModel): CatalogModel {
-  const derived = deriveMetadata(d);
-  return {
-    platform: d.platform,
-    modelId: d.modelId,
-    displayName: d.modelId,
-    ...derived,
-    released: d.released,
-    contextWindow: d.contextWindow,
-    rpmLimit: null,
-    rpdLimit: null,
-    monthlyTokenBudget: '',
   };
 }

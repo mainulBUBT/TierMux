@@ -4,8 +4,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { CatalogModel, FallbackEntry, Platform } from '../shared/types';
-import { toCatalogModel, deriveMetadata, type DiscoveredModel, type ProviderFetch } from './discovery';
-import { allPlatformInfo } from '../providers';
+import { deriveMetadata } from './discovery';
+import { allPlatformInfo, upsertCompatFromCatalog, type RemoteProviderDef } from '../providers';
 
 const CACHE_KEY = 'tiermux.catalogCache';
 /** Snapshot of the list as it was before the last provider sync (one level of undo). */
@@ -65,29 +65,42 @@ export class Catalog {
     if (Array.isArray(disabled)) this.remoteDisabledPlatforms = disabled;
   }
 
-  /** Fetch the published CSV at `url`, parse it, and adopt it when it has models
-   *  and differs from the current list. Best-effort: any failure (offline, bad
-   *  URL, empty/garbled CSV) silently keeps the cached/bundled list. Fires
-   *  onDidChange only when the active list actually changes. */
-  async refresh(url: string | undefined, mem: vscode.Memento): Promise<CatalogSyncReport | null> {
-    const target = (url ?? '').trim();
-    if (!target) return null;
-    let text: string;
-    try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
-      const res = await fetch(target, { signal: ctrl.signal });
-      clearTimeout(timer);
-      if (!res.ok) return null;
-      text = await res.text();
-    } catch {
-      return null; // offline / timeout / bad URL → keep what we have
+  /** Fetch the worker at `base`: `/models` is the catalog (providers→models), `/providers`
+   *  carries endpoint metadata (base URLs/keyless/keyUrl) merged into the registry. Both are
+   *  fetched together on each refresh. `/models` may also be a legacy published-sheet CSV.
+   *  Best-effort: any failure (offline, bad URL, empty/garbled body) silently keeps the
+   *  cached/bundled list. `/providers` failure degrades gracefully to a models-only refresh.
+   *  Fires onDidChange only when the active list actually changes. */
+  async refresh(baseRaw: string | undefined, mem: vscode.Memento): Promise<CatalogSyncReport | null> {
+    const base = (baseRaw ?? '').trim();
+    if (!base) return null;
+    const modelsUrl = joinBase(base, 'models');
+    const providersUrl = joinBase(base, 'providers');
+
+    // Fetch both endpoints in parallel; each gets its own 8s timeout and fails over alone.
+    const [modelsText, providersText] = await Promise.all([
+      fetchText(modelsUrl),
+      fetchText(providersUrl),
+    ]);
+    if (modelsText === null) return null; // offline / timeout / bad URL → keep what we have
+
+    // Register/update providers BEFORE reading the registry below, so any new platform the
+    // `/models` payload references is already resolvable. A missing/empty `/providers`
+    // response is fine — the hardcoded registry stays as-is. `providersApplied` counts how
+    // many entries were added/refreshed: even when the model list is unchanged, a registry
+    // change (e.g. a brand-new platform appeared) must re-notify the webview so the new
+    // provider shows up in settings.
+    let providersApplied = 0;
+    if (providersText) {
+      const defs = parseWorkerProviders(providersText);
+      if (defs.length) providersApplied = upsertCompatFromCatalog(defs);
     }
-    // The catalog URL may serve the TierMux worker JSON (nested providers→models) or a
+
+    // The /models endpoint may serve the TierMux worker JSON (nested providers→models) or a
     // legacy published-sheet CSV. Try the worker shape first; if it isn't JSON in that
     // shape, fall back to CSV. Either way an empty/unparseable result is ignored.
-    const worker = parseWorkerCatalog(text);
-    const models = worker?.models ?? parseCsvCatalog(text);
+    const worker = parseWorkerCatalog(modelsText);
+    const models = worker?.models ?? parseCsvCatalog(modelsText);
     if (!models.length) return null; // empty or unparseable → ignore
 
     if (worker && JSON.stringify(worker.disabledPlatforms) !== JSON.stringify(this.remoteDisabledPlatforms)) {
@@ -96,91 +109,36 @@ export class Catalog {
     }
 
     const before = this.all();
-    if (JSON.stringify(models) === JSON.stringify(before)) {
+    const modelsChanged = JSON.stringify(models) !== JSON.stringify(before);
+
+    // Nothing changed at all (same models, no provider registry delta) → no work, no notify.
+    if (!modelsChanged && providersApplied === 0) {
       return { added: [], removed: [], updated: before.length, skipped: [], changed: false };
     }
 
-    const beforeKeys = new Set(before.map((m) => Catalog.key(m.platform, m.modelId)));
-    const nextKeys = new Set(models.map((m) => Catalog.key(m.platform, m.modelId)));
+    let added: string[] = [];
+    let removed: string[] = [];
+    let updated = before.length;
+    if (modelsChanged) {
+      const beforeKeys = new Set(before.map((m) => Catalog.key(m.platform, m.modelId)));
+      const nextKeys = new Set(models.map((m) => Catalog.key(m.platform, m.modelId)));
+      added = models.filter((m) => !beforeKeys.has(Catalog.key(m.platform, m.modelId))).map((m) => Catalog.key(m.platform, m.modelId));
+      removed = before.filter((m) => !nextKeys.has(Catalog.key(m.platform, m.modelId))).map((m) => Catalog.key(m.platform, m.modelId));
+      updated = models.length - added.length;
 
-    const added = models.filter((m) => !beforeKeys.has(Catalog.key(m.platform, m.modelId))).map((m) => Catalog.key(m.platform, m.modelId));
-    const removed = before.filter((m) => !nextKeys.has(Catalog.key(m.platform, m.modelId))).map((m) => Catalog.key(m.platform, m.modelId));
-    const updated = models.length - added.length;
-
-    await mem.update(UNDO_KEY, before);
-    this.remote = models;
-    await mem.update(CACHE_KEY, models);
+      await mem.update(UNDO_KEY, before);
+      this.remote = models;
+      await mem.update(CACHE_KEY, models);
+    }
+    // Fire when the model list changed OR the provider registry changed — the webview builds
+    // its provider/settings list from the registry snapshot, so a new platform won't appear
+    // until sendConfig re-runs.
     this._onDidChange.fire();
 
-    return { added, removed, updated, skipped: [], changed: true };
+    return { added, removed, updated, skipped: [], changed: modelsChanged || providersApplied > 0 };
   }
 
-  /**
-   * Reconcile the catalog against what the keyless providers actually serve right now:
-   * add models that appeared, drop models that vanished, refresh provider-reported facts
-   * on the ones that remain.
-   *
-   * Deletion is real (rows go away) but only for a provider whose fetch came back HEALTHY —
-   * a 401/timeout/garbled body/empty list yields `models: null` and that provider is skipped
-   * entirely. Without that gate one bad response would wipe hand-curated ranks permanently.
-   * The pre-sync list is snapshotted to `UNDO_KEY` so a bad sync is recoverable.
-   *
-   * Curated fields (intelligenceRank, speedRank, tags, rpm/rpdLimit, insight, …) are NEVER
-   * overwritten on an existing row — only provider-reported facts are refreshed. Discovery
-   * knows what exists; it does not know what's good.
-   */
-  async syncFromProviders(
-    mem: vscode.Memento,
-    fetchAll: () => Promise<ProviderFetch[]>,
-  ): Promise<CatalogSyncReport> {
-    const before = this.all();
-    const results = await fetchAll();
-
-    const healthy = results.filter((r) => r.models !== null);
-    const skipped = results.filter((r) => r.models === null).map((r) => ({ platform: r.platform, error: r.error ?? 'unhealthy' }));
-    if (!healthy.length) return { added: [], removed: [], updated: 0, skipped, changed: false };
-
-    const syncedPlatforms = new Set(healthy.map((r) => r.platform));
-    const live = new Map<string, DiscoveredModel>();
-    for (const r of healthy) for (const d of r.models!) live.set(Catalog.key(d.platform, d.modelId), d);
-
-    const next: CatalogModel[] = [];
-    const removed: string[] = [];
-
-    for (const m of before) {
-      const k = Catalog.key(m.platform, m.modelId);
-      // Untouched: this provider wasn't synced (keyed, or its fetch was unhealthy).
-      if (!syncedPlatforms.has(m.platform)) { next.push(m); continue; }
-      const d = live.get(k);
-      if (!d) { removed.push(k); continue; }
-      // Refresh only what the provider is authoritative about; keep curation intact.
-      next.push({
-        ...m,
-        contextWindow: d.contextWindow ?? m.contextWindow,
-        supportsTools: d.supportsTools ?? m.supportsTools,
-        supportsVision: d.supportsVision ?? m.supportsVision,
-        supportsReasoning: d.supportsReasoning ?? m.supportsReasoning,
-        released: m.released ?? d.released,
-      });
-      live.delete(k);
-    }
-
-    // Whatever is left in `live` is genuinely new — rank it from the model name.
-    const added: string[] = [];
-    for (const [k, d] of live) { next.push(toCatalogModel(d)); added.push(k); }
-
-    const updated = next.length - added.length;
-    const changed = added.length > 0 || removed.length > 0 || JSON.stringify(next) !== JSON.stringify(before);
-    if (changed) {
-      await mem.update(UNDO_KEY, before);
-      this.remote = next;
-      await mem.update(CACHE_KEY, next);
-      this._onDidChange.fire();
-    }
-    return { added, removed, updated, skipped, changed };
-  }
-
-  /** Restore the list captured before the last `syncFromProviders`. */
+  /** Restore the list captured before the last wholesale `refresh`. */
   async undoSync(mem: vscode.Memento): Promise<boolean> {
     const prev = mem.get<CatalogModel[]>(UNDO_KEY);
     if (!Array.isArray(prev) || !prev.length) return false;
@@ -275,94 +233,89 @@ function wBool(v: unknown, def: boolean): boolean {
   return def;
 }
 
+/** Join a worker base URL with a sub-path, normalizing slashes:
+ *  `https://x.dev/` + `models` → `https://x.dev/models`; `https://x.dev` + `models` → same.
+ *  A base that already ends with the sub-path (e.g. someone pointed catalog.url at
+ *  `…/models` directly) is left as-is rather than doubled. */
+function joinBase(base: string, sub: string): string {
+  const b = base.replace(/\/+$/, '');
+  if (b.toLowerCase().endsWith('/' + sub.toLowerCase())) return b;
+  return `${b}/${sub}`;
+}
+
+/** GET `url` as text with an 8s abort timeout. Returns null on any failure
+ *  (offline, non-OK, timeout) so callers can fail over per-endpoint. */
+async function fetchText(url: string): Promise<string | null> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    const res = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Parse the TierMux worker catalog JSON ({ providers: [{ provider_id, enabled, models: [...] }] })
- * into CatalogModels. The worker schema carries no rank columns, so intelligence/speed are
- * derived from the model id via deriveMetadata (benchmark table → param proxy); capabilities,
- * limits, pricing, and tags come straight from the catalog. Provider/model `enabled` is
- * honored — disabled rows are dropped. Returns null when the body is not this JSON shape so
- * the caller can fall back to CSV.
+ * Parse the TierMux worker catalog JSON into CatalogModels. The worker schema carries no
+ * rank columns, so intelligence/speed are derived from the model id via deriveMetadata
+ * (benchmark table → param proxy); capabilities, limits, pricing, and tags come straight
+ * from the catalog. Provider/model `enabled` is honored — disabled rows are dropped.
+ *
+ * Two payload shapes are accepted:
+ *  - nested:  { providers: [{ provider_id, enabled, models: [...] }] }
+ *  - flat:    { models: [{ model_id, provider_id, enabled, ... }] }   (provider_id inline)
+ *
+ * Returns null when the body is neither shape so the caller can fall back to CSV.
  */
 function parseWorkerCatalog(text: string): { models: CatalogModel[]; disabledPlatforms: Platform[] } | null {
   let body: unknown;
   try { body = JSON.parse(text); } catch { return null; }
   if (!body || typeof body !== 'object') return null;
-  const providers = (body as Record<string, unknown>).providers;
-  if (!Array.isArray(providers)) return null;
+  const obj = body as Record<string, unknown>;
 
   const out: CatalogModel[] = [];
   const disabledPlatforms: Platform[] = [];
   const presentPlatforms = new Set<string>();
-  for (const p of providers) {
-    if (!p || typeof p !== 'object') continue;
-    const platform = String((p as Record<string, unknown>).provider_id ?? '').trim();
-    if (!platform) continue;
-    presentPlatforms.add(platform);
-    if (!wBool((p as Record<string, unknown>).enabled, true)) {
-      disabledPlatforms.push(platform as Platform);
-      continue;
+
+  const providers = obj.providers;
+  if (Array.isArray(providers)) {
+    // Nested shape: provider → models[].
+    for (const p of providers) {
+      if (!p || typeof p !== 'object') continue;
+      const pobj = p as Record<string, unknown>;
+      const platform = String(pobj.provider_id ?? '').trim();
+      if (!platform) continue;
+      presentPlatforms.add(platform);
+      if (!wBool(pobj.enabled, true)) {
+        disabledPlatforms.push(platform as Platform);
+        continue;
+      }
+      const models = pobj.models;
+      if (!Array.isArray(models)) continue;
+      for (const m of models) {
+        const cm = modelRowToCatalog(platform, m);
+        if (cm) out.push(cm);
+      }
     }
-    const models = (p as Record<string, unknown>).models;
-    if (!Array.isArray(models)) continue;
-    for (const m of models) {
+  } else if (Array.isArray(obj.models)) {
+    // Flat shape: every row carries its own provider_id.
+    for (const m of obj.models) {
       if (!m || typeof m !== 'object') continue;
       const row = m as Record<string, unknown>;
+      const platform = String(row.provider_id ?? '').trim();
+      if (!platform) continue;
+      presentPlatforms.add(platform);
       if (!wBool(row.enabled, true)) continue;
-      const modelId = String(row.model_id ?? '').trim();
-      if (!modelId) continue;
-
-      const caps = row.capabilities && typeof row.capabilities === 'object' ? row.capabilities as Record<string, unknown> : {};
-      const limits = row.limits && typeof row.limits === 'object' ? row.limits as Record<string, unknown> : {};
-      const pricing = row.pricing && typeof row.pricing === 'object' ? row.pricing as Record<string, unknown> : {};
-      const ctx = wNum(row.context_window);
-
-      // Ranks: the worker has none, so derive from the id. Capabilities are authoritative
-      // from the catalog, so we ignore deriveMetadata's capability guesses and keep our own.
-      const derived = deriveMetadata({
-        platform: platform as Platform,
-        modelId,
-        contextWindow: ctx,
-        supportsTools: undefined,
-        supportsVision: undefined,
-        supportsReasoning: undefined,
-      });
-
-      const rawTags = Array.isArray(row.tags)
-        ? row.tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean)
-        : [];
-      const tags: string[] = [];
-      for (const t of rawTags) {
-        if (t === 'vision' || t === 'free') continue;       // vision = supportsVision bool; free handled below
-        const mapped = WORKER_TAG_MAP[t] ?? t;
-        if (!tags.includes(mapped)) tags.push(mapped);
-      }
-      const dispName = String(row.display_name ?? '').toLowerCase();
-      if (dispName.includes('router') && !tags.includes('router')) tags.push('router');
-      if (wBool(pricing.free, false) && !tags.includes('free')) tags.push('free');
-
-      out.push({
-        platform: platform as Platform,
-        modelId,
-        displayName: String(row.display_name ?? '').trim() || modelId,
-        intelligenceRank: derived.intelligenceRank,
-        speedRank: derived.speedRank,
-        sizeLabel: derived.sizeLabel,
-        released: undefined,
-        contextWindow: ctx,
-        rpmLimit: wNum(limits.rpm),
-        rpdLimit: wNum(limits.rpd),
-        monthlyTokenBudget: '',
-        supportsTools: wBool(caps.tools, true),
-        supportsVision: wBool(caps.vision, false),
-        supportsReasoning: wBool(caps.reasoning, false),
-        ready: true,
-        tags: tags.length ? tags : undefined,
-        insight: undefined,
-        origInputPricePer1M: wNum(pricing.input) ?? undefined,
-        origOutputPricePer1M: wNum(pricing.output) ?? undefined,
-      });
+      const cm = modelRowToCatalog(platform, m);
+      if (cm) out.push(cm);
     }
+  } else {
+    return null;
   }
+
   // Providers registered locally (they have a baseUrl/auth implementation) but absent
   // from the worker response entirely aren't reachable through the shared catalog either
   // — treat them the same as an explicit enabled:false rather than leaving them looking
@@ -373,6 +326,95 @@ function parseWorkerCatalog(text: string): { models: CatalogModel[]; disabledPla
     }
   }
   return { models: out, disabledPlatforms };
+}
+
+/** Build one CatalogModel from a worker model row, deriving ranks from the id. The worker
+ *  has no rank columns, so capabilities are authoritative while intelligence/speed come from
+ *  deriveMetadata. Returns null for rows without a usable model_id (or disabled, when the
+ *  caller hasn't pre-filtered). */
+function modelRowToCatalog(platform: string, raw: unknown): CatalogModel | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const row = raw as Record<string, unknown>;
+  if (!wBool(row.enabled, true)) return null;
+  const modelId = String(row.model_id ?? '').trim();
+  if (!modelId) return null;
+
+  const caps = row.capabilities && typeof row.capabilities === 'object' ? row.capabilities as Record<string, unknown> : {};
+  const limits = row.limits && typeof row.limits === 'object' ? row.limits as Record<string, unknown> : {};
+  const pricing = row.pricing && typeof row.pricing === 'object' ? row.pricing as Record<string, unknown> : {};
+  const ctx = wNum(row.context_window);
+
+  const derived = deriveMetadata({
+    platform: platform as Platform,
+    modelId,
+    contextWindow: ctx,
+    supportsTools: undefined,
+    supportsVision: undefined,
+    supportsReasoning: undefined,
+  });
+
+  const rawTags = Array.isArray(row.tags)
+    ? row.tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean)
+    : [];
+  const tags: string[] = [];
+  for (const t of rawTags) {
+    if (t === 'vision' || t === 'free') continue;       // vision = supportsVision bool; free handled below
+    const mapped = WORKER_TAG_MAP[t] ?? t;
+    if (!tags.includes(mapped)) tags.push(mapped);
+  }
+  const dispName = String(row.display_name ?? '').toLowerCase();
+  if (dispName.includes('router') && !tags.includes('router')) tags.push('router');
+  if (wBool(pricing.free, false) && !tags.includes('free')) tags.push('free');
+
+  return {
+    platform: platform as Platform,
+    modelId,
+    displayName: String(row.display_name ?? '').trim() || modelId,
+    intelligenceRank: derived.intelligenceRank,
+    speedRank: derived.speedRank,
+    sizeLabel: derived.sizeLabel,
+    released: undefined,
+    contextWindow: ctx,
+    rpmLimit: wNum(limits.rpm),
+    rpdLimit: wNum(limits.rpd),
+    monthlyTokenBudget: '',
+    supportsTools: wBool(caps.tools, true),
+    supportsVision: wBool(caps.vision, false),
+    supportsReasoning: wBool(caps.reasoning, false),
+    ready: true,
+    tags: tags.length ? tags : undefined,
+    insight: undefined,
+    origInputPricePer1M: wNum(pricing.input) ?? undefined,
+    origOutputPricePer1M: wNum(pricing.output) ?? undefined,
+  };
+}
+
+/** Parse the `/providers` endpoint: `{ providers: [{ provider_id, base_url, display_name,
+ *  key_url?, keyless?, enabled? }] }`. Returns one RemoteProviderDef per entry that has a
+ *  usable base_url — these are merged into the registry so new/moved provider endpoints
+ *  propagate without an extension update. Tolerant: a non-JSON/wrong-shape body yields []. */
+function parseWorkerProviders(text: string): RemoteProviderDef[] {
+  let body: unknown;
+  try { body = JSON.parse(text); } catch { return []; }
+  if (!body || typeof body !== 'object') return [];
+  const providers = (body as Record<string, unknown>).providers;
+  if (!Array.isArray(providers)) return [];
+  const out: RemoteProviderDef[] = [];
+  for (const p of providers) {
+    if (!p || typeof p !== 'object') continue;
+    const pobj = p as Record<string, unknown>;
+    const platform = String(pobj.provider_id ?? '').trim();
+    const baseUrl = typeof pobj.base_url === 'string' ? pobj.base_url.trim() : '';
+    if (!platform || !baseUrl) continue;
+    out.push({
+      platform,
+      baseUrl,
+      ...(typeof pobj.display_name === 'string' && pobj.display_name.trim() ? { name: pobj.display_name.trim() } : {}),
+      ...(typeof pobj.key_url === 'string' && pobj.key_url.trim() ? { keyUrl: pobj.key_url.trim() } : {}),
+      ...(pobj.keyless !== undefined ? { keyless: wBool(pobj.keyless, false) } : {}),
+    });
+  }
+  return out;
 }
 
 /** Minimal RFC-4180-ish CSV parser: handles quoted fields, escaped quotes ("")

@@ -93,6 +93,7 @@ const STATE_LABEL = {
     <div class="composer" id="composer">
       <div class="index-status hidden" id="index-status"></div>
       <div class="new-models-bar hidden" id="new-models-bar"></div>
+      <div class="new-models-bar hidden" id="new-providers-bar"></div>
       <div class="changed-bar hidden" id="changed-bar"></div>
       <div class="chips" id="chips"></div>
       <div class="input-wrap">
@@ -125,6 +126,7 @@ const STATE_LABEL = {
           </div>
           <div class="tgroup right">
             <button type="button" id="auto-btn" class="pill toggle-pill icon-only-sm" aria-pressed="false" aria-label="Auto-approve — run commands and apply edits without asking, for an uninterrupted flow. Dangerous commands (rm -rf, force push, sudo…) still ask. Off = review each step." data-tooltip="Auto-approve — run commands and edit files without asking first. Dangerous operations still confirm. Toggle on for an uninterrupted flow.">${ICON.zap}</button>
+            <button class="icon-btn icon-btn-sm" id="btn-announcements" aria-label="Tips &amp; announcements" data-tooltip="Tips &amp; announcements">${ICON.info}<span class="an-dot hidden" id="an-dot"></span></button>
             <button class="icon-btn icon-btn-sm" id="btn-attach" aria-label="Add files" data-tooltip="Add files">${ICON.addCircle}</button>
             <button class="send-btn" id="btn-send" title="Send (Enter)">${ICON.send}</button>
           </div>
@@ -1345,6 +1347,7 @@ const STATE_LABEL = {
   input.addEventListener('input', () => { if (viewedSessionId) saveComposer(viewedSessionId); });
 
   $('#btn-attach').addEventListener('click', () => send({ type: 'attachFromWorkspace' }));
+  $('#btn-announcements').addEventListener('click', () => toggleAnnouncements());
   // Close transient popups when the view loses focus or is hidden (e.g. switching tabs).
   window.addEventListener('blur', () => { closeModelPop(); closeModePop(); closeAc(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) { closeModelPop(); closeModePop(); closeAc(); } });
@@ -1659,11 +1662,11 @@ const STATE_LABEL = {
   }
 
   // ---------- model picker ----------
-  function addModelItem(value, label, m) {
+  function addModelItem(value, label, m, off) {
     const item = document.createElement('div');
     const deprecated = (state.deprecated || []).includes(value);
     const slow = !deprecated && (state.slow || []).includes(value);
-    item.className = 'model-item' + (value === currentModel ? ' selected' : '') + (deprecated ? ' deprecated' : '') + (slow ? ' slow' : '');
+    item.className = 'model-item' + (value === currentModel ? ' selected' : '') + (deprecated ? ' deprecated' : '') + (slow ? ' slow' : '') + (off ? ' off' : '');
     item.dataset.value = value;
     const lbl = document.createElement('span');
     lbl.className = 'mi-label';
@@ -1680,6 +1683,12 @@ const STATE_LABEL = {
       tag.className = 'mi-slow';
       tag.textContent = 'slow';
       tag.title = 'A recent response took 8s or longer. Auto deprioritizes this model for 30 minutes — you can still select it directly.';
+      item.appendChild(tag);
+    } else if (off) {
+      const tag = document.createElement('span');
+      tag.className = 'mi-off';
+      tag.textContent = 'off';
+      tag.title = 'Not in your enabled chain — Auto will not pick it, but pinning routes to it directly. Enable it in Settings to include it in Auto.';
       item.appendChild(tag);
     }
     const caps = [];
@@ -1698,19 +1707,39 @@ const STATE_LABEL = {
    *  chat-input picker and the "Others" tab utility-model selector never drift apart. */
   function getEnabledModelOptions() {
     const options = [];
-    // Only ACTIVE providers count — i.e. the user has set a key for the platform (or
-    // it's keyless) AND has checked the model. Same set Auto routes over.
+    // Only providers the user has enabled (and the catalog hasn't disabled upstream)
+    // count — an API key is NOT required to show a platform's models here. A checked
+    // model on an unkeyed platform still appears so the user sees what they activated;
+    // routing gives a clear "needs an API key" error if they pin it.
     const _disabledProviders = new Set(state.disabledProviders || []);
-    const activePlatforms = new Set((state.platforms || []).filter((p) => p.configured && !_disabledProviders.has(p.platform)).map((p) => p.platform));
+    const _remoteDisabled = new Set(state.remoteDisabledProviders || []);
+    // Enabled platforms — user toggled on at the provider level AND not disabled
+    // upstream by the shared catalog — regardless of whether an API key is set.
+    // A platform the user has checked models on but hasn't keyed yet still lists
+    // those models (they show as active, since the user enabled them); picking one
+    // surfaces the router's clear "needs an API key" error instead of silently
+    // hiding the model the user explicitly activated.
+    const activePlatforms = new Set(
+      (state.platforms || [])
+        .filter((p) => !_disabledProviders.has(p.platform) && !_remoteDisabled.has(p.platform))
+        .map((p) => p.platform),
+    );
     const enabled = new Set(
       (state.fallback || [])
         .filter((e) => e.enabled && activePlatforms.has(e.platform))
         .map((e) => `${e.platform}::${e.modelId}`),
     );
+    // Every catalog model on an active provider is pickable — not just the enabled
+    // ones. A model the user hasn't checked on (or that autoEnableNew left off) is
+    // still shown, dimmed and tagged "off", so it can be pinned directly. Pinning
+    // bypasses the enabled chain in the router (candidates() honors a forced model
+    // even when its fallback row is disabled), so selecting an "off" model routes
+    // to it for that turn without forcing the user to dig into Settings first.
     (state.catalog || []).forEach((m) => {
+      if (!activePlatforms.has(m.platform)) return;
       const value = `${m.platform}::${m.modelId}`;
-      if (!enabled.has(value)) return;
-      options.push({ value, label: m.displayName, group: platformDisplayName(m.platform, m.modelId), model: m });
+      const isOn = enabled.has(value);
+      options.push({ value, label: m.displayName, group: platformDisplayName(m.platform, m.modelId), model: m, off: !isOn });
     });
     // Custom endpoints: enabled models, grouped by endpoint.
     const customModels = (state.fallback || []).filter((e) => e.platform === 'custom' && e.enabled);
@@ -1720,6 +1749,15 @@ const STATE_LABEL = {
       const upstreamId = e.modelId.split('::').slice(1).join('::');
       options.push({ value: `custom::${e.modelId}`, label: upstreamId, group: ep ? ep.name : 'Custom', model: { supportsReasoning: false } });
     });
+    // Keep each provider's models contiguous (a provider header must appear once, not
+    // once per model). The catalog list isn't guaranteed grouped by platform, so sort by
+    // each group's FIRST occurrence — this preserves the original provider order (incl.
+    // custom endpoints staying last) while pulling a provider's models together. The
+    // sort is stable, so models keep their catalog order within the group.
+    const groupOrder = new Map();
+    let g = 0;
+    for (const opt of options) if (!groupOrder.has(opt.group)) groupOrder.set(opt.group, g++);
+    options.sort((a, b) => groupOrder.get(a.group) - groupOrder.get(b.group));
     return options;
   }
 
@@ -1737,7 +1775,7 @@ const STATE_LABEL = {
         h.textContent = opt.group;
         modelList.appendChild(h);
       }
-      addModelItem(opt.value, opt.label, opt.model);
+      addModelItem(opt.value, opt.label, opt.model, opt.off);
       if (opt.value === currentModel) selectedLabel = opt.label;
     });
     // A pinned model is honored as-is — the message goes to THAT model only (the router
@@ -3428,6 +3466,9 @@ const STATE_LABEL = {
       case 'newModelsAvailable':
         renderNewModelsBar(msg.message);
         break;
+      case 'newProvidersAvailable':
+        renderNewProvidersBar(msg.message);
+        break;
       case 'announcements':
         announcementsCache = Array.isArray(msg.items) ? msg.items : [];
         announcementsLastUpdated = msg.lastUpdated;
@@ -4297,6 +4338,28 @@ const STATE_LABEL = {
     title.textContent = message;
     const manage = document.createElement('button'); manage.className = 'cb-action';
     manage.textContent = 'Manage Models';
+    manage.addEventListener('click', () => { toggleSettings(); bar.classList.add('hidden'); });
+    const close = document.createElement('button'); close.className = 'cb-close'; close.textContent = '×';
+    close.title = 'Dismiss';
+    close.addEventListener('click', () => { bar.classList.add('hidden'); });
+    head.appendChild(icon); head.appendChild(title); head.appendChild(manage); head.appendChild(close);
+    bar.appendChild(head);
+    bar.classList.remove('hidden');
+  }
+
+  /** Dismissible "new providers available" banner — same one-shot, dismiss-on-close
+   *  contract as renderNewModelsBar. The host sends it once per newly-registered provider. */
+  function renderNewProvidersBar(message) {
+    const bar = $('#new-providers-bar');
+    if (!bar) return;
+    bar.innerHTML = '';
+    const head = document.createElement('div'); head.className = 'cb-head';
+    const icon = document.createElement('span'); icon.className = 'cb-icon';
+    icon.innerHTML = ICON.bell;
+    const title = document.createElement('span'); title.className = 'cb-title';
+    title.textContent = message;
+    const manage = document.createElement('button'); manage.className = 'cb-action';
+    manage.textContent = 'Manage Providers';
     manage.addEventListener('click', () => { toggleSettings(); bar.classList.add('hidden'); });
     const close = document.createElement('button'); close.className = 'cb-close'; close.textContent = '×';
     close.title = 'Dismiss';

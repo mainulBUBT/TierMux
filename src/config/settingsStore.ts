@@ -1,7 +1,7 @@
 
 
 import * as vscode from 'vscode';
-import type { FallbackEntry, Platform, CustomEndpoint } from '../shared/types';
+import type { FallbackEntry, Platform, PlatformInfo, CustomEndpoint } from '../shared/types';
 import type { Catalog } from '../catalog/catalog';
 import { allPlatformInfo } from '../providers';
 
@@ -10,6 +10,9 @@ const ENDPOINTS_KEY = 'tiermux.endpoints';
 const DISABLED_PROVIDERS_KEY = 'tiermux.disabledProviders';
 const CUSTOM_ENDPOINTS_KEY = 'tiermux.customEndpoints';
 const NOTIFIED_MODELS_KEY = 'tiermux.notifiedModels';
+/** Platforms the user has already been told about — mirrors NOTIFIED_MODELS_KEY so a
+ *  brand-new provider surfacing in the remote catalog notifies exactly once. */
+const NOTIFIED_PROVIDERS_KEY = 'tiermux.notifiedProviders';
 
 /** Platform left enabled by default — a keyless gateway that works with zero setup.
  *  Every other provider starts off until the user opts in (usually by adding a key). */
@@ -93,6 +96,28 @@ export class SettingsStore {
   seedNotifiedModels(): void {
     const keys = this.getFallback().map((e) => `${e.platform}::${e.modelId}`);
     void this.state.update(NOTIFIED_MODELS_KEY, keys);
+  }
+
+  /** Providers (platform infos) registered since the last check that the user hasn't
+   *  been told about yet — i.e. brand-new providers merged in from the remote catalog.
+   *  Marks them notified as a side effect. A provider only counts once its platform has
+   *  a registered info entry, so static COMPAT providers are covered by the first-run
+   *  seed and only later additions surface here. */
+  checkForNewProviders(): PlatformInfo[] {
+    const notified = new Set(this.state.get<string[]>(NOTIFIED_PROVIDERS_KEY, []));
+    const fresh = allPlatformInfo().filter((p) => p.platform !== 'custom' && !notified.has(p.platform));
+    if (fresh.length) {
+      void this.state.update(NOTIFIED_PROVIDERS_KEY, [...notified, ...fresh.map((p) => p.platform)]);
+    }
+    return fresh;
+  }
+
+  /** Silently mark every currently-registered provider as notified. Used once on the
+   *  first run of this feature so an existing install isn't flooded with "new provider!"
+   *  for its whole built-in registry. */
+  seedNotifiedProviders(): void {
+    const keys = allPlatformInfo().filter((p) => p.platform !== 'custom').map((p) => p.platform);
+    void this.state.update(NOTIFIED_PROVIDERS_KEY, keys);
   }
 
   async setFallback(entries: FallbackEntry[]): Promise<void> {

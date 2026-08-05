@@ -2,6 +2,7 @@
 
 import type { ChatCompletionChunk, ChatCompletionResponse, ChatMessage, Platform } from '../shared/types';
 import type { CompletionOptions } from './options';
+import { diagLog } from '../util/diag';
 
 /** A provider HTTP error carrying the upstream status and optional Retry-After. */
 export class ProviderHttpError extends Error {
@@ -115,20 +116,40 @@ export abstract class BaseProvider {
     if (!reader) throw new Error('No response body');
     const decoder = new TextDecoder();
     let buffer = '';
+    // Diagnostic capture (gated by tiermux.agent.diagTrace): the reader silently drops any
+    // line that isn't a `data:` JSON chunk. If an upstream answers stream:true with a plain
+    // JSON body, an HTML error page, or an alternate event format, every byte is skipped and
+    // the turn comes back "instant empty". Capture the content-type + first raw lines + any
+    // parse failures so the cause is visible in the "TierMux Diag" channel instead of silent.
+    let rawSampled = 0;
+    let chunkCount = 0;
+    const ctype = res.headers.get('content-type') || '<none>';
+    // Some gateways answer a stream:true request with a single non-SSE JSON body (no `data:`
+    // prefix). The line loop skips it entirely → 0 chunks → instant empty. Accumulate the raw
+    // bytes (capped) so we can fall back to a one-shot JSON parse when no SSE chunks arrived.
+    let fullRaw = '';
+    const RAW_CAP = 2_000_000;
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        const piece = decoder.decode(value, { stream: true });
+        buffer += piece;
+        if (fullRaw.length < RAW_CAP) fullRaw += piece;
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
         for (const line of lines) {
           const trimmed = line.trim();
+          if (rawSampled < 5 && trimmed) {
+            diagLog('sse.raw', `content-type=${ctype} line=${JSON.stringify(trimmed.slice(0, 200))}`);
+            rawSampled++;
+          }
           if (!trimmed || trimmed.startsWith(':') || !trimmed.startsWith('data:')) continue;
           const data = trimmed.slice(trimmed.indexOf(':') + 1).trim();
           if (data === '[DONE]') return;
           try {
             const chunk = JSON.parse(data) as ChatCompletionChunk;
+            chunkCount++;
             // OpenAI-wire streams report reasoning tokens under
             // usage.completion_tokens_details; lift them to our flat
             // reasoning_tokens field (mirrors the non-stream path).
@@ -137,12 +158,43 @@ export abstract class BaseProvider {
               chunk.usage.reasoning_tokens = details.reasoning_tokens;
             }
             yield chunk;
-          } catch {
-
+          } catch (e) {
+            diagLog('sse.parsefail', `content-type=${ctype} data=${JSON.stringify(data.slice(0, 200))} err=${(e as Error).message}`);
           }
         }
       }
+      // Fallback: the upstream ignored stream:true and returned one JSON object (common with
+      // thin gateways). Re-parse it as a non-streaming completion so the turn isn't blank.
+      if (chunkCount === 0 && fullRaw.trim()) {
+        const bodyText = fullRaw.trim();
+        try {
+          const parsed = JSON.parse(bodyText) as ChatCompletionResponse;
+          if (parsed?.choices?.length) {
+            diagLog('sse.fallback', `content-type=${ctype} 0 SSE chunks; recovered one-shot JSON with ${parsed.choices.length} choice(s)`);
+            yield {
+              id: parsed.id ?? `chatcmpl-fb-${Date.now()}`,
+              object: 'chat.completion.chunk',
+              created: parsed.created ?? Math.floor(Date.now() / 1000),
+              model: parsed.model ?? '',
+              choices: (parsed.choices).map((c, i) => ({
+                index: c.index ?? i,
+                delta: {
+                  role: 'assistant',
+                  ...(typeof c.message?.content === 'string' ? { content: c.message.content } : {}),
+                  ...(c.message?.tool_calls ? { tool_calls: c.message.tool_calls } : {}),
+                },
+                finish_reason: c.finish_reason ?? 'stop',
+              })),
+              ...(parsed.usage ? { usage: parsed.usage } : {}),
+            };
+            chunkCount = parsed.choices.length;
+          }
+        } catch (e) {
+          diagLog('sse.fallbackfail', `content-type=${ctype} bodyHead=${JSON.stringify(bodyText.slice(0, 200))} err=${(e as Error).message}`);
+        }
+      }
     } finally {
+      diagLog('sse.summary', `content-type=${ctype} parsedChunks=${chunkCount} (0 chunks ⇒ instant-empty bug)`);
       reader.cancel().catch(() => { /* upstream already gone */ });
     }
   }

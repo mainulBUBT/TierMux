@@ -25,6 +25,7 @@ export type Platform =
   | 'kenari'
   | 'llmgateway'
   | 'poolside'
+  | 'tokenrouter'
   | 'custom';
 
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';

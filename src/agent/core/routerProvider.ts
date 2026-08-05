@@ -318,8 +318,15 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         } as unknown as LanguageModelV4StreamPart);
         streamController.close();
       }).catch((err: unknown) => {
-        streamController.enqueue({ type: 'error', error: err });
-        streamController.close();
+        // Surface a router.route() rejection (e.g. AllModelsFailedError from a pinned model
+        // hitting 403/quota) by ERRORING the stream rather than enqueuing an `{type:'error'}`
+        // stream part. The official AI SDK providers do the same: they let doStream's stream
+        // throw, which the SDK turns into a thrown error on `fullStream` — caught by runTurn's
+        // catch (→ onError + failed=true), so the failure shows in chat immediately. Enqueuing an
+        // error part instead relied on a stream-part shape the SDK is inconsistent about
+        // (TS type says `error`, runtime schema says `errorText`), which silently dropped the
+        // error and ended the turn empty — only reappearing from persisted transcript on reopen.
+        streamController.error(err);
       });
 
       return { stream };

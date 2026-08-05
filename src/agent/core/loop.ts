@@ -673,7 +673,11 @@ async function runAttempt(
         opts.onTool({ toolCallId: part.toolCallId, name: part.toolName, args: part.input, state: 'error', detail });
       } else if (part.type === 'error') {
         streamErrored = true;
-        streamErrorMessage = part.error instanceof Error ? part.error.message : String(part.error);
+        // AI SDK v7 error parts carry `errorText` (string); accept legacy `error` too.
+        const etext = (part as { errorText?: unknown }).errorText;
+        streamErrorMessage = typeof etext === 'string' && etext.length > 0
+          ? etext
+          : ((part as { error?: unknown }).error instanceof Error ? (part.error as Error).message : String((part as { error?: unknown }).error ?? ''));
         opts.onError(streamErrorMessage);
       }
     }
@@ -779,7 +783,12 @@ async function runAttempt(
       stopReason,
       hadToolCalls,
       hadMutatingToolCall,
-      failed: streamErrored && !text.trim() && !hadToolCalls,
+      // A provider/router error (streamErrored, e.g. AllModelsFailedError from a pinned model
+      // hitting 403/quota) must surface in the chat even when tool calls already ran this turn —
+      // previously the `&& !hadToolCalls` clause let it through as a non-failed empty turn, so the
+      // failure only reappeared after closing/reopening the panel (from persisted transcript).
+      // Drop that clause: no salvageable answer text + a real error = a failed, surfaced turn.
+      failed: streamErrored && !text.trim(),
       errorMessage: streamErrored ? streamErrorMessage : undefined,
     };
   } catch (err) {

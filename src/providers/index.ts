@@ -18,7 +18,7 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'huggingface', name: 'HuggingFace Router', baseUrl: 'https://router.huggingface.co/v1', keyUrl: 'https://huggingface.co/settings/tokens' },
   { platform: 'ollama', name: 'Ollama Cloud', baseUrl: 'https://ollama.com/v1', timeoutMs: 120000, skipPreflight: true, keyUrl: 'https://ollama.com/settings/keys' },
   { platform: 'kilo', name: 'Kilo Gateway', baseUrl: 'https://api.kilo.ai/api/gateway/v1', keyless: true },
-  { platform: 'pollinations', name: 'Pollinations', baseUrl: 'https://text.pollinations.ai/openai/v1', keyless: true },
+  { platform: 'pollinations', name: 'Pollinations', baseUrl: 'https://text.pollinations.ai/openai/v1', keyless: true, skipPreflight: true },
   { platform: 'llm7', name: 'LLM7', baseUrl: 'https://api.llm7.io/v1', keyUrl: 'https://llm7.io' },
   { platform: 'opencode', name: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen/v1', keyless: true, skipPreflight: true, keyUrl: 'https://opencode.ai/auth' },
   { platform: 'ovh', name: 'OVH AI Endpoints', baseUrl: 'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1', keyless: true },
@@ -32,12 +32,17 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   // answer — an unset/small max_tokens lets it exhaust the budget mid-<think>, which
   // ThinkStripper correctly discards, producing an empty (but billed) turn.
   { platform: 'poolside', name: 'Poolside', baseUrl: 'https://inference.poolside.ai/v1', timeoutMs: 120000, skipPreflight: true, defaultMaxTokens: 8192, keyUrl: 'https://poolside.ai' },
+  { platform: 'tokenrouter', name: "Token Router", baseUrl: "https://api.tokenrouter.com/v1", skipPreflight: true, timeoutMs: 600000 }, // auto-synced
 ];
 
 const providers = new Map<Platform, BaseProvider>();
 const platformInfo = new Map<Platform, PlatformInfo>();
+/** Original registration opts for each compat provider, so a remote base-URL update
+ *  can re-register without wiping curated flags (extraHeaders, reasoningStyle, …). */
+const compatOpts = new Map<Platform, OpenAICompatOpts & { keyUrl?: string }>();
 
 function registerCompat(opts: OpenAICompatOpts & { keyUrl?: string }) {
+  compatOpts.set(opts.platform, opts);
   providers.set(opts.platform, new OpenAICompatProvider(opts));
   platformInfo.set(opts.platform, {
     platform: opts.platform,
@@ -105,4 +110,69 @@ export function getPlatformInfo(platform: Platform): PlatformInfo | undefined {
 
 export function allPlatformInfo(): PlatformInfo[] {
   return Array.from(platformInfo.values());
+}
+
+/** A provider definition advertised by the remote catalog. `baseUrl` is required to
+ *  act; the rest is optional polish. `platform` may be a built-in id or a brand-new one. */
+export interface RemoteProviderDef {
+  platform: string;
+  baseUrl?: string;
+  name?: string;
+  keyUrl?: string;
+  keyless?: boolean;
+}
+
+/** Merge provider definitions fetched from the remote catalog into the live registry.
+ *  - Brand-new platforms become a registered OpenAI-compat provider (so a newly added
+ *    upstream is usable without an extension update).
+ *  - Existing compat providers get their base URL (and key/keyless/name when given)
+ *    refreshed — useful when an upstream moves endpoints and the hardcoded value is now
+ *    stale or "missing".
+ *  - Providers with a dedicated implementation (Google, Cloudflare) are never touched,
+ *    since swapping in a generic OpenAI-compat instance would lose their custom code.
+ *  Returns the number of entries that caused a real change (a new platform, or a changed
+ *  base URL/key/keyless/name), so callers can avoid noisy "changed" notifications when the
+ *  remote payload merely repeats what is already registered. */
+export function upsertCompatFromCatalog(defs: RemoteProviderDef[]): number {
+  let applied = 0;
+  for (const d of defs) {
+    if (!d.platform || !d.baseUrl) continue;
+    const platform = d.platform as Platform;
+    const existing = providers.get(platform);
+    if (existing && !(existing instanceof OpenAICompatProvider)) continue; // keep dedicated impls
+    const prev = platformInfo.get(platform);
+    // Skip when nothing actually differs from what's already registered.
+    const sameBaseUrl = prev?.defaultBaseUrl === d.baseUrl;
+    const sameName = !d.name || prev?.name === d.name;
+    const sameKeyless = d.keyless === undefined || prev?.keyless === d.keyless;
+    const sameKeyUrl = !d.keyUrl || prev?.keyUrl === d.keyUrl;
+    if (prev && sameBaseUrl && sameName && sameKeyless && sameKeyUrl) continue;
+
+    const base = compatOpts.get(platform);
+    const opts: OpenAICompatOpts & { keyUrl?: string } = base
+      ? {
+          ...base,
+          baseUrl: d.baseUrl,
+          ...(d.name ? { name: d.name } : {}),
+          ...(d.keyless !== undefined ? { keyless: d.keyless } : {}),
+          ...(d.keyUrl ? { keyUrl: d.keyUrl } : {}),
+        }
+      : {
+          platform,
+          name: d.name ?? platform,
+          baseUrl: d.baseUrl,
+          keyless: d.keyless ?? false,
+          // Remote-registered providers are unvetted upstreams; a hostile 1-token/1.2s
+          // preflight ping (especially against reasoning models) fails them silently and
+          // looks like an "empty" result. Skip the ping and give generous headroom, mirroring
+          // the custom-endpoint path. Without this, every newly added catalog provider with a
+          // slow/thinking model reproduces the Token Router/kimi-k3-empty bug.
+          skipPreflight: true,
+          timeoutMs: CUSTOM_TIMEOUT_MS,
+          ...(d.keyUrl ? { keyUrl: d.keyUrl } : {}),
+        };
+    registerCompat(opts);
+    applied++;
+  }
+  return applied;
 }

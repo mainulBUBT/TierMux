@@ -148,11 +148,6 @@
         "icon": "$(sync)"
       },
       {
-        "command": "tiermux.syncCatalog",
-        "title": "Sync Model Catalog from Providers",
-        "category": "TierMux"
-      },
-      {
         "command": "tiermux.generateCommitMessage",
         "title": "Generate Commit Message",
         "category": "TierMux",
@@ -624,7 +619,7 @@
     }
   },
   "scripts": {
-    "build": "node esbuild.js --production",
+    "build": "npm run sync:all && node esbuild.js --production",
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
     "test:e2e:circuit": "esbuild scripts/circuitBreaker.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/circuitBreaker.e2e.cjs && node dist/circuitBreaker.e2e.cjs",
@@ -643,6 +638,8 @@
     "bench:dataset": "esbuild scripts/bench/dataset.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/benchDataset.cjs && node dist/benchDataset.cjs",
     "package": "vsce package",
     "sync:catalog": "node scripts/sync-catalog.mjs",
+    "sync:providers": "node scripts/sync-providers.mjs --apply",
+    "sync:all": "npm run sync:catalog && npm run sync:providers",
     "publish": "npm run build && vsce publish && ovsx publish -p \"$OVSX_PAT\"",
     "prepare": "husky"
   },
