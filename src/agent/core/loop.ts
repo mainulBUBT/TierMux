@@ -427,6 +427,7 @@ async function runAttempt(
   pruneAtTokens: number,
   maxTurnTokens: number,
   maxExplorationCalls: number,
+  maxStepsPerTurn: number,
   escalation?: { excludeModels: string[]; maxIntelligenceRank: number },
   planGuidance?: string,
 ): Promise<AttemptResult> {
@@ -475,6 +476,20 @@ async function runAttempt(
     if (readOnlyCount > maxExplorationCalls) {
       stopReason = 'stuck';
       diagLog('turn.stop', `stuck: ${readOnlyCount} read-only tool calls with zero mutating progress`);
+      return true;
+    }
+    return false;
+  };
+  // Hard step ceiling (see maxStepsPerTurn in runTurn). Catches the one runaway shape the other
+  // three miss: many DISTINCT mutating tool calls, none exact-repeating, all "real progress" —
+  // yet the turn sprawls. Reports as 'budget' so it halts via the bounded-continuation path
+  // (maxBudgetContinuations) rather than becoming a resumable pause that would just re-segment
+  // the same work across auto-continue rounds.
+  const stepCountStop = ({ steps }: { steps: unknown[] }): boolean => {
+    if (maxStepsPerTurn <= 0) return false;
+    if (steps.length > maxStepsPerTurn) {
+      stopReason = 'budget';
+      diagLog('turn.stop', `step-cap: ${steps.length} steps > ${maxStepsPerTurn}`);
       return true;
     }
     return false;
@@ -539,7 +554,7 @@ async function runAttempt(
       // arbitrary iteration count (see the Resume-button "paused" path, now unreachable for a
       // normal in-progress task). budgetStop/stuckStop are the remaining backstops against a
       // genuinely runaway/stuck turn — the abortSignal (Stop button) is always available too.
-      stopWhen: [budgetStop, stuckStop, explorationStop],
+      stopWhen: [budgetStop, stuckStop, explorationStop, stepCountStop],
       abortSignal: opts.abortSignal,
       // Per-step context compression (AI SDK native). Runs before each model call in the tool
       // loop; only rewrites history once it exceeds the threshold, so short turns are untouched.
@@ -817,10 +832,22 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // ONLY backstop against a runaway loop besides stuckStop's exact-repeat detection — hence a
   // real non-zero default rather than 0/off. A stuck free-model turn was observed burning
   // ~367k tokens before stuckStop caught it; this caps that kind of run earlier even when
-  // stuckStop's narrower exact-repeat check doesn't fire.
-  const maxTurnTokens = vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxTurnTokens', 500_000);
+  // stuckStop's narrower exact-repeat check doesn't fire. Default 200k (was 500k): a single turn
+  // burning past ~200k is almost always a runaway free-tier loop, and the lower ceiling makes the
+  // budget backstop bite well before the user-perceived stall. Large legit multi-file tasks aren't
+  // hurt — auto-continue + maxBudgetContinuations still extend the run across rounds.
+  const maxTurnTokens = vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxTurnTokens', 200_000);
   // Cap on read-only tool calls before the first mutating one (see explorationStop above). 0 disables.
   const maxExplorationCalls = vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxExplorationCalls', 20);
+  // Hard per-turn STEP ceiling (0 = off). With the step-count cap removed, a turn making many
+  // DISTINCT mutating tool calls (never exact-repeating, so stuckStop doesn't fire; each is real
+  // progress, so explorationStop doesn't fire) can still sprawl indefinitely — only the token
+  // budget checked. This is a generous backstop for that gap. Fires as a 'budget' stop (bounded
+  // continuation via maxBudgetContinuations, NOT a resumable pause), so a capped turn halts within
+  // one continuation rather than segmenting into maxAutoContinueRounds resume loops that would
+  // just repeat the work in chunks. Default 50: a legit task rarely exceeds 50 steps in a SINGLE
+  // turn (long tasks span auto-continue rounds instead), so this only catches true runaways.
+  const maxStepsPerTurn = vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxStepsPerTurn', 50);
   const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
   const lastUserText = contentToString(lastUser?.content ?? '');
   // Feed attachment signals so an image (or a text-less/scanned PDF) upgrades the task to 'vision'
@@ -867,7 +894,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     }
   }
 
-  const first = await runAttempt(router, opts, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, undefined, planGuidance);
+  const first = await runAttempt(router, opts, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn, undefined, planGuidance);
   let final = first;
 
   // Force-action retry — a weak model announced an action but called NO tool ("Let me read the
@@ -894,7 +921,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       ...opts,
       messages: [...opts.messages, { role: 'assistant', content: first.text }, { role: 'user', content: nudgeText }],
     };
-    const acted = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls);
+    const acted = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn);
     // Prefer the retry only if it actually acted or produced non-empty text — never regress to blank.
     if (acted.hadToolCalls || acted.text.trim()) final = acted;
   }
@@ -951,7 +978,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     if (shouldEscalate) {
       const excludeKey = `${first.platform}::${first.model}`;
       diagLog('turn.escalate', `${escalateWhy} from ${excludeKey} (score=${quality.score} signals=${quality.signals.join(',')} stopReason=${first.stopReason ?? 'none'}) — retrying with a different model`);
-      const escalated = await runAttempt(router, opts, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, {
+      const escalated = await runAttempt(router, opts, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn, {
         excludeModels: [excludeKey],
         maxIntelligenceRank: 2, // top-tier models only — the point of escalating is a smarter retry
       }, planGuidance);
@@ -981,7 +1008,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
         { role: 'user', content: SELF_CORRECT_NUDGE },
       ],
     };
-    const corrected = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls);
+    const corrected = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn);
     // Accept the retry's own outcome whatever it is (fixed, still broken, or gave up) — the
     // point is one genuine attempt to self-correct, not a guarantee of a clean result. Only
     // guard against regressing to a totally blank turn.

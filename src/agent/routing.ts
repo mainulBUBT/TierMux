@@ -1,6 +1,7 @@
 import type { CatalogModel, FallbackEntry, ChatContent } from '../shared/types';
 import type { Catalog } from '../catalog/catalog';
 import { normalizeAttachmentBlocks } from './content';
+import { profileForTask, tagComparator } from '../router/capabilityProfile';
 
 export type TaskKind = 'trivial' | 'chat' | 'agent' | 'coding' | 'debug' | 'longContext' | 'plan' | 'vision';
 
@@ -109,31 +110,31 @@ export function orderForTask(
 
   const recency = (a: CatalogModel, b: CatalogModel): number => (b.released ?? '').localeCompare(a.released ?? '');
 
-  const hasTag = (m: CatalogModel, tag: string): number => Number((m.tags ?? []).includes(tag));
-  const codingTag = (a: CatalogModel, b: CatalogModel): number => hasTag(b, 'coding') - hasTag(a, 'coding');
-  // Tag-vocabulary tiebreaks for the worker catalog: `planner` floats planning models up for
-  // plan turns; `general` lightly prefers non-specialized models for low-stakes chat/trivial
-  // turns (don't spend a coder/reasoner on chit-chat). Both run AFTER capability/speed so a
-  // tagged-but-weak model can't leapfrog a stronger one.
-  const plannerTag = (a: CatalogModel, b: CatalogModel): number => hasTag(b, 'planner') - hasTag(a, 'planner');
-  const generalTag = (a: CatalogModel, b: CatalogModel): number => hasTag(b, 'general') - hasTag(a, 'general');
+  // Tag preference is delegated to the canonical CapabilityProfile so this ordinal view and
+  // capabilityRaw's magnitude view read the SAME matrix and can't drift. The profile encodes
+  // which tags each task kind prefers (coding/planner/reasoner/vision/general); tagCmp is the
+  // ordinal projection of the same magnitude tagMagnitude uses. Generic building blocks
+  // (tools/reason/vision/directFirst/balanced/ctx/recency/intel/speed) stay — they're not
+  // duplicated policy, they're shared comparators.
+  const tagCmp = (a: CatalogModel, b: CatalogModel): number => tagComparator(profileForTask(kind), a, b);
 
   const vision = (a: CatalogModel, b: CatalogModel): number => Number(!!b.supportsVision) - Number(!!a.supportsVision);
 
   // Aggregator "auto" endpoints (tag: 'router', e.g. kilo-auto/free, openrouter/free)
   // claim supportsVision but delegate to arbitrary underlying models that may drop the
   // image — for a vision turn, a direct vision model is strictly more trustworthy.
+  const hasTag = (m: CatalogModel, tag: string): number => Number((m.tags ?? []).includes(tag));
   const directFirst = (a: CatalogModel, b: CatalogModel): number => hasTag(a, 'router') - hasTag(b, 'router');
 
   const cmp: Record<TaskKind, (a: CatalogModel, b: CatalogModel) => number> = {
-    trivial: (a, b) => speed(a, b) || recency(a, b) || generalTag(a, b) || intel(a, b),                 // cheapest/fastest; smarts irrelevant
-    chat: (a, b) => tools(a, b) || balanced(a, b) || recency(a, b) || generalTag(a, b) || intel(a, b),        // tool-capable, then fast+capable, newest among equals
-    coding: (a, b) => codingTag(a, b) || tools(a, b) || balanced(a, b) || recency(a, b), // coder-tagged, then tools, fast+capable
-    agent: (a, b) => tools(a, b) || codingTag(a, b) || balanced(a, b) || recency(a, b),  // tools, then coder-tagged, fast+capable
-    debug: (a, b) => tools(a, b) || codingTag(a, b) || balanced(a, b) || reason(a, b) || recency(a, b),
-    plan: (a, b) => balanced(a, b) || plannerTag(a, b) || reason(a, b) || tools(a, b) || recency(a, b), // fast+capable first, then planner-tagged, reasoning breaks ties
+    trivial: (a, b) => speed(a, b) || recency(a, b) || tagCmp(a, b) || intel(a, b),                 // cheapest/fastest; smarts irrelevant; general tag mild
+    chat: (a, b) => tools(a, b) || balanced(a, b) || recency(a, b) || tagCmp(a, b) || intel(a, b),  // tool-capable, then fast+capable, newest among equals
+    coding: (a, b) => tagCmp(a, b) || tools(a, b) || balanced(a, b) || recency(a, b),               // coder-tagged, then tools, fast+capable
+    agent: (a, b) => tools(a, b) || tagCmp(a, b) || balanced(a, b) || recency(a, b),                // tools, then coder-tagged, fast+capable
+    debug: (a, b) => tools(a, b) || tagCmp(a, b) || balanced(a, b) || reason(a, b) || recency(a, b),
+    plan: (a, b) => balanced(a, b) || tagCmp(a, b) || reason(a, b) || tools(a, b) || recency(a, b), // fast+capable first, then planner/reasoner-tagged
     longContext: (a, b) => ctx(a, b) || balanced(a, b) || recency(a, b),            // biggest window, then fast+capable, then newest
-    vision: (a, b) => vision(a, b) || directFirst(a, b) || tools(a, b) || balanced(a, b) || recency(a, b), // must-see models first, direct beats aggregator, then like agent
+    vision: (a, b) => vision(a, b) || directFirst(a, b) || tagCmp(a, b) || tools(a, b) || balanced(a, b) || recency(a, b), // must-see first, direct beats aggregator, vision-tagged, then like agent
   };
 
   const sc = score ?? ((): number => 0);

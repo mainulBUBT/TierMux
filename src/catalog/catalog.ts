@@ -208,11 +208,12 @@ export class Catalog {
 
 /**
  * Worker tag vocabulary → internal tag vocabulary. The router/scorer read a small set of
- * canonical tags (`coding`, `planner`, `reasoner`, `general`, `router`); the worker uses
- * `coder`/`planner`/etc. Map them so the new catalog actually feeds routing. `vision` is
- * dropped because it duplicates the `supportsVision` capability boolean the router already
- * gates on; aggregator endpoints whose display name says "Router" get tagged `router` so
- * vision turns can demote them (they claim vision but delegate to arbitrary backends).
+ * canonical tags (`coding`, `planner`, `reasoner`, `general`, `router`, `vision`); the worker
+ * uses `coder`/`planner`/etc. Map them so the catalog actually feeds routing. `vision` is a
+ * first-class quality tag (dedicated VLM) kept DISTINCT from the `supportsVision` capability
+ * boolean — the boolean gates "can it see at all", the tag signals "is it best at seeing".
+ * Aggregator endpoints whose display name says "Router" get tagged `router` so vision turns
+ * can demote them (they claim vision but delegate to arbitrary backends).
  */
 const WORKER_TAG_MAP: Record<string, string> = {
   coder: 'coding', coding: 'coding',
@@ -358,7 +359,11 @@ function modelRowToCatalog(platform: string, raw: unknown): CatalogModel | null 
     : [];
   const tags: string[] = [];
   for (const t of rawTags) {
-    if (t === 'vision' || t === 'free') continue;       // vision = supportsVision bool; free handled below
+    // `free` is dropped here and re-derived from pricing below. `vision` is KEPT as a quality
+    // tag (dedicated VLM) distinct from the `supportsVision` capability boolean (can see at all):
+    // the boolean is the hard routing gate, the tag is a strong preference signal among capable
+    // models. See src/router/capabilityProfile.ts.
+    if (t === 'free') continue;
     const mapped = WORKER_TAG_MAP[t] ?? t;
     if (!tags.includes(mapped)) tags.push(mapped);
   }

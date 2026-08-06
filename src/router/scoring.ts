@@ -15,15 +15,12 @@
 import type { FallbackEntry } from '../shared/types';
 import type { Catalog } from '../catalog/catalog';
 import { type TaskKind } from '../agent/routing';
+import type { ReasoningEffort } from '../shared/types';
 import type { ModelStatsStore } from '../config/modelStats';
 import type { MetricsStore } from './metricsStore';
 import { SCORING_CONFIG, TASK_WEIGHTS, type FailureType } from './scoringConfig';
 import { shrinkageFactor, lerp } from './wilson';
-
-// TODO: CapabilityScore currently derives from orderForTask(), which is a routing
-// heuristic, not a model-quality measure. In the future, extract a dedicated
-// CapabilityProfile module so routing heuristics and model capability evolve
-// independently (offline benchmarks / community rankings / manual overrides).
+import { profileForTask, tagMagnitude } from './capabilityProfile';
 
 export type HealthState = 'ok' | 'half-open' | 'bad';
 
@@ -46,6 +43,8 @@ export interface SelectionContext {
   runtime: Map<string, CandidateRuntime>; // key `${platform}::${modelId}`
   requireTools: boolean;
   isVision: boolean;
+  /** When 'high'/'xhigh', the profile layers a `reasoner` boost into capability. */
+  reasoningEffort?: ReasoningEffort;
 }
 
 export type SkipReason =
@@ -103,14 +102,12 @@ export class ScoringEngine {
     // (Ordinal rank-position was too dominant: two models with identical catalog fitness
     //  got 1.0 vs 0.3 from arbitrary input order, swamping runtime/confidence. Magnitude
     //  normalization gives tied models equal capability so runtime decides between them.)
-    // TODO: extract a dedicated CapabilityProfile so this stops duplicating orderForTask's
-    // per-kind emphasis (see plan Future section).
     const capRaw = new Map<string, number>();
     let capMin = Infinity;
     let capMax = -Infinity;
     for (const e of entries) {
       const m = this.catalog.find(e.platform, e.modelId);
-      const raw = m ? capabilityRaw(taskKind, m) : 1e9; // unknown → worst
+      const raw = m ? capabilityRaw(taskKind, m, ctx.reasoningEffort) : 1e9; // unknown → worst
       capRaw.set(rtKey(e.platform, e.modelId), raw);
       if (raw < capMin) capMin = raw;
       if (raw > capMax) capMax = raw;
@@ -356,38 +353,43 @@ function clamp(x: number, lo: number, hi: number): number {
 }
 
 /**
- * Per-task catalog-fitness raw score (lower = better). Mirrors orderForTask's per-kind
- * emphasis using catalog MAGNITUDES (ranks, tags, context) — not ordinal position — so
- * tied models get equal capability and runtime can decide between them.
+ * Per-task catalog-fitness raw score (lower = better). Per-kind policy (which
+ * capabilities are required, which tags are preferred) lives in the canonical
+ * {@link CapabilityProfile} so this magnitude view and `orderForTask`'s ordinal
+ * view can never drift — both read the same matrix.
+ *
+ * HARD capability gates (profile.requires) return the 1e6 sentinel so min-max
+ * normalization maps them to the 0.5 capability floor. Tag preference enters ONLY
+ * here as a magnitude discount (`tagMagnitude`) — never as a filter — which is what
+ * delivers "strong preference + widen": a tagged model wins among capable peers, but
+ * when none is healthy/keyed the candidate set widens to untagged capable models.
  */
-function capabilityRaw(kind: TaskKind, m: CatalogModelLike): number {
+function capabilityRaw(kind: TaskKind, m: CatalogModelLike, reasoningEffort?: ReasoningEffort): number {
+  const profile = profileForTask(kind, { reasoningEffort });
+  if (profile.requires.tools && !m.supportsTools) return 1e6;
+  if (profile.requires.vision && !m.supportsVision) return 1e6;
   const intel = m.intelligenceRank;
   const speed = m.speedRank;
-  const tools = m.supportsTools ? 0 : 2; // tool-less penalty
-  const coding = (m.tags ?? []).includes('coding') ? 0 : 1;
-  const reason = m.supportsReasoning ? 0 : 1;
-  const planner = (m.tags ?? []).includes('planner') ? 0 : 1;   // planner-tagged preferred for plan turns
-  const general = (m.tags ?? []).includes('general') ? 0 : 0.5; // mild preference for non-specialized on chat
+  const tag = tagMagnitude(profile, m); // ≤ 0 (a discount); large for a matching preferred tag
   const ctx = m.contextWindow ?? 32768;
   switch (kind) {
-    case 'trivial': return speed + general * 0.5;
-    case 'chat': return speed + intel * 0.5 + tools + general;
-    case 'coding': return intel + coding + tools + speed * 0.3;
-    case 'debug': return intel + coding + tools + reason + speed * 0.3;
-    case 'agent': return intel + tools + coding * 0.5 + speed * 0.3;
-    case 'plan': return intel + reason + planner + speed * 0.4;
+    case 'trivial': return speed + tag * 0.5;             // general stays mild here
+    case 'chat': return speed + intel * 0.5 + tag;
+    case 'coding': return intel + tag + speed * 0.3;
+    case 'debug': return intel + tag + speed * 0.3;       // coding+reasoner stacked via profile
+    case 'agent': return intel + tag + speed * 0.3;
+    case 'plan': return intel + tag + speed * 0.4;        // planner+reasoner stacked via profile
     case 'longContext': return -ctx; // bigger window = lower(raw better)
     case 'vision': {
-      if (!m.supportsVision) return 1e6; // hard-exclude text-only models from vision turns
       // Curated "Frontier" preference (cf. Kilo Code's Auto Frontier): among vision-capable
       // models, comprehension tracks raw INTELLIGENCE — weight it heavily so a merely-fast,
-      // weak model (e.g. a small VLM) can't monopolize vision on speed. Aggregator 'router'
-      // endpoints claim vision but delegate to arbitrary, often text-only models that drop
-      // the image — demote them below any direct vision model.
+      // weak model (e.g. a small VLM) can't monopolize vision on speed. The `vision` tag adds
+      // a dedicated-VLM boost (tag) and aggregator 'router' endpoints are demoted — they claim
+      // vision but delegate to arbitrary, often text-only models that drop the image.
       const aggregator = (m.tags ?? []).includes('router') ? 4 : 0;
-      return aggregator + intel * 1.5 + speed * 0.1;
+      return aggregator + intel * 1.5 + tag + speed * 0.1;
     }
-    default: return intel + speed;
+    default: return intel + speed + tag;
   }
 }
 

@@ -540,7 +540,7 @@ export class Router {
           : true;
       runtime.set(`${e.platform}::${e.modelId}`, { health, canSend, hasKey: true, capable, headroom, providerLoad });
     }
-    return { taskKind: kind, entries, runtime, requireTools: !!opts.requireTools, isVision: kind === 'vision' };
+    return { taskKind: kind, entries, runtime, requireTools: !!opts.requireTools, isVision: kind === 'vision', reasoningEffort: opts.reasoningEffort };
   }
 
   /**
@@ -565,6 +565,20 @@ export class Router {
   }
 
   /** Build the ordered candidate list for a request. */
+  /** Platforms that are auth-ready (keyless, or with at least one key stored). Models on OTHER
+   *  platforms can't actually run — excluding them up front means they don't take a candidate slot,
+   *  pollute the selection rationale, or waste a key-resolution round-trip before the request-time
+   *  no_api_key skip fires. `configured` already encodes keyless||hasKey (see SecretStore.snapshot),
+   *  so keyless providers are kept. Returns an empty set on error so the filter is skipped (safe). */
+  private async configuredPlatformSet(): Promise<Set<Platform>> {
+    try {
+      const snap = await this.secrets.snapshot();
+      return new Set(snap.filter((p) => p.configured).map((p) => p.platform));
+    } catch {
+      return new Set();
+    }
+  }
+
   private candidates(opts: RouteOptions): FallbackEntry[] {
     let list = this.settings.enabledByPriority();
     const forcedModel = !!(opts.model && opts.model !== 'auto');
@@ -723,6 +737,19 @@ export class Router {
   private timeoutMsFor(provider: { timeoutMs?: number }): number {
     const floor = provider.timeoutMs ?? 0;
     return Math.max(this.timeoutMs(), floor);
+  }
+
+  /** TTFT-gated fast failover (lightweight hedging). If a streaming candidate accepts the
+   *  connection but emits NO chunk — not even reasoning/keepalive — within this many ms, abort
+   *  it and fail over to the next candidate instead of blocking the full requestTimeoutMs.
+   *  Catches the case preflight can't: the model passed the 1-token ping then hangs mid-stream.
+   *  Full request-level hedging (racing two live streams, doubling token cost) was judged not
+   *  worth it here; this delivers the same user-visible win (no 30s stalls on a slow model) at
+   *  zero extra token cost. 0 disables. Clamped to never exceed requestTimeoutMs. */
+  private ttftTimeoutMs(): number {
+    const v = vscodeConfigNumber('tiermux.ttftTimeoutMs', 8000);
+    if (v <= 0) return 0;
+    return Math.min(v, this.timeoutMs());
   }
 
   /** Exponential cooldown for a given consecutive-failure streak, capped at `HEALTH_MAX_TTL_MS`. */
@@ -907,6 +934,18 @@ export class Router {
 
     let cands = this.candidates(opts);
     const forced = !!(opts.model && opts.model !== 'auto');
+    // Drop candidates on providers that aren't auth-ready (not keyless AND no key stored). They'd
+    // be skipped at request time anyway (no_api_key), but excluding them here keeps them out of the
+    // selection rationale and avoids a wasted key-resolution round-trip per candidate. A forced/
+    // pinned model is exempt — the user asked for it explicitly, so let request-time handle it.
+    if (!forced) {
+      const configured = await this.configuredPlatformSet();
+      if (configured.size > 0) {
+        const before = cands.length;
+        cands = cands.filter((e) => configured.has(e.platform));
+        if (cands.length < before) diagLog('router.candidates', `dropped ${before - cands.length} candidate(s) on providers with no key (not keyless, no key stored)`);
+      }
+    }
     // Set when Smart Auto scoring ran, so the eventual winning candidate can be checked against
     // the rationale reported below — the rationale reflects the ranking's top pick BEFORE the
     // candidates loop tries anything; if that pick fails (health/rate-limit/empty response/error)
@@ -1028,6 +1067,18 @@ export class Router {
         continue;
       }
 
+      // TTFT-gated fast failover (see ttftTimeoutMs): for streaming requests, build a composite
+      // abort signal that fires on EITHER the user's Stop OR our own TTFT timer. The TTFT abort
+      // throws inside the stream loop below → classified 'network' (failoverable) → next candidate,
+      // without touching opts.abortSignal (so the Stop button stays independent). Non-streaming
+      // requests use opts.abortSignal directly; the normal timeoutMs governs them.
+      const wantsStreamPre = !!opts.onChunk;
+      const ttftMs = wantsStreamPre ? this.ttftTimeoutMs() : 0;
+      const ttftController = ttftMs > 0 ? new AbortController() : undefined;
+      const perCandidateAbort = ttftController && opts.abortSignal
+        ? AbortSignal.any([opts.abortSignal, ttftController.signal])
+        : (ttftController ? ttftController.signal : opts.abortSignal);
+
       const completionOpts: CompletionOptions = {
         temperature: opts.temperature,
         // Floor the output budget when the caller didn't set one. Without this, `max_tokens` is
@@ -1047,7 +1098,7 @@ export class Router {
         reasoningEffort: model?.supportsReasoning ? opts.reasoningEffort : undefined,
         baseUrlOverride: this.settings.getEndpoint(entry.platform),
         timeoutMs: opts.timeoutMs ?? this.timeoutMsFor(provider as { timeoutMs?: number }),
-        abortSignal: opts.abortSignal,
+        abortSignal: perCandidateAbort,
       };
 
       let reserved = toolsTokens;
@@ -1056,6 +1107,10 @@ export class Router {
 
         const fitted = fitMessages(messages, inputBudget(model?.contextWindow, maxOut, reserved)).messages;
         const t0 = Date.now();
+        // Start the TTFT timer for this attempt: if no chunk arrives within ttftMs, the composite
+        // abort signal fires and the stream loop below throws → failover. Cleared on first chunk.
+        let ttftTimer: ReturnType<typeof setTimeout> | undefined;
+        if (ttftController) ttftTimer = setTimeout(() => ttftController.abort(), ttftMs);
         try {
           let response: ChatCompletionResponse;
 
@@ -1103,6 +1158,10 @@ export class Router {
             let loopCompletedNormally = false;
             try {
               for await (const chunk of provider.streamChatCompletion(apiKey, fitted, entry.modelId, completionOpts)) {
+                // Any chunk at all (content, reasoning, keepalive, usage-only) proves the model is
+                // live and responding — clear the TTFT fast-failover timer on the first one so it
+                // can't fire mid-stream. The normal timeoutMs still bounds the rest of the stream.
+                if (ttftTimer) { clearTimeout(ttftTimer); ttftTimer = undefined; }
                 if (chunk.usage) finalUsage = chunk.usage;
                 const choice0 = chunk.choices?.[0];
                 if (choice0?.finish_reason) streamFinishReason = choice0.finish_reason;
@@ -1355,7 +1414,15 @@ export class Router {
           diagLog('router.served', `${entry.platform}::${entry.modelId} runtimeName="${(provider as any).runtimeName ?? ''}" usage=${JSON.stringify(response.usage)} contentLen=${contentToString(responseContent).length}`);
           return { response, platform: entry.platform, model: entry.modelId, runtimeName: (provider as any).runtimeName };
         } catch (err) {
-          const { reason, failoverable, retryAfterMs, detail } = classify(err);
+          if (ttftTimer) { clearTimeout(ttftTimer); ttftTimer = undefined; }
+          let { reason, failoverable, retryAfterMs, detail } = classify(err);
+          // If our own TTFT fast-failover timer aborted this candidate (no chunk within ttftMs),
+          // label it as a timeout rather than a generic network error — it's more accurate and
+          // routes through the existing timeout health/metric handling.
+          if (reason === 'network' && ttftController?.signal.aborted) {
+            reason = 'timeout';
+            detail = detail ? `ttft timeout: ${detail}` : 'ttft timeout (no first chunk in time)';
+          }
           diagLog('router.catch', `${entry.platform}::${entry.modelId} reason=${reason} failoverable=${!!failoverable} detail=${detail ?? ''} err=${err instanceof Error ? err.message : String(err)}`);
 
           if (reason === 'http_413' && sentTools && !triedTrim) {

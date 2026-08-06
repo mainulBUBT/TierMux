@@ -1970,7 +1970,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const agentCfg = vscode.workspace.getConfiguration('tiermux.agent');
       const autoContinueOn = agentCfg.get<boolean>('autoContinue', true);
       const maxAutoContinueRounds = agentCfg.get<number>('maxAutoContinueRounds', 25);
-      const maxBudgetContinuations = agentCfg.get<number>('maxBudgetContinuations', 3);
+      const maxBudgetContinuations = agentCfg.get<number>('maxBudgetContinuations', 1);
       if (m.mode === 'agent' && autoContinueOn) {
         let budgetContinuations = 0;
         for (let ac = 0; ac < maxAutoContinueRounds && this.isActiveRun(s, m.requestId); ac++) {

@@ -254,6 +254,67 @@ function test_visionBlindDemotes(): void {
   assert(ordered[0].modelId === 'clean-vlm', 'vision-blind model demoted below the clean vision model');
 }
 
+function test_taggedBeatsUntagged(): void {
+  console.log('10. classification: a correctly-tagged model beats a smarter untagged one');
+  // dumber-coder is intelligenceRank 4 (vs smarter 2) but carries the `coding` tag.
+  // TAG_BOOST_PER_MATCH (3.0) covers the 2-rank gap → tagged wins despite lower intelligence.
+  const models = [
+    model('a', 'smarter-nocoding', { intelligenceRank: 2, speedRank: 3 }),
+    model('b', 'dumber-coder', { intelligenceRank: 4, speedRank: 3, tags: ['coding'] }),
+  ];
+  const { engine } = freshEngine(models);
+  const entries = [entry('a', 'smarter-nocoding'), entry('b', 'dumber-coder')];
+  const runtime = new Map([['a::smarter-nocoding', rt()], ['b::dumber-coder', rt()]]);
+  const ordered = rank(engine, 'coding', entries, runtime, true);
+  assert(ordered[0].modelId === 'dumber-coder', 'coding-tagged model wins despite lower intelligence');
+}
+
+function test_widenWhenTaggedUnhealthy(): void {
+  console.log('11. widen: untagged healthy model wins when the tagged one is unhealthy');
+  const models = [
+    model('a', 'smarter-nocoding', { intelligenceRank: 2, speedRank: 3 }),
+    model('b', 'dumber-coder', { intelligenceRank: 4, speedRank: 3, tags: ['coding'] }),
+  ];
+  const { engine } = freshEngine(models);
+  const entries = [entry('a', 'smarter-nocoding'), entry('b', 'dumber-coder')];
+  // The tagged coder is down — widen to the untagged healthy model.
+  const runtime = new Map([['a::smarter-nocoding', rt()], ['b::dumber-coder', rt({ health: 'bad' })]]);
+  const res = engine.rank({ taskKind: 'coding' as any, entries, runtime, requireTools: true, isVision: false }, () => 0);
+  assert(res.ordered[0].modelId === 'smarter-nocoding', 'untagged healthy model wins when tagged is unhealthy (widen)');
+  const coderRationale = res.rationale.find((r) => r.modelId === 'dumber-coder');
+  assert(!!coderRationale && coderRationale.skip === 'unhealthy', 'unhealthy tagged model carries skip=unhealthy');
+}
+
+function test_visionTagQuality(): void {
+  console.log('12. vision tag: dedicated VLM ranks above plain image-acceptor and aggregator');
+  const models = [
+    model('a', 'plain-acceptor', { supportsVision: true, intelligenceRank: 3, speedRank: 3 }),
+    model('b', 'dedicated-vlm', { supportsVision: true, intelligenceRank: 3, speedRank: 3, tags: ['vision'] }),
+    model('c', 'aggregator', { supportsVision: true, intelligenceRank: 3, speedRank: 3, tags: ['router'] }),
+  ];
+  const { engine } = freshEngine(models);
+  const entries = [entry('a', 'plain-acceptor'), entry('b', 'dedicated-vlm'), entry('c', 'aggregator')];
+  const runtime = new Map(entries.map((e) => [`${e.platform}::${e.modelId}`, rt({ capable: true })] as const));
+  const ordered = rank(engine, 'vision', entries, runtime, false, true);
+  assert(ordered[0].modelId === 'dedicated-vlm', 'vision-tagged VLM ranks first');
+  assert(ordered[ordered.length - 1].modelId === 'aggregator', 'aggregator ranked last');
+}
+
+function test_reasonerEffortRouting(): void {
+  console.log('13. reasoningEffort=high: reasoner-tagged model floats up on a high-effort turn');
+  // Two equal-intelligence models; only one is reasoner-tagged + supportsReasoning.
+  const models = [
+    model('a', 'plain', { intelligenceRank: 2, speedRank: 3, supportsReasoning: true }),
+    model('b', 'thinker', { intelligenceRank: 2, speedRank: 3, supportsReasoning: true, tags: ['reasoner'] }),
+  ];
+  const { engine } = freshEngine(models);
+  const entries = [entry('a', 'plain'), entry('b', 'thinker')];
+  const runtime = new Map([['a::plain', rt()], ['b::thinker', rt()]]);
+  // effort=high → profile layers a reasoner boost; without it the two tie and order is input order.
+  const res = engine.rank({ taskKind: 'agent' as any, entries, runtime, requireTools: true, isVision: false, reasoningEffort: 'high' } as any, () => 0);
+  assert(res.ordered[0].modelId === 'thinker', 'reasoner-tagged model wins on a high-effort turn');
+}
+
 // ---- run ----
 
 console.log(`SCORING_CONFIG: minSamples=${SCORING_CONFIG.minSamples} speedFloorRatio=${SCORING_CONFIG.speedFloorRatio} explorationMargin=${SCORING_CONFIG.explorationMargin}\n`);
@@ -266,6 +327,10 @@ test_smallSampleConfidence();
 test_explorationDeterministic();
 test_visionPrefersStrongDirectModel();
 test_visionBlindDemotes();
+test_taggedBeatsUntagged();
+test_widenWhenTaggedUnhealthy();
+test_visionTagQuality();
+test_reasonerEffortRouting();
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

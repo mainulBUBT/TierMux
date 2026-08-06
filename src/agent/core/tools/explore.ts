@@ -18,8 +18,11 @@ const MAX_STEPS = 6;
 // Hard wall-clock ceiling for the whole sub-agent. Without it, a nested 6-step loop on a pinned
 // free utility model that keeps hitting rate-limit backoff can run for minutes, freezing the
 // parent turn with no output ("huge time / response not showing"). On timeout the sub-agent aborts
-// and degrades to a "search yourself" message the main agent can act on.
-const EXPLORE_TIMEOUT_MS = 45_000;
+// and degrades to a "search yourself" message the main agent can act on. Capped at 20s (was 45s):
+// the sub-agent is read-only exploration on a cheap model — a search that hasn't converged in 20s
+// is almost certainly thrashing on rate-limit backoff, and every second it blocks the parent turn
+// is a second the user sees nothing.
+const EXPLORE_TIMEOUT_MS = 20_000;
 
 const EXPLORE_SYSTEM =
   'You are a codebase exploration sub-agent. Your ONLY job is to investigate the workspace and '
@@ -86,7 +89,7 @@ export function createExploreTool(router: Router, abortSignal?: AbortSignal) {
     };
 
     // Bound the sub-agent in time: whichever fires first — the parent turn's abort or our own
-    // 45s ceiling — cancels the nested loop. AbortSignal.any keeps both live.
+    // 20s ceiling — cancels the nested loop. AbortSignal.any keeps both live.
     const timeout = AbortSignal.timeout(EXPLORE_TIMEOUT_MS);
     const signal = abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout;
 

@@ -187,7 +187,9 @@ async function main() {
     // tags (worker-authoritative)
     const tags = [];
     for (const t of (Array.isArray(row.tags) ? row.tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : [])) {
-      if (t === 'vision' || t === 'free') continue;
+      // `vision` is kept as a quality tag (dedicated VLM) distinct from the supportsVision
+      // capability boolean — mirror src/catalog/catalog.ts. See src/router/capabilityProfile.ts.
+      if (t === 'free') continue;
       const mapped = WORKER_TAG_MAP[t] ?? t;
       if (!tags.includes(mapped)) tags.push(mapped);
     }
