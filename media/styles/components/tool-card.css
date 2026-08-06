@@ -176,6 +176,39 @@
   border-radius: var(--tm-radius-sm);
 }
 
+/* Markdown file cards (writeFile/createFile/readFile on a .md): rendered Preview by
+   default, raw Source one click away. Only one of the two panes is ever mounted-visible. */
+.tm-md-doc { margin-top: var(--tm-gap-xs); }
+.tm-md-doc-bar { display: flex; gap: 2px; margin-bottom: var(--tm-gap-xs); }
+.tm-md-doc-tab {
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--tm-radius-sm);
+  background: transparent;
+  color: var(--tm-fg-muted);
+  font-size: var(--tm-text-xs);
+  cursor: pointer;
+}
+.tm-md-doc-tab:hover { color: var(--tm-fg); }
+.tm-md-doc-tab.active {
+  background: var(--tm-surface-code);
+  border-color: var(--tm-card-border);
+  color: var(--tm-fg);
+}
+.tm-md-doc-preview {
+  background: var(--tm-surface-code);
+  border: 1px solid var(--tm-card-border);
+  border-radius: var(--tm-radius-md);
+  padding: var(--tm-gap-sm) var(--tm-gap-md);
+  font-size: var(--tm-text-sm);
+  overflow-x: auto;
+}
+.tm-md-doc-preview > div > :first-child { margin-top: 0; }
+.tm-md-doc-preview > div > :last-child { margin-bottom: 0; }
+.tm-md-doc-source { display: none; margin-top: 0; }
+.tm-md-doc.show-source .tm-md-doc-preview { display: none; }
+.tm-md-doc.show-source .tm-md-doc-source { display: block; }
+
 /* Validation run cards keep a subtle left accent. */
 .tm-tool-card.validation { border-left: 2px solid var(--tm-status-done); padding-left: 2px; }
 .tm-tool-card.validation.error { border-left-color: var(--tm-status-error); }

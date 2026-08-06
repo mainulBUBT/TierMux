@@ -28,7 +28,7 @@ import { getPlatformInfo } from './providers';
 import { parseSlash, resolveMentions, searchMentions } from './context/mentions';
 import { contentToString } from './agent/content';
 import { getSnapshot as getRetrievalSnapshot } from './context/telemetry';
-import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSupportedAttachmentPath, kindForPath as kindFromName, mimeForPath as mimeForName } from './util/extractAttachments';
+import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSupportedAttachmentPath, kindForPath as kindFromName, lastPdfFailureReason, mimeForPath as mimeForName } from './util/extractAttachments';
 import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense, generateHandoff } from './agent/condense';
@@ -1442,10 +1442,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  so the user isn't left guessing why the model later refuses or answers from nothing. */
   private warnIfPdfTextExtractionFailed(attachment: Attachment): void {
     if (attachment.kind === 'pdf' && !attachment.text) {
+      // Only report a real MALFUNCTION here. A genuine scan (no text layer) is not an error:
+      // the webview converts its pages to images right after this and reports the outcome
+      // itself, so claiming "sending the raw file" now would contradict what actually happens.
+      // The library-failed-to-load case is different — it makes every PDF look like a scan and
+      // must be named, because nothing else distinguishes the two.
+      const why = lastPdfFailureReason();
+      if (!why || why.startsWith('getText returned no text')) return;
       this.post({
         type: 'notice',
         sessionId: this.viewedSessionId,
-        text: `Couldn't extract text from "${attachment.name}" (likely a scanned PDF with no text layer) — sending the raw file instead. Not all models can read raw PDFs.`,
+        text: `Couldn't read text from "${attachment.name}" — the PDF reader failed (${why.slice(0, 300)}). Falling back to sending the pages as images.`,
       });
     }
   }
@@ -1724,7 +1731,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (a.kind === 'image' && a.dataUrl) {
         visualBlocks.push({ type: 'image_url', image_url: { url: a.dataUrl, mime: a.mime, filename: a.name } });
       } else if (a.kind === 'pdf' && a.dataUrl && !a.text) {
-        visualBlocks.push({ type: 'file', file: { filename: a.name, file_data: a.dataUrl, mime: a.mime } });
+        // Scanned PDF: prefer the page images the webview rendered (see media/src/pdfPages.ts)
+        // — every vision-capable model can read `image_url` blocks, whereas raw PDF bytes (the
+        // `file` block below) only Google actually forwards (BaseProvider.carriesRawPdf). Fall
+        // back to the raw file when rendering failed, preserving the pre-existing Google-only
+        // behavior rather than dropping the attachment entirely.
+        if (a.pageImages?.length) {
+          a.pageImages.forEach((url, i) => {
+            // Read the mime off the data URL itself — the webview encodes JPEG, and an
+            // explicit-but-wrong mime here would WIN over the URL's own header downstream
+            // (see resolveMime in agent/content.ts), handing Gemini mislabelled bytes.
+            const mime = /^data:([^;,]+)/.exec(url)?.[1] ?? 'image/jpeg';
+            visualBlocks.push({ type: 'image_url', image_url: { url, mime, filename: `${a.name} (page ${i + 1})` } });
+          });
+        } else {
+          visualBlocks.push({ type: 'file', file: { filename: a.name, file_data: a.dataUrl, mime: a.mime } });
+        }
       }
     }
     diagLog('attach.build', `attachments=${list.length} kinds=${list.map((a) => `${a.kind}${a.dataUrl ? ':dataUrl' : ''}${a.text ? ':text' : ''}`).join(',') || '<none>'} visualBlocks=${visualBlocks.length}`);
@@ -2961,9 +2983,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const uri = (f: string) => webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', f));
     const csp = [
       `default-src 'none'`,
-      `img-src ${webview.cspSource} https: data:`,
+      `img-src ${webview.cspSource} https: data: blob:`,
       `style-src ${webview.cspSource} 'nonce-${nonce}'`,
-      `script-src 'nonce-${nonce}'`,
+      // `${webview.cspSource}` is needed alongside the nonce for pdf.js: it is an ES module,
+      // and a module's own `import` is matched against the source list, NOT the nonce (a nonce
+      // only authorizes the <script> element itself). Without it the lazy pdf.js load is
+      // blocked and scanned-PDF rendering silently never starts.
+      `script-src ${webview.cspSource} 'nonce-${nonce}'`,
+      // pdf.js runs its parser in a Web Worker loaded from our own vendor directory.
+      `worker-src ${webview.cspSource} blob:`,
       `font-src ${webview.cspSource}`,
     ].join('; ');
     return `<!DOCTYPE html>
@@ -2986,7 +3014,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div id="app"></div>
-  <script nonce="${nonce}">window.__PRODUCT_NAME__ = ${JSON.stringify(PRODUCT_NAME)}; window.__LOGO_URI__ = ${JSON.stringify(uri('logo-mono.png').toString())};</script>
+  <script nonce="${nonce}">window.__PRODUCT_NAME__ = ${JSON.stringify(PRODUCT_NAME)}; window.__LOGO_URI__ = ${JSON.stringify(uri('logo-mono.png').toString())};
+  // Mermaid is ~3.5 MB, so it is not loaded up front like the vendors below. markdown.ts
+  // injects it on demand the first time a mermaid fence renders, using __NONCE__ to
+  // satisfy the script-src/style-src CSP (which is nonce-only, so no 'unsafe-inline').
+  window.__NONCE__ = ${JSON.stringify(nonce)}; window.__MERMAID_URI__ = ${JSON.stringify(uri('vendor/mermaid.min.js').toString())};
+  // pdf.js, lazy-injected by pdfPages.ts the first time a scanned PDF is attached — see the
+  // vendor copy in esbuild.js for why this has to render here in the webview, not host-side.
+  window.__PDFJS_URI__ = ${JSON.stringify(uri('vendor/pdf.min.mjs').toString())}; window.__PDFJS_WORKER_URI__ = ${JSON.stringify(uri('vendor/pdf.worker.min.mjs').toString())};</script>
   <script nonce="${nonce}" src="${uri('vendor/marked.min.js')}"></script>
   <script nonce="${nonce}" src="${uri('vendor/highlight.min.js')}"></script>
   <script nonce="${nonce}" src="${uri('vendor/diff2html.min.js')}"></script>

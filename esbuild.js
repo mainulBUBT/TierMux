@@ -73,6 +73,30 @@ function copyVendor() {
   } else {
     console.warn('[esbuild] diff2html.min.js not found — run npm install');
   }
+
+  // mermaid: self-contained browser bundle (sets globalThis.mermaid). Renders
+  // ```mermaid fences into flowcharts/sequence diagrams in the chat.
+  // ~3.5 MB, so unlike the vendors above it is NOT a <script> tag in the webview
+  // HTML — markdown.ts injects it lazily the first time a mermaid block appears
+  // (see loadMermaid), keeping webview startup unaffected for the common case.
+  const mermaidJs = path.join(__dirname, 'node_modules', 'mermaid', 'dist', 'mermaid.min.js');
+  if (fs.existsSync(mermaidJs)) {
+    copy(mermaidJs, path.join(vendorDir, 'mermaid.min.js'));
+  } else {
+    console.warn('[esbuild] mermaid.min.js not found — run npm install');
+  }
+
+  // pdf.js (browser ESM build + its worker): rasterizes a scanned PDF's pages to images
+  // so ANY vision model can read it. This MUST run in the webview, not the extension host:
+  // host-side rendering needs @napi-rs/canvas, whose native binding Electron refuses to load
+  // ("Failed to load native binding"), while the webview is a real browser with real <canvas>.
+  // ~1.4 MB combined, so like mermaid it is lazy-injected (see media/src/pdfPages.ts) rather
+  // than a <script> tag — a session that never attaches a scanned PDF never pays for it.
+  for (const f of ['pdf.min.mjs', 'pdf.worker.min.mjs']) {
+    const src = path.join(__dirname, 'node_modules', 'pdfjs-dist', 'build', f);
+    if (fs.existsSync(src)) copy(src, path.join(vendorDir, f));
+    else console.warn(`[esbuild] pdfjs-dist ${f} not found — run npm install`);
+  }
 }
 
 // Emits begin/end markers per build so VS Code's background problemMatcher (in
@@ -161,6 +185,9 @@ async function main() {
     // file. Bundled into dist/extension.js, that path resolves to a nonexistent dist/pdf.worker.mjs
     // and every PDF text extraction silently fails ("Setting up fake worker failed"). Left
     // external, Node's real module resolution finds the real pdf.worker.mjs next to pdf-parse.
+    // NOTE: pdf-parse is loaded with `require()`, never `await import()` — it is "type":"module",
+    // so a dynamic import picks its ESM entry, which the VS Code extension host fails to load
+    // (every PDF then silently extracted as empty). See loadPdfParse in util/extractAttachments.
     external: ['vscode', '@vscode/ripgrep', 'jsdom', 'pdf-parse'],
     sourcemap: !production,
     minify: production,

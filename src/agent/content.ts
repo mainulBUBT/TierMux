@@ -104,17 +104,33 @@ export function collectSessionAttachmentBlocks(messages: ChatMessage[], cap = 4)
 }
 
 /**
- * Drop only `type: 'file'` blocks (PDFs we attached as native file data) but
- * keep `image_url` blocks. OpenAI-compat providers that DO support vision
- * (Groq Llama Vision, Mistral Pixtral, OpenRouter, etc.) accept `image_url`
- * natively — only our `file` envelope is unknown to them, so strip it and
- * rely on the PDF's extracted text already embedded in the user message.
+ * Drop `type: 'file'` blocks (PDFs we attached as native file data) and narrow
+ * `image_url` blocks to the standard OpenAI wire shape `{ url }` before sending to
+ * an OpenAI-compat endpoint. OpenAI-compat providers that DO support vision (Groq
+ * Llama Vision, Mistral Pixtral, OpenRouter, etc.) accept `image_url` natively —
+ * only our `file` envelope is unknown to them, so strip it and rely on the PDF's
+ * extracted text already embedded in the user message.
+ *
+ * `image_url` blocks internally carry extra `mime`/`filename` fields (see
+ * AttachmentBlock/normalizeAttachmentBlocks above) that the rest of the extension
+ * needs for routing/session-attachment-memory, but which are NOT part of the
+ * OpenAI vision API (`image_url: { url, detail? }`). Some gateways schema-validate
+ * the request body and reject unknown properties with an outright 400 — a
+ * `supportsVision: true` model then looks broken even though the model itself is
+ * fine, because the request carrying its image never arrived. Only `url` (and a
+ * `detail` hint if ever added) belongs on the wire.
  */
 export function stripFileBlocks(content: ChatContent): ChatContent {
   if (!Array.isArray(content)) return content;
   const out: ChatContent = [];
   for (const block of content) {
-    if (block && typeof block === 'object' && (block as { type?: string }).type === 'file') continue;
+    if (!block || typeof block !== 'object') { out.push(block as never); continue; }
+    const b = block as { type?: string; image_url?: { url?: unknown } };
+    if (b.type === 'file') continue;
+    if (b.type === 'image_url' && typeof b.image_url?.url === 'string') {
+      out.push({ type: 'image_url', image_url: { url: b.image_url.url } } as never);
+      continue;
+    }
     out.push(block as never);
   }
   return out;

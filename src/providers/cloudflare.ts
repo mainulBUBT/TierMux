@@ -8,6 +8,11 @@ import { flattenMessageContent } from '../agent/content';
 export class CloudflareProvider extends BaseProvider {
   readonly platform = 'cloudflare' as const;
   readonly name = 'Cloudflare Workers AI';
+  // body() always calls flattenMessageContent() below, so image/file content blocks never
+  // reach Workers AI — the router's vision-turn `carriesImages`/pinned-model checks key off
+  // this exact property name (see router.ts's `{flattenContent?: boolean}` casts) to route
+  // around providers that silently reduce multimodal content to plain text on the wire.
+  readonly flattenContent = true;
 
   private parseKey(apiKey: string): { accountId: string; token: string } {
     const sep = apiKey.indexOf(':');

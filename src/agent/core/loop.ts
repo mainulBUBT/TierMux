@@ -903,8 +903,12 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // engine (assessAnswerQuality → maybeEscalateWeak → tryEscalate → onFailover) and was lost in
   // the migration to this native loop. Only safe when NO mutating tool call happened yet: once a
   // write/edit/delete/command has actually run, retrying with a different model would either
-  // repeat that side effect or silently strand it — never retry past that point.
-  const canEscalate = final === first && !first.hadMutatingToolCall && !opts.abortSignal?.aborted && first.platform && first.model;
+  // repeat that side effect or silently strand it — never retry past that point. Also skipped
+  // when the user pinned a specific model (not Auto): escalation drops pinnedModel (see the
+  // `escalation ? undefined : opts.pinnedModel` above) and free-picks among top-tier models, so
+  // running it on a pinned turn would silently execute the reply on a model the user never chose.
+  const canEscalate = final === first && !first.hadMutatingToolCall && !opts.abortSignal?.aborted
+    && !opts.pinnedModel && first.platform && first.model;
   if (canEscalate) {
     const quality = assessAnswerQuality(first.text, taskKind);
     let shouldEscalate = first.stopReason === 'stuck' || quality.weak;
@@ -997,7 +1001,10 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     // Only meaningful when nothing downstream salvaged the turn — every retry/escalation path
     // above already overwrites `final` with a candidate that has real text or tool calls, so a
     // surviving `failed` here means every attempt genuinely came back empty after an error.
-    failed: final.failed && !final.text.trim() && !final.hadToolCalls,
+    // Deliberately NOT gated on `!final.hadToolCalls`: a tool call running earlier in the turn
+    // doesn't make a later stream error (e.g. AllModelsFailedError) any less real — see the
+    // matching comment in runAttempt's own `failed` computation above.
+    failed: final.failed && !final.text.trim(),
     errorMessage: final.errorMessage,
   };
 }

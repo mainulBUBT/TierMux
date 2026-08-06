@@ -181,8 +181,15 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
   const isEditStatic = step.name === 'editFile' || step.name === 'writeFile' || step.name === 'createFile';
   const editArgsStatic = isEditStatic && step.args && typeof step.args === 'object' ? step.args as Record<string, unknown> : null;
 
+  // A markdown file the card already has the full text of (written, created, or read)
+  // gets a rendered Preview/Source view instead of the raw JSON/text dump.
+  const mdSource = markdownDocSource(step);
+
   let hasBody = false;
-  if (editArgsStatic && 'old_string' in editArgsStatic && 'new_string' in editArgsStatic) {
+  if (mdSource != null) {
+    pre.replaceWith(buildMarkdownDoc(mdSource));
+    hasBody = true;
+  } else if (editArgsStatic && 'old_string' in editArgsStatic && 'new_string' in editArgsStatic) {
     pre.className = 'tm-tool-card-output diff-view';
     pre.appendChild(buildInlineDiff(String(editArgsStatic.old_string), String(editArgsStatic.new_string)));
     hasBody = true;
@@ -389,6 +396,65 @@ function shortPath(p: string): string {
   const s = String(p || '').replace(/\\/g, '/').replace(/^\.?\//, '');
   const parts = s.split('/').filter(Boolean);
   return parts.length <= 2 ? parts.join('/') : parts.slice(-2).join('/');
+}
+
+const MARKDOWN_EXT = /\.(md|markdown|mdx)$/i;
+
+/**
+ * The full markdown text a tool card can preview, or null when there is none.
+ * Only tools that carry a whole document qualify: writeFile/createFile hold it in
+ * `content`, and a single-path readFile returns it as the tool output. editFile is
+ * deliberately excluded — its old_string/new_string pair is a fragment, and the
+ * existing inline diff is the more useful view of it.
+ */
+function markdownDocSource(step: ToolStep): string | null {
+  const args = step.args && typeof step.args === 'object' ? step.args as Record<string, unknown> : null;
+  if (!args) return null;
+  const path = String(args.path ?? args.file ?? args.filePath ?? args.relativePath ?? '');
+  if (!MARKDOWN_EXT.test(path)) return null;
+
+  if (step.name === 'writeFile' || step.name === 'createFile') {
+    return typeof args.content === 'string' && args.content.trim() ? args.content : null;
+  }
+  if (step.name === 'readFile') {
+    // A failed read returns a message, not a document — keep the plain output for that.
+    const detail = typeof step.detail === 'string' ? step.detail : '';
+    if (!detail.trim() || /^File not found:/.test(detail)) return null;
+    return detail;
+  }
+  return null;
+}
+
+/**
+ * Rendered markdown with a Preview/Source switch, for the body of a tool card that
+ * wrote or read a `.md` file. Preview is the default view — the point of the card is
+ * to show what the document looks like; Source is one click away for the exact bytes.
+ */
+function buildMarkdownDoc(md: string): HTMLElement {
+  const root = el('div', { class: 'tm-md-doc' });
+
+  const preview = el('div', { class: 'tm-md-doc-preview' }, renderMarkdown(md));
+  const source = el('pre', { class: 'tm-tool-card-output tm-md-doc-source' });
+  source.textContent = md;
+
+  const tab = (label: string, showSource: boolean) => {
+    const b = el('button', {
+      class: `tm-md-doc-tab${showSource ? '' : ' active'}`,
+      type: 'button',
+      onClick: (e: Event) => {
+        // The card header owns expand/collapse; a tab click must not bubble into it.
+        e.stopPropagation();
+        root.classList.toggle('show-source', showSource);
+        root.querySelectorAll('.tm-md-doc-tab').forEach((t, i) => t.classList.toggle('active', (i === 1) === showSource));
+      },
+    }, label);
+    return b;
+  };
+
+  root.appendChild(el('div', { class: 'tm-md-doc-bar' }, tab('Preview', false), tab('Source', true)));
+  root.appendChild(preview);
+  root.appendChild(source);
+  return root;
 }
 
 /**

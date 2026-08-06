@@ -274,6 +274,22 @@ details[open].work-summary > .work-sum-label { opacity: .7; }
 .code-block-wrap:hover .code-copy-btn { opacity: 1; }
 .code-block-head .code-copy-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,.1)); }
 .code-block-head .code-copy-btn.ok { color: var(--vscode-terminal-ansiGreen, #4caf50); opacity: 1; }
+/* The header can carry more than one action (mermaid adds a Diagram/Source toggle);
+   `margin-right:auto` on the label keeps them grouped right without restructuring. */
+.code-block-head { gap: 4px; }
+.code-block-head .code-lang { margin-right: auto; }
+
+/* ```mermaid blocks: the code block is the always-present fallback, so the SVG only
+   takes over once `.rendered` is set, and the toggle flips back to source on demand. */
+.mermaid-render {
+  display: flex; justify-content: center;
+  padding: 14px 12px; overflow-x: auto;
+  background: var(--vscode-editor-background, #1e1e1e);
+}
+.mermaid-render svg { max-width: 100%; height: auto; }
+.mermaid-block.rendered > pre { display: none; }
+.mermaid-block.rendered.show-source > pre { display: block; }
+.mermaid-block.rendered.show-source > .mermaid-render { display: none; }
 
 /* Streaming cursor: a soft blinking block trailing the last streamed token, the AI SDK Elements
    "Response is still writing" affordance. renderMarkdown wraps content in a <div>, so target the

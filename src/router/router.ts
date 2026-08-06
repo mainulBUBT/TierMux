@@ -231,6 +231,7 @@ export class AllModelsFailedError extends Error {
           : `${who} rejected the API key. Update it in "Manage Models & Keys".${upstream}`;
         case 'bad_request': return `${who} rejected the request (HTTP 400)${isCustom ? ' — often a wrong model ID or unsupported parameter for this endpoint' : ''}.${upstream}`;
         case 'paid_only': return `${who} is paid-only or out of free quota on this provider. Add credit/a key in "Manage Models & Keys", pick a different model, or set it to Auto.`;
+        case 'content_filter': return `${who} blocked this request before generating a reply.${upstream} Try a different model, or remove/replace the attachment.`;
         default: return `${who} failed (${f.reason}). Try again, or set the model to Auto.${upstream}`;
       }
     }
@@ -314,6 +315,14 @@ function classify(err: unknown): { reason: string; failoverable: boolean; retryA
     if (s === 402) return { reason: 'paid_only', failoverable: true, detail };
     if (s && s >= 500) return { reason: 'server_error', failoverable: true, detail };
     return { reason: `http_${s ?? '?'}`, failoverable: true, detail };
+  }
+
+  // Google throws a plain Error (no HTTP status — the response itself was 200) when a prompt
+  // gets blocked (safety/recitation) instead of returning a candidate — see google.ts's
+  // promptFeedback/finishReason check. Recognize its message so the surfaced failure reads as
+  // an actionable content-block notice instead of a generic "network" failure.
+  if (detail?.startsWith('Google blocked this request')) {
+    return { reason: 'content_filter', failoverable: true, detail };
   }
 
   return { reason: 'network', failoverable: true, detail };

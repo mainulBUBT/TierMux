@@ -8,6 +8,7 @@
 import { escapeHtml, showToast } from './dom';
 import { send } from './bridge';
 import { ICON } from './icons';
+import { mermaidAvailable, renderMermaid } from './mermaid';
 
 // Configure marked ONCE: render embedded raw HTML as escaped TEXT instead of
 // live DOM, so a chat message containing an HTML form/snippet shows as readable,
@@ -109,6 +110,7 @@ const LANG_LABEL: Record<string, string> = {
   sh: 'Shell', bash: 'Bash', zsh: 'Shell', json: 'JSON', yaml: 'YAML', yml: 'YAML',
   html: 'HTML', css: 'CSS', scss: 'SCSS', sql: 'SQL', md: 'Markdown', diff: 'Diff',
   java: 'Java', c: 'C', cpp: 'C++', cs: 'C#', kt: 'Kotlin', swift: 'Swift',
+  mermaid: 'Diagram',
 };
 
 // Give every remaining fenced code block (anything diff2html didn't already replace) an AI-SDK-
@@ -122,6 +124,7 @@ function addCodeCopyButtons(div: HTMLElement): void {
 
     const wrap = document.createElement('div');
     wrap.className = 'code-block-wrap';
+    if (lang) wrap.dataset.lang = lang;
     pre.replaceWith(wrap);
 
     const head = document.createElement('div');
@@ -146,5 +149,42 @@ function addCodeCopyButtons(div: HTMLElement): void {
 
     wrap.appendChild(head);
     wrap.appendChild(pre);
+
+    if (lang === 'mermaid') attachDiagram(wrap, head, btn, code);
+  });
+}
+
+/**
+ * Upgrade a ```mermaid code block into a rendered diagram with a Diagram/Source
+ * toggle in the block header. The code block IS the fallback: it stays visible
+ * until (and unless) mermaid returns an SVG, so an unsupported diagram type, a
+ * missing bundle, or a half-streamed fence simply reads as source.
+ */
+function attachDiagram(wrap: HTMLElement, head: HTMLElement, copyBtn: HTMLElement, src: string): void {
+  if (!mermaidAvailable()) return;
+  wrap.classList.add('mermaid-block');
+
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'code-copy-btn diagram-toggle';
+  toggle.hidden = true; // revealed only once there is a diagram to switch to
+  head.insertBefore(toggle, copyBtn);
+
+  const syncToggle = () => {
+    const showingSource = wrap.classList.contains('show-source');
+    toggle.innerHTML = showingSource ? ICON.eye : ICON.code;
+    toggle.title = showingSource ? 'Show diagram' : 'Show source';
+  };
+  toggle.addEventListener('click', () => {
+    wrap.classList.toggle('show-source');
+    syncToggle();
+  });
+  syncToggle();
+
+  renderMermaid(src).then((host) => {
+    if (!host) return;
+    wrap.insertBefore(host, wrap.querySelector('pre'));
+    wrap.classList.add('rendered');
+    toggle.hidden = false;
   });
 }

@@ -23,6 +23,10 @@ export interface Attachment {
   dataUrl?: string;
   /** MIME type, used by the provider to decide between file and text parts. */
   mime?: string;
+  /** Scanned/no-text-layer PDF only: each page rendered to a PNG data: URL. When present,
+   *  these are sent as ordinary `image_url` blocks instead of the raw PDF file — every
+   *  vision-capable model can read images, but only Google forwards raw PDF bytes. */
+  pageImages?: string[];
   /** Bytes — used by the agent's read_image / read_document tools to re-open the file. */
   fsPath?: string;
   /** How the user got this attachment into the chip — used only for UI hints. */

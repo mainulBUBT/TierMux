@@ -12,6 +12,7 @@ import { send } from './bridge';
 import type { RxMessage } from './bridge';
 import { $, escapeHtml, showToast } from './dom';
 import { renderMarkdown } from './markdown';
+import { renderPdfToPageImages, PDF_MAX_RENDER_PAGES } from './pdfPages';
 import { buildReasoningBlock, updateReasoningBlock, buildToolCard, toolLabel, activityFor, STATE_ICON } from './ui/tool/ToolCard';
 import { createPlan, planDataFromStepText, planDataFromTodos } from './ui/components';
 import { handleAssistantStart } from './handlers/assistantStart';
@@ -1647,6 +1648,28 @@ const STATE_LABEL = {
     }
   }
 
+  /** Rasterize a scanned PDF (no text layer) into page images, in place on the pending
+   *  attachment, so the send path carries readable images instead of raw PDF bytes that
+   *  only Google forwards. Best-effort: on failure the attachment is left exactly as it
+   *  arrived, preserving the existing raw-file behaviour. */
+  async function renderScannedPdf(att) {
+    const label = String(att.name ?? 'PDF').split('/').pop();
+    showComposerStatus(`Reading ${label} — it has no text layer, converting pages to images…`);
+    const { pages, total, error } = await renderPdfToPageImages(att.dataUrl);
+    // The user may have removed the chip while we were rendering.
+    if (!pendingAttachments.includes(att)) return;
+    if (!pages.length) {
+      showComposerStatus(`Couldn't read ${label}${error ? ` (${error})` : ''} — sending the raw file; only some models can read it.`);
+      return;
+    }
+    att.pageImages = pages;
+    renderChips();
+    const truncated = total > pages.length
+      ? ` (first ${pages.length} of ${total} pages — ${PDF_MAX_RENDER_PAGES}-page limit)`
+      : '';
+    showComposerStatus(`${label}: converted ${pages.length} page${pages.length > 1 ? 's' : ''} to images${truncated}. Use a vision-capable model to read it.`);
+  }
+
   function updateReasoningAvailability() {
     let supports = false;
     if (currentModel !== 'auto') {
@@ -1729,17 +1752,14 @@ const STATE_LABEL = {
         .filter((e) => e.enabled && activePlatforms.has(e.platform))
         .map((e) => `${e.platform}::${e.modelId}`),
     );
-    // Every catalog model on an active provider is pickable — not just the enabled
-    // ones. A model the user hasn't checked on (or that autoEnableNew left off) is
-    // still shown, dimmed and tagged "off", so it can be pinned directly. Pinning
-    // bypasses the enabled chain in the router (candidates() honors a forced model
-    // even when its fallback row is disabled), so selecting an "off" model routes
-    // to it for that turn without forcing the user to dig into Settings first.
+    // Only models the user has actually enabled (checked on) are pickable here — a
+    // model left off (or that autoEnableNew skipped) doesn't appear in this dropdown
+    // at all. To route to one anyway, enable it first in Settings.
     (state.catalog || []).forEach((m) => {
       if (!activePlatforms.has(m.platform)) return;
       const value = `${m.platform}::${m.modelId}`;
-      const isOn = enabled.has(value);
-      options.push({ value, label: m.displayName, group: platformDisplayName(m.platform, m.modelId), model: m, off: !isOn });
+      if (!enabled.has(value)) return;
+      options.push({ value, label: m.displayName, group: platformDisplayName(m.platform, m.modelId), model: m, off: false });
     });
     // Custom endpoints: enabled models, grouped by endpoint.
     const customModels = (state.fallback || []).filter((e) => e.platform === 'custom' && e.enabled);
@@ -4026,6 +4046,10 @@ const STATE_LABEL = {
           pendingAttachments.push(att);
           renderChips();
           warnIfImageUnsupported(att.kind);
+          // A PDF the host couldn't extract text from is a scan. Rasterize its pages here
+          // (the host can't — see pdfPages.ts) so it travels as ordinary images and ANY
+          // vision model can read it, instead of raw bytes only Google forwards.
+          if (att && att.kind === 'pdf' && !att.text && att.dataUrl) void renderScannedPdf(att);
         }
         break;
       }

@@ -27,6 +27,10 @@ interface GeminiPart {
 interface GeminiCandidate { content?: { parts?: GeminiPart[] }; finishReason?: string }
 interface GeminiResponse {
   candidates?: GeminiCandidate[];
+  /** Set when Gemini blocked the WHOLE prompt (e.g. a scanned PDF's rasterized pages
+   *  tripping safety/recitation on the input side) — `candidates` is then empty/absent,
+   *  which otherwise parses as an ordinary empty-but-successful 200 response. */
+  promptFeedback?: { blockReason?: string };
   usageMetadata?: {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
@@ -256,6 +260,23 @@ export class GoogleProvider extends BaseProvider {
     const parts = candidate?.content?.parts;
     const toolCalls = extractToolCalls(parts);
     const text = extractText(parts);
+    // A blocked prompt (candidates empty/absent, `promptFeedback.blockReason` set) or a
+    // safety/recitation-finished candidate with no parts both look like an ordinary
+    // empty-but-200 response otherwise — the caller has no way to tell "the model chose to say
+    // nothing" from "the model was never allowed to answer". Throw a specific, actionable error
+    // instead of silently returning empty text: the generic "I wasn't able to produce a
+    // response" fallback further up the stack gives the user no clue this was a content block,
+    // which is exactly what a scanned-PDF-as-rasterized-images request can trip. A candidate that
+    // legitimately finished with STOP and no parts (rare but not a block) falls through as before.
+    const BLOCK_REASONS = new Set(['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'OTHER']);
+    const promptBlockReason = data.promptFeedback?.blockReason;
+    const candidateBlockReason = candidate?.finishReason && BLOCK_REASONS.has(candidate.finishReason.toUpperCase())
+      ? candidate.finishReason
+      : undefined;
+    if (!parts?.length && toolCalls.length === 0 && (promptBlockReason || candidateBlockReason)) {
+      const reason = promptBlockReason ?? candidateBlockReason;
+      throw new Error(`Google blocked this request before generating a reply (${reason}). Try a different model, or remove/replace the attachment.`);
+    }
     // Gemini reports thoughtsTokenCount SEPARATELY from candidatesTokenCount,
     // but TokenUsage's contract (and Gemini billing) treats reasoning as part
     // of completion — fold thoughts in so totals and $-savings price them.

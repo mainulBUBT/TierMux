@@ -3,6 +3,7 @@
 import * as vscode from 'vscode';
 import mammoth from 'mammoth';
 import type { Attachment, AttachmentKind } from '../messages';
+import { diagLog } from './diag';
 
 /**
  * pdf-parse wraps pdfjs-dist, which expects browser globals (DOMMatrix, …). A top-level
@@ -13,6 +14,23 @@ import type { Attachment, AttachmentKind } from '../messages';
  */
 function ensureBrowserGlobals(): void {
   const g = globalThis as Record<string, unknown>;
+  // pdfjs does `const { platform } = navigator` at module scope. Plain Node 21+ and
+  // `ELECTRON_RUN_AS_NODE` both define a global `navigator`, but the VS Code extension host
+  // does NOT — so pdfjs threw "Cannot destructure property 'platform' of 'navigator'" and
+  // every PDF came back with no text, indistinguishable from a genuine scan. Defined via
+  // defineProperty because on some runtimes `navigator` is a getter-only global.
+  if (!g.navigator) {
+    const platform = process.platform === 'darwin' ? 'MacIntel'
+      : process.platform === 'win32' ? 'Win32'
+      : 'Linux x86_64';
+    try {
+      Object.defineProperty(globalThis, 'navigator', {
+        value: { platform, userAgent: `Node/${process.versions.node}`, language: 'en-US', languages: ['en-US'] },
+        configurable: true,
+        writable: true,
+      });
+    } catch { /* already defined by the host — its own value is fine */ }
+  }
   if (!g.DOMMatrix) {
 
     g.DOMMatrix = class DOMMatrix {
@@ -126,8 +144,12 @@ export async function buildAttachmentFromUri(uri: vscode.Uri, source: Attachment
     if (bytes.byteLength > MAX_PDF_BYTES) {
       throw new Error(`PDF is too large to attach (${(bytes.byteLength / 1024 / 1024).toFixed(1)} MB; max ${MAX_PDF_BYTES / 1024 / 1024} MB).`);
     }
-    att.dataUrl = `data:application/pdf;base64,${Buffer.from(bytes).toString('base64')}`;
-    att.text = (await extractPdfText(Buffer.from(bytes))).slice(0, MAX_EXTRACTED_CHARS);
+    const buf = Buffer.from(bytes);
+    att.dataUrl = `data:application/pdf;base64,${buf.toString('base64')}`;
+    att.text = (await extractPdfText(buf)).slice(0, MAX_EXTRACTED_CHARS);
+    // When there's no text layer (a scan), the WEBVIEW rasterizes the pages to images and
+    // fills in `pageImages` — see media/src/pdfPages.ts. It can't be done here: host-side
+    // rendering needs @napi-rs/canvas, whose native binding Electron refuses to load.
     return att;
   }
   if (kind === 'doc') {
@@ -145,36 +167,118 @@ export async function buildAttachmentFromUri(uri: vscode.Uri, source: Attachment
   return att;
 }
 
-/** Extract plain text from a PDF buffer using pdf-parse (which wraps pdfjs-dist). */
-/** Extract plain text from a PDF buffer using pdf-parse (which wraps pdfjs-dist).
- *  Lazy-loaded so pdfjs never evaluates at activation; any failure returns '' (never throws). */
-export async function extractPdfText(buf: Buffer): Promise<string> {
-  ensureBrowserGlobals();
-  try {
-    const mod = await import('pdf-parse');
-
-    const lib = (mod as any).PDFParse ?? (mod as any).default;
-
-    if (lib && typeof lib === 'function' && typeof lib.prototype?.getText === 'function') {
-
-      const parser = new lib({ data: new Uint8Array(buf) });
-      try {
-        const result = await parser.getText();
-        return (result?.text ?? '').trim();
-      } finally {
-        await parser.destroy?.().catch(() => { /* best-effort cleanup */ });
-      }
-    }
-    if (typeof lib === 'function') {
-
-      const result = await lib(new Uint8Array(buf));
-      return (result?.text ?? '').trim();
-    }
-    return '';
-  } catch {
-
-    return '';
+/**
+ * Run `fn` with pdf.js able to recognise that it is on Node.
+ *
+ * pdf.js picks its Node vs browser implementation with:
+ *   !(… || process.versions.electron && process.type !== undefined && process.type !== 'browser')
+ * The VS Code extension host is an Electron process whose `process.type` is set (e.g.
+ * 'utility'), so pdf.js concluded it was in a BROWSER — and then reached for browser-only
+ * globals, failing with "Cannot destructure property 'platform' of 'navigator'" and, past
+ * that, 'No "GlobalWorkerOptions.workerSrc" specified'. Every PDF therefore came back with
+ * no text, which the UI reported as "scanned, no text layer".
+ *
+ * The host genuinely IS Node (fs, require, … all present) and pdf.js's Node path works
+ * perfectly there, so the honest fix is to stop the misdetection: hide `process.type` for
+ * the duration of the parse, then restore it exactly as it was. The window is short and
+ * confined to PDF work; pdf.js re-checks during worker setup, so it must span the whole
+ * operation rather than just the module load.
+ */
+async function withNodeDetection<T>(fn: () => Promise<T>): Promise<T> {
+  const proc = process as unknown as { type?: string };
+  const masked = !!process.versions.electron && typeof proc.type === 'string' && proc.type !== 'browser';
+  const original = masked ? Object.getOwnPropertyDescriptor(process, 'type') : undefined;
+  if (masked) {
+    try {
+      Object.defineProperty(process, 'type', { value: undefined, configurable: true, writable: true });
+    } catch { /* not redefinable — fall through and let the browser path report its own error */ }
   }
+  try {
+    return await fn();
+  } finally {
+    if (masked) {
+      try {
+        if (original) Object.defineProperty(process, 'type', original);
+        else delete proc.type;
+      } catch { /* best-effort restore */ }
+    }
+  }
+}
+
+/**
+ * Why every PDF failure must record a reason:
+ * a swallowed error here is indistinguishable from a genuinely scanned PDF, so the user gets
+ * told "no text layer" about a text-rich document and there is nothing else to go on. This
+ * holds the last failure so the UI notice can name the real cause instead of guessing.
+ */
+let lastPdfError: string | undefined;
+export function lastPdfFailureReason(): string | undefined {
+  return lastPdfError;
+}
+
+/**
+ * Load pdf-parse's PDFParse class lazily (never a top-level import: pdfjs touches browser
+ * globals on load and would crash EXTENSION ACTIVATION — see ensureBrowserGlobals above).
+ *
+ * Tries CJS `require` first, then a dynamic `import`. pdf-parse is `"type": "module"` but also
+ * ships a CJS entry (`exports.require`), and the two module systems fail in different hosts:
+ * plain Node handles both, while the VS Code extension host (Electron) is fussier about ESM.
+ * Trying both means a host that supports either one works, and the reason each attempt failed
+ * is preserved for the user-facing notice rather than being swallowed.
+ */
+async function loadPdfParse(): Promise<any | null> {
+  ensureBrowserGlobals();
+  const errors: string[] = [];
+  const pick = (mod: unknown): any =>
+    (mod as any)?.PDFParse ?? (mod as any)?.default?.PDFParse ?? (mod as any)?.default ?? mod;
+
+  try {
+    const lib = pick(require('pdf-parse'));
+    if (typeof lib === 'function') { lastPdfError = undefined; return lib; }
+    errors.push(`require: resolved but PDFParse is ${typeof lib}`);
+  } catch (e) {
+    errors.push(`require: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  try {
+    const lib = pick(await import('pdf-parse'));
+    if (typeof lib === 'function') { lastPdfError = undefined; return lib; }
+    errors.push(`import: resolved but PDFParse is ${typeof lib}`);
+  } catch (e) {
+    errors.push(`import: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  lastPdfError = errors.join(' | ');
+  console.error('[tiermux] pdf-parse failed to load — PDF text/rendering unavailable:', lastPdfError);
+  diagLog('pdf.load', lastPdfError);
+  return null;
+}
+
+/** Extract plain text from a PDF buffer using pdf-parse (which wraps pdfjs-dist).
+ *  Any failure returns '' (never throws) — the caller treats that as "no text layer",
+ *  so the real reason is recorded in lastPdfError for the UI to report. */
+export async function extractPdfText(buf: Buffer): Promise<string> {
+  // The mask must span BOTH the module load and the parse — pdf.js re-checks which platform
+  // it is on when it sets up its worker, not just at import time.
+  return withNodeDetection(async () => {
+  const PDFParse = await loadPdfParse();
+  if (!PDFParse) return '';
+  let parser: any;
+  try {
+    parser = new PDFParse({ data: new Uint8Array(buf) });
+    const result = await parser.getText();
+    const text = (result?.text ?? '').trim();
+    if (!text) lastPdfError = 'getText returned no text (genuinely scanned / image-only PDF)';
+    return text;
+  } catch (e) {
+    lastPdfError = `getText: ${e instanceof Error ? e.message : String(e)}`;
+    console.error('[tiermux] PDF text extraction failed:', lastPdfError);
+    diagLog('pdf.text', lastPdfError);
+    return '';
+  } finally {
+    await parser?.destroy?.().catch(() => { /* best-effort cleanup */ });
+  }
+  });
 }
 
 /** Extract plain text from a DOCX buffer using mammoth. */

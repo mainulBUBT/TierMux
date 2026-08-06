@@ -135,7 +135,9 @@ export abstract class BaseProvider {
         if (done) break;
         const piece = decoder.decode(value, { stream: true });
         buffer += piece;
-        if (fullRaw.length < RAW_CAP) fullRaw += piece;
+        // Only needed for the zero-chunk fallback below — once a real chunk has parsed this
+        // stream is a normal SSE stream, so stop copying every subsequent piece into it too.
+        if (chunkCount === 0 && fullRaw.length < RAW_CAP) fullRaw += piece;
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
         for (const line of lines) {
