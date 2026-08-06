@@ -17,6 +17,64 @@ Every new retrieval layer, planner, cache, graph feature, semantic search, ranki
 
 ---
 
+## Running It
+
+Two harnesses, measuring different things. Both live in `scripts/bench/`.
+
+| Command | Measures | Answers |
+|---|---|---|
+| `npm run bench` | latency / TTFT / failover, one bare `router.route()` per query | "is routing fast and reliable?" |
+| `npm run bench:quality` | Retrieval / Reasoning / Answer over the REAL agent loop and tool set | "is the agent any good?" — the metrics below |
+
+The quality harness is the one this document's targets are written against. It drives
+`runTurn()` against a real checkout, records every tool call, and scores from that trace.
+It runs each query in `ask` or `plan` mode, so the tool set is read-only: **a benchmark run
+can never edit the project it is measuring.**
+
+```bash
+# validate the dataset's ground-truth paths still exist (fast, no network)
+npm run bench:quality:dataset
+
+# full run — pin BOTH models, or the numbers are not comparable to anything
+npm run bench:quality -- --variant baseline \
+  --model <platform>::<model-id> --judge <platform>::<strong-model-id>
+
+# keyless smoke test, 3 queries
+npm run bench:quality -- --limit 3 --platforms kilo,pollinations,ovh --no-judge
+
+# merge gate: exit 0 = MERGE, exit 1 = REJECT
+npm run bench:quality:compare -- .benchmarks/quality/<before>.json .benchmarks/quality/<after>.json
+```
+
+Runs are written to `.benchmarks/quality/<runId>.json` (gitignored) with the full per-query
+tool trace, so a bad score can be diagnosed after the fact instead of re-run blind.
+
+### How each score is produced
+
+* **Retrieval** — computed, never judged. The dataset carries ground-truth paths per query
+  (`docs/bench/dataset.tiermux.json`); the trace says which files the agent actually opened.
+  A file that only appeared inside a `grep` dump counts *only* if the answer goes on to cite
+  it — otherwise one unscoped grep over the repo would hand every query a free 1.0.
+* **Reasoning / Answer** — graded by a pinned strong model against the query's rubric
+  (`scripts/bench/judge.ts`). Use `--no-judge` to score these by hand instead; the runner
+  emits a scoring sheet and reports them as UNSCORED rather than as a measured 0.
+* **Efficiency** — grep-fallback rate, window-read rate, avg tool calls, avg context chars,
+  and tool-error rate, all derived from the trace.
+
+The scoring rules have their own deterministic test: `npm run test:e2e:bench-score`.
+
+### Datasets are per-project
+
+Ground truth is file paths in one specific repo, so a dataset is only valid for the project
+named in its `project` field. Point the runner at another checkout with
+`--dataset <file> --workspace <path>`; the runner refuses to start if any ground-truth path is
+missing, which is also how you find out a refactor invalidated the dataset.
+
+The seeded TierMux dataset holds **20** of the 50 queries this document asks for. Extend it
+toward 50 (10 per category) before quoting a result as the MVP verdict.
+
+---
+
 ## Metrics
 
 ### Retrieval Score
