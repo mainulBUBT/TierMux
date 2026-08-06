@@ -33,6 +33,7 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   // ThinkStripper correctly discards, producing an empty (but billed) turn.
   { platform: 'poolside', name: 'Poolside', baseUrl: 'https://inference.poolside.ai/v1', timeoutMs: 120000, skipPreflight: true, defaultMaxTokens: 8192, keyUrl: 'https://poolside.ai' },
   { platform: 'tokenrouter', name: "Token Router", baseUrl: "https://api.tokenrouter.com/v1", skipPreflight: true, timeoutMs: 600000 }, // auto-synced
+  { platform: 'nararouter', name: "Nara Router", baseUrl: "https://router.bynara.id/v1", skipPreflight: true, timeoutMs: 600000 }, // auto-synced
 ];
 
 const providers = new Map<Platform, BaseProvider>();

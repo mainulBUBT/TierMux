@@ -26,6 +26,7 @@ export type Platform =
   | 'llmgateway'
   | 'poolside'
   | 'tokenrouter'
+  | 'nararouter'
   | 'custom';
 
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
