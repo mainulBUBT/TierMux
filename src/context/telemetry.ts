@@ -37,6 +37,15 @@ export function onTelemetryUpdate(cb: () => void): () => void {
   listeners.add(cb);
   return () => listeners.delete(cb);
 }
+function notify(): void { for (const cb of listeners) cb(); }
+
+/** Record a retrieval event: a symbol/dependency-index hit (the fast path) vs a grep fallback.
+ *  These drive the status-bar "Retrieval Quality" gauge (extension.ts) and the bench KPI report
+ *  (formatTelemetryReport) — before the index shipped, both were permanently 0% because nothing
+ *  ever incremented symbolIndexHits. Call from getSymbolGraph/getDependencyTree on a hit, and
+ *  from the grep tool on every call. */
+export function incSymbolHit(): void { counts.symbolIndexHits++; notify(); }
+export function incGrep(): void { counts.grepCalls++; notify(); }
 
 function rate(n: number, total: number): number {
   return total === 0 ? 0 : Math.round((n / total) * 100);

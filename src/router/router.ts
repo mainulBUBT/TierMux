@@ -57,6 +57,11 @@ function toFailureType(reason: string, sentTools: boolean): FailureType {
  * directly in the content stream. Without stripping, the client sees the raw
  * reasoning markup alongside the actual answer.
  */
+const THINK_OPEN_RE = /<(think|thinking|thought|reasoning)>/i;
+const THINK_CLOSE_RE = /<\/(think|thinking|thought|reasoning)>/i;
+const OPEN_TAG_PREFIXES = ['<think>', '<thinking>', '<thought>', '<reasoning>'];
+const CLOSE_TAG_PREFIXES = ['</think>', '</thinking>', '</thought>', '</reasoning>'];
+
 export class ThinkStripper {
   private buf = '';
   private insideThink = false;
@@ -67,28 +72,34 @@ export class ThinkStripper {
 
     while (this.buf.length > 0) {
       if (this.insideThink) {
-        const closeIdx = this.buf.toLowerCase().indexOf('</think>');
-        if (closeIdx === -1) {
-
+        const closeMatch = THINK_CLOSE_RE.exec(this.buf);
+        if (!closeMatch) {
+          let safeCut = this.buf.length;
+          const lower = this.buf.toLowerCase();
+          for (let i = Math.max(0, lower.length - 12); i < lower.length; i++) {
+            const tail = lower.slice(i);
+            if (CLOSE_TAG_PREFIXES.some((p) => p.startsWith(tail))) {
+              safeCut = i;
+              break;
+            }
+          }
+          this.buf = this.buf.slice(safeCut);
           break;
         }
 
-        this.buf = this.buf.slice(closeIdx + '</think>'.length);
+        this.buf = this.buf.slice(closeMatch.index + closeMatch[0].length);
         this.insideThink = false;
         continue;
       }
 
-      const openIdx = this.buf.toLowerCase().indexOf('<think>');
-      if (openIdx === -1) {
-
-        const holdBack = Math.min(6, this.buf.length);
-
-        const prefix = '<think>';
+      const openMatch = THINK_OPEN_RE.exec(this.buf);
+      if (!openMatch) {
         let safeUpTo = this.buf.length;
-        for (let i = this.buf.length - holdBack + 1; i <= this.buf.length; i++) {
-          const tail = this.buf.slice(i - 1).toLowerCase();
-          if (prefix.startsWith(tail)) {
-            safeUpTo = Math.min(safeUpTo, i - 1);
+        const lower = this.buf.toLowerCase();
+        for (let i = Math.max(0, lower.length - 11); i < lower.length; i++) {
+          const tail = lower.slice(i);
+          if (OPEN_TAG_PREFIXES.some((p) => p.startsWith(tail))) {
+            safeUpTo = Math.min(safeUpTo, i);
           }
         }
         out += this.buf.slice(0, safeUpTo);
@@ -96,17 +107,16 @@ export class ThinkStripper {
         break;
       }
 
-      out += this.buf.slice(0, openIdx);
-      this.buf = this.buf.slice(openIdx + '<think>'.length);
+      out += this.buf.slice(0, openMatch.index);
+      this.buf = this.buf.slice(openMatch.index + openMatch[0].length);
       this.insideThink = true;
     }
 
     return out;
   }
 
-  /** Flush any remaining buffer at stream end. If we're still inside a `<think>`,
-   *  the tag was dangling — discard the buffered reasoning. Otherwise emit
-   *  any held-back text. */
+  /** Flush any remaining buffer at stream end. If we're still inside a think block,
+   *  discard the buffered reasoning. Otherwise emit any held-back text. */
   flush(): string {
     if (this.insideThink) {
       this.buf = '';
@@ -119,13 +129,14 @@ export class ThinkStripper {
   }
 }
 
-/** Strip `<think>…</think>` from a complete (non-streamed) response string. */
+/** Strip `<think>…</think>`, `<thinking>…</thinking>`, and other reasoning tags from a response string. */
 export function stripThinkTags(text: string): string {
   let result = text;
-
-  result = result.replace(/<think>[\s\S]*?<\/think>/gi, '');
-
-  result = result.replace(/<think>[\s\S]*$/i, '');
+  result = result.replace(/<(think|thinking|thought|reasoning)>[\s\S]*?<\/\1>/gi, '');
+  result = result.replace(/<(think|thinking|thought|reasoning)>[\s\S]*?<\/(think|thinking|thought|reasoning)>/gi, '');
+  result = result.replace(/<(think|thinking|thought|reasoning)>[\s\S]*$/i, '');
+  result = result.replace(/^[\s\S]*?<\/(think|thinking|thought|reasoning)>/gi, '');
+  result = result.replace(/<\/?(think|thinking|thought|reasoning)>/gi, '');
   return result.trim();
 }
 

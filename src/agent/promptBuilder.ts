@@ -131,7 +131,10 @@ const AGENT_MODE_TAIL =
   + 'Never invoke a pager (`less`, `more`, `git log` without `--no-pager`) or an interactive/`-i` flag '
   + '(e.g. `git rebase -i`, `npm init` without `-y`) — the command will hang waiting for input that '
   + 'never comes. Pipe through `head`/`tail`/`grep` to narrow noisy output instead of letting it dump '
-  + 'unbounded text.';
+  + 'unbounded text.\n\n'
+  + '### Code Search & Retrieval Strategy\n'
+  + 'When searching for function, class, or symbol definitions, use `getSymbolGraph` before falling back to `grep`. '
+  + 'When assessing code impact, file dependencies, or downstream importers, use `getDependencyTree`.';
 
 const PLAN_MODE_TAIL =
   '\n\n## Plan mode\n'

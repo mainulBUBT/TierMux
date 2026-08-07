@@ -21,6 +21,7 @@
         "coding",
         "reasoner",
         "planner",
+        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.03,
@@ -94,6 +95,7 @@
       "tags": [
         "general",
         "reasoner",
+        "vision",
         "free"
       ],
       "insight": "Google Gemma 4 31B optimized for multimodal reasoning across screenshots, documents, diagrams, and design assets with high-throughput inference on Cerebras.",
@@ -246,6 +248,7 @@
         "coding",
         "planner",
         "reasoner",
+        "vision",
         "free"
       ],
       "insight": "General-purpose long-context MoE model supporting coding, vision, and multi-turn tool calling.",
@@ -320,6 +323,7 @@
         "general",
         "planner",
         "reasoner",
+        "vision",
         "free"
       ],
       "insight": "Flagship multimodal model with vision, reasoning, tool use, OCR, document understanding, and multilingual support.",
@@ -369,6 +373,7 @@
       "supportsReasoning": true,
       "tags": [
         "general",
+        "vision",
         "free"
       ],
       "insight": "Document understanding, OCR, chart and image analysis, multimodal conversations, and tool use.",
@@ -422,6 +427,7 @@
         "general",
         "planner",
         "reasoner",
+        "vision",
         "free"
       ]
     },
@@ -445,6 +451,7 @@
       "origOutputPricePer1M": 1.5,
       "tags": [
         "general",
+        "vision",
         "free"
       ]
     },
@@ -466,6 +473,7 @@
       "tags": [
         "general",
         "reasoner",
+        "vision",
         "free"
       ],
       "insight": "Largest free Gemma model with vision and reasoning support",
@@ -584,6 +592,7 @@
       "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
+        "vision",
         "general",
         "free"
       ],
@@ -607,6 +616,7 @@
       "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
+        "vision",
         "general",
         "free"
       ],
@@ -750,6 +760,7 @@
       "supportsReasoning": true,
       "tags": [
         "coding",
+        "vision",
         "reasoner",
         "general",
         "free"
@@ -776,6 +787,7 @@
       "tags": [
         "reasoner",
         "planner",
+        "vision",
         "general",
         "router",
         "free"
@@ -848,6 +860,7 @@
       "tags": [
         "coding",
         "planner",
+        "vision",
         "free"
       ],
       "insight": "Excellent software engineering model",
@@ -916,6 +929,7 @@
       "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
+        "vision",
         "general",
         "free"
       ],
@@ -945,6 +959,7 @@
         "general",
         "planner",
         "reasoner",
+        "vision",
         "free"
       ]
     },
@@ -993,6 +1008,7 @@
       "origOutputPricePer1M": 6,
       "tags": [
         "general",
+        "vision",
         "free"
       ]
     },
@@ -1039,6 +1055,7 @@
       "origOutputPricePer1M": 0.6,
       "tags": [
         "general",
+        "vision",
         "free"
       ]
     },
@@ -1526,6 +1543,7 @@
       "tags": [
         "reasoner",
         "planner",
+        "vision",
         "general",
         "free"
       ],
@@ -1598,6 +1616,7 @@
       "tags": [
         "reasoner",
         "planner",
+        "vision",
         "general",
         "router",
         "free"
@@ -1960,6 +1979,7 @@
       "origInputPricePer1M": 0.06,
       "origOutputPricePer1M": 0.18,
       "tags": [
+        "vision",
         "general",
         "free"
       ]
@@ -2093,6 +2113,7 @@
         "coding",
         "reasoner",
         "planner",
+        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.03,
@@ -2158,6 +2179,7 @@
         "coding",
         "planner",
         "general",
+        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.03,
@@ -2229,6 +2251,7 @@
         "planner",
         "general",
         "reasoner",
+        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.15,

@@ -6,6 +6,7 @@ import { rgPath } from '@vscode/ripgrep';
 import { tool } from 'ai';
 import { z } from 'zod';
 import { capToolOutput } from '../capOutput';
+import { incGrep } from '../../../../context/telemetry';
 
 const MAX_OUTPUT = 20 * 1024;
 const TIMEOUT_MS = 15_000;
@@ -20,6 +21,7 @@ export function createGrepTool() {
     }),
     execute: async ({ pattern, path, glob }: { pattern: string; path?: string; glob?: string }) => {
       if (!pattern) throw new Error('Missing required "pattern" argument.');
+      incGrep(); // a grep fallback — tracked against symbol-index hits for the retrieval-quality gauge
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
       if (!root) throw new Error('No workspace folder is open.');
       const searchPath = path && path.length ? path : '.';

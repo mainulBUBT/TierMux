@@ -34,6 +34,16 @@ function configureMarked(): void {
   } catch { /* marked optional / older API — fall through to plain parse */ }
 }
 
+function cleanThinkTags(text: string): string {
+  if (!text) return '';
+  let result = text;
+  result = result.replace(/<(think|thinking|thought|reasoning)>[\s\S]*?<\/(?:think|thinking|thought|reasoning)>/gi, '');
+  result = result.replace(/<(think|thinking|thought|reasoning)>[\s\S]*$/i, '');
+  result = result.replace(/^[\s\S]*?<\/(?:think|thinking|thought|reasoning)>/gi, '');
+  result = result.replace(/<\/?(think|thinking|thought|reasoning)>/gi, '');
+  return result;
+}
+
 /**
  * Render a markdown string into a detached DOM node.
  * Parses via marked (GFM + line breaks), strips <script> and neutralizes
@@ -43,9 +53,10 @@ function configureMarked(): void {
  */
 export function renderMarkdown(md: string): HTMLElement {
   try {
+    const cleanMd = cleanThinkTags(md);
     if (window.marked) {
       configureMarked();
-      const html = window.marked.parse(md, { breaks: true, gfm: true });
+      const html = window.marked.parse(cleanMd, { breaks: true, gfm: true });
       const div = document.createElement('div');
       div.innerHTML = html;
       div.querySelectorAll('script').forEach((s) => s.remove());

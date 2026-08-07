@@ -18,6 +18,8 @@ import { registerCheckpointContentProvider } from './edits/checkpoints';
 
 import { setGates } from './agent/core/tools/gates';
 import { setMcpManager } from './agent/core/tools/mcp/manager';
+import { setWorkspaceIndex } from './agent/core/tools/indexAccess';
+import { WorkspaceIndex } from './indexer/WorkspaceIndex';
 import { setExtensionPath } from './agent/promptBuilder';
 import { McpManager } from './mcp/mcpManager';
 import { ChatViewProvider } from './chatViewProvider';
@@ -155,6 +157,17 @@ export function activate(context: vscode.ExtensionContext): void {
 
   setGates(editGate, commandGate);
   setMcpManager(mcp);
+
+  // In-memory workspace symbol + dependency index (lazy, watcher-maintained). Constructed here
+  // like the other singletons; its FileSystemWatcher is disposed via context.subscriptions. Tools
+  // read it through the module-scoped holder set just below. No scan at activation — lazy.
+  const wsIndex = new WorkspaceIndex(() => ({
+    enabled: vscode.workspace.getConfiguration('tiermux.index').get<boolean>('enabled', true),
+    maxFiles: vscode.workspace.getConfiguration('tiermux.index').get<number>('maxFiles', 5000),
+    excludes: vscode.workspace.getConfiguration('tiermux.index').get<string[]>('excludes', []),
+  }));
+  context.subscriptions.push(wsIndex.register());
+  setWorkspaceIndex(wsIndex);
 
   const chat = new ChatViewProvider(context.extensionUri, {
     secrets,
@@ -342,6 +355,10 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('tiermux.resetTelemetry', () => {
       resetTelemetry();
       void vscode.window.showInformationMessage('TierMux: telemetry counters reset.');
+    }),
+    vscode.commands.registerCommand('tiermux.index.rebuild', () => {
+      wsIndex.rebuild();
+      void vscode.window.showInformationMessage('TierMux: Symbol & Dependency Index rebuilt.');
     }),
 
     vscode.commands.registerCommand('tiermux.verifyGrounding', async () => {

@@ -97,6 +97,11 @@
         "category": "TierMux"
       },
       {
+        "command": "tiermux.index.rebuild",
+        "title": "Rebuild Symbol & Dependency Index",
+        "category": "TierMux"
+      },
+      {
         "command": "tiermux.explainSelection",
         "title": "Explain Selection",
         "category": "TierMux"
@@ -448,6 +453,22 @@
           "default": 0.8,
           "description": "Automatically summarize (compact) the conversation when it exceeds this fraction of the model's context window. 0 disables auto-compact."
         },
+        "tiermux.index.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Maintain an in-memory symbol + dependency index so the agent can look up definitions and import graphs directly instead of grepping."
+        },
+        "tiermux.index.maxFiles": {
+          "type": "number",
+          "default": 5000,
+          "description": "Maximum number of files the in-memory index will hold (bounds memory). Files beyond this are not indexed until older ones drop."
+        },
+        "tiermux.index.excludes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Path segments/globs never indexed (e.g. \"node_modules\", \"vendor\", \"*.min.js\"). Empty uses the built-in defaults (node_modules, .git, dist, build, vendor, .next, out, coverage, .cache)."
+        },
         "tiermux.memory.autoLearn": {
           "type": "boolean",
           "default": true,
@@ -461,7 +482,7 @@
         "tiermux.context.includeOpenEditors": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically include the active file (a slice around the cursor) and open tab names as context each turn."
+          "description": "Each turn, silently attach the active editor (the selection, or a slice around the cursor — see ambientSliceRadius) and its live diagnostics to the model-facing prompt. The visible transcript is unchanged; this just lets \"fix this\" resolve to the cursor location."
         },
         "tiermux.context.ambientSliceRadius": {
           "type": "number",

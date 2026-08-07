@@ -304,6 +304,7 @@ export function toolLabel(name: string, args: unknown, detail?: string, state?: 
     impactAnalysis: ['⊕', 'Analyzed impact'],
     buildGraph: ['⊕', 'Built the call graph'],
     getSymbolGraph: ['⊕', 'Indexed symbols'],
+    getDependencyTree: ['⊕', 'Mapped dependencies'],
     askUser: ['◎', 'Asking…'],
     skill: ['◎', argFirst ? `Delegated to ${shortPath(argFirst)}` : 'Delegated to a sub-agent'],
     lspCheck: ['⊘', path ? `Checked ${path}` : 'Checked language diagnostics'],

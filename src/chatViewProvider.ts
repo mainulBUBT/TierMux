@@ -26,6 +26,7 @@ import { getNonce } from './util/nonce';
 import { diagLog } from './util/diag';
 import { getPlatformInfo } from './providers';
 import { parseSlash, resolveMentions, searchMentions } from './context/mentions';
+import { activeEditorRelPath, buildActiveEditorContext, buildDiagnosticsContext } from './context/activeContext';
 import { contentToString } from './agent/content';
 import { getSnapshot as getRetrievalSnapshot } from './context/telemetry';
 import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSupportedAttachmentPath, kindForPath as kindFromName, lastPdfFailureReason, mimeForPath as mimeForName } from './util/extractAttachments';
@@ -1807,7 +1808,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     diagLog('sendMessage', `requestId=${m.requestId} mode=${m.mode} pinnedModel="${m.model ?? '<none>'}" reasoningEffort=${m.reasoningEffort ?? '<none>'}`);
     const contextText = await resolveMentions(prompt).catch(() => '');
     diagLog('send.gate', `requestId=${m.requestId} · resolveMentions done`);
-    const userContent = this.buildUserContent(prompt, contextText, m.attachments);
+
+    // Auto-enrich: fold a hidden snapshot of the active editor (file/language/selection or an
+    // ambient slice around the cursor) and its live diagnostics into the MODEL-facing context only.
+    // The displayed transcript (built from `prompt` below) is unaffected, so the user sees exactly
+    // what they typed. Gated by `tiermux.context.includeOpenEditors` (was a dead setting before —
+    // now actually wired); the slice radius comes from `tiermux.context.ambientSliceRadius`. Skip
+    // the editor block if they already @-mentioned the active file (resolveMentions already put its
+    // full contents in contextText) — but keep diagnostics, which a file mention doesn't carry.
+    const ctxCfg = vscode.workspace.getConfiguration('tiermux.context');
+    let ctx = contextText;
+    if (ctxCfg.get<boolean>('includeOpenEditors', true)) {
+      const activeRel = activeEditorRelPath();
+      const alreadyMentioned = !!(activeRel && ctx.includes(activeRel));
+      const radius = ctxCfg.get<number>('ambientSliceRadius', 15);
+      const editorBlock = alreadyMentioned ? null : buildActiveEditorContext(radius);
+      const diagBlock = buildDiagnosticsContext();
+      const auto = [editorBlock, diagBlock].filter(Boolean).join('\n\n');
+      if (auto) ctx = ctx ? `${ctx}\n\n${auto}` : auto;
+    }
+
+    const userContent = this.buildUserContent(prompt, ctx, m.attachments);
     // Deterministic resume: a bare "continue"/"keep going" isn't a fresh task — it means "pick up
     // the unfinished work". If the agent's visible plan still has open todos, splice them into the
     // MODEL-facing copy of the message so it resumes precisely instead of re-planning from scratch

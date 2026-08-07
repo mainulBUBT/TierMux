@@ -136,9 +136,9 @@ export function stripFileBlocks(content: ChatContent): ChatContent {
   return out;
 }
 
-/** Split a leading `<think>…</think>` reasoning block from message text. */
+/** Split a leading `<think>…</think>` or `<thinking>…</thinking>` reasoning block from message text. */
 export function splitReasoning(text: string): { reasoning?: string; content: string } {
-  const m = /^\s*<think>([\s\S]*?)<\/think>\s*/i.exec(text);
-  if (m) return { reasoning: m[1].trim(), content: text.slice(m[0].length).trim() };
+  const m = /^\s*<(think|thinking|thought|reasoning)>([\s\S]*?)<\/(?:think|thinking|thought|reasoning)>\s*/i.exec(text);
+  if (m) return { reasoning: m[2].trim(), content: text.slice(m[0].length).trim() };
   return { content: text };
 }

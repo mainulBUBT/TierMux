@@ -32,6 +32,8 @@ import { createQuestionTool } from './ui/question';
 import { createMcpTools } from './mcp/mcp';
 import { createExploreTool } from './explore';
 import { createDiagnosticsTool } from './workspace/diagnostics';
+import { createSymbolGraphTool } from './workspace/symbolGraph';
+import { createDependencyTreeTool } from './workspace/dependencyTree';
 import { createFetchUrlTool } from './network/fetchUrl';
 import { createWebSearchTool } from './network/webSearch';
 import { createDeepSearchTool } from './network/deepSearch';
@@ -46,6 +48,8 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
       listDir: createListDirTool(),
       glob: createGlobTool(),
       grep: createGrepTool(),
+      getSymbolGraph: createSymbolGraphTool(),
+      getDependencyTree: createDependencyTreeTool(),
       explore: createExploreTool(router, opts.abortSignal),
       webSearch: createWebSearchTool(),
       fetchUrl: createFetchUrlTool(),
@@ -63,6 +67,8 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
     listDir: createListDirTool(),
     glob: createGlobTool(),
     grep: createGrepTool(),
+    getSymbolGraph: createSymbolGraphTool(),
+    getDependencyTree: createDependencyTreeTool(),
     getDiagnostics: createDiagnosticsTool(),
     fetchUrl: createFetchUrlTool(),
     webSearch: createWebSearchTool(),
