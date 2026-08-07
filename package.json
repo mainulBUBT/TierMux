@@ -2,7 +2,7 @@
   "name": "tiermux",
   "displayName": "TierMux",
   "description": "Free agentic AI coding assistant for VS Code. Multiplexes many free-tier LLM providers into one self-healing surface — auto-routes, auto-fails-over, learns your codebase. Zero setup with keyless providers; bring your own keys anytime.",
-  "version": "2.0.9",
+  "version": "2.1.0",
   "publisher": "mainul-islam",
   "license": "MIT",
   "repository": {
@@ -465,7 +465,9 @@
         },
         "tiermux.index.excludes": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Path segments/globs never indexed (e.g. \"node_modules\", \"vendor\", \"*.min.js\"). Empty uses the built-in defaults (node_modules, .git, dist, build, vendor, .next, out, coverage, .cache)."
         },
