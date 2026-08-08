@@ -231,6 +231,11 @@ interface Session {
   liveSteps: Map<string, TranscriptStep[]>;
   model?: string;
   reasoningEffort?: ReasoningEffort;
+  /** How many `@mentions` resolved into context on the most recent send — carried through to
+   *  AgentOpts.mentionCount so routing (classifyTaskCore) can tell "content already supplied"
+   *  turns apart from ambiguous ones without re-parsing the message text. Persists across a
+   *  retry of the same turn (only overwritten by the next fresh send). */
+  lastMentionCount?: number;
   /** Set by the `watchdogAction` handler ('restartRequest'/'switchModel'), consumed by the send
    *  handler's retry loop right after the aborted run settles — reusing the same in-flight
    *  request instead of pushing a new user turn. Cleared once consumed. */
@@ -1806,8 +1811,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.model = m.model;
     s.reasoningEffort = m.reasoningEffort;
     diagLog('sendMessage', `requestId=${m.requestId} mode=${m.mode} pinnedModel="${m.model ?? '<none>'}" reasoningEffort=${m.reasoningEffort ?? '<none>'}`);
-    const contextText = await resolveMentions(prompt).catch(() => '');
-    diagLog('send.gate', `requestId=${m.requestId} · resolveMentions done`);
+    const mentionResult = await resolveMentions(prompt).catch(() => ({ text: '', count: 0 }));
+    const contextText = mentionResult.text;
+    s.lastMentionCount = mentionResult.count;
+    diagLog('send.gate', `requestId=${m.requestId} · resolveMentions done (count=${mentionResult.count})`);
 
     // Auto-enrich: fold a hidden snapshot of the active editor (file/language/selection or an
     // ambient slice around the cursor) and its live diagnostics into the MODEL-facing context only.
@@ -1820,7 +1827,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let ctx = contextText;
     if (ctxCfg.get<boolean>('includeOpenEditors', true)) {
       const activeRel = activeEditorRelPath();
-      const alreadyMentioned = !!(activeRel && ctx.includes(activeRel));
+      // Path-boundary match, not a raw substring check — a plain `ctx.includes(activeRel)` false-
+      // positives whenever another @mentioned file's contents happen to contain the active path as
+      // a substring (e.g. an import line), silently dropping the active-editor context block.
+      const escapedActiveRel = activeRel ? activeRel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
+      const alreadyMentioned = !!(activeRel && new RegExp(`(^|[\\s"'\`(/])${escapedActiveRel}($|[\\s"'\`):,])`).test(ctx));
       const radius = ctxCfg.get<number>('ambientSliceRadius', 15);
       const editorBlock = alreadyMentioned ? null : buildActiveEditorContext(radius);
       const diagBlock = buildDiagnosticsContext();
@@ -2407,6 +2418,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       effort,
       pinnedModel,
       sessionId: s.id,
+      mentionCount: s.lastMentionCount,
       abortSignal: s.cancel ? tokenToAbortSignal(s.cancel.token) : undefined,
       profiler: this.deps.profiler,
       ...callbacks,

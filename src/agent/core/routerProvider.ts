@@ -90,6 +90,14 @@ function filePartToDataUrl(part: LanguageModelV4FilePart): string | undefined {
   return undefined;
 }
 
+/** Strips a leading/trailing ```json ... ``` (or bare ```) fence some models wrap JSON output
+ *  in despite being told not to — generateObject's own JSON.parse would otherwise fail outright. */
+function stripJsonFence(text: string): string {
+  const t = text.trim();
+  const m = /^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i.exec(t);
+  return m ? m[1].trim() : t;
+}
+
 /** Convert AI SDK prompt messages -> TierMux ChatMessage[] (OpenAI-wire format). */
 function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): ChatMessage[] {
   const msgs: ChatMessage[] = [];
@@ -184,12 +192,32 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
       const messages = toRouterMessages(options.prompt);
       const tools = toRouterTools(options.tools);
 
+      // generateObject/generateText's `output: 'object'|'enum'` sets responseFormat but the
+      // router has no native "JSON mode" passthrough across ~18 heterogeneous free providers —
+      // most weak/free models were never told to emit JSON at all otherwise. Append the schema
+      // as an explicit trailing instruction instead (models attend most to the last message);
+      // stripJsonFences below cleans up the common case where a model still wraps it in a
+      // ```json fence despite being told not to.
+      const wantsJson = options.responseFormat?.type === 'json';
+      const jsonSchema = wantsJson && options.responseFormat && 'schema' in options.responseFormat ? options.responseFormat.schema : undefined;
+      if (wantsJson) {
+        messages.push({
+          role: 'user',
+          content: 'Respond with ONLY valid JSON matching this schema — no markdown fences, no '
+            + `prose before or after it:\n${JSON.stringify(jsonSchema ?? {})}`,
+        });
+      }
+
       const routeOpts: RouteOptions = {
         model: providerOpts.pinnedModel ?? 'auto',
         temperature: options.temperature,
         max_tokens: options.maxOutputTokens,
         tools,
         requireTools: !!tools?.length,
+        // Plumbed to CompletionOptions for a future per-provider native response_format —
+        // no adapter reads this yet (see options.ts), the trailing instruction above is what
+        // actually does the work today. Harmless to pass down unused.
+        responseFormat: wantsJson ? { type: 'json', schema: jsonSchema } : undefined,
         reasoningEffort: providerOpts.effort,
         taskKind: providerOpts.taskKind as RouteOptions['taskKind'],
         onFailover: providerOpts.onFailover ? (info) => providerOpts.onFailover!(`${info.from.platform}::${info.from.modelId}`, info.reason) : undefined,
@@ -208,7 +236,10 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
 
       const msg = result.response.choices?.[0]?.message;
       const content: LanguageModelV4GenerateResult['content'] = [];
-      if (msg?.content) content.push({ type: 'text', text: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content) });
+      if (msg?.content) {
+        const raw = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+        content.push({ type: 'text', text: wantsJson ? stripJsonFence(raw) : raw });
+      }
       if (msg?.tool_calls?.length) {
         for (const tc of msg.tool_calls) {
           content.push({ type: 'tool-call', toolCallId: tc.id, toolName: tc.function.name, input: tc.function.arguments ?? '{}', providerExecuted: false });

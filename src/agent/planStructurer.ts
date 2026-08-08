@@ -37,7 +37,10 @@ export async function structurePlanSteps(router: Router, planText: string): Prom
       model,
       system: 'Extract the concrete action steps from this plan as a clean, deduplicated list. '
         + 'One step per array entry, imperative mood, no numbering/bullets in the text itself. '
-        + 'Preserve the file/symbol names the plan already names. Do not invent new steps.',
+        + 'Preserve the file/symbol names the plan already names. Do not invent new steps. '
+        + 'A before-→after text change (e.g. old line vs new line, a diff, "change X to Y") is '
+        + 'ONE step, not two — never split the "before" and "after" text into separate array '
+        + 'entries; combine them into a single step like "Change <file> from X to Y".',
       prompt: planText,
       output: Output.object({ schema: StepsSchema }),
       abortSignal: AbortSignal.timeout(15000),
@@ -68,14 +71,16 @@ export async function extractPlanFromProse(router: Router, text: string): Promis
     const result = await generateText({
       model,
       system:
-        + 'You are classifying an assistant reply given in Plan mode. '
+        'You are classifying an assistant reply given in Plan mode. '
         + 'Decide IS_PLAN: true ONLY if the reply proposes concrete changes the user could approve '
         + 'and have run (new files, edits, deletions, commands, a build/refactor) — i.e. it is a '
         + 'plan of action, not an explanation. False if it is an answer to a question, an '
         + 'explanation of how something works, discussion, a clarifying question, or small talk. '
         + 'When IS_PLAN is true, STEPS must be the concrete action items (imperative mood, no '
         + 'numbering/bullets in the text itself, preserve the file/symbol names already named, do '
-        + 'not invent new steps). When IS_PLAN is false, leave STEPS empty.',
+        + 'not invent new steps). A before-→after text change (old line vs new line, a diff, '
+        + '"change X to Y") is ONE step, not two — never split the "before" and "after" text into '
+        + 'separate array entries. When IS_PLAN is false, leave STEPS empty.',
       prompt: text,
       output: Output.object({ schema: ProsePlanSchema }),
       abortSignal: AbortSignal.timeout(15000),

@@ -1736,15 +1736,15 @@ const STATE_LABEL = {
     // routing gives a clear "needs an API key" error if they pin it.
     const _disabledProviders = new Set(state.disabledProviders || []);
     const _remoteDisabled = new Set(state.remoteDisabledProviders || []);
-    // Enabled platforms — user toggled on at the provider level AND not disabled
-    // upstream by the shared catalog — regardless of whether an API key is set.
-    // A platform the user has checked models on but hasn't keyed yet still lists
-    // those models (they show as active, since the user enabled them); picking one
-    // surfaces the router's clear "needs an API key" error instead of silently
-    // hiding the model the user explicitly activated.
+    // Enabled platforms — user toggled on at the provider level, not disabled
+    // upstream by the shared catalog, AND either keyless (free, no key needed)
+    // or configured (a key is stored). A paid platform the user enabled but
+    // hasn't keyed yet is left out here rather than surfacing a "needs an API
+    // key" error at send time — Settings already shows it as "no key".
     const activePlatforms = new Set(
       (state.platforms || [])
         .filter((p) => !_disabledProviders.has(p.platform) && !_remoteDisabled.has(p.platform))
+        .filter((p) => p.keyless || p.configured)
         .map((p) => p.platform),
     );
     const enabled = new Set(

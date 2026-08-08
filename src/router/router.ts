@@ -1110,6 +1110,7 @@ export class Router {
         baseUrlOverride: this.settings.getEndpoint(entry.platform),
         timeoutMs: opts.timeoutMs ?? this.timeoutMsFor(provider as { timeoutMs?: number }),
         abortSignal: perCandidateAbort,
+        responseFormat: opts.responseFormat,
       };
 
       let reserved = toolsTokens;

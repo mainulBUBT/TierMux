@@ -343,17 +343,31 @@ export class WorkspaceIndex implements vscode.Disposable {
     }
     const out: DepEdge[] = [];
     const seen = new Set<string>([rel]);
-    let frontier: { path: string; d: number }[] = node.resolvedImports.filter((p) => !seen.has(p)).map((p) => ({ path: p, d: 1 }));
+    let frontier: { path: string; d: number; parent: string }[] =
+      node.resolvedImports.filter((p) => !seen.has(p)).map((p) => ({ path: p, d: 1, parent: rel }));
     // Carry raw-import status for display on the first level (which imports resolved vs not).
     while (frontier.length) {
-      const next: { path: string; d: number }[] = [];
-      for (const { path, d } of frontier) {
+      const next: { path: string; d: number; parent: string }[] = [];
+      for (const { path, d, parent } of frontier) {
         if (seen.has(path)) continue;
         seen.add(path);
+        const child = await this.ensureIndexed(path);
+        if (!child) {
+          // Target no longer exists on disk (deleted/renamed since `parent` was last indexed) —
+          // prune the stale edge so it stops resurfacing on future walks, and report it as
+          // unresolved instead of a live dependency.
+          const parentNode = this.graph.get(parent);
+          if (parentNode) {
+            const idx = parentNode.resolvedImports.indexOf(path);
+            if (idx !== -1) parentNode.resolvedImports.splice(idx, 1);
+          }
+          this.updateReverse(parent, [path], []);
+          out.push({ path, resolved: false });
+          continue;
+        }
         out.push({ path, resolved: true });
         if (d < depth) {
-          const child = await this.ensureIndexed(path);
-          for (const c of child?.resolvedImports ?? []) if (!seen.has(c)) next.push({ path: c, d: d + 1 });
+          for (const c of child.resolvedImports ?? []) if (!seen.has(c)) next.push({ path: c, d: d + 1, parent: path });
         }
       }
       frontier = next;

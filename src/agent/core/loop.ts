@@ -5,14 +5,15 @@
 // tool-result/tool-error/tool-approval-* parts in the expected order — see the plan's spike
 // notes) and maps them onto the existing AgentOpts callbacks. No custom iteration, no custom
 // permission gate, no custom hook system.
-import { streamText, wrapLanguageModel, isStepCount, pruneMessages } from 'ai';
+import { streamText, wrapLanguageModel, isStepCount, pruneMessages, generateObject, NoSuchToolError, InvalidToolInputError } from 'ai';
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { z } from 'zod';
 import type { Router } from '../../router/router';
 import type { ChatMessage, ChatContentBlock } from '../../shared/types';
 import type { AgentOpts, AgentResult } from '../agent';
-import { classifyTask, attachmentKindsFromContent, type TaskKind } from '../routing';
+import { classifyTaskCore, attachmentKindsFromContent, type TaskKind, type ClassifySignals } from '../routing';
 import { assessAnswerQuality, TASK_WORD_FLOOR } from '../answerQuality';
 import { judgeFulfillment, JUDGEABLE_TASK_KINDS } from '../fulfillment';
 import { contentToString } from '../content';
@@ -24,6 +25,7 @@ import { createToolSet } from './tools';
 import { getMcpManager } from './tools/mcp/manager';
 import { NEW_DIAGNOSTICS_MARKER } from './tools/workspace/formatDiagnostics';
 import { diagLog } from '../../util/diag';
+import { repairToolArguments, sanitizeToolName } from '../toolArgs';
 
 /** AI SDK ModelMessage shape (loosely typed here — the SDK validates the real shape). */
 type CoreMessage = { role: string; content: unknown };
@@ -395,6 +397,55 @@ async function runPlannerStep(router: Router, opts: AgentOpts): Promise<string> 
   }
 }
 
+const BRAINSTORM_SYSTEM =
+  'You are evaluating whether a coding task has a genuine fork in approach — competing '
+  + 'libraries/patterns, a migrate-vs-shim choice, a data-model tradeoff, etc. Most tasks do '
+  + 'NOT have one (e.g. "fix this typo", "add a loading spinner") — only flag a real fork, not '
+  + 'a trivial implementation detail. If there is no genuine fork, set hasFork to false and leave '
+  + 'approaches empty. If there is one, name 2-3 concrete approaches with a one-line tradeoff '
+  + 'each, and a short recommendation for which to pick and why.';
+
+const BRAINSTORM_SCHEMA = z.object({
+  hasFork: z.boolean(),
+  approaches: z.array(z.object({ name: z.string(), tradeoff: z.string() })).max(3),
+  recommendation: z.string().optional(),
+});
+
+/** Plan-mode counterpart to runPlannerStep: a single tool-less `generateObject` call that
+ *  decides whether this task has a genuine fork in approach and, if so, names the alternatives
+ *  and their tradeoffs — folded into the plan-generation system prompt as guidance so the final
+ *  numbered plan can name the tradeoff instead of silently picking one (see the research behind
+ *  this: no coding agent runs a separate "generate N full plans, pick one" pipeline for this —
+ *  Claude Code/Cline/aider all fold it into prompt guidance for the single planning pass, which
+ *  is what this does too — one extra structured call, not a multi-plan fan-out).
+ *  Best-effort: '' on any failure, timeout, or "no real fork" — never blocks the plan turn. */
+async function runBrainstormStep(router: Router, opts: AgentOpts): Promise<string> {
+  opts.onStep('planning', 'Considering approaches…');
+  try {
+    const provider = createRouterProvider(router, {
+      taskKind: 'plan',
+      onFailover: opts.onFailover,
+      onKeyRotated: opts.onKeyRotated,
+      onModelSelected: (p, m, rt) => opts.onModel(p, m, rt),
+      onSelectionRationale: opts.onSelectionRationale,
+    });
+    const timeout = AbortSignal.timeout(8000);
+    const { object } = await generateObject({
+      model: provider,
+      schema: BRAINSTORM_SCHEMA,
+      system: BRAINSTORM_SYSTEM,
+      messages: toCoreMessages(opts.messages) as any,
+      abortSignal: opts.abortSignal ? AbortSignal.any([opts.abortSignal, timeout]) : timeout,
+    });
+    if (!object.hasFork || !object.approaches.length) return '';
+    const lines = object.approaches.map((a) => `- ${a.name}: ${a.tradeoff}`).join('\n');
+    return `\n\n## Approaches considered\n${lines}`
+      + (object.recommendation ? `\nRecommendation: ${object.recommendation}` : '');
+  } catch {
+    return ''; // brainstorm is best-effort — never let it block or mask the plan turn
+  }
+}
+
 /** One model attempt at a turn — everything runTurn used to do inline, extracted so a weak/
  *  stuck attempt can be retried once with a different (excluded/escalated) model. See
  *  runTurn's escalation orchestration below. */
@@ -419,6 +470,74 @@ interface AttemptResult {
    *  it as a real reply bubble instead of leaving the user with only the thin error notice. */
   errorMessage?: string;
 }
+
+const TASK_KIND_VALUES = ['trivial', 'chat', 'agent', 'coding', 'debug', 'longContext', 'vision'] as const;
+
+/** Regex classification is instant but guesses when nothing matches (e.g. "reformat this for
+ *  Google Docs @notes.md" — no textbook verb, no bare "?"). Rather than trust a predefined-word
+ *  list that can always miss a phrasing, spend one cheap classify call ONLY on that ambiguous
+ *  case — confident regex matches (the overwhelming majority of messages) pay zero extra latency.
+ *  Uses `output: 'enum'` (not a full object schema) since the model just needs to pick one label,
+ *  and a short abort timeout + broad try/catch so a flaky/incapable free model never blocks the
+ *  turn — any failure just falls back to the regex guess it already had. */
+async function classifyTaskSmart(router: Router, text: string, signals?: ClassifySignals): Promise<TaskKind> {
+  const { kind, confident } = classifyTaskCore(text, signals);
+  if (confident) return kind;
+  try {
+    const provider = createRouterProvider(router, { taskKind: 'trivial' });
+    const { object } = await generateObject({
+      model: provider,
+      output: 'enum',
+      enum: [...TASK_KIND_VALUES],
+      abortSignal: AbortSignal.timeout(4000),
+      prompt: 'Classify this message for an AI coding assistant\'s routing.\n'
+        + '- trivial: a greeting or small talk\n'
+        + '- chat: a question, or a request to use/transform content already supplied in the '
+        + 'message (e.g. "reformat this for Google Docs")\n'
+        + '- agent: an explicit action that may edit files\n'
+        + '- coding: a specific code edit/implementation request\n'
+        + '- debug: chasing a bug or error\n'
+        + '- longContext: needs a very large amount of context\n'
+        + '- vision: about an attached image or PDF\n\n'
+        + `Message:\n"""${text.slice(0, 2000)}"""`,
+    });
+    diagLog('turn.classify', `regex guessed "${kind}" (ambiguous) → llm picked "${object}"`);
+    return object as TaskKind;
+  } catch (err) {
+    diagLog('turn.classify', `llm classify failed, keeping regex guess "${kind}": ${err instanceof Error ? err.message : String(err)}`);
+    return kind;
+  }
+}
+
+/** AI SDK's own inline repair hook for a NATIVE tool call the model emitted through the real
+ *  tools API but with bad name/args — distinct from `rescueInlineToolCalls` in routerProvider.ts,
+ *  which only fires when the model emitted NO native call at all (dialect text instead). A weak
+ *  model can still botch a genuine native call (double-JSON-encoded args, a stringified nested
+ *  object/array, a Harmony-mangled tool name) and this is currently the only place that gets a
+ *  chance to fix it before the SDK throws and drops the step.
+ *  - InvalidToolInputError: reuse the same repairToolArguments the text-rescue path already
+ *    trusts, against the failing tool's real input schema.
+ *  - NoSuchToolError: reuse sanitizeToolName to strip Harmony/namespace noise, retry against the
+ *    tool list.
+ *  Returns null (drop the call, let the SDK report the error back to the model) when neither
+ *  repair produces a valid result — never fabricate an unrelated tool call. */
+const repairToolCall: NonNullable<Parameters<typeof streamText>[0]['repairToolCall']> = async ({ toolCall, tools, error, inputSchema }) => {
+  if (InvalidToolInputError.isInstance(error)) {
+    const schema = await Promise.resolve(inputSchema({ toolName: toolCall.toolName })).catch(() => undefined);
+    const repaired = repairToolArguments(toolCall.input, schema as { properties?: Record<string, { type?: string }> } | undefined);
+    if (repaired === toolCall.input) return null;
+    try { JSON.parse(repaired); } catch { return null; }
+    diagLog('turn.repairToolCall', `invalid-input: ${toolCall.toolName} repaired`);
+    return { ...toolCall, input: repaired };
+  }
+  if (NoSuchToolError.isInstance(error)) {
+    const fixedName = sanitizeToolName(toolCall.toolName);
+    if (fixedName === toolCall.toolName || !tools[fixedName]) return null;
+    diagLog('turn.repairToolCall', `no-such-tool: "${toolCall.toolName}" → "${fixedName}"`);
+    return { ...toolCall, toolName: fixedName };
+  }
+  return null;
+};
 
 async function runAttempt(
   router: Router,
@@ -550,6 +669,7 @@ async function runAttempt(
       messages: toCoreMessages(opts.messages) as any,
       tools: tools as any,
       toolApproval: createToolApproval(opts) as any,
+      repairToolCall,
       // No hard step-count cap — a long multi-step task no longer pauses just for running past an
       // arbitrary iteration count (see the Resume-button "paused" path, now unreachable for a
       // normal in-progress task). budgetStop/stuckStop are the remaining backstops against a
@@ -861,7 +981,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // the plan-mode quality floor/escalation below unreachable dead code.
   const taskKind = opts.mode === 'plan'
     ? 'plan'
-    : classifyTask(lastUserText, { attachmentKinds, attachments: attachmentKinds.length });
+    : await classifyTaskSmart(router, lastUserText, { attachmentKinds, attachments: attachmentKinds.length, mentions: opts.mentionCount });
 
   // Planner→execute mixture pipeline: when the best executor for this task is weak (or the user
   // forces 'on'), first run a read-only planner step that decomposes the task, then hand the plan
@@ -891,6 +1011,15 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       // under the plan content.
       guidance += REACT_SCAFFOLD;
       planGuidance = guidance;
+    }
+  } else if (opts.mode === 'plan') {
+    // Brainstorm step: only for messages that look like a real task, not a plain question/
+    // discussion — PLAN_MODE_TAIL already answers those in prose with no numbered plan, so a
+    // fork-in-approach analysis has nothing to attach to. classifyTaskCore's regex kind (not its
+    // 'agent' ambiguous-default bias) is enough here: 'chat'/'trivial' means question-shaped.
+    const regexKind = classifyTaskCore(lastUserText, { attachmentKinds, attachments: attachmentKinds.length }).kind;
+    if (regexKind !== 'chat' && regexKind !== 'trivial') {
+      planGuidance = await runBrainstormStep(router, opts);
     }
   }
 

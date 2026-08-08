@@ -160,9 +160,15 @@ const PLAN_MODE_TAIL =
   + 'actual steps as a numbered/bulleted list under each heading so they can be reviewed and '
   + 'approved individually.\n\n'
   + 'For a trivial message (a greeting like "hi", small talk), just reply briefly and directly.\n\n'
-  + 'If you need to ask the user something before you can plan, use ONLY the '
-  + '???QUESTIONS???...???END??? text block (see the ask-format instructions) — do NOT call '
-  + 'an interactive question tool for this.';
+  + 'If a "## Approaches considered" section appears above (a separate pass already checked for a '
+  + 'genuine fork in approach), weave its recommendation and the rejected alternative\'s tradeoff '
+  + 'into the lead-in sentence, e.g. "…, using X over Y because…" — do not add a separate section '
+  + 'for it or restate the analysis, and do not let it change the numbered-list format above.\n\n'
+  + 'Ask before you investigate, not after, ONLY when something is ambiguous in a way that would '
+  + 'change WHICH files or approach you investigate (e.g. which of two similar features they mean) '
+  + '— use the ???QUESTIONS???...???END??? text block (see the ask-format instructions, do NOT '
+  + 'call an interactive question tool for this). Most messages are not ambiguous this way — this '
+  + 'is an exception, not a default step before every plan.';
 
 const ASK_MODE_TAIL =
   '\n\n## Ask mode\n'

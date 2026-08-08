@@ -54,33 +54,51 @@ export function attachmentKindsFromContent(content: ChatContent): NonNullable<Cl
  * (or `agent` if tools are likely) so the router prefers a model with
  * `supportsVision: true`. If no vision model is enabled, falls back to text only.
  */
-export function classifyTask(text: string, signals?: ClassifySignals): TaskKind {
+/** Same classification as `classifyTask`, but also reports whether a regex actually matched
+ *  (`confident`) vs. we fell through to a best-guess default. Weak-model routing correctness
+ *  matters more than saving a heuristic's honor — callers that can afford a cheap LLM
+ *  double-check (see `classifyTaskSmart` in loop.ts) should only spend it on the `false` case. */
+export function classifyTaskCore(text: string, signals?: ClassifySignals): { kind: TaskKind; confident: boolean } {
   const t = (text || '').trim();
-  if (!t) return 'chat';
+  if (!t) return { kind: 'chat', confident: true };
   const words = t.split(/\s+/).filter(Boolean);
 
   const hasVisual = (signals?.attachmentKinds ?? []).some((k) => k === 'image' || k === 'pdf');
 
-  if (!hasVisual && words.length <= 6 && GREETING.test(t) && !TASK_VERB.test(t)) return 'trivial';
+  if (!hasVisual && words.length <= 6 && GREETING.test(t) && !TASK_VERB.test(t)) return { kind: 'trivial', confident: true };
 
   if (t.length > 6000 || (signals?.attachments ?? 0) > 0 || (signals?.mentions ?? 0) >= 3) {
-    return hasVisual ? 'vision' : 'longContext';
+    return { kind: hasVisual ? 'vision' : 'longContext', confident: true };
   }
 
   if (hasVisual) {
-    if (DEBUG_HINT.test(t)) return 'vision';            // debug a screenshot/log → vision tool-capable
-    if (EXPLAIN_Q.test(t)) return 'vision';             // "what's in this image" → read-only vision
-    if (TASK_VERB.test(t)) return 'vision';             // "translate this screenshot" → vision tools ok
-    if (t.endsWith('?')) return 'vision';
-    return 'vision';
+    if (DEBUG_HINT.test(t)) return { kind: 'vision', confident: true };  // debug a screenshot/log → vision tool-capable
+    if (EXPLAIN_Q.test(t)) return { kind: 'vision', confident: true };   // "what's in this image" → read-only vision
+    if (TASK_VERB.test(t)) return { kind: 'vision', confident: true };   // "translate this screenshot" → vision tools ok
+    if (t.endsWith('?')) return { kind: 'vision', confident: true };
+    return { kind: 'vision', confident: false };
   }
 
-  if (DEBUG_HINT.test(t)) return 'debug';            // a bug to chase (debug can investigate AND fix)
-  if (EXPLAIN_Q.test(t)) return 'chat';              // explanation-seeking → read-only answer
-  if (CODE_HINT(t)) return 'coding';                 // genuine code-edit intent → coder-preferred tool loop
-  if (TASK_VERB.test(t)) return 'agent';             // explicit action → tool loop (can edit)
-  if (t.endsWith('?')) return 'chat';                // a bare question → read-only
-  return 'agent';                                    // ambiguous: assume an action so edits aren't dropped
+  if (DEBUG_HINT.test(t)) return { kind: 'debug', confident: true };   // a bug to chase (debug can investigate AND fix)
+  if (EXPLAIN_Q.test(t)) return { kind: 'chat', confident: true };     // explanation-seeking → read-only answer
+  if (CODE_HINT(t)) return { kind: 'coding', confident: true };        // genuine code-edit intent → coder-preferred tool loop
+  if (TASK_VERB.test(t)) return { kind: 'agent', confident: true };    // explicit action → tool loop (can edit)
+  if (t.endsWith('?')) return { kind: 'chat', confident: true };       // a bare question → read-only
+  // A referenced @mention already resolved its content into the context block (see
+  // mentions.ts) — with no code-edit/debug/question signal detected, this is a "work from
+  // what I gave you" turn (e.g. "reformat this for Google Docs @notes.md"), not a codebase
+  // investigation. Route to chat so research.md's grep-first framing doesn't misdirect a
+  // weak model into searching for unrelated files instead of using the supplied content.
+  // Still a guess (not a real signal), so confident: false — worth an LLM double-check.
+  if ((signals?.mentions ?? 0) >= 1) return { kind: 'chat', confident: false };
+  return { kind: 'agent', confident: false };         // ambiguous: assume an action so edits aren't dropped
+}
+
+/** Regex-only classification — synchronous, zero extra latency. Prefer `classifyTaskSmart`
+ *  (loop.ts) where an async context and a cheap model are available; this stays for call sites
+ *  that need a sync, no-I/O answer (e.g. filtering trivial messages while picking a session title). */
+export function classifyTask(text: string, signals?: ClassifySignals): TaskKind {
+  return classifyTaskCore(text, signals).kind;
 }
 
 /**

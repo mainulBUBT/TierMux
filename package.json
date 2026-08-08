@@ -697,7 +697,7 @@
   "dependencies": {
     "@ai-sdk/provider": "^4.0.3",
     "@vscode/ripgrep": "^1.18.0",
-    "ai": "^7.0.34",
+    "ai": "^7.0.58",
     "diff2html": "^3.4.56",
     "jsdom": "^29.0.2",
     "mammoth": "^1.12.0",

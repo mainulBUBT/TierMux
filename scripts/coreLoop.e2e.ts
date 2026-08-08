@@ -85,6 +85,10 @@ async function main() {
         }
         return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'done' }) };
       },
+      // A strong executor (low intelligenceRank) so the mixture-pipeline planner step
+      // (loop.ts's WEAK_EXECUTOR_RANK gate) doesn't fire and consume a route() call — these
+      // tests are about tool-approval/execution ordering, not the mixture pipeline.
+      peekTopSelection: () => ({ entry: { platform: 'custom', modelId: 'fake', enabled: true, priority: 0 }, model: { intelligenceRank: 1 } }),
     } as unknown as Router;
 
     const { opts } = makeOpts({ onPermissionAsk: async () => 'reject' });
@@ -108,6 +112,10 @@ async function main() {
         }
         return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'done' }) };
       },
+      // A strong executor (low intelligenceRank) so the mixture-pipeline planner step
+      // (loop.ts's WEAK_EXECUTOR_RANK gate) doesn't fire and consume a route() call — these
+      // tests are about tool-approval/execution ordering, not the mixture pipeline.
+      peekTopSelection: () => ({ entry: { platform: 'custom', modelId: 'fake', enabled: true, priority: 0 }, model: { intelligenceRank: 1 } }),
     } as unknown as Router;
 
     let markerExistedAtRunningState: boolean | undefined;
@@ -144,6 +152,10 @@ async function main() {
         }
         return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'done' }) };
       },
+      // A strong executor (low intelligenceRank) so the mixture-pipeline planner step
+      // (loop.ts's WEAK_EXECUTOR_RANK gate) doesn't fire and consume a route() call — these
+      // tests are about tool-approval/execution ordering, not the mixture pipeline.
+      peekTopSelection: () => ({ entry: { platform: 'custom', modelId: 'fake', enabled: true, priority: 0 }, model: { intelligenceRank: 1 } }),
     } as unknown as Router;
 
     let permissionAskCalls = 0;

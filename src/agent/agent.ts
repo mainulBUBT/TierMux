@@ -72,6 +72,10 @@ export interface AgentOpts {
   taskKind?: string;
   /** TierMux chat session id. */
   sessionId?: string;
+  /** How many `@mentions` in the latest user message resolved into supplied context — see
+   *  routing.ts's classifyTaskCore, which uses this to route "work from what I gave you" turns
+   *  (e.g. "reformat this @notes.md") to `chat` instead of an ambiguous default. */
+  mentionCount?: number;
 
   onChunk: (text: string) => void;
   /** Retract the live text draft: a tentative chat reply turned out to be tool-planning narration

@@ -53,9 +53,11 @@ export function parseSlash(text: string): SlashCommand | undefined {
   return { name: m[1].toLowerCase(), rest: m[2].trim() };
 }
 
-/** Find @mentions and resolve them to context blocks. Returns the context text
- *  (possibly empty) plus the original prompt (mentions left in place as hints). */
-export async function resolveMentions(text: string): Promise<string> {
+/** Find @mentions and resolve them to context blocks. Returns the joined context text
+ *  (possibly empty) plus how many mentions actually resolved — the count lets routing
+ *  (see classifyTaskCore in routing.ts) tell "content already supplied" turns apart from
+ *  ambiguous ones without re-parsing the message text itself. */
+export async function resolveMentions(text: string): Promise<{ text: string; count: number }> {
   const mentionRe = /@([^\s@]+)/g;
   const seen = new Set<string>();
   const blocks: string[] = [];
@@ -67,7 +69,7 @@ export async function resolveMentions(text: string): Promise<string> {
     const block = await resolveOne(target);
     if (block) blocks.push(block);
   }
-  return blocks.join('\n\n');
+  return { text: blocks.join('\n\n'), count: blocks.length };
 }
 
 /** Matches an optional trailing line-range suffix, e.g. `#1-145`, `#L1-145`, `#42`, `#L42`. */

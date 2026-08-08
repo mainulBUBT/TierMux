@@ -61,6 +61,14 @@ function makeFakeRouter(answers: string[]): { router: Router; calls: Call[] } {
   let n = 0;
   const router = {
     async route(messages: unknown, opts: Call['opts'] = {}) {
+      // Plan mode's brainstorm step (loop.ts's runBrainstormStep) makes its own route() call
+      // BEFORE the real turn — routerProvider.ts marks it with this trailing instruction.
+      // Answer it directly (no genuine fork) without counting it as a turn call: these tests
+      // assert exact call counts/indices for the ESCALATION pipeline, which the brainstorm
+      // pre-step is not part of.
+      if (JSON.stringify(messages).includes('Respond with ONLY valid JSON')) {
+        return { platform: 'custom' as const, model: 'brainstorm-model', response: baseResponse({ content: '{"hasFork":false,"approaches":[]}' }) };
+      }
       calls.push({ messages, opts });
       const idx = Math.min(n, answers.length - 1);
       const text = answers[n] ?? answers[answers.length - 1];
@@ -71,13 +79,20 @@ function makeFakeRouter(answers: string[]): { router: Router; calls: Call[] } {
         response: baseResponse({ content: text }),
       };
     },
+    // A strong executor so the mixture-pipeline planner step (loop.ts's WEAK_EXECUTOR_RANK
+    // gate) doesn't fire and consume a route() call — these tests count exact route() calls.
+    peekTopSelection: () => ({ entry: { platform: 'custom', modelId: 'fake', enabled: true, priority: 0 }, model: { intelligenceRank: 1 } }),
   } as unknown as Router;
   return { router, calls };
 }
 
 function makeOpts(mode: AgentMode, overrides: Partial<AgentOpts> = {}): AgentOpts {
   return {
-    messages: [{ role: 'user', content: 'draft a plan for adding a new provider tier' }],
+    // A confidently-classified verb ("write") so classifyTaskSmart (routing.ts) short-circuits
+    // on the regex match with no extra classify-side route() call — this file's fake router
+    // returns canned answers by call INDEX, so any incidental extra call shifts every
+    // subsequent assertion here (escalation exclude-list, maxIntelligenceRank, call counts).
+    messages: [{ role: 'user', content: 'write a plan for adding a new provider tier' }],
     mode,
     effort: 'medium',
     onChunk: () => {},
