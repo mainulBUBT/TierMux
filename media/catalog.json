@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Synced from remote /models JSON — 102 models from 24 providers.",
+  "note": "Synced from remote /models JSON — 101 models from 24 providers.",
   "models": [
     {
       "platform": "agnes",
@@ -219,7 +219,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
+        "planner",
         "reasoner",
         "general",
         "free"
@@ -793,29 +793,6 @@
         "free"
       ],
       "insight": "Main Kilo router selecting backend free models dynamically",
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "kilo",
-      "modelId": "inclusionai/ling-3.0-flash:free",
-      "displayName": "InclusionAI Ling 3.0 Flash",
-      "intelligenceRank": 3,
-      "speedRank": 2,
-      "contextWindow": 262000,
-      "rpmLimit": 20,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "reasoner",
-        "planner",
-        "agent",
-        "free"
-      ],
       "origInputPricePer1M": 0,
       "origOutputPricePer1M": 0
     },
@@ -2054,28 +2031,6 @@
     },
     {
       "platform": "kenari",
-      "modelId": "ling-3-0-flash:free",
-      "displayName": "Ling-3.0-flash",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": 262144,
-      "rpmLimit": 5,
-      "rpdLimit": 1000,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "reasoner",
-        "planner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.055,
-      "origOutputPricePer1M": 0.165
-    },
-    {
-      "platform": "kenari",
       "modelId": "glm-4-7-flash:free",
       "displayName": "GLM 4.7 Flash",
       "intelligenceRank": 4,
@@ -2140,27 +2095,6 @@
       ],
       "origInputPricePer1M": 3,
       "origOutputPricePer1M": 15
-    },
-    {
-      "platform": "tokenrouter",
-      "modelId": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-      "displayName": "NVIDIA: Nemotron 3 Nano Omni",
-      "intelligenceRank": 2,
-      "speedRank": 2,
-      "contextWindow": 256000,
-      "rpmLimit": 15,
-      "rpdLimit": 500,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.3,
-      "origOutputPricePer1M": 0.9
     },
     {
       "platform": "nararouter",
@@ -2322,6 +2256,51 @@
       ],
       "origInputPricePer1M": 0.2,
       "origOutputPricePer1M": 1.15
+    },
+    {
+      "platform": "kilo",
+      "modelId": "inclusionai/ling-3.0-tiny:free",
+      "displayName": "inclusionAI: Ling 3.0 Tiny",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 262144,
+      "rpmLimit": 0,
+      "rpdLimit": 0,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.06,
+      "origOutputPricePer1M": 0.18
+    },
+    {
+      "platform": "nararouter",
+      "modelId": "grok-4.5-free",
+      "displayName": "Grok 4.5 free",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 212000,
+      "rpmLimit": 5,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "coding",
+        "general",
+        "reasoner",
+        "planner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.25,
+      "origOutputPricePer1M": 1.34
     },
     {
       "platform": "github",
