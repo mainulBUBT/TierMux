@@ -93,11 +93,21 @@ function result(over: Partial<QualityResult>): QualityResult {
   const e = efficiency([
     result({ trace: [
       trace('readFile', { paths: ['a.ts'], windowed: true }),
-      trace('readFile', { paths: ['b.ts'], windowed: false }),
+      // Big file slurped whole — the actual discipline failure.
+      trace('readFile', { paths: ['b.ts'], windowed: false, pagedOut: true }),
       trace('readFile', { paths: ['c.ts'], windowed: false, error: 'AI_NoSuchToolError' }),
     ] }),
   ]);
-  ok('window rate over successful reads only (1 of 2)', e.readCount === 2 && Math.abs(e.windowReadRate - 0.5) < 1e-9);
+  ok('window rate over reads that needed windowing (1 of 2)', e.readCount === 2 && Math.abs(e.windowReadRate - 0.5) < 1e-9);
+
+  // A small file read in full is correct behaviour and must not be counted as a miss.
+  const small = efficiency([
+    result({ trace: [
+      trace('readFile', { paths: ['a.ts'], windowed: true }),
+      trace('readFile', { paths: ['small.ts'], windowed: false }),
+    ] }),
+  ]);
+  ok('whole-file read of a SMALL file is excluded, not a miss', small.readCount === 1 && small.windowReadRate === 1);
   ok('tool error rate counts the failed call (1 of 3)', Math.abs(e.toolErrorRate - 1 / 3) < 1e-9);
 
   const noReads = summarizeQuality([result({ trace: [trace('grep', { paths: ['src'] })] })]);

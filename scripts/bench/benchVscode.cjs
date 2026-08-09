@@ -129,6 +129,11 @@ const vscodeMock = {
     showInformationMessage: async () => undefined,
     showErrorMessage: async () => undefined,
     createOutputChannel: () => ({ appendLine() {}, append() {}, show() {}, dispose() {} }),
+    // Headless: nothing is open. Must exist as an ARRAY — WorkspaceIndex.fallbackSymbolScan
+    // maps over it to prioritise open editors, and an undefined here threw
+    // "Cannot read properties of undefined (reading 'map')" out of every getSymbolGraph call.
+    visibleTextEditors: [],
+    activeTextEditor: undefined,
   },
   languages: { getDiagnostics: () => [] },
   commands: { executeCommand: async () => undefined },

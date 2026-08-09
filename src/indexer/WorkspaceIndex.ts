@@ -58,6 +58,12 @@ export class WorkspaceIndex implements vscode.Disposable {
   private readonly symbolCache = new Map<string, SymbolRef[]>();
   private watcher: vscode.FileSystemWatcher | undefined;
   private disposed = false;
+  /** Shared in-flight seed scan, so N concurrent symbol lookups trigger ONE walk, not N. */
+  private seeding: Promise<void> | undefined;
+  private seeded = false;
+  /** The workspace had more indexable files than `maxFiles` — the index is partial, so a
+   *  "not found" answer is not proof of absence. Surfaced through `coverage()`. */
+  private seedTruncated = false;
 
   constructor(private readonly config: () => IndexConfig) {}
 
@@ -81,11 +87,69 @@ export class WorkspaceIndex implements vscode.Disposable {
     this.debounce.clear();
   }
 
+  /** How much of the workspace the symbol index actually covers. `truncated` means the scan hit
+   *  `maxFiles`, so callers must not report "not found" as if it were authoritative. */
+  coverage(): { files: number; seeded: boolean; truncated: boolean } {
+    return { files: this.graph.size, seeded: this.seeded, truncated: this.seedTruncated };
+  }
+
+  /** Build the glob of directories never worth walking, from configured excludes (or the
+   *  defaults). Passed to findFiles so the scan never descends into node_modules/vendor at all —
+   *  filtering after the walk would still pay for walking them. */
+  private excludeGlob(): string {
+    const cfg = this.config();
+    const list = cfg.excludes.length ? cfg.excludes : DEFAULT_EXCLUDES;
+    const dirs = list.filter((e) => !e.includes('*')).map((e) => `**/${e}/**`);
+    return dirs.length ? `{${dirs.join(',')}}` : '**/node_modules/**';
+  }
+
+  /**
+   * One-shot lazy scan that populates the graph from the WORKSPACE, not just open editors.
+   *
+   * The symbol fallback used to seed itself from `visibleTextEditors`, which meant that with no
+   * language server and nothing open — a fresh session, or any non-TS project like PHP/Laravel —
+   * `findSymbol` searched an empty graph and answered "No definitions found". That is a
+   * confidently wrong answer: it sends the model off to grep exactly when the index would have
+   * been most useful. Measured cost of that failure: the 2026-08-09 benchmark scored 50%
+   * retrieval with the symbol tools contributing nothing.
+   *
+   * Still lazy (nothing runs until a symbol/dependency query needs it), bounded by `maxFiles`,
+   * and concurrency-limited so a big repo doesn't open thousands of file handles at once.
+   */
+  private async seedGraph(): Promise<void> {
+    if (this.seeded || this.disposed || !this.config().enabled) return;
+    if (this.seeding) return this.seeding;
+    this.seeding = (async () => {
+      const max = this.config().maxFiles;
+      let uris: vscode.Uri[] = [];
+      try {
+        // max + 1 so hitting the ceiling is distinguishable from exactly filling it.
+        uris = await vscode.workspace.findFiles('**/*', this.excludeGlob(), max + 1);
+      } catch {
+        return; // no findFiles (headless shim without it) — leave the graph as-is
+      }
+      const candidates = uris.filter((u) => {
+        const rel = this.relPath(u);
+        return !this.isExcluded(rel) && languageForPath(rel) !== 'unknown';
+      });
+      this.seedTruncated = candidates.length > max;
+      const batch = 12;
+      for (let i = 0; i < candidates.length && i < max; i += batch) {
+        if (this.disposed) return;
+        await Promise.all(candidates.slice(i, i + batch).map((u) => this.indexFile(u).catch(() => { /* skip unreadable */ })));
+      }
+      this.seeded = true;
+    })().finally(() => { this.seeding = undefined; });
+    return this.seeding;
+  }
+
   /** Clear all in-memory index caches. Graph rebuilds lazily on next tool access / file event. */
   rebuild(): void {
     this.graph.clear();
     this.reverse.clear();
     this.symbolCache.clear();
+    this.seeded = false;
+    this.seedTruncated = false;
     for (const t of this.debounce.values()) clearTimeout(t);
     this.debounce.clear();
   }
@@ -302,13 +366,11 @@ export class WorkspaceIndex implements vscode.Disposable {
    *  never disk), prioritizing OPEN editors then the rest, early-exiting at `limit`. If the graph
    *  is empty, seed it from the currently open editors so the fallback has something to read. */
   private async fallbackSymbolScan(query: string, limit: number): Promise<SymbolRef[]> {
-    if (this.graph.size === 0) {
-      const open = vscode.window.visibleTextEditors.map((e) => this.relPath(e.document.uri));
-      await Promise.all(open.map((rel) => this.ensureIndexed(rel)));
-    }
+    // Seed from the whole workspace, not just what happens to be open — see seedGraph().
+    if (this.graph.size === 0) await this.seedGraph();
     const ql = query.toLowerCase();
     const order: string[] = [];
-    for (const e of vscode.window.visibleTextEditors) {
+    for (const e of vscode.window.visibleTextEditors ?? []) {
       const rel = this.relPath(e.document.uri);
       if (!order.includes(rel)) order.push(rel);
     }

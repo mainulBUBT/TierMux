@@ -32,7 +32,14 @@ export function createSymbolGraphTool() {
       const idx = getWorkspaceIndex();
       const refs = await idx.findSymbol(symbol, Math.min(limit ?? 20, MAX_RESULTS));
       if (refs.length === 0) {
-        return capToolOutput(`No definitions found for "${symbol}". Try grep to search usages, or check the name/spelling.`, MAX_CHARS);
+        // Never state absence as fact when the index is partial — a truncated scan makes
+        // "no definitions" indistinguishable from "not indexed", and the model would take the
+        // first reading and stop looking.
+        const cov = idx.coverage();
+        const caveat = cov.truncated
+          ? ` The index covers only ${cov.files} files (workspace exceeds the maxFiles limit), so this is NOT proof it doesn't exist — grep to be sure.`
+          : ' Try grep to search usages, or check the name/spelling.';
+        return capToolOutput(`No definitions found for "${symbol}".${caveat}`, MAX_CHARS);
       }
       incSymbolHit(); // a real index hit — drives the retrieval-quality gauge off grep
       const lines = refs.map((r) => {

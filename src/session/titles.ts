@@ -112,6 +112,22 @@ const SUBJECT_STOPWORDS = new Set([
   'project', 'codebase', 'code', 'app', 'application', 'system', 'repo', 'repository', 'file', 'files',
   'what', 'why', 'when', 'where', 'which', 'who', 'whom',
   'good', 'better', 'best', 'well', 'also', 'just', 'really', 'very', 'so', 'then', 'now', 'more', 'multiple',
+  // Romanized Bengali ("Banglish") filler — question words, verbs and particles. Without these
+  // the list is English-only, and "router ta kivabe kaj kore?" yields the subject terms
+  // ["router", "kivabe", "kore"]. Not cosmetic: looksLikeGroundedAnswer then requires the reply
+  // to contain "kivabe", and offTopicCorrection tells the model to "grep the codebase for:
+  // router, kivabe, kore" — sending it to search for a Bengali grammar word. Only filler is
+  // listed; real nouns a user might name stay eligible as subjects.
+  'kivabe', 'kemne', 'kemon', 'keno', 'kothay', 'kobe', 'kono',
+  'kichu', 'kore', 'korche', 'korte', 'kora', 'korbo', 'korbe', 'koro', 'korlam', 'korchi',
+  'korechi', 'korecho', 'kortese', 'kaj', 'hoy', 'hoye', 'hocche', 'holo', 'hobe', 'ache',
+  'achhe', 'ase', 'chilo', 'bolchi', 'bolchilam', 'bolche', 'bole', 'bolo', 'dao', 'dile',
+  'diye', 'theke', 'jonno', 'kotha', 'ekta', 'ekhon', 'ekhane', 'oita', 'oigula', 'egula',
+  'eta', 'eita', 'sathe', 'moto', 'valo', 'bhalo', 'kharap', 'amar', 'amader', 'tomar',
+  'tumi', 'ami', 'apni', 'aro', 'aar', 'abar', 'onek', 'khub', 'jodi', 'tahole',
+  'kintu', 'jonno', 'nai', 'nei', 'hoyeche', 'lagbe', 'lage', 'jane', 'jani', 'bujhe',
+  'bujhte', 'bujhi', 'dekho', 'dekhi', 'dekha', 'pare', 'parbe', 'parina', 'thik', 'seta',
+  'sob',
 ]);
 
 /**

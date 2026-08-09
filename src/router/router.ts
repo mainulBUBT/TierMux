@@ -186,6 +186,9 @@ export interface RouteOptions extends CompletionOptions {
   exclude?: string[];
   /** Quality-based escalation: only consider models at least this smart (intelligenceRank <= this). */
   maxIntelligenceRank?: number;
+  /** Chat session this call belongs to. Enables session-sticky Auto routing (see sessionPin):
+   *  once a model has served this conversation successfully, keep using it. */
+  sessionId?: string;
   /** External cancellation (the Stop button, or a sub-agent's own wall-clock ceiling like
    *  explore.ts's 45s). Forwarded into each provider's fetchWithTimeout so the actual in-flight
    *  HTTP request is cancelled, not just future retries; also checked between failover attempts
@@ -359,6 +362,22 @@ function parseRetryFromBody(text: string): number | undefined {
 export class Router {
   /** Last model (platform::modelId) that succeeded for each task kind — tried first next time. */
   private lastGood = new Map<TaskKind, string>();
+  /**
+   * Last model that successfully served each CHAT SESSION — tried first next time, ahead of the
+   * per-taskKind `lastGood` pin.
+   *
+   * `lastGood` is keyed by task kind, which means one conversation gets re-routed every time the
+   * classifier's label shifts: a measured 20-query Auto run was served by SIX different models,
+   * including a *tiny* one that then failed a bugfix task. That is the opposite of how Claude
+   * Code / Copilot behave, and it breaks continuity — each turn is answered by a model with a
+   * different idea of what the previous turns meant.
+   *
+   * Same guards as `lastGood` (still a candidate, not disliked, not flagged slow), so a pinned
+   * model that starts failing or crawling still loses the seat. Bounded so long-lived windows
+   * don't accumulate one entry per session forever.
+   */
+  private sessionPin = new Map<string, string>();
+  private static readonly MAX_SESSION_PINS = 100;
   private rateTracker = new RateTracker();
   private latencyTracker = new LatencyTracker();
   /**
@@ -500,6 +519,25 @@ export class Router {
    * but tool-less model could top the peek, reporting a falsely-strong executor while the
    * actual (tool-filtered) route() pick is much weaker.
    */
+  /** Record the model serving a session, evicting the oldest entry past the cap. Re-setting an
+   *  existing session moves it to the end (Map preserves insertion order), so an active
+   *  conversation is never the one evicted. */
+  private setSessionPin(sessionId: string, modelKey: string): void {
+    this.sessionPin.delete(sessionId);
+    this.sessionPin.set(sessionId, modelKey);
+    while (this.sessionPin.size > Router.MAX_SESSION_PINS) {
+      const oldest = this.sessionPin.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.sessionPin.delete(oldest);
+    }
+  }
+
+  /** Forget a session's sticky model — call when the user deletes a session or explicitly picks
+   *  a model, so a stale pin can't outlive the conversation it belonged to. */
+  clearSessionPin(sessionId: string): void {
+    this.sessionPin.delete(sessionId);
+  }
+
   peekTopSelection(taskKind: TaskKind): { entry: FallbackEntry; model?: CatalogModel } | undefined {
     const base = { taskKind, requireTools: true } as RouteOptions;
     let cands = this.candidates(base);
@@ -715,13 +753,16 @@ export class Router {
       const score = this.stats ? (p: string, m: string): number => this.stats!.score(kind, p, m) : undefined;
       list = orderForTask(kind, list, this.catalog, score);
 
-      const good = this.lastGood.get(kind);
-      if (good) {
+      // Session pin applied AFTER the taskKind pin so it ends up in front of it — continuity
+      // within one conversation outranks "what worked for this label globally".
+      const pins = [this.lastGood.get(kind), opts.sessionId ? this.sessionPin.get(opts.sessionId) : undefined];
+      for (const good of pins) {
+        if (!good) continue;
         const i = list.findIndex((e) => `${e.platform}::${e.modelId}` === good);
         const notDisliked = !this.stats || this.stats.score(kind, list[i]?.platform, list[i]?.modelId) >= 0;
-        // A lastGood pin must not resurrect a model currently flagged slow — "it answered"
-        // is not "it answered acceptably fast", and the pin otherwise self-renews forever
-        // (each slow success re-writes lastGood, so the same 200s+ model wins every turn).
+        // A pin must not resurrect a model currently flagged slow — "it answered" is not "it
+        // answered acceptably fast", and the pin otherwise self-renews forever (each slow
+        // success re-writes it, so the same 200s+ model wins every turn).
         const notSlow = i < 0 || !this.slowModels?.isSlow(list[i].platform, list[i].modelId);
         if (i > 0 && notDisliked && notSlow) list = [list[i], ...list.slice(0, i), ...list.slice(i + 1)];
       }
@@ -1396,8 +1437,14 @@ export class Router {
             const slow = this.slowModels?.isSlow(entry.platform, entry.modelId) ?? false;
             if (!slow) {
               this.lastGood.set(opts.taskKind, modelKey2);
+              if (opts.sessionId) this.setSessionPin(opts.sessionId, modelKey2);
             } else if (this.lastGood.get(opts.taskKind) === modelKey2) {
               this.lastGood.delete(opts.taskKind);
+              // A slow model loses the session seat too, not just the taskKind one — otherwise
+              // stickiness would lock a conversation onto the model that made it slow.
+              if (opts.sessionId && this.sessionPin.get(opts.sessionId) === modelKey2) {
+                this.sessionPin.delete(opts.sessionId);
+              }
             }
           }
           opts.onProviderAttempt?.({ platform: entry.platform, model: entry.modelId, status: 'ok', latencyMs: Date.now() - t0 });

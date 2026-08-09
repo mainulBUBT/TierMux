@@ -57,6 +57,11 @@ export interface TraceEntry {
   /** readFile only: the call passed an explicit offset/limit (a windowed read) rather than
    *  slurping the file's default first-800-lines page. */
   windowed?: boolean;
+  /** readFile only: the result was a PARTIAL page — the file was longer than the window, so the
+   *  tool appended its "showing lines X–Y of N" notice. This is what makes window discipline
+   *  measurable: reading a 40-line file whole is correct behaviour, not a discipline failure, so
+   *  only reads where the file actually exceeded a page belong in the denominator. */
+  pagedOut?: boolean;
   /** Characters of tool output returned to the model — the context-growth proxy. */
   outputChars: number;
   error?: string;

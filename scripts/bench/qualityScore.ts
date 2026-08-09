@@ -83,7 +83,13 @@ export function efficiency(results: QualityResult[]): EfficiencyStats {
 
   // Successful reads only: a call that errored (wrong tool name, missing file) tells you
   // nothing about window discipline and would otherwise dilute the rate in either direction.
-  const reads = results.flatMap((r) => r.trace.filter((t) => t.name === 'readFile' && !t.error));
+  const allReads = results.flatMap((r) => r.trace.filter((t) => t.name === 'readFile' && !t.error));
+  // Only reads where windowing could have mattered. Reading a 40-line file in full is CORRECT,
+  // not sloppy, and counting it as a miss made the 80% target partly unreachable by good
+  // behaviour — the 2026-08-09 baseline's 36.8% was measured against every read in the run.
+  // A read qualifies when it was windowed (offset/limit passed) or when the file turned out to
+  // be longer than one page (`pagedOut`); everything else is a small file read whole.
+  const reads = allReads.filter((t) => t.windowed || t.pagedOut);
   const windowed = reads.filter((t) => t.windowed).length;
 
   const allCalls = results.flatMap((r) => r.trace);

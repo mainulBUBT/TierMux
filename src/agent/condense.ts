@@ -7,8 +7,12 @@ import { contentToString } from './content';
 import { capToolOutput } from './core/tools/capOutput';
 import { diagLog } from '../util/diag';
 
-/** Number of recent messages kept verbatim (so the active thread of work stays intact). */
-const KEEP_TAIL = 6;
+/** Number of recent messages kept verbatim (so the active thread of work stays intact). 10, not
+ *  6: a tool-heavy turn spends several messages on its own tool round-trips, so 6 could cover as
+ *  little as one exchange — putting a correction the user made two turns ago outside the verbatim
+ *  tail and at the mercy of the summarizer. Raising it is nearly free because surviving tool
+ *  results are re-capped to TAIL_TOOL_RESULT_CAP below; the extra messages are mostly short text. */
+const KEEP_TAIL = 10;
 /** Re-cap ceiling for a tool result surviving in the kept tail. Per-tool caps (capOutput.ts) run
  *  up to 15-30k chars each — fine for the model mid-task, but by compaction time the model has
  *  already acted on that result, so keeping it at full size in the "recent, verbatim" tail can

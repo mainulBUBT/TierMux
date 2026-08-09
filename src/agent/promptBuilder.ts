@@ -31,9 +31,13 @@ const AGENT_FILE_ORDER = ['identity.md', 'behavior.md', 'ask-format.md', 'resear
 
 /** Loads `.tiermux/agent/*.md` scaffolding + project rules/memory/skills index, reading fresh
  *  every call (no caching) — editing `.tiermux/memory.md` takes effect on the very next turn. */
-async function loadAgentInstructions(extPath: string, workspaceRoot?: string, taskKind?: TaskKind): Promise<{ agentPrompt: string; instructions: string }> {
+async function loadAgentInstructions(extPath: string, workspaceRoot?: string, taskKind?: TaskKind, mode?: AgentMode): Promise<{ agentPrompt: string; instructions: string }> {
   const agentDir = path.join(extPath, '.tiermux', 'agent');
   const skipFiles = new Set(taskKind ? SKIP_FILES_FOR_TASK_KIND[taskKind] ?? [] : []);
+  // ask-format.md documents the ???QUESTIONS??? pre-flight clarify block, and PLAN_MODE_TAIL is
+  // the only place that asks for it — agent/ask mode were paying ~1.3KB of prompt for a protocol
+  // they never use, competing for a free model's attention with rules that do apply.
+  if (mode && mode !== 'plan') skipFiles.add('ask-format.md');
   let base: string;
   try {
     const files = fs.readdirSync(agentDir)
@@ -72,8 +76,6 @@ const AGENT_MODE_TAIL =
   + 'if it is only a question or a greeting, answer in text — do NOT edit files just because '
   + 'you can. Only modify files when the user asks you to change, fix, add, remove, or '
   + 'implement something.\n\n'
-  + 'When you edit files, use `getDiagnostics` to verify whether your changes introduce '
-  + 'TypeScript or linter errors, and automatically fix any errors before finishing.\n\n'
   + 'When you need external documentation, specs, or web pages, use `fetchUrl` to retrieve them. '
   + 'When the question is about something current or general-knowledge that is not answerable from '
   + 'this codebase (news, current events, a fact about the outside world, a library/API you need to '
@@ -82,20 +84,12 @@ const AGENT_MODE_TAIL =
   + 'For researching a specific library, package, or API (GitHub repos, npm packages, MDN docs), '
   + 'prefer `deepSearch` over `webSearch` — it queries those sources directly and returns '
   + 'structured, ranked results.\n\n'
-  + 'YOUR KNOWLEDGE HAS A CUTOFF well before today\'s date (shown above). For ANY question whose '
-  + 'answer could have changed after that cutoff — sports results or match/event outcomes ("who '
-  + 'won…", "…result"), elections, product or version releases, prices, or anything phrased with a '
-  + 'year, a date, "latest", "current", or "result" — you MUST call `webSearch` (or `deepSearch` '
-  + 'for a library/package/API) BEFORE answering, and answer from the results. A confident-sounding '
-  + 'guess about a post-cutoff event is still a guess: never answer such questions from memory, and '
-  + 'never claim an event "hasn\'t happened yet" or "is scheduled for" a date that today\'s date '
-  + 'shows has already passed. If a search returns nothing useful, say you couldn\'t verify it '
-  + 'rather than falling back to a stale guess.\n\n'
-  + 'When you need to LOCATE code or UNDERSTAND how part of the codebase works before acting '
-  + '(e.g. "where is X handled", "how does Y flow", "which files touch Z"), prefer the `explore` '
-  + 'tool over running many grep/read calls yourself: it delegates the search to a fast '
-  + 'read-only sub-agent and returns a compact findings summary (files, symbols, line numbers), '
-  + 'keeping your context small. Use direct grep/read for a single known file or a quick check.\n\n'
+  + 'YOUR KNOWLEDGE HAS A CUTOFF before today\'s date (shown above). For ANY question whose answer '
+  + 'could have changed since — event/match outcomes, elections, releases, prices, or anything '
+  + 'phrased with a year, "latest", "current", or "result" — call `webSearch` (or `deepSearch` for '
+  + 'a library/package/API) BEFORE answering and answer from the results. Never answer these from '
+  + 'memory, and never say an event "hasn\'t happened yet" when today\'s date shows it has. If the '
+  + 'search finds nothing useful, say you couldn\'t verify it rather than guessing.\n\n'
   + '### Working autonomously\n'
   + 'You are an autonomous agent, not a one-reply chatbot. For any task that takes more than a '
   + 'couple of steps (implementing a feature, fixing a bug across files, a multi-part change), FIRST '
@@ -131,10 +125,7 @@ const AGENT_MODE_TAIL =
   + 'Never invoke a pager (`less`, `more`, `git log` without `--no-pager`) or an interactive/`-i` flag '
   + '(e.g. `git rebase -i`, `npm init` without `-y`) — the command will hang waiting for input that '
   + 'never comes. Pipe through `head`/`tail`/`grep` to narrow noisy output instead of letting it dump '
-  + 'unbounded text.\n\n'
-  + '### Code Search & Retrieval Strategy\n'
-  + 'When searching for function, class, or symbol definitions, use `getSymbolGraph` before falling back to `grep`. '
-  + 'When assessing code impact, file dependencies, or downstream importers, use `getDependencyTree`.';
+  + 'unbounded text.';
 
 const PLAN_MODE_TAIL =
   '\n\n## Plan mode\n'
@@ -228,6 +219,6 @@ export async function buildSystemPrompt(mode: AgentMode, taskKind?: TaskKind): P
   if (!extensionPath) {
     return '# Identity\nYou are TierMux, an AI coding assistant.' + modeTail(mode) + `\n\n${todayLine()}`;
   }
-  const { agentPrompt, instructions } = await loadAgentInstructions(extensionPath, workspaceRoot, taskKind);
+  const { agentPrompt, instructions } = await loadAgentInstructions(extensionPath, workspaceRoot, taskKind, mode);
   return [agentPrompt + modeTail(mode), todayLine(), instructions].filter(Boolean).join('\n\n');
 }

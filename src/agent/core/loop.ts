@@ -216,12 +216,52 @@ const SELF_CORRECT_NUDGE =
   + 'read the surrounding code if you need to, then correct the error with another edit before '
   + 'finishing. Do not just acknowledge the error — actually fix it.';
 
+/** Tools that can actually falsify a "it's fixed" claim: they execute or re-inspect the code
+ *  rather than restating it. `readFile` is deliberately NOT here — re-reading your own edit
+ *  confirms the text landed, not that the bug is gone. */
+const VERIFY_TOOLS = new Set(['runCommand', 'getDiagnostics']);
+
+/** Completion claims — a verdict about the user's system ("Fixed.", "Both issues fixed", "should
+ *  work now"), as opposed to a description of what changed ("changed the column count to F"). */
+const COMPLETION_CLAIM_RE = /\b(?:(?:is|are|now|both|all|issues?|bugs?|problems?)\s+fixed|fixed(?:\s+(?:it|this|that|both|all|the\s+\w+))?\.|resolved|should (?:now )?work|now works?|works? now|that (?:should|will) (?:fix|do) it|problem solved|all set|done\.)/i;
+
+/** Appended verbatim when the model claims a fix it never checked. Deterministic on purpose: the
+ *  prompt (behavior.md "Reporting what you changed") already asks for this honesty, and free
+ *  models comply unreliably — an unverified "Fixed." that turns out wrong costs the user a round
+ *  trip AND their trust, which is exactly the failure this whole path exists to stop. A plain
+ *  appended line costs zero extra model calls and zero latency, unlike a retry nudge. */
+const UNVERIFIED_CLAIM_CAVEAT =
+  '\n\n> ⚠️ **Unverified** — this change was not tested. No command was run and no diagnostics '
+  + 'were checked after the last edit, so the claim above is reasoning about the code, not an '
+  + 'observed result. Please confirm it actually fixes the problem.';
+
 /** The user's request asks to PRODUCE something (a file/feature/change), not just discuss it.
  *  Used to detect the "model showed the code in chat but never called writeFile/editFile" failure:
  *  a create/edit task answered with a code block and no tool call means nothing was actually built,
  *  so runTurn escalates to a model that will use the tools. Discussion verbs (explain/review/show)
  *  are deliberately excluded — those legitimately produce text/code without a tool call. */
 const CREATE_TASK_RE = /\b(?:make|create|build|write|add|fix|implement|develop|generate|set ?up|put together|scaffold|generate|produce|write me|build me|create me)\b/i;
+
+/** Tool-result pruning policy for `prepareStep` (see its comment below). Split by tool, not one
+ *  blanket rule, because the two kinds of tool result age very differently:
+ *
+ *  - Read-type results are the bloat — a single `readFile` is capped at 30K chars (~7.5K tokens,
+ *    capOutput.ts), so two of them alone blow past `pruneAtTokens`. Once the model has used a file
+ *    dump it can re-read on demand, so these are evicted aggressively.
+ *  - Mutating results are a handful of bytes each ("Edited src/foo.ts.") and ARE the turn's memory
+ *    of what it has already done. Blanket-pruning them (the previous behavior) is what made the
+ *    agent forget its own edits mid-turn and across turns — so a user correcting the same thing
+ *    repeatedly got the same wrong answer back, since the evidence of the earlier attempt was gone
+ *    from the model's view. They cost almost nothing to keep, so they are never pruned.
+ *
+ *  `question`/`todowrite` are kept for the same reason: they record interaction state, not bulk. */
+const PRUNE_TOOL_POLICY = [
+  {
+    type: 'before-last-2-messages' as const,
+    tools: ['readFile', 'grep', 'glob', 'listDir', 'explore', 'getSymbolGraph', 'getDependencyTree',
+      'getDiagnostics', 'runCommand', 'webSearch', 'deepSearch', 'fetchUrl'],
+  },
+];
 
 /** Intelligence rank at/above which an executor counts as "weak" for the planner→execute
  *  pipeline — rank 3+ means a mid-tier-or-worse model will serve the turn, so a planner step
@@ -336,7 +376,20 @@ async function continueAfterTruncation(
 const REACT_SCAFFOLD =
   '\n\nBefore each action, write one short line starting "Thought:" stating what you are about to '
   + 'do and why, then either call exactly one tool or give your final answer. Do not describe '
-  + 'multiple future steps in the same turn — one thought, one action.';
+  + 'multiple future steps in the same turn — one thought, one action. Wait for each tool result '
+  + 'before deciding the next step.\n'
+  // Anti-repeat: the dominant free-model failure isn't a wrong tool, it's the same tool re-run on
+  // a near-identical query until the turn dies. stuckStop catches exact repeats after the fact;
+  // this tries to stop it happening. OpenCode ships the same rule to every free model.
+  + 'Do not call the same tool again with the same or nearly-identical arguments once you have a '
+  + 'usable result — if a search came back empty or unhelpful, change approach or say what you '
+  + 'could not find, rather than searching again in a loop.';
+
+/** True when the model that will actually serve this task is mid-tier or worse — the condition
+ *  REACT_SCAFFOLD exists for. Read-only peek; does not commit the router to a selection. */
+function isWeakExecutor(router: Router, taskKind: TaskKind): boolean {
+  return (router.peekTopSelection(taskKind)?.model?.intelligenceRank ?? 5) >= WEAK_EXECUTOR_RANK;
+}
 
 /** Scans planner output for file-path-shaped tokens (nested like `src/foo/bar.ts` or bare
  *  root-level like `package.json`) and returns the ones that don't exist in the workspace —
@@ -463,6 +516,8 @@ interface AttemptResult {
    *  true, retrying with a different model is unsafe (side effects already occurred), so
    *  runTurn must not escalate past this attempt. */
   hadMutatingToolCall: boolean;
+  /** A verify-shaped tool ran after the last mutating call — see VERIFY_TOOLS. */
+  verifiedAfterMutation: boolean;
   /** Set when the attempt ended via the genuine-error catch path (not abort) with no text —
    *  `onError` already surfaced a message to the UI; runTurn must not also report success. */
   failed?: boolean;
@@ -531,13 +586,47 @@ const repairToolCall: NonNullable<Parameters<typeof streamText>[0]['repairToolCa
     return { ...toolCall, input: repaired };
   }
   if (NoSuchToolError.isInstance(error)) {
-    const fixedName = sanitizeToolName(toolCall.toolName);
-    if (fixedName === toolCall.toolName || !tools[fixedName]) return null;
+    const fixedName = resolveToolName(sanitizeToolName(toolCall.toolName), tools);
+    if (!fixedName || fixedName === toolCall.toolName) return null;
     diagLog('turn.repairToolCall', `no-such-tool: "${toolCall.toolName}" → "${fixedName}"`);
     return { ...toolCall, toolName: fixedName };
   }
   return null;
 };
+
+/** Names weak models invent for tools that DO exist under another name. Measured, not guessed:
+ *  a 20-query benchmark run made 13 `read` calls, every one of which errored — ~4% of all tool
+ *  calls in the run burned on a name mismatch, each one also costing a step and a round trip.
+ *  sanitizeToolName alone can't fix these; it only strips Harmony/namespace noise, so a clean
+ *  but wrong name like `read` passes through unchanged and the call dies. */
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  read: 'readFile', readfile: 'readFile', cat: 'readFile', open: 'readFile', view: 'readFile',
+  write: 'writeFile', create: 'createFile', edit: 'editFile', patch: 'editFile', replace: 'editFile',
+  delete: 'deleteFile', remove: 'deleteFile', rm: 'deleteFile',
+  ls: 'listDir', list: 'listDir', listdirectory: 'listDir', dir: 'listDir',
+  find: 'glob', search: 'grep', ripgrep: 'grep', rg: 'grep', searchfiles: 'grep',
+  bash: 'runCommand', shell: 'runCommand', run: 'runCommand', exec: 'runCommand', terminal: 'runCommand',
+  todo: 'todowrite', todos: 'todowrite', todowrite: 'todowrite',
+  websearch: 'webSearch', fetch: 'fetchUrl', fetchurl: 'fetchUrl',
+  ask: 'question', askuser: 'question',
+  diagnostics: 'getDiagnostics', symbols: 'getSymbolGraph', symbolgraph: 'getSymbolGraph',
+  dependencies: 'getDependencyTree', dependencytree: 'getDependencyTree',
+};
+
+/** Map a model-invented tool name onto a real one from THIS turn's tool set, or undefined.
+ *  Order matters: an exact hit wins, then a case/underscore-insensitive match (`read_file` →
+ *  `readFile`), then the hand-written alias table. Never returns a tool the turn doesn't have —
+ *  swapping in a tool the mode deliberately withheld would defeat the plan/ask read-only gate. */
+function resolveToolName(name: string, tools: Record<string, unknown>): string | undefined {
+  if (!name) return undefined;
+  if (tools[name]) return name;
+  const key = name.toLowerCase().replace(/[_\-\s]/g, '');
+  for (const real of Object.keys(tools)) {
+    if (real.toLowerCase().replace(/[_\-\s]/g, '') === key) return real;
+  }
+  const alias = TOOL_NAME_ALIASES[key];
+  return alias && tools[alias] ? alias : undefined;
+}
 
 async function runAttempt(
   router: Router,
@@ -640,6 +729,9 @@ async function runAttempt(
     // picked — that would just repeat the same weak/stuck answer. Auto-select among the
     // excluded/higher-tier candidates instead.
     pinnedModel: escalation ? undefined : opts.pinnedModel,
+    // Session stickiness for Auto (see Router.sessionPin). Deliberately NOT passed on an
+    // escalation retry: the whole point there is to leave the model that just underperformed.
+    sessionId: escalation ? undefined : opts.sessionId,
     excludeModels: escalation?.excludeModels,
     maxIntelligenceRank: escalation?.maxIntelligenceRank,
     onFailover: opts.onFailover,
@@ -688,7 +780,7 @@ async function runAttempt(
             const pruned = pruneMessages({
               messages: messages as any,
               reasoning: 'before-last-message',
-              toolCalls: 'before-last-2-messages',
+              toolCalls: PRUNE_TOOL_POLICY,
               emptyMessages: 'remove',
             }) as unknown as CoreMessage[];
             diagLog('turn.prune', `~${before}tok ≥ ${pruneAtTokens} → pruned ${messages.length}→${pruned.length} msgs (~${roughTokens(pruned)}tok)`);
@@ -711,6 +803,10 @@ async function runAttempt(
 
     let hadToolCalls = false;
     let hadMutatingToolCall = false;
+    // True once a verification-shaped tool ran AFTER the most recent mutating call. Reset by each
+    // new mutation, so "edit, test, edit again" correctly counts as unverified — the last edit is
+    // the one the completion claim is about.
+    let verifiedAfterMutation = false;
 
     // ── Two-buffer state machine (speculative draft vs canonical reply) ──────────────
     // A tool call is a MIDDLE step, not a final answer. Text the model emits in a step that ALSO
@@ -792,7 +888,8 @@ async function runAttempt(
         const d = part.text ?? part.delta ?? ''; reasoning += d; opts.onReasoning(d);
       } else if (part.type === 'tool-call') {
         hadToolCalls = true; stepHasTool = true; phase = 'planning';
-        if (MUTATING_TOOLS.has(part.toolName)) hadMutatingToolCall = true;
+        if (MUTATING_TOOLS.has(part.toolName)) { hadMutatingToolCall = true; verifiedAfterMutation = false; }
+        else if (hadMutatingToolCall && VERIFY_TOOLS.has(part.toolName)) verifiedAfterMutation = true;
         // If text from THIS step already streamed live to the chat bubble as a tentative reply,
         // it's now revealed to be narration (a tool call arrived in the same step). Retract the
         // draft so it doesn't linger in the chat; the finish-step handler re-routes it to reasoning.
@@ -918,6 +1015,7 @@ async function runAttempt(
       stopReason,
       hadToolCalls,
       hadMutatingToolCall,
+      verifiedAfterMutation,
       // A provider/router error (streamErrored, e.g. AllModelsFailedError from a pinned model
       // hitting 403/quota) must surface in the chat even when tool calls already ran this turn —
       // previously the `&& !hadToolCalls` clause let it through as a non-failed empty turn, so the
@@ -938,7 +1036,7 @@ async function runAttempt(
     if (genuineFailure) {
       opts.onError(errMsg);
     }
-    return { text, reasoning: reasoning.trim(), platform, model, runtimeName, paused: false, workMessages, hadToolCalls: false, hadMutatingToolCall: false, failed: genuineFailure && !text.trim(), errorMessage: genuineFailure ? errMsg : undefined };
+    return { text, reasoning: reasoning.trim(), platform, model, runtimeName, paused: false, workMessages, hadToolCalls: false, hadMutatingToolCall: false, verifiedAfterMutation: false, failed: genuineFailure && !text.trim(), errorMessage: genuineFailure ? errMsg : undefined };
   }
 }
 
@@ -1012,7 +1110,14 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       guidance += REACT_SCAFFOLD;
       planGuidance = guidance;
     }
-  } else if (opts.mode === 'plan') {
+  } else if (opts.mode !== 'plan' && opts.mode !== 'ask' && isWeakExecutor(router, taskKind)) {
+    // The scaffold is about the EXECUTOR's tool-call reliability, so it must not be collateral
+    // damage of the planner step being skipped. Pinning a model, or turning the mixture pipeline
+    // off, says nothing about that model being strong enough to go without it — and OpenCode
+    // ships the same one-tool-per-message rule to every free model unconditionally.
+    planGuidance = REACT_SCAFFOLD;
+  }
+  if (opts.mode === 'plan') {
     // Brainstorm step: only for messages that look like a real task, not a plain question/
     // discussion — PLAN_MODE_TAIL already answers those in prose with no numbered plan, so a
     // fork-in-approach analysis has nothing to attach to. classifyTaskCore's regex kind (not its
@@ -1144,8 +1249,17 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     if (corrected.text.trim() || corrected.hadToolCalls) final = corrected;
   }
 
+  // Honesty backstop: the turn edited files, declared the problem solved, and never ran anything
+  // that could have proved it wrong. Flag it rather than letting the claim stand unqualified —
+  // see UNVERIFIED_CLAIM_CAVEAT for why this is deterministic instead of prompt-only.
+  let finalText = final.text;
+  if (final.hadMutatingToolCall && !final.verifiedAfterMutation && COMPLETION_CLAIM_RE.test(finalText)) {
+    diagLog('turn.unverified', 'completion claim with no verify tool after the last mutating call — appending caveat');
+    finalText += UNVERIFIED_CLAIM_CAVEAT;
+  }
+
   return {
-    text: final.text,
+    text: finalText,
     reasoning: final.reasoning || undefined,
     platform: final.platform,
     model: final.model,

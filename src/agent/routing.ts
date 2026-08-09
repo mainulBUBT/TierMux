@@ -11,7 +11,32 @@ const TASK_VERB = /\b(add|create|implement|build|write|fix|refactor|rename|move|
 
 const DEBUG_HINT = /\b(debug|bug|error|exception|stack ?trace|traceback|failing|fails?|failed|broken|crash(?:es|ed)?|throws?|not working|isn'?t working|won'?t (?:work|run|build|compile)|doesn'?t (?:work|run)|null pointer|segfault)\b|\bnot (?:loading|showing|rendering|displaying|working|saving|submitting|connecting|fetching|appearing|updating|redirecting|running|opening|logging in)\b|\b(?:can'?t|cannot|couldn'?t|won'?t|didn'?t|doesn'?t)\s+(?:log ?in|load|show|work|submit|run|open|save|fetch|connect|find|access|see|get|send|redirect|register|authenticate)\b|\b(?:shows?|returns?|displays?|gives?|outputs?)\s+(?:0|zero|null|undefined|nothing|empty|wrong|incorrect|the wrong)\b|\b(?:something (?:wrong|broken|off)|is (?:wrong|broken|incorrect)|looks (?:wrong|broken)|seems (?:broken|wrong)|does nothing|do nothing|nothing happens)\b/i;
 
-const EXPLAIN_Q = /^\s*(how (?:do|to|can|could|would|does|is|are)|what(?:'?s| is| are| does| do)|why (?:do|does|is|are|would)|when (?:should|do|does|is)|which |who |whose |where (?:is|are|do|does|can)|should i|is it|are there|can i|could i|do i|does it|explain|describe|tell me|walk me|difference between)\b/i;
+// `what (kind|sort|type) of …` is listed explicitly: TASK_VERB contains nouns that double as verbs
+// (`cache`, `test`, `format`, `support`), so "what kind of cache is this?" fell through to `agent`
+// — a read-only question handed an edit-capable tool set.
+const EXPLAIN_Q = /^\s*(how (?:do|to|can|could|would|does|is|are)|what (?:kind|sort|type)s? of|what(?:'?s| is| are| does| do)|why (?:do|does|is|are|would)|when (?:should|do|does|is)|which |who |whose |where (?:is|are|do|does|can)|should i|is it|are there|can i|could i|do i|does it|explain|describe|tell me|walk me|difference between)\b/i
+
+
+/** The explanation verbs again, WITHOUT the `^` anchor. EXPLAIN_Q only matches at the start of a
+ *  message, so "ok so explain how routing works" — or any language that puts the verb last, e.g.
+ *  romanized Bengali "ei file ta explain koro" — fell through to TASK_VERB/`agent` and got an
+ *  edit-capable tool set for what was a read-only question. Kept separate (and checked after the
+ *  anchored form) so the leading-question fast path keeps its precedence. */
+const EXPLAIN_VERB = /\b(explain|describe|walk me through|tell me about|bujhiye|bujhao|bojhao|bujhai)\b/i
+
+/**
+ * Romanized Bengali ("Banglish") signals. This user writes nearly every message this way, and the
+ * English-only regexes above classified 6 of 11 real messages as low-confidence `agent` — the
+ * ambiguous default, which hands a plain remark a mutating tool set AND pays for an extra LLM
+ * classify call. GitHub's own Copilot docs state routing should be language-invariant: "Routing
+ * decisions depend on what you are trying to do, not what language you're asking in."
+ *
+ * Written with word boundaries and multi-character stems so they can't fire inside English words
+ * (`\bkor\b` cannot match "korean"; `\bki\b` cannot match "kind").
+ */
+const BN_TASK_VERB = /\b(kor(?:o|un|be|chi|te|ben|te ?hobe)?|kore ?(?:dao|den|dio)|banao|banan|banate|likh(?:o|un|te)?|lekho|thik ?kor\w*|ঠিক|muche ?(?:dao|felo)|poriborton|bodla(?:o|te)|joga(?:o|te)|add ?kor\w*|fix ?kor\w*|update ?kor\w*|delete ?kor\w*)\b/i
+const BN_EXPLAIN_Q = /\b(ki+\b|kiser|kivabe|ki ?vabe|kemne|kemon|keno|kothay|kon\b|kobe|kar\b|kaj ?ki|kaj ?kore|bujhi?ye|bujhte|mane ?ki)\b/i
+const BN_DEBUG_HINT = /\b(kaj ?kor(?:e|che) ?na|hocche ?na|hoy ?na|hoche ?na|dekha(?:y|cche) ?na|ashe ?na|ase ?na|somossa|shomosha|problem ?hocche|vul|bhul|error ?dicche|bhang\w*|nosto)\b/i
 
 const FILE_REF = /(?:^|\s|[(["'`])(\.\/)?(\w[\w-./]*\.[a-zA-Z]{1,5})\b|```/;
 const CODE_VERB = /\b(refactor|implement|write|generate|port|migrate|optimi[sz]e|debug|fix|extend|extract|scaffold|wire)\b/i;
@@ -79,10 +104,14 @@ export function classifyTaskCore(text: string, signals?: ClassifySignals): { kin
     return { kind: 'vision', confident: false };
   }
 
-  if (DEBUG_HINT.test(t)) return { kind: 'debug', confident: true };   // a bug to chase (debug can investigate AND fix)
+  if (DEBUG_HINT.test(t) || BN_DEBUG_HINT.test(t)) return { kind: 'debug', confident: true };   // a bug to chase (debug can investigate AND fix)
   if (EXPLAIN_Q.test(t)) return { kind: 'chat', confident: true };     // explanation-seeking → read-only answer
   if (CODE_HINT(t)) return { kind: 'coding', confident: true };        // genuine code-edit intent → coder-preferred tool loop
-  if (TASK_VERB.test(t)) return { kind: 'agent', confident: true };    // explicit action → tool loop (can edit)
+  // An explanation request beats a BARE auxiliary verb: "ei file ta explain koro" is "please
+  // explain", not an edit — `koro`/`kore dao` carry no intent of their own. A concrete English
+  // task verb still wins, which is why TASK_VERB is the exception rather than BN_TASK_VERB.
+  if ((EXPLAIN_VERB.test(t) || BN_EXPLAIN_Q.test(t)) && !TASK_VERB.test(t)) return { kind: 'chat', confident: true };
+  if (TASK_VERB.test(t) || BN_TASK_VERB.test(t)) return { kind: 'agent', confident: true };    // explicit action → tool loop (can edit)
   if (t.endsWith('?')) return { kind: 'chat', confident: true };       // a bare question → read-only
   // A referenced @mention already resolved its content into the context block (see
   // mentions.ts) — with no code-edit/debug/question signal detected, this is a "work from

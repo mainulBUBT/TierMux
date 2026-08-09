@@ -13,10 +13,28 @@
  */
 import * as path from 'path';
 import { runTurn } from '../../src/agent/core/loop';
+import { WorkspaceIndex } from '../../src/indexer/WorkspaceIndex';
+import { setWorkspaceIndex } from '../../src/agent/core/tools/indexAccess';
 import type { Router } from '../../src/router/router';
 import type { AgentOpts, ToolEvent } from '../../src/agent/agent';
 import type { ChatMessage } from '../../src/shared/types';
 import type { QualityMode, QualityQuery, TraceEntry } from './qualityTypes';
+
+/** extension.ts wires the symbol/dependency index at activation; a bench run never activates the
+ *  extension, so `getSymbolGraph`/`getDependencyTree` threw "WorkspaceIndex not initialized." on
+ *  every call — the 2026-08-09 baseline measured an agent whose symbol tools were 100% broken,
+ *  which real users do not have. Mirror the activation wiring here so the bench measures the
+ *  same tool set the product ships. Config defaults match extension.ts. */
+let indexReady = false;
+function ensureWorkspaceIndex(): void {
+  if (indexReady) return;
+  indexReady = true;
+  try {
+    setWorkspaceIndex(new WorkspaceIndex(() => ({ enabled: true, maxFiles: 5000, excludes: [] })));
+  } catch (e) {
+    console.warn(`[bench] workspace index unavailable — symbol tools will error: ${(e as Error).message}`);
+  }
+}
 
 /** Tools whose calls count as "retrieval" for the grep-fallback metric. `explore` is retrieval
  *  too — it is a sub-agent that reads and greps on the caller's behalf. */
@@ -95,6 +113,8 @@ export function setWorkspaceRoot(root: string): void {
   const vscode = require('vscode');
   const fsPath = path.resolve(root);
   vscode.workspace.workspaceFolders = [{ uri: { fsPath, path: fsPath }, name: path.basename(fsPath), index: 0 }];
+  // After workspaceFolders exists — the index resolves its root from it.
+  ensureWorkspaceIndex();
 }
 
 export async function runQuery(router: Router, q: QualityQuery, opts: RunQueryOpts): Promise<AgentRunOutcome> {
@@ -129,6 +149,9 @@ export async function runQuery(router: Router, q: QualityQuery, opts: RunQueryOp
       entry.error = output.slice(0, 300);
       return;
     }
+    // Mirrors the notice createReadTool appends when a file is longer than the returned window
+    // ("…[showing lines 1–800 of 2431. Read again with offset=801 for more.]").
+    if (e.name === 'readFile' && /\[showing lines \d+[–-]\d+ of \d+/.test(output)) entry.pagedOut = true;
     const hits = pathsFromOutput(e.name, output).filter((p) => !entry.paths.includes(p));
     if (hits.length) {
       hits.forEach((p) => seen.add(p));

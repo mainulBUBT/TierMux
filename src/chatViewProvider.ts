@@ -967,6 +967,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.stopRun(id); // cancel only this session's run — it's about to be deleted
     this.sessions.delete(id);
     this.statusOf.delete(id);
+    this.deps.router.clearSessionPin(id); // don't leave the sticky-Auto pin behind
     void this.deps.workspaceState.update(SESSIONS_KEY, this.loadSessions().filter((s) => s.id !== id));
     if (wasViewed) {
 
@@ -1934,7 +1935,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // through to whatever the model produces. `extraHistoryPushed` tracks the correction
       // message so the plan-mode "not committed yet" pop() below removes both, not just one.
       let extraHistoryPushed = 0;
-      if (sdkMode === 'plan') {
+      // Ask mode needs this at least as much as plan mode: "explain X" is the most common way to
+      // use it, and a free model answering a codebase question from memory with ZERO tool calls
+      // was measured doing exactly that in the 2026-08-09 benchmark (query E1 — 0 tool calls, a
+      // plausible but generic answer the judge scored 0/0). Gating the correction to plan mode
+      // left the mode where it happens most with no check at all.
+      if (sdkMode === 'plan' || sdkMode === 'ask') {
         const subjectTerms = extractSubjectTerms(prompt);
         if (!looksLikeGroundedAnswer(result.text, subjectTerms)) {
           s.history.push({ role: 'user', content: offTopicCorrection(subjectTerms) });

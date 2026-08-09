@@ -29,6 +29,9 @@ export interface RouterProviderOptions {
   effort?: ReasoningEffort;
   taskKind?: string;
   pinnedModel?: string;
+  /** Chat session this turn belongs to. Forwarded to Router.route() so Auto keeps serving one
+   *  conversation from ONE model instead of re-rolling per turn — see Router.sessionPin. */
+  sessionId?: string;
   onFailover?: (from: string, reason: string) => void;
   onKeyRotated?: (info: { platform: string; keyIndex: number; keyTotal: number }) => void;
   onModelSelected?: (platform: string, model: string, runtimeName?: string) => void;
@@ -220,6 +223,7 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         responseFormat: wantsJson ? { type: 'json', schema: jsonSchema } : undefined,
         reasoningEffort: providerOpts.effort,
         taskKind: providerOpts.taskKind as RouteOptions['taskKind'],
+        sessionId: providerOpts.sessionId,
         onFailover: providerOpts.onFailover ? (info) => providerOpts.onFailover!(`${info.from.platform}::${info.from.modelId}`, info.reason) : undefined,
         onKeyRotated: providerOpts.onKeyRotated ? (info) => providerOpts.onKeyRotated!({ platform: info.platform, keyIndex: info.keyIndex, keyTotal: info.keyTotal }) : undefined,
         onSelectionRationale: toRationaleCallback(providerOpts.onSelectionRationale),
@@ -279,6 +283,7 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         requireTools: hasTools,
         reasoningEffort: providerOpts.effort,
         taskKind: providerOpts.taskKind as RouteOptions['taskKind'],
+        sessionId: providerOpts.sessionId,
         // Router.route() now streams even when tools are offered (tool-call deltas are
         // accumulated by index internally); live text deltas still arrive here as they land.
         onChunk: (delta: string) => {

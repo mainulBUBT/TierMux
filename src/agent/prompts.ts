@@ -14,6 +14,12 @@ rename sections, and do not mention the summary/condensing process itself:
 ## Constraints & preferences
 [anything the user specified about how it should be done]
 
+## Corrections & rejected approaches
+[every time the user said an answer or change was wrong, incomplete, or missed the point:
+what was attempted, and what they objected to. Quote their wording where it is specific.
+This section outranks the others — an approach the user already rejected must never be
+retried after this summary replaces the conversation]
+
 ## Done
 [work already completed, as terse bullets]
 
