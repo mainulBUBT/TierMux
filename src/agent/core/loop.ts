@@ -18,6 +18,7 @@ import { assessAnswerQuality, TASK_WORD_FLOOR } from '../answerQuality';
 import { judgeFulfillment, JUDGEABLE_TASK_KINDS } from '../fulfillment';
 import { contentToString } from '../content';
 import { buildSystemPrompt } from '../promptBuilder';
+import { recordFindings } from '../sessionFindings';
 import { createRouterProvider } from './routerProvider';
 import { createTelemetryMiddleware } from './middleware/telemetry';
 import { createToolApproval, MUTATING_TOOLS } from './policies/permission';
@@ -221,9 +222,32 @@ const SELF_CORRECT_NUDGE =
  *  confirms the text landed, not that the bug is gone. */
 const VERIFY_TOOLS = new Set(['runCommand', 'getDiagnostics']);
 
+/** Tools whose `path` argument names a workspace file the agent has genuinely looked at. Kept to
+ *  tools that address ONE file: `grep`/`glob` take a directory or pattern, which would poison the
+ *  findings note with "already read" entries for files nobody opened. */
+const PATH_ARG_TOOLS = new Set(['readFile', 'writeFile', 'createFile', 'editFile', 'getSymbolGraph', 'getDependencyTree']);
+
+/** The `path`-ish argument of a tool call, if it looks like one. Args arrive as `unknown` from
+ *  the stream part (and from a weak model, sometimes as a JSON string). */
+function pathArgOf(input: unknown): string | undefined {
+  let v = input;
+  if (typeof v === 'string') { try { v = JSON.parse(v); } catch { return undefined; } }
+  if (!v || typeof v !== 'object') return undefined;
+  const p = (v as Record<string, unknown>).path ?? (v as Record<string, unknown>).file;
+  return typeof p === 'string' && p.trim() ? p.trim() : undefined;
+}
+
 /** Completion claims — a verdict about the user's system ("Fixed.", "Both issues fixed", "should
  *  work now"), as opposed to a description of what changed ("changed the column count to F"). */
-const COMPLETION_CLAIM_RE = /\b(?:(?:is|are|now|both|all|issues?|bugs?|problems?)\s+fixed|fixed(?:\s+(?:it|this|that|both|all|the\s+\w+))?\.|resolved|should (?:now )?work|now works?|works? now|that (?:should|will) (?:fix|do) it|problem solved|all set|done\.)/i;
+const COMPLETION_CLAIM_RE = new RegExp([
+  // English
+  /\b(?:(?:is|are|now|both|all|issues?|bugs?|problems?)\s+fixed|fixed(?:\s+(?:it|this|that|both|all|the\s+\w+))?\.|resolved|should (?:now )?work|now works?|works? now|that (?:should|will) (?:fix|do) it|problem solved|all set|done\.)/.source,
+  // Romanized Bengali, and Bengali script. Without these the badge was English-only, so a reply
+  // ending "ঠিক হয়ে গেছে" or "thik kore diyechi" made exactly the unverified claim this guard
+  // exists to catch and sailed through untouched — the user this was built for writes that way.
+  /\b(?:thik\s*(?:hoye\s*(?:geche|gache)|kore\s*(?:dilam|diyechi|dieche))|hoye\s*geche|kaj\s*kor(?:be|che)\s*ekhon|somossa\s*(?:nei|shesh)|fix\s*kore\s*(?:dilam|diyechi))\b/.source,
+  /(?:ঠিক\s*(?:হয়ে\s*গেছে|করে\s*দিয়েছি|করে\s*দিলাম)|সমাধান\s*হয়েছে|কাজ\s*করবে\s*এখন|হয়ে\s*গেছে)/.source,
+].join('|'), 'i');
 
 /** Appended verbatim when the model claims a fix it never checked. Deterministic on purpose: the
  *  prompt (behavior.md "Reporting what you changed") already asks for this honesty, and free
@@ -234,6 +258,24 @@ const UNVERIFIED_CLAIM_CAVEAT =
   '\n\n> ⚠️ **Unverified** — this change was not tested. No command was run and no diagnostics '
   + 'were checked after the last edit, so the claim above is reasoning about the code, not an '
   + 'observed result. Please confirm it actually fixes the problem.';
+
+/** Does the text make CODEBASE-SPECIFIC claims — a workspace-looking path, a backticked
+ *  identifier, or a `call()` — as opposed to answering in plain prose? An answer with none of
+ *  these asserts nothing about the repo, so having opened no files is not suspicious; an answer
+ *  full of them, written without opening anything, is invention. */
+const CLAIMS_CODE_IDENTIFIERS = /`[A-Za-z_$][\w$]{2,}`|\b[\w-]+\/[\w-/]+\.[a-zA-Z]{1,5}\b|\b[A-Za-z_$][\w$]{2,}\s*\(\s*\)/;
+
+/** Sent back when an Ask/Plan turn answered about the project without opening anything. Names the
+ *  specific failure (answered from memory) and demands ONE tool call, so a weak model has a single
+ *  unambiguous next move. */
+const FORCE_GROUND_NUDGE =
+  'You answered without opening a single file, so that answer came from memory — and you have '
+  + 'never seen this codebase before. Anything you named in it (files, functions, constants) is a '
+  + 'guess until you verify it.\n\n'
+  + 'Do it properly now: make ONE search or read call (grep, glob, getSymbolGraph, readFile, or '
+  + 'explore) against this workspace, wait for the result, then continue from what it actually '
+  + 'says. Cite `path:line` for each claim. If the answer genuinely needs no project file, say so '
+  + 'explicitly in one sentence instead of describing code you did not read.';
 
 /** The user's request asks to PRODUCE something (a file/feature/change), not just discuss it.
  *  Used to detect the "model showed the code in chat but never called writeFile/editFile" failure:
@@ -518,6 +560,10 @@ interface AttemptResult {
   hadMutatingToolCall: boolean;
   /** A verify-shaped tool ran after the last mutating call — see VERIFY_TOOLS. */
   verifiedAfterMutation: boolean;
+  /** Workspace paths this attempt actually passed to a path-taking tool — the raw material for
+   *  the session findings note (see sessionFindings.ts). Unfiltered here; recordFindings drops
+   *  anything that isn't a real file. */
+  openedFiles: string[];
   /** Set when the attempt ended via the genuine-error catch path (not abort) with no text —
    *  `onError` already surfaced a message to the UI; runTurn must not also report success. */
   failed?: boolean;
@@ -744,7 +790,7 @@ async function runAttempt(
     middleware: createTelemetryMiddleware({ profiler: opts.profiler, traceId: opts.sessionId as any }),
   });
 
-  const system = (await buildSystemPrompt(opts.mode, taskKind)) + (planGuidance ?? '');
+  const system = (await buildSystemPrompt(opts.mode, taskKind, opts.sessionId)) + (planGuidance ?? '');
   diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · buildSystemPrompt done`);
   const tools = createToolSet(opts, getMcpManager(), router);
   diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · createToolSet done (${Object.keys(tools).length} tools)`);
@@ -807,6 +853,7 @@ async function runAttempt(
     // new mutation, so "edit, test, edit again" correctly counts as unverified — the last edit is
     // the one the completion claim is about.
     let verifiedAfterMutation = false;
+    const openedFiles: string[] = [];
 
     // ── Two-buffer state machine (speculative draft vs canonical reply) ──────────────
     // A tool call is a MIDDLE step, not a final answer. Text the model emits in a step that ALSO
@@ -890,6 +937,10 @@ async function runAttempt(
         hadToolCalls = true; stepHasTool = true; phase = 'planning';
         if (MUTATING_TOOLS.has(part.toolName)) { hadMutatingToolCall = true; verifiedAfterMutation = false; }
         else if (hadMutatingToolCall && VERIFY_TOOLS.has(part.toolName)) verifiedAfterMutation = true;
+        if (PATH_ARG_TOOLS.has(part.toolName)) {
+          const p = pathArgOf(part.input);
+          if (p) openedFiles.push(p);
+        }
         // If text from THIS step already streamed live to the chat bubble as a tentative reply,
         // it's now revealed to be narration (a tool call arrived in the same step). Retract the
         // draft so it doesn't linger in the chat; the finish-step handler re-routes it to reasoning.
@@ -1016,6 +1067,7 @@ async function runAttempt(
       hadToolCalls,
       hadMutatingToolCall,
       verifiedAfterMutation,
+      openedFiles,
       // A provider/router error (streamErrored, e.g. AllModelsFailedError from a pinned model
       // hitting 403/quota) must surface in the chat even when tool calls already ran this turn —
       // previously the `&& !hadToolCalls` clause let it through as a non-failed empty turn, so the
@@ -1036,7 +1088,7 @@ async function runAttempt(
     if (genuineFailure) {
       opts.onError(errMsg);
     }
-    return { text, reasoning: reasoning.trim(), platform, model, runtimeName, paused: false, workMessages, hadToolCalls: false, hadMutatingToolCall: false, verifiedAfterMutation: false, failed: genuineFailure && !text.trim(), errorMessage: genuineFailure ? errMsg : undefined };
+    return { text, reasoning: reasoning.trim(), platform, model, runtimeName, paused: false, workMessages, hadToolCalls: false, hadMutatingToolCall: false, verifiedAfterMutation: false, openedFiles: [], failed: genuineFailure && !text.trim(), errorMessage: genuineFailure ? errMsg : undefined };
   }
 }
 
@@ -1168,6 +1220,34 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // when the user pinned a specific model (not Auto): escalation drops pinnedModel (see the
   // `escalation ? undefined : opts.pinnedModel` above) and free-picks among top-tier models, so
   // running it on a pinned turn would silently execute the reply on a model the user never chose.
+  // Ungrounded-answer retry. Ask and Plan exist to answer ABOUT THIS PROJECT, so a turn that
+  // answered without opening a single file did it from memory — and a free model's memory of a
+  // repo it has never seen is invention. Measured (2026-08-09 human simulation): turns 2-4 each
+  // made ZERO tool calls, and one answered "yes, I verified" while citing constants that exist
+  // nowhere in the codebase. The chatViewProvider grounding check could not catch it: it lives in
+  // the UI layer, so every non-UI caller had no protection, and it only fires on a subject-term
+  // mismatch — a confident invention that echoes the subject sails through.
+  const readOnlyMode = opts.mode === 'ask' || opts.mode === 'plan';
+  const canRetryUngrounded = readOnlyMode && final === first && !first.hadToolCalls
+    && taskKind !== 'trivial' && !first.stopReason && !opts.abortSignal?.aborted && first.text.trim()
+    // Only when the answer actually asserts things about THIS repo. A plain-prose answer that
+    // opened nothing may be perfectly correct, and re-running every such turn would double the
+    // cost of Ask mode on rate-limited free tiers for no gain.
+    && CLAIMS_CODE_IDENTIFIERS.test(first.text);
+  if (canRetryUngrounded) {
+    diagLog('turn.ungrounded', `${opts.mode} answer with zero retrieval calls — retrying with a read-the-code nudge`);
+    // No noteToolSoftFailure strike, unlike the force-action path: a question that genuinely needs
+    // no project file is legitimate in Ask mode. The retry is the correction.
+    const nudged: AgentOpts = {
+      ...opts,
+      messages: [...opts.messages, { role: 'assistant', content: first.text }, { role: 'user', content: FORCE_GROUND_NUDGE }],
+    };
+    const grounded = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn);
+    // Only take the retry if it actually went and looked — otherwise keep the original rather than
+    // swapping one ungrounded answer for another.
+    if (grounded.hadToolCalls && grounded.text.trim()) final = grounded;
+  }
+
   const canEscalate = final === first && !first.hadMutatingToolCall && !opts.abortSignal?.aborted
     && !opts.pinnedModel && first.platform && first.model;
   if (canEscalate) {
@@ -1257,6 +1337,11 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     diagLog('turn.unverified', 'completion claim with no verify tool after the last mutating call — appending caveat');
     finalText += UNVERIFIED_CLAIM_CAVEAT;
   }
+
+  // Carry what this turn established into the next one. Done here, after every retry/escalation
+  // path has settled on `final`, so a discarded attempt's reads don't get promoted into a
+  // standing fact. recordFindings itself refuses any path that isn't a real file.
+  recordFindings(opts.sessionId, final.openedFiles, finalText);
 
   return {
     text: finalText,

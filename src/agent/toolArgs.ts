@@ -182,11 +182,19 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
   // inside the `content`/`replace` string (any code with braces), and `\{[\s\S]*?\}` truncated
   // at that first inner `}` → invalid JSON → the call was dropped and the raw `<function=…>`
   // text streamed through as the reply → no tool ran → loop. Balance-tracking fixes it.
+  // The `{` must be the FIRST non-whitespace thing after the tag. firstBalancedJson scans
+  // FORWARD from the tag, so without this guard `<function=editFile><parameter=search>…{…}…`
+  // (shape 6) matched here, lifted a brace out of the search payload as the whole argument
+  // object, and — because every later shape only runs when nothing matched — suppressed the
+  // branch that would have parsed it correctly. Measured cost: an edit that wrote nothing.
   const fnAnchor = /<function=([a-zA-Z0-9_\-]+)[^>]*>/g;
   while ((m = fnAnchor.exec(text)) !== null) {
     const name = m[1];
+    const after = m.index + m[0].length;
     if (!toolNames.has(name)) continue;
-    const obj = firstBalancedJson(text, m.index + m[0].length);
+    const lead = /^\s*/.exec(text.slice(after))![0].length;
+    if (text[after + lead] !== '{') continue;
+    const obj = balancedJsonFrom(text, after + lead);
     if (!obj) continue;
     calls.push({ name, arguments: obj.text });
     fnAnchor.lastIndex = obj.end;
@@ -279,6 +287,49 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
       }
       calls.push({ name, arguments: JSON.stringify(args) });
       invokeTag.lastIndex = close ? close.index + close[0].length : text.length;
+    }
+  }
+
+  if (calls.length === 0) {
+    // Shape 6: the Hermes/Qwen `<parameter=KEY>` dialect — same `<function=NAME>` opener as
+    // shape 1 but with tagged parameters instead of a JSON body, usually wrapped in <tool_call>:
+    //   <tool_call>
+    //   <function=editFile>
+    //   <parameter=path>
+    //   package.json
+    //   </parameter>
+    //   <parameter=search>
+    //   …possibly-braced code…
+    //   </parameter>
+    //   </function>
+    //   </tool_call>
+    // Captured from a real run where this was the turn's ONLY edit attempt: nothing parsed it,
+    // so zero bytes changed on disk and the raw XML was shown to the user as the answer.
+    // Values are NOT trimmed — an editFile `search` body must match the file byte for byte, so
+    // only the single newline the dialect puts after the opening tag (and the newline plus any
+    // indent before the closing one) is removed. Closing tags are optional to tolerate a
+    // response truncated mid-call.
+    const fnParamAnchor = /<function=([a-zA-Z0-9_\-]+)[^>]*>/g;
+    while ((m = fnParamAnchor.exec(text)) !== null) {
+      const name = m[1];
+      const bodyStart = m.index + m[0].length;
+      fnParamAnchor.lastIndex = bodyStart;
+      if (!toolNames.has(name)) continue;
+      const closeRe = /<\/function>/g;
+      closeRe.lastIndex = bodyStart;
+      const close = closeRe.exec(text);
+      const bodyEnd = close ? close.index : text.length;
+      const args: Record<string, unknown> = {};
+      const paramTag = /<parameter=([a-zA-Z0-9_\-]+)\s*>([\s\S]*?)(?:<\/parameter>|$)/g;
+      let p: RegExpExecArray | null;
+      while ((p = paramTag.exec(text.slice(bodyStart, bodyEnd))) !== null) {
+        const raw = p[2].replace(/^[ \t]*\r?\n/, '').replace(/\r?\n[ \t]*$/, '');
+        // Only single-line scalars get JSON coercion; a multi-line body is code, and parsing it
+        // would either fail or (worse) succeed and reshape it.
+        args[p[1]] = raw.includes('\n') ? raw : coerceInlineArgValue(raw);
+      }
+      if (Object.keys(args).length > 0) calls.push({ name, arguments: JSON.stringify(args) });
+      if (close) fnParamAnchor.lastIndex = close.index + close[0].length;
     }
   }
 
