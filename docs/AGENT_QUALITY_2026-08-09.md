@@ -10,6 +10,33 @@ and survives another `reset --hard`. The pre-reset work also exists as dangling 
 
 ---
 
+## ⚠️ MAJOR CORRECTION — 2026-08-10: `.tiermux/agent/*.md` was invisible to every bench/e2e run
+
+`setExtensionPath` is only called at real extension activation (`extension.ts`). No script under
+`scripts/bench/*` or any of the `*.e2e.ts` harnesses ever called it, and `buildSystemPrompt` falls
+back SILENTLY (no error) to a ~2.8KB stub (one identity line + the mode tail) when it's unset.
+Verified directly: `buildSystemPrompt('agent')` returned 2,800 chars without the fix, 11,856 with
+it — the difference is the entirety of `behavior.md`/`research.md`/`identity.md` (correction
+handling, tool-selection ordering, conventions, few-shot examples).
+
+**This means every live-agent number in this file before commit `e01b027` was measured against a
+prompt that never included those files, regardless of what they said or which taskKind's skip-list
+included them.** In particular:
+- The tool-ordering rewrite's apparent grep-fallback win (38%→13%, §4 below) cannot be attributed
+  to `research.md` — that file was never loaded in the run that measured it. The actual cause was
+  something else running in the same commit (symbol-index restoration, tool-name/arg coercion) —
+  unknown which, not re-investigated.
+- The "restoring research.md for `chat` lowered retrieval" verdict (§4 below) is UNFOUNDED for the
+  same reason — the file was invisible in that run too, so its content cannot have caused the drop.
+- `humanSim.e2e.ts`'s turn-2 failure (ignoring a correction) was never a fair test of
+  `behavior.md`'s correction-handling rule — that rule was never shown to the model.
+
+Fixed in `agentHarness.ts`'s `setWorkspaceRoot` (the one choke point every harness calls). Do not
+trust any §-numbered conclusion below that attributes a result to `.tiermux/agent/*.md` content
+specifically — re-verify against a run at or after `e01b027` before relying on it.
+
+---
+
 ## 1. The headline: measurement started working
 
 Before today the quality bench had never produced a valid run — four attempts existed in
