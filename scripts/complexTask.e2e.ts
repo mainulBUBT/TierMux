@@ -59,6 +59,12 @@ const PARTS: Array<{ name: string; touched: (files: string[], text: string) => b
   const edited = new Set<string>();
   let model = '';
   let todos: Array<{ content?: string; status?: string }> = [];
+  // Args + outcome for every mutating call — ToolEvent carries args on 'running' and a result/
+  // error `detail` on 'done'/'error', but the harness previously only logged the tool NAME on
+  // 'running'. That hid the actual failure mode of a git-diff-empty run: was the call skipped,
+  // did it throw, or did it "succeed" on the wrong text? Keyed by toolCallId so the two events
+  // for one call (args, then outcome) can be joined into one line.
+  const editLog = new Map<string, { name: string; args: unknown; outcome?: string; ok?: boolean }>();
 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 900_000); // 15 min — a huge task deserves room
@@ -71,11 +77,19 @@ const PARTS: Array<{ name: string; touched: (files: string[], text: string) => b
     sessionId: 'complex-1',
     abortSignal: ac.signal,
     onChunk: () => {},
-    onTool: (e: { state: string; name: string; args?: unknown }) => {
-      if (e.state !== 'running') return;
-      tools.push(e.name);
-      const p = (e.args as { path?: unknown })?.path;
-      if (typeof p === 'string' && /^(write|edit|create|delete)/i.test(e.name)) edited.add(p);
+    onTool: (e: { toolCallId: string; state: string; name: string; args?: unknown; detail?: string }) => {
+      const isEditTool = /^(write|edit|create|delete)/i.test(e.name);
+      if (e.state === 'running') {
+        tools.push(e.name);
+        const p = (e.args as { path?: unknown })?.path;
+        if (typeof p === 'string' && isEditTool) edited.add(p);
+        if (isEditTool) editLog.set(e.toolCallId, { name: e.name, args: e.args });
+        return;
+      }
+      if ((e.state === 'done' || e.state === 'error') && isEditTool) {
+        const entry = editLog.get(e.toolCallId);
+        if (entry) { entry.outcome = e.detail; entry.ok = e.state === 'done'; }
+      }
     },
     onReasoning: () => {},
     onModel: (p: string, m: string) => { model = `${p}::${m}`; },
@@ -103,6 +117,11 @@ const PARTS: Array<{ name: string; touched: (files: string[], text: string) => b
   console.log(`tool sequence: ${tools.join(' → ').slice(0, 600)}`);
   console.log(`\ntodos kept (${todos.length}):`);
   todos.forEach((t) => console.log(`  [${t.status}] ${t.content}`));
+  console.log(`\nedit-tool calls (${editLog.size}):`);
+  for (const { name, args, outcome, ok } of editLog.values()) {
+    console.log(`  ${ok ? 'OK  ' : 'FAIL'} ${name} ${JSON.stringify(args).slice(0, 200)}`);
+    if (outcome) console.log(`       -> ${outcome.slice(0, 300)}`);
+  }
   console.log(`\ngit diff --stat in the sandbox:\n${diff || '  (no changes made)'}`);
   console.log(`\npart coverage:`);
   const files = [...edited, ...diff.split('\n').map((l) => l.trim().split(' ')[0]).filter(Boolean)];

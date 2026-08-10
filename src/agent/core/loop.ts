@@ -163,8 +163,9 @@ function roughTokens(messages: CoreMessage[]): number {
  *  it must now answer the user in plain language. */
 const SYNTH_SUFFIX =
   '\n\nYou have finished using tools. Using ONLY what you learned from the tool results above, '
-  + 'write your final answer to the user now — clear, plain language, no tool calls. Summarize '
-  + 'what you did and what you found, and directly address the user\'s original request.';
+  + 'write your final answer to the user now — clear, plain language, no tool calls, no '
+  + '<function=…>/<tool_call> syntax of any kind. Summarize what you did and what you found, and '
+  + 'directly address the user\'s original request.';
 
 /** System-prompt tail used instead of SYNTH_SUFFIX when the turn ended via stuckStop/budgetStop
  *  (loop.ts's stopReason) rather than finishing naturally — the model did NOT complete the task,
@@ -174,7 +175,9 @@ const SYNTH_SUFFIX_STUCK =
   '\n\nYou were stopped before finishing — you got stuck repeating the same action without making '
   + 'progress. Using ONLY what you learned from the tool results above, tell the user what you '
   + 'found/concluded so far and what is still unresolved. Do NOT claim the task is complete — this '
-  + 'is a progress report, not a final answer.';
+  + 'is a progress report, not a final answer. Do NOT call a tool or emit tool-call syntax of any '
+  + 'kind (no <function=…>, no <tool_call>, no JSON action blob) — you no longer have tools '
+  + 'available in this step; write prose only.';
 
 /** A reply that ENDS on an announced action ("…let me read the file and fix it:") — a weak model's
  *  classic "all talk, no action" turn. Matched only at the tail so a genuine explanation that
@@ -268,6 +271,17 @@ const CLAIMS_CODE_IDENTIFIERS = /`[A-Za-z_$][\w$]{2,}`|\b[\w-]+\/[\w-/]+\.[a-zA-
 /** Sent back when an Ask/Plan turn answered about the project without opening anything. Names the
  *  specific failure (answered from memory) and demands ONE tool call, so a weak model has a single
  *  unambiguous next move. */
+/** Threshold (fraction of maxTurnTokens) at which the budget-approaching nudge fires — see
+ *  prepareStep in runAttempt. 0.65 leaves real room after the nudge for the model to actually
+ *  make the edit and get verified, while still firing well before the hard budgetStop cutoff. */
+const BUDGET_NUDGE_THRESHOLD = 0.65;
+
+const BUDGET_NUDGE =
+  'You are most of the way through your token budget for this turn and have not made any edit '
+  + 'yet. Stop investigating now and make the change with the files you have already found — '
+  + 'read no more new files. If you genuinely need one more piece of information, get it in your '
+  + 'very next tool call and then write the edit.';
+
 const FORCE_GROUND_NUDGE =
   'You answered without opening a single file, so that answer came from memory — and you have '
   + 'never seen this codebase before. Anything you named in it (files, functions, constants) is a '
@@ -337,6 +351,88 @@ const PLANNER_SYSTEM =
  * `onChunk`/`onReasoning` keep streaming the synthesis live into the UI as if it were a normal
  * answer turn — the user sees "Writing answer…" then the text, not a silent stall.
  */
+/** Budget for what `forceSynthesis` may send. Well under any free model's window, because this
+ *  is the call that must NOT fail — it is the last chance to turn a dead turn into something the
+ *  user can act on. */
+const SYNTH_TOKEN_BUDGET = 8_000;
+/** Per-tool-result ceiling once the transcript is still too big after pruning. A synthesis needs
+ *  to know WHICH files said WHAT, not every line of them. */
+const SYNTH_RESULT_CAP = 1_200;
+
+/**
+ * Shrink a turn's transcript down to something a weak model can actually summarise.
+ *
+ * `forceSynthesis` used to send `[...opts.messages, ...workMessages]` verbatim — every raw tool
+ * result the turn produced. A stuck turn is BY DEFINITION the one with the most tool output: runs
+ * that died this way had made 28-45 calls and carried ~100K characters, so the synthesis request
+ * blew past the model's context window and returned nothing. The user then saw "couldn't
+ * summarize its findings either" — the turn threw away everything it had learned at exactly the
+ * moment that knowledge was all it had left.
+ *
+ * Two passes, cheapest first: evict stale tool results the same way the main loop does, then, if
+ * still over budget, truncate whatever tool results remain.
+ */
+export function shrinkForSynthesis(messages: CoreMessage[]): CoreMessage[] {
+  if (roughTokens(messages) <= SYNTH_TOKEN_BUDGET) return messages;
+  let out = pruneMessages({
+    messages: messages as never,
+    reasoning: 'before-last-message',
+    toolCalls: PRUNE_TOOL_POLICY,
+    emptyMessages: 'remove',
+  }) as unknown as CoreMessage[];
+  if (roughTokens(out) <= SYNTH_TOKEN_BUDGET) return out;
+  // toCoreMessages() gives a 'tool' message a structured content ARRAY of tool-result parts, each
+  // carrying its text under `output.value` — not a plain string. An earlier version of this pass
+  // checked `typeof m.content !== 'string'` and therefore never matched anything real, silently
+  // no-op-ing on every actual turn (only caught by a test fixture that happened to mirror the bug).
+  out = out.map((m) => {
+    if (m.role !== 'tool' || !Array.isArray(m.content)) return m;
+    return {
+      ...m,
+      content: (m.content as Array<Record<string, unknown>>).map((part) => {
+        if (part.type !== 'tool-result') return part;
+        const output = part.output as { type?: string; value?: unknown } | undefined;
+        if (output?.type !== 'text' || typeof output.value !== 'string' || output.value.length <= SYNTH_RESULT_CAP) return part;
+        return { ...part, output: { ...output, value: `${output.value.slice(0, SYNTH_RESULT_CAP)}\n…[truncated for the summary]` } };
+      }),
+    } as CoreMessage;
+  });
+  // Third pass: 40 results capped at 1.2K each can still overshoot, so drop tool calls/results
+  // entirely via pruneMessages('all') rather than hand-filtering — a manual filter that removes a
+  // 'tool' (result) message but leaves its paired assistant tool-call in place orphans the call,
+  // which the AI SDK rejects outright (AI_MissingToolResultsError), and that error is exactly
+  // what forceSynthesis's own try/catch swallows into another empty "couldn't summarize" turn.
+  // pruneMessages removes a call and its result together, so the transcript stays well-formed.
+  if (roughTokens(out) > SYNTH_TOKEN_BUDGET) {
+    out = pruneMessages({
+      messages: out as never,
+      reasoning: 'all',
+      toolCalls: 'all',
+      emptyMessages: 'remove',
+    }) as unknown as CoreMessage[];
+  }
+  diagLog('turn.synth', `transcript shrunk to ~${roughTokens(out)}tok for synthesis`);
+  return out;
+}
+
+/** Do the first ~200 chars of synthesis output look like an attempted tool call rather than
+ *  prose? forceSynthesis explicitly disables tools (single step, no `tools` param) so the model
+ *  MUST answer in text — but a weak model mid-investigation can still try to "call" one anyway by
+ *  emitting one of the inline dialects (see rescueInlineToolCalls) as plain text, which streams
+ *  straight to the user as the final answer. Measured 2026-08-09: a stuck synthesis's entire
+ *  "answer" was a raw `<tool_call><function=readFile>...` block. Matching only the dialect
+ *  OPENERS (not full rescueInlineToolCalls parsing) keeps this cheap and false-positive-safe —
+ *  prose describing a file rarely opens with one of these exact tokens. */
+function looksLikeToolCallAttempt(text: string): boolean {
+  // NOT anchored to the start: a model that narrates first ("Now let me read the specific
+  // parts…") and THEN emits the dialect mid-answer is the same failure with a prose prefix —
+  // measured for real, `stopReason: 'budget'` synthesis on `ling-3.0-tiny:free`. The prefix
+  // narration is meta ("let me find X"), not an actual finding, so discarding the whole
+  // synthesis and falling back to the honest "couldn't produce a final answer" text loses
+  // nothing worth keeping.
+  return /(?:<tool_call>|<function=|<｜+DSML｜|\{\s*"(?:name|type)"\s*:)/.test(text);
+}
+
 async function forceSynthesis(
   languageModel: unknown,
   system: string,
@@ -348,7 +444,7 @@ async function forceSynthesis(
 ): Promise<string> {
   opts.onStep('synthesizing', stuck ? 'Summarizing progress so far…' : 'Writing answer…');
   try {
-    const messages = toCoreMessages([...opts.messages, ...workMessages]);
+    const messages = shrinkForSynthesis(toCoreMessages([...opts.messages, ...workMessages]) as CoreMessage[]);
     messages.push({ role: 'user', content: stuck ? 'You got stuck — summarize your findings and what remains unresolved.' : 'Based on the tool results above, give your final answer now.' });
     const synth = streamText({
       model: languageModel as any,
@@ -359,10 +455,20 @@ async function forceSynthesis(
       abortSignal: opts.abortSignal,
     } as any);
     let out = '';
+    let streamed = false;
     for await (const part of (synth as any).fullStream) {
-      if (part.type === 'text-delta') { const t = part.text ?? part.delta ?? ''; out += t; onChunk(t); }
+      if (part.type === 'text-delta') { const t = part.text ?? part.delta ?? ''; out += t; onChunk(t); if (t) streamed = true; }
       else if (part.type === 'reasoning-delta') { const d = part.text ?? part.delta ?? ''; onReasoning(d); }
       else if (part.type === 'error') { break; }
+    }
+    if (looksLikeToolCallAttempt(out)) {
+      diagLog('turn.synth', 'synthesis output looks like an attempted tool call — discarding rather than showing raw dialect text');
+      // The raw XML/JSON already streamed to the chat bubble live (we can't know it's a tool-call
+      // attempt until the stream ends) — retract it the same way a revealed-as-narration draft is
+      // retracted elsewhere in this file, so the caller's honest fallback message replaces it
+      // instead of appending after it.
+      if (streamed) opts.onRetractDraft?.();
+      return '';
     }
     return out;
   } catch {
@@ -690,6 +796,8 @@ async function runAttempt(
   // are "the model is stuck / over budget" stops, and auto-continuing them would just repeat the
   // waste. Kept out of the paused→auto-continue path on purpose.
   let stopReason: 'budget' | 'stuck' | undefined;
+  // Fires-once guard for the budget-approaching nudge in prepareStep below.
+  let budgetNudged = false;
   const budgetStop = ({ steps }: { steps: Array<{ usage?: { totalTokens?: number } }> }): boolean => {
     if (maxTurnTokens <= 0) return false;
     const total = steps.reduce((n, s) => n + (s.usage?.totalTokens ?? 0), 0);
@@ -819,10 +927,11 @@ async function runAttempt(
       // Keeps the last 2 messages' tool outputs (the model's active working set) and the most
       // recent reasoning, dropping older ones — the SDK keeps the result well-formed (call+result
       // pruned together), so this can't reintroduce the orphaned-tool-call shape sanitize fixes.
-      prepareStep: pruneAtTokens > 0
-        ? ({ messages }: { messages: CoreMessage[] }) => {
-            const before = roughTokens(messages);
-            if (before < pruneAtTokens) return {};
+      prepareStep: ({ messages, steps }: { messages: CoreMessage[]; steps: Array<{ usage?: { totalTokens?: number }; toolCalls?: Array<{ toolName?: string }> }> }) => {
+        let out: { messages?: CoreMessage[] } = {};
+        if (pruneAtTokens > 0) {
+          const before = roughTokens(messages);
+          if (before >= pruneAtTokens) {
             const pruned = pruneMessages({
               messages: messages as any,
               reasoning: 'before-last-message',
@@ -830,9 +939,29 @@ async function runAttempt(
               emptyMessages: 'remove',
             }) as unknown as CoreMessage[];
             diagLog('turn.prune', `~${before}tok ≥ ${pruneAtTokens} → pruned ${messages.length}→${pruned.length} msgs (~${roughTokens(pruned)}tok)`);
-            return { messages: pruned as any };
+            out.messages = pruned as any;
           }
-        : undefined,
+        }
+        // Budget-approaching nudge — agent mode only, fires once. budgetStop is a pure kill
+        // switch with no warning: a model that keeps exploring without ever attempting an edit
+        // can burn the ENTIRE token budget on read-only calls and get cut off having never once
+        // tried the actual task. Measured 2026-08-10: a complex-task run made 29 read-only calls,
+        // hit budgetStop, and produced zero edit-tool calls — confirmed via per-call instrumentation
+        // (dead code before that: the harness only logged tool NAMES, never which ones ran).
+        // Pruning doesn't help here — it shrinks what gets RE-SENT, not the cumulative usage
+        // budgetStop counts — so the fix is pressure, not compression: once over threshold with no
+        // mutation yet, tell the model plainly to stop investigating and act on what it has.
+        if (opts.mode === 'agent' && maxTurnTokens > 0 && !budgetNudged) {
+          const usedSoFar = steps.reduce((n, s) => n + (s.usage?.totalTokens ?? 0), 0);
+          const hasMutated = steps.some((s) => (s.toolCalls ?? []).some((tc) => tc.toolName && MUTATING_TOOLS.has(tc.toolName)));
+          if (!hasMutated && usedSoFar > maxTurnTokens * BUDGET_NUDGE_THRESHOLD) {
+            budgetNudged = true;
+            diagLog('turn.budgetNudge', `~${usedSoFar}tok > ${Math.round(maxTurnTokens * BUDGET_NUDGE_THRESHOLD)}tok (${Math.round(BUDGET_NUDGE_THRESHOLD * 100)}% of budget) with no mutating call yet — nudging to act now`);
+            out.messages = [...(out.messages ?? messages), { role: 'user', content: BUDGET_NUDGE }] as any;
+          }
+        }
+        return out;
+      },
       // Thin forwarders of the SDK's own lifecycle callbacks onto AgentOpts.onStep — no new
       // phase tracking of our own. Deliberately narrow:
       // - onToolExecutionStart/onToolExecutionEnd are NOT forwarded here: the tool-call/

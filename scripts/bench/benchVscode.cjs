@@ -84,6 +84,11 @@ const CONFIG_OVERRIDES = {
   // reasoning model answering offline, and 6 of 24 queries in the 2026-08-09 run went UNSCORED
   // purely on `timeout` — an unmeasured query costs far more here than a slow one.
   'tiermux.requestTimeoutMs': 120000,
+  // Opt-in per invocation (`TIERMUX_DIAG=1 npm run ...`) so a debugging run can see diagLog's
+  // turn.budgetNudge/turn.prune/etc lines on stdout without every bench run being noisy by
+  // default. diagLog itself gates on the vscode setting 'tiermux.agent.diagTrace' — not an env
+  // var — so without this bridge no diagnostic line reaches the console at all in this harness.
+  ...(process.env.TIERMUX_DIAG ? { 'tiermux.agent.diagTrace': true } : {}),
 };
 
 const vscodeMock = {
