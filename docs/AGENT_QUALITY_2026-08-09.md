@@ -61,28 +61,44 @@ Judge that works: `kilo::nvidia/nemotron-3-ultra-550b-a55b:free`.
 | 4 `followup` dataset cases (FU1–FU4) | `docs/bench/dataset.tiermux.json` |
 | Bench: symbol index wired, window-read metric corrected | `scripts/bench/*` |
 
-### Still MISSING — recover from the `dist/` bundle named (all verified to contain the source)
+### Recovered 2026-08-10
 
-| Change | File to patch | Recover from |
+| Change | File | Verified by |
 |---|---|---|
-| string→number/boolean arg coercion | `src/agent/toolArgs.ts` | `dist/coreLoop.e2e.cjs` |
-| XML shape 6 (`<parameter=…>`) rescue + shape-1 guard | `src/agent/toolArgs.ts` | `dist/rescueXml.e2e.cjs` |
-| One-pass repair (name **and** args together) | `src/agent/core/loop.ts` | `dist/coreLoop.e2e.cjs` |
-| Ungrounded-answer retry (`FORCE_GROUND_NUDGE`) | `src/agent/core/loop.ts` | `dist/coreLoop.e2e.cjs` |
-| Findings wiring (`recordFindings`, `PATH_ARG_TOOLS`) | `src/agent/core/loop.ts` | `dist/coreLoop.e2e.cjs` |
-| Multilingual completion-claim regex | `src/agent/core/loop.ts` | `dist/coreLoop.e2e.cjs` |
-| Findings block in the system prompt | `src/agent/promptBuilder.ts` | `dist/sessionFindings.e2e.cjs` |
-| `clearFindings` on session delete | `src/chatViewProvider.ts` | — (one line) |
-| Sticky-pin capability floor (`SESSION_PIN_MAX_RANK = 2`) | `src/router/router.ts` | `dist/complexTask.e2e.cjs` |
-| Structured judge (`generateObject`) + tolerant parser | `scripts/bench/judge.ts` | `dist/benchQuality.cjs` |
-| Bench request timeout 120s | `scripts/bench/benchVscode.cjs` | — (one line) |
-| `research.md` tool-ordering rewrite | `.tiermux/agent/research.md` | — (rewrite, see §4) |
+| XML shape 6 (`<parameter=…>`) rescue + shape-1 brace guard | `src/agent/toolArgs.ts` | `test:e2e:rescue-xml` 8/8 |
+| Findings wiring (`recordFindings`, `PATH_ARG_TOOLS`, `openedFiles`) | `src/agent/core/loop.ts` | `test:e2e:session-findings` 10/10 |
+| Findings block in the system prompt (`buildSystemPrompt(…, sessionId)`) | `src/agent/promptBuilder.ts` | ⤴ same |
+| `clearFindings` on session delete | `src/chatViewProvider.ts` | — |
+| Sticky-pin capability floor (`SESSION_PIN_MAX_RANK = 2`) | `src/router/router.ts` | — (no offline harness) |
+| `research.md` tool-ordering rewrite | `.tiermux/agent/research.md` | — (needs a bench run, see §4) |
 
-> `src/agent/sessionFindings.ts` survived (untracked) but is **not wired in** — its test passes
-> while the feature does nothing. Do not mistake the green test for a working feature.
->
-> `npm run test:e2e:rescue-xml` currently **FAILS** — that is the missing XML rescue, and the bug
-> it guards against is still live.
+The findings test now asserts the **seam** (`buildSystemPrompt` contains the block), not just the
+module — the earlier version was fully green while the feature was called from nowhere.
+
+Arg coercion (`coerceInlineArgValue`) turned out to be present already; the "one-pass repair"
+row was too: `repairToolCall` handles `InvalidToolInputError` and `NoSuchToolError` in one hook.
+
+### Recovery complete 2026-08-10
+
+Everything is restored. The last four items were salvaged from `dist/` bundles built before the
+reset (`complexTask.e2e.cjs`, `benchQuality.cjs`) — worth knowing that **running a test rebuilds
+its bundle and destroys the salvage source**, which nearly cost the ungrounded-retry code.
+
+| Change | File | Verified by |
+|---|---|---|
+| Ungrounded-answer retry (`FORCE_GROUND_NUDGE`, `CLAIMS_CODE_IDENTIFIERS`) | `src/agent/core/loop.ts` | `test:e2e:plan-escalation` |
+| Multilingual completion-claim regex (en + Banglish + Bengali) | `src/agent/core/loop.ts` | — |
+| Structured judge (`generateObject`) + tolerant parser | `scripts/bench/judge.ts` | — (needs a bench run) |
+| Bench request timeout 120s | `scripts/bench/benchVscode.cjs` | — |
+
+All 10 offline suites pass: classify, rescue-xml, session-findings, core, self-correct,
+bench-score, plan-escalation, plan-structurer, command-classify, terminal-util.
+
+### Broken harnesses (pre-existing, NOT caused by the reset)
+
+`test:e2e:smart-routing` and `test:e2e:circuit` both die with `MODULE_NOT_FOUND` at require time,
+and `test:e2e:scoring` fails 1/22 (*"proven 97% (n=200) beats tiny 100% (n=3)"*). Verified by
+stashing: identical at `95ebdf3`. Nobody has looked at these.
 
 ---
 
@@ -157,3 +173,43 @@ never sets `sessionId`. That is what `human-sim` is for.
 
 **Never point `complex-task` at the working tree** — pass a disposable `git worktree`. The script
 refuses if the target resolves to the current directory.
+
+---
+
+## 7. 2026-08-10 — harness repairs and the first real human-sim run
+
+Three harnesses were not running at all. None of this was visible from the summary lines; each
+one needed its exit code checked.
+
+- **`human-sim` never compiled.** Its imports were workspace-root-relative (`'./src/agent/core/loop'`)
+  rather than file-relative — four unresolved modules, dead since `95ebdf3` introduced it. Fixed.
+  Beware: piping the run through `tail` reports *tail's* exit code and hides this completely.
+- **`circuit` and `smart-routing`** were missing `-r ./scripts/vscodeMock.cjs` in their npm
+  script, so both died on `Cannot find module 'vscode'` before executing a line. Both now pass.
+- **`scoring` fails 1/22, genuinely** — *"proven 97% (n=200) beats tiny 100% (n=3)"*. Not a flake:
+  `proven` scores 0.807 vs `tiny` 0.705, yet `tiny` ranks first, reason
+  `Selected — … (low confidence, cold)`. Something promotes the cold unproven model ahead of the
+  better score. This is an exploration-policy-vs-test conflict; deciding which side is wrong is a
+  product call, so it is left open deliberately.
+
+### First human-sim result (live, `--model auto`, 4 Banglish turns)
+
+| turn | kind | model vs prev | tools | result |
+|---|---|---|---|---|
+| 1 "router ta kivabe kaj kore?" | chat | — (super-120b) | 3 | answered from `router.ts` |
+| 2 "na, ami model selection er kotha bolchilam" | agent | SAME | 1 `readFile` | **answered the correction directly** |
+| 3 "oi same file e task classification kothay hoy?" | chat | SAME | 1 | named `estimateComplexity` |
+| 4 "eta tumi verify korecho?" | chat | CHANGED (ultra-550b) | 1 | claimed verified |
+
+- **§5 #3 looks addressed.** The documented failure was turn 2 making *zero* tool calls and asking
+  the user what they wanted. It now reads a file and answers. One run, so this is a
+  disappeared-failure-mode, not a measured delta.
+- **Session stickiness held turns 1→3.** The turn-4 switch was NOT the new capability floor:
+  `kilo::nemotron-3-super-120b-a12b` is `intelligenceRank` 2 and clears `SESSION_PIN_MAX_RANK`.
+- **NEW BUG — fabricated line numbers inside a verification claim.** Turn 3 placed
+  `estimateComplexity` at "≈350‑360", turn 4 at "~1200‑1210". It is at **`router.ts:560`**. The
+  symbol is real, so no grounding check fires; only the *location* is invented, and differently
+  each time. Turn 4 opens with "হ্যাঁ, ভেরিফাই করলাম" ("yes, I verified") while citing a line
+  range that does not exist. `readFile` returns line-numbered content, so this is the model
+  ignoring what it was given — a citation-accuracy check (does the cited line actually contain
+  the symbol?) would catch it structurally, unlike the prose heuristics in §5 #5.

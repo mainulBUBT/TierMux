@@ -8,12 +8,12 @@
  * Read-only by construction: every turn runs in 'ask' mode, so the tool set has no
  * write/edit/delete/runCommand and the simulation can never touch the repo.
  */
-import { buildHarness, syncRemoteProviders } from './scripts/bench/routerHarness';
-import { setWorkspaceRoot } from './scripts/bench/agentHarness';
-import { runTurn } from './src/agent/core/loop';
-import { classifyTaskCore } from './src/agent/routing';
-import type { AgentOpts } from './src/agent/agent';
-import type { ChatMessage } from './src/shared/types';
+import { buildHarness, syncRemoteProviders } from './bench/routerHarness';
+import { setWorkspaceRoot } from './bench/agentHarness';
+import { runTurn } from '../src/agent/core/loop';
+import { classifyTaskCore } from '../src/agent/routing';
+import type { AgentOpts } from '../src/agent/agent';
+import type { ChatMessage } from '../src/shared/types';
 
 const TURNS = [
   'router ta kivabe kaj kore?',
