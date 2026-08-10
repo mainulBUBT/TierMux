@@ -6,6 +6,7 @@ import * as path from 'path';
 import { loadUserMemory } from '../context/userMemory';
 import { loadProjectRules } from '../context/projectRules';
 import { skillIndexPrompt } from '../context/skills';
+import { findingsPrompt } from './sessionFindings';
 import type { TaskKind } from './routing';
 import type { AgentMode } from './agent';
 
@@ -214,11 +215,15 @@ function todayLine(): string {
   return `Today's date is ${today}.`;
 }
 
-export async function buildSystemPrompt(mode: AgentMode, taskKind?: TaskKind): Promise<string> {
+/** `sessionId` appends this conversation's findings note (see sessionFindings.ts). It belongs in
+ *  the SYSTEM prompt specifically: the message history it summarises is exactly what pruning and
+ *  condensation throw away, and the system prompt is the only part rebuilt intact every turn. */
+export async function buildSystemPrompt(mode: AgentMode, taskKind?: TaskKind, sessionId?: string): Promise<string> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const findings = findingsPrompt(sessionId);
   if (!extensionPath) {
-    return '# Identity\nYou are TierMux, an AI coding assistant.' + modeTail(mode) + `\n\n${todayLine()}`;
+    return '# Identity\nYou are TierMux, an AI coding assistant.' + modeTail(mode) + `\n\n${todayLine()}` + findings;
   }
   const { agentPrompt, instructions } = await loadAgentInstructions(extensionPath, workspaceRoot, taskKind, mode);
-  return [agentPrompt + modeTail(mode), todayLine(), instructions].filter(Boolean).join('\n\n');
+  return [agentPrompt + modeTail(mode), todayLine(), instructions].filter(Boolean).join('\n\n') + findings;
 }

@@ -9,6 +9,7 @@
  */
 import { setWorkspaceRoot } from './bench/agentHarness';
 import { recordFindings, findingsPrompt, clearFindings } from '../src/agent/sessionFindings';
+import { buildSystemPrompt } from '../src/agent/promptBuilder';
 
 setWorkspaceRoot(process.cwd());
 const S = 'sess-1';
@@ -30,9 +31,19 @@ ok('bare mention upgraded to path:line', findingsPrompt(S).includes('src/agent/c
 recordFindings(S, ['../../etc/passwd', '/etc/passwd'], '');
 ok('refuses traversal / absolute paths', !findingsPrompt(S).includes('passwd'));
 
-recordFindings(undefined, ['src/agent/core/loop.ts'], '');
-clearFindings(S);
-ok('clearFindings empties the note', findingsPrompt(S) === '');
+// ── Wiring, not just the module ────────────────────────────────────────────────────────────
+// The note is worthless unless it reaches the model. It was previously implemented, fully
+// tested, and called from nowhere — every assertion above passed while the feature did
+// nothing. These two check the seam into the system prompt instead of the module in isolation.
+void (async () => {
+  ok('the note reaches buildSystemPrompt', (await buildSystemPrompt('agent', 'coding', S)).includes('src/agent/core/loop.ts'));
+  ok('a session with no note adds nothing', !(await buildSystemPrompt('agent', 'coding', 'other-sess')).includes('Already established'));
 
-console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAILURE(S)`);
-process.exit(fail === 0 ? 0 : 1);
+  recordFindings(undefined, ['src/agent/core/loop.ts'], '');
+  clearFindings(S);
+  ok('clearFindings empties the note', findingsPrompt(S) === '');
+  ok('cleared note is gone from the system prompt too', !(await buildSystemPrompt('agent', 'coding', S)).includes('Already established'));
+
+  console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAILURE(S)`);
+  process.exit(fail === 0 ? 0 : 1);
+})();

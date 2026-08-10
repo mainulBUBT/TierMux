@@ -9,6 +9,7 @@ import type { Mode } from './shared/types';
 import { runAgentStream, runPlanStream, runAskStream, type AgentResult, type AgentOpts, type AgentMode, type ToolEvent } from './agent/agent';
 import { findTextInWorkspace } from './context/textSearch';
 import { classifyTask } from './agent/routing';
+import { clearFindings } from './agent/sessionFindings';
 import { PRODUCT_NAME } from './shared/branding';
 import { SETTINGS_META, defaultForSetting } from './settingsMeta';
 import type { Router } from './router/router';
@@ -968,6 +969,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.sessions.delete(id);
     this.statusOf.delete(id);
     this.deps.router.clearSessionPin(id); // don't leave the sticky-Auto pin behind
+    clearFindings(id); // the findings note must not outlive the conversation it describes
     void this.deps.workspaceState.update(SESSIONS_KEY, this.loadSessions().filter((s) => s.id !== id));
     if (wasViewed) {
 
