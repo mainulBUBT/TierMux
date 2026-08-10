@@ -80,6 +80,10 @@ const CONFIG_OVERRIDES = {
   // The bench measures the agent's own retrieval, so leave pruning/caps at their real defaults;
   // only knobs that would make a headless run hang or prompt are forced here.
   'tiermux.agent.maxTurnTokens': 200000,
+  // The 30s product default is tuned for a user watching a chat bubble. A bench judge is a large
+  // reasoning model answering offline, and 6 of 24 queries in the 2026-08-09 run went UNSCORED
+  // purely on `timeout` — an unmeasured query costs far more here than a slow one.
+  'tiermux.requestTimeoutMs': 120000,
 };
 
 const vscodeMock = {
