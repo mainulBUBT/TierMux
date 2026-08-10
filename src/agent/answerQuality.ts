@@ -43,12 +43,14 @@ export const VISION_BLIND = /\b(?:can(?:no|')?t|cannot|unable to|not able to)\s+
 /** A short reply that deflects the task back to the user — asking what they want, begging
  *  clarification, or offering options — instead of doing the work. The classic weak-model
  *  failure on a clear task ("make a landing page"): it replies "What would you like to know?"
- *  or "Could you clarify what you mean?" and stops. That answer is too_short (weight 15, never
- *  escalates alone) so the turn used to die on the SAME weak model with no failover. Matched only
- *  on short replies (< DEFLECTION_MAX_WORDS) so a substantive answer that merely ends with a
- *  genuine follow-up question is NOT flagged. Legitimate plan-mode clarifying questions use the
- *  ???QUESTIONS??? block, which parseClarifying strips before this text is ever shown — so a
- *  question-back left in the visible reply is a deflection, not a structured ask. */
+ *  or "Could you clarify what you mean?" and stops. Its own `deflection` signal (weight 50,
+ *  see QUALITY_WEIGHTS) escalates alone — it used to be folded into `too_short` (weight 15,
+ *  never escalates alone), which let the turn die on the SAME weak model with no failover; split
+ *  out into its own signal to fix that. Matched only on short replies (< DEFLECTION_MAX_WORDS) so
+ *  a substantive answer that merely ends with a genuine follow-up question is NOT flagged.
+ *  Legitimate plan-mode clarifying questions use the ???QUESTIONS??? block, which parseClarifying
+ *  strips before this text is ever shown — so a question-back left in the visible reply is a
+ *  deflection, not a structured ask. */
 const DEFLECTION_MAX_WORDS = 40;
 export const DEFLECTION_PHRASE = /\b(?:what (?:would|do|did) you (?:like|want|mean|need|prefer|think)|what (?:exactly )?(?:do|would) you (?:want|need)|which (?:one|ones|approach|option|part)s? (?:do|would|are) you|could you (?:clarify|specify|provide|tell me|elaborate|confirm)|can you (?:clarify|specify|provide|tell me|elaborate|confirm)|please (?:clarify|specify|provide|elaborate|confirm)|let me know (?:what|which|if|how|when)|i need more (?:details|information|context|specifics)|i'?m not sure (?:what|which|how) you|i (?:don'?t|do not) (?:have|know) (?:enough )?(?:details|information|context)|kindly (?:clarify|provide|specify|elaborate))\b/i;
 

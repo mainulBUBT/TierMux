@@ -15,6 +15,7 @@ import * as path from 'path';
 import { runTurn } from '../../src/agent/core/loop';
 import { WorkspaceIndex } from '../../src/indexer/WorkspaceIndex';
 import { setWorkspaceIndex } from '../../src/agent/core/tools/indexAccess';
+import { setExtensionPath } from '../../src/agent/promptBuilder';
 import type { Router } from '../../src/router/router';
 import type { AgentOpts, ToolEvent } from '../../src/agent/agent';
 import type { ChatMessage } from '../../src/shared/types';
@@ -107,12 +108,29 @@ export interface RunQueryOpts {
   timeoutMs: number;
 }
 
-/** Set the workspace the tools operate on. Must be called before the first runTurn(). */
+/** Set the workspace the tools operate on. Must be called before the first runTurn().
+ *
+ *  Also wires `setExtensionPath` — a bug that sat invisible through EVERY live-agent test this
+ *  session (every bench run, humanSim, taskSim, complexTask, deflectionRepro). Production sets it
+ *  once at activation (`extension.ts`) to the INSTALLED EXTENSION's own directory — separate from
+ *  whatever workspace the user has open — because that's where `.tiermux/agent/*.md` ships.
+ *  `buildSystemPrompt` silently falls back to a ~2.8KB stub (just AGENT_MODE_TAIL + one identity
+ *  line) when it's unset, with no error, so nothing in any test run ever surfaced the gap.
+ *  Verified directly: without this, the system prompt was 2,800 chars and contained neither the
+ *  correction-handling rule nor the conventions section; with it, 11,492 chars and both present.
+ *  Deliberately NOT `root` (the target workspace under test, which varies per harness) — this
+ *  extension's own `.tiermux/agent/` lives at THIS repo's root regardless of what's being tested,
+ *  exactly like production's extensionUri is independent of the user's open folder. */
 export function setWorkspaceRoot(root: string): void {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const vscode = require('vscode');
   const fsPath = path.resolve(root);
   vscode.workspace.workspaceFolders = [{ uri: { fsPath, path: fsPath }, name: path.basename(fsPath), index: 0 }];
+  // NOT __dirname — esbuild bundles this file into a single dist/*.cjs, so __dirname would
+  // resolve to dist/ at runtime, not scripts/bench/. Every one of these harnesses is invoked via
+  // `npm run ...`, and npm always sets CWD to the directory containing package.json (the repo
+  // root) for the duration of the script — process.cwd() is the reliable one.
+  setExtensionPath(process.cwd());
   // After workspaceFolders exists — the index resolves its root from it.
   ensureWorkspaceIndex();
 }

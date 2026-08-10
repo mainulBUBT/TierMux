@@ -676,6 +676,7 @@
     "test:e2e:human-sim": "esbuild scripts/humanSim.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/humanSim.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/humanSim.e2e.cjs",
     "test:e2e:task-sim": "esbuild scripts/taskSim.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/taskSim.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/taskSim.e2e.cjs",
     "test:e2e:complex-task": "esbuild scripts/complexTask.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/complexTask.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/complexTask.e2e.cjs",
+    "test:e2e:deflection-repro": "esbuild scripts/deflectionRepro.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/deflectionRepro.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/deflectionRepro.e2e.cjs",
     "bench": "esbuild scripts/bench/runBench.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bench.cjs && node dist/bench.cjs",
     "bench:compare": "esbuild scripts/bench/compare.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/benchCompare.cjs && node dist/benchCompare.cjs",
     "bench:dataset": "esbuild scripts/bench/dataset.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/benchDataset.cjs && node dist/benchDataset.cjs",
