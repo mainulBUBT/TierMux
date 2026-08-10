@@ -7,8 +7,15 @@
 // REAL project on disk, so every workspace API they touch has to actually work — a stubbed
 // readFile would score every query 0 on retrieval and blame the model for it.
 //
-// Implemented against the read-only tool set only (mode 'ask'/'plan'). Write/edit/runCommand
-// tools are never built in those modes, so their vscode surface is intentionally absent.
+// Originally implemented against the read-only tool set only (mode 'ask'/'plan'). Extended
+// 2026-08-10 to cover the mutation surface too (Range/WorkspaceEdit/applyEdit/fs.writeFile) once
+// scripts/complexTask.e2e.ts started reusing this SAME shim for real agent-mode (edit-enabled)
+// runs — every editFile/writeFile/deleteFile call in every complex-task run up to that point had
+// been silently unable to succeed even when the model got everything right, because
+// `applyEdit.ts` constructs `new vscode.WorkspaceEdit()` and this shim didn't define the class at
+// all: confirmed live as `TypeError: vscode.WorkspaceEdit is not a constructor` on the first
+// EVER editFile call to reach this point (all prior runs died — crash, budget exhaustion, XML
+// leak — before an edit call got this far, which is why the gap went unnoticed for so long).
 const fs = require('fs');
 const path = require('path');
 const Module = require('module');
@@ -43,6 +50,32 @@ function globToRegExp(glob) {
     else re += c.replace(/[.+^$()|[\]\\]/g, '\\$&');
   }
   return new RegExp(`^${re}$`);
+}
+
+// Minimal — this codebase only ever constructs `new Range(0, 0, Number.MAX_SAFE_INTEGER, 0)` to
+// mean "the whole document", never a partial range, so the fields just need to exist/round-trip.
+class Range {
+  constructor(startLine, startChar, endLine, endChar) {
+    this.start = { line: startLine, character: startChar };
+    this.end = { line: endLine, character: endChar };
+  }
+}
+
+/**
+ * Records the same operations the real vscode.WorkspaceEdit would (createFile/deleteFile/
+ * replace), applied by `applyEdit()` below rather than by VS Code's own editor/document layer.
+ *
+ * Every call site in src/edits/applyEdit.ts always `replace`s the WHOLE document (see Range
+ * above) and then does its own explicit `vscode.workspace.fs.writeFile(uri, content)` right
+ * after a successful `applyEdit()` for the write/create paths — so `replace`/`createFile` here
+ * are deliberately no-ops; they only need to make `applyEdit` return true so that real write
+ * happens. `deleteFile` is the one case with NO follow-up fs call, so it must actually delete.
+ */
+class WorkspaceEdit {
+  constructor() { this._deletes = []; }
+  createFile() { /* no-op — see class comment */ }
+  replace() { /* no-op — see class comment */ }
+  deleteFile(target, opts) { this._deletes.push({ target, ignoreIfNotExists: !!(opts && opts.ignoreIfNotExists) }); }
 }
 
 function uri(fsPath) {
@@ -110,6 +143,25 @@ const vscodeMock = {
         const s = await fs.promises.stat(u.fsPath);
         return { type: s.isDirectory() ? 2 : 1, ctime: s.ctimeMs, mtime: s.mtimeMs, size: s.size };
       },
+      // `content` arrives as a Uint8Array (TextEncoder().encode(...) at every applyEdit.ts call
+      // site) — mkdir -p first since a brand-new nested file's directory may not exist yet.
+      writeFile: async (u, content) => {
+        await fs.promises.mkdir(path.dirname(u.fsPath), { recursive: true });
+        await fs.promises.writeFile(u.fsPath, Buffer.from(content));
+      },
+      delete: async (u, opts) => {
+        try { await fs.promises.rm(u.fsPath, { recursive: !!(opts && opts.recursive), force: true }); }
+        catch (e) { if (!(opts && opts.ignoreIfNotExists)) throw e; }
+      },
+    },
+    // Executes a WorkspaceEdit built by src/edits/applyEdit.ts. Only `deleteFile` needs real
+    // work here — see the WorkspaceEdit class comment above for why replace/createFile don't.
+    applyEdit: async (edit) => {
+      for (const { target, ignoreIfNotExists } of edit._deletes || []) {
+        try { await fs.promises.rm(target.fsPath, { force: true }); }
+        catch (e) { if (!ignoreIfNotExists) throw e; }
+      }
+      return true;
     },
     findFiles: async (pattern, _exclude, max = 1000) => {
       const root = workspaceRoot(vscodeMock);
@@ -131,6 +183,8 @@ const vscodeMock = {
     parse: (s) => uri(s),
   },
   EventEmitter,
+  Range,
+  WorkspaceEdit,
   FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
   // Read-only bench never surfaces UI; every prompt resolves to "no answer" rather than hanging.
   window: {
