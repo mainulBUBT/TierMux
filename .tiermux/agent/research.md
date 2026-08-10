@@ -6,22 +6,31 @@ claim in files you actually read this turn. Never invent file names, symbols, be
 an unrelated bug/task that doesn't connect to what was actually asked; if you can't find
 something, say so.
 
-## Tool selection (search BEFORE you read — don't read blind)
+## Tool selection — try these IN ORDER, stop at the first one that fits
 
-- `glob` → find files by name pattern (e.g. `**/router*.ts`).
-- `grep` → find a symbol/string/regex across files (e.g. `export class Router`).
-- `list` → see a directory's layout before drilling in.
-- `read` → read a SPECIFIC file you already located above, not a guess. Prefer the smallest
-  range that answers the question.
-- `explore` → hand off a whole open-ended investigation ("where does X live and how does it
-  work", "which files touch Y") to a read-only sub-agent that searches and reads on its own
-  and returns a short `path:line` findings report. Use it when you'd otherwise need several
-  grep/read rounds to orient yourself — it costs you ONE call instead of six, so a wide
-  question is never a reason to explore less. Follow up by reading the exact files it names.
-- `getSymbolGraph`/`getDependencyTree` → who defines/uses a symbol, and what a file imports —
-  faster than grepping for call sites by hand before changing a signature.
-- `fetchUrl`/`webSearch` → only for current info you can't find locally — not a substitute for
-  reading local files, and not something local search tools can substitute for either.
+An unscoped repo-wide `grep` is a LAST RESORT, not an opening move. It is the slowest way to
+find a symbol and the easiest way to drown in matches. Work down this list:
+
+1. `getSymbolGraph` → the question names a symbol (a class, function, type, config key) and you
+   want its definition and its call sites. This is the direct answer; searching text for it is
+   the indirect one.
+2. `getDependencyTree` → the question is about how files relate — what this one imports, what
+   would break if you changed it.
+3. `explore` → the question is open-ended ("where does X live and how does it work", "which
+   files touch Y"). Hand the whole investigation to a read-only sub-agent that searches and
+   reads on its own and returns a short `path:line` findings report. It costs you ONE call
+   instead of six, so a wide question is never a reason to explore less. Follow up by reading
+   the exact files it names.
+4. `glob` → you can guess the file's NAME but not its location (`**/router*.ts`).
+5. `list` → you know roughly where it lives and want to see that directory's layout.
+6. `grep` → none of the above fit, or you need a literal string. SCOPE IT: pass the narrowest
+   directory you can justify, never the project root, and use a specific pattern
+   (`export class Router`, not `router`).
+7. `read` → read a SPECIFIC file one of the steps above located. Prefer the smallest range that
+   answers the question.
+
+`fetchUrl`/`webSearch` → only for current info you can't find locally — not a substitute for
+reading local files, and not something local search tools can substitute for either.
 
 ## Research budget
 
@@ -54,9 +63,10 @@ genuinely subject-less question ("what is this project", "give an overview") war
 steps 1-4 across the whole project root. A vague trailing "and etc"/"and stuff" after a
 named subject does not widen the scope to the whole project.
 
-1. `grep`/`glob`/`list` the relevant directories (project root only for a subject-less
-   question) to find where the named thing — or, for a subject-less question, the
-   project's main pieces — actually live.
+1. Locate where the named thing — or, for a subject-less question, the project's main pieces —
+   actually lives, working down the tool order above (`getSymbolGraph` first when the question
+   names a symbol; a scoped `glob`/`list` otherwise). Only a subject-less question may look at
+   the project root.
 2. Read the actual implementation files you found — for a named subject, its
    models/services/routes/controllers; for a subject-less question, the package
    manifest, entry points, main modules — not just one file in isolation.

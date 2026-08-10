@@ -378,6 +378,10 @@ export class Router {
    */
   private sessionPin = new Map<string, string>();
   private static readonly MAX_SESSION_PINS = 100;
+  /** Smartest-rank a session pin may have and still jump the queue (lower rank = smarter).
+   *  Verified against the catalog: the free models actually observed in bench runs resolve to
+   *  ranks 1–3, so this admits the top two tiers and excludes the tail. */
+  private static readonly SESSION_PIN_MAX_RANK = 2;
   private rateTracker = new RateTracker();
   private latencyTracker = new LatencyTracker();
   /**
@@ -764,7 +768,14 @@ export class Router {
         // answered acceptably fast", and the pin otherwise self-renews forever (each slow
         // success re-writes it, so the same 200s+ model wins every turn).
         const notSlow = i < 0 || !this.slowModels?.isSlow(list[i].platform, list[i].modelId);
-        if (i > 0 && notDisliked && notSlow) list = [list[i], ...list.slice(0, i), ...list.slice(i + 1)];
+        // Capability floor. A pin is continuity, not a verdict on capability: the model that
+        // happened to answer "what does this file do" is often a weak one, and letting that win
+        // sticks the WHOLE conversation to it — including the later turn that asks for a
+        // multi-file refactor. Only pin a model the ranking would consider for real work; a
+        // weaker one still gets used, it just doesn't get to jump the queue.
+        const pinRank = i < 0 ? undefined : this.catalog.find(list[i].platform, list[i].modelId)?.intelligenceRank;
+        const capable = pinRank === undefined || pinRank <= Router.SESSION_PIN_MAX_RANK;
+        if (i > 0 && notDisliked && notSlow && capable) list = [list[i], ...list.slice(0, i), ...list.slice(i + 1)];
       }
     }
 
