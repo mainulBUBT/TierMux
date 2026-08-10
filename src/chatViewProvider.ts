@@ -2993,30 +2993,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async generateTitleViaLlm(s: Session, messageText: string): Promise<void> {
     if (s.titleGenerated || s.userRenamedTitle) return;
     s.titleGenerated = true; // guard before the call to avoid duplicate runs
-    try {
-      const snippet = messageText.slice(0, 800);
-      const model = await this.deps.router.pickUtilityModel();
-      const result = await this.deps.router.route(
-        [
-          { role: 'system', content: TITLE_SYSTEM },
-          { role: 'user', content: `User's message: ${snippet}` },
-        ],
-        { temperature: 0.3, max_tokens: 48, model, taskKind: 'trivial', reasoningEffort: 'off' },
-      );
-      const raw = contentToString(result.response.choices[0]?.message.content);
 
-      let title = sanitizeTitle(raw);
-      if (/^(starting conversation|new chat|untitled|chat)$/i.test(title)) title = '';
-      s.title = title || deriveTitleFrom(messageText);
-      this.persist(s.id);
-      this.updateViewTitle();
-      this.postSessionList();
-    } catch {
-      s.title = deriveTitleFrom(messageText);
-      this.persist(s.id);
-      this.updateViewTitle();
-      this.postSessionList();
+    const snippet = messageText.slice(0, 800);
+    const router = this.deps.router;
+    const primary = await router.pickUtilityModel();
+    // Same free-model fallback chain as generateCommitMessage: a single free model
+    // routinely 429s or times out, so one shot at `primary` silently degrades every
+    // failed session to the raw-derived placeholder title instead of a real one.
+    const fallbacks = [
+      'google::gemini-2.5-flash',
+      'groq::llama-3.3-70b-versatile',
+      'openrouter::deepseek/deepseek-chat-v3.1:free',
+    ];
+    const candidates = [primary, ...fallbacks].filter((m): m is string => !!m);
+    const seen = new Set<string>();
+    const attempts: string[] = [];
+    for (const m of candidates) {
+      if (seen.has(m)) continue;
+      seen.add(m);
+      if (!(await router.isReady(m))) continue;
+      attempts.push(m);
+      if (attempts.length >= 3) break;
     }
+
+    let title = '';
+    for (const model of attempts) {
+      try {
+        const result = await router.route(
+          [
+            { role: 'system', content: TITLE_SYSTEM },
+            { role: 'user', content: `User's message: ${snippet}` },
+          ],
+          { temperature: 0.3, max_tokens: 48, model, taskKind: 'trivial', reasoningEffort: 'off' },
+        );
+        const raw = contentToString(result.response.choices[0]?.message.content);
+        const cleaned = sanitizeTitle(raw);
+        if (cleaned && !/^(starting conversation|new chat|untitled|chat)$/i.test(cleaned)) {
+          title = cleaned;
+          break;
+        }
+      } catch { /* try the next model */ }
+    }
+
+    s.title = title || deriveTitleFrom(messageText);
+    this.persist(s.id);
+    this.updateViewTitle();
+    this.postSessionList();
   }
 
    private getHtml(webview: vscode.Webview): string {
