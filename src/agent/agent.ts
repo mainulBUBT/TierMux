@@ -131,17 +131,3 @@ export async function runPlanStream(router: Router, opts: AgentOpts, _tools?: un
 export async function runAskStream(router: Router, opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
   return (await loadCore())(router, { ...opts, mode: 'ask' });
 }
-
-/** Session title: one-shot completion straight through the Router (no agent loop). */
-export async function generateSessionTitle(router: Router, firstMessage: string): Promise<string> {
-  try {
-    const result = await router.route(
-      [{ role: 'user', content: `Generate a 2-5 word title for a chat that starts with: "${firstMessage.slice(0, 200)}"\nReply with ONLY the title, no punctuation, no quotes.` }],
-      { max_tokens: 16, temperature: 0.2 },
-    );
-    const text = result.response.choices?.[0]?.message?.content;
-    return (typeof text === 'string' ? text : '').trim().slice(0, 60) || '';
-  } catch {
-    return '';
-  }
-}
