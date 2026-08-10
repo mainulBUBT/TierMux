@@ -16,6 +16,7 @@
 import { MUTATING_TOOLS } from '../src/agent/core/policies/permission';
 
 const BUDGET_NUDGE_THRESHOLD = 0.65;
+const BUDGET_FORCE_THRESHOLD = 0.85;
 
 function shouldNudge(
   steps: Array<{ usage?: { totalTokens?: number }; toolCalls?: Array<{ toolName?: string }> }>,
@@ -26,6 +27,23 @@ function shouldNudge(
   const usedSoFar = steps.reduce((n, s) => n + (s.usage?.totalTokens ?? 0), 0);
   const hasMutated = steps.some((s) => (s.toolCalls ?? []).some((tc) => tc.toolName && MUTATING_TOOLS.has(tc.toolName)));
   return !hasMutated && usedSoFar > maxTurnTokens * BUDGET_NUDGE_THRESHOLD;
+}
+
+/** The hard escalation: words alone (shouldNudge) can be ignored by a weak model — measured live
+ *  2026-08-10, a run got the nudge and kept reading a DIFFERENT file each time, so stuckStop's
+ *  exact-repeat check never caught it, and budgetStop eventually killed the turn with zero edits
+ *  attempted. Past this threshold, prepareStep returns `activeTools` restricted to mutating tools
+ *  (+ getDiagnostics) so the model can no longer physically call another read/search tool. Unlike
+ *  shouldNudge this is NOT fires-once — it re-applies every step past the threshold until a
+ *  mutation happens, which is why it takes no `alreadyForced` param. */
+function shouldForceTools(
+  steps: Array<{ usage?: { totalTokens?: number }; toolCalls?: Array<{ toolName?: string }> }>,
+  maxTurnTokens: number,
+): boolean {
+  if (maxTurnTokens <= 0) return false;
+  const usedSoFar = steps.reduce((n, s) => n + (s.usage?.totalTokens ?? 0), 0);
+  const hasMutated = steps.some((s) => (s.toolCalls ?? []).some((tc) => tc.toolName && MUTATING_TOOLS.has(tc.toolName)));
+  return !hasMutated && usedSoFar > maxTurnTokens * BUDGET_FORCE_THRESHOLD;
 }
 
 let bad = 0;
@@ -49,6 +67,30 @@ ok(
 );
 ok('fires-once guard: does not re-nudge once already nudged', !shouldNudge(readSteps(40, 5000), 200_000, true));
 ok('budget disabled (maxTurnTokens<=0): never nudges', !shouldNudge(readSteps(100, 5000), 0, false));
+
+ok('force threshold is stricter than the nudge threshold', BUDGET_FORCE_THRESHOLD > BUDGET_NUDGE_THRESHOLD);
+ok('below force threshold (but above nudge): does not force', !shouldForceTools(readSteps(29, 5000), 200_000)); // 72.5%
+ok(
+  'above force threshold, model ignored the nudge and kept reading: forces',
+  shouldForceTools(readSteps(35, 5000), 200_000), // 175K/200K = 87.5% > 85%
+);
+ok(
+  'above force threshold but already mutated: does not force — nothing to enforce',
+  !shouldForceTools([...readSteps(34, 5000), { usage: { totalTokens: 5000 }, toolCalls: [{ toolName: 'writeFile' }] }], 200_000),
+);
+ok(
+  'keeps forcing on every step past threshold (not fires-once, unlike the soft nudge)',
+  shouldForceTools(readSteps(35, 5000), 200_000) && shouldForceTools(readSteps(36, 5000), 200_000),
+);
+ok('budget disabled: never forces', !shouldForceTools(readSteps(100, 5000), 0));
+
+// The restricted toolset itself: mutating tools plus getDiagnostics (so an edit can still be
+// self-checked), nothing read/search-shaped.
+const sampleTools = { readFile: 1, grep: 1, glob: 1, listDir: 1, explore: 1, writeFile: 1, editFile: 1, createFile: 1, deleteFile: 1, runCommand: 1, getDiagnostics: 1, getSymbolGraph: 1, webSearch: 1 };
+const forced = Object.keys(sampleTools).filter((name) => MUTATING_TOOLS.has(name) || name === 'getDiagnostics');
+ok('forced set contains every mutating tool', ['writeFile', 'editFile', 'createFile', 'deleteFile', 'runCommand'].every((t) => forced.includes(t)));
+ok('forced set contains getDiagnostics (verification stays available)', forced.includes('getDiagnostics'));
+ok('forced set excludes every read/search tool', ['readFile', 'grep', 'glob', 'listDir', 'explore', 'getSymbolGraph', 'webSearch'].every((t) => !forced.includes(t)));
 
 console.log(bad ? `\n${bad} FAILURE(S)` : '\nALL PASS');
 process.exit(bad ? 1 : 0);

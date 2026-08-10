@@ -282,6 +282,18 @@ const BUDGET_NUDGE =
   + 'read no more new files. If you genuinely need one more piece of information, get it in your '
   + 'very next tool call and then write the edit.';
 
+/** Threshold (fraction of maxTurnTokens) at which read-only tools are physically removed from
+ *  the model's toolset for the rest of the turn — see prepareStep. Comfortably above
+ *  BUDGET_NUDGE_THRESHOLD (0.65) so a model that heeded the nudge is never forced; only a model
+ *  that ignored it reaches this. */
+const BUDGET_FORCE_THRESHOLD = 0.85;
+
+const BUDGET_FORCE_NUDGE =
+  'You ignored the earlier warning and kept investigating instead of making the change. Your '
+  + 'search/read tools are now DISABLED for the rest of this turn — calling them is no longer '
+  + 'possible. Use only what you have already learned: make the edit now with a mutating tool, '
+  + 'or if you truly cannot proceed, explain in plain text exactly what is blocking you and stop.';
+
 const FORCE_GROUND_NUDGE =
   'You answered without opening a single file, so that answer came from memory — and you have '
   + 'never seen this codebase before. Anything you named in it (files, functions, constants) is a '
@@ -798,6 +810,10 @@ async function runAttempt(
   let stopReason: 'budget' | 'stuck' | undefined;
   // Fires-once guard for the budget-approaching nudge in prepareStep below.
   let budgetNudged = false;
+  // Fires-once guard for the DIAGNOSTIC message on the hard tool-restriction escalation below —
+  // the restriction itself (`out.activeTools`) re-applies every step past the threshold, this
+  // flag only stops the explanatory nudge message from repeating each time.
+  let budgetForced = false;
   const budgetStop = ({ steps }: { steps: Array<{ usage?: { totalTokens?: number } }> }): boolean => {
     if (maxTurnTokens <= 0) return false;
     const total = steps.reduce((n, s) => n + (s.usage?.totalTokens ?? 0), 0);
@@ -928,7 +944,7 @@ async function runAttempt(
       // recent reasoning, dropping older ones — the SDK keeps the result well-formed (call+result
       // pruned together), so this can't reintroduce the orphaned-tool-call shape sanitize fixes.
       prepareStep: ({ messages, steps }: { messages: CoreMessage[]; steps: Array<{ usage?: { totalTokens?: number }; toolCalls?: Array<{ toolName?: string }> }> }) => {
-        let out: { messages?: CoreMessage[] } = {};
+        let out: { messages?: CoreMessage[]; activeTools?: string[] } = {};
         if (pruneAtTokens > 0) {
           const before = roughTokens(messages);
           if (before >= pruneAtTokens) {
@@ -951,13 +967,34 @@ async function runAttempt(
         // Pruning doesn't help here — it shrinks what gets RE-SENT, not the cumulative usage
         // budgetStop counts — so the fix is pressure, not compression: once over threshold with no
         // mutation yet, tell the model plainly to stop investigating and act on what it has.
-        if (opts.mode === 'agent' && maxTurnTokens > 0 && !budgetNudged) {
+        if (opts.mode === 'agent' && maxTurnTokens > 0) {
           const usedSoFar = steps.reduce((n, s) => n + (s.usage?.totalTokens ?? 0), 0);
           const hasMutated = steps.some((s) => (s.toolCalls ?? []).some((tc) => tc.toolName && MUTATING_TOOLS.has(tc.toolName)));
-          if (!hasMutated && usedSoFar > maxTurnTokens * BUDGET_NUDGE_THRESHOLD) {
+          if (!hasMutated && !budgetNudged && usedSoFar > maxTurnTokens * BUDGET_NUDGE_THRESHOLD) {
             budgetNudged = true;
             diagLog('turn.budgetNudge', `~${usedSoFar}tok > ${Math.round(maxTurnTokens * BUDGET_NUDGE_THRESHOLD)}tok (${Math.round(BUDGET_NUDGE_THRESHOLD * 100)}% of budget) with no mutating call yet — nudging to act now`);
             out.messages = [...(out.messages ?? messages), { role: 'user', content: BUDGET_NUDGE }] as any;
+          }
+          // Escalation: the nudge above is words, and a weak model can just ignore words — measured
+          // live 2026-08-10, a run got the nudge, kept reading anyway (a DIFFERENT file each time,
+          // so stuckStop's exact-repeat check never caught it), and only stopped when budgetStop
+          // finally killed the whole turn with zero edits attempted. Once further past budget with
+          // still no mutation, stop asking and start ENFORCING: restrict this step's tools to only
+          // the mutating ones (plus getDiagnostics, so an edit can still be self-checked). The model
+          // can no longer physically call another readFile/grep/glob — its only moves are to make
+          // the edit or give up and explain why in text. Applied on every remaining step once
+          // triggered (not fires-once) — no `mutatingOnly` flag needed since MUTATING_TOOLS check
+          // above already turns this off the instant a real edit happens.
+          if (!hasMutated && usedSoFar > maxTurnTokens * BUDGET_FORCE_THRESHOLD) {
+            const forced = Object.keys(tools).filter((name) => MUTATING_TOOLS.has(name) || name === 'getDiagnostics');
+            if (forced.length) {
+              if (!budgetForced) {
+                budgetForced = true;
+                diagLog('turn.budgetForce', `~${usedSoFar}tok > ${Math.round(maxTurnTokens * BUDGET_FORCE_THRESHOLD)}tok (${Math.round(BUDGET_FORCE_THRESHOLD * 100)}% of budget) with no mutating call yet — restricting to [${forced.join(', ')}] only`);
+                out.messages = [...(out.messages ?? messages), { role: 'user', content: BUDGET_FORCE_NUDGE }] as any;
+              }
+              out.activeTools = forced as any;
+            }
           }
         }
         return out;
