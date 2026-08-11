@@ -100,7 +100,13 @@ body {
    makes the sticky .msg.user below actually work: a command pins at top only while you
    scroll THIS turn, then scrolls away so the next command takes over — instead of every
    command pinning at top:0 of the whole thread and piling on top of each other. */
-.turn { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+/* content-visibility skips layout/paint for turns scrolled out of view — without it, EVERY
+   turn in a long thread (plus every other open session's whole pane, all mounted at once per
+   the .session-pane comment above) repaints when the webview regains visibility after the user
+   switches to another VS Code extension and back, which is the "little delay then it loads"
+   flash. contain-intrinsic-size keeps the scrollbar from jumping before a turn's real height is
+   known (first render only — the browser remembers the true size after that). */
+.turn { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; content-visibility: auto; contain-intrinsic-size: auto 300px; }
 .turn:first-of-type { margin-top: 0; }
 .msg { display: flex; flex-direction: column; gap: 4px; }
 /* The command sticks to the top while you scroll its answer, so you always know which

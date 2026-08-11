@@ -2,7 +2,7 @@
   "name": "tiermux",
   "displayName": "TierMux",
   "description": "Free agentic AI coding assistant for VS Code. Multiplexes many free-tier LLM providers into one self-healing surface \u2014 auto-routes, auto-fails-over, learns your codebase. Zero setup with keyless providers; bring your own keys anytime.",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "publisher": "mainul-islam",
   "license": "MIT",
   "repository": {
@@ -664,6 +664,7 @@
     "test:e2e:plan-escalation": "esbuild scripts/planEscalation.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planEscalation.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planEscalation.e2e.cjs",
     "test:e2e:self-correct": "esbuild scripts/selfCorrect.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/selfCorrect.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/selfCorrect.e2e.cjs",
     "test:e2e:unverified-badge": "esbuild scripts/unverifiedBadge.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/unverifiedBadge.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/unverifiedBadge.e2e.cjs",
+    "test:e2e:checkpoint-persist": "esbuild scripts/checkpointPersist.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/checkpointPersist.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/checkpointPersist.e2e.cjs",
     "test:e2e:plan-structurer": "esbuild scripts/planStructurer.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planStructurer.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planStructurer.e2e.cjs",
     "test:e2e:command-classify": "esbuild scripts/commandClassify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/commandClassify.e2e.cjs && node dist/commandClassify.e2e.cjs",
     "test:e2e:terminal-util": "esbuild scripts/terminalUtil.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/terminalUtil.e2e.cjs && node dist/terminalUtil.e2e.cjs",

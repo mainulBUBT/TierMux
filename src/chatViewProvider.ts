@@ -15,7 +15,7 @@ import { SETTINGS_META, defaultForSetting } from './settingsMeta';
 import type { Router } from './router/router';
 import { AllModelsFailedError } from './router/router';
 import type { McpManager } from './mcp/mcpManager';
-import { CheckpointManager } from './edits/checkpoints';
+import { CheckpointManager, type SerializedCheckpoint } from './edits/checkpoints';
 import { isDangerous } from './edits/commandGate';
 import type { ModelStatsStore, Vote } from './config/modelStats';
 import type { SlowModelStore } from './config/slowModel';
@@ -270,6 +270,11 @@ interface StoredSession {
   /** Tool kinds the user chose "Always" for, persisted so the per-tool allowlist survives a reload
    *  instead of re-prompting. Stored as an array (Set isn't JSON-serializable). */
   alwaysAllowTools?: string[];
+  /** Per-turn edit checkpoints, persisted so "Revert to here" / "Undo all" still restore real
+   *  file content after an extension host restart. Without this, CheckpointManager was rebuilt
+   *  empty on every hydrate — the revert button stayed visible and the confirm dialog still
+   *  fired, but silently restored 0 files, quietly breaking a promise the UI kept making. */
+  checkpoints?: SerializedCheckpoint[];
 }
 
 /**
@@ -477,7 +482,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       voteCtx: new Map(),
       cards: [],
       pendingAskUser: new Map(),
-      checkpoints: new CheckpointManager(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath),
+      checkpoints: new CheckpointManager(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, s.checkpoints),
       lastWindow: 0,
       liveSteps: new Map(),
       createdAt: s.ts ?? Date.now(),
@@ -523,6 +528,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         id: s.id, title: s.title ?? this.deriveTitle(s), ts: Date.now(), transcript: s.transcript,
         model: s.model, reasoningEffort: s.reasoningEffort, history: s.history, inProgressTurn: s.inProgressTurn,
         lastTodos: s.lastTodos, alwaysAllowTools: s.alwaysAllowTools.size ? [...s.alwaysAllowTools] : undefined,
+        checkpoints: s.checkpoints.toJSON(),
       });
     }
     void this.deps.workspaceState.update(SESSIONS_KEY, others.slice(0, MAX_SESSIONS));
@@ -2126,6 +2132,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   async clearAllCheckpoints(): Promise<void> {
     for (const s of this.sessions.values()) {
       s.checkpoints.clear();
+      this.persist(s.id);
       if (s.id === this.viewedSessionId) await this.postCheckpoints(s);
     }
   }

@@ -45,6 +45,12 @@ let diffTokenSeq = 0;
 interface Snapshot { uri: vscode.Uri; rel: string; before: string | null }
 interface Checkpoint { id: string; requestId: string; label: string; ts: number; snaps: Map<string, Snapshot>; beginTree?: string }
 
+/** JSON-serializable form of a Checkpoint, for persisting across an extension host restart. */
+export interface SerializedCheckpoint {
+  id: string; requestId: string; label: string; ts: number; beginTree?: string;
+  snaps: Array<{ uri: string; rel: string; before: string | null }>;
+}
+
 export class CheckpointManager {
   private readonly provider = baselineProvider;
   private readonly cwd?: string;
@@ -52,8 +58,26 @@ export class CheckpointManager {
   private current?: Checkpoint;
   private counter = 0;
 
-  constructor(cwd?: string) {
+  constructor(cwd?: string, restored?: SerializedCheckpoint[]) {
     this.cwd = cwd;
+    if (restored?.length) {
+      this.checkpoints = restored.map((c) => ({
+        id: c.id, requestId: c.requestId, label: c.label, ts: c.ts, beginTree: c.beginTree,
+        snaps: new Map(c.snaps.map((s) => [s.uri, { uri: vscode.Uri.parse(s.uri), rel: s.rel, before: s.before }])),
+      }));
+      this.counter = restored.length;
+    }
+  }
+
+  /** Serialize all checkpoints for persistence (see StoredSession.checkpoints). Per-file
+   *  `before` content is kept inline — the same tradeoff EditGate.record() already makes in
+   *  memory — so revert keeps working for gitignored files and non-git workspaces even after
+   *  an extension host restart, not just for the git-diffable subset. */
+  toJSON(): SerializedCheckpoint[] {
+    return this.checkpoints.map((c) => ({
+      id: c.id, requestId: c.requestId, label: c.label, ts: c.ts, beginTree: c.beginTree,
+      snaps: [...c.snaps.values()].map((s) => ({ uri: s.uri.toString(), rel: s.rel, before: s.before })),
+    }));
   }
 
   /**
