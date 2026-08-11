@@ -427,22 +427,41 @@ export function shrinkForSynthesis(messages: CoreMessage[]): CoreMessage[] {
   return out;
 }
 
-/** Do the first ~200 chars of synthesis output look like an attempted tool call rather than
- *  prose? forceSynthesis explicitly disables tools (single step, no `tools` param) so the model
- *  MUST answer in text — but a weak model mid-investigation can still try to "call" one anyway by
- *  emitting one of the inline dialects (see rescueInlineToolCalls) as plain text, which streams
- *  straight to the user as the final answer. Measured 2026-08-09: a stuck synthesis's entire
- *  "answer" was a raw `<tool_call><function=readFile>...` block. Matching only the dialect
- *  OPENERS (not full rescueInlineToolCalls parsing) keeps this cheap and false-positive-safe —
- *  prose describing a file rarely opens with one of these exact tokens. */
-function looksLikeToolCallAttempt(text: string): boolean {
-  // NOT anchored to the start: a model that narrates first ("Now let me read the specific
-  // parts…") and THEN emits the dialect mid-answer is the same failure with a prose prefix —
-  // measured for real, `stopReason: 'budget'` synthesis on `ling-3.0-tiny:free`. The prefix
-  // narration is meta ("let me find X"), not an actual finding, so discarding the whole
-  // synthesis and falling back to the honest "couldn't produce a final answer" text loses
-  // nothing worth keeping.
-  return /(?:<tool_call>|<function=|<｜+DSML｜|\{\s*"(?:name|type)"\s*:)/.test(text);
+const TOOL_CALL_DIALECT_RE = /(?:<tool_call>|<function=|<｜+DSML｜|\{\s*"(?:name|type)"\s*:)/;
+
+/** Minimum prefix length (words) worth keeping when a tool-call dialect attempt is found mid-text.
+ *  Below this, the "prefix" is just meta-narration ("Now let me…") with nothing substantive in
+ *  it, and keeping it would show the user a sentence fragment instead of an answer. */
+const TOOL_CALL_PREFIX_MIN_WORDS = 12;
+
+/** Does synthesis output contain an attempted tool call, and if so, is there real content before
+ *  it worth keeping? forceSynthesis explicitly disables tools (single step, no `tools` param) so
+ *  the model MUST answer in text — but a weak model can still try to "call" one anyway by emitting
+ *  an inline dialect (see rescueInlineToolCalls) as plain text.
+ *
+ *  Two real, DIFFERENT cases were observed, and conflating them was itself a bug:
+ *  - 2026-08-09: a stuck synthesis's ENTIRE "answer" was raw `<tool_call><function=readFile>...` —
+ *    nothing to keep, discard everything.
+ *  - 2026-08-10, confirmed from a live user session (screenshot): a model that had ALREADY
+ *    successfully made two real edits wrote a genuine summary of what it changed, then tried one
+ *    more verification call as text ("...updated the seeder. Let me verify with
+ *    <tool_call>getDiagnostics</tool_call>"). The old all-or-nothing version discarded the WHOLE
+ *    thing, so the user saw "I looked into this and ran some tools, but couldn't produce a final
+ *    answer" — a confident-sounding LIE about a turn that had just edited two real files, worse
+ *    than the raw dialect leak this was built to prevent.
+ *
+ *  Returns the safe portion to keep (possibly the original text if no dialect attempt), or ''
+ *  when nothing before the attempt is worth keeping. */
+function stripToolCallAttempt(text: string): string {
+  const m = TOOL_CALL_DIALECT_RE.exec(text);
+  if (!m) return text;
+  const prefix = text.slice(0, m.index).trim();
+  const words = prefix ? prefix.split(/\s+/).length : 0;
+  // Word count alone isn't enough: "Now let me read the specific parts of `runTurn`. Let me find
+  // the key code sections." is 16 words and STILL pure narration, not a finding — it ends on an
+  // announced-but-undone action, the same shape ACTION_INTENT_RE already exists to catch
+  // elsewhere in this file. Require the prefix to be substantial AND not end that way.
+  return words >= TOOL_CALL_PREFIX_MIN_WORDS && !ACTION_INTENT_RE.test(prefix) ? prefix : '';
 }
 
 async function forceSynthesis(
@@ -473,14 +492,18 @@ async function forceSynthesis(
       else if (part.type === 'reasoning-delta') { const d = part.text ?? part.delta ?? ''; onReasoning(d); }
       else if (part.type === 'error') { break; }
     }
-    if (looksLikeToolCallAttempt(out)) {
-      diagLog('turn.synth', 'synthesis output looks like an attempted tool call — discarding rather than showing raw dialect text');
-      // The raw XML/JSON already streamed to the chat bubble live (we can't know it's a tool-call
-      // attempt until the stream ends) — retract it the same way a revealed-as-narration draft is
-      // retracted elsewhere in this file, so the caller's honest fallback message replaces it
-      // instead of appending after it.
+    if (TOOL_CALL_DIALECT_RE.test(out)) {
+      const kept = stripToolCallAttempt(out);
+      diagLog('turn.synth', kept
+        ? `synthesis contained a trailing tool-call attempt — kept ${kept.length}/${out.length} chars of real content before it`
+        : 'synthesis output looks like an attempted tool call with no real content before it — discarding');
+      // The raw text already streamed to the chat bubble live (we can't know it's a tool-call
+      // attempt until the stream ends) — retract the transient streamed draft the same way a
+      // revealed-as-narration draft is retracted elsewhere in this file. The RETURNED value (not
+      // the retracted stream) is what the caller renders as the persisted final answer bubble, so
+      // returning `kept` here shows the trimmed real content instead of losing it entirely.
       if (streamed) opts.onRetractDraft?.();
-      return '';
+      return kept;
     }
     return out;
   } catch {
