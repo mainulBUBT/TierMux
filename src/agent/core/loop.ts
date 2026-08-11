@@ -225,6 +225,18 @@ const SELF_CORRECT_NUDGE =
  *  confirms the text landed, not that the bug is gone. */
 const VERIFY_TOOLS = new Set(['runCommand', 'getDiagnostics']);
 
+/** Mutating tools that ALREADY run a diagnostics check as part of their own execute() —
+ *  verifyNoteFor (src/agent/core/tools/workspace/formatDiagnostics.ts) is baked into
+ *  writeFile/createFile/editFile unconditionally, success or not. Before this existed, the
+ *  Unverified badge fired on every clean edit that didn't ALSO get a separate top-level
+ *  getDiagnostics/runCommand call — which is most single-edit turns — training users to ignore a
+ *  warning that was often wrong, exactly the alarm-fatigue failure mode a trust-signal cannot
+ *  afford. A successful ('tool-result', not 'tool-error') call to one of these IS the check; no
+ *  extra step should be required to prove it happened. `deleteFile` (nothing left to lint) and
+ *  `runCommand` (a shell command claiming a fix genuinely needs external verification, e.g. a
+ *  test run) are deliberately excluded — they still require a real VERIFY_TOOLS call. */
+const SELF_VERIFYING_TOOLS = new Set(['writeFile', 'createFile', 'editFile']);
+
 /** Tools whose `path` argument names a workspace file the agent has genuinely looked at. Kept to
  *  tools that address ONE file: `grep`/`glob` take a directory or pattern, which would poison the
  *  findings note with "already read" entries for files nobody opened. */
@@ -1138,6 +1150,11 @@ async function runAttempt(
       } else if (part.type === 'tool-result') {
         phase = 'waiting_final';
         const detail = typeof part.output === 'string' ? part.output : JSON.stringify(part.output ?? '');
+        // A SUCCESSFUL completion (not 'tool-error') of one of these means verifyNoteFor already
+        // ran inside the tool's own execute() — see SELF_VERIFYING_TOOLS. Only counts for the
+        // most recent mutation: an editFile that ran, then ANOTHER editFile that hasn't finished
+        // yet, must not inherit the first one's verified status.
+        if (SELF_VERIFYING_TOOLS.has(part.toolName) && hadMutatingToolCall) verifiedAfterMutation = true;
         opts.onTool({ toolCallId: part.toolCallId, name: part.toolName, args: part.input, state: 'done', detail });
       } else if (part.type === 'tool-error') {
         phase = 'waiting_final';

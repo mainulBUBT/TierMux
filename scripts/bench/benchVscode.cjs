@@ -198,7 +198,14 @@ const vscodeMock = {
     visibleTextEditors: [],
     activeTextEditor: undefined,
   },
-  languages: { getDiagnostics: () => [] },
+  // No language server runs headless, so a diagnostics-change event never fires — real code
+  // (formatDiagnostics.ts's waitForDiagnosticsSettled) already treats that as the common case
+  // and falls through to its own timeout, AS LONG AS this method exists at all to subscribe to.
+  // Its prior absence meant calling it threw "onDidChangeDiagnostics is not a function" —
+  // synchronously, inside editFile's own execute() — which the AI SDK surfaced as a hung tool
+  // call (stuck at 'running', no 'tool-result'/'tool-error' ever reaching onTool) rather than a
+  // clean rejection, so every editFile/writeFile call in this shim silently never completed.
+  languages: { getDiagnostics: () => [], onDidChangeDiagnostics: () => ({ dispose() {} }) },
   commands: { executeCommand: async () => undefined },
   env: { openExternal: async () => true },
   ExtensionMode: { Production: 1, Development: 2, Test: 3 },
