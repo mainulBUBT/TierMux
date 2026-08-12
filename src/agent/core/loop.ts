@@ -5,7 +5,7 @@
 // tool-result/tool-error/tool-approval-* parts in the expected order — see the plan's spike
 // notes) and maps them onto the existing AgentOpts callbacks. No custom iteration, no custom
 // permission gate, no custom hook system.
-import { streamText, wrapLanguageModel, isStepCount, pruneMessages, generateObject, NoSuchToolError, InvalidToolInputError } from 'ai';
+import { streamText, generateText, wrapLanguageModel, isStepCount, pruneMessages, generateObject, NoSuchToolError, InvalidToolInputError } from 'ai';
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -27,6 +27,7 @@ import { getMcpManager } from './tools/mcp/manager';
 import { NEW_DIAGNOSTICS_MARKER } from './tools/workspace/formatDiagnostics';
 import { diagLog } from '../../util/diag';
 import { repairToolArguments, sanitizeToolName } from '../toolArgs';
+import type { ClarifyingQuestion } from '../clarify';
 
 /** AI SDK ModelMessage shape (loosely typed here — the SDK validates the real shape). */
 type CoreMessage = { role: string; content: unknown };
@@ -210,6 +211,60 @@ const FORCE_WEBSEARCH_NUDGE =
   + 'If you cannot emit a native tool call, emit it as text in EXACTLY this format (a real call '
   + 'will run from it): <function=webSearch>{"query": "..."}</function>. Put the tag on its own '
   + 'line, not in backticks. Emit the call now, then wait for the result.';
+
+/** Confident fast-path: common phrasings of "I have no execution/runtime capability" that a
+ *  model states flatly, with zero tool calls, despite Agent mode having a real runCommand tool.
+ *  [\s\S]{0,100} (not [^.!?\n]*) deliberately spans sentence boundaries — a real reply like
+ *  "I cannot run this request. I have no access to the test suite." is two sentences but one
+ *  decline; a sentence-bounded gap would miss it and fall through to the (still-correct, just
+ *  more expensive) LLM path every time. Bounded to 100 chars so it can't runaway-match across an
+ *  entire long reply. */
+const NO_RUNTIME_ACCESS_RE =
+  /\b(i (?:cannot|can'?t|am unable to|don'?t have (?:the )?ability to)|there'?s no|no access to)\b[\s\S]{0,100}\b(run|execute|access)\b[\s\S]{0,100}\b(tests?|runtime|environment|test suite|database|code)\b/i;
+
+/** Loose pre-filter: decline-shaped language. Gates the LLM classify call below so it never
+ *  fires on an ordinary no-tool-call reply (e.g. a plain chat answer) — only on text that already
+ *  smells like a capability claim, mirroring classifyTaskCore's "confident vs ambiguous" split. */
+const MAYBE_CAPABILITY_DECLINE_RE = /\b(cannot|can'?t|unable|don'?t have|no access|not able)\b/i;
+
+/** Regex-first, LLM-classify-fallback for a false "I have no execution capability" decline —
+ *  same shape as classifyTaskSmart (task-kind routing, above) and tryModelRepair's Tier 3 (tool-
+ *  call repair): a cheap regex catches the common phrasings for free; anything decline-shaped but
+ *  not a confident regex match escalates to one cheap classify call for genuine semantic
+ *  judgment on the paraphrases a regex can't enumerate. Never blocks the turn — any failure
+ *  (timeout/abort/parse) degrades to `false` (no retry), same discipline as tryModelRepair's
+ *  `catch { return null }`. Exported so scripts/falseCapabilityDecline.e2e.ts can unit-test it
+ *  directly, bypassing the full runTurn() pipeline (found unreliable for triggering classify-
+ *  style calls through a fake-Router harness — see repairToolCallTier3.e2e.ts's own history). */
+export async function detectFalseCapabilityDecline(router: Router, text: string, abortSignal?: AbortSignal): Promise<boolean> {
+  if (NO_RUNTIME_ACCESS_RE.test(text)) return true;
+  if (!MAYBE_CAPABILITY_DECLINE_RE.test(text)) return false; // not decline-shaped — skip the call entirely
+  try {
+    const provider = createRouterProvider(router, { taskKind: 'trivial' });
+    const timeout = AbortSignal.timeout(4000);
+    const signal = abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout;
+    const { object } = await generateObject({
+      model: provider,
+      output: 'enum',
+      enum: ['false_decline', 'other'],
+      abortSignal: signal,
+      prompt: 'An AI coding assistant that HAS a real tool to run shell commands/tests just replied '
+        + 'without calling it. Does this reply falsely claim it lacks the ability to run commands/'
+        + 'tests/code, when it actually has that capability? Reply "false_decline" if so, "other" if '
+        + 'it is declining for a different valid reason (missing info, genuinely ambiguous request) '
+        + 'or not declining at all.\n\nReply:\n"""' + text.slice(0, 1500) + '"""',
+    });
+    return object === 'false_decline';
+  } catch {
+    return false;
+  }
+}
+
+const FORCE_RUNTIME_ACCESS_NUDGE =
+  'You DO have a `runCommand` tool available right now in this session — call it to actually run '
+  + 'the command/tests. Do not claim you lack execution access. If you cannot emit a native tool '
+  + 'call, emit it as text in EXACTLY this format: <function=runCommand>{"command": "..."}</function>. '
+  + 'Put the tag on its own line, not in backticks. Emit the call now, then wait for the result.';
 
 /** Nudge appended (as a user turn) when an edit/write tool call's own verifyNoteFor check found a
  *  NEW diagnostic error right after the edit (Ralph-Wiggum-style self-correct). The diagnostic
@@ -705,7 +760,10 @@ interface AttemptResult {
   runtimeName?: string;
   paused: boolean;
   workMessages: ChatMessage[];
-  stopReason?: 'budget' | 'stuck';
+  stopReason?: 'budget' | 'stuck' | 'askQuestions';
+  /** Set when the model called the plan-mode `askQuestions` tool this turn — the caller uses
+   *  this directly instead of parsing `text` for the legacy ???QUESTIONS??? sentinel. */
+  askQuestions?: ClarifyingQuestion[];
   hadToolCalls: boolean;
   /** True if any write/create/edit/delete/runCommand tool call happened this attempt — once
    *  true, retrying with a different model is unsafe (side effects already occurred), so
@@ -773,25 +831,90 @@ async function classifyTaskSmart(router: Router, text: string, signals?: Classif
  *    trusts, against the failing tool's real input schema.
  *  - NoSuchToolError: reuse sanitizeToolName to strip Harmony/namespace noise, retry against the
  *    tool list.
- *  Returns null (drop the call, let the SDK report the error back to the model) when neither
- *  repair produces a valid result — never fabricate an unrelated tool call. */
-const repairToolCall: NonNullable<Parameters<typeof streamText>[0]['repairToolCall']> = async ({ toolCall, tools, error, inputSchema }) => {
-  if (InvalidToolInputError.isInstance(error)) {
-    const schema = await Promise.resolve(inputSchema({ toolName: toolCall.toolName })).catch(() => undefined);
-    const repaired = repairToolArguments(toolCall.input, schema as { properties?: Record<string, { type?: string }> } | undefined);
-    if (repaired === toolCall.input) return null;
-    try { JSON.parse(repaired); } catch { return null; }
-    diagLog('turn.repairToolCall', `invalid-input: ${toolCall.toolName} repaired`);
-    return { ...toolCall, input: repaired };
+ *  - Tier 3 (last resort, only when both above miss): ask a cheap utility model to fix the call
+ *    itself. `ai@7.0.58`'s `repairToolCall` ships no built-in repair strategy of its own — this is
+ *    the SDK's own documented pattern (recursively calling the model to repair its tool call), not
+ *    something the SDK does automatically; TierMux didn't use it before this.
+ *  Returns null (drop the call, let the SDK report the error back to the model) when no repair
+ *  produces a valid result — never fabricate an unrelated tool call. */
+function createRepairToolCall(router: Router, abortSignal?: AbortSignal): NonNullable<Parameters<typeof streamText>[0]['repairToolCall']> {
+  return async ({ toolCall, tools, error, inputSchema }) => {
+    if (InvalidToolInputError.isInstance(error)) {
+      const schema = await Promise.resolve(inputSchema({ toolName: toolCall.toolName })).catch(() => undefined);
+      const repaired = repairToolArguments(toolCall.input, schema as { properties?: Record<string, { type?: string }> } | undefined);
+      if (repaired !== toolCall.input) {
+        try {
+          JSON.parse(repaired);
+          diagLog('turn.repairToolCall', `invalid-input: ${toolCall.toolName} repaired`);
+          return { ...toolCall, input: repaired };
+        } catch { /* fall through to Tier 3 */ }
+      }
+      return (await tryModelRepair(toolCall, tools, error.message, schema, router, abortSignal)) as any;
+    }
+    if (NoSuchToolError.isInstance(error)) {
+      const fixedName = resolveToolName(sanitizeToolName(toolCall.toolName), tools);
+      if (fixedName && fixedName !== toolCall.toolName) {
+        diagLog('turn.repairToolCall', `no-such-tool: "${toolCall.toolName}" → "${fixedName}"`);
+        return { ...toolCall, toolName: fixedName };
+      }
+      // Tool name is too scrambled to resolve deterministically — no schema to repair args
+      // against either. Tier 3's prompt gets the full active tool-name list in this case so the
+      // model can pick the right tool AND fix the arguments in one shot.
+      return (await tryModelRepair(toolCall, tools, error.message, undefined, router, abortSignal)) as any;
+    }
+    return null;
+  };
+}
+
+/** Tier 3: ask a cheap/fast utility model (`router.pickUtilityModel()` — the same picker
+ *  `explore.ts` uses, so this doesn't add a second model-tier decision) to fix a tool call that
+ *  neither deterministic repair could. Only reached when Tier 1/2 both miss, so it never adds
+ *  latency to the common cases. Strictly time-boxed (this is error recovery, not a normal
+ *  request) and combined with the turn's own abort signal so cancelling the turn also kills an
+ *  in-flight repair call instead of leaving it running to its own timeout. */
+export async function tryModelRepair(
+  // Typed loosely on purpose: the real type is the SDK's LanguageModelV4ToolCall, but this
+  // helper only reads toolName/input and spreads the rest back through unchanged (preserving
+  // `type`/`toolCallId`, which the hook's return type requires but this function never touches).
+  toolCall: { toolName: string; input: string } & Record<string, unknown>,
+  tools: Record<string, unknown>,
+  errorMessage: string,
+  schema: unknown,
+  router: Router,
+  abortSignal?: AbortSignal,
+): Promise<({ toolName: string; input: string } & Record<string, unknown>) | null> {
+  diagLog('turn.repairToolCall.tier3_attempt', `${toolCall.toolName}: ${errorMessage}`);
+  const timeout = AbortSignal.timeout(4000);
+  const signal = abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout;
+  try {
+    const utility = await router.pickUtilityModel();
+    const provider = createRouterProvider(router, { taskKind: 'reasoning', pinnedModel: utility });
+    const toolNames = Object.keys(tools);
+    const prompt = schema
+      ? `A tool call failed validation.\nTool: ${toolCall.toolName}\nSchema: ${JSON.stringify(schema)}\nArguments: ${toolCall.input}\nError: ${errorMessage}\n\nReply with ONLY the corrected JSON arguments object matching the schema. No explanation, no markdown.`
+      : `A tool call named "${toolCall.toolName}" does not exist. Valid tool names: ${toolNames.join(', ')}\nArguments: ${toolCall.input}\nError: ${errorMessage}\n\nReply with ONLY a JSON object of the shape {"toolName": "<correct name from the list>", "input": <corrected arguments object>}. No explanation, no markdown.`;
+    const { text } = await generateText({ model: provider as any, prompt, abortSignal: signal } as any);
+    // Weak utility models routinely wrap the answer in preamble/markdown fences even when told
+    // not to — extract the substring between the first `{` and the last `}` rather than trust a
+    // fragile `replace(/^```json/, '')`, matching the tolerance repairToolArguments's own
+    // double-JSON-unwrap already assumes about messy model output.
+    const first = text.indexOf('{');
+    const last = text.lastIndexOf('}');
+    if (first === -1 || last === -1 || last <= first) return null;
+    const candidate = text.slice(first, last + 1);
+    if (schema) {
+      JSON.parse(candidate); // validate only — throws on garbage
+      diagLog('turn.repairToolCall.tier3_success', `invalid-input: ${toolCall.toolName} model-repaired`);
+      return { ...toolCall, input: candidate };
+    }
+    const parsed = JSON.parse(candidate) as { toolName?: string; input?: unknown };
+    if (!parsed.toolName || !tools[parsed.toolName] || parsed.input == null) return null;
+    diagLog('turn.repairToolCall.tier3_success', `no-such-tool: "${toolCall.toolName}" → "${parsed.toolName}" model-repaired`);
+    return { ...toolCall, toolName: parsed.toolName, input: JSON.stringify(parsed.input) };
+  } catch {
+    return null; // timeout, abort, or genuinely unparseable — surface as a normal tool error
   }
-  if (NoSuchToolError.isInstance(error)) {
-    const fixedName = resolveToolName(sanitizeToolName(toolCall.toolName), tools);
-    if (!fixedName || fixedName === toolCall.toolName) return null;
-    diagLog('turn.repairToolCall', `no-such-tool: "${toolCall.toolName}" → "${fixedName}"`);
-    return { ...toolCall, toolName: fixedName };
-  }
-  return null;
-};
+}
 
 /** Names weak models invent for tools that DO exist under another name. Measured, not guessed:
  *  a 20-query benchmark run made 13 `read` calls, every one of which errored — ~4% of all tool
@@ -842,7 +965,10 @@ async function runAttempt(
   // condition fires so the finish handling below can treat it as TERMINAL (not paused) — these
   // are "the model is stuck / over budget" stops, and auto-continuing them would just repeat the
   // waste. Kept out of the paused→auto-continue path on purpose.
-  let stopReason: 'budget' | 'stuck' | undefined;
+  let stopReason: 'budget' | 'stuck' | 'askQuestions' | undefined;
+  // Captured when the model calls the plan-mode `askQuestions` tool (no `execute` — the SDK
+  // never auto-runs it). Its `input.questions` is already Zod-validated by the SDK.
+  let askQuestionsCall: { toolCallId: string; questions: ClarifyingQuestion[] } | undefined;
   // Fires-once guard for the budget-approaching nudge in prepareStep below.
   let budgetNudged = false;
   // Fires-once guard for the DIAGNOSTIC message on the hard tool-restriction escalation below —
@@ -893,6 +1019,21 @@ async function runAttempt(
     }
     return false;
   };
+  // `askQuestions` has no `execute` (human-in-the-loop pattern — see tools/ui/askQuestions.ts),
+  // so there's no tool-result to feed back into a further step. Belt-and-suspenders alongside
+  // the SDK's own "no result available, nothing to continue with" behavior for no-execute tools —
+  // an explicit stop here means this turn terminates deterministically the moment it's called,
+  // rather than relying on that being the SDK's actual behavior in every version.
+  const askQuestionsStop = ({ steps }: { steps: Array<{ toolCalls?: Array<{ toolName?: string }> }> }): boolean => {
+    if (!tools.askQuestions) return false; // not registered this mode — a name match can't be real
+    for (const s of steps) {
+      if ((s.toolCalls ?? []).some((tc) => tc.toolName === 'askQuestions')) {
+        stopReason = 'askQuestions';
+        return true;
+      }
+    }
+    return false;
+  };
   // Hard step ceiling (see maxStepsPerTurn in runTurn). Catches the one runaway shape the other
   // three miss: many DISTINCT mutating tool calls, none exact-repeating, all "real progress" —
   // yet the turn sprawls. Reports as 'budget' so it halts via the bounded-continuation path
@@ -927,6 +1068,15 @@ async function runAttempt(
   let model: string | undefined;
   let runtimeName: string | undefined;
 
+  // A caller-supplied excludeModels (e.g. chatViewProvider's auto-continue loop excluding the
+  // model that just got stuck) only matters in Auto mode — an explicit pinnedModel is the user's
+  // own choice and always wins. Unlike escalation, sessionId is deliberately KEPT here: Router
+  // filters excludeModels out of the candidate list BEFORE consulting the session pin (see
+  // Router.route()), so the excluded model is already gone by the time the pin would apply — the
+  // pin lookup harmlessly misses and falls through. Keeping sessionId lets Router record whatever
+  // NEW model this call picks as the session's pin, so the round AFTER the stuck-recovery one
+  // stays on the model that actually worked instead of drifting back to the stale pin.
+  const hasCallerExclude = !escalation && !opts.pinnedModel && !!opts.excludeModels?.length;
   const provider = createRouterProvider(router, {
     effort: opts.effort,
     taskKind,
@@ -937,7 +1087,7 @@ async function runAttempt(
     // Session stickiness for Auto (see Router.sessionPin). Deliberately NOT passed on an
     // escalation retry: the whole point there is to leave the model that just underperformed.
     sessionId: escalation ? undefined : opts.sessionId,
-    excludeModels: escalation?.excludeModels,
+    excludeModels: escalation?.excludeModels ?? (hasCallerExclude ? opts.excludeModels : undefined),
     maxIntelligenceRank: escalation?.maxIntelligenceRank,
     onFailover: opts.onFailover,
     onKeyRotated: opts.onKeyRotated,
@@ -966,12 +1116,12 @@ async function runAttempt(
       messages: toCoreMessages(opts.messages) as any,
       tools: tools as any,
       toolApproval: createToolApproval(opts) as any,
-      repairToolCall,
+      repairToolCall: createRepairToolCall(router, opts.abortSignal),
       // No hard step-count cap — a long multi-step task no longer pauses just for running past an
       // arbitrary iteration count (see the Resume-button "paused" path, now unreachable for a
       // normal in-progress task). budgetStop/stuckStop are the remaining backstops against a
       // genuinely runaway/stuck turn — the abortSignal (Stop button) is always available too.
-      stopWhen: [budgetStop, stuckStop, explorationStop, stepCountStop],
+      stopWhen: [budgetStop, stuckStop, explorationStop, stepCountStop, askQuestionsStop],
       abortSignal: opts.abortSignal,
       // Per-step context compression (AI SDK native). Runs before each model call in the tool
       // loop; only rewrites history once it exceeds the threshold, so short turns are untouched.
@@ -1147,6 +1297,33 @@ async function runAttempt(
         // draft so it doesn't linger in the chat; the finish-step handler re-routes it to reasoning.
         if (streamedThisStep) opts.onRetractDraft?.();
         opts.onTool({ toolCallId: part.toolCallId, name: part.toolName, args: part.input, state: 'running' });
+        // `askQuestions` has no `execute` — no 'tool-result' part will ever arrive for this call,
+        // so capture it here and immediately report the card as done (waiting on the user, not
+        // "running" forever) instead of leaving it stuck mid-state.
+        // Guard on the tool actually being registered for this mode — the raw stream part
+        // reports whatever name the model invented, BEFORE repairToolCall/NoSuchToolError even
+        // runs, so a model calling this name in agent/ask mode (where it's not offered) must not
+        // be treated as a real clarify request just because the string matches.
+        if (part.toolName === 'askQuestions' && tools.askQuestions) {
+          const raw = (part.input as { questions?: Array<Partial<ClarifyingQuestion>> } | undefined)?.questions;
+          if (raw && raw.length) {
+            // Normalize: the schema leaves `options` optional (rescued/weak-model calls often
+            // omit it entirely) but ClarifyingQuestion.options is a required array everywhere
+            // downstream (the same shape parseClarifying's sentinel parser always produced).
+            const q: ClarifyingQuestion[] = raw
+              .filter((x): x is Partial<ClarifyingQuestion> & { text: string } => !!x.text)
+              .map((x) => ({ text: x.text, label: x.label, options: x.options ?? [], ...(x.multi ? { multi: true } : {}) }));
+            if (q.length) {
+              askQuestionsCall = { toolCallId: part.toolCallId, questions: q };
+              // Set directly here rather than relying solely on askQuestionsStop's stopWhen
+              // predicate: a no-execute tool call is the SDK's own "nothing to continue with"
+              // terminal case, which can end the stream before stopWhen is ever consulted —
+              // askQuestionsStop stays as a belt-and-suspenders net, this is the reliable path.
+              stopReason = 'askQuestions';
+              opts.onTool({ toolCallId: part.toolCallId, name: part.toolName, args: part.input, state: 'done', detail: 'Waiting for the user to answer.' });
+            }
+          }
+        }
       } else if (part.type === 'tool-result') {
         phase = 'waiting_final';
         const detail = typeof part.output === 'string' ? part.output : JSON.stringify(part.output ?? '');
@@ -1203,6 +1380,17 @@ async function runAttempt(
       for (const tr of step.toolResults ?? []) {
         workMessages.push({ role: 'tool', content: typeof tr.output === 'string' ? tr.output : JSON.stringify(tr.output ?? ''), tool_call_id: tr.toolCallId });
       }
+      // `askQuestions` has no `execute`, so `step.toolResults` never contains a matching entry —
+      // synthesize a short placeholder now so this call's tool_call/tool-result pair is complete
+      // in workMessages from the moment it's built, not just after the user eventually answers.
+      // An orphaned tool_call with no result violates the same invariant synth-shrink.e2e.ts
+      // guards ("no tool-call survives without its result" — AI_MissingToolResultsError). Kept
+      // deliberately short: this string persists in history across every later turn of the session.
+      for (const tc of calls) {
+        if (tc.toolName === 'askQuestions') {
+          workMessages.push({ role: 'tool', content: 'Clarification requested.', tool_call_id: tc.toolCallId });
+        }
+      }
     }
     if (text.trim()) workMessages.push({ role: 'assistant', content: text });
 
@@ -1213,7 +1401,9 @@ async function runAttempt(
     // ANSWER NOW, with the tool loop disabled (stopWhen: 1 step, no tools) so the model must
     // produce text. This is the single biggest fix for weak/instruct models that delegate via
     // tools (e.g. explore) and then stop without synthesizing.
-    if (!text.trim() && hadToolCalls && !paused && !opts.abortSignal?.aborted) {
+    // Skip when askQuestionsCall is set — the model deliberately stopped to ask the user, an
+    // empty `text` here is correct (the questions ARE the response), not a synthesis failure.
+    if (!text.trim() && hadToolCalls && !paused && !opts.abortSignal?.aborted && !askQuestionsCall) {
       text = await forceSynthesis(languageModel, system, opts, workMessages, (t) => opts.onChunk(t), (d) => { reasoning += d; opts.onReasoning(d); }, stopReason === 'stuck') || text;
       if (text.trim()) workMessages.push({ role: 'assistant', content: text });
     }
@@ -1227,7 +1417,7 @@ async function runAttempt(
     // UI (e.g. AllModelsFailedError) — piling a generic "couldn't produce a response" bubble on
     // top of that duplicates the message with a less useful one. The `failed` flag on the return
     // below tells the caller to skip rendering a turn at all, same as the thrown-exception path.
-    if (!text.trim() && !paused && !streamErrored) {
+    if (!text.trim() && !paused && !streamErrored && !askQuestionsCall) {
       text = stopReason === 'stuck'
         ? 'Stopped: the model kept repeating the same action without making progress, and couldn\'t summarize its findings either. Try rephrasing the request, or switch models.'
         : hadToolCalls
@@ -1270,6 +1460,7 @@ async function runAttempt(
       paused,
       workMessages,
       stopReason,
+      askQuestions: askQuestionsCall?.questions,
       hadToolCalls,
       hadMutatingToolCall,
       verifiedAfterMutation,
@@ -1401,11 +1592,17 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // Declined-websearch fires for ANY taskKind (a plain chat question is exactly where a weak
   // model tells the user to "switch modes" instead of calling the webSearch tool it was given).
   const declinedWebSearch = canRetryToolUse && DECLINED_WEBSEARCH_RE.test(first.text.trim());
-  if (canRetryToolUse && (announcedNoAction || declinedWebSearch)) {
-    const nudgeText = declinedWebSearch ? FORCE_WEBSEARCH_NUDGE : FORCE_ACTION_NUDGE;
-    diagLog('turn.forceAction', declinedWebSearch
-      ? 'declined to search the web despite having webSearch — retrying with a use-the-tool nudge'
-      : 'announced an action but made no tool call — retrying with an act-now nudge');
+  // False capability decline: only meaningful in Agent mode (the only mode with a real
+  // runCommand tool to point the model back at). Only classify when the cheaper checks above
+  // didn't already explain the miss, so the classify call stays rare.
+  let falseCapabilityDecline = false;
+  if (canRetryToolUse && opts.mode === 'agent' && !announcedNoAction && !declinedWebSearch) {
+    falseCapabilityDecline = await detectFalseCapabilityDecline(router, first.text.trim(), opts.abortSignal);
+  }
+  if (canRetryToolUse && (announcedNoAction || declinedWebSearch || falseCapabilityDecline)) {
+    const nudgeText = declinedWebSearch ? FORCE_WEBSEARCH_NUDGE : falseCapabilityDecline ? FORCE_RUNTIME_ACCESS_NUDGE : FORCE_ACTION_NUDGE;
+    const reason = declinedWebSearch ? 'declinedWebSearch' : falseCapabilityDecline ? 'falseCapabilityDecline' : 'announcedNoAction';
+    diagLog('turn.forceAction', `${reason}: retrying with a use-the-tool nudge`);
     // Learn-by-failure: announcing an action but calling no tool is a tool-use failure this model
     // "succeeded" (HTTP 200) on. Record a strike so repeat offenders get benched from tool routing.
     router.noteToolSoftFailure(first.platform, first.model);
@@ -1454,8 +1651,11 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     if (grounded.hadToolCalls && grounded.text.trim()) final = grounded;
   }
 
+  // Excludes an askQuestions turn: its empty `text` is correct (the questions ARE the response,
+  // not a synthesis gap), so quality.weak would otherwise misjudge it and escalate away the
+  // model's deliberate clarify request instead of surfacing it to the user.
   const canEscalate = final === first && !first.hadMutatingToolCall && !opts.abortSignal?.aborted
-    && !opts.pinnedModel && first.platform && first.model;
+    && !opts.pinnedModel && first.platform && first.model && !first.askQuestions;
   if (canEscalate) {
     const quality = assessAnswerQuality(first.text, taskKind);
     let shouldEscalate = first.stopReason === 'stuck' || quality.weak;
@@ -1558,6 +1758,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     taskKind,
     paused: final.paused,
     stopReason: final.stopReason,
+    askQuestions: final.askQuestions,
     workMessages: final.workMessages.length ? final.workMessages : undefined,
     // Only meaningful when nothing downstream salvaged the turn — every retry/escalation path
     // above already overwrites `final` with a candidate that has real text or tool calls, so a

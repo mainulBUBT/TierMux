@@ -34,7 +34,7 @@ import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSu
 import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense, generateHandoff } from './agent/condense';
-import { parseClarifying, type ClarifyingQuestion } from './agent/clarify';
+import { resolveClarifying, type ClarifyingQuestion } from './agent/clarify';
 import { structurePlanSteps, formatStructuredSteps, extractPlanFromProse } from './agent/planStructurer';
 import { deriveTitleFrom, extractSubjectTerms, looksLikeActionablePlan, looksLikeGroundedAnswer, offTopicCorrection, sanitizeTitle } from './session/titles';
 
@@ -122,6 +122,25 @@ function autoContinueMessage(remainingTodos: TodoItem[]): string {
     + 'the work already done above; do not restart or repeat completed steps. Update the todo list '
     + 'as you finish each item, and only stop once every item is completed (or you hit a genuine '
     + `blocker, which you must state plainly).\n\nRemaining items:\n${list}`;
+}
+
+/** Companion to {@link autoContinueMessage} for a 'stuck' stop specifically. A plain "keep going"
+ *  message would very likely reproduce the exact same repeated tool call that caused the stall —
+ *  this one names that risk explicitly and asks for a genuinely different approach (or, failing
+ *  that, to move on to the next item rather than stopping the whole plan over one blocked step).
+ *  Bounded to one use per stall by the caller (maxStuckContinuations) — if the SAME approach
+ *  fails a second time, the auto-continue loop halts for real rather than nudging forever. */
+function stuckContinueMessage(remainingTodos: TodoItem[]): string {
+  const base = 'You got stuck repeating the same action without making progress — do NOT repeat '
+    + 'it. Try a genuinely different approach for whatever you were stuck on (a different search '
+    + 'term, file, or tool entirely). If it still doesn\'t work, move on to the next item rather '
+    + 'than stopping the whole plan, and report the stuck one as blocked at the end, stating '
+    + 'plainly what you tried and why it didn\'t work.';
+  if (remainingTodos.length === 0) return base;
+  const list = remainingTodos
+    .map((t) => `- ${t.content}${t.status === 'in_progress' ? ' (in progress)' : ''}`)
+    .join('\n');
+  return `${base}\n\nRemaining items:\n${list}`;
 }
 
 /** Deterministic end-of-turn footer built directly from todo state, not trusted to the model's
@@ -1960,9 +1979,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       // Hoisted so the fallthrough below (plan mode, neither a clarify question nor an
       // actionable plan) can reuse this instead of re-parsing the identical `result.text`.
-      let planClar: ReturnType<typeof parseClarifying> | undefined;
+      let planClar: ReturnType<typeof resolveClarifying> | undefined;
       if (m.mode === 'plan') {
-        const clar = parseClarifying(result.text);
+        const clar = resolveClarifying(result.text, result.askQuestions);
         planClar = clar;
         if (clar.questions && clar.questions.length) {
 
@@ -2017,19 +2036,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const autoContinueOn = agentCfg.get<boolean>('autoContinue', true);
       const maxAutoContinueRounds = agentCfg.get<number>('maxAutoContinueRounds', 25);
       const maxBudgetContinuations = agentCfg.get<number>('maxBudgetContinuations', 1);
+      const maxStuckContinuations = agentCfg.get<number>('maxStuckContinuations', 1);
       if (m.mode === 'agent' && autoContinueOn) {
         let budgetContinuations = 0;
+        let stuckContinuations = 0;
         for (let ac = 0; ac < maxAutoContinueRounds && this.isActiveRun(s, m.requestId); ac++) {
-          if (result.stopReason === 'stuck') { diagLog('send.autocontinue', `halt: stopReason=stuck after round ${ac}`); break; }
-          if (result.stopReason === 'budget') {
+          // A todo plan with items still pending after a stall is exactly the case worth one more
+          // try: a repeated tool call on item 4 says nothing about whether item 5 is reachable, and
+          // even item 4 may well succeed with a genuinely different approach — see
+          // stuckContinueMessage. Bounded to maxStuckContinuations so a SECOND stall on the same
+          // approach still halts for real instead of nudging forever.
+          if (result.stopReason === 'stuck') {
+            if (stuckContinuations >= maxStuckContinuations) {
+              diagLog('send.autocontinue', `halt: stuck ${stuckContinuations}× in a row (cap ${maxStuckContinuations}) after round ${ac}`);
+              break;
+            }
+            stuckContinuations++;
+            budgetContinuations = 0;
+            diagLog('send.autocontinue', `stuck after round ${ac} — continuing once with a break-the-loop nudge (${stuckContinuations}/${maxStuckContinuations})`);
+          } else if (result.stopReason === 'budget') {
             if (budgetContinuations >= maxBudgetContinuations) {
               diagLog('send.autocontinue', `halt: budget cutoff ${budgetContinuations}× in a row (cap ${maxBudgetContinuations}) after round ${ac}`);
               break;
             }
             budgetContinuations++;
+            stuckContinuations = 0;
             diagLog('send.autocontinue', `budget cutoff after round ${ac} — continuing with a fresh turn budget (${budgetContinuations}/${maxBudgetContinuations})`);
           } else {
             budgetContinuations = 0; // reset the streak once a round completes without hitting the cap
+            stuckContinuations = 0;
           }
           // Only todos written during THIS send count (see todosAtSendStart) — stale todos from an
           // earlier turn must not keep a fresh, unrelated turn spinning.
@@ -2038,9 +2073,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (!result.paused && remainingTodos.length === 0) break; // goal met (or no plan to pursue)
 
           this.persistAgentTurn(s, result);
-          s.history.push({ role: 'user', content: autoContinueMessage(remainingTodos) });
-          diagLog('send.autocontinue', `round ${ac + 1}/${maxAutoContinueRounds} · ${remainingTodos.length} todos left · paused=${result.paused}`);
-          result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model), {});
+          const wasStuck = result.stopReason === 'stuck';
+          const continueMsg = wasStuck ? stuckContinueMessage(remainingTodos) : autoContinueMessage(remainingTodos);
+          s.history.push({ role: 'user', content: continueMsg });
+          // In Auto mode, a stuck round is also given a genuinely different model, not just a
+          // nudge to the same one — the model that just stalled looks perfectly healthy to the
+          // router (it answered fine, the stall was a logic loop, not an API failure), so without
+          // this it would very likely be re-picked. Only for Auto: an explicit model pin is the
+          // user's own choice and stays untouched even after a stall.
+          const isAutoMode = !s.model || s.model === 'auto';
+          const excludeModels = wasStuck && isAutoMode && result.platform && result.model
+            ? [`${result.platform}::${result.model}`] : undefined;
+          diagLog('send.autocontinue', `round ${ac + 1}/${maxAutoContinueRounds} · ${remainingTodos.length} todos left · paused=${result.paused}${excludeModels ? ` · excluding ${excludeModels[0]}` : ''}`);
+          result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model, excludeModels), {});
           if (!this.isActiveRun(s, m.requestId)) return;
         }
       }
@@ -2068,7 +2113,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         totalTokens: after.totalTokens - before.totalTokens,
       };
 
-      const agentClar = planClar ?? (!result.paused ? parseClarifying(result.text) : { questions: null, text: result.text });
+      const agentClar = planClar ?? (!result.paused ? resolveClarifying(result.text, result.askQuestions) : { questions: null, text: result.text });
 
       // Final check, independent of WHY the turn ended (guardrail stop, round-cap exhaustion, or
       // plain completion): does the plan written this send still have unfinished items? Computed
@@ -2426,12 +2471,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     effort: ReasoningEffort,
     callbacks: ReturnType<typeof this.agentCallbacks>,
     pinnedModel?: string,
+    excludeModels?: string[],
   ): AgentOpts {
     return {
       messages: s.history,
       mode,
       effort,
       pinnedModel,
+      excludeModels,
       sessionId: s.id,
       mentionCount: s.lastMentionCount,
       abortSignal: s.cancel ? tokenToAbortSignal(s.cancel.token) : undefined,
@@ -2781,7 +2828,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});
         if (!this.isActiveRun(s, m.requestId)) return;
       }
-      const clar = parseClarifying(result.text);
+      const clar = resolveClarifying(result.text, result.askQuestions);
       if (clar.questions && clar.questions.length) {
         // The model re-asked despite being told not to (the "do not ask any further
         // questions" instruction pushed above) — show the follow-up instead of silently

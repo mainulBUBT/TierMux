@@ -372,7 +372,13 @@
           "type": "number",
           "default": 1,
           "minimum": 0,
-          "description": "How many consecutive per-turn token-budget cutoffs a single send may auto-continue past (each continuation gets a fresh token budget), so a large multi-file task isn't abandoned mid-way the way it would be if a budget cutoff always halted the run. Separate from maxAutoContinueRounds, which bounds total rounds regardless of cause. Default 1 (was 3): a budget cutoff is a strong signal the turn is sprawling, so allow one continuation rather than three before halting. Set to 0 to halt immediately on a budget cutoff. Stuck-loop cutoffs always halt immediately, budget continuations or not."
+          "description": "How many consecutive per-turn token-budget cutoffs a single send may auto-continue past (each continuation gets a fresh token budget), so a large multi-file task isn't abandoned mid-way the way it would be if a budget cutoff always halted the run. Separate from maxAutoContinueRounds, which bounds total rounds regardless of cause. Default 1 (was 3): a budget cutoff is a strong signal the turn is sprawling, so allow one continuation rather than three before halting. Set to 0 to halt immediately on a budget cutoff. See maxStuckContinuations for the sibling setting covering stuck-loop cutoffs."
+        },
+        "tiermux.agent.maxStuckContinuations": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "description": "How many consecutive stuck-loop cutoffs (repeated identical tool calls, or thrashing with no mutating progress) a single send may auto-continue past. Each continuation gets an explicit \"you got stuck, try something genuinely different or move to the next item\" nudge rather than a plain \"keep going\" — without it, a turn that finished 3 of 5 todo items and then stalled on item 4 would halt the whole plan right there, leaving items 4-5 reported as unresolved even though a different approach (or simply moving on to item 5) might well have succeeded. Default 1: give it one genuinely different attempt, but if the SAME approach stalls a second time in a row, halt for real rather than nudging forever. Set to 0 to restore the old always-halt-immediately behavior."
         },
         "tiermux.agent.maxConcurrentRuns": {
           "type": "number",
@@ -665,7 +671,13 @@
     "test:e2e:self-correct": "esbuild scripts/selfCorrect.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/selfCorrect.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/selfCorrect.e2e.cjs",
     "test:e2e:unverified-badge": "esbuild scripts/unverifiedBadge.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/unverifiedBadge.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/unverifiedBadge.e2e.cjs",
     "test:e2e:checkpoint-persist": "esbuild scripts/checkpointPersist.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/checkpointPersist.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/checkpointPersist.e2e.cjs",
+    "test:e2e:stuck-continue": "esbuild scripts/stuckContinue.e2e.ts --bundle --platform=node --format=cjs --outfile=dist/stuckContinue.e2e.cjs && node dist/stuckContinue.e2e.cjs",
     "test:e2e:plan-structurer": "esbuild scripts/planStructurer.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planStructurer.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planStructurer.e2e.cjs",
+  "test:e2e:remember-memory": "esbuild scripts/rememberMemory.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rememberMemory.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/rememberMemory.e2e.cjs",
+  "test:e2e:remember-memory-load": "esbuild scripts/rememberMemoryLoad.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rememberMemoryLoad.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/rememberMemoryLoad.e2e.cjs",
+  "test:e2e:ask-questions-flow": "esbuild scripts/askQuestionsFlow.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/askQuestionsFlow.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/askQuestionsFlow.e2e.cjs",
+  "test:e2e:repair-tier3": "esbuild scripts/repairToolCallTier3.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/repairToolCallTier3.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/repairToolCallTier3.e2e.cjs",
+  "test:e2e:false-capability-decline": "esbuild scripts/falseCapabilityDecline.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/falseCapabilityDecline.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/falseCapabilityDecline.e2e.cjs",
     "test:e2e:command-classify": "esbuild scripts/commandClassify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/commandClassify.e2e.cjs && node dist/commandClassify.e2e.cjs",
     "test:e2e:terminal-util": "esbuild scripts/terminalUtil.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/terminalUtil.e2e.cjs && node dist/terminalUtil.e2e.cjs",
     "test:e2e:bench-score": "esbuild scripts/benchScore.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/benchScore.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/benchScore.e2e.cjs",

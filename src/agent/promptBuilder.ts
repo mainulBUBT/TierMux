@@ -41,7 +41,7 @@ const AGENT_FILE_ORDER = ['identity.md', 'behavior.md', 'ask-format.md', 'resear
 async function loadAgentInstructions(extPath: string, workspaceRoot?: string, taskKind?: TaskKind, mode?: AgentMode): Promise<{ agentPrompt: string; instructions: string }> {
   const agentDir = path.join(extPath, '.tiermux', 'agent');
   const skipFiles = new Set(taskKind ? SKIP_FILES_FOR_TASK_KIND[taskKind] ?? [] : []);
-  // ask-format.md documents the ???QUESTIONS??? pre-flight clarify block, and PLAN_MODE_TAIL is
+  // ask-format.md documents the askQuestions pre-flight clarify tool, and PLAN_MODE_TAIL is
   // the only place that asks for it — agent/ask mode were paying ~1.3KB of prompt for a protocol
   // they never use, competing for a free model's attention with rules that do apply.
   if (mode && mode !== 'plan') skipFiles.add('ask-format.md');
@@ -81,7 +81,9 @@ const AGENT_MODE_TAIL =
   '\n\n## Agent mode\n'
   + 'You can edit/write files and run commands. If the message is only a question or greeting, '
   + 'answer in text — do NOT edit files just because you can; only modify files when asked to '
-  + 'change, fix, add, remove, or implement something.\n\n'
+  + 'change, fix, add, remove, or implement something. Never claim you lack execution/runtime/'
+  + 'test-running capability — you have `runCommand` in this mode. If unsure whether something '
+  + 'will work, try the tool before declining.\n\n'
   + 'Use `fetchUrl` for docs/specs/web pages. For something current or outside this codebase '
   + '(news, a fact about the outside world, a library/API to look up), use `webSearch` — not a '
   + 'local search for info that was never going to be in local files. For a specific library, '
@@ -138,8 +140,8 @@ const PLAN_MODE_TAIL =
   + 'rejected alternative\'s tradeoff into the lead-in sentence ("…, using X over Y because…") — no '
   + 'separate section, no restating the analysis.\n\n'
   + 'Ask before investigating, not after, ONLY when something is ambiguous in a way that changes '
-  + 'WHICH files/approach you\'d investigate — use the ???QUESTIONS???...???END??? text block (see '
-  + 'ask-format), not an interactive question tool. Exception, not a default step before every plan.';
+  + 'WHICH files/approach you\'d investigate — call the `askQuestions` tool (see ask-format). '
+  + 'Exception, not a default step before every plan.';
 
 const ASK_MODE_TAIL =
   '\n\n## Ask mode\n'

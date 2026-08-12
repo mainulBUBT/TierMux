@@ -254,6 +254,15 @@ export function toolLabel(name: string, args: unknown, detail?: string, state?: 
     };
   }
 
+  // Special case: remember
+  if (name === 'remember') {
+    const note = String((args && typeof args === 'object' && (args as { note?: string }).note) || '');
+    return {
+      icon: '✎',
+      title: note ? `Remembered: ${note.replace(/\s+/g, ' ').trim().slice(0, 80)}` : 'Saved a memory note',
+    };
+  }
+
   // Special case: thinking
   if (name === 'think') {
     const thought = String((args && typeof args === 'object' && (args as { thought?: string }).thought) || '');

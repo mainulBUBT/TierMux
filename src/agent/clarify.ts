@@ -119,3 +119,14 @@ export function parseClarifying(input: string): ParsedClarifying {
 
   return { questions: questions.length ? questions : null, text: scrubSentinels(text) };
 }
+
+/**
+ * Primary path: the model called the `askQuestions` tool this turn (already Zod-validated —
+ * no parsing needed). Falls back to `parseClarifying`'s sentinel/freeform-prose detection only
+ * when the tool wasn't used — kept as a reliability net for models that ignore the tool despite
+ * it being offered, not deleted in favor of the tool call.
+ */
+export function resolveClarifying(text: string, toolQuestions?: ClarifyingQuestion[] | null): ParsedClarifying {
+  if (toolQuestions && toolQuestions.length) return { questions: toolQuestions, text };
+  return parseClarifying(text);
+}

@@ -149,6 +149,9 @@ const vscodeMock = {
         await fs.promises.mkdir(path.dirname(u.fsPath), { recursive: true });
         await fs.promises.writeFile(u.fsPath, Buffer.from(content));
       },
+      createDirectory: async (u) => {
+        await fs.promises.mkdir(u.fsPath, { recursive: true });
+      },
       delete: async (u, opts) => {
         try { await fs.promises.rm(u.fsPath, { recursive: !!(opts && opts.recursive), force: true }); }
         catch (e) { if (!(opts && opts.ignoreIfNotExists)) throw e; }

@@ -18,7 +18,7 @@ import type { ToolSet } from 'ai';
 import type { AgentOpts } from '../../agent';
 import type { McpManager } from '../../../mcp/mcpManager';
 import type { Router } from '../../../router/router';
-import { MUTATING_TOOLS } from '../policies/permission';
+import { MUTATING_TOOLS, PLAN_MODE_EXTRA_EXCLUDED_TOOLS } from '../policies/permission';
 import { createReadTool } from './filesystem/read';
 import { createWriteFileTool } from './filesystem/write';
 import { createEditTool } from './filesystem/edit';
@@ -37,6 +37,8 @@ import { createDependencyTreeTool } from './workspace/dependencyTree';
 import { createFetchUrlTool } from './network/fetchUrl';
 import { createWebSearchTool } from './network/webSearch';
 import { createDeepSearchTool } from './network/deepSearch';
+import { createRememberTool } from './context/remember';
+import { createAskQuestionsTool } from './ui/askQuestions';
 
 export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, router: Router): ToolSet {
   // Ask mode: read-only codebase search only — no edit/write/delete/shell. Router.route()
@@ -76,6 +78,7 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
     explore: createExploreTool(router, opts.abortSignal),
     todowrite: createTodoWriteTool(opts.onTodos),
     question: createQuestionTool(opts.onAskUser),
+    remember: createRememberTool(),
     ...createMcpTools(mcp),
   };
 
@@ -83,10 +86,17 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
 
   // plan mode: the model never even sees a mutating tool's schema, rather than showing it
   // and denying execution at call time (defense-in-depth mirrored in policies/permission.ts).
+  // Also excludes low-risk-but-side-effecting tools (e.g. `remember`) that aren't gated by
+  // approval but still shouldn't run during a mode that's meant to produce zero side effects.
   const filtered: ToolSet = {};
   for (const [name, t] of Object.entries(all)) {
-    if (MUTATING_TOOLS.has(name)) continue;
+    if (MUTATING_TOOLS.has(name) || PLAN_MODE_EXTRA_EXCLUDED_TOOLS.has(name)) continue;
     filtered[name] = t;
   }
+  // Plan-mode-only pre-flight clarify tool (replaces the ???QUESTIONS??? text sentinel as the
+  // primary channel — see clarify.ts, which stays as the fallback). Deliberately not in `all`:
+  // agent/ask mode already have `question` for mid-task clarification, a different UX (different
+  // UI card, different resend/history semantics) — offering both here would be redundant.
+  filtered.askQuestions = createAskQuestionsTool();
   return filtered;
 }

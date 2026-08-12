@@ -8,6 +8,7 @@
 import type { Router } from '../router/router';
 import type { ChatMessage, TodoItem, ReasoningEffort } from '../shared/types';
 import type { IProfilerService } from '../profiler/profilerService';
+import type { ClarifyingQuestion } from './clarify';
 
 export interface ToolEvent {
   toolCallId: string;
@@ -30,7 +31,10 @@ export interface AgentResult {
    *  repeating/thrashing) rather than finishing naturally. The autonomous continuation loop in
    *  chatViewProvider uses this to HALT — auto-continuing a budget/stuck stop just repeats the
    *  waste. Undefined = the model concluded on its own terms (may still have pending todos). */
-  stopReason?: 'budget' | 'stuck';
+  stopReason?: 'budget' | 'stuck' | 'askQuestions';
+  /** Set when the model called the plan-mode `askQuestions` tool this turn — the caller uses
+   *  this directly instead of parsing `text` for the legacy ???QUESTIONS??? sentinel. */
+  askQuestions?: ClarifyingQuestion[];
   /** Set when the turn ended via the genuine-error catch path (not abort) — `onError` already
    *  surfaced a message to the UI. Callers must NOT also render this as a normal completed
    *  turn (empty text + a real footer reads as a phantom "successful" blank reply). */
@@ -69,6 +73,13 @@ export interface AgentOpts {
   effort: ReasoningEffort;
   abortSignal?: AbortSignal;
   pinnedModel?: string;
+  /** `platform::modelId` keys to skip during Auto selection for this call only — e.g. the
+   *  auto-continue loop excluding the model that just got stuck, so the retry genuinely tries a
+   *  different model rather than very likely re-picking the same one (nothing about a stuck loop
+   *  looks like a failure to the router's own health/availability scoring). Ignored when
+   *  `pinnedModel` names a specific model (the user's explicit choice always wins) — only affects
+   *  Auto selection. */
+  excludeModels?: string[];
   taskKind?: string;
   /** TierMux chat session id. */
   sessionId?: string;

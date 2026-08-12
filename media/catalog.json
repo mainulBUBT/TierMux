@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Synced from remote /models JSON — 105 models from 24 providers.",
+  "note": "Synced from remote /models JSON — 111 models from 24 providers.",
   "models": [
     {
       "platform": "agnes",
@@ -891,30 +891,6 @@
       "origOutputPricePer1M": 0.9
     },
     {
-      "platform": "llmgateway",
-      "modelId": "claude-haiku-4-5-free",
-      "displayName": "Claude Haiku 4.5 (Free)",
-      "intelligenceRank": 3,
-      "speedRank": 1,
-      "released": "reasoning,vision,tool-use,json,streaming,free",
-      "sizeLabel": "Haiku",
-      "contextWindow": 200000,
-      "rpmLimit": 0.5,
-      "rpdLimit": 720,
-      "monthlyTokenBudget": "TRUE",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "vision",
-        "general",
-        "free"
-      ],
-      "insight": "Anthropic",
-      "origInputPricePer1M": 1,
-      "origOutputPricePer1M": 5
-    },
-    {
       "platform": "mistral",
       "modelId": "mistral-medium-2604",
       "displayName": "Mistral Medium 3.5 (128B) (Mistral)",
@@ -1386,29 +1362,6 @@
     },
     {
       "platform": "opencode",
-      "modelId": "north-mini-code-free",
-      "displayName": "North Mini Code (OpenCode Zen)",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "released": "2026-04",
-      "sizeLabel": "Medium",
-      "contextWindow": 131072,
-      "rpmLimit": 10,
-      "rpdLimit": 1000,
-      "monthlyTokenBudget": "~free",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "origInputPricePer1M": 0.0375,
-      "origOutputPricePer1M": 0.15,
-      "tags": [
-        "coding",
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "opencode",
       "modelId": "big-pickle",
       "displayName": "Big Pickle (OpenCode Zen)",
       "intelligenceRank": 4,
@@ -1431,29 +1384,6 @@
       "insight": "Free reasoning model with tool calling and structured outputs. OpenCode dynamically routes requests to different backend models.",
       "origInputPricePer1M": 0,
       "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "opencode",
-      "modelId": "longcat-2.0-free",
-      "displayName": "LongCat-2.0 Free",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 1000000,
-      "rpmLimit": 5,
-      "rpdLimit": 100,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "reasoner",
-        "planner",
-        "agent",
-        "free"
-      ],
-      "origInputPricePer1M": 0.3,
-      "origOutputPricePer1M": 1.2
     },
     {
       "platform": "opencode",
@@ -2384,6 +2314,207 @@
       ],
       "origInputPricePer1M": 0,
       "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "kenari",
+      "modelId": "ling-3-0-flash:free",
+      "displayName": "Ling 3 0 Flash:free",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 262144,
+      "rpmLimit": 5,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.06,
+      "origOutputPricePer1M": 0.18
+    },
+    {
+      "platform": "groq",
+      "modelId": "groq/compound",
+      "displayName": "Compound",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 131072,
+      "rpmLimit": 30,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "planner",
+        "coding",
+        "free"
+      ],
+      "origInputPricePer1M": 0.15,
+      "origOutputPricePer1M": 60
+    },
+    {
+      "platform": "opencode",
+      "modelId": "hy3-free",
+      "displayName": "Hy3 Free",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 256000,
+      "rpmLimit": 60,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "reasoner",
+        "planner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.13,
+      "origOutputPricePer1M": 0.53
+    },
+    {
+      "platform": "kenari",
+      "modelId": "nemotron-3-5-lightning:free",
+      "displayName": "Nemotron 3 5 Lightning:free",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1000000,
+      "rpmLimit": 5,
+      "rpdLimit": 150,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "planner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.1,
+      "origOutputPricePer1M": 0.25
+    },
+    {
+      "platform": "kilo",
+      "modelId": "tencent/hy3:free",
+      "displayName": "Tencent: Hy3 (free)",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262144,
+      "rpmLimit": 60,
+      "rpdLimit": 150,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "general",
+        "code",
+        "planner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.14,
+      "origOutputPricePer1M": 0.58
+    },
+    {
+      "platform": "kilo",
+      "modelId": "liquid/lfm-2.5-2.6b:free",
+      "displayName": "LiquidAI: LFM2.5-2.6B (free)",
+      "intelligenceRank": 5,
+      "speedRank": 2,
+      "contextWindow": 128000,
+      "rpmLimit": 10,
+      "rpdLimit": 150,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.05,
+      "origOutputPricePer1M": 0.2
+    },
+    {
+      "platform": "opencode",
+      "modelId": "nemotron-3.5-lightning-free",
+      "displayName": "Nemotron 3.5 Lightning Free",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262144,
+      "rpmLimit": 60,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "planner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.05,
+      "origOutputPricePer1M": 0.2
+    },
+    {
+      "platform": "kilo",
+      "modelId": "nvidia/nemotron-3.5-lightning:free",
+      "displayName": "NVIDIA: Nemotron 3.5 Lightning (free)",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "general",
+        "planner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.18,
+      "origOutputPricePer1M": 0.58
+    },
+    {
+      "platform": "llmgateway",
+      "modelId": "claude-haiku-4-5-free",
+      "displayName": "Claude Haiku 4.5 (Free)",
+      "intelligenceRank": 3,
+      "speedRank": 1,
+      "released": "reasoning,vision,tool-use,json,streaming,free",
+      "sizeLabel": "Haiku",
+      "contextWindow": 200000,
+      "rpmLimit": 0.5,
+      "rpdLimit": 720,
+      "monthlyTokenBudget": "TRUE",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "tags": [
+        "vision",
+        "general",
+        "free"
+      ],
+      "insight": "Anthropic",
+      "origInputPricePer1M": 1,
+      "origOutputPricePer1M": 5
     },
     {
       "platform": "github",

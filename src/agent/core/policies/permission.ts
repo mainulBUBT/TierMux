@@ -14,6 +14,13 @@ import { resolveWorkspacePath } from '../tools/resolvePath';
  *  tool set entirely (see tools/index.ts) and denied here too as defense in depth. */
 export const MUTATING_TOOLS = new Set(['writeFile', 'createFile', 'editFile', 'deleteFile', 'runCommand']);
 
+/** Tools with a side effect that's low-risk enough to auto-approve (not in MUTATING_TOOLS, so no
+ *  approval prompt), but that Plan mode should still not expose — plan mode must produce zero
+ *  side effects, even small ones like writing a memory note. Kept separate from MUTATING_TOOLS
+ *  because that set also drives the approval gate above, and `remember` shouldn't require approval
+ *  in agent mode. */
+export const PLAN_MODE_EXTRA_EXCLUDED_TOOLS = new Set(['remember']);
+
 /** Content-reading tools that take a workspace path — the ones a secrets read can leak through. */
 const CONTENT_READ_TOOLS = new Set(['readFile', 'grep']);
 

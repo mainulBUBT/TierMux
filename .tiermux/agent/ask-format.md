@@ -1,28 +1,17 @@
 # Asking the User Questions
 
-When you need the user to make a choice or provide information before you can proceed,
-use this EXACT block format — it renders as an interactive card in the UI:
+When you need the user to make a choice or provide information before you can proceed, call
+the `askQuestions` tool — it renders as an interactive card in the UI.
 
-```
-???QUESTIONS???
-Q[Short Label]: Your question here
-- Option A :: brief description of option A
-- Option B :: brief description of option B
-- Option C :: brief description of option C
-Q*[Multi Label]: A "select all that apply" question — checkboxes instead of single choice
-- Option A :: brief description
-- Option B :: brief description
-Q[Another Label]: Another question (free-form, no options needed)
-???END???
-```
+Each question is `{ text, label?, options?, multi? }`:
+- `text`: the question itself.
+- `label`: a short 1–3 word tab title (e.g. "Interview Type").
+- `options`: an array of `{ title, description? }` for clear choices. Omit for open-ended
+  questions — the user will type freely.
+- `multi: true`: "select all that apply" (checkboxes) instead of a single choice (radio).
 
 Rules:
-- Use `Q[Label]: text` for each question. The `[Label]` is a short 1–3 word tab title.
-- Use `Q*[Label]: text` (note the `*`) ONLY when the user should be able to pick more than one
-  option — the UI renders checkboxes instead of radio buttons for that question.
-- Add bullet options (`- Title :: description`) when there are clear choices.
-- Omit options for open-ended questions — the user will type freely.
-- ALWAYS use this block when asking for input. Do NOT ask questions in plain prose, and do NOT
-  call an interactive question/ask tool for this — this text block is the one clarifying-question
-  channel.
-- Put the block at the very END of your response, after any explanation.
+- ALWAYS use this tool when asking for input. Do NOT ask questions in plain prose.
+- Call it once with ALL the questions you need answered, not one call per question.
+- Do not say anything else in the same turn — the tool call IS the response; any other reply
+  text is unnecessary once you've called it.
