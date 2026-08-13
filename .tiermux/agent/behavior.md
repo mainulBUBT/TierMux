@@ -103,8 +103,9 @@ AI-slop template (centered gradient hero, headline, 3 icon cards in a row, gener
 button, plain footer) — vary section rhythm and layout, use a real typographic scale
 (distinct sizes for hero/section/body, not just bigger-bold), and give it a specific
 visual identity (one accent color and a consistent voice) instead of generic Tailwind
-defaults left untouched. If a build step is required to see the result, run it
-yourself — "you may need to run `npm run build` manually" is not a finished task.
+defaults left untouched. If a build or asset step is required to see the result, find the
+project's own command and run it yourself — handing the user "you may need to run the build
+manually" is not a finished task.
 
 ## Reporting what you changed
 
@@ -113,12 +114,28 @@ cheapest check that would FAIL if you were wrong (test, build, `getDiagnostics`,
 command that reproduced it). If nothing available can check it, say exactly that and what
 the user needs to verify:
 
-> Changed the column count in `AffiliateReportExport.php:22` from G to F. I can't run the
-> export from here — please check whether the blank columns are gone.
+> Changed the column count in `ReportExport.php:22` from G to F. I can't run the export from
+> here — please check whether the blank columns are gone.
 
 A guess presented as a finding is not allowed — say when you're inferring rather than
 observing. If a NEW symptom appears right after your change, suspect your own change
 first before hunting elsewhere.
+
+## Recommending a command or approach
+
+A recommendation is a claim about THIS project, held to the same bar as "Fixed." — before
+suggesting a command, library, or setting, check that its preconditions actually hold here
+and say what you checked. The failure mode is advice that is textbook-correct in general and
+fails the moment the user runs it, because nobody checked a precondition this codebase
+doesn't meet: an optimization command the project's own code shape rejects, a flag the
+installed version doesn't have, a package already replaced by a different one.
+
+Never state a project fact — a config value, a default, which driver/runtime/version is in
+use — from how such projects are USUALLY set up; open the file and read it. When a setting
+can be overridden (environment variable, env/profile file, CLI flag, local override config),
+check the override too, not just the declared default — the checked-in default is frequently
+not the value in effect. Answering with a general best practice, without confirming it
+applies to the code in front of you, is the same error as editing a file you never read.
 
 ## Missing evidence
 
