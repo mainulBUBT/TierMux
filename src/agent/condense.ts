@@ -46,9 +46,18 @@ export async function condenseHistory(
 ): Promise<{ messages: ChatMessage[]; summary: string } | null> {
   if (!shouldCondense(history)) return null;
 
+  // Walk BACKWARD from the nominal tail start to the nearest user boundary. Scanning forward
+  // (the previous behavior) never terminates on a tool-heavy session: its last KEEP_TAIL messages
+  // are all assistant/tool, so the scan ran off the end and returned null — meaning the sessions
+  // with the largest contexts, exactly the ones compaction exists for, could NEVER compact. The
+  // user just saw "Compaction produced no summary" while the context grew until fitMessages
+  // started evicting the task itself. Backward keeps the same "tail starts on a user turn"
+  // invariant (no orphaned tool result, no dangling tool call) while always finding a boundary,
+  // and only ever makes the verbatim tail LONGER than requested, never shorter.
   let tailStart = history.length - KEEP_TAIL;
-  while (tailStart < history.length && history[tailStart].role !== 'user') tailStart++;
-  if (tailStart >= history.length) return null;
+  while (tailStart > 0 && history[tailStart].role !== 'user') tailStart--;
+  // No user turn at all before the tail (degenerate) — nothing safe to split on.
+  if (tailStart <= 0 || history[tailStart].role !== 'user') return null;
   const prefix = history.slice(0, tailStart);
   const tail = recapTailToolResults(history.slice(tailStart));
   if (prefix.length < 3) return null;

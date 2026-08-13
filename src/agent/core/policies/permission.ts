@@ -41,6 +41,27 @@ function findSensitivePath(paths: string[]): string | undefined {
   return paths.find((p) => SENSITIVE_PATH_PATTERNS.some((re) => re.test(p)));
 }
 
+/** A bare `env` / `printenv` dumps every environment variable — API keys included — straight into
+ *  the model context. Matched as a whole command segment so `env NODE_ENV=x node app.js` (which
+ *  runs a program rather than printing the environment) doesn't trip it. */
+const ENV_DUMP_RE = /(^|[;&|]\s*)(printenv\b|env\s*($|[;&|]))/;
+
+/** The secrets check applied to `runCommand`, mirroring the CONTENT_READ_TOOLS gate on
+ *  readFile/grep. Without it the file gate was trivially bypassable: `cat .env`,
+ *  `grep -r AWS_SECRET .`, `cat ~/.ssh/id_rsa` and `printenv` are all classified read-only by
+ *  isReadOnlyCommand (cat/grep/env/printenv are in its ALWAYS_READ_ONLY set), so they were
+ *  auto-approved below with NO prompt at all — while `readFile('.env')` correctly asked. That
+ *  asymmetry matters more here than in most agents: nothing redacts tool output, so the contents
+ *  land in the model context and are shipped to whichever free third-party provider is routed,
+ *  several of which train on submitted data. Returns the offending token, or undefined.
+ *  Deliberately errs toward false positives — the cost is one extra approval prompt. */
+function commandTouchesSecrets(command: string): string | undefined {
+  if (!command) return undefined;
+  if (ENV_DUMP_RE.test(command)) return 'the environment (may contain API keys)';
+  // Split on shell separators AND `=` so `--file=.env` is inspected as `.env`.
+  return findSensitivePath(command.split(/[\s'"=]+/).filter(Boolean));
+}
+
 /** Mutating tools that rewrite an EXISTING file's content — the ones a blind edit destroys work
  *  through. `createFile` is excluded: a new file has nothing to read first. */
 const REWRITE_TOOLS = new Set(['writeFile', 'editFile', 'deleteFile']);
@@ -64,6 +85,28 @@ type ToolApprovalStatus = ToolApprovalStatusObject | 'approved' | 'denied' | 'no
 interface ApprovalToolCall {
   toolName: string;
   input: unknown;
+}
+
+/**
+ * Approval policy for NESTED sub-agents — currently `explore`, which runs its own generateText
+ * loop over readFile/grep/glob/listDir. That loop passed no `toolApproval` at all, so the whole
+ * policy below simply never applied to it: `explore("look at the config")` could read `.env`,
+ * `id_rsa` or `.aws/credentials` with no gate whatsoever, a second independent path around the
+ * CONTENT_READ_TOOLS check. Denies outright instead of prompting — a sub-agent has no UI to show
+ * an approval card from, and the parent agent can still read the file through the prompted path
+ * if it genuinely needs to.
+ */
+export function createSubAgentToolApproval() {
+  return async ({ toolCall }: { toolCall: ApprovalToolCall }): Promise<ToolApprovalStatus> => {
+    if (MUTATING_TOOLS.has(toolCall.toolName)) {
+      return { type: 'denied', reason: `"${toolCall.toolName}" is not available inside explore.` };
+    }
+    const hit = findSensitivePath(toolPaths(toolCall.input));
+    if (hit) {
+      return { type: 'denied', reason: `"${hit}" looks like a secrets file — report that it exists instead of reading it.` };
+    }
+    return 'approved';
+  };
 }
 
 /**
@@ -124,6 +167,20 @@ export function createToolApproval(opts: AgentOpts) {
       const command = typeof (toolCall.input as { command?: unknown })?.command === 'string'
         ? (toolCall.input as { command: string }).command
         : '';
+      // Checked BEFORE the read-only fast path below — a secrets-reading command is precisely the
+      // kind that classifies as read-only, so ordering is what makes this gate effective at all.
+      const secretHit = commandTouchesSecrets(command);
+      if (secretHit) {
+        const reason = `This command reads ${secretHit}.`;
+        if (!opts.onPermissionAsk) return { type: 'denied', reason };
+        const resp = await opts.onPermissionAsk({
+          title: 'This tool wants to run a command that reads secrets',
+          pattern: secretHit,
+          command,
+          toolName: name,
+        });
+        return resp === 'reject' ? { type: 'denied', reason } : 'approved';
+      }
       if (command && isReadOnlyCommand(command) && !isDangerous(command)) return 'approved';
     }
 

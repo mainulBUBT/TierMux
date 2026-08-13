@@ -2,6 +2,7 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import { capToolOutput } from '../capOutput';
 import { collectWebSearchResults, formatWebSearchResults } from './tiermuxWeb/search';
+import { tagExternalContent } from './tiermuxWeb/security';
 
 const MAX_CHARS = 8_000;
 const MAX_RESULTS = 8;
@@ -59,7 +60,8 @@ export function createWebSearchTool() {
         }
 
         const formatted = formatWebSearchResults(query, results, attempts, limit, domain);
-        return capToolOutput(formatted, MAX_CHARS, 'Search results truncated.');
+        // See fetchUrl.ts: tag after capping so the safety notice survives truncation.
+        return tagExternalContent(capToolOutput(formatted, MAX_CHARS, 'Search results truncated.'));
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         throw new Error(`Web search failed for "${query}": ${msg}`);

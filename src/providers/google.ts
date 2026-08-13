@@ -302,26 +302,115 @@ export class GoogleProvider extends BaseProvider {
     };
   }
 
+  /**
+   * REAL token-by-token streaming via `:streamGenerateContent?alt=sse`.
+   *
+   * This used to be a fake generator: it awaited the blocking `chatCompletion()` and yielded the
+   * entire reply as ONE chunk. Everything downstream worked, but the user saw the whole answer
+   * appear at once ("splash") instead of streaming, on every Google/Gemini turn — while other
+   * providers, which go through openai-compat's real SSE path, streamed normally. Gemini has
+   * always supported SSE; TierMux simply never called that endpoint.
+   *
+   * Gemini's SSE frames are Gemini-shaped (`{candidates:[{content:{parts:[...]}}]}`), NOT
+   * OpenAI-shaped, so `base.readSseStream` (which JSON.parses each frame straight into a
+   * ChatCompletionChunk) cannot be reused — each frame is converted here instead.
+   */
   async *streamChatCompletion(apiKey: string, messages: ChatMessage[], modelId: string, options?: CompletionOptions): AsyncGenerator<ChatCompletionChunk> {
+    const { contents, systemInstruction } = await toGeminiContents(messages);
+    const base = options?.baseUrlOverride?.trim()?.replace(/\/+$/, '') || API_BASE;
+    const url = `${base}/models/${modelId}:streamGenerateContent?alt=sse`;
+    const res = await this.fetchWithTimeout(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify(this.buildBody(contents, systemInstruction, options, modelId)),
+      signal: options?.abortSignal,
+    }, options?.timeoutMs);
 
-    const resp = await this.chatCompletion(apiKey, messages, modelId, options);
-    const msg = resp.choices[0]?.message;
-    yield {
-      id: resp.id,
-      object: 'chat.completion.chunk',
-      created: resp.created,
-      model: resp.model,
-      choices: [{ index: 0, delta: { role: 'assistant', content: contentToString(msg?.content), tool_calls: msg?.tool_calls }, finish_reason: resp.choices[0]?.finish_reason ?? 'stop' }],
-    };
-    // Usage-only chunk (the router treats usage chunks as data-free), so the
-    // streamed path records real token counts instead of char/4 estimates.
-    yield {
-      id: resp.id,
-      object: 'chat.completion.chunk',
-      created: resp.created,
-      model: resp.model,
-      choices: [],
-      usage: resp.usage,
-    };
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw providerHttpError(res, `Google API error ${res.status}: ${(err as { error?: { message?: string } })?.error?.message ?? res.statusText}`);
+    }
+
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const id = this.makeId();
+    const created = Math.floor(Date.now() / 1000);
+    const frame = (choices: ChatCompletionChunk['choices'], usage?: TokenUsage): ChatCompletionChunk =>
+      ({ id, object: 'chat.completion.chunk', created, model: modelId, choices, ...(usage ? { usage } : {}) });
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let sawText = false;
+    let sawToolCall = false;
+    let lastUsage: GeminiResponse['usageMetadata'];
+    let finishReason: string | undefined;
+    let promptBlockReason: string | undefined;
+    let candidateBlockReason: string | undefined;
+    const BLOCK_REASONS = new Set(['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'OTHER']);
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith(':') || !trimmed.startsWith('data:')) continue;
+          const payload = trimmed.slice(trimmed.indexOf(':') + 1).trim();
+          if (!payload || payload === '[DONE]') continue;
+          let data: GeminiResponse;
+          try { data = JSON.parse(payload) as GeminiResponse; } catch { continue; }
+
+          if (data.usageMetadata) lastUsage = data.usageMetadata;
+          if (data.promptFeedback?.blockReason) promptBlockReason = data.promptFeedback.blockReason;
+          const candidate = data.candidates?.[0];
+          if (candidate?.finishReason) {
+            finishReason = candidate.finishReason;
+            if (BLOCK_REASONS.has(candidate.finishReason.toUpperCase())) candidateBlockReason = candidate.finishReason;
+          }
+
+          const parts = candidate?.content?.parts;
+          // Tool calls arrive whole in Gemini (not fragmented across frames like OpenAI's
+          // argument deltas), so each one is emitted as a complete tool_calls entry.
+          const toolCalls = extractToolCalls(parts);
+          if (toolCalls.length > 0) {
+            sawToolCall = true;
+            yield frame([{ index: 0, delta: { role: 'assistant', tool_calls: toolCalls }, finish_reason: null }]);
+          }
+          const text = extractText(parts);
+          if (text) {
+            sawText = true;
+            yield frame([{ index: 0, delta: { role: 'assistant', content: text }, finish_reason: null }]);
+          }
+        }
+      }
+    } finally {
+      reader.cancel().catch(() => { /* stream already closed */ });
+    }
+
+    // Same block detection the non-streaming path does: a blocked prompt otherwise looks like an
+    // ordinary empty-but-200 answer, and the generic "I wasn't able to produce a response"
+    // fallback upstream gives the user no clue it was a content block.
+    if (!sawText && !sawToolCall && (promptBlockReason || candidateBlockReason)) {
+      throw new Error(`Google blocked this request before generating a reply (${promptBlockReason ?? candidateBlockReason}). Try a different model, or remove/replace the attachment.`);
+    }
+
+    // Closing frame: real finish_reason, then a usage-only frame (the router treats usage frames
+    // as data-free) so the streamed path records real token counts instead of char/4 estimates.
+    yield frame([{ index: 0, delta: {}, finish_reason: sawToolCall ? 'tool_calls' : toGeminiFinishReason(finishReason) }]);
+    if (lastUsage) {
+      const thoughts = lastUsage.thoughtsTokenCount ?? 0;
+      yield frame([], {
+        prompt_tokens: lastUsage.promptTokenCount ?? 0,
+        // Gemini reports thoughtsTokenCount separately from candidatesTokenCount, but TokenUsage's
+        // contract (and Gemini billing) treats reasoning as part of completion — fold it in.
+        completion_tokens: (lastUsage.candidatesTokenCount ?? 0) + thoughts,
+        total_tokens: lastUsage.totalTokenCount ?? 0,
+        ...(lastUsage.thoughtsTokenCount !== undefined ? { reasoning_tokens: thoughts } : {}),
+      });
+    }
   }
 }

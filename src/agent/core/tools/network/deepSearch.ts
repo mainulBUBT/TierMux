@@ -2,6 +2,7 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import { capToolOutput } from '../capOutput';
 import { deepSearch } from './tiermuxWeb/deep-search';
+import { tagExternalContent } from './tiermuxWeb/security';
 
 const MAX_CHARS = 8_000;
 
@@ -59,7 +60,8 @@ export function createDeepSearchTool() {
           })
           .join('\n\n');
 
-        return capToolOutput(`# Deep Search: "${query}"\n${items.length} result(s)\n\n${formatted}`, MAX_CHARS, 'Results truncated.');
+        // See fetchUrl.ts: tag after capping so the safety notice survives truncation.
+        return tagExternalContent(capToolOutput(`# Deep Search: "${query}"\n${items.length} result(s)\n\n${formatted}`, MAX_CHARS, 'Results truncated.'));
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         throw new Error(`Deep search failed for "${query}": ${msg}`);

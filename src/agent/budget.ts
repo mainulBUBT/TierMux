@@ -16,11 +16,31 @@ export function estimateMessagesTokens(messages: ChatMessage[]): number {
   return total;
 }
 
+/** Strip leading `tool` results (and assistant turns that only carry tool_calls) whose partner
+ *  message was trimmed away — providers reject an orphan on either side. Never returns empty
+ *  when given a non-empty list: the newest message is kept as a floor, since a request with no
+ *  messages at all is strictly worse than one with a slightly odd shape. */
+function dropLeadingOrphans(msgs: ChatMessage[]): ChatMessage[] {
+  let i = 0;
+  while (i < msgs.length - 1 && (msgs[i].role === 'tool' || (msgs[i].role === 'assistant' && msgs[i].tool_calls?.length))) i++;
+  return msgs.slice(i);
+}
+
 /**
  * Trim a message list to fit `maxInputTokens`. Keeps a leading system message
  * and the most recent turns; drops older ones. The kept window is started at a
  * `user`/`system` boundary so we never leave an orphaned `tool` result or a
  * dangling assistant tool-call. As a last resort the final message is truncated.
+ *
+ * The LATEST user message — the task actually being worked on — is reserved before
+ * anything else and can never be dropped. A plain newest-first fill puts it last in
+ * line: an agent turn is `[system, user(task), assistant(tool_calls), tool, …]`, so
+ * walking backward spends the whole budget on recent tool output (a single capped
+ * readFile result is ~7.5k tokens) and evicts the task itself. The old
+ * `while (kept[0].role !== 'user') kept.shift()` then emptied whatever remained,
+ * producing a system-prompt-only request: the provider 400s, or the model answers a
+ * question it was never shown. Measured on a realistic turn at a 2.5k budget, the
+ * result was literally `["system"]` with the task gone.
  */
 export function fitMessages(messages: ChatMessage[], maxInputTokens: number): { messages: ChatMessage[]; trimmed: boolean } {
   if (estimateMessagesTokens(messages) <= maxInputTokens) return { messages, trimmed: false };
@@ -28,18 +48,45 @@ export function fitMessages(messages: ChatMessage[], maxInputTokens: number): { 
   const system = messages[0]?.role === 'system' ? [messages[0]] : [];
   const rest = messages.slice(system.length);
 
-  const kept: ChatMessage[] = [];
+  let taskIdx = -1;
+  for (let i = rest.length - 1; i >= 0; i--) if (rest[i].role === 'user') { taskIdx = i; break; }
+
   let used = estimateMessagesTokens(system);
-  for (let i = rest.length - 1; i >= 0; i--) {
+  // Reserved unconditionally, even when it alone busts the budget — the last-resort
+  // truncation below then shrinks it, which still beats dropping it entirely.
+  if (taskIdx >= 0) used += estimateMessagesTokens([rest[taskIdx]]);
+
+  // This turn's own tool loop (everything after the task) is the most valuable remaining
+  // context, so it fills before older history.
+  const after: ChatMessage[] = [];
+  for (let i = rest.length - 1; i > taskIdx; i--) {
     const t = estimateMessagesTokens([rest[i]]);
-    if (used + t > maxInputTokens && kept.length > 0) break;
-    kept.unshift(rest[i]);
+    if (used + t > maxInputTokens) break;
+    after.unshift(rest[i]);
     used += t;
   }
 
-  while (kept.length && kept[0].role !== 'user') kept.shift();
+  const before: ChatMessage[] = [];
+  for (let i = taskIdx - 1; i >= 0; i--) {
+    const t = estimateMessagesTokens([rest[i]]);
+    if (used + t > maxInputTokens) break;
+    before.unshift(rest[i]);
+    used += t;
+  }
 
-  let out = [...system, ...kept];
+  // Start the older-history window on a user boundary so a `tool` result or an assistant
+  // tool-call whose partner was trimmed can't lead the list. Safe to empty: the reserved
+  // task still follows it.
+  while (before.length && before[0].role !== 'user') before.shift();
+
+  // No user message anywhere (unusual — e.g. a synthesis-only call) and nothing fit: keep the
+  // newest message regardless, matching the old `kept.length > 0` floor. A request carrying only
+  // a system prompt is never valid.
+  if (taskIdx < 0 && after.length === 0 && rest.length) after.push(rest[rest.length - 1]);
+
+  let out = taskIdx >= 0
+    ? [...system, ...before, rest[taskIdx], ...after]
+    : [...system, ...dropLeadingOrphans(after)];
 
   if (estimateMessagesTokens(out) > maxInputTokens && out.length) {
     const last = out[out.length - 1];

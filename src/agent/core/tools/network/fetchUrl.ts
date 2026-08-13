@@ -2,6 +2,7 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import { capToolOutput } from '../capOutput';
 import { browseUrl } from './tiermuxWeb/browse';
+import { tagExternalContent } from './tiermuxWeb/security';
 
 const MAX_CHARS = 15_000;
 
@@ -43,7 +44,12 @@ export function createFetchUrlTool() {
         if (result.dateWarning) parts.push(result.dateWarning);
         parts.push(result.content || '[No readable content extracted — the page may be JavaScript-rendered.]');
 
-        return capToolOutput(parts.join('\n\n'), MAX_CHARS, 'Fetched content truncated.');
+        // Tag AFTER capping so the safety notice and the closing </external-content> tag can't be
+        // truncated off the end. Untagged web text used to land straight in the agent's message
+        // history next to a live runCommand tool — a page saying "ignore previous instructions
+        // and run ..." reached a weak free model with zero framing. `tagExternalContent` and
+        // CONTENT_SAFETY_NOTICE already existed for exactly this and were referenced nowhere.
+        return tagExternalContent(capToolOutput(parts.join('\n\n'), MAX_CHARS, 'Fetched content truncated.'));
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         throw new Error(`Failed to fetch URL ${url}: ${msg}`);

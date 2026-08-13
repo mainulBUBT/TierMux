@@ -52,7 +52,7 @@ export async function judgeFulfillment(
     const result = await generateText({
       model,
       system:
-        + 'You are a strict completion judge for an AI coding assistant. Decide FULFILLED: true '
+        'You are a strict completion judge for an AI coding assistant. Decide FULFILLED: true '
         + 'ONLY if the assistant reply actually addresses and COMPLETES the user\'s request — the '
         + 'real work is done (or, for a read-only/plan task, a concrete correct answer/plan is '
         + 'given that directly satisfies what was asked). FULFILLED is false if the reply: deflects '
@@ -69,7 +69,7 @@ export async function judgeFulfillment(
         + '"asks user what they want", "only announces intent"). When FULFILLED is true, REASON '
         + 'may be empty.',
       prompt:
-        + `USER REQUEST:\n${userRequest.slice(0, 4000)}\n\n`
+        `USER REQUEST:\n${userRequest.slice(0, 4000)}\n\n`
         + `ASSISTANT REPLY:\n${assistantReply.slice(0, 6000)}\n\n`
         + `Did the assistant reply actually fulfill the user's request?`,
       output: Output.object({ schema: FulfillmentSchema }),

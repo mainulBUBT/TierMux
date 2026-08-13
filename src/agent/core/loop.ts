@@ -5,7 +5,7 @@
 // tool-result/tool-error/tool-approval-* parts in the expected order — see the plan's spike
 // notes) and maps them onto the existing AgentOpts callbacks. No custom iteration, no custom
 // permission gate, no custom hook system.
-import { streamText, generateText, wrapLanguageModel, isStepCount, pruneMessages, generateObject, NoSuchToolError, InvalidToolInputError } from 'ai';
+import { streamText, generateText, wrapLanguageModel, isStepCount, pruneMessages, generateObject, NoSuchToolError, InvalidToolInputError, ToolCallRepairError } from 'ai';
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -186,6 +186,32 @@ const SYNTH_SUFFIX_STUCK =
  *  runTurn to detect a turn that promised work but called no tool. */
 const ACTION_INTENT_RE = /\b(let me|i'?ll|i will|let'?s|i'?m going to|now i'?ll|i can|i'?d|i should|let me go ahead and)\b[^.!?\n]*\b(read|open|look at|inspect|examine|check|review|fix|edit|update|change|modify|rewrite|replace|implement|create|add|remove|delete|run|execute|search|grep|find|explore|apply|write)\b[^.!?\n]*[:.]?\s*$/i;
 
+/** A DIFFERENT "all talk, no action" shape than ACTION_INTENT_RE: instead of announcing an action
+ *  and stopping, the model explains what to change and pastes the fix as a fenced code block —
+ *  e.g. "here's the updated code snippet:" + ```php ... ``` — as if showing the diff in chat WERE
+ *  the action. Reproduced from real free-model runs (Mistral/GLM) that never called `editFile` at
+ *  all. Deliberately just "did it emit at least one fenced code block" — with hadToolCalls===false
+ *  already required by the caller, a fenced block in an action task kind is the signal; requiring
+ *  a specific announcing phrase (like ACTION_INTENT_RE) would miss the exact cases this exists
+ *  for, since these replies often open with "To do X, you need to..." rather than "let me...". */
+const CODE_FENCE_RE = /```[\s\S]*?```/;
+
+/** A THIRD "all talk, no action" shape: the model works out exactly what needs doing, lists the
+ *  steps, then ENDS by asking permission to start ("Do you want me to proceed with these steps?")
+ *  — having called no tool at all. Captured from a real 2026-08-13 Gemini run that listed
+ *  "locate the route files / verify closure routes" and then stopped.
+ *
+ *  No existing detector caught it: ACTION_INTENT_RE is tail-anchored on an action VERB so a
+ *  trailing question misses; CODE_FENCE_RE needs a fenced block; and answerQuality's
+ *  DEFLECTION_PHRASE is capped at DEFLECTION_MAX_WORDS (40) so a long, well-structured reply is
+ *  excluded before its regex even runs — and "want me to proceed" isn't in that phrase list.
+ *
+ *  Matched only against the TAIL (see the caller) so a long report that merely poses a question
+ *  mid-text doesn't trip it — the signal is specifically "the LAST thing it did was ask instead
+ *  of act". Agent mode has `askQuestions` for genuinely blocking ambiguity, and behavior.md
+ *  already tells the model to act directly, so this shape is a failure, not a clarification. */
+const ASKS_PERMISSION_RE = /\b(do you want me to|would you like me to|shall i|should i (?:go ahead|proceed|start)|do you want (?:me )?to proceed|let me know if you(?:'d| would)? (?:like|want)|want me to (?:proceed|continue|start|go ahead))\b[^?]{0,160}\?\s*$/i;
+
 /** Nudge appended (as a user turn) when a model announced an action but called no tool. Pushes the
  *  SAME model to actually invoke the tool this time instead of re-describing the plan. */
 const FORCE_ACTION_NUDGE =
@@ -196,6 +222,19 @@ const FORCE_ACTION_NUDGE =
   + 'will run from it): <function=TOOL_NAME>{"arg": "value"}</function> — for example '
   + '<function=readFile>{"path": "routes/web.php"}</function>. Put the tag on its own line, not in '
   + 'backticks, using the real tool name and JSON arguments. Emit the call now, then wait for the result.';
+
+/** Nudge appended (as a user turn) when a tool call died with `toolCallRepairFailed` — repair
+ *  exhausted and the model never actually saw why, since an unrepaired InvalidToolInputError
+ *  surfaces as a stream `error` part, not a `tool-error` part the model gets in its context (see
+ *  createRepairToolCall's doc comment). `detail` is the raw SDK error message — genuinely useful
+ *  to the model here (it names the offending tool/field), unlike showing it to the user raw. */
+function forceToolRepairNudge(detail: string): string {
+  return 'Your last tool call failed and could not be automatically repaired:\n\n'
+    + `${detail}\n\n`
+    + 'Common causes: a JSON array/object argument was sent as an escaped STRING instead of a real '
+    + 'array/object, or an argument name that does not exist in the tool\'s schema. Call the SAME '
+    + 'tool again with corrected arguments — do not repeat the same malformed call.';
+}
 
 /** A model declined to look something up and pointed the user elsewhere ("switch to a mode that
  *  can search the web", "I don't have real-time access", "check FIFA's official site") instead of
@@ -781,6 +820,15 @@ interface AttemptResult {
   /** The failure text, same as what went to `onError` — carried through so the caller can show
    *  it as a real reply bubble instead of leaving the user with only the thin error notice. */
   errorMessage?: string;
+  /** Set when `failed` came from a tool call that `repairToolCall`'s 3 tiers all gave up on
+   *  (InvalidToolInputError/NoSuchToolError/ToolCallRepairError escaping streamText) — a weak
+   *  model shape neither deterministic nor model-assisted repair could fix, as opposed to a
+   *  provider/network failure. runTurn uses this to decide the failure is worth one more attempt
+   *  with an explicit "here's what was wrong with your last call" nudge, since the model never
+   *  actually saw why it failed (see AI SDK's own docs: an unrepaired InvalidToolInputError comes
+   *  back as a stream `error` part, not a `tool-error` part, so it never reaches the model like a
+   *  normal tool failure would). */
+  toolCallRepairFailed?: boolean;
 }
 
 const TASK_KIND_VALUES = ['trivial', 'chat', 'agent', 'coding', 'debug', 'longContext', 'vision'] as const;
@@ -1107,6 +1155,23 @@ async function runAttempt(
   let text = '';
   let reasoning = '';
   const workMessages: ChatMessage[] = [];
+  // Declared OUT here, not inside the try, so the catch below can report what actually happened.
+  // They used to live in the try body, which left the catch no choice but to hardcode
+  // `hadToolCalls: false, hadMutatingToolCall: false, openedFiles: []`. An exception can escape
+  // streamText long AFTER real work ran (e.g. tiers 1-3 of repairToolCall all miss on step 5,
+  // when step 3 already wrote a file), so those falsy values were a lie — and every guard built
+  // on them was silently disarmed on this path: `!first.hadToolCalls` in the repair retry and
+  // `!first.hadMutatingToolCall` in `canEscalate` are precisely the "never retry past a mutation"
+  // invariant, and both were structurally always-true after a caught error. The result was a
+  // retry that re-ran the turn from the original messages with no record of the edit already on
+  // disk — duplicating the side effect.
+  let hadToolCalls = false;
+  let hadMutatingToolCall = false;
+  // True once a verification-shaped tool ran AFTER the most recent mutating call. Reset by each
+  // new mutation, so "edit, test, edit again" correctly counts as unverified — the last edit is
+  // the one the completion claim is about.
+  let verifiedAfterMutation = false;
+  const openedFiles: string[] = [];
 
   try {
     diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · streamText starting`);
@@ -1198,13 +1263,6 @@ async function runAttempt(
       onStepStart: () => opts.onStep('thinking', 'Thinking…'),
     } as any);
 
-    let hadToolCalls = false;
-    let hadMutatingToolCall = false;
-    // True once a verification-shaped tool ran AFTER the most recent mutating call. Reset by each
-    // new mutation, so "edit, test, edit again" correctly counts as unverified — the last edit is
-    // the one the completion claim is about.
-    let verifiedAfterMutation = false;
-    const openedFiles: string[] = [];
 
     // ── Two-buffer state machine (speculative draft vs canonical reply) ──────────────
     // A tool call is a MIDDLE step, not a final answer. Text the model emits in a step that ALSO
@@ -1377,19 +1435,38 @@ async function runAttempt(
         content: step.text || null,
         tool_calls: calls.map((tc) => ({ id: tc.toolCallId, type: 'function' as const, function: { name: tc.toolName, arguments: JSON.stringify(tc.input ?? {}) } })),
       });
+      const settled = new Set<string>();
       for (const tr of step.toolResults ?? []) {
         workMessages.push({ role: 'tool', content: typeof tr.output === 'string' ? tr.output : JSON.stringify(tr.output ?? ''), tool_call_id: tr.toolCallId });
+        settled.add(tr.toolCallId);
       }
-      // `askQuestions` has no `execute`, so `step.toolResults` never contains a matching entry —
-      // synthesize a short placeholder now so this call's tool_call/tool-result pair is complete
-      // in workMessages from the moment it's built, not just after the user eventually answers.
-      // An orphaned tool_call with no result violates the same invariant synth-shrink.e2e.ts
-      // guards ("no tool-call survives without its result" — AI_MissingToolResultsError). Kept
-      // deliberately short: this string persists in history across every later turn of the session.
+      // A tool call that THREW is reported as a `tool-error` part on `step.content`, and never
+      // appears in `step.toolResults` — in ai@7 `TypedToolError` is a separate type from
+      // `TypedToolResult`. Without this pass the failing call stayed an ORPHANED tool_call, which
+      // `sanitizeCoreMessages` then deleted wholesale on every later turn (call AND error, since
+      // there was no result to pair it with). Net effect: the model had no record that the call
+      // was ever attempted or why it failed, so on "try again" it reissued the identical failing
+      // call — e.g. an `editFile` whose `search` text didn't match, retried verbatim.
+      for (const part of (step.content ?? []) as Array<{ type?: string; toolCallId?: string; error?: unknown }>) {
+        if (part?.type !== 'tool-error' || !part.toolCallId || settled.has(part.toolCallId)) continue;
+        const msg = part.error instanceof Error ? part.error.message : String(part.error ?? 'unknown error');
+        workMessages.push({ role: 'tool', content: `Tool call failed: ${msg}`, tool_call_id: part.toolCallId });
+        settled.add(part.toolCallId);
+      }
+      // Anything STILL unsettled gets a short placeholder, so no tool_call is ever orphaned.
+      // Covers `askQuestions` (no `execute`, so it never yields a result) and a call denied by the
+      // approval policy (neither a result nor an error). An orphan here violates the same
+      // invariant synth-shrink.e2e.ts guards ("no tool-call survives without its result" —
+      // AI_MissingToolResultsError). Kept deliberately short: these strings persist in history
+      // across every later turn of the session.
       for (const tc of calls) {
-        if (tc.toolName === 'askQuestions') {
-          workMessages.push({ role: 'tool', content: 'Clarification requested.', tool_call_id: tc.toolCallId });
-        }
+        if (settled.has(tc.toolCallId)) continue;
+        workMessages.push({
+          role: 'tool',
+          content: tc.toolName === 'askQuestions' ? 'Clarification requested.' : 'No result was recorded for this tool call.',
+          tool_call_id: tc.toolCallId,
+        });
+        settled.add(tc.toolCallId);
       }
     }
     if (text.trim()) workMessages.push({ role: 'assistant', content: text });
@@ -1482,10 +1559,20 @@ async function runAttempt(
     // every other error so the user sees what actually went wrong.
     const genuineFailure = !(opts.abortSignal?.aborted && isAbortError(err));
     const errMsg = err instanceof Error ? err.message : String(err);
+    // repairToolCall's 3 tiers all gave up and the SDK re-threw instead of feeding the model a
+    // normal retryable tool-error (see AI SDK docs: an unrepaired input error is a stream `error`
+    // part, not a `tool-error` part). The model never saw why its call failed — worth one more
+    // attempt with an explicit nudge (runTurn) instead of dying here on the raw SDK message.
+    const toolCallRepairFailed = genuineFailure
+      && (InvalidToolInputError.isInstance(err) || NoSuchToolError.isInstance(err) || ToolCallRepairError.isInstance(err));
     if (genuineFailure) {
       opts.onError(errMsg);
     }
-    return { text, reasoning: reasoning.trim(), platform, model, runtimeName, paused: false, workMessages, hadToolCalls: false, hadMutatingToolCall: false, verifiedAfterMutation: false, openedFiles: [], failed: genuineFailure && !text.trim(), errorMessage: genuineFailure ? errMsg : undefined };
+    // Report the REAL tool/mutation state, not hardcoded falsies — see the hoisted declarations
+    // above. `workMessages` is only assembled after the stream loop, so on this path it can still
+    // be empty even though tools ran; `hadMutatingToolCall` is what the retry guards key on, and
+    // it is now accurate, so a caught error after a real edit can no longer unlock a duplicate.
+    return { text, reasoning: reasoning.trim(), platform, model, runtimeName, paused: false, workMessages, hadToolCalls, hadMutatingToolCall, verifiedAfterMutation, openedFiles, failed: genuineFailure && !text.trim(), errorMessage: genuineFailure ? errMsg : undefined, toolCallRepairFailed };
   }
 }
 
@@ -1580,6 +1667,29 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   const first = await runAttempt(router, opts, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn, undefined, planGuidance);
   let final = first;
 
+  // Tool-call-repair-exhausted retry — repairToolCall's 3 tiers all gave up on a malformed call
+  // and the SDK threw instead of feeding the model a normal retryable tool-error (see
+  // toolCallRepairFailed's doc comment). The model never saw why it failed, so give it one shot
+  // with the raw error named explicitly. `first` already has failed/errorMessage set from the
+  // catch path — if the retry doesn't produce anything usable either, that original failure
+  // stands as `final` and surfaces exactly as it would have without this retry.
+  //
+  // Gated on hadMutatingToolCall, NOT hadToolCalls (same rule canEscalate uses): the retry re-runs
+  // the turn from the ORIGINAL messages, so a write/delete/command that already landed would be
+  // duplicated, while re-running reads is merely wasteful and idempotent. Gating on hadToolCalls
+  // would also make this dead in its most common case — a model that reads a file and THEN emits
+  // the unrepairable edit call, which is exactly the shape that motivated the retry.
+  if (first.toolCallRepairFailed && !first.hadMutatingToolCall && !opts.abortSignal?.aborted) {
+    diagLog('turn.forceAction', 'toolCallRepairFailed: retrying with the SDK error named explicitly');
+    router.noteToolSoftFailure(first.platform, first.model);
+    const nudged: AgentOpts = {
+      ...opts,
+      messages: [...opts.messages, { role: 'user', content: forceToolRepairNudge(first.errorMessage ?? 'Invalid tool input.') }],
+    };
+    const retried = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn);
+    if (!retried.failed && (retried.hadToolCalls || retried.text.trim())) final = retried;
+  }
+
   // Force-action retry — a weak model announced an action but called NO tool ("Let me read the
   // file and fix it:") and then stopped, so nothing happened and the turn died on a coherent-looking
   // but empty promise (assessAnswerQuality can't catch it — the text is long and well-formed). Only
@@ -1587,8 +1697,27 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // Re-invoke the SAME model with the model's own promise plus an explicit "actually do it now"
   // nudge so it follows through instead of re-describing. One retry only; accept whatever it yields.
   const wantsAction = taskKind === 'agent' || taskKind === 'coding' || taskKind === 'debug' || taskKind === 'longContext';
-  const canRetryToolUse = !first.hadToolCalls && !first.stopReason && !opts.abortSignal?.aborted;
+  // final !== first: the tool-call-repair retry above already spent this turn's one retry.
+  const canRetryToolUse = final === first && !first.hadToolCalls && !first.stopReason && !opts.abortSignal?.aborted;
   const announcedNoAction = wantsAction && ACTION_INTENT_RE.test(first.text.trim());
+  // The "explained + pasted code instead of calling editFile/writeFile" shape — see
+  // CODE_FENCE_RE's doc comment. Only for action task kinds (a real 'chat'/'trivial' question is
+  // legitimately answered with an example snippet), and only when nothing already explains the
+  // miss, so this stays a narrow net rather than firing on every code-containing reply.
+  // Agent mode ONLY. `taskKind` comes from classifyTaskSmart for every non-plan mode, so a plain
+  // Ask-mode question like "write me a regex for semver" classifies as `coding` and would trip
+  // `wantsAction` — but Ask mode has no mutating tool to call, and answering with a fenced snippet
+  // is the CORRECT behavior there. Without this gate the retry fired on a good answer and
+  // FORCE_ACTION_NUDGE told the model to call tools it hadn't been given.
+  const pastedCodeInsteadOfActing = wantsAction && opts.mode === 'agent' && !announcedNoAction && CODE_FENCE_RE.test(first.text);
+  // "Listed the steps, then asked permission to start" — see ASKS_PERMISSION_RE. Tested against
+  // the TAIL only (last 240 chars), so a long report that asks something mid-way is untouched;
+  // the signal is that the LAST thing the turn did was ask instead of act. Agent mode only, for
+  // the same reason as pastedCodeInsteadOfActing: in Ask/Plan mode offering next steps is correct,
+  // and Plan mode has `askQuestions` for genuinely blocking ambiguity.
+  const askedPermissionInsteadOfActing = wantsAction && opts.mode === 'agent'
+    && !announcedNoAction && !pastedCodeInsteadOfActing
+    && ASKS_PERMISSION_RE.test(first.text.trim().slice(-240));
   // Declined-websearch fires for ANY taskKind (a plain chat question is exactly where a weak
   // model tells the user to "switch modes" instead of calling the webSearch tool it was given).
   const declinedWebSearch = canRetryToolUse && DECLINED_WEBSEARCH_RE.test(first.text.trim());
@@ -1596,12 +1725,13 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // runCommand tool to point the model back at). Only classify when the cheaper checks above
   // didn't already explain the miss, so the classify call stays rare.
   let falseCapabilityDecline = false;
-  if (canRetryToolUse && opts.mode === 'agent' && !announcedNoAction && !declinedWebSearch) {
+  if (canRetryToolUse && opts.mode === 'agent' && !announcedNoAction && !declinedWebSearch && !pastedCodeInsteadOfActing && !askedPermissionInsteadOfActing) {
     falseCapabilityDecline = await detectFalseCapabilityDecline(router, first.text.trim(), opts.abortSignal);
   }
-  if (canRetryToolUse && (announcedNoAction || declinedWebSearch || falseCapabilityDecline)) {
+  if (canRetryToolUse && (announcedNoAction || pastedCodeInsteadOfActing || askedPermissionInsteadOfActing || declinedWebSearch || falseCapabilityDecline)) {
     const nudgeText = declinedWebSearch ? FORCE_WEBSEARCH_NUDGE : falseCapabilityDecline ? FORCE_RUNTIME_ACCESS_NUDGE : FORCE_ACTION_NUDGE;
-    const reason = declinedWebSearch ? 'declinedWebSearch' : falseCapabilityDecline ? 'falseCapabilityDecline' : 'announcedNoAction';
+    const reason = declinedWebSearch ? 'declinedWebSearch' : falseCapabilityDecline ? 'falseCapabilityDecline'
+      : pastedCodeInsteadOfActing ? 'pastedCodeInsteadOfActing' : askedPermissionInsteadOfActing ? 'askedPermissionInsteadOfActing' : 'announcedNoAction';
     diagLog('turn.forceAction', `${reason}: retrying with a use-the-tool nudge`);
     // Learn-by-failure: announcing an action but calling no tool is a tool-use failure this model
     // "succeeded" (HTTP 200) on. Record a strike so repeat offenders get benched from tool routing.
@@ -1611,8 +1741,15 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       messages: [...opts.messages, { role: 'assistant', content: first.text }, { role: 'user', content: nudgeText }],
     };
     const acted = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn);
-    // Prefer the retry only if it actually acted or produced non-empty text — never regress to blank.
-    if (acted.hadToolCalls || acted.text.trim()) final = acted;
+    // Take the retry only if it ACTUALLY ACTED. The entire point of a force-action retry is to
+    // convert a described action into a performed one; a retry that still called no tool has not
+    // done that, and the old `hadToolCalls || text.trim()` accepted it purely for being non-empty
+    // — which regularly made the turn WORSE. Observed shapes: "I already gave you the corrected
+    // code above." replacing the corrected code, and a declined-websearch retry re-explaining the
+    // refusal. The ungrounded retry below already uses this stricter rule; match it. The only
+    // exception is a first attempt with no text at all, where any text beats blank (defensive —
+    // every trigger above requires non-empty text, so this shouldn't be reachable today).
+    if (acted.hadToolCalls || (!first.text.trim() && acted.text.trim())) final = acted;
   }
 
   // Quality-based escalation — restores a pipeline that existed under the old OpenCode-backed

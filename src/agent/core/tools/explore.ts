@@ -8,6 +8,7 @@ import { createReadTool } from './filesystem/read';
 import { createGrepTool } from './workspace/grep';
 import { createGlobTool } from './workspace/glob';
 import { createListDirTool } from './workspace/list';
+import { createSubAgentToolApproval } from '../policies/permission';
 
 // The whole point is to keep the MAIN agent's context small, so this sub-loop is deliberately
 // short: enough steps to search + read a few files, not to solve a task. It runs on the cheap
@@ -99,6 +100,9 @@ export function createExploreTool(router: Router, abortSignal?: AbortSignal) {
         system: EXPLORE_SYSTEM,
         prompt: task,
         tools: tools as any,
+        // Without this the sub-agent ran completely ungated — the parent turn's toolApproval does
+        // not reach a nested generateText, so the secrets-file check never applied here.
+        toolApproval: createSubAgentToolApproval() as any,
         stopWhen: isStepCount(MAX_STEPS),
         abortSignal: signal,
       } as any);

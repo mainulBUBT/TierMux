@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import { spawn } from 'child_process';
 import type { RunContext } from '../agent/runContext';
 import { isReadOnlyCommand } from './commandClassify';
+import { resolveWorkspacePath } from '../agent/core/tools/resolvePath';
 import type { PersistentShellManager } from './persistentShell';
 
 export type CommandApproval = 'always' | 'allowlist' | 'never';
@@ -88,13 +89,18 @@ export class CommandGate {
     return folders[0].uri;
   }
 
-  /** Resolve an optional cwd, confined to the workspace root. */
+  /** Resolve an optional cwd, confined to the workspace root. Delegates to the shared
+   *  `resolveWorkspacePath` so `cwd` gets the same absolute-path normalization and
+   *  segment-boundary containment check every path-taking tool uses — a bare `startsWith`
+   *  prefix test accepted a sibling directory (`../Proj-backup` under root `../Proj`). */
   private resolveCwd(cwd?: string): string {
     const root = this.root();
     if (!cwd) return root.fsPath;
-    const uri = vscode.Uri.joinPath(root, cwd.replace(/^\/+/, ''));
-    if (!uri.path.startsWith(root.path)) throw new Error(`cwd escapes the workspace: ${cwd}`);
-    return uri.fsPath;
+    try {
+      return resolveWorkspacePath(cwd).fsPath;
+    } catch {
+      throw new Error(`cwd escapes the workspace: ${cwd}`);
+    }
   }
 
   private isAllowlisted(command: string): boolean {
@@ -129,7 +135,15 @@ export class CommandGate {
     return choice === 'Run';
   }
 
-  async run(command: string, cwd?: string, ctx?: RunContext): Promise<CommandResult> {
+  /** Bounds a model-requested per-call timeout override. Floors at 1s (a smaller value is almost
+   *  certainly a mistake, not intent) and caps at 10 minutes — long enough for a real install/
+   *  build, short enough that a stuck command still gets reported back within one turn. */
+  private clampTimeout(overrideMs?: number): number {
+    if (overrideMs === undefined || !Number.isFinite(overrideMs)) return this.timeoutMs();
+    return Math.min(Math.max(overrideMs, 1_000), 600_000);
+  }
+
+  async run(command: string, cwd?: string, ctx?: RunContext, timeoutOverrideMs?: number): Promise<CommandResult> {
     const cmd = command.trim();
     if (!cmd) return { exitCode: null, stdout: '', stderr: '', error: 'Empty command.' };
     if (this.policy() === 'never') {
@@ -138,7 +152,7 @@ export class CommandGate {
     if (!(await this.approve(cmd, cwd, ctx))) {
       return { exitCode: null, stdout: '', stderr: '', error: 'User declined to run the command.' };
     }
-    return this.execute(cmd, cwd, ctx);
+    return this.execute(cmd, cwd, ctx, this.clampTimeout(timeoutOverrideMs));
   }
 
   /**
@@ -146,16 +160,17 @@ export class CommandGate {
    * `toolApproval` policy) — skips `approve()` entirely so the user is never asked twice for the
    * same call. Still respects the hard `commandApproval: 'never'` off-switch as a safety net.
    */
-  async runApproved(command: string, cwd?: string, ctx?: RunContext): Promise<CommandResult> {
+  async runApproved(command: string, cwd?: string, ctx?: RunContext, timeoutOverrideMs?: number): Promise<CommandResult> {
     const cmd = command.trim();
     if (!cmd) return { exitCode: null, stdout: '', stderr: '', error: 'Empty command.' };
     if (this.policy() === 'never') {
       return { exitCode: null, stdout: '', stderr: '', error: 'Command execution is disabled (tiermux.agent.commandApproval = "never").' };
     }
-    return this.execute(cmd, cwd, ctx);
+    return this.execute(cmd, cwd, ctx, this.clampTimeout(timeoutOverrideMs));
   }
 
-  private async execute(cmd: string, cwd: string | undefined, ctx: RunContext | undefined): Promise<CommandResult> {
+  private async execute(cmd: string, cwd: string | undefined, ctx: RunContext | undefined, timeoutMsOverride?: number): Promise<CommandResult> {
+    const effectiveTimeout = timeoutMsOverride ?? this.timeoutMs();
     let workdir: string;
     try {
       workdir = this.resolveCwd(cwd);
@@ -165,7 +180,7 @@ export class CommandGate {
 
     if (this.shellManager && ctx?.sessionId) {
       try {
-        const { stdout, exitCode } = await this.shellManager.run(ctx.sessionId, cmd, cwd ? workdir : undefined, this.timeoutMs());
+        const { stdout, exitCode } = await this.shellManager.run(ctx.sessionId, cmd, cwd ? workdir : undefined, effectiveTimeout);
         return { exitCode, stdout: truncate(stdout), stderr: '' };
       } catch {
         // Shell integration unavailable/never activated for this terminal — fall through to a
@@ -187,8 +202,8 @@ export class CommandGate {
       const child = spawn(cmd, { cwd: workdir, shell: true });
       const timer = setTimeout(() => {
         child.kill();
-        finish({ exitCode: null, stdout: truncate(stdout), stderr: truncate(stderr), error: `Command timed out after ${this.timeoutMs()}ms.` });
-      }, this.timeoutMs());
+        finish({ exitCode: null, stdout: truncate(stdout), stderr: truncate(stderr), error: `Command timed out after ${effectiveTimeout}ms.` });
+      }, effectiveTimeout);
 
       child.stdout?.on('data', (d) => { if (stdout.length < MAX_OUTPUT) stdout += d.toString(); });
       child.stderr?.on('data', (d) => { if (stderr.length < MAX_OUTPUT) stderr += d.toString(); });

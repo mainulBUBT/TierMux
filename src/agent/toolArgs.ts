@@ -3,6 +3,83 @@
 interface JsonSchemaish {
   type?: string;
   properties?: Record<string, JsonSchemaish>;
+  items?: JsonSchemaish;
+}
+
+/** Parse the leading balanced JSON value (object or array) out of `text`, discarding anything
+ *  after it. Needed because a weak model can glue hallucinated trailing content onto an
+ *  otherwise-valid value — e.g. `[{"search":"a","replace":"b"}], "oldEdits": [...]` — which makes
+ *  `JSON.parse` on the whole string throw even though the real value up front is fine. Tracks a
+ *  bracket stack (not a single depth counter) so `{`/`[` can nest in either order, and honors
+ *  string-literal/escape state so a bracket character inside a quoted value doesn't miscount. */
+function leadingBalancedJsonValue(text: string): unknown | undefined {
+  const first = text[0];
+  if (first !== '{' && first !== '[') return undefined;
+  const stack: string[] = [];
+  let inStr = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{' || ch === '[') { stack.push(ch); continue; }
+    if (ch === '}' || ch === ']') {
+      stack.pop();
+      if (stack.length === 0) {
+        try { return JSON.parse(text.slice(0, i + 1)); } catch { return undefined; }
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Un-stringify `value` against `schema` if it should be an array/object per the schema but
+ *  arrived as a JSON-encoded string, then recurse into array items / object properties so a
+ *  NESTED field stringified inside an already-correctly-typed parent (e.g. `askQuestions`'
+ *  `questions[i].options`, one level inside the outer `questions` array) gets the same treatment
+ *  — not just the top-level args object's own immediate fields. Mutates array/object values in
+ *  place and returns the (possibly replaced) value; sets `state.changed` on any repair. */
+function repairValueAgainstSchema(value: unknown, schema: JsonSchemaish | undefined, state: { changed: boolean }): unknown {
+  if (!schema) return value;
+
+  if ((schema.type === 'array' || schema.type === 'object') && typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+      let inner: unknown;
+      try {
+        inner = JSON.parse(trimmed);
+      } catch {
+        // Whole string didn't parse — try the leading balanced value in case trailing
+        // hallucinated content (e.g. a stray extra key) was glued on after it.
+        inner = leadingBalancedJsonValue(trimmed);
+      }
+      const isMatch = schema.type === 'array'
+        ? Array.isArray(inner)
+        : inner !== null && typeof inner === 'object' && !Array.isArray(inner);
+      if (isMatch) {
+        value = inner;
+        state.changed = true;
+      }
+    }
+  }
+
+  if (schema.type === 'array' && Array.isArray(value) && schema.items) {
+    return value.map((el) => repairValueAgainstSchema(el, schema.items, state));
+  }
+  if (schema.type === 'object' && value !== null && typeof value === 'object' && !Array.isArray(value) && schema.properties) {
+    const obj = value as Record<string, unknown>;
+    for (const key of Object.keys(obj)) {
+      const propSchema = schema.properties[key];
+      if (propSchema) obj[key] = repairValueAgainstSchema(obj[key], propSchema, state);
+    }
+  }
+
+  return value;
 }
 
 export function repairToolArguments(args: string, paramSchema?: JsonSchemaish): string {
@@ -33,28 +110,10 @@ export function repairToolArguments(args: string, paramSchema?: JsonSchemaish): 
     return changed ? JSON.stringify(parsed) : args;
   }
 
-  const props = paramSchema?.properties;
-  if (props) {
-    const obj = parsed as Record<string, unknown>;
-    for (const [key, value] of Object.entries(obj)) {
-      if (typeof value !== 'string') continue;
-      const want = props[key]?.type;
-      if (want !== 'array' && want !== 'object') continue;
-      const trimmed = value.trim();
-      if (!(trimmed.startsWith('[') || trimmed.startsWith('{'))) continue;
-      try {
-        const inner = JSON.parse(trimmed);
-        const isMatch = want === 'array'
-          ? Array.isArray(inner)
-          : inner !== null && typeof inner === 'object' && !Array.isArray(inner);
-        if (isMatch) {
-          obj[key] = inner;
-          changed = true;
-        }
-      } catch {
-
-      }
-    }
+  if (paramSchema?.properties) {
+    const state = { changed };
+    parsed = repairValueAgainstSchema(parsed, { type: 'object', properties: paramSchema.properties }, state);
+    changed = state.changed;
   }
 
   return changed ? JSON.stringify(parsed) : args;
@@ -160,6 +219,43 @@ function balancedJsonFrom(text: string, start: number): { text: string; end: num
   return null; // truncated before the matching close — caller skips
 }
 
+/** Index of the `{` opening a `<function=NAME>`'s JSON body, or -1 if this occurrence doesn't have
+ *  one (meaning it belongs to the `<parameter=…>` dialect, shape 6). Skips leading whitespace AND
+ *  an opening code fence: weak models wrap JSON in ```json … ``` constantly — the rest of this
+ *  codebase already fights that in stripJsonFence — and a fenced body used to fail the bare
+ *  `text[after + lead] !== '{'` test, so the call was dropped by shape 1 and then found no
+ *  `<parameter=` for shape 6 either, vanishing entirely.
+ *
+ *  Doubles as the ownership boundary between shapes 1 and 6: `>= 0` means shape 1 owns this
+ *  occurrence, `-1` means shape 6 does. That makes them provably exclusive per-occurrence, which
+ *  is what lets shape 6 run over the same text instead of being suppressed whenever shape 1
+ *  matched anything (a reply mixing both dialects used to silently lose the second call). */
+function jsonBodyStart(text: string, after: number): number {
+  const lead = /^\s*/.exec(text.slice(after))![0].length;
+  let i = after + lead;
+  const fence = /^```[a-zA-Z0-9_-]*[ \t]*\r?\n?/.exec(text.slice(i));
+  if (fence) i += fence[0].length;
+  return text[i] === '{' ? i : -1;
+}
+
+/** Normalize a rescued call's argument payload to a JSON-object string, or null if it isn't one.
+ *  Weak models emit it two ways: as a real object (`"arguments": {...}`) or — mimicking the
+ *  OpenAI wire format, where `arguments` is literally a string — as an ESCAPED JSON STRING
+ *  (`"arguments": "{\"path\":\"src/app.ts\"}"`). The string form failed the old
+ *  `typeof inner === 'object'` test, so the call was dropped with no log and no fallthrough: no
+ *  tool ran and the raw JSON streamed to chat as the final answer — the exact "tool call as text"
+ *  symptom this module exists to prevent, triggered by the single most standard encoding there is. */
+function liftArgsPayload(inner: unknown): string | null {
+  if (inner !== null && typeof inner === 'object') return JSON.stringify(inner);
+  if (typeof inner === 'string') {
+    const t = inner.trim();
+    // Hand a valid object literal through as-is — repairToolArguments runs next and expects
+    // exactly this shape (a JSON string), so re-encoding would only add a layer to strip.
+    if (t.startsWith('{')) { try { JSON.parse(t); return t; } catch { return null; } }
+  }
+  return null;
+}
+
 /** First balanced JSON object at or after `from`, or null. */
 function firstBalancedJson(text: string, from: number): { text: string; end: number } | null {
   const brace = text.indexOf('{', from);
@@ -192,9 +288,9 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     const name = m[1];
     const after = m.index + m[0].length;
     if (!toolNames.has(name)) continue;
-    const lead = /^\s*/.exec(text.slice(after))![0].length;
-    if (text[after + lead] !== '{') continue;
-    const obj = balancedJsonFrom(text, after + lead);
+    const jsonStart = jsonBodyStart(text, after);
+    if (jsonStart < 0) continue;
+    const obj = balancedJsonFrom(text, jsonStart);
     if (!obj) continue;
     calls.push({ name, arguments: obj.text });
     fnAnchor.lastIndex = obj.end;
@@ -212,8 +308,8 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
       if (!obj) continue;
       let parsed: { arguments?: unknown };
       try { parsed = JSON.parse(obj.text); } catch { blobAnchor.lastIndex = m.index + m[0].length; continue; }
-      const inner = parsed?.arguments;
-      if (inner != null && typeof inner === 'object') calls.push({ name, arguments: JSON.stringify(inner) });
+      const lifted = liftArgsPayload(parsed?.arguments);
+      if (lifted !== null) calls.push({ name, arguments: lifted });
       blobAnchor.lastIndex = obj.end;
     }
   }
@@ -230,8 +326,8 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
       if (!obj) continue;
       let parsed: { parameters?: unknown };
       try { parsed = JSON.parse(obj.text); } catch { typedAnchor.lastIndex = m.index + m[0].length; continue; }
-      const inner = parsed?.parameters;
-      if (inner != null && typeof inner === 'object') calls.push({ name, arguments: JSON.stringify(inner) });
+      const lifted = liftArgsPayload(parsed?.parameters);
+      if (lifted !== null) calls.push({ name, arguments: lifted });
       typedAnchor.lastIndex = obj.end;
     }
   }
@@ -290,7 +386,14 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     }
   }
 
-  if (calls.length === 0) {
+  {
+    // NOTE: deliberately NOT gated on `calls.length === 0`, unlike shapes 2-5. Shape 6 shares the
+    // `<function=NAME>` opener with shape 1, and `jsonBodyStart` splits ownership cleanly between
+    // them (JSON body → shape 1, tagged parameters → shape 6), so both can scan the full text
+    // without double-counting an occurrence. Under the old guard a reply that mixed the two — very
+    // common, since weak models switch dialects between calls in one turn — kept only whichever
+    // came first: a verified repro dropped the `editFile` entirely while the `readFile` went
+    // through, so zero bytes were written and nothing reported an error.
     // Shape 6: the Hermes/Qwen `<parameter=KEY>` dialect — same `<function=NAME>` opener as
     // shape 1 but with tagged parameters instead of a JSON body, usually wrapped in <tool_call>:
     //   <tool_call>
@@ -315,6 +418,9 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
       const bodyStart = m.index + m[0].length;
       fnParamAnchor.lastIndex = bodyStart;
       if (!toolNames.has(name)) continue;
+      // This occurrence has a JSON body — shape 1 already claimed it. Skipping here is what keeps
+      // the two shapes exclusive now that both run unconditionally.
+      if (jsonBodyStart(text, bodyStart) >= 0) continue;
       const closeRe = /<\/function>/g;
       closeRe.lastIndex = bodyStart;
       const close = closeRe.exec(text);
@@ -328,12 +434,28 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
         // would either fail or (worse) succeed and reshape it.
         args[p[1]] = raw.includes('\n') ? raw : coerceInlineArgValue(raw);
       }
-      if (Object.keys(args).length > 0) calls.push({ name, arguments: JSON.stringify(args) });
+      // Pushed even with NO parameters. A parameterless tool (`listTodos`, `getDiagnostics` with
+      // no args) legitimately emits `<function=listTodos></function>`, and the old
+      // `Object.keys(args).length > 0` guard meant such a call could never be rescued at all —
+      // the turn died with the raw XML shown as the answer. Safe now only because the
+      // `jsonBodyStart` check above already excluded shape 1's occurrences: without it this would
+      // push a duplicate `{}` call for every JSON-bodied one.
+      calls.push({ name, arguments: JSON.stringify(args) });
       if (close) fnParamAnchor.lastIndex = close.index + close[0].length;
     }
   }
 
-  return { detected: calls.length > 0, calls };
+  // Cheap insurance now that shapes 1 and 6 both scan the full text: collapse identical
+  // (name, arguments) pairs so no dialect overlap can ever run the same tool call twice.
+  const seen = new Set<string>();
+  const unique = calls.filter((c) => {
+    const key = `${c.name} ${c.arguments}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return { detected: unique.length > 0, calls: unique };
 }
 
 /** Coerce one <arg_value> payload to a JS value: JSON-parse it so `30`→number, `true`→boolean,
