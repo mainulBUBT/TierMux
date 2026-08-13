@@ -1287,6 +1287,7 @@ async function runAttempt(
     let phase: Phase = 'idle';
     let finalBuffer = '';    // canonical reply — last pure-text (final-answer) step only
     let stepText = '';       // text accumulated in the CURRENT step (provisional until finish-step)
+    let stepChatText = '';   // the subset of stepText that streamed to the CHAT bubble as a draft
     let stepHasTool = false; // current step issued a tool call → its text is narration
     // Per-step live streaming: once we've SEEN a tool call in the current step, further text in
     // this step is narration being generated alongside the tool call — route to reasoning. We
@@ -1298,19 +1299,23 @@ async function runAttempt(
 
     for await (const part of (result as any).fullStream) {
       if (part.type === 'start-step') {
-        stepText = ''; stepHasTool = false; streamedThisStep = false; lastRepetitionCheckLen = 0;
+        stepText = ''; stepChatText = ''; stepHasTool = false; streamedThisStep = false; lastRepetitionCheckLen = 0;
       } else if (part.type === 'finish-step') {
         // Commit/discard by intent. A pure-text step (no tool call) is an answer step — its text
         // is canonical; the LAST such step wins (earlier ones, if any, are superseded). A tool
         // step's text was narration → route it to reasoning (CoT) instead of the chat reply.
         if (stepHasTool) {
-          if (stepText.trim()) {
+          // Only the part that went to the CHAT bubble needs retrospective routing — text emitted
+          // once the step was already known to be a tool step streamed to `onReasoning` delta by
+          // delta as it arrived (see text-delta below) and is in `reasoning` already. Re-emitting
+          // it here would print it twice in the CoT block, which appends what it receives.
+          if (stepChatText.trim()) {
             // Retrospective routing: this text streamed live to the chat bubble as a draft, but
             // the step turned out to be a tool-planning step. Treat it as thinking instead. The
             // webview's toolStatus/reasoning path will render it in the CoT block, and the
             // assistantMessage reconciliation drops the draft bubble.
-            reasoning += stepText;
-            opts.onReasoning(stepText);
+            reasoning += stepChatText;
+            opts.onReasoning(stepChatText);
           }
         } else if (stepText.trim()) {
           finalBuffer = stepText;
@@ -1326,7 +1331,17 @@ async function runAttempt(
         // deferred, and it's exactly the "Let me search…" narration we must not show as chat.
         if (phase === 'waiting_final' || phase === 'final' || phase === 'text' || (phase === 'idle' && !hadToolCalls)) {
           streamedThisStep = true;
+          stepChatText += t;
           opts.onChunk(t);
+        } else {
+          // Narration emitted alongside a tool call (phase 'planning'): its destination is already
+          // decided, so stream it to the CoT block delta by delta. Holding it until finish-step —
+          // as this branch used to — is why the Thinking block appeared all at once instead of
+          // typing out: `reasoning-delta` never fires here (routerProvider emits text parts only),
+          // so this text IS the thinking, and one buffered call at the end of the step renders as
+          // a single splash.
+          reasoning += t;
+          opts.onReasoning(t);
         }
         if (phase === 'idle') phase = 'text';
         else if (phase === 'waiting_final') phase = 'final';

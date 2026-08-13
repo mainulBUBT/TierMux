@@ -3927,13 +3927,24 @@ const STATE_LABEL = {
       }
       case 'clearDraft': {
         // A tool call just arrived in the same step as text that streamed live as a tentative
-        // reply — that text was narration, not the answer. Drop ONLY the segment currently being
-        // streamed (this step's narration); earlier steps already closed their own .flow-text divs
-        // (see toolStatus.ts resetting currentText per tool card) and may hold a legitimately
-        // finalized answer from an earlier step in this same turn — those must stay visible.
+        // reply — that text was narration, not the answer. Only the segment currently being
+        // streamed is affected (this step's narration); earlier steps already closed their own
+        // .flow-text divs (see toolStatus.ts resetting currentText per tool card) and may hold a
+        // legitimately finalized answer from an earlier step in this same turn — those stay.
         const t = ensureTarget(msg.requestId);
         if (t.currentText) {
-          t.currentText.remove();
+          // With a reasoning segment named, RE-LABEL the streamed text rather than deleting it:
+          // build the CoT block around the text already on screen and keep it in the same slot in
+          // the flow. The matching reasoning post arrives with this same toolCallId and updates
+          // this node, so the thought reads as one continuous stream. Deleting here (the old
+          // behavior) is what made the Thinking block appear all at once a moment later.
+          const streamedText = msg.reasoningId ? (t.currentText._buf ?? t.currentText.textContent ?? '') : '';
+          if (msg.reasoningId && streamedText.trim()) {
+            const block = buildReasoningBlock(streamedText, msg.reasoningId, true);
+            t.currentText.replaceWith(block);
+          } else {
+            t.currentText.remove();
+          }
           t.currentText = null;
         }
         break;

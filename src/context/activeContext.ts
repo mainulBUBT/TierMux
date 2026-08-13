@@ -35,7 +35,14 @@ export function buildActiveEditorContext(sliceRadius = 15): string | null {
   const doc = ed.document;
   if (doc.uri.scheme !== 'file') return null; // skip output panels, settings editors, etc.
   const rel = vscode.workspace.asRelativePath(doc.uri);
-  const lines: string[] = [`<active_editor file="${rel}" language="${doc.languageId}">`];
+  // The provenance line is not decoration: without it a model reads this block as a payload the
+  // user pasted and answers about it ("the SQL you've provided…") even when the message never
+  // mentioned it. Say plainly that the editor produced it and when it is relevant.
+  const lines: string[] = [
+    `<active_editor file="${rel}" language="${doc.languageId}">`,
+    'Automatic snapshot of the editor. The user did NOT send this — use it only to resolve what a'
+      + ' vague reference ("this", "here", "the bug") points at, never as the subject of the reply.',
+  ];
 
   const sel = ed.selection;
   if (!sel.isEmpty) {

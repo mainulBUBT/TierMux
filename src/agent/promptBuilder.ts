@@ -116,7 +116,10 @@ const AGENT_MODE_TAIL =
   + 'Always prefer native tool-calling. If you cannot emit a native call, emit it as text in '
   + 'EXACTLY this format — a real call will run from it:\n'
   + '<function=TOOL_NAME>{"arg": "value"}</function>\n'
-  + 'Example: <function=readFile>{"path": "routes/web.php"}</function>\n'
+  // The example path must be one that exists in almost any project: a weaker model copies the
+  // example verbatim on its first fallback call, and a framework-specific path (e.g. a Laravel
+  // `routes/web.php`) turns that first call into a not-found error in every other project.
+  + 'Example: <function=readFile>{"path": "README.md"}</function>\n'
   + 'Tag on its own, not in backticks; real tool name and JSON arguments; emit ONE call then STOP '
   + 'and wait for the result. Never invent a tool name.\n\n'
   + '### Shell command strategy\n'
@@ -172,7 +175,10 @@ const ASK_MODE_TAIL =
   + 'Always prefer native tool-calling. If you cannot emit a native call, emit it as text in '
   + 'EXACTLY this format — a real call will run from it:\n'
   + '<function=TOOL_NAME>{"arg": "value"}</function>\n'
-  + 'Example: <function=readFile>{"path": "routes/web.php"}</function>\n'
+  // The example path must be one that exists in almost any project: a weaker model copies the
+  // example verbatim on its first fallback call, and a framework-specific path (e.g. a Laravel
+  // `routes/web.php`) turns that first call into a not-found error in every other project.
+  + 'Example: <function=readFile>{"path": "README.md"}</function>\n'
   + 'Tag on its own, not in backticks; real tool name and JSON arguments; emit ONE call then STOP '
   + 'and wait for the result. Never invent a tool name or tag dialect.';
 

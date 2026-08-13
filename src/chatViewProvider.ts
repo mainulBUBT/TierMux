@@ -1851,9 +1851,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // now actually wired); the slice radius comes from `tiermux.context.ambientSliceRadius`. Skip
     // the editor block if they already @-mentioned the active file (resolveMentions already put its
     // full contents in contextText) — but keep diagnostics, which a file mention doesn't carry.
+    // A greeting/small-talk turn is never ABOUT what's on screen, and enrichment is invisible in
+    // the transcript, so the user has no way to see why the reply went off-topic: with a SQL dump
+    // (or any large file) open, "Hello" shipped up to 8KB of it and the model answered about the
+    // SQL instead of saying hello. Skipping enrichment here also keeps a greeting from parking
+    // that snippet in `s.history` for the rest of the session.
     const ctxCfg = vscode.workspace.getConfiguration('tiermux.context');
     let ctx = contextText;
-    if (ctxCfg.get<boolean>('includeOpenEditors', true)) {
+    if (ctxCfg.get<boolean>('includeOpenEditors', true) && classifyTask(prompt) !== 'trivial') {
       const activeRel = activeEditorRelPath();
       // Path-boundary match, not a raw substring check — a plain `ctx.includes(activeRel)` false-
       // positives whenever another @mentioned file's contents happen to contain the active path as
@@ -2602,7 +2607,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       onRetractDraft: () => {
         if (!live()) return;
-        this.post({ type: 'clearDraft', sessionId: s.id, requestId });
+        // Hand the webview the CoT segment this text is about to become. The reasoning post that
+        // follows (from loop.ts's finish-step retro-route) carries the same toolCallId, so it
+        // updates the converted block in place — the user sees one continuously-streamed thought,
+        // not a draft that disappears and re-materializes as a finished paragraph.
+        if (!reasoningStart) reasoningStart = Date.now();
+        this.post({ type: 'clearDraft', sessionId: s.id, requestId, reasoningId: reasoningId() });
       },
       onAskUser: async (question, options) => {
         if (!live()) return '';
