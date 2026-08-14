@@ -653,6 +653,30 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically enable models newly discovered in the catalog. Models on providers you haven't enabled stay inactive regardless. Turn off to review each new model manually."
+        },
+        "tiermux.fleet.maxWorkers": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 8,
+          "description": "Maximum number of worker sub-agents the parallel pipeline (implementPipeline) runs at once. Each worker is a full router-routed loop, so raising this increases token cost (~N×) and rate-limit contention on shared providers."
+        },
+        "tiermux.fleet.workerMaxSteps": {
+          "type": "number",
+          "default": 16,
+          "minimum": 1,
+          "description": "Hard ceiling on the tool-loop step count for a single pipeline worker (the explore sub-agent uses 6; workers need more because they actually edit files)."
+        },
+        "tiermux.fleet.workerTimeoutMs": {
+          "type": "number",
+          "default": 300000,
+          "minimum": 10000,
+          "description": "Wall-clock timeout (ms) for a single pipeline worker. On timeout the worker aborts and its branch is left for inspection; the parent turn's Stop button also aborts all workers."
+        },
+        "tiermux.fleet.stagingBranchPrefix": {
+          "type": "string",
+          "default": "tiermux/pipeline",
+          "description": "Prefix for the staging branch the pipeline merges worker branches into (e.g. tiermux/pipeline-<runId>). The user's working tree is never modified; you merge the staging branch into your own branch manually."
         }
       }
     }
@@ -687,6 +711,8 @@
     "test:e2e:condense-split": "esbuild scripts/condenseSplit.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/condenseSplit.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/condenseSplit.e2e.cjs",
     "test:e2e:tool-history": "esbuild scripts/toolHistory.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/toolHistory.e2e.cjs && node dist/toolHistory.e2e.cjs",
     "test:e2e:secrets-gate": "esbuild scripts/secretsGate.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/secretsGate.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/secretsGate.e2e.cjs",
+    "test:e2e:pipeline-paths": "esbuild scripts/pipelinePathScope.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --external:minimatch --outfile=dist/pipelinePathScope.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/pipelinePathScope.e2e.cjs",
+    "test:e2e:worktree": "esbuild scripts/worktree.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/worktree.e2e.cjs && node dist/worktree.e2e.cjs",
     "test:e2e:resolve-path": "esbuild scripts/resolvePath.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/resolvePath.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/resolvePath.e2e.cjs",
     "test:e2e:synth-shrink": "esbuild scripts/synthShrink.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/synthShrink.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/synthShrink.e2e.cjs",
     "test:e2e:budget-nudge": "esbuild scripts/budgetNudge.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/budgetNudge.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/budgetNudge.e2e.cjs",
@@ -730,6 +756,7 @@
     "diff2html": "^3.4.56",
     "jsdom": "^29.0.2",
     "mammoth": "^1.12.0",
+    "minimatch": "^3.1.5",
     "pdf-parse": "^2.4.5",
     "shell-quote": "^1.10.0",
     "zod": "^4.4.3"

@@ -31,6 +31,7 @@ import { createTodoWriteTool } from './ui/todo';
 import { createQuestionTool } from './ui/question';
 import { createMcpTools } from './mcp/mcp';
 import { createExploreTool } from './explore';
+import { createImplementPipelineTool } from './fleet/implementPipeline';
 import { createDiagnosticsTool } from './workspace/diagnostics';
 import { createSymbolGraphTool } from './workspace/symbolGraph';
 import { createDependencyTreeTool } from './workspace/dependencyTree';
@@ -76,6 +77,7 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
     webSearch: createWebSearchTool(),
     deepSearch: createDeepSearchTool(),
     explore: createExploreTool(router, opts.abortSignal),
+    implementPipeline: createImplementPipelineTool(router, opts.abortSignal),
     todowrite: createTodoWriteTool(opts.onTodos),
     question: createQuestionTool(opts.onAskUser),
     remember: createRememberTool(),

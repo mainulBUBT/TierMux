@@ -1,6 +1,7 @@
 
 
 import * as vscode from 'vscode';
+import { effectiveRootUri } from './workspaceRoot';
 
 /** Strips a leading workspace-root prefix, so an ABSOLUTE path that already points inside the
  *  workspace becomes workspace-relative. Weak models routinely echo absolute paths straight back
@@ -33,9 +34,10 @@ function stripWorkspacePrefix(input: string, root: vscode.Uri): string {
 /** Resolves a workspace-relative path to a Uri, confined to the workspace root — same
  *  escape check CommandGate.resolveCwd already applies to `cwd`. */
 export function resolveWorkspacePath(relPath: string): vscode.Uri {
-  const folders = vscode.workspace.workspaceFolders;
-  if (!folders || folders.length === 0) throw new Error('No workspace folder is open.');
-  const root = folders[0].uri;
+  // Goes through `effectiveRootUri` so a fleet-pipeline worker (wrapped in
+  // `runWithWorkspaceRoot`) resolves paths against its OWN worktree, while the main-agent path —
+  // which never sets an ALS root — falls through to `workspaceFolders[0]` exactly as before.
+  const root = effectiveRootUri();
   const rel = stripWorkspacePrefix((relPath ?? '').trim(), root);
   const uri = vscode.Uri.joinPath(root, rel.replace(/^[/\\]+/, ''));
   if (!isInsideRoot(uri, root)) throw new Error(`Path escapes the workspace: ${relPath}`);

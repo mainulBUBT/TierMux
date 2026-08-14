@@ -55,6 +55,9 @@ export interface PlanOptions {
   onApprove?: (steps: string) => void;
   onDefer?: (steps: string) => void;
   onDiscard?: () => void;
+  /** Save the plan AND immediately execute it: switch to Agent mode and run. Distinct from
+   *  `onApprove` (Save), which only writes the plan to a file. */
+  onExecute?: (steps: string) => void;
   /** Legacy live-mode hooks (kept for compatibility, currently unused by callers). */
   onTaskToggle?: (taskId: string) => void;
   onSave?: () => void;
@@ -245,13 +248,18 @@ export function planDataFromTodos(title: string, todos: { status: 'completed' | 
 
 function createActions(host: HTMLElement, opts: PlanOptions): HTMLElement {
   const actions = el('div', { class: 'tm-plan-actions' });
-  // "Save", not "Build" — this only writes the plan to a file now; it never executes it (see
-  // handleApprovePlan in chatViewProvider.ts). "Build" was the label from when clicking this
-  // also auto-ran the agent; keeping that name after that behavior was removed would be
-  // actively misleading about what the button does.
+  // Two primary affordances:
+  //  - Execute: save the plan AND run it now (switch to Agent mode, auto-launch). This is the
+  //    "do it" button — the explicit execute-or-not choice the flow was missing.
+  //  - Save: write the plan to a file only; the user runs it later by switching to Agent.
+  // "Save", not "Build", because it no longer auto-runs — Execute is the run path now.
+  const execIcon = el('span', { class: 'tm-plan-action-icon' });
+  execIcon.innerHTML = ICON.zap;
+  const execute = el('button', { class: 'tm-plan-action primary', type: 'button', title: 'Save the plan and start executing it in Agent mode now' },
+    'Execute', execIcon);
   const buildIcon = el('span', { class: 'tm-plan-action-icon' });
   buildIcon.innerHTML = ICON.save;
-  const build = el('button', { class: 'tm-plan-action primary', type: 'button', title: 'Save the plan to a file — switch to Agent mode to execute it' },
+  const build = el('button', { class: 'tm-plan-action', type: 'button', title: 'Save the plan to a file — execute it later from Agent mode' },
     'Save', buildIcon);
   const discuss = el('button', { class: 'tm-plan-action', type: 'button', title: 'Keep talking — nothing saved or run yet' }, 'Discuss');
   const discard = el('button', { class: 'tm-plan-action danger', type: 'button' }, 'Discard');
@@ -263,6 +271,12 @@ function createActions(host: HTMLElement, opts: PlanOptions): HTMLElement {
     host.insertAdjacentElement('afterend', note);
     setTimeout(() => note.remove(), 3000);
   };
+  execute.addEventListener('click', () => {
+    const steps = collectSteps(host);
+    if (!steps.trim()) { warnEmpty(); return; }
+    actions.remove();
+    opts.onExecute?.(steps);
+  });
   build.addEventListener('click', () => {
     const steps = collectSteps(host);
     if (!steps.trim()) { warnEmpty(); return; }
@@ -271,7 +285,7 @@ function createActions(host: HTMLElement, opts: PlanOptions): HTMLElement {
   });
   discuss.addEventListener('click', () => { discuss.remove(); discard.remove(); opts.onDefer?.(collectSteps(host)); });
   discard.addEventListener('click', () => { actions.remove(); opts.onDiscard?.(); });
-  actions.append(build, discuss, discard);
+  actions.append(execute, build, discuss, discard);
   return actions;
 }
 

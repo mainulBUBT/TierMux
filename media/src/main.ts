@@ -3791,6 +3791,7 @@ const STATE_LABEL = {
           settled,
           summary: settled ? undefined : summary,
           onApprove: (steps) => send({ type: 'approvePlan', requestId: newId(), approved: true, steps }),
+          onExecute: (steps) => send({ type: 'executePlan', requestId: newId(), steps }),
           onDiscard: () => send({ type: 'approvePlan', requestId: newId(), approved: false, steps: '' }),
           onDefer: (steps) => {
             const note = document.createElement('div'); note.className = 'tm-plan-note';
@@ -4086,6 +4087,13 @@ const STATE_LABEL = {
         break;
       case 'planExecuting': {
         setPlanExecuting(msg.requestId, msg.executing);
+        break;
+      }
+      case 'setMode': {
+        // Host-driven mode switch (e.g. executing an approved plan flips to Agent). Updates the
+        // user's actual mode selection, so their next message lands in the new mode too — unlike
+        // setPlanExecuting, which is a visual-only pill state.
+        if (msg.mode) setMode(msg.mode);
         break;
       }
       case 'notice': {

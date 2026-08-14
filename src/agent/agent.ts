@@ -43,6 +43,10 @@ export interface AgentResult {
    *  here so the caller can render it as a proper reply bubble instead of leaving the user with
    *  only the thin error notice and no visible response in the conversation. */
   errorMessage?: string;
+  /** Files this turn created/modified/deleted via mutating tools, derived from the tool calls in
+   *  `workMessages`. Lets the caller render a deterministic "Files changed" recap independent of
+   *  the model's prose, so a turn that ended on a bare tool call still surfaces what it changed. */
+  changedFiles?: { path: string; status: 'created' | 'modified' | 'deleted' }[];
 }
 
 /** Smart Auto scoring rationale for a route() call this run triggered — "why this model?".

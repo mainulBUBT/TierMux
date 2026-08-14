@@ -27,6 +27,7 @@ const vscodeMock = {
       const fsPath = path.join(base.fsPath, ...parts);
       return { fsPath, path: fsPath };
     },
+    file: (fsPath) => ({ fsPath, path: fsPath }),
     parse: (s) => ({ fsPath: s, path: s }),
   },
   EventEmitter,

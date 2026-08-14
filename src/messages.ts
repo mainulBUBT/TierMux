@@ -174,6 +174,7 @@ export type InMessage =
   | { type: 'ready' }
   | { type: 'sendMessage'; requestId: string; text: string; mode: Mode; model: string; reasoningEffort: ReasoningEffort; attachments?: Attachment[]; attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'> }
   | { type: 'approvePlan'; requestId: string; approved: boolean; steps: string }
+  | { type: 'executePlan'; requestId: string; steps: string }
   | { type: 'deferPlan'; requestId: string; steps: string }
   | { type: 'answerClarifying'; requestId: string; answers: string[] }
   | { type: 'renameSession'; title: string }
@@ -348,6 +349,9 @@ export type OutMessage =
   /** Visual-only: an approved plan's execution window, keyed by requestId so an overlapping
    *  or stale `executing:false` from a different run can never clear the wrong indicator. */
   | { type: 'planExecuting'; sessionId: string; requestId: string; executing: boolean }
+  /** Host-driven mode switch (e.g. executing an approved plan flips the user's mode to Agent).
+   *  Unlike planExecuting (visual-only), this updates the user's actual mode selection. */
+  | { type: 'setMode'; sessionId: string; mode: Mode }
   | { type: 'error'; sessionId?: string; requestId?: string; message: string }
   | { type: 'busy'; sessionId: string; busy: boolean }
   /** First-run engine onboarding: binary download progress → verify → ready/error.

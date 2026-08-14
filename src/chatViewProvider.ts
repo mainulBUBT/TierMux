@@ -1040,6 +1040,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'approvePlan':
         await this.handleApprovePlan(m);
         break;
+      case 'executePlan':
+        await this.handleExecutePlan(m);
+        break;
       case 'deferPlan':
         this.handleDeferPlan(m);
         break;
@@ -2386,6 +2389,49 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.persist(s.id);
     this.post({ type: 'notice', sessionId: s.id, text: 'Plan approved — switch to Agent mode and send a message to start executing it.', icon: 'check' });
     if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle');
+  }
+
+  /**
+   * Execute an approved plan: write it to a file (like handleApprovePlan), switch the user's mode
+   * to Agent, and AUTO-LAUNCH an agent turn seeded with the plan. This is the explicit
+   * execute-or-not path the flow was missing — unlike the old implicit mode hop (removed; see the
+   * comment in handleApprovePlan), this only fires on a direct Execute click. The launched turn
+   * flows through the normal handleSend path, so it gets the autonomous loop, the end-of-turn
+   * workspace verify, and the change recap like any agent turn.
+   */
+  private async handleExecutePlan(m: Extract<InMessage, { type: 'executePlan' }>): Promise<void> {
+    const s = this.current();
+    this.removeCards(s, (c) => c.type === 'clarifyingQuestions');
+    if (!m.steps?.trim()) return;
+
+    // 1. Persist the plan exactly like Save does (file + history), so an executed plan is also
+    //    saved to disk and remembered in conversation history.
+    if (m.steps) await this.writePlanFile(s, m.steps);
+    s.pendingPlanFile = undefined;
+    this.removeCards(s, (c) => c.type === 'planProposed');
+    const original = s.pendingPlanUser;
+    s.pendingPlanUser = undefined;
+    if (original) s.history.push({ role: 'user', content: original });
+    s.history.push({ role: 'assistant', content: `Approved plan:\n\n${m.steps}` });
+    this.persist(s.id);
+
+    // 2. Switch the user's mode to Agent (their next message also lands in Agent) and show the
+    //    executing ⚡ indicator for the about-to-launch run.
+    this.post({ type: 'setMode', sessionId: s.id, mode: 'agent' });
+
+    // 3. Auto-launch an agent turn carrying out the plan. Reuses handleSend (the normal send
+    //    path), exactly like handleAnswerClarifying's agent branch. A fresh requestId so the run
+    //    is tracked independently and the ⚆ indicator is keyed correctly.
+    const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    this.post({ type: 'planExecuting', sessionId: s.id, requestId, executing: true });
+    await this.handleSend({
+      type: 'sendMessage',
+      requestId,
+      text: `Carry out this approved plan now, step by step:\n\n${m.steps}`,
+      mode: 'agent',
+      model: s.model ?? 'auto',
+      reasoningEffort: s.reasoningEffort ?? 'medium',
+    });
   }
 
   /**

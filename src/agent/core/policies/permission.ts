@@ -11,8 +11,11 @@ import { isDangerous } from '../../../edits/commandGate';
 import { resolveWorkspacePath } from '../tools/resolvePath';
 
 /** Tools that mutate the workspace or run arbitrary commands — excluded from plan/ask mode's
- *  tool set entirely (see tools/index.ts) and denied here too as defense in depth. */
-export const MUTATING_TOOLS = new Set(['writeFile', 'createFile', 'editFile', 'deleteFile', 'runCommand']);
+ *  tool set entirely (see tools/index.ts) and denied here too as defense in depth. `implementPipeline`
+ *  is included because its EFFECT is mutating (workers write files; merge rewrites a branch) even
+ *  though the tool itself only orchestrates — so it should be gated out of plan/ask and surfaced in
+ *  the main turn's approval flow like the other mutating tools. */
+export const MUTATING_TOOLS = new Set(['writeFile', 'createFile', 'editFile', 'deleteFile', 'runCommand', 'implementPipeline']);
 
 /** Tools with a side effect that's low-risk enough to auto-approve (not in MUTATING_TOOLS, so no
  *  approval prompt), but that Plan mode should still not expose — plan mode must produce zero
@@ -105,6 +108,97 @@ export function createSubAgentToolApproval() {
     if (hit) {
       return { type: 'denied', reason: `"${hit}" looks like a secrets file — report that it exists instead of reading it.` };
     }
+    return 'approved';
+  };
+}
+
+/** Git subcommands that are unambiguously READ-ONLY — safe for a worker to run for inspection
+ *  (`git status`, `git diff`, `git log`). Everything else git is treated as mutating and denied,
+ *  because `git` subcommands are a mix of read and write forms (e.g. `git branch` lists but
+ *  `git branch -d` deletes; `git tag` lists but `git tag -a` creates) and an allowlist is safer
+ *  than a denylist that could miss a new destructive subcommand. A worker running `git commit`,
+ *  `git checkout`, or `git push` would disrupt the orchestrator's worktree/branch lifecycle, so
+ *  only this tight read-only set passes. */
+const GIT_READONLY = new Set([
+  'status', 'diff', 'log', 'show', 'ls-files', 'blame', 'grep', 'rev-parse',
+  'cat-file', 'ls-tree', 'for-each-ref', 'reflog', 'shortlog', 'describe',
+  'symbolic-ref', 'ls-remote', 'annotate', 'name-rev',
+]);
+
+/** Returns the git subcommand token if `command` is a git invocation, else undefined. Handles
+ *  leading env-assignments and `git -c key=val` global flags so `git -c x=y commit` is still caught. */
+function gitSubcommand(command: string): string | undefined {
+  const tokens = command.trim().split(/\s+/);
+  let i = tokens.findIndex((t) => /^git(\.exe)?$/.test(t));
+  if (i < 0) return undefined;
+  i++;
+  // Skip global git flags that take a value (-c, -C, --git-dir, --work-tree, -l, etc.) so we land
+  // on the real subcommand. Bare flags like -p are skipped too.
+  while (i < tokens.length && tokens[i].startsWith('-')) {
+    if (/^-(-git-dir|--work-tree|--namespace|-c|-C|-b|-l|-p)$/.test(tokens[i]) && i + 1 < tokens.length) i += 2;
+    else i++;
+  }
+  return tokens[i];
+}
+
+/** True if `command` is a git invocation whose subcommand is NOT in the read-only allowlist. */
+export function isMutatingGit(command: string): boolean {
+  const sub = gitSubcommand(command);
+  return !!sub && !GIT_READONLY.has(sub);
+}
+
+/**
+ * Approval policy for a fleet-pipeline WORKER sub-agent — the write-capable counterpart to
+ * `createSubAgentToolApproval`. Unlike explore, a worker MUST edit files (writeFile/editFile/etc.),
+ * so this does NOT blanket-deny MUTATING_TOOLS. It keeps the safety gates that still matter under a
+ * worker, all as hard DENYs (a worker has no UI to prompt from):
+ *   - secrets-path reads (CONTENT_READ_TOOLS) — a worker scoped to a worktree can still see `.env`;
+ *   - secrets-reading or dangerous commands (commandTouchesSecrets / isDangerous);
+ *   - mutating git (isMutatingGit) — the orchestrator owns the worktree/branch lifecycle, so a
+ *     worker must not commit, branch, push, or otherwise reshape git state;
+ *   - read-before-edit (REWRITE_TOOLS) — a weak worker blindly clobbering a file it never read is
+ *     the exact failure mode this gate exists for.
+ * Everything else is approved outright. No `onPermissionAsk` path is reachable because every gated
+ * branch denies instead of prompting, so the worker runs fully autonomously.
+ */
+export function createWorkerToolApproval() {
+  const readPaths = new Set<string>();
+  const blindEditDenials = new Set<string>();
+  return async ({ toolCall }: { toolCall: ApprovalToolCall }): Promise<ToolApprovalStatus> => {
+    const name = toolCall.toolName;
+
+    if (name === 'readFile') for (const p of toolPaths(toolCall.input)) { const k = pathKey(p); if (k) readPaths.add(k); }
+
+    if (CONTENT_READ_TOOLS.has(name)) {
+      const hit = findSensitivePath(toolPaths(toolCall.input));
+      if (hit) return { type: 'denied', reason: `"${hit}" looks like a secrets file.` };
+    }
+
+    if (name === 'runCommand') {
+      const command = typeof (toolCall.input as { command?: unknown })?.command === 'string'
+        ? (toolCall.input as { command: string }).command
+        : '';
+      const secretHit = commandTouchesSecrets(command);
+      if (secretHit) return { type: 'denied', reason: `Command reads ${secretHit}.` };
+      if (command && isDangerous(command)) return { type: 'denied', reason: 'Dangerous command pattern.' };
+      if (command && isMutatingGit(command)) {
+        return { type: 'denied', reason: 'The orchestrator manages git for the pipeline — do not run mutating git commands.' };
+      }
+    }
+
+    if (REWRITE_TOOLS.has(name)) {
+      const target = toolPaths(toolCall.input)[0];
+      const key = target ? pathKey(target) : undefined;
+      if (key && !readPaths.has(key) && !blindEditDenials.has(key) && await fileExists(key)) {
+        blindEditDenials.add(key);
+        return {
+          type: 'denied',
+          reason: `You have not read "${target}" yet. Call readFile on it first, then retry — editing from a guess corrupts the file.`,
+        };
+      }
+      if (key) readPaths.add(key);
+    }
+
     return 'approved';
   };
 }

@@ -5,6 +5,7 @@ import { spawn } from 'child_process';
 import type { RunContext } from '../agent/runContext';
 import { isReadOnlyCommand } from './commandClassify';
 import { resolveWorkspacePath } from '../agent/core/tools/resolvePath';
+import { peekWorkspaceRoot } from '../agent/core/tools/workspaceRoot';
 import type { PersistentShellManager } from './persistentShell';
 
 export type CommandApproval = 'always' | 'allowlist' | 'never';
@@ -84,6 +85,10 @@ export class CommandGate {
   }
 
   private root(): vscode.Uri {
+    // Fleet-pipeline workers scope their commands to a worktree via the ALS root; the main-agent
+    // path leaves it unset and uses the live workspace folder as before.
+    const override = peekWorkspaceRoot();
+    if (override) return vscode.Uri.file(override);
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) throw new Error('No workspace folder is open.');
     return folders[0].uri;

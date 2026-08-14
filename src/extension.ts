@@ -240,10 +240,6 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   context.subscriptions.push(catalog.onDidChange(() => chat.refresh()));
-  void catalog.refresh(
-    vscode.workspace.getConfiguration('tiermux').get<string>('catalog.url', ''),
-    context.globalState,
-  );
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chat, {

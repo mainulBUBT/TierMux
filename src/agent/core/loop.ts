@@ -24,7 +24,7 @@ import { createTelemetryMiddleware } from './middleware/telemetry';
 import { createToolApproval, MUTATING_TOOLS } from './policies/permission';
 import { createToolSet } from './tools';
 import { getMcpManager } from './tools/mcp/manager';
-import { NEW_DIAGNOSTICS_MARKER } from './tools/workspace/formatDiagnostics';
+import { NEW_DIAGNOSTICS_MARKER, waitForWorkspaceDiagnosticsSettled, workspaceErrorSignatures, newErrorsSince } from './tools/workspace/formatDiagnostics';
 import { diagLog } from '../../util/diag';
 import { repairToolArguments, sanitizeToolName } from '../toolArgs';
 import type { ClarifyingQuestion } from '../clarify';
@@ -223,6 +223,22 @@ const FORCE_ACTION_NUDGE =
   + '<function=readFile>{"path": "routes/web.php"}</function>. Put the tag on its own line, not in '
   + 'backticks, using the real tool name and JSON arguments. Emit the call now, then wait for the result.';
 
+/** Nudge appended (as a user turn) when the model already did real work this turn (tool calls ran)
+ *  but then ENDED on an announced-but-undone next action ("Let me check the workspace structure
+ *  first.") — a continuation of the announcedNoAction failure that the zero-tool gate on
+ *  FORCE_ACTION_NUDGE's path can't reach. Unlike FORCE_ACTION_NUDGE this must NOT claim "nothing
+ *  happened", because the turn's workMessages show real prior work; it only pushes the model to
+ *  perform the ONE action it just announced. */
+const FORCE_CONTINUE_ACTION_NUDGE =
+  'Your last message announced what you would do next, but the turn ended there — you did NOT '
+  + 'actually perform that next action. Continue now: call the appropriate tool to perform the '
+  + 'action you just described. Do not just describe what you will do — actually do it, then wait '
+  + 'for the result.\n\n'
+  + 'If you cannot emit a native tool call, emit it as text in EXACTLY this format (a real call '
+  + 'will run from it): <function=TOOL_NAME>{"arg": "value"}</function> — for example '
+  + '<function=listDir>{"path": "."}</function>. Put the tag on its own line, not in backticks, '
+  + 'using the real tool name and JSON arguments.';
+
 /** Nudge appended (as a user turn) when a tool call died with `toolCallRepairFailed` — repair
  *  exhausted and the model never actually saw why, since an unrepaired InvalidToolInputError
  *  surfaces as a stream `error` part, not a `tool-error` part the model gets in its context (see
@@ -235,6 +251,23 @@ function forceToolRepairNudge(detail: string): string {
     + 'array/object, or an argument name that does not exist in the tool\'s schema. Call the SAME '
     + 'tool again with corrected arguments — do not repeat the same malformed call.';
 }
+
+/** Nudge appended (as a user turn) when the model answered an action task by PASTING the code in
+ *  its reply (a fenced block) instead of creating/editing the file — so no project file actually
+ *  changed. The most common "all talk, no action" shape on weaker models: it reads the project,
+ *  then "helpfully" writes the solution out as text. Pushes it to call createFile/editFile with the
+ *  exact content. Continues from the turn's transcript (reads already happened), so it must NOT
+ *  claim "nothing happened" — reads did; only the write is missing. */
+const FORCE_PASTE_TO_ACTION_NUDGE =
+  'You wrote out the code in your reply but did NOT create or edit the file — no writeFile or '
+  + 'editFile tool ran, so nothing in the project actually changed. Implement it now: call '
+  + 'createFile (for a new file) or editFile (to change an existing one) with the exact content '
+  + 'you just wrote. Do not paste the code again as text — write it to the file with the tool, '
+  + 'then confirm it is done.\n\n'
+  + 'If you cannot emit a native tool call, emit it as text in EXACTLY this format (a real call '
+  + 'will run from it): <function=TOOL_NAME>{"arg": "value"}</function> — for example '
+  + '<function=createFile>{"path": "resources/views/landing.blade.php", "content": "..."}</function>. '
+  + 'Put the tag on its own line, not in backticks, using the real tool name and JSON arguments.';
 
 /** A model declined to look something up and pointed the user elsewhere ("switch to a mode that
  *  can search the web", "I don't have real-time access", "check FIFA's official site") instead of
@@ -344,6 +377,27 @@ function pathArgOf(input: unknown): string | undefined {
   if (!v || typeof v !== 'object') return undefined;
   const p = (v as Record<string, unknown>).path ?? (v as Record<string, unknown>).file;
   return typeof p === 'string' && p.trim() ? p.trim() : undefined;
+}
+
+/** Flatten the per-attempt changedFiles Map into the AgentResult array shape. Empty → undefined so
+ *  a no-op turn carries no field. */
+function mapChangedFiles(m: Map<string, 'created' | 'modified' | 'deleted'>): { path: string; status: 'created' | 'modified' | 'deleted' }[] | undefined {
+  if (!m.size) return undefined;
+  return [...m.entries()].map(([path, status]) => ({ path, status }));
+}
+
+/** Merge a retry's changedFiles into the running set. A path created in one attempt then edited in
+ *  another stays 'created'; 'deleted' wins over 'modified'. Later status overrides unless it would
+ *  downgrade a created→modified (a file created this turn was created, not modified). */
+function mergeChangedFiles(a: { path: string; status: 'created' | 'modified' | 'deleted' }[] | undefined, b: { path: string; status: 'created' | 'modified' | 'deleted' }[] | undefined): { path: string; status: 'created' | 'modified' | 'deleted' }[] | undefined {
+  if (!a?.length && !b?.length) return undefined;
+  const m = new Map<string, 'created' | 'modified' | 'deleted'>();
+  const rank = { created: 3, deleted: 2, modified: 1 } as const;
+  for (const e of [...(a ?? []), ...(b ?? [])]) {
+    const prev = m.get(e.path);
+    if (!prev || rank[e.status] >= rank[prev]) m.set(e.path, e.status);
+  }
+  return [...m.entries()].map(([path, status]) => ({ path, status }));
 }
 
 /** Completion claims — a verdict about the user's system ("Fixed.", "Both issues fixed", "should
@@ -658,6 +712,61 @@ async function continueAfterTruncation(
   }
 }
 
+/**
+ * End-of-turn change recap for mutating turns whose final text didn't already summarize what
+ * changed (the model ended on a bare tool call, or on narration that never named the files). A
+ * short, single-step, tool-less synthesis pass — the same shape as `forceSynthesis` but prompted
+ * for a concise "what I changed" summary, streamed live via onChunk. Best-effort: on any failure it
+ * returns '' and the caller falls back to the deterministic changedFiles footer. Only invoked when
+ * the heuristic below judges the existing final text NOT to be a recap, so it adds no latency to a
+ * turn that already ended with a real summary.
+ */
+async function recapChanges(
+  router: Router,
+  opts: AgentOpts,
+  workMessages: ChatMessage[],
+  changedFiles: { path: string; status: 'created' | 'modified' | 'deleted' }[],
+): Promise<string> {
+  opts.onStep('synthesizing', 'Summarizing changes…');
+  try {
+    const provider = createRouterProvider(router, { taskKind: 'trivial' });
+    const changeList = changedFiles.map((f) => `- ${f.path} (${f.status})`).join('\n');
+    const messages = toCoreMessages([...opts.messages, ...workMessages]);
+    messages.push({ role: 'user', content: `Summarize what you just changed. In 1-3 sentences, name the files you edited and what the change does. Files touched:\n${changeList}` });
+    const synth = streamText({
+      model: provider as any,
+      system: 'You are summarizing your own completed edits. Be concise and factual. Do not describe steps you did not take.',
+      messages: messages as any,
+      stopWhen: [isStepCount(1)],
+      abortSignal: opts.abortSignal,
+    } as any);
+    let out = '';
+    for await (const part of (synth as any).fullStream) {
+      if (part.type === 'text-delta') { const t = part.text ?? part.delta ?? ''; out += t; opts.onChunk(t); }
+      else if (part.type === 'reasoning-delta') { const d = part.text ?? part.delta ?? ''; opts.onReasoning(d); }
+      else if (part.type === 'error') { break; }
+    }
+    return out.trim();
+  } catch {
+    return '';
+  }
+}
+
+/** Heuristic: does `text` already constitute a recap of the changes (so we can skip the synthesis
+ *  call)? "Yes" if it's substantive (≥40 words) OR mentions at least one changed file's basename.
+ *  Cheaper than an LLM judge and good enough to avoid a redundant synthesis on turns that already
+ *  ended with a real summary. */
+function alreadyRecaps(text: string, changedFiles: { path: string; status: 'created' | 'modified' | 'deleted' }[]): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (t.split(/\s+/).filter(Boolean).length >= 40) return true;
+  const lower = t.toLowerCase();
+  return changedFiles.some((f) => {
+    const base = f.path.split(/[\\/]/).pop()?.toLowerCase();
+    return !!base && base.length > 2 && lower.includes(base);
+  });
+}
+
 /** Extra instruction appended AFTER the plan (not before) in the executor's system prompt when
  *  the mixture pipeline is active — weak models weight the tail of a system prompt most heavily,
  *  and the one thing that must not get buried is "one thought, one action per turn", the ReAct
@@ -829,6 +938,9 @@ interface AttemptResult {
    *  back as a stream `error` part, not a `tool-error` part, so it never reaches the model like a
    *  normal tool failure would). */
   toolCallRepairFailed?: boolean;
+  /** Files this attempt created/modified/deleted via mutating tools — propagated to
+   *  AgentResult.changedFiles for the caller's recap. */
+  changedFiles?: { path: string; status: 'created' | 'modified' | 'deleted' }[];
 }
 
 const TASK_KIND_VALUES = ['trivial', 'chat', 'agent', 'coding', 'debug', 'longContext', 'vision'] as const;
@@ -1172,6 +1284,10 @@ async function runAttempt(
   // the one the completion claim is about.
   let verifiedAfterMutation = false;
   const openedFiles: string[] = [];
+  // Files this attempt created/modified/deleted, for the structured AgentResult.changedFiles recap.
+  // A Map keyed by path so repeated edits to the same file collapse to one entry; createFile wins
+  // over a later editFile on the same path (it was created this turn).
+  const changedFilesMap = new Map<string, 'created' | 'modified' | 'deleted'>();
 
   try {
     diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · streamText starting`);
@@ -1364,6 +1480,16 @@ async function runAttempt(
         if (PATH_ARG_TOOLS.has(part.toolName)) {
           const p = pathArgOf(part.input);
           if (p) openedFiles.push(p);
+        }
+        // Record file mutations for the end-of-turn structured recap. `runCommand` is in
+        // MUTATING_TOOLS but takes no `path`, so it contributes no entry here (correct — a shell
+        // command's file effects aren't reliably knowable from its args).
+        if (part.toolName === 'createFile') {
+          const p = pathArgOf(part.input); if (p) changedFilesMap.set(p, 'created');
+        } else if (part.toolName === 'writeFile' || part.toolName === 'editFile') {
+          const p = pathArgOf(part.input); if (p && changedFilesMap.get(p) !== 'created') changedFilesMap.set(p, 'modified');
+        } else if (part.toolName === 'deleteFile') {
+          const p = pathArgOf(part.input); if (p) changedFilesMap.set(p, 'deleted');
         }
         // If text from THIS step already streamed live to the chat bubble as a tentative reply,
         // it's now revealed to be narration (a tool call arrived in the same step). Retract the
@@ -1564,6 +1690,7 @@ async function runAttempt(
       // Drop that clause: no salvageable answer text + a real error = a failed, surfaced turn.
       failed: streamErrored && !text.trim(),
       errorMessage: streamErrored ? streamErrorMessage : undefined,
+      changedFiles: mapChangedFiles(changedFilesMap),
     };
   } catch (err) {
     diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · CAUGHT aborted=${!!opts.abortSignal?.aborted} isAbort=${isAbortError(err)} err=${err instanceof Error ? err.message : String(err)}`);
@@ -1587,7 +1714,7 @@ async function runAttempt(
     // above. `workMessages` is only assembled after the stream loop, so on this path it can still
     // be empty even though tools ran; `hadMutatingToolCall` is what the retry guards key on, and
     // it is now accurate, so a caught error after a real edit can no longer unlock a duplicate.
-    return { text, reasoning: reasoning.trim(), platform, model, runtimeName, paused: false, workMessages, hadToolCalls, hadMutatingToolCall, verifiedAfterMutation, openedFiles, failed: genuineFailure && !text.trim(), errorMessage: genuineFailure ? errMsg : undefined, toolCallRepairFailed };
+    return { text, reasoning: reasoning.trim(), platform, model, runtimeName, paused: false, workMessages, hadToolCalls, hadMutatingToolCall, verifiedAfterMutation, openedFiles, failed: genuineFailure && !text.trim(), errorMessage: genuineFailure ? errMsg : undefined, toolCallRepairFailed, changedFiles: mapChangedFiles(changedFilesMap) };
   }
 }
 
@@ -1679,6 +1806,17 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     }
   }
 
+  // Snapshot workspace errors BEFORE any edit lands, so the end-of-turn workspace verify (below)
+  // can tell which errors THIS turn introduced vs. ones the user already had. Captured here, right
+  // before the first attempt — anything an earlier turn in this same run left behind is correctly
+  // treated as pre-existing (not this turn's responsibility). Cheap: a synchronous getDiagnostics.
+  // Defensive: in a headless test harness (or any env with no language server) `vscode.languages`
+  // may be undefined — a missing diagnostics API just means no workspace verify, not a crash.
+  let baselineErrors: Set<string> | undefined;
+  try {
+    if (vscode.languages?.getDiagnostics) baselineErrors = workspaceErrorSignatures(vscode.languages.getDiagnostics());
+  } catch { /* no diagnostics available — skip workspace verify */ }
+
   const first = await runAttempt(router, opts, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn, undefined, planGuidance);
   let final = first;
 
@@ -1712,9 +1850,13 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // Re-invoke the SAME model with the model's own promise plus an explicit "actually do it now"
   // nudge so it follows through instead of re-describing. One retry only; accept whatever it yields.
   const wantsAction = taskKind === 'agent' || taskKind === 'coding' || taskKind === 'debug' || taskKind === 'longContext';
+  // Widens the action gate past a misclassified taskKind: a "create/build/write/implement ..." prompt
+  // that classifyTaskSmart wrongly read as 'chat'/'trivial' still counts as an action task for the
+  // pasted-code / announced-action retries below, so agent mode doesn't accept a text-only answer.
+  const actionTask = wantsAction || CREATE_TASK_RE.test(lastUserText);
   // final !== first: the tool-call-repair retry above already spent this turn's one retry.
   const canRetryToolUse = final === first && !first.hadToolCalls && !first.stopReason && !opts.abortSignal?.aborted;
-  const announcedNoAction = wantsAction && ACTION_INTENT_RE.test(first.text.trim());
+  const announcedNoAction = actionTask && ACTION_INTENT_RE.test(first.text.trim());
   // The "explained + pasted code instead of calling editFile/writeFile" shape — see
   // CODE_FENCE_RE's doc comment. Only for action task kinds (a real 'chat'/'trivial' question is
   // legitimately answered with an example snippet), and only when nothing already explains the
@@ -1724,13 +1866,13 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // `wantsAction` — but Ask mode has no mutating tool to call, and answering with a fenced snippet
   // is the CORRECT behavior there. Without this gate the retry fired on a good answer and
   // FORCE_ACTION_NUDGE told the model to call tools it hadn't been given.
-  const pastedCodeInsteadOfActing = wantsAction && opts.mode === 'agent' && !announcedNoAction && CODE_FENCE_RE.test(first.text);
+  const pastedCodeInsteadOfActing = actionTask && opts.mode === 'agent' && !announcedNoAction && CODE_FENCE_RE.test(first.text);
   // "Listed the steps, then asked permission to start" — see ASKS_PERMISSION_RE. Tested against
   // the TAIL only (last 240 chars), so a long report that asks something mid-way is untouched;
   // the signal is that the LAST thing the turn did was ask instead of act. Agent mode only, for
   // the same reason as pastedCodeInsteadOfActing: in Ask/Plan mode offering next steps is correct,
   // and Plan mode has `askQuestions` for genuinely blocking ambiguity.
-  const askedPermissionInsteadOfActing = wantsAction && opts.mode === 'agent'
+  const askedPermissionInsteadOfActing = actionTask && opts.mode === 'agent'
     && !announcedNoAction && !pastedCodeInsteadOfActing
     && ASKS_PERMISSION_RE.test(first.text.trim().slice(-240));
   // Declined-websearch fires for ANY taskKind (a plain chat question is exactly where a weak
@@ -1765,6 +1907,57 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     // exception is a first attempt with no text at all, where any text beats blank (defensive —
     // every trigger above requires non-empty text, so this shouldn't be reachable today).
     if (acted.hadToolCalls || (!first.text.trim() && acted.text.trim())) final = acted;
+  }
+
+  // Announced-action-but-stopped AFTER tools already ran. The force-action retry above is gated on
+  // `!first.hadToolCalls` (zero tools), so a model that did real work — e.g. a runCommand that
+  // landed — then ended on "Let me check the workspace structure first." with NO follow-up tool call
+  // sails through untouched: the announcement becomes the final answer and the agent stops mid-plan
+  // (observed 2026-08-13). ACTION_INTENT_RE still matches the tail, so detect it here and CONTINUE
+  // from `first.workMessages` (the turn's own transcript) rather than restarting from opts.messages.
+  // Restarting would discard the work already done and risk re-running prior (possibly mutating)
+  // calls from scratch; continuing keeps that work in context and just nudges the model to perform
+  // the ONE action it announced. Same model, one shot, accepted only if it actually made a tool call.
+  const announcedAfterWork = final === first && first.hadToolCalls
+    && !first.stopReason && !opts.abortSignal?.aborted
+    && wantsAction && ACTION_INTENT_RE.test(first.text.trim());
+  if (announcedAfterWork) {
+    diagLog('turn.forceAction', `announcedNoAction after prior tool calls: continuing with a use-the-tool nudge`);
+    router.noteToolSoftFailure(first.platform, first.model);
+    const nudged: AgentOpts = {
+      ...opts,
+      messages: [...opts.messages, ...first.workMessages, { role: 'user', content: FORCE_CONTINUE_ACTION_NUDGE }],
+    };
+    const acted = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn);
+    // Take the continuation only if it actually performed the announced action (a tool call ran) —
+    // a retry that just re-describes the plan or answers in prose has not advanced anything.
+    if (acted.hadToolCalls) final = acted;
+  }
+
+  // Pasted-code-after-reads — the single most common "all talk, no action" shape on weaker models:
+  // it gathered context (read/grep/list tools ran, so hadToolCalls is true), then answered by
+  // PASTING the implementation as a code fence instead of calling createFile/editFile. The zero-tool
+  // force-action path above can't reach it (its `canRetryToolUse` gate requires !hadToolCalls), and
+  // `announcedAfterWork` only matches an action-INTENT phrase at the tail (ACTION_INTENT_RE), not a
+  // pasted block — so a coherent reply ending in prose slipped through both. Detect it here: reads
+  // happened, NO mutating tool ran (nothing was built), and the answer contains a fenced code block.
+  // Continue from the turn's own transcript (reads already done — don't redo them) with a "create
+  // the file now" nudge. Agent mode + action task only; Ask/Plan legitimately answer with snippets.
+  // `actionTask` (defined above) already widens the gate past a misclassified taskKind.
+  const pastedCodeAfterReads = final === first && first.hadToolCalls && !first.hadMutatingToolCall
+    && !first.stopReason && !opts.abortSignal?.aborted
+    && actionTask && opts.mode === 'agent' && CODE_FENCE_RE.test(first.text);
+  if (pastedCodeAfterReads) {
+    diagLog('turn.forceAction', `pastedCodeAfterReads: model answered with a code block instead of creating the file — continuing with a create-it nudge`);
+    router.noteToolSoftFailure(first.platform, first.model);
+    const nudged: AgentOpts = {
+      ...opts,
+      messages: [...opts.messages, ...first.workMessages, { role: 'assistant', content: first.text }, { role: 'user', content: FORCE_PASTE_TO_ACTION_NUDGE }],
+    };
+    const acted = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn);
+    // Accept only if a MUTATING tool ran — the point is to convert a pasted block into a real file
+    // change, not to accept another read-only re-description.
+    if (acted.hadMutatingToolCall) final = acted;
   }
 
   // Quality-based escalation — restores a pipeline that existed under the old OpenCode-backed
@@ -1887,6 +2080,35 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     if (corrected.text.trim() || corrected.hadToolCalls) final = corrected;
   }
 
+  // Workspace-wide verify retry — the per-edit verifyNoteFor check above only sees the file that
+  // was just edited. An edit can break a DIFFERENT file (rename a symbol used elsewhere, change a
+  // shared type) whose error never appears in any single edit's tool result. After the work settles,
+  // diff the workspace diagnostics against the pre-turn baseline: any NEW errors were introduced by
+  // this turn. Bounded to exactly one retry, independent of the self-correct retry above (which keys
+  // on the per-edit marker) — so a cross-file break the per-edit check missed still gets one fix
+  // attempt. Never loops.
+  if (final.hadMutatingToolCall && !opts.abortSignal?.aborted && !final.stopReason && baselineErrors) {
+    let newErrs: string[] = [];
+    try { newErrs = newErrorsSince(baselineErrors, await waitForWorkspaceDiagnosticsSettled()); }
+    catch { /* diagnostics API unavailable — skip */ }
+    if (newErrs.length) {
+      diagLog('turn.verifyWs', `${newErrs.length} new workspace error(s) after this turn's edits — retrying once to fix`);
+      const wsNudge: AgentOpts = {
+        ...opts,
+        messages: [
+          ...opts.messages,
+          ...final.workMessages,
+          ...(final.text.trim() ? [{ role: 'assistant' as const, content: final.text }] : []),
+          { role: 'user', content: `${SELF_CORRECT_NUDGE}\n\nNew errors introduced elsewhere in the workspace by your edits:\n${newErrs.join('\n')}` },
+        ],
+      };
+      const corrected = await runAttempt(router, wsNudge, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn);
+      if (corrected.text.trim() || corrected.hadToolCalls) final = corrected;
+      // Merge changedFiles so the recap reflects the fix attempt too.
+      if (corrected.changedFiles) final = { ...final, changedFiles: mergeChangedFiles(final.changedFiles, corrected.changedFiles) };
+    }
+  }
+
   // Honesty backstop: the turn edited files, declared the problem solved, and never ran anything
   // that could have proved it wrong. Flag it rather than letting the claim stand unqualified —
   // see UNVERIFIED_CLAIM_CAVEAT for why this is deterministic instead of prompt-only.
@@ -1894,6 +2116,33 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   if (final.hadMutatingToolCall && !final.verifiedAfterMutation && COMPLETION_CLAIM_RE.test(finalText)) {
     diagLog('turn.unverified', 'completion claim with no verify tool after the last mutating call — appending caveat');
     finalText += UNVERIFIED_CLAIM_CAVEAT;
+  }
+
+  // Guaranteed recap: a mutating turn should always end with a summary of what changed. If the
+  // model's own final text already recaps the changes, leave it; otherwise run one short synthesis
+  // pass to produce a recap (streamed live above the deterministic footer the host appends from
+  // changedFiles). Skipped on abort/stuck/budget stops — a stopReason terminal turn isn't "done".
+  const changedFiles = mergeChangedFiles(undefined, final.changedFiles);
+  if (final.hadMutatingToolCall && !final.stopReason && !opts.abortSignal?.aborted && changedFiles?.length && !alreadyRecaps(finalText, changedFiles)) {
+    diagLog('turn.recap', 'mutating turn ended without a change summary — synthesizing one');
+    const recap = await recapChanges(router, opts, final.workMessages, changedFiles);
+    if (recap) finalText = finalText.trim() ? `${finalText.trim()}\n\n${recap}` : recap;
+  }
+
+  // Deterministic "Files changed" footer — a compact, always-present recap of WHICH files changed
+  // (the synthesis above is the prose WHAT). Appended (and streamed live) only when the final text
+  // doesn't already list the files, so a turn that already named them isn't duplicated. This is the
+  // guarantee that a mutating turn always surfaces what it changed, independent of model prose.
+  if (changedFiles?.length && !alreadyRecaps(finalText, changedFiles) && !opts.abortSignal?.aborted) {
+    const byStatus = (st: 'created' | 'modified' | 'deleted') => changedFiles.filter((f) => f.status === st).map((f) => f.path);
+    const parts: string[] = [];
+    const created = byStatus('created'), modified = byStatus('modified'), deleted = byStatus('deleted');
+    if (created.length) parts.push(`created: ${created.join(', ')}`);
+    if (modified.length) parts.push(`modified: ${modified.join(', ')}`);
+    if (deleted.length) parts.push(`deleted: ${deleted.join(', ')}`);
+    const footer = `\n\n**Files changed** — ${parts.join('; ')}.`;
+    finalText += footer;
+    opts.onChunk(footer);
   }
 
   // Carry what this turn established into the next one. Done here, after every retry/escalation
@@ -1912,6 +2161,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     stopReason: final.stopReason,
     askQuestions: final.askQuestions,
     workMessages: final.workMessages.length ? final.workMessages : undefined,
+    changedFiles,
     // Only meaningful when nothing downstream salvaged the turn — every retry/escalation path
     // above already overwrites `final` with a candidate that has real text or tool calls, so a
     // surviving `failed` here means every attempt genuinely came back empty after an error.
