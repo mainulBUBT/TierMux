@@ -16,7 +16,10 @@ class EventEmitter {
 const vscodeMock = {
   workspace: {
     workspaceFolders: undefined, // set by the test via setWorkspaceRoot() below
-    getConfiguration: () => ({ get: (_key, def) => def }),
+    // Config reads return the default unless the test set an override in
+    // globalThis.__tiermuxTestConfig (e.g. `{ mixturePipeline: 'off' }` to keep the
+    // planner step out of router-call-count assertions) — see the e2e scripts.
+    getConfiguration: () => ({ get: (key, def) => (globalThis.__tiermuxTestConfig && Object.prototype.hasOwnProperty.call(globalThis.__tiermuxTestConfig, key) ? globalThis.__tiermuxTestConfig[key] : def) }),
     fs: {},
     findFiles: async () => [],
     asRelativePath: (u) => (u && u.fsPath) || String(u),

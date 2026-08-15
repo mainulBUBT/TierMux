@@ -79,7 +79,8 @@ function mapRegServer(s: RegServer): McpRegistryItem | null {
 export async function loadMcpRegistry(extensionPath: string): Promise<McpRegistryItem[]> {
   let items: McpRegistryItem[] = [];
   try {
-    const raw = fs.readFileSync(path.join(extensionPath, 'media', 'mcp-registry.json'), 'utf8');
+    // Use async file reading to avoid blocking on Windows
+    const raw = await fs.promises.readFile(path.join(extensionPath, 'media', 'mcp-registry.json'), 'utf8');
     items = (JSON.parse(raw) as { servers?: McpRegistryItem[] }).servers ?? [];
   } catch { /* ignore */ }
 

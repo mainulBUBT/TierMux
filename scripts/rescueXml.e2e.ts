@@ -88,5 +88,29 @@ ok('a plain shape-1 call is not duplicated by shape 6',
 ok('a plain shape-6 call is not duplicated',
   rescueInlineToolCalls('<function=editFile>\n<parameter=path>b.ts</parameter>\n</function>', tools).calls.length === 1);
 
+// ── Shape 7: Liquid/Llama-3.1 python-call dialect ────────────────────────────────────────────
+// From a real 2026-08-15 OpenRouter liquid/lfm-2.5-2.6b run: no shape above matched, the edit
+// never ran, and the raw dialect text streamed to chat as the final answer.
+const liquid = `<tool_call_start>|[readFile(path='public/landing.blade.php')]<tool_call_end>|`;
+const lq = rescueInlineToolCalls(liquid, tools);
+ok('shape 7: <tool_call_start> python-call dialect is rescued', lq.detected && lq.calls.length === 1 && lq.calls[0].name === 'readFile');
+ok('shape 7: single-quoted kwarg extracted verbatim', JSON.parse(lq.calls[0]?.arguments ?? '{}').path === 'public/landing.blade.php');
+
+const liquidMulti = `<tool_call_start>|[editFile(path='routes/web.php', search='Route::get(/', replace='Route::post(/')]<tool_call_end>|`;
+const lqm = rescueInlineToolCalls(liquidMulti, tools);
+const lqmArgs = JSON.parse(lqm.calls[0]?.arguments ?? '{}');
+ok('shape 7: multiple kwargs split correctly', lqm.detected && lqmArgs.path === 'routes/web.php' && lqmArgs.search === 'Route::get(/' && lqmArgs.replace === 'Route::post(/');
+
+const bareForm = `[grep(pattern='TODO', path='src')]`;
+const bf = rescueInlineToolCalls(bareForm, tools);
+ok('shape 7: bare [name(...)] form (tokens stripped) is rescued', bf.detected && JSON.parse(bf.calls[0].arguments).pattern === 'TODO');
+
+ok('shape 7: double-quoted values parse', JSON.parse(rescueInlineToolCalls(`[readFile(path="a.ts")]`, tools).calls[0].arguments).path === 'a.ts');
+ok('shape 7: markdown link does not false-positive', !rescueInlineToolCalls('see [the docs](https://example.com) for details', tools).detected);
+ok('shape 7: unknown bracket name does not false-positive', !rescueInlineToolCalls('[foobar(x=1)]', tools).detected);
+ok('shape 7: truncated call (never closed) is NOT rescued half-parsed',
+  !rescueInlineToolCalls(`<tool_call_start>|[readFile(path='a.ts`, tools).detected);
+ok('shape 7: a numeric kwarg coerces to number', JSON.parse(rescueInlineToolCalls(`[grep(pattern='x', limit=30)]`, tools).calls[0].arguments).limit === 30);
+
 console.log(bad ? `\n${bad} FAILURE(S)` : '\nALL PASS');
 process.exit(bad ? 1 : 0);

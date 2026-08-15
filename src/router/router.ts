@@ -186,6 +186,12 @@ export interface RouteOptions extends CompletionOptions {
   exclude?: string[];
   /** Quality-based escalation: only consider models at least this smart (intelligenceRank <= this). */
   maxIntelligenceRank?: number;
+  /** Step routing (Phase 2): only consider models at MOST this smart (intelligenceRank >= this)
+   *  — the cheap pool for `[easy]` plan steps (reads/searches), so a lookup step never burns a
+   *  top-tier model. Soft filter: if the constrained pool is empty, the full list survives (a
+   *  user who enabled only rank-1 models still gets their turn served). Unknown models (custom
+   *  endpoints not in the catalog) always pass, mirroring maxIntelligenceRank. */
+  minIntelligenceRank?: number;
   /** Chat session this call belongs to. Enables session-sticky Auto routing (see sessionPin):
    *  once a model has served this conversation successfully, keep using it. */
   sessionId?: string;
@@ -750,6 +756,17 @@ export class Router {
         const m = this.catalog.find(e.platform, e.modelId);
         return !m || m.intelligenceRank <= floor;
       });
+    }
+    if (opts.minIntelligenceRank != null) {
+      // Soft ceiling: keep only the cheap pool, but NEVER fail the turn for a difficulty
+      // constraint — when the user's enabled models are all smarter than the ceiling, the
+      // full list survives and the turn simply runs on what exists.
+      const ceilRank = opts.minIntelligenceRank;
+      const cheap = list.filter((e) => {
+        const m = this.catalog.find(e.platform, e.modelId);
+        return !m || m.intelligenceRank >= ceilRank;
+      });
+      if (cheap.length > 0) list = cheap;
     }
 
     if (opts.taskKind) {

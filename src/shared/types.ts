@@ -165,6 +165,11 @@ export interface CatalogModel {
 export interface TodoItem {
   content: string;
   status: 'pending' | 'in_progress' | 'completed';
+  /** Phase-2 step routing: how hard this step is (`[easy]`/`[medium]`/`[hard]` planner tag or
+   *  inferred). Rounds executing an `easy` step route to the cheap fast pool; `hard` steps to
+   *  the top tier. Optional — model-authored todos without it route unconstrained. Ignored by
+   *  the webview (unknown fields are safe there). */
+  difficulty?: 'easy' | 'medium' | 'hard';
 }
 
 export type KeyStatus = 'healthy' | 'rate_limited' | 'invalid' | 'error' | 'unknown' | 'missing';

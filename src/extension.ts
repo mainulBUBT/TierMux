@@ -73,8 +73,14 @@ function notifyNewProviders(entries: PlatformInfo[]): void {
 
 export function activate(context: vscode.ExtensionContext): void {
   console.log('[tiermux-bench-debug] activate() STARTED');
-  const catalog = new Catalog(context.extensionPath);
-  catalog.loadCached(context.globalState, vscode.workspace.getConfiguration('tiermux').get<string>('catalog.url', ''));
+
+  // Windows-specific: handle path issues
+  const extensionPath = context.extensionUri.fsPath;
+  console.log('[tiermux-bench-debug] Extension path:', extensionPath);
+
+  try {
+    const catalog = new Catalog(extensionPath);
+    catalog.loadCached(context.globalState, vscode.workspace.getConfiguration('tiermux').get<string>('catalog.url', ''));
   const secrets = new SecretStore(context.secrets);
   const settings = new SettingsStore(context.globalState, catalog);
   if (context.globalState.get('tiermux.notifiedModels') === undefined) {
@@ -410,6 +416,12 @@ export function activate(context: vscode.ExtensionContext): void {
     ...registerInlineCompletions(router, catalog, settings),
     registerCommitMessage(router),
   );
+  } catch (error) {
+    console.error('[tiermux] Extension activation failed:', error);
+    void vscode.window.showErrorMessage(
+      `TierMux failed to activate: ${error instanceof Error ? error.message : String(error)}. Check console for details.`
+    );
+  }
 }
 
 export function deactivate(): void {

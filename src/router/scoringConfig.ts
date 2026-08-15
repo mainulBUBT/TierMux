@@ -130,6 +130,10 @@ export interface TaskWeights {
   density: number;
   /** TTFT share within the speed signal (rest is total latency). */
   ttftShare: number;
+  /** Price emphasis — how hard a pricier model yields to an equally-capable cheaper peer.
+   *  Relative within the candidate pool (cheapest = 1.0, priciest = 0.1), so it only breaks
+   *  ties between similar models; free/unknown-priced models are neutral and never punished. */
+  price: number;
 }
 
 const BASE_WEIGHTS: TaskWeights = {
@@ -141,19 +145,20 @@ const BASE_WEIGHTS: TaskWeights = {
   headroom: 1,
   density: 0.6,
   ttftShare: 0.7,
+  price: 0.2,
 };
 
 export const TASK_WEIGHTS: Record<TaskKind, TaskWeights> = {
-  // Interactive, low-stakes → feel fast above all.
-  trivial: { ...BASE_WEIGHTS, speed: 2.2, reliability: 0.8, providerHealth: 1.2, ttftShare: 0.85 },
-  chat: { ...BASE_WEIGHTS, speed: 1.8, reliability: 1.1, providerHealth: 1.1, ttftShare: 0.8 },
-  agent: { ...BASE_WEIGHTS, speed: 1.2, reliability: 1.4, providerHealth: 1.1, ttftShare: 0.7 },
-  // Quality-first, but still penalize slowness.
-  coding: { ...BASE_WEIGHTS, speed: 0.8, reliability: 1.8, providerHealth: 1.0, ttftShare: 0.6 },
-  debug: { ...BASE_WEIGHTS, speed: 0.8, reliability: 1.8, providerHealth: 1.0, ttftShare: 0.6 },
-  plan: { ...BASE_WEIGHTS, speed: 0.7, reliability: 1.6, providerHealth: 1.0, ttftShare: 0.55 },
+  // Interactive, low-stakes → feel fast above all, and never spend paid quota on small talk.
+  trivial: { ...BASE_WEIGHTS, speed: 2.2, reliability: 0.8, providerHealth: 1.2, ttftShare: 0.85, price: 1.2 },
+  chat: { ...BASE_WEIGHTS, speed: 1.8, reliability: 1.1, providerHealth: 1.1, ttftShare: 0.8, price: 0.9 },
+  agent: { ...BASE_WEIGHTS, speed: 1.2, reliability: 1.4, providerHealth: 1.1, ttftShare: 0.7, price: 0.35 },
+  // Quality-first, but still penalize slowness — and mildly prefer cheaper among equals.
+  coding: { ...BASE_WEIGHTS, speed: 0.8, reliability: 1.8, providerHealth: 1.0, ttftShare: 0.6, price: 0.25 },
+  debug: { ...BASE_WEIGHTS, speed: 0.8, reliability: 1.8, providerHealth: 1.0, ttftShare: 0.6, price: 0.25 },
+  plan: { ...BASE_WEIGHTS, speed: 0.7, reliability: 1.6, providerHealth: 1.0, ttftShare: 0.55, price: 0.25 },
   // Big context → total latency matters more than TTFT.
-  longContext: { ...BASE_WEIGHTS, speed: 0.9, reliability: 1.5, providerHealth: 1.0, ttftShare: 0.4 },
+  longContext: { ...BASE_WEIGHTS, speed: 0.9, reliability: 1.5, providerHealth: 1.0, ttftShare: 0.4, price: 0.3 },
   // Vision → capability-gated; among capable models, prefer healthy+fast.
-  vision: { ...BASE_WEIGHTS, speed: 1.0, reliability: 1.3, providerHealth: 1.1, ttftShare: 0.65 },
+  vision: { ...BASE_WEIGHTS, speed: 1.0, reliability: 1.3, providerHealth: 1.1, ttftShare: 0.65, price: 0.3 },
 };

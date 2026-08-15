@@ -22,6 +22,11 @@ import { EditGate } from '../src/edits/applyEdit';
 import type { Router } from '../src/router/router';
 import type { AgentOpts, AgentMode } from '../src/agent/agent';
 
+// Keep the planner step out of these runs (mixturePipeline 'auto' plans for every action task,
+// which would consume a route() call and shift the scripted router sequences below) — read by
+// the vscode mock's getConfiguration (scripts/vscodeMock.cjs).
+(globalThis as any).__tiermuxTestConfig = { mixturePipeline: 'off' };
+
 let failures = 0;
 const ok = (name: string, cond: boolean) => {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}`);
@@ -79,8 +84,8 @@ function makeFakeRouter(answers: string[]): { router: Router; calls: Call[] } {
         response: baseResponse({ content: text }),
       };
     },
-    // A strong executor so the mixture-pipeline planner step (loop.ts's WEAK_EXECUTOR_RANK
-    // gate) doesn't fire and consume a route() call — these tests count exact route() calls.
+    // A strong executor; the mixture pipeline is disabled globally at the top of this file so
+    // the planner step never consumes a route() call — these tests count exact route() calls.
     peekTopSelection: () => ({ entry: { platform: 'custom', modelId: 'fake', enabled: true, priority: 0 }, model: { intelligenceRank: 1 } }),
   } as unknown as Router;
   return { router, calls };

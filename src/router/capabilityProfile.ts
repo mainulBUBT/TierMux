@@ -28,6 +28,10 @@ import type { ReasoningEffort } from '../shared/types';
 export interface ProfileModel {
   tags?: string[];
   supportsReasoning?: boolean;
+  /** 1 = frontier … 5 = weakest. Used to floor the effort-layered reasoner boost (see
+   *  tagMagnitude): a bottom-tier model tagged `reasoner` still can't hold a tool loop or
+   *  produce the analysis quality "high effort" asks for, so the boost must not crown it. */
+  intelligenceRank?: number;
 }
 
 export interface CapabilityProfile {
@@ -92,8 +96,16 @@ export function tagMagnitude(profile: CapabilityProfile, m: ProfileModel): numbe
   for (const t of profile.preferredTags) {
     if (tags.includes(t)) { discount += (t === 'general' ? GENERAL_MILD : TAG_BOOST_PER_MATCH); matched = true; }
   }
-  // Effort-layered reasoner: boost only if the model can actually reason (boolean gate).
-  if (profile.prefersReasoner && tags.includes('reasoner') && m.supportsReasoning) {
+  // Effort-layered reasoner: boost only if the model can actually reason (boolean gate) AND
+  // isn't bottom-tier. TAG_BOOST_PER_MATCH is large enough that one match lets a tagged rank-5
+  // beat an untagged rank-1 — fine for a curated `coding`/`vision` tag, catastrophic for the
+  // effort-layered `reasoner` boost: measured 2026-08-15, a 2.6B model tagged `reasoner` won a
+  // coding task at high effort over mid-tier models, drove 14 reads, then leaked its one edit
+  // as raw dialect text and ended on "What would you like to know?". A model that weak "reasoning
+  // harder" doesn't outperform a mid-tier model at any effort — rank 5 (and unknown rank, treated
+  // as 5) gets no reasoner boost. The base preferredTags boosts are untouched: a hand-curated
+  // tag is a curation judgment this module defers to.
+  if (profile.prefersReasoner && tags.includes('reasoner') && m.supportsReasoning && (m.intelligenceRank ?? 5) <= 4) {
     discount += TAG_BOOST_PER_MATCH;
     matched = true;
   }

@@ -23,6 +23,11 @@ import { NEW_DIAGNOSTICS_MARKER } from '../src/agent/core/tools/workspace/format
 import type { Router } from '../src/router/router';
 import type { AgentOpts } from '../src/agent/agent';
 
+// Keep the planner step out of these runs (mixturePipeline 'auto' plans for every action task,
+// which would consume a route() call and shift the scripted router sequences below) — read by
+// the vscode mock's getConfiguration (scripts/vscodeMock.cjs).
+(globalThis as any).__tiermuxTestConfig = { mixturePipeline: 'off' };
+
 let failures = 0;
 const ok = (name: string, cond: boolean) => {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}`);
@@ -87,9 +92,9 @@ async function main() {
         // Retry attempt: confirm the nudge is actually present, then "fix" it.
         return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'Fixed the error.' }) };
       },
-          // A strong executor so the mixture-pipeline planner step (loop.ts's
-      // WEAK_EXECUTOR_RANK gate) doesn't fire and consume a route() call — these tests
-      // count exact route() calls for the self-correct retry logic.
+          // A strong executor; the mixture pipeline is disabled globally at the top of this
+      // file so the planner step never consumes a route() call — these tests count exact
+      // route() calls for the self-correct retry logic.
       peekTopSelection: () => ({ entry: { platform: 'custom', modelId: 'fake', enabled: true, priority: 0 }, model: { intelligenceRank: 1 } }),
     } as unknown as Router;
 
@@ -116,9 +121,9 @@ async function main() {
         }
         return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'Edited the file, all clean.' }) };
       },
-          // A strong executor so the mixture-pipeline planner step (loop.ts's
-      // WEAK_EXECUTOR_RANK gate) doesn't fire and consume a route() call — these tests
-      // count exact route() calls for the self-correct retry logic.
+          // A strong executor; the mixture pipeline is disabled globally at the top of this
+      // file so the planner step never consumes a route() call — these tests count exact
+      // route() calls for the self-correct retry logic.
       peekTopSelection: () => ({ entry: { platform: 'custom', modelId: 'fake', enabled: true, priority: 0 }, model: { intelligenceRank: 1 } }),
     } as unknown as Router;
 

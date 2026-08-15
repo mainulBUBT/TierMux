@@ -25,6 +25,9 @@ import { createToolApproval, MUTATING_TOOLS } from './policies/permission';
 import { createToolSet } from './tools';
 import { getMcpManager } from './tools/mcp/manager';
 import { NEW_DIAGNOSTICS_MARKER, waitForWorkspaceDiagnosticsSettled, workspaceErrorSignatures, newErrorsSince } from './tools/workspace/formatDiagnostics';
+import { resolveVerifyCommand, runVerifyCommand } from './tools/workspace/verifyCommand';
+import { planStepsToTodos } from '../../session/titles';
+import { stepDifficultyOf, type StepDifficulty } from '../stepDifficulty';
 import { diagLog } from '../../util/diag';
 import { repairToolArguments, sanitizeToolName } from '../toolArgs';
 import type { ClarifyingQuestion } from '../clarify';
@@ -347,6 +350,17 @@ const SELF_CORRECT_NUDGE =
   + 'read the surrounding code if you need to, then correct the error with another edit before '
   + 'finishing. Do not just acknowledge the error — actually fix it.';
 
+/** Nudge for the end-of-turn command gate: the turn's edits were checked by ACTUALLY RUNNING the
+ *  project's verify command (the planner's `Verify:` pick or auto-detected from the manifest) and
+ *  it exited non-zero. The failing output is appended to this nudge by the caller. Same shape as
+ *  SELF_CORRECT_NUDGE but the evidence is an observed command result, not LSP diagnostics — the
+ *  strongest falsifier the loop has. */
+const VERIFY_FAILED_NUDGE =
+  'Your changes were verified by actually running the project\'s verify command, and it FAILED '
+  + '(output below). Fix the actual cause of the failure now — read the failing file or test if '
+  + 'you need to, make the edit, and make the command pass. Do not just acknowledge the failure: '
+  + 'the turn is not complete while the verify command still exits non-zero.';
+
 /** Tools that can actually falsify a "it's fixed" claim: they execute or re-inspect the code
  *  rather than restating it. `readFile` is deliberately NOT here — re-reading your own edit
  *  confirms the text landed, not that the bug is gone. */
@@ -496,6 +510,28 @@ const PRUNE_TOOL_POLICY = [
  *  that decomposes the task first is worth its latency. Lower = smarter; 1 is frontier. */
 const WEAK_EXECUTOR_RANK = 3;
 
+/** Step routing (Phase 2): `easy` steps (reads/searches/lookups) route to the cheap pool —
+ *  intelligenceRank >= 3. A cheap model reading a file correctly is exactly as correct as a
+ *  frontier model reading it; the only thing being spent is quota that a later `hard` step
+ *  will need. Unknown models (custom endpoints) always pass the filter inside Router. */
+const EASY_STEP_MIN_RANK = 3;
+/** `hard` steps (tricky edits, refactors, debugging) get the same top-tier-only constraint the
+ *  quality escalation uses — this is where model intelligence actually changes outcomes. */
+const HARD_STEP_MAX_RANK = 2;
+
+/** Maps a plan step's difficulty to Router constraints. `medium`/undefined → no constraint
+ *  (today's behavior). Escalation constraints win over difficulty — an escalation retry is by
+ *  definition a "the smart model must finish this" path. */
+function difficultyRouteConstraints(
+  stepDifficulty: StepDifficulty | undefined,
+  escalation: { maxIntelligenceRank: number } | undefined,
+): { minIntelligenceRank?: number; maxIntelligenceRank?: number } {
+  if (escalation) return { maxIntelligenceRank: escalation.maxIntelligenceRank };
+  if (stepDifficulty === 'easy') return { minIntelligenceRank: EASY_STEP_MIN_RANK };
+  if (stepDifficulty === 'hard') return { maxIntelligenceRank: HARD_STEP_MAX_RANK };
+  return {};
+}
+
 /** System prompt for the planner step of the mixture pipeline. The planner is a read-only,
  *  single-step call routed to a `planner`-tagged model (via taskKind 'plan') that decomposes
  *  the task into an execution plan WITHOUT calling tools or executing anything — its output is
@@ -504,15 +540,33 @@ const WEAK_EXECUTOR_RANK = 3;
 const PLANNER_SYSTEM =
   'You are a planning model. Decompose the user\'s task into a concise, ordered execution plan: '
   + 'the goal, the relevant files/paths to touch, concrete steps in order, and edge cases to watch. '
-  + 'Do NOT execute, write code, or call tools — only produce the plan. Be specific and brief.\n\n'
+  + 'Do NOT execute, write code, or call tools — only produce the plan. Be specific and brief.\n'
+  + 'Prefix EVERY step with a difficulty tag: `[easy]` for reading/searching/looking things up, '
+  + '`[medium]` for straightforward edits, `[hard]` for tricky logic, refactoring, or debugging.\n'
+  + 'End the plan with a final line of the exact form `Verify: <command>` naming the ONE command '
+  + 'that best proves the change works once implemented (e.g. `npm test`, `tsc --noEmit`, `cargo test`), '
+  + 'or `Verify: none` if no command applies.\n\n'
   + 'Example — task: "add a loading spinner to the submit button":\n'
   + 'Goal: show a spinner on the submit button while the form request is in flight.\n'
   + 'Files: src/components/SubmitButton.tsx, src/components/SubmitButton.css\n'
   + 'Steps:\n'
-  + '1. Add an `isLoading` prop to SubmitButton and disable the button when true.\n'
-  + '2. Render a spinner element in place of the label when isLoading is true.\n'
-  + '3. Pass isLoading from the form\'s submit-in-flight state into SubmitButton.\n'
-  + 'Edge cases: rapid double-submit while loading; spinner must clear on request failure, not just success.';
+  + '1. [easy] Read SubmitButton.tsx and the form component to find the submit handler.\n'
+  + '2. [medium] Add an `isLoading` prop to SubmitButton and disable the button when true.\n'
+  + '3. [hard] Wire isLoading from the form\'s submit-in-flight state, clearing it on failure too.\n'
+  + 'Edge cases: rapid double-submit while loading; spinner must clear on request failure, not just success.\n'
+  + 'Verify: npm test';
+
+/** Parses the planner's `Verify: <command>` tail line (see PLANNER_SYSTEM). Returns undefined for
+ *  'none', a missing line, or a value that doesn't look like a shell command — the planner output
+ *  is free text from an arbitrary model, so nothing downstream trusts it blindly. */
+function plannerVerifyCommand(plan: string): string | undefined {
+  const m = /^Verify:\s*(.+)$/im.exec(plan);
+  const v = m?.[1]?.trim();
+  if (!v || v.toLowerCase() === 'none') return undefined;
+  // Command-shaped sanity bound: single line, short, contains a word char. A "verification
+  // paragraph" from a chatty planner is not a runnable command — fall back to auto-detection.
+  return /^[\w./@-]+([ \t]+\S+){0,6}$/.test(v) ? v : undefined;
+}
 
 /**
  * Forced synthesis turn — run after the main loop when the model acted via tools but produced no
@@ -587,7 +641,7 @@ export function shrinkForSynthesis(messages: CoreMessage[]): CoreMessage[] {
   return out;
 }
 
-const TOOL_CALL_DIALECT_RE = /(?:<tool_call>|<function=|<｜+DSML｜|\{\s*"(?:name|type)"\s*:)/;
+const TOOL_CALL_DIALECT_RE = /(?:<tool_call>|<tool_call_start|<function=|<｜+DSML｜|\[\s*[a-zA-Z0-9_\-]+\s*\(|\{\s*"(?:name|type)"\s*:)/;
 
 /** Minimum prefix length (words) worth keeping when a tool-call dialect attempt is found mid-text.
  *  Below this, the "prefix" is just meta-narration ("Now let me…") with nothing substantive in
@@ -1156,25 +1210,52 @@ async function runAttempt(
     }
     return false;
   };
+/** Canonical form of a tool call for near-duplicate detection: tool name + arguments with keys
+ *  sorted and string values lowercased/stripped of non-alphanumerics, so "submitProduct" and
+ *  "submitproduct" collapse to the same key while two genuinely different reads stay distinct.
+ *  Input may arrive as a JSON string from a weak model — unwrap it first (same tolerance as
+ *  pathArgOf/repairToolArguments). */
+function normalizedToolCallKey(toolName: string, input: unknown): string {
+  let v = input;
+  if (typeof v === 'string') { try { v = JSON.parse(v); } catch { /* keep raw string */ } }
+  const canon = (x: unknown): unknown => {
+    if (Array.isArray(x)) return x.map(canon);
+    if (x && typeof x === 'object') {
+      const o: Record<string, unknown> = {};
+      for (const k of Object.keys(x as Record<string, unknown>).sort()) o[k] = canon((x as Record<string, unknown>)[k]);
+      return o;
+    }
+    if (typeof x === 'string') return x.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    return x;
+  };
+  return `${toolName}:${JSON.stringify(canon(v))}`;
+}
+
   // Exact-repeat detection (above) misses the more common weak-model failure: re-searching the
   // SAME thing with slightly different wording each time ("submitproduct", "submitProduct",
-  // "submit") — never an exact duplicate, so it never trips stuckStop, yet zero real progress
-  // (no mutating tool call) happens. With no step-count cap anymore, this can now run
-  // indefinitely. Cap read-only tool calls made before the FIRST mutating call — past this many,
-  // the model is thrashing on exploration, not investigating.
-  const explorationStop = ({ steps }: { steps: Array<{ toolCalls?: Array<{ toolName?: string }> }> }): boolean => {
+  // "submit") — never an exact duplicate, so never trips stuckStop, yet zero real progress
+  // (no mutating tool call) happens. Cap only the NEAR-DUPLICATE exploration calls, not distinct
+  // reads: investigating an unfamiliar codebase legitimately takes 20+ distinct reads before the
+  // first edit, and the old distinct-count cap cut exactly those investigations short (reported
+  // as 'stuck', then halted by the auto-continue loop after one nudge). Distinct reads are
+  // progress — they are never counted here; budgetStop/stepCountStop remain the backstops for a
+  // turn that reads forever without acting. Any mutating call disables the cap entirely.
+  const explorationStop = ({ steps }: { steps: Array<{ toolCalls?: Array<{ toolName?: string; input?: unknown }> }> }): boolean => {
     if (maxExplorationCalls <= 0) return false;
-    let readOnlyCount = 0;
+    const seen = new Set<string>();
+    let repeated = 0;
     for (const s of steps) {
       for (const tc of s.toolCalls ?? []) {
         if (!tc.toolName) continue;
         if (MUTATING_TOOLS.has(tc.toolName)) return false; // real progress happened — no cap
-        readOnlyCount++;
+        const key = normalizedToolCallKey(tc.toolName, tc.input);
+        if (seen.has(key)) repeated++;
+        else seen.add(key);
       }
     }
-    if (readOnlyCount > maxExplorationCalls) {
+    if (repeated > maxExplorationCalls) {
       stopReason = 'stuck';
-      diagLog('turn.stop', `stuck: ${readOnlyCount} read-only tool calls with zero mutating progress`);
+      diagLog('turn.stop', `stuck: ${repeated} near-duplicate read-only tool calls (${seen.size} distinct) with zero mutating progress`);
       return true;
     }
     return false;
@@ -1237,6 +1318,12 @@ async function runAttempt(
   // NEW model this call picks as the session's pin, so the round AFTER the stuck-recovery one
   // stays on the model that actually worked instead of drifting back to the stale pin.
   const hasCallerExclude = !escalation && !opts.pinnedModel && !!opts.excludeModels?.length;
+  // Step routing (Phase 2): the difficulty of the plan step this attempt executes constrains
+  // the candidate pool. A pinned model always wins regardless (candidates() short-circuits
+  // forced models before any rank filter), and an escalation's top-tier constraint wins over
+  // difficulty — see difficultyRouteConstraints. `tiermux.agent.stepRouting: false` disables.
+  const stepRoutingOn = vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('stepRouting', true);
+  const stepRoute = stepRoutingOn ? difficultyRouteConstraints(opts.stepDifficulty, escalation) : {};
   const provider = createRouterProvider(router, {
     effort: opts.effort,
     taskKind,
@@ -1248,7 +1335,8 @@ async function runAttempt(
     // escalation retry: the whole point there is to leave the model that just underperformed.
     sessionId: escalation ? undefined : opts.sessionId,
     excludeModels: escalation?.excludeModels ?? (hasCallerExclude ? opts.excludeModels : undefined),
-    maxIntelligenceRank: escalation?.maxIntelligenceRank,
+    maxIntelligenceRank: stepRoute.maxIntelligenceRank,
+    minIntelligenceRank: stepRoute.minIntelligenceRank,
     onFailover: opts.onFailover,
     onKeyRotated: opts.onKeyRotated,
     onModelSelected: (p, m, rt) => { platform = p; model = m; runtimeName = rt; opts.onModel(p, m, rt); },
@@ -1718,12 +1806,27 @@ async function runAttempt(
   }
 }
 
+/** Pruning threshold scaled to the model that will actually serve the turn. The flat 12k default
+ *  was tuned for the smallest free windows — on any model with a larger context it evicts read
+ *  results the model is still actively using (one capped readFile is ~7.5k tokens, so after ~2
+ *  reads everything older vanished), which reads to the user as "the agent forgot what it just
+ *  looked at". 40% of the window, clamped to [12k, 60k]: small-window models keep the tight
+ *  pruning they need, large-window models keep their context. Only used when the user hasn't set
+ *  tiermux.agent.pruneAtTokens explicitly — a deliberate value always wins. */
+function adaptivePruneAtTokens(router: Router, taskKind: TaskKind): number {
+  const cfg = vscode.workspace.getConfiguration('tiermux.agent');
+  const base = cfg.get<number>('pruneAtTokens', 12_000);
+  if (base <= 0) return 0; // explicitly disabled
+  const ins = typeof cfg.inspect === 'function' ? cfg.inspect<number>('pruneAtTokens') : undefined;
+  const userSet = ins && (ins.globalValue !== undefined || ins.workspaceValue !== undefined
+    || ins.workspaceFolderValue !== undefined || ins.globalLanguageValue !== undefined);
+  if (userSet) return base;
+  const window = router.peekTopSelection(taskKind)?.model?.contextWindow;
+  if (!window || window <= 0) return base;
+  return Math.min(Math.max(Math.floor(window * 0.4), 12_000), 60_000);
+}
+
 export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentResult> {
-  // Once the running tool-loop context passes this many tokens, prune stale tool outputs and old
-  // reasoning BEFORE each step so a long, tool-heavy turn stops re-sending megabytes of grep/read
-  // dumps the model no longer needs. 0 disables. Complements the per-result cap in capOutput.ts:
-  // that bounds each result; this evicts whole stale ones from the growing history.
-  const pruneAtTokens = vscode.workspace.getConfiguration('tiermux.agent').get<number>('pruneAtTokens', 12000);
   // Hard per-turn token ceiling (0 = off). With the step-count cap removed, this is now the
   // ONLY backstop against a runaway loop besides stuckStop's exact-repeat detection — hence a
   // real non-zero default rather than 0/off. A stuck free-model turn was observed burning
@@ -1759,14 +1862,25 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     ? 'plan'
     : await classifyTaskSmart(router, lastUserText, { attachmentKinds, attachments: attachmentKinds.length, mentions: opts.mentionCount });
 
-  // Planner→execute mixture pipeline: when the best executor for this task is weak (or the user
-  // forces 'on'), first run a read-only planner step that decomposes the task, then hand the plan
-  // to the executor as system-prompt guidance. Skipped for read-only modes (plan/ask already
-  // non-mutating), when a model is pinned (respect the explicit choice), and for trivial/chat/vision
-  // kinds. The planner is tool-less, so it has no side effects and can't violate the no-retry-after-
-  // mutation rule below. Best-effort: a failed/empty planner just yields no plan.
+  // Once the running tool-loop context passes this many tokens, prune stale tool outputs and old
+  // reasoning BEFORE each step so a long, tool-heavy turn stops re-sending megabytes of grep/read
+  // dumps the model no longer needs. 0 disables. Complements the per-result cap in capOutput.ts:
+  // that bounds each result; this evicts whole stale ones from the growing history. Computed here
+  // (after taskKind) because the adaptive default scales with the routed model's context window.
+  const pruneAtTokens = adaptivePruneAtTokens(router, taskKind);
+
+  // Planner→execute mixture pipeline: for action tasks, first run a read-only planner step that
+  // decomposes the task, then hand the plan to the executor as system-prompt guidance AND seed
+  // the todo checklist from it (the step-wise completion contract). Skipped for read-only modes
+  // (plan/ask already non-mutating), when a model is pinned (respect the explicit choice), and
+  // for trivial/chat/vision kinds. The planner is tool-less, so it has no side effects and can't
+  // violate the no-retry-after-mutation rule below. Best-effort: a failed/empty planner just
+  // yields no plan.
   const mixture = vscode.workspace.getConfiguration('tiermux.agent').get<string>('mixturePipeline', 'auto');
   let planGuidance: string | undefined;
+  /** Verify command for the end-of-turn command gate: the planner's explicit `Verify:` line when
+   *  the mixture pipeline ran, else auto-detected from the project manifest at gate time. */
+  let turnVerifyCommand: string | undefined;
   const mixtureEligible = mixture !== 'off'
     && opts.mode !== 'plan' && opts.mode !== 'ask'
     && !opts.pinnedModel
@@ -1774,20 +1888,48 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   if (mixtureEligible) {
     const top = router.peekTopSelection(taskKind);
     const executorRank = top?.model?.intelligenceRank ?? 5;
-    const weak = mixture === 'on' || executorRank >= WEAK_EXECUTOR_RANK;
-    if (weak) {
-      diagLog('turn.pipeline', `planner step before execute (executor ${top?.entry.platform}/${top?.entry.modelId ?? '?'} rank ${executorRank}, mode=${mixture})`);
-      const plan = await runPlannerStep(router, opts);
-      let guidance = '';
-      if (plan.trim()) {
-        guidance += '\n\n## Execution plan (produced by the planner — follow it, adapt as needed)\n' + plan.trim();
-      }
+    // 'auto' now plans for EVERY eligible action task, not just weak executors: the plan is
+    // also what seeds the todo checklist (the step-wise completion contract below) and the
+    // verify command for the end-of-turn command gate, which a strong executor benefits from
+    // just as much — "capable model" and "never drifts from a 6-step task" are not the same
+    // claim. 'on' additionally forces the weak-executor scaffold; 'off' skips everything.
+    const scaffold = mixture === 'on' || executorRank >= WEAK_EXECUTOR_RANK;
+    diagLog('turn.pipeline', `planner step before execute (executor ${top?.entry.platform}/${top?.entry.modelId ?? '?'} rank ${executorRank}, mode=${mixture})`);
+    const plan = await runPlannerStep(router, opts);
+    let guidance = '';
+    if (plan.trim()) {
+      guidance += '\n\n## Execution plan (produced by the planner — follow it, adapt as needed)\n' + plan.trim();
+    }
+    // Seed the visible todo checklist from the plan's own steps (deterministic regex parse via
+    // planStepsToTodos — no extra LLM call). Two effects: the user sees the plan as a trackable
+    // checklist immediately, and the chatViewProvider auto-continue loop gains its completion
+    // contract — the send keeps going until every seeded step is marked completed, so "plan as
+    // prompt text only" (the old behavior) can no longer end a turn with steps silently undone.
+    // The executor replaces this list the moment it writes its own todowrite, so model-authored
+    // plans always win. Only at ≥2 steps: a single-step task needs no checklist, and seeding one
+    // would make the auto-continue loop treat a finished turn as incomplete. Each step also
+    // carries its difficulty tag (stripped from the visible text) so later rounds route by it.
+    const seededSteps = planStepsToTodos(plan);
+    if (seededSteps.length >= 2) {
+      opts.onTodos(seededSteps.map((t, i) => {
+        const { difficulty, content } = stepDifficultyOf(t.content);
+        return { content, difficulty, status: i === 0 ? ('in_progress' as const) : t.status };
+      }));
+      guidance += '\n\nThese plan steps are now your todo checklist. As you complete each step, '
+        + 'report the updated list with the `todowrite` tool (marking the finished step `completed` '
+        + 'and the next one `in_progress`) — the checklist is what tells the harness you are done.';
+    }
+    if (scaffold) {
       // REACT_SCAFFOLD goes LAST, after the plan — weak models weight the tail of a system
       // prompt most heavily (recency bias), and "one thought, one action" must not get buried
       // under the plan content.
       guidance += REACT_SCAFFOLD;
-      planGuidance = guidance;
     }
+    planGuidance = guidance || undefined;
+    // The planner names the single command that proves the change works (see PLANNER_SYSTEM).
+    // Used in preference to auto-detection by the command gate below; free-text output from an
+    // arbitrary model, hence the shape check in plannerVerifyCommand().
+    turnVerifyCommand = plannerVerifyCommand(plan);
   } else if (opts.mode !== 'plan' && opts.mode !== 'ask' && isWeakExecutor(router, taskKind)) {
     // The scaffold is about the EXECUTOR's tool-call reliability, so it must not be collateral
     // damage of the planner step being skipped. Pinning a model, or turning the mixture pipeline
@@ -2109,11 +2251,71 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     }
   }
 
+  // Command verify gate — the checks above prove the edited files PARSE (LSP diagnostics); this
+  // one proves the project still WORKS. After a mutating turn settles, actually run the verify
+  // command (the planner's explicit `Verify:` pick, else auto-detected from the project manifest
+  // — package.json scripts / Makefile / Cargo.toml / …; `tiermux.agent.verifyCommand` overrides
+  // or disables). A non-zero exit feeds the failure output back for exactly ONE self-correct
+  // retry, then the command is re-run once; if it still fails, the final answer carries a
+  // deterministic failure note instead of letting an untested "done" stand. `ok === null` (could
+  // not run: declined, disabled, timed out, no command detected) is "no signal" — never treated
+  // as a failure. This is the fleet pipeline's worker gate (implementPipeline.ts verifyCommand)
+  // applied to the single-agent path, with the command auto-detected so the model can't skip it
+  // by never naming one.
+  const verifyCmd = turnVerifyCommand ?? resolveVerifyCommand();
+  let verifyGateFailed: string | null = null;
+  // Exposed on AgentResult.verifyOutcome: the step engine keys on 'failed' to refuse accepting
+  // a "completed" checklist whose verify command still fails.
+  let verifyOutcome: 'passed' | 'failed' | 'unverified' | undefined;
+  if (final.hadMutatingToolCall && !final.stopReason && !opts.abortSignal?.aborted && verifyCmd) {
+    opts.onStep('verifying', `Verifying with ${verifyCmd}…`);
+    let run = await runVerifyCommand(verifyCmd);
+    if (run.ok === false) {
+      diagLog('turn.verifyCmd', `${verifyCmd} exited non-zero after this turn's edits — retrying once with the failure output`);
+      const nudged: AgentOpts = {
+        ...opts,
+        messages: [
+          ...opts.messages,
+          ...final.workMessages,
+          ...(final.text.trim() ? [{ role: 'assistant' as const, content: final.text }] : []),
+          { role: 'user', content: `${VERIFY_FAILED_NUDGE}\n\nCommand: \`${verifyCmd}\`\n\nOutput:\n\`\`\`\n${run.output.slice(0, 4000)}\n\`\`\`` },
+        ],
+      };
+      const corrected = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn);
+      if (corrected.text.trim() || corrected.hadToolCalls) final = corrected;
+      if (corrected.changedFiles) final = { ...final, changedFiles: mergeChangedFiles(final.changedFiles, corrected.changedFiles) };
+      // Re-check only when the fix attempt actually changed something — re-running an
+      // unchanged workspace can only reproduce the same failure and waste the timeout.
+      if (corrected.hadMutatingToolCall && !opts.abortSignal?.aborted) {
+        opts.onStep('verifying', `Re-running ${verifyCmd}…`);
+        run = await runVerifyCommand(verifyCmd);
+      }
+    }
+    if (run.ok === true) {
+      // Observed pass — stronger than any LLM self-report, so it also satisfies the
+      // unverified-claim backstop below.
+      final = { ...final, verifiedAfterMutation: true };
+      verifyOutcome = 'passed';
+    } else if (run.ok === false) {
+      verifyGateFailed = verifyCmd;
+      verifyOutcome = 'failed';
+    }
+  } else if (final.hadMutatingToolCall) {
+    // A mutating turn with no verify command available — honest "we don't know" signal for the
+    // step engine (distinct from both passed and failed).
+    verifyOutcome = 'unverified';
+  }
+
   // Honesty backstop: the turn edited files, declared the problem solved, and never ran anything
   // that could have proved it wrong. Flag it rather than letting the claim stand unqualified —
-  // see UNVERIFIED_CLAIM_CAVEAT for why this is deterministic instead of prompt-only.
+  // see UNVERIFIED_CLAIM_CAVEAT for why this is deterministic instead of prompt-only. A failed
+  // command gate above replaces this weaker caveat with the observed failure.
   let finalText = final.text;
-  if (final.hadMutatingToolCall && !final.verifiedAfterMutation && COMPLETION_CLAIM_RE.test(finalText)) {
+  if (verifyGateFailed) {
+    diagLog('turn.verifyCmd', `verify command still failing after fix attempt — appending failure note`);
+    finalText += `\n\n> ❌ **Verification failed** — \`${verifyGateFailed}\` still exits non-zero after a fix attempt. `
+      + 'The changes above are on disk but not proven to work; re-run the command to see the remaining failure.';
+  } else if (final.hadMutatingToolCall && !final.verifiedAfterMutation && COMPLETION_CLAIM_RE.test(finalText)) {
     diagLog('turn.unverified', 'completion claim with no verify tool after the last mutating call — appending caveat');
     finalText += UNVERIFIED_CLAIM_CAVEAT;
   }
@@ -2162,6 +2364,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     askQuestions: final.askQuestions,
     workMessages: final.workMessages.length ? final.workMessages : undefined,
     changedFiles,
+    verifyOutcome,
     // Only meaningful when nothing downstream salvaged the turn — every retry/escalation path
     // above already overwrites `final` with a candidate that has real text or tool calls, so a
     // surviving `failed` here means every attempt genuinely came back empty after an error.

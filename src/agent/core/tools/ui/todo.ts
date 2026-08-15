@@ -13,11 +13,12 @@ export function createTodoWriteTool(onTodos: (todos: TodoItem[]) => void) {
         z.object({
           content: z.string(),
           status: z.enum(['pending', 'in_progress', 'completed']),
+          difficulty: z.enum(['easy', 'medium', 'hard']).optional(),
         }),
       ])),
     }),
-    execute: async ({ todos }: { todos: Array<{ content: string; status: TodoItem['status'] }> }) => {
-      const list: TodoItem[] = todos.filter((t) => t.content).map((t) => ({ content: t.content, status: t.status }));
+    execute: async ({ todos }: { todos: Array<{ content: string; status: TodoItem['status']; difficulty?: TodoItem['difficulty'] }> }) => {
+      const list: TodoItem[] = todos.filter((t) => t.content).map((t) => ({ content: t.content, status: t.status, ...(t.difficulty ? { difficulty: t.difficulty } : {}) }));
       onTodos(list);
       return `Todo list updated (${list.length} items).`;
     },

@@ -43,6 +43,9 @@ export interface RouterProviderOptions {
    *  Router.route()'s `maxIntelligenceRank` (lower rank number = smarter; already implemented,
    *  just never set by any caller before loop.ts's escalation retry). */
   maxIntelligenceRank?: number;
+  /** Step routing (Phase 2): only consider models at most this smart (the cheap pool for easy
+   *  plan steps) — forwarded to Router.route()'s `minIntelligenceRank`. */
+  minIntelligenceRank?: number;
 }
 
 const routeKey = (e: { platform: string; modelId: string }): string => `${e.platform}::${e.modelId}`;
@@ -229,6 +232,7 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         onSelectionRationale: toRationaleCallback(providerOpts.onSelectionRationale),
         exclude: providerOpts.excludeModels,
         maxIntelligenceRank: providerOpts.maxIntelligenceRank,
+        minIntelligenceRank: providerOpts.minIntelligenceRank,
         abortSignal: options.abortSignal,
         hasRawPdfPart: hasRawPdfPart(messages),
       };
@@ -296,6 +300,7 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         onSelectionRationale: toRationaleCallback(providerOpts.onSelectionRationale),
         exclude: providerOpts.excludeModels,
         maxIntelligenceRank: providerOpts.maxIntelligenceRank,
+        minIntelligenceRank: providerOpts.minIntelligenceRank,
         abortSignal: options.abortSignal,
         hasRawPdfPart: hasRawPdfPart(messages),
       };

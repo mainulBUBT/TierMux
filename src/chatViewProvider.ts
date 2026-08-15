@@ -9,6 +9,7 @@ import type { Mode } from './shared/types';
 import { runAgentStream, runPlanStream, runAskStream, type AgentResult, type AgentOpts, type AgentMode, type ToolEvent } from './agent/agent';
 import { findTextInWorkspace } from './context/textSearch';
 import { classifyTask } from './agent/routing';
+import { decideStepRound } from './agent/core/stepEngine';
 import { clearFindings } from './agent/sessionFindings';
 import { PRODUCT_NAME } from './shared/branding';
 import { SETTINGS_META, defaultForSetting } from './settingsMeta';
@@ -103,44 +104,6 @@ function planDataFromTodos(title: string, todos: TodoItem[]): PlanDataPayload {
     totalTasks: tasks.length,
     completedTasks: tasks.filter((t) => t.completed).length,
   };
-}
-
-/** The synthetic user message that drives one round of the autonomous continuation loop. When the
- *  agent's visible plan still has unfinished todos, spell them out so the model resumes the exact
- *  remaining work (rather than the old generic "continue" string, which invited re-planning or
- *  repeating done steps). Falls back to a plain continuation when the loop was triggered by a
- *  step-cap pause with no todos. */
-function autoContinueMessage(remainingTodos: TodoItem[]): string {
-  if (remainingTodos.length === 0) {
-    return 'Continue from where you left off. Keep going with the remaining steps using the work '
-      + 'already done above — do not restart or repeat completed steps.';
-  }
-  const list = remainingTodos
-    .map((t) => `- ${t.content}${t.status === 'in_progress' ? ' (in progress)' : ''}`)
-    .join('\n');
-  return 'Keep going — your plan still has unfinished items. Continue working through them using '
-    + 'the work already done above; do not restart or repeat completed steps. Update the todo list '
-    + 'as you finish each item, and only stop once every item is completed (or you hit a genuine '
-    + `blocker, which you must state plainly).\n\nRemaining items:\n${list}`;
-}
-
-/** Companion to {@link autoContinueMessage} for a 'stuck' stop specifically. A plain "keep going"
- *  message would very likely reproduce the exact same repeated tool call that caused the stall —
- *  this one names that risk explicitly and asks for a genuinely different approach (or, failing
- *  that, to move on to the next item rather than stopping the whole plan over one blocked step).
- *  Bounded to one use per stall by the caller (maxStuckContinuations) — if the SAME approach
- *  fails a second time, the auto-continue loop halts for real rather than nudging forever. */
-function stuckContinueMessage(remainingTodos: TodoItem[]): string {
-  const base = 'You got stuck repeating the same action without making progress — do NOT repeat '
-    + 'it. Try a genuinely different approach for whatever you were stuck on (a different search '
-    + 'term, file, or tool entirely). If it still doesn\'t work, move on to the next item rather '
-    + 'than stopping the whole plan, and report the stuck one as blocked at the end, stating '
-    + 'plainly what you tried and why it didn\'t work.';
-  if (remainingTodos.length === 0) return base;
-  const list = remainingTodos
-    .map((t) => `- ${t.content}${t.status === 'in_progress' ? ' (in progress)' : ''}`)
-    .join('\n');
-  return `${base}\n\nRemaining items:\n${list}`;
 }
 
 /** Deterministic end-of-turn footer built directly from todo state, not trusted to the model's
@@ -2028,72 +1991,67 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // ── Autonomous continuation loop (todo-driven) ───────────────────────────────────
       // Turns the engine from single-response into goal-pursuing: the agent writes a plan via the
       // `todowrite` tool, and this loop keeps re-invoking the model until every planned item is
-      // `completed` (the "visible plan" IS the completion contract). Two triggers keep going:
-      //   (a) pending todos — the agent's own plan still has unfinished items this send, or
-      //   (b) result.paused — a genuine step-cap cutoff mid-task (legacy resumable state).
-      // Hard stops: 'stuck' (repeated identical tool calls / thrashing with no mutating progress)
-      // HALTS immediately — a fresh attempt would very likely repeat the exact same loop. 'budget'
-      // (per-attempt token cap, e.g. a large multi-file rewrite) instead gets a bounded number of
-      // continuations (maxBudgetContinuations) — each continuation is a brand-new runTurn call, so
-      // it gets a FRESH token budget rather than raising any ceiling, matching how Claude Code/
-      // Cursor-style agents keep working across turns instead of abandoning a big task mid-way. A
-      // per-send round cap (maxAutoContinueRounds) bounds total autonomy regardless of cause; the
-      // Stop button (isActiveRun/abort) always wins. A plain Q&A turn that never wrote a plan has
-      // no pending todos → this never fires, so simple chats still return in one turn.
+      // `completed` (the "visible plan" IS the completion contract — and the verify command is its
+      // arbiter, see decideStepRound's step-acceptance rule). The DECISIONS live in
+      // core/stepEngine.ts (decideStepRound) so headless callers and tests share this exact
+      // brain; this loop owns only the UI effects around each round: persisting the finished
+      // round, pushing the continuation message into history, and the per-round model routing.
+      // A per-send round cap (maxAutoContinueRounds) bounds total autonomy; the Stop button
+      // (isActiveRun/abort) always wins. A plain Q&A turn that never wrote a plan has no pending
+      // todos → this never fires, so simple chats still return in one turn.
       const agentCfg = vscode.workspace.getConfiguration('tiermux.agent');
       const autoContinueOn = agentCfg.get<boolean>('autoContinue', true);
       const maxAutoContinueRounds = agentCfg.get<number>('maxAutoContinueRounds', 25);
       const maxBudgetContinuations = agentCfg.get<number>('maxBudgetContinuations', 1);
       const maxStuckContinuations = agentCfg.get<number>('maxStuckContinuations', 1);
       if (m.mode === 'agent' && autoContinueOn) {
+        // Capture the original user request so each continuation round re-injects the goal.
+        // After history compaction or a small-window trim the original task can be evicted from
+        // context, leaving the model working toward a summary it never saw — re-injecting it here
+        // prevents that without increasing the continuation message's cost on tiny windows (kept
+        // short: first 200 chars). `prompt` is the raw user text; strip attachment blocks since
+        // those are separate context, not goal text.
+        const originalTask = prompt.replace(/\n\{\s*"type":\s*"(image_url|file)"/g, '').trim();
         let budgetContinuations = 0;
         let stuckContinuations = 0;
+        let unacceptedContinuations = 0;
         for (let ac = 0; ac < maxAutoContinueRounds && this.isActiveRun(s, m.requestId); ac++) {
-          // A todo plan with items still pending after a stall is exactly the case worth one more
-          // try: a repeated tool call on item 4 says nothing about whether item 5 is reachable, and
-          // even item 4 may well succeed with a genuinely different approach — see
-          // stuckContinueMessage. Bounded to maxStuckContinuations so a SECOND stall on the same
-          // approach still halts for real instead of nudging forever.
-          if (result.stopReason === 'stuck') {
-            if (stuckContinuations >= maxStuckContinuations) {
-              diagLog('send.autocontinue', `halt: stuck ${stuckContinuations}× in a row (cap ${maxStuckContinuations}) after round ${ac}`);
-              break;
-            }
-            stuckContinuations++;
-            budgetContinuations = 0;
-            diagLog('send.autocontinue', `stuck after round ${ac} — continuing once with a break-the-loop nudge (${stuckContinuations}/${maxStuckContinuations})`);
-          } else if (result.stopReason === 'budget') {
-            if (budgetContinuations >= maxBudgetContinuations) {
-              diagLog('send.autocontinue', `halt: budget cutoff ${budgetContinuations}× in a row (cap ${maxBudgetContinuations}) after round ${ac}`);
-              break;
-            }
-            budgetContinuations++;
-            stuckContinuations = 0;
-            diagLog('send.autocontinue', `budget cutoff after round ${ac} — continuing with a fresh turn budget (${budgetContinuations}/${maxBudgetContinuations})`);
-          } else {
-            budgetContinuations = 0; // reset the streak once a round completes without hitting the cap
-            stuckContinuations = 0;
-          }
           // Only todos written during THIS send count (see todosAtSendStart) — stale todos from an
           // earlier turn must not keep a fresh, unrelated turn spinning.
           const wroteTodosThisSend = s.lastTodos !== todosAtSendStart;
-          const remainingTodos = wroteTodosThisSend ? (s.lastTodos ?? []).filter((t) => t.status !== 'completed') : [];
-          if (!result.paused && remainingTodos.length === 0) break; // goal met (or no plan to pursue)
+          const sendTodos = wroteTodosThisSend ? (s.lastTodos ?? []) : [];
+          // In Auto mode, a stuck round is also given a genuinely different model, not just a
+          // nudge to the same one — an explicit model pin is the user's own choice and stays
+          // untouched even after a stall.
+          const isAutoMode = !s.model || s.model === 'auto';
+          const decision = decideStepRound({
+            todos: sendTodos,
+            result,
+            originalTask,
+            stuckContinuations,
+            maxStuckContinuations,
+            budgetContinuations,
+            maxBudgetContinuations,
+            unacceptedContinuations,
+            maxUnacceptedContinuations: maxStuckContinuations,
+            allowModelExclusion: isAutoMode,
+          });
+          if (decision.action === 'stop') {
+            if (sendTodos.length) diagLog('send.autocontinue', `halt: ${decision.reason} after round ${ac}`);
+            break;
+          }
+          stuckContinuations = decision.stuckContinuations;
+          budgetContinuations = decision.budgetContinuations;
+          unacceptedContinuations = decision.unacceptedContinuations;
 
           this.persistAgentTurn(s, result);
-          const wasStuck = result.stopReason === 'stuck';
-          const continueMsg = wasStuck ? stuckContinueMessage(remainingTodos) : autoContinueMessage(remainingTodos);
-          s.history.push({ role: 'user', content: continueMsg });
-          // In Auto mode, a stuck round is also given a genuinely different model, not just a
-          // nudge to the same one — the model that just stalled looks perfectly healthy to the
-          // router (it answered fine, the stall was a logic loop, not an API failure), so without
-          // this it would very likely be re-picked. Only for Auto: an explicit model pin is the
-          // user's own choice and stays untouched even after a stall.
-          const isAutoMode = !s.model || s.model === 'auto';
-          const excludeModels = wasStuck && isAutoMode && result.platform && result.model
-            ? [`${result.platform}::${result.model}`] : undefined;
-          diagLog('send.autocontinue', `round ${ac + 1}/${maxAutoContinueRounds} · ${remainingTodos.length} todos left · paused=${result.paused}${excludeModels ? ` · excluding ${excludeModels[0]}` : ''}`);
-          result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model, excludeModels), {});
+          s.history.push({ role: 'user', content: decision.message });
+          if (decision.difficulty && decision.difficulty !== 'medium') {
+            const stepTodo = sendTodos.find((t) => t.status !== 'completed');
+            diagLog('send.steproute', `round ${ac + 1} (${decision.kind}): routing next todo as ${decision.difficulty} — "${stepTodo?.content.slice(0, 60) ?? '?'}"`);
+          }
+          diagLog('send.autocontinue', `round ${ac + 1}/${maxAutoContinueRounds} · ${decision.reason} · paused=${result.paused}${decision.excludeModels ? ` · excluding ${decision.excludeModels[0]}` : ''}`);
+          result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model, decision.excludeModels, decision.difficulty), {});
           if (!this.isActiveRun(s, m.requestId)) return;
         }
       }
@@ -2523,6 +2481,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     callbacks: ReturnType<typeof this.agentCallbacks>,
     pinnedModel?: string,
     excludeModels?: string[],
+    stepDifficulty?: 'easy' | 'medium' | 'hard',
   ): AgentOpts {
     return {
       messages: s.history,
@@ -2530,6 +2489,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       effort,
       pinnedModel,
       excludeModels,
+      stepDifficulty,
       sessionId: s.id,
       mentionCount: s.lastMentionCount,
       abortSignal: s.cancel ? tokenToAbortSignal(s.cancel.token) : undefined,

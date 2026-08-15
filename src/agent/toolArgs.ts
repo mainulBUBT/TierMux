@@ -445,11 +445,77 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     }
   }
 
-  // Cheap insurance now that shapes 1 and 6 both scan the full text: collapse identical
+  {
+    // Shape 7: the Liquid LFM / Llama-3.1 single-line python-call dialect, emitted as plain
+    // content when the provider doesn't wire the special tokens:
+    //   <tool_call_start>|[readFile(path='public/landing.blade.php')]<tool_call_end>|
+    // Captured from a real 2026-08-15 OpenRouter liquid/lfm-2.5-2.6b run: the model drove 14
+    // read calls fine, then emitted its edit exactly once in THIS dialect — no shape above
+    // matched (`<tool_call_start>` fails shape 4's literal `<tool_call>`; no `<function=`,
+    // no JSON blob), so the call never ran, the raw text streamed to chat as the reply, and
+    // the turn ended on "What would you like to know?". The bare `[name(kw='v')]` form (same
+    // dialect, special tokens already stripped by the provider) parses identically — the
+    // toolNames membership test is the false-positive guard, since prose brackets don't start
+    // with a real tool name followed by `(`.
+    // Runs unconditionally (like 1/6): it shares no opener with any other shape, and the
+    // dedupe pass below collapses any overlap.
+    const pyAnchor = /(?:<tool_call_start>\|?\s*)?\[([a-zA-Z0-9_\-]+)\s*\(/g;
+    while ((m = pyAnchor.exec(text)) !== null) {
+      const name = m[1];
+      if (!toolNames.has(name)) continue;
+      // Scan the kwarg list by hand: `key='value'` / key="value" / bare token, comma-separated.
+      // Values are python-style single-OR-double-quoted strings whose contents may hold commas,
+      // brackets, and escaped quotes — a naive split(',') breaks on the first comma inside a path.
+      let i = m.index + m[0].length;
+      const args: Record<string, unknown> = {};
+      let matchedClose = false;
+      while (i < text.length) {
+        // Skip whitespace and separators before the next kwarg.
+        while (i < text.length && /[\s,]/.test(text[i])) i++;
+        if (i >= text.length) break;
+        // `)` or `]` ends the call (a model may close the paren, the bracket, or both).
+        if (text[i] === ')' || text[i] === ']') { matchedClose = text[i] === ')'; i++; break; }
+        const keyMatch = /([a-zA-Z0-9_\-]+)\s*=\s*/.exec(text.slice(i));
+        if (!keyMatch) break; // not a kwarg — give up rather than mis-parse
+        const key = keyMatch[1];
+        i += keyMatch[0].length;
+        let value: unknown;
+        const q = text[i];
+        if (q === '\'' || q === '"') {
+          // Quoted string: scan to the matching unescaped close quote, honoring backslash escapes.
+          let j = i + 1;
+          let raw = '';
+          while (j < text.length) {
+            if (text[j] === '\\' && j + 1 < text.length) { raw += text[j + 1]; j += 2; continue; }
+            if (text[j] === q) break;
+            raw += text[j];
+            j++;
+          }
+          value = raw; // a quoted value is always a literal string — no JSON coercion
+          i = j < text.length ? j + 1 : j;
+        } else {
+          // Bare token: up to the next `,`, `)`, or `]`.
+          let j = i;
+          while (j < text.length && !/[,\)\]]/.test(text[j])) j++;
+          value = coerceInlineArgValue(text.slice(i, j));
+          i = j;
+        }
+        args[key] = value;
+      }
+      // Only rescue a call whose kwarg scan actually closed (a `)` or `]`), so truncated
+      // mid-emit text or an accidental `[readFile(` in prose doesn't run a half-parsed call
+      // with silently-missing arguments.
+      if (!matchedClose) continue;
+      calls.push({ name, arguments: JSON.stringify(args) });
+      pyAnchor.lastIndex = Math.max(pyAnchor.lastIndex, i);
+    }
+  }
+
+  // Cheap insurance now that shapes 1, 6 and 7 all scan the full text: collapse identical
   // (name, arguments) pairs so no dialect overlap can ever run the same tool call twice.
   const seen = new Set<string>();
   const unique = calls.filter((c) => {
-    const key = `${c.name} ${c.arguments}`;
+    const key = `${c.name} ${c.arguments}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

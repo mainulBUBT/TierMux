@@ -25,6 +25,12 @@ import { EditGate } from '../src/edits/applyEdit';
 import type { Router } from '../src/router/router';
 import type { AgentOpts } from '../src/agent/agent';
 
+// Keep the planner step out of these runs: mixturePipeline 'auto' now plans for EVERY action
+// task (see loop.ts), which would consume a route() call and shift the scripted sequences
+// below. These tests are about tool-approval/execution ordering and retry shapes, not the
+// mixture pipeline — read by the vscode mock's getConfiguration (scripts/vscodeMock.cjs).
+(globalThis as any).__tiermuxTestConfig = { mixturePipeline: 'off' };
+
 let failures = 0;
 const ok = (name: string, cond: boolean) => {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}`);
@@ -85,9 +91,9 @@ async function main() {
         }
         return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'done' }) };
       },
-      // A strong executor (low intelligenceRank) so the mixture-pipeline planner step
-      // (loop.ts's WEAK_EXECUTOR_RANK gate) doesn't fire and consume a route() call — these
-      // tests are about tool-approval/execution ordering, not the mixture pipeline.
+      // A strong executor (low intelligenceRank); the mixture pipeline is disabled globally at
+      // the top of this file so the planner step never consumes a route() call — these tests
+      // are about tool-approval/execution ordering, not the mixture pipeline.
       peekTopSelection: () => ({ entry: { platform: 'custom', modelId: 'fake', enabled: true, priority: 0 }, model: { intelligenceRank: 1 } }),
     } as unknown as Router;
 
@@ -112,9 +118,9 @@ async function main() {
         }
         return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'done' }) };
       },
-      // A strong executor (low intelligenceRank) so the mixture-pipeline planner step
-      // (loop.ts's WEAK_EXECUTOR_RANK gate) doesn't fire and consume a route() call — these
-      // tests are about tool-approval/execution ordering, not the mixture pipeline.
+      // A strong executor (low intelligenceRank); the mixture pipeline is disabled globally at
+      // the top of this file so the planner step never consumes a route() call — these tests
+      // are about tool-approval/execution ordering, not the mixture pipeline.
       peekTopSelection: () => ({ entry: { platform: 'custom', modelId: 'fake', enabled: true, priority: 0 }, model: { intelligenceRank: 1 } }),
     } as unknown as Router;
 
@@ -152,9 +158,9 @@ async function main() {
         }
         return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'done' }) };
       },
-      // A strong executor (low intelligenceRank) so the mixture-pipeline planner step
-      // (loop.ts's WEAK_EXECUTOR_RANK gate) doesn't fire and consume a route() call — these
-      // tests are about tool-approval/execution ordering, not the mixture pipeline.
+      // A strong executor (low intelligenceRank); the mixture pipeline is disabled globally at
+      // the top of this file so the planner step never consumes a route() call — these tests
+      // are about tool-approval/execution ordering, not the mixture pipeline.
       peekTopSelection: () => ({ entry: { platform: 'custom', modelId: 'fake', enabled: true, priority: 0 }, model: { intelligenceRank: 1 } }),
     } as unknown as Router;
 

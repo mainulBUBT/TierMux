@@ -64,6 +64,7 @@ export interface SignalBreakdown {
   providerHealth: number;
   headroom: number;
   density: number;
+  price: number;
 }
 
 export interface RationaleEntry {
@@ -135,6 +136,17 @@ export class ScoringEngine {
       }
     }
 
+    // ---- Precompute the pool's priciest blended price (for the economy signal) ----
+    // Relative like density/maxLoad: absolute dollars mean nothing here, "costs the most in
+    // THIS pool" does. Blended = input + 0.3×output (tool turns read much more than they
+    // write, so input dominates). Models with no published price (custom endpoints, "~free"
+    // tiers with no numbers) stay neutral — unknown ≠ free ≠ expensive.
+    let maxPrice = 0;
+    for (const e of entries) {
+      const p = blendedPrice(this.catalog.find(e.platform, e.modelId));
+      if (p != null) maxPrice = Math.max(maxPrice, p);
+    }
+
     // ---- Score every candidate ----
     const scored = entries.map((e) => {
       const k = rtKey(e.platform, e.modelId);
@@ -178,13 +190,20 @@ export class ScoringEngine {
       const loadShare = maxLoad > 0 ? (rt?.providerLoad ?? 0) / maxLoad : 0;
       const density = 1 - SCORING_CONFIG.densityPenalty * loadShare;
 
-      const signals: SignalBreakdown = { reliability, health, availability, speed, providerHealth, headroom, density };
+      // Economy, relative to the pool's priciest candidate. Cheapest (incl. every $0/free
+      // model) → 1.0; the most expensive → 0.1; unpublished price → neutral 1.0. It only
+      // ever breaks ties between candidates the other signals already like — the weight is
+      // per-task (TASK_WEIGHTS.price) and small for quality-first kinds.
+      const blended = blendedPrice(m);
+      const price = !m || blended == null || maxPrice <= 0 ? 1 : Math.max(0.1, 1 - 0.9 * (blended / maxPrice));
+
+      const signals: SignalBreakdown = { reliability, health, availability, speed, providerHealth, headroom, density, price };
 
       // RuntimeMultiplier = structural geo(health, availability, speed) × reliability^pow × providerHealth^pow.
       // Reliability and provider health are direct multipliers (not soft geo members) so a
       // 20%-success gateway collapses decisively — "excellent model, temporarily unhealthy".
-      const structWeights = [w.health, w.availability, w.speed, w.headroom, w.density];
-      const structVals = [health, availability, speed, headroom, density];
+      const structWeights = [w.health, w.availability, w.speed, w.headroom, w.density, w.price];
+      const structVals = [health, availability, speed, headroom, density, price];
       const structSum = structWeights.reduce((a, b) => a + b, 0) || 1;
       let structLog = 0;
       for (let i = 0; i < structVals.length; i++) structLog += (structWeights[i] / structSum) * Math.log(Math.max(1e-6, structVals[i]));
@@ -340,6 +359,7 @@ export class ScoringEngine {
       ['availability', sig.availability],
       ['speed', sig.speed],
       ['providerHealth', sig.providerHealth],
+      ['price', sig.price],
     ];
     entries.sort((a, b) => a[1] - b[1]); // weakest signal first = the thing dragging it down
     const [name, val] = entries[0];
@@ -401,7 +421,20 @@ type CatalogModelLike = {
   supportsVision: boolean;
   supportsReasoning: boolean;
   tags?: string[];
+  origInputPricePer1M?: number;
+  origOutputPricePer1M?: number;
 };
+
+/** Blended per-1M price for the economy signal: input + 0.3 × output (agent tool turns send
+ *  far more tokens than they receive back). Returns null when the catalog publishes no price —
+ *  the caller treats unknown as neutral, never as free or expensive. */
+function blendedPrice(m: CatalogModelLike | undefined): number | null {
+  if (!m) return null;
+  const i = m.origInputPricePer1M;
+  const o = m.origOutputPricePer1M;
+  if (i == null && o == null) return null;
+  return (i ?? 0) + 0.3 * (o ?? 0);
+}
 
 /** Re-export for callers that classify errors into FailureType. */
 export type { FailureType };

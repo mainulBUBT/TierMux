@@ -47,6 +47,13 @@ export interface AgentResult {
    *  `workMessages`. Lets the caller render a deterministic "Files changed" recap independent of
    *  the model's prose, so a turn that ended on a bare tool call still surfaces what it changed. */
   changedFiles?: { path: string; status: 'created' | 'modified' | 'deleted' }[];
+  /** Outcome of the end-of-turn command verify gate (loop.ts): 'passed' — the project's verify
+   *  command ran and exited 0; 'failed' — it exited non-zero even after the one fix retry;
+   *  'unverified' — the turn mutated files but no verify command exists. Undefined — no mutation
+   *  (nothing to verify). The step engine (core/stepEngine.ts) treats 'failed' as "the step is
+   *  NOT accepted": a model marking its todos completed while the verify command fails gets one
+   *  focused extra round instead of a handshake. */
+  verifyOutcome?: 'passed' | 'failed' | 'unverified';
 }
 
 /** Smart Auto scoring rationale for a route() call this run triggered — "why this model?".
@@ -87,6 +94,13 @@ export interface AgentOpts {
   taskKind?: string;
   /** TierMux chat session id. */
   sessionId?: string;
+  /** Step routing (Phase 2): difficulty of the plan step this turn is executing — derived by the
+   *  caller (chatViewProvider's auto-continue loop) from the current todo item. `easy` routes
+   *  the round to the cheap fast pool (minIntelligenceRank), `hard` to the top tier
+   *  (maxIntelligenceRank), `medium`/undefined to the unconstrained default. Ignored when a
+   *  model is pinned or on an escalation retry (the user's choice / the escalation's own
+   *  top-tier constraint always win). */
+  stepDifficulty?: 'easy' | 'medium' | 'hard';
   /** How many `@mentions` in the latest user message resolved into supplied context — see
    *  routing.ts's classifyTaskCore, which uses this to route "work from what I gave you" turns
    *  (e.g. "reformat this @notes.md") to `chat` instead of an ambiguous default. */
