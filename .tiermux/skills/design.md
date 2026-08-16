@@ -1,27 +1,41 @@
 ---
-description: Build or restyle UI with a modern, consistent design system
+description: Build or restyle UI to a modern, consistent design system, reusing the project's existing tokens
+triggers: restyle, design system, make it look, looks ugly, looks bad, look better, ui polish, polish the ui, style the, styling, css, dark mode, light mode, responsive, spacing, hover state, focus state, design the
 ---
-You are doing UI/design work. Follow these rules strictly — the result must look like a modern, professionally designed product, not a default-styled prototype.
+UI/design task. Produce real edits that look like a professionally designed product, not a default-styled prototype. Work in this order and do not skip step 1.
 
-FOUNDATION (do this before writing any styles):
-- Reuse the project's existing design tokens/variables (colors, spacing, radii, fonts) if any exist — grep for CSS variables, a theme file, or a tailwind config FIRST. Extend them; never invent a parallel palette.
-- If no tokens exist, define them once at the top (CSS custom properties or theme object) and reference only tokens in components. No hard-coded hex/px scattered in markup.
+STEP 1 — LOOK BEFORE YOU STYLE (tools first, always)
+- Read the file(s) you are about to change. Never write styles for markup you have not read.
+- Grep for an existing design system before inventing anything: CSS custom properties (`--*`), a theme/tokens file, `tailwind.config.*`, a styled-components theme, or the host's own variables (e.g. `--vscode-*` in a VS Code webview).
+- If tokens exist, reuse and extend them. A second parallel palette is a defect, not a style choice.
+- If none exist, define one small token block once (color, spacing, radius, font), then reference only tokens below it.
 
-VISUAL RULES:
-- Spacing: use a consistent scale (4/8px steps). Whitespace is a feature — generous padding, clear grouping, no cramped edges.
-- Type: max 2 font families; establish hierarchy with size/weight (e.g. 13/14/16/20/24), line-height ≥1.4 for body. Never all-caps body text.
-- Color: one accent color, neutral grays for everything else. Text contrast ≥4.5:1. Muted secondary text, not pure gray-on-gray.
-- Depth: subtle — small shadows, 6–12px radii, 1px borders in a low-contrast neutral. No heavy drop shadows, no gradients unless the product already uses them.
-- States: every interactive element gets hover, focus-visible, active, and disabled styles. Focus rings must be visible (keyboard a11y).
-- Motion: 120–200ms ease transitions on hover/expand only. No gratuitous animation.
-- Dark/light: if the host supports themes (e.g. VS Code webview), derive every color from theme variables so both modes work — never assume a background color.
+STEP 2 — PICK THE RIGHT MODE
+- Restyling working UI → keep the existing structure, class names, and layout. Change values, not architecture. The user wants it to look better, not to be rebuilt.
+- Building new UI → match the patterns already in the codebase (same component style, same token names, same file layout) so it does not read as bolted on.
+- Unsure which → restyle. Rebuilding working UI you were not asked to rebuild is the most expensive mistake here.
 
-LAYOUT:
-- Flexbox/grid with gap — no margin-hack layouts. Content must handle overflow (ellipsis or scroll within its own container), long strings, and empty states.
-- Align to a grid: consistent left edges, equal gutters, one max-width for readable content.
+STEP 3 — THE RULES
+- Spacing: one 4/8px scale. Generous padding, clear grouping, no cramped edges. Whitespace is a feature.
+- Type: max 2 families. Hierarchy from size/weight (13/14/16/20/24), body line-height ≥ 1.4. Never all-caps body text.
+- Color: one accent; neutrals for everything else. Body text contrast ≥ 4.5:1. Secondary text muted, never gray-on-gray.
+- Depth: subtle — 6–12px radii, 1px low-contrast borders, small shadows. No heavy drop shadows, no gradients unless the product already uses them.
+- States: every interactive element needs hover, focus-visible, active, and disabled. Focus rings must stay visible — keyboard users are not optional.
+- Motion: 120–200ms ease, on hover/expand only. No gratuitous animation.
+- Theming: derive every color from theme variables when the host has them. Never assume a background color; light and dark must both work.
 
-QUALITY BAR:
-- Before finishing, re-read the rendered structure and check: consistent spacing scale? single accent? visible focus? theme-safe colors? If any answer is no, fix it.
-- Keep the existing layout/structure when modifying working UI — restyle minimally and invisibly unless a redesign was explicitly requested.
+STEP 4 — LAYOUT
+- Flex/grid with `gap`. No margin hacks.
+- Consistent left edges, equal gutters, one max-width for readable text.
+- Handle the ugly cases: overflow (ellipsis or scroll inside its own container), long unbroken strings, empty states, loading states.
 
-Task:
+NEVER
+- Never add a CSS framework, UI library, icon pack, web font, or CDN link to solve a styling problem. Style with what the project already has.
+- Never hard-code a hex or px value that an existing token already covers.
+- Never restructure markup, rename classes, or drop features as a side effect of restyling.
+- Never describe the design instead of implementing it — make the edits.
+
+BEFORE YOU FINISH
+Re-read your own diff and answer: one spacing scale? one accent? tokens instead of literals? hover and focus-visible on every interactive element? theme-safe colors? no new dependency? structure unchanged (if restyling)? Fix anything that answers no. Then state plainly what you changed and what you deliberately left alone.
+
+Task (if nothing follows this line, ask what to design instead of guessing):

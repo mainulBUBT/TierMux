@@ -9,6 +9,8 @@
  *
  * Run: npm run test:e2e:classify
  */
+import * as fs from 'fs';
+import * as path from 'path';
 import { classifyTaskCore } from '../src/agent/routing';
 import type { TaskKind } from '../src/agent/routing';
 
@@ -60,6 +62,48 @@ console.log('\n— Must NOT false-positive on English words containing Banglish 
 expect('korean translation library', ['agent', 'chat'], '\\bkor\\b must not match "korean"');
 expect('what kind of file is this?', ['chat'], '"kind" must not match \\bki\\b');
 expect('the banner needs a new colour', ['agent', 'chat'], '"banner" must not match \\bbanao\\b');
+
+/* — Bundled skill bodies —
+ *
+ * A `/name` invocation does NOT send the user's text: chatViewProvider substitutes the whole
+ * SKILL.md body and appends the user's request after it, so the skill body is what
+ * classifyTaskCore actually sees. Two ways a well-meaning prompt edit silently mis-routes every
+ * invocation of its skill:
+ *   - a stray DEBUG_HINT word (`bug`, `broken`, `fails`) anywhere in the body wins over
+ *     CODE_HINT, which is tested later — one word in a design skill routed it to `debug`;
+ *   - a body over 6000 chars trips the longContext branch before any intent regex runs, pinning
+ *     every invocation to a long-context model instead of a coder.
+ * Neither is visible when reading the prose, hence this guard.
+ */
+console.log('\n— Bundled skill bodies (the body IS the classified text) —');
+const skillsDir = path.join(__dirname, '..', '.tiermux', 'skills');
+const ACTION_KINDS: TaskKind[] = ['agent', 'coding', 'debug'];
+/** Kinds each bundled skill must classify as — read-only skills stay read-only, the rest must
+ *  keep an edit-capable route. */
+const SKILL_WANT: Record<string, TaskKind[]> = {
+  design: ['coding', 'agent'],
+  landing: ['coding', 'agent'],
+  fix: ACTION_KINDS,
+  tests: ['agent', 'coding'],
+  'code-review': ACTION_KINDS.concat('chat'),
+  doc: ['agent', 'coding'],
+  explain: ['chat'],
+};
+for (const file of fs.readdirSync(skillsDir).filter((f) => f.endsWith('.md')).sort()) {
+  const name = path.basename(file, '.md');
+  const raw = fs.readFileSync(path.join(skillsDir, file), 'utf8');
+  const body = /^---\s*\n[\s\S]*?\n---\s*\n?([\s\S]*)$/.exec(raw)?.[1]?.trim() ?? raw.trim();
+  const want = SKILL_WANT[name];
+  if (!want) { console.log(`SKIP  ${name} — no expectation declared`); continue; }
+  // Composed the way the provider composes it: body, then the user's request. Checked inline
+  // rather than via expect() so the log stays one line per skill instead of echoing every body.
+  const { kind, confident } = classifyTaskCore(`${body}\n\nmake the sidebar look better`);
+  const okKind = want.includes(kind);
+  const okLen = body.length <= 4500;
+  if (!okKind || !okLen) failures++;
+  const note = okLen ? '' : `   (body ${body.length} chars — over 4500 leaves too little room before the 6000-char longContext trip)`;
+  console.log(`${okKind && okLen ? 'PASS' : 'FAIL'}  ${kind.padEnd(11)} conf=${String(confident).padEnd(5)} want=${want.join('|').padEnd(18)} /${name} body (${body.length} chars)${note}`);
+}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);
