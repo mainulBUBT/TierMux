@@ -196,7 +196,11 @@ function test_smallSampleConfidence(): void {
   seed(metrics, 'y', 'proven', 'chat', 200, { okPct: 0.97, ttft: 1000, total: 3000 });
   const entries = [entry('x', 'tiny'), entry('y', 'proven')];
   const runtime = new Map([['x::tiny', rt()], ['y::proven', rt()]]);
-  const res = engine.rank({ taskKind: 'chat' as any, entries, runtime, requireTools: false, isVision: false }, () => 0);
+  // rng=1 disables exploration (`rng() < explorationRate` is false), isolating the property under
+  // test. `() => 0` would do the opposite — it always FIRES exploration, and the two models here
+  // sit inside explorationMargin of each other, so the runner-up gets promoted and the assertion
+  // measures exploration rather than confidence shrinkage. See test 7 for exploration itself.
+  const res = engine.rank({ taskKind: 'chat' as any, entries, runtime, requireTools: false, isVision: false }, () => 1);
   for (const r of res.rationale) console.log(`     ${r.modelId}: cap=${r.capability.toFixed(2)} runtime=×${r.runtimeMultiplier.toFixed(2)} score=${r.score.toFixed(3)} conf=${r.confidence.toFixed(2)} | ${r.reason}`);
   const ordered = res.ordered;
   assert(ordered[0].modelId === 'proven', 'proven 97% (n=200) beats tiny 100% (n=3)');

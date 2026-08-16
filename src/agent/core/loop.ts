@@ -1321,9 +1321,12 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
   // Step routing (Phase 2): the difficulty of the plan step this attempt executes constrains
   // the candidate pool. A pinned model always wins regardless (candidates() short-circuits
   // forced models before any rank filter), and an escalation's top-tier constraint wins over
-  // difficulty — see difficultyRouteConstraints. `tiermux.agent.stepRouting: false` disables.
+  // difficulty — see difficultyRouteConstraints. `tiermux.agent.stepRouting: false` disables the
+  // DIFFICULTY constraint only: an escalation retry is not step routing, and dropping its
+  // top-tier constraint here would silently let the quality escalation retry on the same weak
+  // tier it just escalated away from.
   const stepRoutingOn = vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('stepRouting', true);
-  const stepRoute = stepRoutingOn ? difficultyRouteConstraints(opts.stepDifficulty, escalation) : {};
+  const stepRoute = difficultyRouteConstraints(stepRoutingOn ? opts.stepDifficulty : undefined, escalation);
   const provider = createRouterProvider(router, {
     effort: opts.effort,
     taskKind,
@@ -2245,9 +2248,12 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
         ],
       };
       const corrected = await runAttempt(router, wsNudge, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn);
+      // Merge changedFiles so the recap reflects the fix attempt too — snapshotting the
+      // pre-retry set first, since `final` is about to become `corrected` (which knows only
+      // about its own edits).
+      const preRetryChanged = final.changedFiles;
       if (corrected.text.trim() || corrected.hadToolCalls) final = corrected;
-      // Merge changedFiles so the recap reflects the fix attempt too.
-      if (corrected.changedFiles) final = { ...final, changedFiles: mergeChangedFiles(final.changedFiles, corrected.changedFiles) };
+      if (corrected.changedFiles) final = { ...final, changedFiles: mergeChangedFiles(preRetryChanged, corrected.changedFiles) };
     }
   }
 
@@ -2282,8 +2288,12 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
         ],
       };
       const corrected = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn);
+      // Snapshot BEFORE `final` is replaced: the retry's result carries only ITS own edits, so
+      // merging after the swap would merge corrected into corrected and silently drop the files
+      // the first attempt already changed from the "Files changed" recap.
+      const preRetryChanged = final.changedFiles;
       if (corrected.text.trim() || corrected.hadToolCalls) final = corrected;
-      if (corrected.changedFiles) final = { ...final, changedFiles: mergeChangedFiles(final.changedFiles, corrected.changedFiles) };
+      if (corrected.changedFiles) final = { ...final, changedFiles: mergeChangedFiles(preRetryChanged, corrected.changedFiles) };
       // Re-check only when the fix attempt actually changed something — re-running an
       // unchanged workspace can only reproduce the same failure and waste the timeout.
       if (corrected.hadMutatingToolCall && !opts.abortSignal?.aborted) {
