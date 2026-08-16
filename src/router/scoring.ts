@@ -53,8 +53,11 @@ export type SkipReason =
   | 'rate-limited'
   | 'no-key'
   | 'missing-tools'
-  | 'missing-vision'
-  | 'context-too-large';
+  | 'missing-vision';
+// No 'context-too-large' member: it was declared here but never assigned, so the rationale could
+// never actually report it. Context-window fit is a HARD filter applied earlier, in Router's
+// candidates() (see the `fits` predicate) — a model that cannot hold the conversation is reordered
+// out before scoring runs, so it never reaches this skip path at all.
 
 export interface SignalBreakdown {
   reliability: number;

@@ -14,6 +14,7 @@
 // Tools therefore capture session state via closures.
 //
 // Re-check on future AI SDK upgrades.
+import * as vscode from 'vscode';
 import type { ToolSet } from 'ai';
 import type { AgentOpts } from '../../agent';
 import type { McpManager } from '../../../mcp/mcpManager';
@@ -41,7 +42,23 @@ import { createDeepSearchTool } from './network/deepSearch';
 import { createRememberTool } from './context/remember';
 import { createAskQuestionsTool } from './ui/askQuestions';
 
+/** `tiermux.graph.enabled` — whether the structural code-graph tools are offered at all.
+ *
+ *  This setting shipped declared-but-never-read: package.json advertised `false` ("opt in for
+ *  refactor-heavy work") while both tools were registered unconditionally on every turn, for
+ *  every user, in both mode branches below. Toggling it did nothing. Now it gates them for real,
+ *  and the default flipped to `true` so the behaviour everyone has actually been getting is what
+ *  the setting describes — turning it OFF is the change, not on. */
+function graphToolsEnabled(): boolean {
+  return vscode.workspace.getConfiguration('tiermux.graph').get<boolean>('enabled', true);
+}
+
 export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, router: Router): ToolSet {
+  // Typed as ToolSet so the empty branch spreads as "no keys" rather than being inferred as
+  // `{ getSymbolGraph: undefined }`, which does not satisfy ToolSet's index signature.
+  const graphTools: ToolSet = graphToolsEnabled()
+    ? { getSymbolGraph: createSymbolGraphTool(), getDependencyTree: createDependencyTreeTool() }
+    : {};
   // Ask mode: read-only codebase search only — no edit/write/delete/shell. Router.route()
   // streams fine with tools attached (routerProvider.ts accumulates tool-call deltas
   // internally), so this no longer needs the "zero tools" workaround it once did.
@@ -51,8 +68,7 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
       listDir: createListDirTool(),
       glob: createGlobTool(),
       grep: createGrepTool(),
-      getSymbolGraph: createSymbolGraphTool(),
-      getDependencyTree: createDependencyTreeTool(),
+      ...graphTools,
       explore: createExploreTool(router, opts.abortSignal),
       webSearch: createWebSearchTool(),
       fetchUrl: createFetchUrlTool(),
@@ -70,8 +86,7 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
     listDir: createListDirTool(),
     glob: createGlobTool(),
     grep: createGrepTool(),
-    getSymbolGraph: createSymbolGraphTool(),
-    getDependencyTree: createDependencyTreeTool(),
+    ...graphTools,
     getDiagnostics: createDiagnosticsTool(),
     fetchUrl: createFetchUrlTool(),
     webSearch: createWebSearchTool(),

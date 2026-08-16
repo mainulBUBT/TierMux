@@ -22,22 +22,34 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-if [ -z "${BENCH_KEY_CLOUDFLARE:-}" ]; then
-  echo "BENCH_KEY_CLOUDFLARE is not set." >&2
-  echo "  export BENCH_KEY_CLOUDFLARE='<account_id>:<api_token>'" >&2
-  echo "Get one at https://dash.cloudflare.com/profile/api-tokens (Workers AI read+run)." >&2
+# Provider choice, and why it is NOT Cloudflare.
+#
+# Cloudflare looks best in the catalog (300 rpm / 432k rpd) and is the worst choice in practice:
+# its free tier meters COMPUTE, not requests — 10,000 neurons/day — and the catalog has no field
+# for that. A 24-query run on a 32B model exhausted the whole daily allocation and produced a run
+# with 0 tool calls on every query. Trust catalog rpm/rpd only for providers that actually bill by
+# request.
+#
+# Two arms x 24 queries x ~10 requests/turn is ~480 requests, so rpd is the binding number.
+#   cerebras gpt-oss-120b  30 rpm / 14,400 rpd  rank 2   <- default here, ample margin
+#   agnes    2.0-flash     20 rpm / 28,800 rpd  rank 2   <- more rpd, less rpm
+#   groq     gpt-oss-120b  30 rpm /  1,000 rpd  rank 2   <- tight: ~480 of 1,000 in one A/B
+#   kilo     nemotron      3 rpm  /  4,800 rpd  rank 1   <- 3 rpm cannot serve a tool-heavy turn
+# Override either model by exporting AGENT_MODEL / JUDGE_MODEL before running.
+PLATFORM="${BENCH_PLATFORM:-cerebras}"
+KEY_VAR="BENCH_KEY_$(printf '%s' "$PLATFORM" | tr '[:lower:]' '[:upper:]')"
+if [ -z "${!KEY_VAR:-}" ]; then
+  echo "$KEY_VAR is not set." >&2
+  echo "  export $KEY_VAR='<your-key>'" >&2
+  echo "Or pick another provider: BENCH_PLATFORM=agnes|groq|cerebras bash $0" >&2
   exit 1
 fi
-case "$BENCH_KEY_CLOUDFLARE" in
-  *:*) ;;
-  *) echo "Key must be 'account_id:api_token' (see src/providers/cloudflare.ts parseKey)." >&2; exit 1 ;;
-esac
 
 # Pinned on purpose. --model auto picks a different model per query, which makes two runs
 # incomparable — the harness prints that warning itself.
-AGENT_MODEL="cloudflare::@cf/qwen/qwen2.5-coder-32b-instruct"   # rank 2, coder-tagged, 131k ctx
-JUDGE_MODEL="cloudflare::@cf/openai/gpt-oss-120b"               # rank 1 — the strongest judge available
-DELAY_MS=1500      # 300 rpm is ~5 req/s; this stays well clear without wasting wall-clock
+AGENT_MODEL="${AGENT_MODEL:-cerebras::gpt-oss-120b}"
+JUDGE_MODEL="${JUDGE_MODEL:-cerebras::gpt-oss-120b}"
+DELAY_MS="${DELAY_MS:-2500}"   # 30 rpm = 1 req/2s; this keeps a margin for multi-request turns
 RETRIES=3
 
 run_arm() {

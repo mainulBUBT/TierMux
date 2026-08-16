@@ -18,10 +18,6 @@ export const SETTINGS_META: SettingMeta[] = [
   // -- Agent --
   { key: 'agent.requireWriteConfirmation', label: 'Require write confirmation', type: 'boolean',
     desc: 'Show a diff and ask for confirmation before the agent writes/creates/deletes a file.' },
-  { key: 'agent.qualityGate', label: 'Quality gate', type: 'boolean',
-    desc: 'Escalate to the next model when an answer is weak (refusal, repetition, truncation) instead of accepting it.' },
-  { key: 'agent.hotStandby', label: 'Hot standby', type: 'boolean',
-    desc: 'Pre-create the next fallback model\'s session in the background so escalation starts faster.' },
   { key: 'agent.smartScoring', label: 'Smart Auto scoring', type: 'boolean',
     desc: 'Route Auto requests by learned, per-model runtime metrics (success rate, TTFT vs own baseline, provider health) instead of fixed priority. Slower models adapt within minutes; turn off to restore priority-only routing.' },
   { key: 'agent.scoringTrace', label: 'Trace Smart Auto', type: 'boolean',
@@ -47,9 +43,6 @@ export const SETTINGS_META: SettingMeta[] = [
   // string field — see the Utility model row for why.
   { key: 'completions.debounceMs', label: 'Completions debounce (ms)', type: 'number', min: 0, max: 5000,
     desc: 'Debounce delay before requesting an inline completion.' },
-  // -- Chat --
-  { key: 'chat.typingSpeedMs', label: 'Typing speed (ms)', type: 'number', min: 0, max: 100,
-    desc: 'Delay between chunks of the simulated typing animation. 0 disables animation.' },
   // -- Plan --
   { key: 'plan.saveToFile', label: 'Save plans to file', type: 'boolean',
     desc: 'Save actionable plans as markdown checklist files.' },

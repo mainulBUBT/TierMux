@@ -391,16 +391,6 @@
           "default": true,
           "description": "Show a diff and ask for confirmation before the agent writes/creates/deletes a file."
         },
-        "tiermux.agent.qualityGate": {
-          "type": "boolean",
-          "default": true,
-          "description": "Escalate to the next model when an answer is weak (refusal, repetition, truncation, or too-short-for-task) instead of accepting it. Only fires when the fallback chain has another hop (never for a pinned model)."
-        },
-        "tiermux.agent.hotStandby": {
-          "type": "boolean",
-          "default": true,
-          "description": "Pre-create the next fallback model's session in the background while the current one is running, so escalation (quality gate, no-answer, network retry) is instant instead of waiting on a fresh session."
-        },
         "tiermux.agent.smartScoring": {
           "type": "boolean",
           "default": true,
@@ -492,15 +482,10 @@
           "default": [],
           "description": "Path segments/globs never indexed (e.g. \"node_modules\", \"vendor\", \"*.min.js\"). Empty uses the built-in defaults (node_modules, .git, dist, build, vendor, .next, out, coverage, .cache)."
         },
-        "tiermux.memory.autoLearn": {
-          "type": "boolean",
-          "default": true,
-          "description": "After edits, infer basic code-style signals (indent, quotes, semicolons) for free and record them in .tiermux/memory.md so future turns stay consistent. No model call \u2014 pure heuristics."
-        },
         "tiermux.graph.enabled": {
           "type": "boolean",
-          "default": false,
-          "description": "Enable the structural code graph (imports, exports, call edges, entrypoints). Provides cross-file context to the agent and enables getSymbolGraph, impactAnalysis, and onboarding tour tools. Off by default \u2014 opt in for refactor-heavy work (the regex-based graph can be imprecise on large codebases)."
+          "default": true,
+          "description": "Offer the structural code-graph tools (getSymbolGraph, getDependencyTree) to the agent, giving it cross-file context from imports, exports, and call edges. Turn off to drop both tools from every turn \u2014 useful on a very large codebase, where the regex-based graph gets imprecise and the tool descriptions still cost prompt tokens."
         },
         "tiermux.context.includeOpenEditors": {
           "type": "boolean",
@@ -513,20 +498,6 @@
           "minimum": 0,
           "maximum": 200,
           "description": "Lines of context on each side of the cursor to include with the active file. Lower = fewer tokens per turn (helps free-tier quotas)."
-        },
-        "tiermux.context.ambientMaxChars": {
-          "type": "number",
-          "default": 2000,
-          "minimum": 200,
-          "maximum": 20000,
-          "description": "Hard cap (chars) on the active-file slice injected per turn. Lower = fewer tokens per turn."
-        },
-        "tiermux.context.ambientMaxTabs": {
-          "type": "number",
-          "default": 12,
-          "minimum": 0,
-          "maximum": 50,
-          "description": "Maximum number of open tab names to include in ambient context."
         },
         "tiermux.utilityModel": {
           "type": "string",
@@ -557,23 +528,6 @@
           "type": "number",
           "default": 60000,
           "description": "How long (ms) to skip a rate-limited provider before trying it again. Honors a provider's Retry-After header when present."
-        },
-        "tiermux.usage.referencePriceInPer1M": {
-          "type": "number",
-          "default": 5,
-          "minimum": 0,
-          "description": "Reference price per 1M input tokens used to estimate how much you would have paid on a paid tier (default mirrors OpenAI GPT-4o). 0 disables the dollar estimate. Used only for the 'est. $ saved' line in the chat footer \u2014 you are not actually billed this amount, since every provider TierMux uses is free."
-        },
-        "tiermux.usage.referencePriceOutPer1M": {
-          "type": "number",
-          "default": 15,
-          "minimum": 0,
-          "description": "Reference price per 1M output tokens used to estimate how much you would have paid on a paid tier (default mirrors OpenAI GPT-4o). 0 disables the dollar estimate. Used only for the 'est. $ saved' line in the chat footer."
-        },
-        "tiermux.chat.typingSpeedMs": {
-          "type": "number",
-          "default": 8,
-          "description": "Delay (ms) between chunks of the simulated typing animation. 0 disables animation."
         },
         "tiermux.completions.enabled": {
           "type": "boolean",
