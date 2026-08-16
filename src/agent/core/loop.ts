@@ -26,6 +26,7 @@ import { createToolSet } from './tools';
 import { getMcpManager } from './tools/mcp/manager';
 import { NEW_DIAGNOSTICS_MARKER, waitForWorkspaceDiagnosticsSettled, workspaceErrorSignatures, newErrorsSince } from './tools/workspace/formatDiagnostics';
 import { resolveVerifyCommand, runVerifyCommand } from './tools/workspace/verifyCommand';
+import { AnchorStore, stripAnchorBlock } from './anchors';
 import { planStepsToTodos } from '../../session/titles';
 import { stepDifficultyOf, type StepDifficulty } from '../stepDifficulty';
 import { diagLog } from '../../util/diag';
@@ -497,6 +498,12 @@ const CREATE_TASK_RE = /\b(?:make|create|build|write|add|fix|implement|develop|g
  *    from the model's view. They cost almost nothing to keep, so they are never pruned.
  *
  *  `question`/`todowrite` are kept for the same reason: they record interaction state, not bulk. */
+/** Tools whose result is worth retaining for late re-anchoring (anchors.ts): they return the
+ *  CONTENT of a specific file, keyed by a `path` argument. Deliberately narrow — `grep`/`glob`
+ *  return match lists across many files with no single path to anchor to, and re-showing a grep
+ *  dump is what the bench already found scores retrieval without the model citing anything. */
+const ANCHOR_TOOLS = new Set(['readFile']);
+
 const PRUNE_TOOL_POLICY = [
   {
     type: 'before-last-2-messages' as const,
@@ -1381,6 +1388,14 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
   // the one the completion claim is about.
   let verifiedAfterMutation = false;
   const openedFiles: string[] = [];
+  // Late re-anchoring (anchors.ts): retains the content of files read this attempt so prepareStep
+  // can re-show it after PRUNE_TOOL_POLICY evicts the real tool result. `stepIndex` only orders
+  // the anchors by freshness — the newest read is rendered nearest the prompt tail.
+  const anchors = new AnchorStore();
+  let stepIndex = 0;
+  // Read inline rather than threaded through runAttempt's already-long positional signature —
+  // same pattern as the stepRouting flag above. 0 disables re-anchoring entirely.
+  const reanchorChars = vscode.workspace.getConfiguration('tiermux.agent').get<number>('reanchorChars', 6_000);
   // Files this attempt created/modified/deleted, for the structured AgentResult.changedFiles recap.
   // A Map keyed by path so repeated edits to the same file collapse to one entry; createFile wins
   // over a later editFile on the same path (it was created this turn).
@@ -1419,6 +1434,18 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
             }) as unknown as CoreMessage[];
             diagLog('turn.prune', `~${before}tok ≥ ${pruneAtTokens} → pruned ${messages.length}→${pruned.length} msgs (~${roughTokens(pruned)}tok)`);
             out.messages = pruned as any;
+            // Late re-anchoring — see anchors.ts. Pruning just removed the read results; put a
+            // bounded copy of the same files back so the model is not answering about code it can
+            // no longer see. Deliberately tied to the prune branch: while nothing has been evicted
+            // the real results are still in history and re-showing them would only duplicate.
+            // Re-runs every pruned step (continuous re-anchoring, which is the mechanism that
+            // works), and strips its own previous block first so copies can never stack.
+            const digest = anchors.digest(reanchorChars);
+            if (digest) {
+              const base = stripAnchorBlock(out.messages as Array<{ role: string; content: unknown }>);
+              out.messages = [...base, { role: 'user', content: digest }] as any;
+              diagLog('turn.reanchor', `re-showed ${anchors.size} read file(s), ~${digest.length} chars, after prune`);
+            }
           }
         }
         // Budget-approaching nudge — agent mode only, fires once. budgetStop is a pure kill
@@ -1512,6 +1539,7 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
 
     for await (const part of (result as any).fullStream) {
       if (part.type === 'start-step') {
+        stepIndex++;
         stepText = ''; stepChatText = ''; stepHasTool = false; streamedThisStep = false; lastRepetitionCheckLen = 0;
       } else if (part.type === 'finish-step') {
         // Commit/discard by intent. A pure-text step (no tool call) is an answer step — its text
@@ -1623,6 +1651,12 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
       } else if (part.type === 'tool-result') {
         phase = 'waiting_final';
         const detail = typeof part.output === 'string' ? part.output : JSON.stringify(part.output ?? '');
+        // Late re-anchoring: keep this file's content so it can be re-shown after pruning evicts
+        // the real result. Reads only — mutating results are a few bytes and are never pruned.
+        if (reanchorChars > 0 && ANCHOR_TOOLS.has(part.toolName) && typeof detail === 'string') {
+          const p = pathArgOf(part.input);
+          if (p) anchors.record(p, detail, stepIndex);
+        }
         // A SUCCESSFUL completion (not 'tool-error') of one of these means verifyNoteFor already
         // ran inside the tool's own execute() — see SELF_VERIFYING_TOOLS. Only counts for the
         // most recent mutation: an editFile that ran, then ANOTHER editFile that hasn't finished

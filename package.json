@@ -421,6 +421,11 @@
           "default": "auto",
           "description": "Command run automatically after a turn edits files, to verify the project still works (a non-zero exit triggers one fix-and-recheck attempt). 'auto' detects it from the project (package.json test/typecheck/lint/build script, Makefile check/test, cargo test, go test, pytest, composer test); the planner's 'Verify:' line overrides per task; any other value is used verbatim; 'off' disables."
         },
+        "tiermux.agent.reanchorChars": {
+          "type": "number",
+          "default": 6000,
+          "description": "Late re-anchoring: after stale read results are pruned from a long turn, re-show up to this many characters of the files the model actually read, so it answers about code it can still see rather than from memory. 0 disables. Weak models benefit most — reasoning errors concentrate late in a turn, which is exactly when pruning has removed the evidence."
+        },
         "tiermux.agent.stepRouting": {
           "type": "boolean",
           "default": true,
@@ -719,6 +724,7 @@
     "test:e2e:terminal-util": "esbuild scripts/terminalUtil.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/terminalUtil.e2e.cjs && node dist/terminalUtil.e2e.cjs",
     "test:e2e:bench-score": "esbuild scripts/benchScore.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/benchScore.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/benchScore.e2e.cjs",
     "test:e2e:classify": "esbuild scripts/classify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/classify.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/classify.e2e.cjs",
+    "test:e2e:reanchor": "esbuild scripts/reanchor.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/reanchor.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/reanchor.e2e.cjs",
     "test:e2e:skill-match": "esbuild scripts/skillMatch.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/skillMatch.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/skillMatch.e2e.cjs",
     "test:e2e:rescue-xml": "esbuild scripts/rescueXml.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rescueXml.e2e.cjs && node dist/rescueXml.e2e.cjs",
     "test:e2e:fit-messages": "esbuild scripts/fitMessages.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/fitMessages.e2e.cjs && node dist/fitMessages.e2e.cjs",
