@@ -122,14 +122,32 @@ const CONFIG_OVERRIDES = {
   // default. diagLog itself gates on the vscode setting 'tiermux.agent.diagTrace' — not an env
   // var — so without this bridge no diagnostic line reaches the console at all in this harness.
   ...(process.env.TIERMUX_DIAG ? { 'tiermux.agent.diagTrace': true } : {}),
+  // A/B hook for late re-anchoring (src/agent/core/anchors.ts). Set TIERMUX_REANCHOR=0 for the
+  // control arm and =6000 (the product default) for the treatment arm, so a before/after pair can
+  // be produced from the SAME commit. Comparing a run against numbers recorded on an older commit
+  // measures every change in between, not the one under test.
+  ...(process.env.TIERMUX_REANCHOR !== undefined
+    ? { 'tiermux.agent.reanchorChars': Number(process.env.TIERMUX_REANCHOR) }
+    : {}),
 };
 
 const vscodeMock = {
   workspace: {
     workspaceFolders: undefined, // set by the runner before the first turn
     getConfiguration: (section) => ({
+      // Precedence: a test's own globalThis.__tiermuxTestConfig, then the bench's fixed
+      // CONFIG_OVERRIDES, then the caller's default. The test hook mirrors scripts/vscodeMock.cjs
+      // so an e2e script can pick either shim by what it needs (this one has a real filesystem)
+      // without changing how it sets config. Both the bare key ('pruneAtTokens') and the fully
+      // qualified one ('tiermux.agent.pruneAtTokens') are accepted, since the two shims'
+      // pre-existing scripts are split on which they use.
       get: (key, def) => {
         const full = section ? `${section}.${key}` : key;
+        const t = globalThis.__tiermuxTestConfig;
+        if (t) {
+          if (Object.prototype.hasOwnProperty.call(t, full)) return t[full];
+          if (Object.prototype.hasOwnProperty.call(t, key)) return t[key];
+        }
         return Object.prototype.hasOwnProperty.call(CONFIG_OVERRIDES, full) ? CONFIG_OVERRIDES[full] : def;
       },
     }),

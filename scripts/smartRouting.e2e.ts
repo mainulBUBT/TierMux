@@ -132,19 +132,32 @@ async function main() {
 
     // ---- The real test: an AUTO route (smartScoring default-on, no forced model).
     // The slow model is higher priority; smart routing must still pick the fast one.
+    // Sampled over N draws for the same reason the cold-start control below is: margin-gated
+    // exploration promotes a statistically-tied peer at SCORING_CONFIG.explorationRate (0.2), so a
+    // single draw fails ~20-25% of the time regardless of whether smart routing works. Measured:
+    // 2/8 runs failed before this loop existed. Asserting the modal outcome tests the ranking;
+    // asserting one draw tests Math.random().
+    const AUTO_N = 15;
+    let fastFirst = 0;
+    let fastServed = 0;
     let ordered: FallbackEntry[] = [];
-    let pickedFirst = '';
-    const res = await router.route(msgs, {
-      taskKind: 'chat',
-      onSelectionRationale: (info) => {
-        ordered = info.rationale.map((r) => `${r.platform}::${r.modelId}`) as unknown as FallbackEntry[];
-        pickedFirst = info.picked ? `${info.picked.platform}::${info.picked.modelId}` : '';
-      },
-    });
+    for (let i = 0; i < AUTO_N; i++) {
+      let pickedFirst = '';
+      const res = await router.route(msgs, {
+        taskKind: 'chat',
+        onSelectionRationale: (info) => {
+          ordered = info.rationale.map((r) => `${r.platform}::${r.modelId}`) as unknown as FallbackEntry[];
+          pickedFirst = info.picked ? `${info.picked.platform}::${info.picked.modelId}` : '';
+        },
+      });
+      if (pickedFirst === 'github::fast-model') fastFirst++;
+      if (res.model === 'fast-model') fastServed++;
+    }
 
-    ok('AUTO route ranks the FAST model first despite the slow one being higher priority',
-      pickedFirst === 'github::fast-model');
-    ok('AUTO route actually completed on the fast model', res.model === 'fast-model');
+    ok(`AUTO route ranks the FAST model first despite the slow one being higher priority (${fastFirst}/${AUTO_N})`,
+      fastFirst > AUTO_N / 2);
+    ok(`AUTO route actually completed on the fast model in the majority (${fastServed}/${AUTO_N})`,
+      fastServed > AUTO_N / 2);
     console.log('   rationale order:', ordered.join('  >  '));
 
     // ---- Control: with a genuine cold catalog (no metrics), priority order holds. Margin-gated

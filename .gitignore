@@ -29,3 +29,11 @@ extensionPath/
 
 # Webview TS incremental build cache
 .cache/
+
+# Secrets. PUBLISHING.md step 1 checks that no .env file is TRACKED, but nothing stopped one from
+# being added in the first place — a `git add -A` on a machine that had a local .env was all it
+# would have taken. Benchmark runs need real provider keys (BENCH_KEY_<PLATFORM>), which is exactly
+# the situation that puts a key in the working tree.
+.env
+.env.*
+!.env.example
