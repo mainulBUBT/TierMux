@@ -719,6 +719,7 @@
     "test:e2e:terminal-util": "esbuild scripts/terminalUtil.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/terminalUtil.e2e.cjs && node dist/terminalUtil.e2e.cjs",
     "test:e2e:bench-score": "esbuild scripts/benchScore.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/benchScore.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/benchScore.e2e.cjs",
     "test:e2e:classify": "esbuild scripts/classify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/classify.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/classify.e2e.cjs",
+    "test:e2e:skill-match": "esbuild scripts/skillMatch.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/skillMatch.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/skillMatch.e2e.cjs",
     "test:e2e:rescue-xml": "esbuild scripts/rescueXml.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rescueXml.e2e.cjs && node dist/rescueXml.e2e.cjs",
     "test:e2e:fit-messages": "esbuild scripts/fitMessages.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/fitMessages.e2e.cjs && node dist/fitMessages.e2e.cjs",
     "test:e2e:condense-split": "esbuild scripts/condenseSplit.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/condenseSplit.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/condenseSplit.e2e.cjs",

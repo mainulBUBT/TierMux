@@ -1350,7 +1350,13 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
     middleware: createTelemetryMiddleware({ profiler: opts.profiler, traceId: opts.sessionId as any }),
   });
 
-  const system = (await buildSystemPrompt(opts.mode, taskKind, opts.sessionId)) + (planGuidance ?? '');
+  // Last user message drives the skill auto-match (`triggers:` frontmatter). On a continuation
+  // round this is the synthetic continue message — which is exactly why stepEngine re-injects the
+  // "Original request:" line into it: the trigger words ride along, so a matched skill stays
+  // active for every round of a multi-step task instead of silently dropping after round 1.
+  const lastUserForSkill = [...opts.messages].reverse().find((m) => m.role === 'user');
+  const system = (await buildSystemPrompt(opts.mode, taskKind, opts.sessionId, contentToString(lastUserForSkill?.content ?? '')))
+    + (planGuidance ?? '');
   diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · buildSystemPrompt done`);
   const tools = createToolSet(opts, getMcpManager(), router);
   diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · createToolSet done (${Object.keys(tools).length} tools)`);

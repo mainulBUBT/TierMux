@@ -9,17 +9,30 @@ export interface Skill {
   description: string;
   /** Prompt template substituted for the user's message when `/name` is invoked. */
   prompt: string;
+  /** Optional `triggers:` frontmatter — comma-separated phrases that auto-activate this skill
+   *  when they appear in the user's request, with no `/name` typed (see matchSkill). Empty for
+   *  skills that don't declare any, which is the safe default: no triggers = slash-only, exactly
+   *  today's behavior. Deliberately explicit rather than inferred from the description — a
+   *  request like "make a landing page" shares no words with "Build or restyle UI to a modern,
+   *  consistent design system", so description-keyword matching would miss the very cases that
+   *  most need the skill while firing on unrelated ones. */
+  triggers: string[];
   /** Absolute path to the folder the skill file lives in — lets multi-file skill packages
    *  (SKILL.md + references/scripts/examples, e.g. the obra/superpowers convention) resolve
    *  their own relative paths; without it the agent has no way to find sibling files. */
   dir: string;
 }
 
-function parseSkillFile(raw: string): { description: string; prompt: string } {
+function parseSkillFile(raw: string): { description: string; prompt: string; triggers: string[] } {
   const m = /^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/.exec(raw);
-  if (!m) return { description: '', prompt: raw.trim() };
+  if (!m) return { description: '', prompt: raw.trim(), triggers: [] };
   const descMatch = /^description:\s*(.+)$/m.exec(m[1]);
-  return { description: descMatch ? descMatch[1].trim() : '', prompt: m[2].trim() };
+  const trigMatch = /^triggers:\s*(.+)$/m.exec(m[1]);
+  const triggers = (trigMatch?.[1] ?? '')
+    .split(',')
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean);
+  return { description: descMatch ? descMatch[1].trim() : '', prompt: m[2].trim(), triggers };
 }
 
 function loadDir(dir: string, into: Map<string, Skill>): void {
@@ -30,8 +43,8 @@ function loadDir(dir: string, into: Map<string, Skill>): void {
     const name = path.basename(f, '.md').toLowerCase();
     try {
       const raw = fs.readFileSync(path.join(dir, f), 'utf8');
-      const { description, prompt } = parseSkillFile(raw);
-      if (prompt) into.set(name, { name, description, prompt, dir });
+      const { description, prompt, triggers } = parseSkillFile(raw);
+      if (prompt) into.set(name, { name, description, prompt, triggers, dir });
     } catch { /* skip unreadable file */ }
   }
 }
@@ -52,8 +65,8 @@ function loadUniversalDir(dir: string, into: Map<string, Skill>): void {
     try {
       const skillDir = path.join(dir, entry.name);
       const raw = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8');
-      const { description, prompt } = parseSkillFile(raw);
-      if (prompt) into.set(name, { name, description, prompt, dir: skillDir });
+      const { description, prompt, triggers } = parseSkillFile(raw);
+      if (prompt) into.set(name, { name, description, prompt, triggers, dir: skillDir });
     } catch { /* no SKILL.md in this subfolder */ }
   }
 }
@@ -104,16 +117,89 @@ export function invalidateSkillsCache(extensionPath: string, workspaceRoot?: str
   cache.delete(`${extensionPath}|${workspaceRoot ?? ''}`);
 }
 
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Whole-phrase containment: `landing page` matches "make a landing page for us" but `ui` does
+ *  NOT match "build". Boundaries are non-alphanumeric rather than `\b` so multi-word triggers and
+ *  trailing punctuation ("a landing page.") both behave. */
+function containsPhrase(haystack: string, phrase: string): boolean {
+  return new RegExp(`(?:^|[^a-z0-9])${escapeRe(phrase)}(?:[^a-z0-9]|$)`, 'i').test(haystack);
+}
+
+/**
+ * The skill whose `triggers:` best match this request, or undefined. Precision-first by design:
+ * only skills that explicitly declare triggers can ever auto-activate, and the LONGEST matching
+ * trigger phrase wins so a specific skill ("landing page") beats a general one ("page") rather
+ * than losing to whichever happened to load first. Ties on length go to more distinct hits.
+ *
+ * Cheap and deterministic — pure string work, no LLM call, no I/O beyond the cached skill map.
+ */
+export function matchSkill(text: string, skills: Map<string, Skill>): Skill | undefined {
+  const t = (text || '').toLowerCase();
+  if (!t.trim()) return undefined;
+  let best: Skill | undefined;
+  let bestLen = 0;
+  let bestHits = 0;
+  for (const sk of skills.values()) {
+    // Already-invoked guard: on the explicit `/name` path the provider has substituted this
+    // skill's whole body INTO the user message, so its triggers are trivially present. Matching
+    // it again would inject the same 3KB a second time, into the system prompt. Detect by the
+    // body's own opening text rather than a caller-passed flag, so the guard holds for any caller.
+    const head = sk.prompt.slice(0, 60).toLowerCase().trim();
+    if (head && t.includes(head)) continue;
+    let longest = 0;
+    let hits = 0;
+    for (const trig of sk.triggers) {
+      if (!containsPhrase(t, trig)) continue;
+      hits++;
+      if (trig.length > longest) longest = trig.length;
+    }
+    if (!hits) continue;
+    if (longest > bestLen || (longest === bestLen && hits > bestHits)) {
+      best = sk;
+      bestLen = longest;
+      bestHits = hits;
+    }
+  }
+  return best;
+}
+
+/**
+ * The full body of an auto-matched skill, wrapped for the SYSTEM prompt. Injected there rather
+ * than substituted into the user's message (which is what the explicit `/name` path does at
+ * chatViewProvider): the user message is the text classifyTaskCore routes on, so prepending 3KB
+ * of skill body to it would move task classification around as a side effect — a skill about
+ * styling must not change which model serves the turn. The system prompt is also rebuilt intact
+ * every turn, so the rules survive pruning and condensation.
+ */
+export function skillBodyPrompt(sk: Skill): string {
+  return `ACTIVE SKILL: \`/${sk.name}\` — ${sk.description}\n`
+    + 'The user\'s request matches this installed skill, so its full instructions are below and '
+    + `APPLY TO THIS TURN. Follow them as if the user had typed \`/${sk.name}\`. Do not mention `
+    + 'the skill or ask whether to use it — just do the work to this standard.\n'
+    + `(This skill's files live at: ${sk.dir}. Resolve any relative paths it references — e.g. `
+    + 'references/, scripts/, examples/ — against that directory.)\n\n'
+    + sk.prompt;
+}
+
 const MAX_INDEX_CHARS = 2000;
 
 /**
  * A cheap name+description index of every loaded skill, meant for the system prompt so the
  * model can proactively RECOMMEND a matching skill — never the full skill body, which stays
- * gated behind explicit `/name` invocation (parseSlash) to keep this index cheap regardless
- * of how many skills are installed. Returns '' when there are no skills to suggest.
+ * gated behind explicit `/name` invocation (parseSlash) or a `triggers:` auto-match, to keep
+ * this index cheap regardless of how many skills are installed. Returns '' when there are no
+ * skills to suggest.
+ *
+ * `excludeName` drops the skill whose body is already injected this turn (see skillBodyPrompt):
+ * listing it as a "you could run this" suggestion alongside its own active instructions reads as
+ * a contradiction, and invites the model to tell the user to run a skill it is already following.
  */
-export function skillIndexPrompt(extensionPath: string, workspaceRoot?: string): string {
-  const skills = loadSkills(extensionPath, workspaceRoot);
+export function skillIndexPrompt(extensionPath: string, workspaceRoot?: string, excludeName?: string): string {
+  const loaded = loadSkills(extensionPath, workspaceRoot);
+  const skills = excludeName
+    ? new Map(Array.from(loaded).filter(([n]) => n !== excludeName))
+    : loaded;
   if (!skills.size) return '';
   const header = 'AVAILABLE SKILLS: the user has these slash-command skills installed. If their request '
     + 'clearly matches one, tell them which skill applies and that they can run it directly (e.g. '

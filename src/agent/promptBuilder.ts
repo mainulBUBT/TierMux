@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { loadUserMemory } from '../context/userMemory';
 import { loadProjectRules } from '../context/projectRules';
-import { skillIndexPrompt } from '../context/skills';
+import { loadSkills, matchSkill, skillBodyPrompt, skillIndexPrompt } from '../context/skills';
 import { findingsPrompt } from './sessionFindings';
 import type { TaskKind } from './routing';
 import type { AgentMode } from './agent';
@@ -38,7 +38,7 @@ const AGENT_FILE_ORDER = ['identity.md', 'behavior.md', 'ask-format.md', 'resear
 
 /** Loads `.tiermux/agent/*.md` scaffolding + project rules/memory/skills index, reading fresh
  *  every call (no caching) — editing `.tiermux/memory.md` takes effect on the very next turn. */
-async function loadAgentInstructions(extPath: string, workspaceRoot?: string, taskKind?: TaskKind, mode?: AgentMode): Promise<{ agentPrompt: string; instructions: string }> {
+async function loadAgentInstructions(extPath: string, workspaceRoot?: string, taskKind?: TaskKind, mode?: AgentMode, userText?: string): Promise<{ agentPrompt: string; instructions: string }> {
   const agentDir = path.join(extPath, '.tiermux', 'agent');
   const skipFiles = new Set(taskKind ? SKIP_FILES_FOR_TASK_KIND[taskKind] ?? [] : []);
   // ask-format.md documents the askQuestions pre-flight clarify tool, and PLAN_MODE_TAIL is
@@ -69,7 +69,26 @@ async function loadAgentInstructions(extPath: string, workspaceRoot?: string, ta
   const rules = await loadProjectRules().catch(() => '');
   // Skill index is only useful when the model might reach for a /slash-command skill — never for
   // a trivial (greeting/small-talk) turn.
-  const skills = taskKind === 'trivial' ? '' : skillIndexPrompt(extPath, workspaceRoot);
+  //
+  // Auto-match (the `triggers:` frontmatter): a request that matches an installed skill gets that
+  // skill's FULL body here, so "make a landing page" gets the same standard as typing `/landing`.
+  // Without this the model only ever saw the one-line index and was told it does not know the
+  // instructions — so the rules applied only for users who knew the command existed. Precision is
+  // the whole game: only skills that explicitly declare triggers can auto-activate, exactly one
+  // body is ever injected, and the index still lists the rest.
+  //
+  // Agent mode only. These bodies are written to be ACTED on ("make the edits", "never describe
+  // the design instead of implementing it"), which flatly contradicts the read-only plan/ask mode
+  // tails — handing a weak model both at once is a prompt conflict, and it would spend ~4KB of a
+  // small context window arguing with itself. An explicit `/name` is unchanged in every mode:
+  // that's the user asking for it, this is us guessing.
+  let skills = '';
+  if (taskKind !== 'trivial') {
+    const autoMatchOk = !mode || mode === 'agent';
+    const matched = userText && autoMatchOk ? matchSkill(userText, loadSkills(extPath, workspaceRoot)) : undefined;
+    const index = skillIndexPrompt(extPath, workspaceRoot, matched?.name);
+    skills = matched ? [skillBodyPrompt(matched), index].filter(Boolean).join('\n\n') : index;
+  }
   return { agentPrompt: base, instructions: [rules, memory, skills].filter(Boolean).join('\n\n') };
 }
 
@@ -209,12 +228,12 @@ function todayLine(): string {
 /** `sessionId` appends this conversation's findings note (see sessionFindings.ts). It belongs in
  *  the SYSTEM prompt specifically: the message history it summarises is exactly what pruning and
  *  condensation throw away, and the system prompt is the only part rebuilt intact every turn. */
-export async function buildSystemPrompt(mode: AgentMode, taskKind?: TaskKind, sessionId?: string): Promise<string> {
+export async function buildSystemPrompt(mode: AgentMode, taskKind?: TaskKind, sessionId?: string, userText?: string): Promise<string> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const findings = findingsPrompt(sessionId);
   if (!extensionPath) {
     return '# Identity\nYou are TierMux, an AI coding assistant.' + modeTail(mode) + `\n\n${todayLine()}` + findings;
   }
-  const { agentPrompt, instructions } = await loadAgentInstructions(extensionPath, workspaceRoot, taskKind, mode);
+  const { agentPrompt, instructions } = await loadAgentInstructions(extensionPath, workspaceRoot, taskKind, mode, userText);
   return [agentPrompt + modeTail(mode), todayLine(), instructions].filter(Boolean).join('\n\n') + findings;
 }
