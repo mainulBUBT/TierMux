@@ -42,11 +42,11 @@ if (process.argv.includes('--publish')) {
   const vsixPaths = TARGETS.map(([target]) => `${outDir}/tiermux-${target}.vsix`);
 
   console.log('\nPublishing to VS Code Marketplace...');
-  run('npx', ['vsce', 'publish', '-i', ...vsixPaths]);
+  run('npx', ['vsce', 'publish', '--skip-duplicate', '-i', ...vsixPaths]);
 
   if (process.env.OVSX_PAT) {
     console.log('\nPublishing to Open VSX...');
-    run('npx', ['ovsx', 'publish', '-i', ...vsixPaths, '-p', process.env.OVSX_PAT]);
+    run('npx', ['ovsx', 'publish', '--skip-duplicate', '-i', ...vsixPaths, '-p', process.env.OVSX_PAT]);
   } else {
     console.log('\nOVSX_PAT not set — skipping Open VSX publish.');
   }
