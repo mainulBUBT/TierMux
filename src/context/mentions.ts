@@ -3,6 +3,7 @@
 import * as os from 'os';
 import * as vscode from 'vscode';
 import type { MentionItem } from '../messages';
+import { pruneFileForPrompt, shouldPrune } from './symbolPruner';
 
 const MAX_MENTION_BYTES = 60 * 1024;
 
@@ -66,7 +67,7 @@ export async function resolveMentions(text: string): Promise<{ text: string; cou
     const target = m[1];
     if (seen.has(target)) continue;
     seen.add(target);
-    const block = await resolveOne(target);
+    const block = await resolveOne(target, text);
     if (block) blocks.push(block);
   }
   return { text: blocks.join('\n\n'), count: blocks.length };
@@ -121,7 +122,7 @@ async function resolveAbsolutePath(path: string): Promise<vscode.Uri | undefined
   return undefined;
 }
 
-async function resolveOne(target: string): Promise<string | undefined> {
+async function resolveOne(target: string, queryText: string): Promise<string | undefined> {
   const { path, startLine, endLine } = splitLineRange(target);
 
   let fileUri: vscode.Uri | undefined = await resolveAbsolutePath(path);
@@ -141,6 +142,17 @@ async function resolveOne(target: string): Promise<string | undefined> {
         const to = Math.min(lines.length, endLine ?? startLine);
         text = lines.slice(from - 1, to).join('\n');
         return `Context — file \`${rel}\` (lines ${from}-${to}):\n\`\`\`\n${text}\n\`\`\``;
+      }
+      // A plain @mention with no line range and no explicit "give me everything" signal — for
+      // a large file, dumping it whole can eat most of a weak model's context budget on one
+      // mention. Prune to a symbol skeleton + the query-relevant bodies instead; the skeleton
+      // tells the model what else exists so it can follow up with @file#Lx-y for a specific part.
+      if (shouldPrune(text)) {
+        const pruned = pruneFileForPrompt(rel, text, queryText);
+        const note = pruned.truncated
+          ? ` (pruned to ${pruned.includedSymbols}/${pruned.totalSymbols} symbols shown in full — use @${rel}#Lx-y for a specific range)`
+          : '';
+        return `Context — file \`${rel}\`${note}:\n\`\`\`\n${pruned.text}\n\`\`\``;
       }
       return `Context — file \`${rel}\`:\n\`\`\`\n${text}\n\`\`\``;
     } catch { /* fall through */ }

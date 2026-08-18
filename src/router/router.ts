@@ -1236,6 +1236,10 @@ export class Router {
             // not grow unbounded — cap how much text can be withheld from live streaming so a false
             // positive (or an abort mid-hold, see the finally-flush below) never eats a large reply.
             const MAX_HOLD_CHARS = 800;
+            // A 'tag' hold hides a real tool call, not prose — and tool args (e.g. writeFile's file
+            // content) can legitimately run to tens of KB. A too-small cap here truncates mid-call,
+            // dumping the unfinished tag soup as visible chat text and losing the rescue entirely.
+            const MAX_TAG_HOLD_CHARS = 200_000;
             let loopCompletedNormally = false;
             try {
               for await (const chunk of provider.streamChatCompletion(apiKey, fitted, entry.modelId, completionOpts)) {
@@ -1259,7 +1263,7 @@ export class Router {
                       // length cap frees it (and a tag opener is a strong enough signal that a false
                       // positive is unlikely — give it a larger cap before giving up).
                       const looksNotJson = holdKind === 'brace' && heldText.includes('\n\n');
-                      const cap = holdKind === 'tag' ? 4000 : MAX_HOLD_CHARS;
+                      const cap = holdKind === 'tag' ? MAX_TAG_HOLD_CHARS : MAX_HOLD_CHARS;
                       if (looksNotJson || heldText.length > cap) { flushHeld(); holdingToolText = false; holdKind = null; }
                     } else if (toolsOffered) {
                       // Detect a tool-call opener — either a `{` opening a line (JSON dialects), or an

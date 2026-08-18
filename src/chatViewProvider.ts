@@ -150,11 +150,70 @@ function resumeContextBlock(remainingTodos: TodoItem[]): string {
     + `the todo list as you finish each item.]\n\nRemaining items:\n${list}`;
 }
 
-/** Append resume context to a user message's content, preserving any attachment blocks. */
-function withResumeContext(content: ChatContent, remainingTodos: TodoItem[]): ChatContent {
-  const block = resumeContextBlock(remainingTodos);
+/** Append a context block to a user message's content, preserving any attachment blocks. */
+function withContextBlock(content: ChatContent, block: string): ChatContent {
   if (typeof content === 'string' || content == null) return `${content ?? ''}\n\n${block}`.trim();
   return [...content, { type: 'text', text: block }];
+}
+
+/** Append resume context to a user message's content, preserving any attachment blocks. */
+function withResumeContext(content: ChatContent, remainingTodos: TodoItem[]): ChatContent {
+  return withContextBlock(content, resumeContextBlock(remainingTodos));
+}
+
+/** A short follow-up that leans on a pronoun ("it", "that") or opens with a correction ("no",
+ *  "don't", "wait") without naming what it's about — e.g. "no fix it", "make it faster", "undo
+ *  that". Unlike {@link isBareContinuation} these aren't a fixed phrase, so weak models (and
+ *  sometimes strong ones) read them as a fresh, contextless request instead of tying them back
+ *  to the last thing the agent did. Kept to short messages only: a longer sentence usually spells
+ *  out its own context ("that error you mentioned in api.ts is still happening"). */
+const AMBIGUOUS_FOLLOWUP_REF_RE = /\b(it|that|this|those|same|again|instead)\b/i;
+const AMBIGUOUS_FOLLOWUP_START_RE = /^(no|nope|nah|don'?t|actually|wait|hm+|not (quite|really))\b/i;
+function isAmbiguousFollowup(text: string): boolean {
+  const t = (text || '').trim();
+  if (!t) return false;
+  if (t.split(/\s+/).length > 10) return false;
+  return AMBIGUOUS_FOLLOWUP_START_RE.test(t) || AMBIGUOUS_FOLLOWUP_REF_RE.test(t);
+}
+
+/** Find the most recent tool action(s) in history to anchor an ambiguous follow-up to. Prefers
+ *  the last run of assistant tool_calls plus their tool results (what "it"/"that" almost always
+ *  means right after a command); falls back to the last assistant text reply if no tool has run
+ *  yet this session. */
+function lastActionSummary(history: ChatMessage[]): string | null {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const msg = history[i] as any;
+    if (msg?.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+      const results = new Map<string, string>();
+      for (let j = i + 1; j < history.length; j++) {
+        const m2 = history[j] as any;
+        if (m2?.role !== 'tool' || !m2.tool_call_id) break;
+        results.set(m2.tool_call_id, typeof m2.content === 'string' ? m2.content : JSON.stringify(m2.content ?? ''));
+      }
+      const lines = msg.tool_calls.slice(0, 4).map((tc: any) => {
+        let args: Record<string, unknown> = {};
+        try { args = JSON.parse(tc.function?.arguments || '{}'); } catch { /* leave empty */ }
+        const argSummary = Object.entries(args).slice(0, 2).map(([k, v]) => `${k}=${String(v).slice(0, 80)}`).join(', ');
+        const out = (results.get(tc.id) || '').slice(0, 400);
+        return `- ${tc.function?.name}(${argSummary})${out ? ` → ${out}` : ''}`;
+      });
+      return lines.join('\n') || null;
+    }
+    if (msg?.role === 'assistant' && typeof msg.content === 'string' && msg.content.trim()) {
+      return msg.content.trim().slice(0, 400);
+    }
+  }
+  return null;
+}
+
+/** Companion to {@link resumeContextBlock}: names the last action instead of the remaining plan,
+ *  so a short pronoun-y follow-up resolves against what the agent just did rather than being read
+ *  as a brand-new, unrelated request. */
+function ambiguousFollowupBlock(summary: string): string {
+  return '[Context note: the previous action in this conversation was:\n' + summary
+    + '\n\nThe message below is a short follow-up and most likely refers to that action or its '
+    + 'result — interpret it in that context rather than asking what "it"/"that" refers to, unless '
+    + 'it is genuinely unrelated.]';
 }
 
 /**
@@ -1847,7 +1906,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const pendingTodos = (m.mode === 'agent' && isBareContinuation(prompt))
       ? (s.lastTodos ?? []).filter((t) => t.status !== 'completed')
       : [];
-    const historyContent = pendingTodos.length ? withResumeContext(userContent, pendingTodos) : userContent;
+    // Same idea, wider net: a short pronoun-y or corrective follow-up ("no fix it", "make it
+    // faster") that isn't the exact "continue" phrase above still needs anchoring to the last
+    // thing the agent did, not a fresh read. Only kicks in when the user gave no other context
+    // (no @mention, no attachment) — those already carry their own anchor.
+    const lastAction = (!pendingTodos.length && m.mode === 'agent' && mentionResult.count === 0
+      && !(m.attachments && m.attachments.length) && s.history.length > 0 && isAmbiguousFollowup(prompt))
+      ? lastActionSummary(s.history)
+      : null;
+    const historyContent = pendingTodos.length
+      ? withResumeContext(userContent, pendingTodos)
+      : lastAction
+        ? withContextBlock(userContent, ambiguousFollowupBlock(lastAction))
+        : userContent;
     s.history.push({ role: 'user', content: historyContent });
     s.transcript.push({ role: 'user', text: prompt, requestId: m.requestId, ts: Date.now(), historyLen: s.history.length - 1, attachments: m.attachments });
     s.updatedAt = Date.now();

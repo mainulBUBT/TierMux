@@ -145,11 +145,23 @@ export class EditGate {
     return choice === 'Apply';
   }
 
+  /** Re-reads disk content right before applying and reports whether it drifted from what the
+   *  diff/confirmation was shown against. `writeCore`'s confirm dialog can sit open for a long
+   *  time waiting on the user, and `edit.replace(0..MAX, content)` below is a wholesale overwrite
+   *  — without this check, a manual edit made while that dialog was open gets silently clobbered. */
+  private async driftedSincePreview(uri: vscode.Uri, beforeRaw: string | undefined): Promise<boolean> {
+    const nowRaw = await this.readIfExists(uri);
+    return nowRaw !== beforeRaw;
+  }
+
   /** Applies `content` without asking — the caller's `toolApproval` decision already stands in
    *  for the confirm click. Still shows the diff and records a checkpoint. */
   private async applyDirect(uri: vscode.Uri, content: string, title: string, ctx?: RunContext): Promise<EditResult> {
     const beforeRaw = await this.readIfExists(uri);
     await this.previewOnly(uri, beforeRaw ?? '', content, title);
+    if (await this.driftedSincePreview(uri, beforeRaw)) {
+      return { applied: false, error: 'File changed on disk since the preview was shown — reload and retry the edit.' };
+    }
     const recorder = ctx ? (u: vscode.Uri, b: string | null) => ctx.checkpoints.record(u, b) : this.recorder;
     recorder?.(uri, beforeRaw ?? null);
     const edit = new vscode.WorkspaceEdit();
@@ -168,6 +180,9 @@ export class EditGate {
     const beforeRaw = await this.readIfExists(uri);
     const ok = await this.previewAndConfirm(uri, beforeRaw ?? '', content, `Write ${vscode.workspace.asRelativePath(uri)}`, ctx);
     if (!ok) return { applied: false, error: 'User rejected the change.' };
+    if (await this.driftedSincePreview(uri, beforeRaw)) {
+      return { applied: false, error: 'File changed on disk since the preview was shown — reload and retry the edit.' };
+    }
     const recorder = ctx ? (u: vscode.Uri, b: string | null) => ctx.checkpoints.record(u, b) : this.recorder;
     recorder?.(uri, beforeRaw ?? null); // snapshot pre-edit state for the checkpoint
     const edit = new vscode.WorkspaceEdit();
