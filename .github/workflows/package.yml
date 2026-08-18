@@ -1,0 +1,52 @@
+name: Package platform-specific VSIX
+
+# Builds one VSIX per OS/arch target so each ships only its own
+# @vscode/ripgrep-<platform> native binary (see PUBLISHING.md).
+# A single VSIX built on one machine only bundles that machine's
+# ripgrep binary and crashes activation on every other platform.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  package:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: win32-x64
+          - os: macos-latest
+            target: darwin-arm64
+          - os: macos-13
+            target: darwin-x64
+          - os: ubuntu-latest
+            target: linux-x64
+        # win32-arm64 / linux-arm64 need a cross-arch force-install of the
+        # matching @vscode/ripgrep-* binary since GitHub's free runners are
+        # x64/darwin-arm64 only — add those targets later if needed, with a
+        # `npm install --force @vscode/ripgrep-<target>@<version>` step
+        # after `npm ci` to pull in the non-native binary before packaging.
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Package VSIX
+        run: npx vsce package --target ${{ matrix.target }} -o tiermux-${{ matrix.target }}.vsix
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tiermux-${{ matrix.target }}
+          path: tiermux-${{ matrix.target }}.vsix

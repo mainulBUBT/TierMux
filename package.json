@@ -703,6 +703,8 @@
     "bench:quality:compare": "esbuild scripts/bench/compareQuality.ts --bundle --platform=node --format=cjs --outfile=dist/benchQualityCompare.cjs && node dist/benchQualityCompare.cjs",
     "bench:quality:dataset": "esbuild scripts/bench/checkDataset.ts --bundle --platform=node --format=cjs --outfile=dist/benchQualityDataset.cjs && node dist/benchQualityDataset.cjs",
     "package": "vsce package",
+    "package:all": "npm run build && node scripts/packageAllTargets.mjs",
+    "publish:all": "npm run build && node scripts/packageAllTargets.mjs --publish",
     "sync:catalog": "node scripts/sync-catalog.mjs",
     "sync:providers": "node scripts/sync-providers.mjs --apply",
     "sync:all": "npm run sync:catalog && npm run sync:providers",
