@@ -19,7 +19,7 @@ import type { ToolSet } from 'ai';
 import type { AgentOpts } from '../../agent';
 import type { McpManager } from '../../../mcp/mcpManager';
 import type { Router } from '../../../router/router';
-import { MUTATING_TOOLS, PLAN_MODE_EXTRA_EXCLUDED_TOOLS } from '../policies/permission';
+import { FILE_MUTATING_TOOLS, PLAN_MODE_EXTRA_EXCLUDED_TOOLS } from '../policies/permission';
 import { createReadTool } from './filesystem/read';
 import { createWriteFileTool } from './filesystem/write';
 import { createEditTool } from './filesystem/edit';
@@ -59,15 +59,19 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
   const graphTools: ToolSet = graphToolsEnabled()
     ? { getSymbolGraph: createSymbolGraphTool(), getDependencyTree: createDependencyTreeTool() }
     : {};
-  // Ask mode: read-only codebase search only — no edit/write/delete/shell. Router.route()
-  // streams fine with tools attached (routerProvider.ts accumulates tool-call deltas
-  // internally), so this no longer needs the "zero tools" workaround it once did.
+  // Ask mode: read-only codebase search plus shell — no file write/edit/delete. `runCommand`
+  // is allowed here (approval-gated same as agent mode, see permission.ts) so the model can run
+  // status/inspection commands (tests, git diff, a linter) while discussing, without being able
+  // to touch the workspace. Router.route() streams fine with tools attached (routerProvider.ts
+  // accumulates tool-call deltas internally), so this no longer needs the "zero tools" workaround
+  // it once did.
   if (opts.mode === 'ask') {
     return {
       readFile: createReadTool(),
       listDir: createListDirTool(),
       glob: createGlobTool(),
       grep: createGrepTool(),
+      runCommand: createShellTool(),
       ...graphTools,
       explore: createExploreTool(router, opts.abortSignal),
       webSearch: createWebSearchTool(),
@@ -101,13 +105,16 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
 
   if (opts.mode === 'agent') return all;
 
-  // plan mode: the model never even sees a mutating tool's schema, rather than showing it
+  // plan mode: the model never even sees a file-mutating tool's schema, rather than showing it
   // and denying execution at call time (defense-in-depth mirrored in policies/permission.ts).
+  // `runCommand` stays in the set — plan mode is for brainstorming/gathering info with the model
+  // (and its subagents), which includes running read/inspection commands, not just file edits.
   // Also excludes low-risk-but-side-effecting tools (e.g. `remember`) that aren't gated by
-  // approval but still shouldn't run during a mode that's meant to produce zero side effects.
+  // approval but still shouldn't run during a mode that's meant to produce zero file-write side
+  // effects.
   const filtered: ToolSet = {};
   for (const [name, t] of Object.entries(all)) {
-    if (MUTATING_TOOLS.has(name) || PLAN_MODE_EXTRA_EXCLUDED_TOOLS.has(name)) continue;
+    if (FILE_MUTATING_TOOLS.has(name) || PLAN_MODE_EXTRA_EXCLUDED_TOOLS.has(name)) continue;
     filtered[name] = t;
   }
   // Plan-mode-only pre-flight clarify tool (replaces the ???QUESTIONS??? text sentinel as the

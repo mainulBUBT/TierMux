@@ -17,6 +17,14 @@ import { resolveWorkspacePath } from '../tools/resolvePath';
  *  the main turn's approval flow like the other mutating tools. */
 export const MUTATING_TOOLS = new Set(['writeFile', 'createFile', 'editFile', 'deleteFile', 'runCommand', 'implementPipeline']);
 
+/** The subset of MUTATING_TOOLS that ask/plan mode still exclude outright — file writes and the
+ *  pipeline (which writes files under the hood). `runCommand` is deliberately NOT in this set:
+ *  ask/plan are for gathering information and discussing/brainstorming (status checks, running
+ *  tests, `git diff`, a linter, a one-off script to inspect data), not for editing the workspace,
+ *  so bash gets the same approval-gated treatment there as in agent mode instead of being denied
+ *  outright. */
+export const FILE_MUTATING_TOOLS = new Set(['writeFile', 'createFile', 'editFile', 'deleteFile', 'implementPipeline']);
+
 /** Tools with a side effect that's low-risk enough to auto-approve (not in MUTATING_TOOLS, so no
  *  approval prompt), but that Plan mode should still not expose — plan mode must produce zero
  *  side effects, even small ones like writing a memory note. Kept separate from MUTATING_TOOLS
@@ -221,7 +229,7 @@ export function createToolApproval(opts: AgentOpts) {
 
     if (name === 'readFile') for (const p of toolPaths(toolCall.input)) { const k = pathKey(p); if (k) readPaths.add(k); }
 
-    if (opts.mode !== 'agent' && MUTATING_TOOLS.has(name)) {
+    if (opts.mode !== 'agent' && FILE_MUTATING_TOOLS.has(name)) {
       return { type: 'denied', reason: `"${name}" is not available in ${opts.mode} mode.` };
     }
 

@@ -3,8 +3,13 @@
 import type { ChatMessage } from '../shared/types';
 import { contentToString } from './content';
 
+/** Chars-per-token estimate. Plain English runs closer to 4, but this codebase's history is
+ *  dominated by code/JSON/paths, which tokenize denser (~3-3.5 chars/token). Using 4 here
+ *  under-estimated real usage on small-context (32k) models enough that a "fitted" prefix could
+ *  still overflow the provider's true window — it would silently truncate or return an empty
+ *  200 instead of erroring, which compaction then misread as "summarizer produced nothing". */
 export function estimateTokens(text: string): number {
-  return Math.ceil((text || '').length / 4);
+  return Math.ceil((text || '').length / 3.3);
 }
 
 export function estimateMessagesTokens(messages: ChatMessage[]): number {

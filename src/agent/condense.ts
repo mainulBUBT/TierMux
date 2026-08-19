@@ -92,7 +92,24 @@ export async function condenseHistory(
     summary = contentToString(result.response.choices[0]?.message.content).trim();
   }
   if (!summary) {
-    diagLog('condense.fail', `empty summary from both ${model ?? 'auto'} and its fallback — giving up`);
+    // Two different models both came back blank. On a small-context model this is often the
+    // provider silently rejecting/truncating an over-budget prompt (our token estimate is an
+    // approximation, not exact) rather than a genuinely broken model — so before giving up,
+    // try once more with only the newer half of the prefix. A smaller request either fits
+    // where the full one didn't, or fails the same way for an unrelated reason either way.
+    const excludeKey2 = `${result.platform}::${result.model}`;
+    diagLog('condense.retry', `empty summary again from ${excludeKey2} — retrying with a shorter prefix`);
+    const shortPrefix = prefix.slice(Math.ceil(prefix.length / 2));
+    const shortRequest = [
+      { role: 'system' as const, content: SUMMARY_SYSTEM },
+      ...shortPrefix,
+      { role: 'user' as const, content: 'Summarize the conversation above so it can continue with minimal context. Keep file names, decisions, and unresolved next steps.' },
+    ];
+    result = await router.route(shortRequest, { temperature: 0.2, max_tokens: 1024, taskKind: 'chat' });
+    summary = contentToString(result.response.choices[0]?.message.content).trim();
+  }
+  if (!summary) {
+    diagLog('condense.fail', `empty summary from ${model ?? 'auto'} and two fallbacks — giving up`);
     return null;
   }
 
