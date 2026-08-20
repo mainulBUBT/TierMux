@@ -511,7 +511,39 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     }
   }
 
-  // Cheap insurance now that shapes 1, 6 and 7 all scan the full text: collapse identical
+  {
+    // Shape 8: the GLM-4.x raw CHANNEL dialect — the provider hands back the model's own
+    // tool-call template unparsed as plain content (captured 2026-08-21 in plan mode:
+    // `<|start|>assistant<|channel|>commentary to=functions.listDir <|constrain|>json={"path":""}<|call|>`
+    // streamed straight into the chat, no tool ran, and plan mode looked broken). Shape:
+    //   <|channel|>commentary to=functions.NAME <|constrain|>json={ ...args... }<|call|>
+    // `<|call|>` needs no handling of its own — balanced-JSON scanning ends the args. Runs
+    // unconditionally like 1/6/7: no shared opener, and the dedupe pass covers overlap.
+    // GLM also tends to snake_case names against TierMux's camelCase registry
+    // (functions.read_file vs readFile), so an exact miss falls back to case-variant
+    // resolution instead of dropping the call.
+    const chanAnchor = /<\|channel\|>\s*commentary\s+to\s*=\s*functions\.([a-zA-Z0-9_\-]+)/g;
+    while ((m = chanAnchor.exec(text)) !== null) {
+      const emitted = m[1];
+      const resolved = toolNames.has(emitted) ? emitted
+        : [...toolNames].find((t) => t.replace(/_/g, '').toLowerCase() === emitted.replace(/_/g, '').toLowerCase());
+      if (!resolved) continue;
+      const after = m.index + m[0].length;
+      // Args follow `json=` after a <|constrain|> marker; fall back to the first `{` after
+      // the tag for variants that omit the marker.
+      const constrain = /<\|constrain\|>\s*json\s*=\s*/g;
+      constrain.lastIndex = after;
+      const cm = constrain.exec(text);
+      const braceAt = text.indexOf('{', cm ? cm.index + cm[0].length : after);
+      if (braceAt < 0) continue;
+      const obj = balancedJsonFrom(text, braceAt);
+      if (!obj) continue;
+      calls.push({ name: resolved, arguments: obj.text });
+      chanAnchor.lastIndex = obj.end;
+    }
+  }
+
+  // Cheap insurance now that shapes 1, 6, 7 and 8 all scan the full text: collapse identical
   // (name, arguments) pairs so no dialect overlap can ever run the same tool call twice.
   const seen = new Set<string>();
   const unique = calls.filter((c) => {
@@ -525,11 +557,27 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
 }
 
 /** Coerce one <arg_value> payload to a JS value: JSON-parse it so `30`→number, `true`→boolean,
- *  `["a"]`→array, `{...}`→object; fall back to the raw trimmed string for a plain path/word that
- *  isn't valid JSON. (repairToolArguments still runs afterward to reconcile against the tool's
- *  schema, so this only needs to be a sensible first guess.) */
+ * `["a"]`→array, `{...}`→object; fall back to the raw trimmed string for a plain path/word that
+ * isn't valid JSON. (repairToolArguments still runs afterward to reconcile against the tool's
+ * schema, so this only needs to be a sensible first guess.) */
 function coerceInlineArgValue(raw: string): unknown {
   const t = raw.trim();
   if (t === '') return t;
   try { return JSON.parse(t); } catch { return t; }
+}
+
+/** Strip GLM-style raw channel-template markers from text bound for DISPLAY. When a response
+ *  carries no rescuable call (e.g. only the `final` prose channel), the template's control
+ *  markers (`<|start|>assistant`, `<|channel|>final<|message|>`, `<|call|>`, …) would otherwise
+ *  render as the user-visible answer. Commentary (tool-call) blocks are removed whole; a
+ *  `final` channel's markers are dropped but its message text is kept. */
+export function stripRawChannelMarkers(text: string): string {
+  return text
+    // A commentary block: everything from its channel marker to its <|call|> terminator (or the
+    // next marker / end, tolerating truncation).
+    .replace(/<\|channel\|>\s*commentary\b[\s\S]*?(?=<\|call\|>|<\|start\|>|<\|channel\|>|$)/g, '')
+    .replace(/<\|start\|>\s*assistant\b/g, '')
+    .replace(/<\|channel\|>\s*final\b\s*(?:<\|message\|>)?/gi, '')
+    .replace(/<\|(?:assistant|constrain|call|end|message|start)\|>/g, '')
+    .trim();
 }

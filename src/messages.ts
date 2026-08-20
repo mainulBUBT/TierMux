@@ -1,5 +1,5 @@
 // Wire protocol between the extension host and the chat webview.
-import type { CatalogModel, FallbackEntry, KeyStatus, Mode, Platform, ReasoningEffort, TodoItem } from './shared/types';
+import type { CatalogModel, FallbackEntry, KeyStatus, Mode, Platform, PlanRunState, ReasoningEffort, TodoItem } from './shared/types';
 import type { ClarifyingQuestion } from './agent/clarify';
 import type { McpServerConfig } from './mcp/mcpClient';
 export type { McpServerConfig, McpLocalServerConfig, McpRemoteServerConfig, McpOAuthConfig } from './mcp/mcpClient';
@@ -241,6 +241,10 @@ export type InMessage =
   | { type: 'fetchCustomEndpointModels'; id: string }
   /** Webview asks the host to (re)fetch tips/announcements from the worker and push them back. */
   | { type: 'getAnnouncements' }
+  /** The Tips page was opened — mark the current announcements seen (clears the dot). */
+  | { type: 'markAnnouncementsSeen' }
+  /** Resume a paused plan run (see planProgress) from its persisted step state. */
+  | { type: 'resumePlan' }
   /** Onboarding "Retry" button — re-attempt the OC engine startup. */
   | { type: 'retryEngine' };
 
@@ -363,8 +367,14 @@ export type OutMessage =
    *  models banner but fires when a brand-new provider is merged in from the remote catalog. */
   | { type: 'newProvidersAvailable'; message: string }
   /** Operator-published tips/announcements, fetched from the announcements worker
-   *  (see ChatViewProvider.fetchAnnouncements). Pushed on startup and on icon click. */
-  | { type: 'announcements'; items: AnnouncementItem[]; lastUpdated?: string };
+   *  (see ChatViewProvider.fetchAnnouncements). Pushed on startup and on icon click.
+   *  Items are newest-first; `unseen` drives the dot on the toolbar icon. */
+  | { type: 'announcements'; items: AnnouncementItem[]; lastUpdated?: string; unseen: number }
+  /** Open the Tips page (from the "new announcement" toast's View button). */
+  | { type: 'openAnnouncements' }
+  /** Live state of a first-class plan execution (see core/planRunner.ts). Posted after every
+   *  step transition; `status: 'paused'` renders the Resume button in the webview. */
+  | { type: 'planProgress'; sessionId: string; requestId: string; state: PlanRunState };
 
 /** A single tip/announcement entry from the announcements worker. */
 export interface AnnouncementItem {

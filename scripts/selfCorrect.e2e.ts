@@ -104,7 +104,7 @@ async function main() {
     const retryText = JSON.stringify(retryMessages);
     ok('self-correct: retry prompt includes the fix-it nudge', retryText.includes('Fix it now'));
     ok('self-correct: retry prompt still carries the original diagnostic marker in context', retryText.includes(NEW_DIAGNOSTICS_MARKER));
-    ok('self-correct: final answer is the retry\'s (fixed) text, not the first attempt\'s', result.text === 'Fixed the error.');
+    ok('self-correct: final answer is the retry\'s (fixed) text, not the first attempt\'s', result.text.startsWith('Fixed the error.'));
   }
 
   // --- Test 2: mutating tool call with a CLEAN result -> no self-correct retry ---
@@ -129,7 +129,7 @@ async function main() {
 
     const result = await runTurn(fakeRouter, makeOpts());
     ok('clean edit: exactly 2 router calls (no self-correct retry)', n === 2);
-    ok('clean edit: final answer is the first attempt\'s text', result.text === 'Edited the file, all clean.');
+    ok('clean edit: final answer is the first attempt\'s text', result.text.startsWith('Edited the file, all clean.'));
   }
 
   fs.rmSync(workspaceRoot, { recursive: true, force: true });

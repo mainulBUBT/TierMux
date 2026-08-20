@@ -68,9 +68,10 @@ export interface SelectionRationaleInfo {
   entries: Array<{ model: string; selected: boolean; score: number; capability: number; runtime: number; preference: number; confidence: number; reason: string; skip?: string }>;
 }
 
-/** Last activity is protocol-derived only. Watchdog isn't wired up yet (see the
- *  plan's deferred items — port once the agent core is stable); kept optional so
- *  chatViewProvider.ts's existing callbacks compile unchanged. */
+/** Last activity is protocol-derived (chunks, tool events, reasoning, step labels). The
+ *  engine-side tracker lives in core/watchdog.ts (TurnWatchdog): a turn quiet past its
+ *  warning/actionable thresholds fires these once each; any protocol event dismisses the
+ *  showing card. The callbacks stay optional so headless callers compile unchanged. */
 export interface WatchdogActivity {
   label: string;
   atMs: number;
@@ -125,8 +126,8 @@ export interface AgentOpts {
   onPermissionAsk?: (info: { title: string; pattern?: string | string[]; command?: string; toolName?: string }) => Promise<'once' | 'always' | 'reject'>;
   onError: (message: string) => void;
   onWarning?: (message: string) => void;
-  /** Watchdog — not wired up yet (see plan's deferred items). Kept optional so
-   *  chatViewProvider.ts's existing callbacks compile unchanged. */
+  /** Watchdog — fired by core/watchdog.ts's TurnWatchdog when a turn goes quiet (warning at
+   *  ~45s without a protocol event, actionable at ~90s). See WatchdogActivity above. */
   onWatchdogWarning?: (info: { elapsedMs: number; lastActivity?: WatchdogActivity }) => void;
   onWatchdogActionable?: (info: { elapsedMs: number; lastActivity?: WatchdogActivity; hasPartialOutput: boolean }) => void;
   onWatchdogDismissed?: () => void;

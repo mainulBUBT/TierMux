@@ -238,7 +238,8 @@ export async function runStepTask(router: Router, opts: AgentOpts, cfg: StepTask
   const maxRounds = cfg.maxRounds ?? 25;
   const maxStuck = cfg.maxStuckContinuations ?? 1;
   const maxBudget = cfg.maxBudgetContinuations ?? 1;
-  const maxUnaccepted = cfg.maxUnacceptedContinuations ?? 1;
+  // Default 2 (own setting — a failing verify is more recoverable than a stall; see package.json).
+  const maxUnaccepted = cfg.maxUnacceptedContinuations ?? 2;
   const isActive = cfg.isActive ?? (() => !opts.abortSignal?.aborted);
 
   // Todos written during THIS task only — replaces-wholesale semantics match the todowrite

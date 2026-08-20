@@ -100,7 +100,7 @@ async function main() {
     const { opts } = makeOpts({ onPermissionAsk: async () => 'reject' });
     const result = await runTurn(fakeRouter, opts);
     ok('denied call: marker file NOT created (execute() never ran)', !fs.existsSync(marker));
-    ok('denied call: run still completed to a final answer', result.text === 'done');
+    ok('denied call: run still completed to a final answer', result.text.startsWith('done'));
   }
 
   // --- Test 2: onTool("running") fires before the tool's own execute() mutates anything ---
@@ -136,7 +136,7 @@ async function main() {
     const result = await runTurn(fakeRouter, opts);
     ok('ordering: marker did NOT exist yet when onTool state=running fired', markerExistedAtRunningState === false);
     ok('ordering: marker DOES exist after the run completes (command actually ran)', fs.existsSync(marker));
-    ok('ordering: run completed to a final answer', result.text === 'done');
+    ok('ordering: run completed to a final answer', result.text.startsWith('done'));
   }
 
   // --- Test 3: an approved call prompts for permission EXACTLY once ---
@@ -171,7 +171,7 @@ async function main() {
     const result = await runTurn(fakeRouter, opts);
     ok('approval-once: onPermissionAsk fired exactly once for one approved tool call', permissionAskCalls === 1);
     ok('approval-once: the approved command actually ran', fs.existsSync(marker));
-    ok('approval-once: run completed to a final answer', result.text === 'done');
+    ok('approval-once: run completed to a final answer', result.text.startsWith('done'));
   }
 
   // --- Test 4: announced-but-undone action AFTER tools already ran is continued ---
@@ -218,7 +218,7 @@ async function main() {
     const result = await runTurn(fakeRouter, opts);
     ok('announce-after-work: the initial real work ran', fs.existsSync(workMarker));
     ok('announce-after-work: the announced next action WAS performed (continuation fired)', fs.existsSync(announcedMarker));
-    ok('announce-after-work: run completed to a final answer', result.text === 'done');
+    ok('announce-after-work: run completed to a final answer', result.text.startsWith('done'));
   }
 
   // --- Test 5: full agent-mode run through the continuation (multi-step, verified, synthesized) ---
@@ -271,7 +271,7 @@ async function main() {
     ok('full-agent: initial read ran (pre-announcement work)', fs.existsSync(markers.read));
     ok('full-agent: the announced fix WAS applied (continuation started)', fs.existsSync(markers.fix));
     ok('full-agent: the verify step ran too (continuation is multi-step, not one call)', fs.existsSync(markers.verify));
-    ok('full-agent: turn synthesized a real final answer', result.text === 'Fixed: changed "Helo" to "Hello" and verified.');
+    ok('full-agent: turn synthesized a real final answer', result.text.startsWith('Fixed: changed "Helo" to "Hello" and verified.'));
     ok('full-agent: work transcript carries the continuation\'s tool calls', (result.workMessages ?? []).some((m) => m.role === 'tool' && typeof m.content === 'string' && m.content.length > 0));
   }
 

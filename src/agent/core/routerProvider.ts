@@ -8,7 +8,7 @@ import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4Genera
 import type { Router, RouteOptions } from '../../router/router';
 import type { ChatMessage, ChatToolDefinition, ReasoningEffort } from '../../shared/types';
 import { diagLog } from '../../util/diag';
-import { rescueInlineToolCalls, repairToolArguments, toolSchemaMap } from '../toolArgs';
+import { rescueInlineToolCalls, repairToolArguments, toolSchemaMap, stripRawChannelMarkers } from '../toolArgs';
 
 /** One scored candidate as reported to AgentOpts.onSelectionRationale — `model` is a
  *  "platform::modelId" key (matching onFailover's `from` shape), not a display name;
@@ -339,7 +339,9 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         if (chunkCount === 0 && msg?.content && !hasEffectiveToolCalls) {
           if (!textStarted) { textStarted = true; streamController.enqueue({ type: 'text-start', id: textId }); }
           const fullText = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-          streamController.enqueue({ type: 'text-delta', id: textId, delta: fullText });
+          // Raw channel-template markers (GLM-style <|channel|>final<|message|>…) must never
+          // render as the user-visible answer when no call was rescuable.
+          streamController.enqueue({ type: 'text-delta', id: textId, delta: stripRawChannelMarkers(fullText) });
         }
         if (textStarted) streamController.enqueue({ type: 'text-end', id: textId });
 

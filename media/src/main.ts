@@ -95,6 +95,7 @@ const STATE_LABEL = {
       <div class="index-status hidden" id="index-status"></div>
       <div class="new-models-bar hidden" id="new-models-bar"></div>
       <div class="new-models-bar hidden" id="new-providers-bar"></div>
+      <div class="new-models-bar hidden" id="plan-progress-bar"></div>
       <div class="changed-bar hidden" id="changed-bar"></div>
       <div class="chips" id="chips"></div>
       <div class="input-wrap">
@@ -3489,11 +3490,19 @@ const STATE_LABEL = {
       case 'newProvidersAvailable':
         renderNewProvidersBar(msg.message);
         break;
-      case 'announcements':
-        announcementsCache = Array.isArray(msg.items) ? msg.items : [];
-        announcementsLastUpdated = msg.lastUpdated;
-        updateAnnouncementsDot();
-        if (announcementsOpen) renderAnnouncements();
+        case 'announcements':
+          announcementsCache = Array.isArray(msg.items) ? msg.items : [];
+          announcementsLastUpdated = msg.lastUpdated;
+          announcementsUnseen = msg.unseen || 0;
+          updateAnnouncementsDot();
+          if (announcementsOpen) renderAnnouncements();
+          break;
+        case 'planProgress':
+          renderPlanProgress(msg.state);
+          break;
+      case 'openAnnouncements':
+        // Host-driven open (the "new announcement" toast's View button).
+        if (!announcementsOpen) toggleAnnouncements(true);
         break;
       case 'config':
         state = msg.config;
@@ -4390,10 +4399,51 @@ const STATE_LABEL = {
     bar.classList.remove('hidden');
   }
 
+  /** Live plan-execution banner (first-class plan runner): shows step progress while
+   *  running, a Resume button while paused (window reload interrupted the run), and a
+   *  terminal summary when done/failed. The step checklist itself renders through the
+   *  normal todos path; this bar carries only run status. */
+  function renderPlanProgress(state) {
+    const bar = $('#plan-progress-bar');
+    if (!bar) return;
+    if (!state || state.status === 'aborted') { bar.classList.add('hidden'); return; }
+    const done = (state.steps || []).filter((st) => st.status === 'done').length;
+    const total = (state.steps || []).length;
+    const current = state.steps && state.steps[state.currentStep];
+    bar.innerHTML = '';
+    const head = document.createElement('div'); head.className = 'cb-head';
+    const icon = document.createElement('span'); icon.className = 'cb-icon';
+    icon.innerHTML = ICON.checkSquare;
+    const title = document.createElement('span'); title.className = 'cb-title';
+    if (state.status === 'running') {
+      title.textContent = `Plan · step ${Math.min(state.currentStep + 1, total)}/${total}${current ? ` — ${current.text.slice(0, 80)}` : ''}`;
+    } else if (state.status === 'paused') {
+      title.textContent = `Plan paused at step ${Math.min(state.currentStep + 1, total)}/${total} (${done} done)`;
+    } else if (state.status === 'failed') {
+      title.textContent = `Plan stopped — a step failed verification (${done}/${total} done)`;
+    } else {
+      title.textContent = `Plan completed (${done}/${total} steps)`;
+    }
+    head.appendChild(icon); head.appendChild(title);
+    if (state.status === 'paused') {
+      const resume = document.createElement('button'); resume.className = 'cb-action';
+      resume.textContent = 'Resume';
+      resume.addEventListener('click', () => { send({ type: 'resumePlan' }); bar.classList.add('hidden'); });
+      head.appendChild(resume);
+    }
+    if (state.status !== 'running') {
+      const close = document.createElement('button'); close.className = 'cb-close'; close.textContent = '×';
+      close.title = 'Dismiss';
+      close.addEventListener('click', () => { bar.classList.add('hidden'); });
+      head.appendChild(close);
+    }
+    bar.appendChild(head);
+    bar.classList.remove('hidden');
+  }
+
   /** Dismissible "new providers available" banner — same one-shot, dismiss-on-close
    *  contract as renderNewModelsBar. The host sends it once per newly-registered provider. */
-  function renderNewProvidersBar(message) {
-    const bar = $('#new-providers-bar');
+  function renderNewProvidersBar(message) {    const bar = $('#new-providers-bar');
     if (!bar) return;
     bar.innerHTML = '';
     const head = document.createElement('div'); head.className = 'cb-head';
@@ -4417,13 +4467,15 @@ const STATE_LABEL = {
    *  and is cached here; opening the page with no cache asks the host to fetch on demand. */
   let announcementsCache = [];
   let announcementsLastUpdated;
+  /** Unseen count from the host (drives the dot); zeroed locally when the page is opened. */
+  let announcementsUnseen = 0;
   let announcementsOpen = false;
   const announcementsEl = () => $('#announcements-page');
 
   function updateAnnouncementsDot() {
     const dot = $('#an-dot');
     if (!dot) return;
-    dot.classList.toggle('hidden', announcementsOpen || !announcementsCache.length);
+    dot.classList.toggle('hidden', announcementsOpen || announcementsUnseen <= 0);
   }
 
   function toggleAnnouncements(force) {
@@ -4436,8 +4488,11 @@ const STATE_LABEL = {
     if (settingsOpen) { settingsOpen = false; settingsEl.classList.remove('active'); }
     if (announcementsOpen) {
       renderAnnouncements();
+      // Opening the page counts as seeing them — clears the dot host-side too.
+      send({ type: 'markAnnouncementsSeen' });
       // Refresh from the worker every time the page opens.
       send({ type: 'getAnnouncements' });
+      announcementsUnseen = 0;
     }
     updateAnnouncementsDot();
   }

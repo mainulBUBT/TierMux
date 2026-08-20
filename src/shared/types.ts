@@ -224,3 +224,32 @@ export interface CustomEndpoint {
   /** Unix-ms when created. */
   createdAt: number;
 }
+
+// ── Plan execution state (first-class plan runner) ─────────────────────────────
+// An approved plan runs as a tracked state machine, persisted with the session so an
+// interrupted run (window reload, extension restart) can resume from `currentStep`
+// instead of restarting or silently vanishing. Pure data — no engine imports here.
+
+/** One step of an executing plan. */
+export type PlanStepStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'skipped';
+export interface PlanStep {
+  text: string;
+  status: PlanStepStatus;
+  /** Execution attempts on this step (verify-failed retries). */
+  attempts: number;
+}
+
+export type PlanRunStatus = 'running' | 'paused' | 'done' | 'failed' | 'aborted';
+export interface PlanRunState {
+  id: string;
+  /** The user's original request the plan was approved for (first ~200 chars). */
+  originalTask: string;
+  steps: PlanStep[];
+  /** Index of the step being executed / next to execute. */
+  currentStep: number;
+  status: PlanRunStatus;
+  /** Plan repairs consumed (read-only planner rewrites of the remaining steps). */
+  repairs: number;
+  startedAt: number;
+  updatedAt: number;
+}

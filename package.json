@@ -87,6 +87,11 @@
         "icon": "$(gear)"
       },
       {
+        "command": "tiermux.showAnnouncements",
+        "title": "Tips & Announcements",
+        "category": "TierMux"
+      },
+      {
         "command": "tiermux.setApiKey",
         "title": "Set API Key",
         "category": "TierMux"
@@ -380,6 +385,19 @@
           "minimum": 0,
           "description": "How many consecutive stuck-loop cutoffs (repeated identical tool calls, or thrashing with no mutating progress) a single send may auto-continue past. Each continuation gets an explicit \"you got stuck, try something genuinely different or move to the next item\" nudge rather than a plain \"keep going\" — without it, a turn that finished 3 of 5 todo items and then stalled on item 4 would halt the whole plan right there, leaving items 4-5 reported as unresolved even though a different approach (or simply moving on to item 5) might well have succeeded. Default 1: give it one genuinely different attempt, but if the SAME approach stalls a second time in a row, halt for real rather than nudging forever. Set to 0 to restore the old always-halt-immediately behavior."
         },
+        "tiermux.agent.maxUnacceptedContinuations": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "description": "How many extra rounds a send may take when the model marks its checklist completed but the verify command still FAILS (step not accepted). Each round is a focused \"the verify command is the arbiter, fix the actual failure\" continuation, and after the final failed round a read-only planner pass may rewrite the remaining steps (plan repair). Has its own setting (it used to reuse maxStuckContinuations) because a failing test suite is far more recoverable than a stuck loop. Default 2."
+        },
+        "tiermux.agent.verifyFixRounds": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 4,
+          "description": "At the end of a mutating turn, how many verify→fix rounds to attempt when the verify command (auto-detected from the project, or set via verifyCommand) exits non-zero: the failure output is fed back to the SAME model (routing is never changed by a verification failure) and the command re-runs after each fix attempt that changed something. Default 2 (was hard-coded 1)."
+        },
         "tiermux.agent.maxConcurrentRuns": {
           "type": "number",
           "default": 3,
@@ -547,7 +565,7 @@
         "tiermux.catalog.url": {
           "type": "string",
           "default": "https://tiermux.mainulislam3057.workers.dev/",
-          "description": "URL that supplies the model catalog. Accepts the TierMux worker JSON ({ providers: [{ provider_id, enabled, models: [...] }] }) or a legacy published-sheet CSV. Fetched in the background on startup; the last fetch is cached and used offline, falling back to the built-in catalog. Leave blank to use only the built-in catalog."
+          "description": "URL that supplies the model catalog. Accepts the TierMux worker JSON ({ providers: [{ provider_id, enabled, models: [...] }] }) or a legacy published-sheet CSV. Fetched in the background when the editor starts; the last fetch is cached and used offline, falling back to the built-in catalog. Leave blank to use only the built-in catalog."
         },
         "tiermux.mcpRegistryUrl": {
           "type": "string",
@@ -678,6 +696,10 @@
     "test:e2e:terminal-util": "esbuild scripts/terminalUtil.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/terminalUtil.e2e.cjs && node dist/terminalUtil.e2e.cjs",
     "test:e2e:bench-score": "esbuild scripts/benchScore.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/benchScore.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/benchScore.e2e.cjs",
     "test:e2e:classify": "esbuild scripts/classify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/classify.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/classify.e2e.cjs",
+    "test:e2e:announcement-sync": "esbuild scripts/announcementSync.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/announcementSync.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/announcementSync.e2e.cjs",
+    "test:e2e:plan-runner": "esbuild scripts/planRunner.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planRunner.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planRunner.e2e.cjs",
+    "test:e2e:delegate-tool": "esbuild scripts/delegateTool.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/delegateTool.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/delegateTool.e2e.cjs",
+    "test:e2e:check-url": "esbuild scripts/checkUrl.e2e.ts --bundle --platform=node --format=cjs --outfile=dist/checkUrl.e2e.cjs && node dist/checkUrl.e2e.cjs",
     "test:e2e:reanchor": "esbuild scripts/reanchor.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/reanchor.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/reanchor.e2e.cjs",
     "test:e2e:skill-match": "esbuild scripts/skillMatch.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/skillMatch.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/skillMatch.e2e.cjs",
     "test:e2e:rescue-xml": "esbuild scripts/rescueXml.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rescueXml.e2e.cjs && node dist/rescueXml.e2e.cjs",

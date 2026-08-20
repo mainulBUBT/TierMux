@@ -25,6 +25,34 @@ const ProsePlanSchema = z.object({
 });
 
 /**
+ * Read-only plan repair for the plan runner: given a failed step's output and the remaining
+ * steps, the planner model rewrites the remaining steps around the failure. Planning only —
+ * it never decides WHO executes the rewritten steps (the executor keeps its exact routing
+ * constraints, per the verify-failure-no-escalation invariant). Returns null on any failure
+ * so the runner just keeps the original steps.
+ */
+export async function repairPlanSteps(router: Router, failureOutput: string, remainingSteps: string[]): Promise<string[] | null> {
+  if (!remainingSteps.length) return null;
+  try {
+    const model = createRouterProvider(router, { taskKind: 'plan' });
+    const result = await generateText({
+      model,
+      system: 'A coding plan step failed verification twice. Rewrite the REMAINING steps so the '
+        + 'plan actually reaches its goal given what failed — fold the fix into the first step. '
+        + 'Keep the same style: one imperative step per entry, preserve real file/symbol names, '
+        + 'do not invent steps unrelated to the failure. Output only the rewritten remaining steps.',
+      prompt: `Failed step and its output:\n${failureOutput.slice(0, 3000)}\n\nRemaining steps of the plan:\n${remainingSteps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`,
+      output: Output.object({ schema: StepsSchema }),
+      abortSignal: AbortSignal.timeout(15000),
+    });
+    const steps = result.output?.steps?.map((s: string) => s.trim()).filter(Boolean) ?? [];
+    return steps.length ? steps.slice(0, 20) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Re-parses a confirmed plan's prose into a clean step list via schema-validated structured
  * output. Returns null (never throws) on any failure — timeout, provider rejects `output`,
  * malformed result — so the caller falls back to `planStepsToTodos`'s regex parse.

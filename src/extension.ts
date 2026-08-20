@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import type { Platform, FallbackEntry, PlatformInfo } from './shared/types';
 import { Catalog } from './catalog/catalog';
+import { fetchAnnouncements, unnotifiedAnnouncements } from './catalog/announcements';
 import { SecretStore } from './config/secrets';
 import { SettingsStore } from './config/settingsStore';
 import { UsageTracker } from './config/usage';
@@ -71,6 +72,20 @@ function notifyNewProviders(entries: PlatformInfo[]): void {
   chatProviderRef?.postNewProviders(message);
 }
 
+/** Toast for an announcement the user hasn't been told about yet (items arrive newest-first,
+ *  so the caller passes the head of the list). View jumps to the Tips & Announcements page. */
+function notifyNewAnnouncement(title: string): void {
+  void vscode.window.showInformationMessage(`New announcement: ${title}`, 'View')
+    .then((choice) => { if (choice === 'View') void vscode.commands.executeCommand('tiermux.showAnnouncements'); });
+}
+
+/** Quiet toast when a refresh dropped models the worker no longer serves, so a provider
+ *  quietly retiring its free tier doesn't look like models vanishing for no reason. */
+function notifyRemovedModels(keys: string[]): void {
+  const sample = keys.slice(0, 5).join(', ') + (keys.length > 5 ? `, +${keys.length - 5} more` : '');
+  void vscode.window.showInformationMessage(`TierMux removed ${keys.length} retired model${keys.length === 1 ? '' : 's'}: ${sample}`);
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   console.log('[tiermux-bench-debug] activate() STARTED');
 
@@ -97,6 +112,23 @@ export function activate(context: vscode.ExtensionContext): void {
         if (freshProviders.length) notifyNewProviders(freshProviders);
       }),
     );
+
+    // Remote catalog + announcements sync, once per window (VS Code or fork) at startup —
+    // no periodic timer; reopening/reloading the editor is the refresh trigger. refresh()
+    // reconciles wholesale (new rows added, vanished rows dropped) and no-ops on any network
+    // failure, keeping the cached list; toasts only fire when something actually changed.
+    const backgroundCatalogSync = async (): Promise<void> => {
+      const url = vscode.workspace.getConfiguration('tiermux').get<string>('catalog.url', '');
+      const report = await catalog.refresh(url, context.globalState);
+      if (report?.removed.length) notifyRemovedModels(report.removed);
+      const ann = await fetchAnnouncements(url);
+      if (ann) {
+        chatProviderRef?.postAnnouncements(ann.items, ann.lastUpdated);
+        const fresh = unnotifiedAnnouncements(context.globalState, ann.items);
+        if (fresh.length) notifyNewAnnouncement(fresh[0].title || 'Untitled');
+      }
+    };
+    void backgroundCatalogSync();
     const usage = new UsageTracker();
     const usageStore = new UsageStore(context.globalState);
     const modelStats = new ModelStatsStore(context.globalState);
@@ -186,6 +218,7 @@ export function activate(context: vscode.ExtensionContext): void {
       modelStats,
       slowModels,
       workspaceState: context.workspaceState,
+      globalState: context.globalState,
       generateCommitMessage: () => generateCommitMessage(router),
       profiler,
     });
@@ -237,10 +270,7 @@ export function activate(context: vscode.ExtensionContext): void {
           if (scoringTraceOn) getRouterLog().show(true);
         }
         if (e.affectsConfiguration('tiermux.catalog')) {
-          void catalog.refresh(
-            vscode.workspace.getConfiguration('tiermux').get<string>('catalog.url', ''),
-            context.globalState,
-          );
+          void backgroundCatalogSync();
         }
       }),
     );
@@ -259,6 +289,7 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.commands.registerCommand('tiermux.compactChat', () => chat.compact()),
       vscode.commands.registerCommand('tiermux.generateHandoff', () => chat.handoff()),
       vscode.commands.registerCommand('tiermux.openModelSettings', () => chat.toggleSettingsPanel()),
+      vscode.commands.registerCommand('tiermux.showAnnouncements', () => chat.showAnnouncements()),
       vscode.commands.registerCommand('tiermux.setApiKey', (platformArg?: Platform) => setApiKey(secrets, platformArg)),
       vscode.commands.registerCommand('tiermux.clearApiKey', () => clearApiKey(secrets)),
       vscode.commands.registerCommand('tiermux.addSelectionToChat', () => chat.addSelectionToChat()),

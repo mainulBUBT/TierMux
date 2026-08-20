@@ -54,6 +54,10 @@ export const SETTINGS_META: SettingMeta[] = [
   { key: 'profiler.ringSize', label: 'Profiler ring size', type: 'number', min: 10, max: 10000,
     desc: 'Maximum number of recent turns to keep in the profiler\'s ring buffer.' },
   // -- Other --
+  { key: 'agent.maxUnacceptedContinuations', label: 'Verify-failure retries', type: 'number', min: 0, max: 5,
+    desc: 'Extra rounds when the checklist says done but the verify command still fails. After the last round a read-only planner pass may rewrite the remaining steps.' },
+  { key: 'agent.verifyFixRounds', label: 'Verify→fix rounds', type: 'number', min: 1, max: 4,
+    desc: 'At the end of a mutating turn, how many times to feed the verify-command failure back to the same model and re-run it. Verification failure never switches models.' },
   { key: 'requestTimeoutMs', label: 'Request timeout (ms)', type: 'number', min: 1000, max: 300000,
     desc: 'Per-provider request timeout before failing over to the next model.' },
   { key: 'rateLimitCooldownMs', label: 'Rate-limit cooldown (ms)', type: 'number', min: 0, max: 600000,

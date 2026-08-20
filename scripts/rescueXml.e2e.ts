@@ -9,7 +9,7 @@
  *
  * Run: npm run test:e2e:rescue-xml
  */
-import { rescueInlineToolCalls } from '../src/agent/toolArgs';
+import { rescueInlineToolCalls, stripRawChannelMarkers } from '../src/agent/toolArgs';
 
 // `listTodos` stands in for any parameterless tool — see the zero-arg case below.
 const tools = new Set(['editFile', 'readFile', 'writeFile', 'grep', 'listTodos']);
@@ -111,6 +111,37 @@ ok('shape 7: unknown bracket name does not false-positive', !rescueInlineToolCal
 ok('shape 7: truncated call (never closed) is NOT rescued half-parsed',
   !rescueInlineToolCalls(`<tool_call_start>|[readFile(path='a.ts`, tools).detected);
 ok('shape 7: a numeric kwarg coerces to number', JSON.parse(rescueInlineToolCalls(`[grep(pattern='x', limit=30)]`, tools).calls[0].arguments).limit === 30);
+
+// ── Shape 8: GLM raw channel dialect ────────────────────────────────────────────
+// Captured verbatim from a 2026-08-21 plan-mode run: the provider returned the model's own
+// tool-call template as plain content, it streamed into chat, and no tool ran.
+const glmTools = new Set([...tools, 'listDir']);
+const glmReal = `<|start|>assistant<|channel|>commentary to=functions.listDir <|constrain|>json={"path":""}<|call|>`;
+const g = rescueInlineToolCalls(glmReal, glmTools);
+ok('shape 8: the captured GLM template is rescued as a real listDir call',
+  g.detected && g.calls.length === 1 && g.calls[0].name === 'listDir');
+ok('shape 8: empty JSON args parse to a usable object', JSON.parse(g.calls[0]?.arguments ?? 'null')?.path === '');
+
+const glmEdit = `<|start|>assistant<|channel|>commentary to=functions.editFile <|constrain|>json={"path":"src/a.ts","search":"fn main() {","replace":"fn main() {\\n    println!(\\"hi\\");"}`;
+const ge = rescueInlineToolCalls(glmEdit, tools);
+ok('shape 8: braces inside string payloads survive (balanced scan, not regex-lazy)',
+  ge.detected && JSON.parse(ge.calls[0].arguments).search.includes('{'));
+ok('shape 8: truncated-before-<|call|> still parses (terminator is optional)',
+  ge.detected && JSON.parse(ge.calls[0].arguments).path === 'src/a.ts');
+
+const glmSnake = `<|channel|>commentary to=functions.read_file <|constrain|>json={"path":"b.ts"}<|call|>`;
+const gs = rescueInlineToolCalls(glmSnake, tools);
+ok('shape 8: snake_case name resolves to the camelCase registry name',
+  gs.detected && gs.calls[0].name === 'readFile' && JSON.parse(gs.calls[0].arguments).path === 'b.ts');
+ok('shape 8: unknown tool ignored', !rescueInlineToolCalls(`<|channel|>commentary to=functions.frobnicate <|constrain|>json={"x":1}<|call|>`, tools).detected);
+ok('plain prose with angle brackets still detects nothing', !rescueInlineToolCalls('use a<b and b>c comparisons', tools).detected);
+
+// Marker stripping for display text (the no-rescuable-call path).
+ok('strip: final-channel prose survives with markers removed',
+  stripRawChannelMarkers('<|start|>assistant<|channel|>final<|message|>Here is the plan.<|end|>') === 'Here is the plan.');
+ok('strip: commentary (tool-call) blocks are removed whole',
+  stripRawChannelMarkers('Intro text<|channel|>commentary to=functions.listDir <|constrain|>json={"path":""}<|call|>Outro') === 'Intro textOutro');
+ok('strip: plain text is untouched', stripRawChannelMarkers('Just a normal answer.') === 'Just a normal answer.');
 
 console.log(bad ? `\n${bad} FAILURE(S)` : '\nALL PASS');
 process.exit(bad ? 1 : 0);

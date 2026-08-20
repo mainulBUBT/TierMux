@@ -8,6 +8,10 @@ import { deriveMetadata } from './discovery';
 import { allPlatformInfo, upsertCompatFromCatalog, type RemoteProviderDef } from '../providers';
 
 const CACHE_KEY = 'tiermux.catalogCache';
+/** Provider defs (`/providers`) applied by the last successful refresh, restored on startup so
+ *  offline/first-run loads still register remote providers (names + base URLs) alongside the
+ *  cached model list — without it, restored models show raw platform ids until a fetch lands. */
+export const PROVIDER_DEFS_KEY = 'tiermux.catalogProviderDefs';
 /** Snapshot of the list as it was before the last provider sync (one level of undo). */
 const UNDO_KEY = 'tiermux.catalogSyncUndo';
 /** Platforms the shared worker catalog currently reports `enabled: false` for. */
@@ -57,10 +61,15 @@ export class Catalog {
     if (!catalogUrl.trim()) {
       this.remote = undefined;
       void mem.update(CACHE_KEY, undefined);
+      void mem.update(PROVIDER_DEFS_KEY, undefined);
       return;
     }
     const cached = mem.get<CatalogModel[]>(CACHE_KEY);
     if (Array.isArray(cached) && cached.length) this.remote = cached;
+    // Restore the provider registry snapshot too — model rows alone would reference platforms
+    // with no name/baseUrl until the next live fetch succeeds.
+    const defs = mem.get<RemoteProviderDef[]>(PROVIDER_DEFS_KEY);
+    if (Array.isArray(defs) && defs.length) upsertCompatFromCatalog(defs);
     const disabled = mem.get<Platform[]>(REMOTE_DISABLED_KEY);
     if (Array.isArray(disabled)) this.remoteDisabledPlatforms = disabled;
   }
@@ -93,7 +102,10 @@ export class Catalog {
     let providersApplied = 0;
     if (providersText) {
       const defs = parseWorkerProviders(providersText);
-      if (defs.length) providersApplied = upsertCompatFromCatalog(defs);
+      if (defs.length) {
+        providersApplied = upsertCompatFromCatalog(defs);
+        void mem.update(PROVIDER_DEFS_KEY, defs);
+      }
     }
 
     // The /models endpoint may serve the TierMux worker JSON (nested providers→models) or a
@@ -238,7 +250,7 @@ function wBool(v: unknown, def: boolean): boolean {
  *  `https://x.dev/` + `models` → `https://x.dev/models`; `https://x.dev` + `models` → same.
  *  A base that already ends with the sub-path (e.g. someone pointed catalog.url at
  *  `…/models` directly) is left as-is rather than doubled. */
-function joinBase(base: string, sub: string): string {
+export function joinBase(base: string, sub: string): string {
   const b = base.replace(/\/+$/, '');
   if (b.toLowerCase().endsWith('/' + sub.toLowerCase())) return b;
   return `${b}/${sub}`;
@@ -246,7 +258,7 @@ function joinBase(base: string, sub: string): string {
 
 /** GET `url` as text with an 8s abort timeout. Returns null on any failure
  *  (offline, non-OK, timeout) so callers can fail over per-endpoint. */
-async function fetchText(url: string): Promise<string | null> {
+export async function fetchText(url: string): Promise<string | null> {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 8000);

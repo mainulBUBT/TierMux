@@ -11,8 +11,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { z } from 'zod';
 import type { Router } from '../../router/router';
-import type { ChatMessage, ChatContentBlock } from '../../shared/types';
+import type { ChatMessage, ChatContentBlock, TodoItem } from '../../shared/types';
 import type { AgentOpts, AgentResult } from '../agent';
+import { repairPlanSteps } from '../planStructurer';
 import { classifyTaskCore, attachmentKindsFromContent, type TaskKind, type ClassifySignals } from '../routing';
 import { assessAnswerQuality, TASK_WORD_FLOOR } from '../answerQuality';
 import { judgeFulfillment, compareAnswers, JUDGEABLE_TASK_KINDS } from '../fulfillment';
@@ -28,6 +29,7 @@ import { NEW_DIAGNOSTICS_MARKER, waitForWorkspaceDiagnosticsSettled, workspaceEr
 import { resolveVerifyCommand, runVerifyCommand } from './tools/workspace/verifyCommand';
 import { resolveWorkspacePath } from './tools/resolvePath';
 import { AnchorStore, stripAnchorBlock, renderTouchedFiles } from './anchors';
+import { TurnWatchdog } from './watchdog';
 import { planStepsToTodos } from '../../session/titles';
 import { stepDifficultyOf, type StepDifficulty } from '../stepDifficulty';
 import { diagLog } from '../../util/diag';
@@ -366,7 +368,7 @@ const VERIFY_FAILED_NUDGE =
 /** Tools that can actually falsify a "it's fixed" claim: they execute or re-inspect the code
  *  rather than restating it. `readFile` is deliberately NOT here — re-reading your own edit
  *  confirms the text landed, not that the bug is gone. */
-const VERIFY_TOOLS = new Set(['runCommand', 'getDiagnostics']);
+const VERIFY_TOOLS = new Set(['runCommand', 'getDiagnostics', 'checkUrl']);
 
 /** Mutating tools that ALREADY run a diagnostics check as part of their own execute() —
  *  verifyNoteFor (src/agent/core/tools/workspace/formatDiagnostics.ts) is baked into
@@ -415,28 +417,6 @@ function mergeChangedFiles(a: { path: string; status: 'created' | 'modified' | '
   }
   return [...m.entries()].map(([path, status]) => ({ path, status }));
 }
-
-/** Completion claims — a verdict about the user's system ("Fixed.", "Both issues fixed", "should
- *  work now"), as opposed to a description of what changed ("changed the column count to F"). */
-const COMPLETION_CLAIM_RE = new RegExp([
-  // English
-  /\b(?:(?:is|are|now|both|all|issues?|bugs?|problems?)\s+fixed|fixed(?:\s+(?:it|this|that|both|all|the\s+\w+))?\.|resolved|should (?:now )?work|now works?|works? now|that (?:should|will) (?:fix|do) it|problem solved|all set|done\.)/.source,
-  // Romanized Bengali, and Bengali script. Without these the badge was English-only, so a reply
-  // ending "ঠিক হয়ে গেছে" or "thik kore diyechi" made exactly the unverified claim this guard
-  // exists to catch and sailed through untouched — the user this was built for writes that way.
-  /\b(?:thik\s*(?:hoye\s*(?:geche|gache)|kore\s*(?:dilam|diyechi|dieche))|hoye\s*geche|kaj\s*kor(?:be|che)\s*ekhon|somossa\s*(?:nei|shesh)|fix\s*kore\s*(?:dilam|diyechi))\b/.source,
-  /(?:ঠিক\s*(?:হয়ে\s*গেছে|করে\s*দিয়েছি|করে\s*দিলাম)|সমাধান\s*হয়েছে|কাজ\s*করবে\s*এখন|হয়ে\s*গেছে)/.source,
-].join('|'), 'i');
-
-/** Appended verbatim when the model claims a fix it never checked. Deterministic on purpose: the
- *  prompt (behavior.md "Reporting what you changed") already asks for this honesty, and free
- *  models comply unreliably — an unverified "Fixed." that turns out wrong costs the user a round
- *  trip AND their trust, which is exactly the failure this whole path exists to stop. A plain
- *  appended line costs zero extra model calls and zero latency, unlike a retry nudge. */
-const UNVERIFIED_CLAIM_CAVEAT =
-  '\n\n> ⚠️ **Unverified** — this change was not tested. No command was run and no diagnostics '
-  + 'were checked after the last edit, so the claim above is reasoning about the code, not an '
-  + 'observed result. Please confirm it actually fixes the problem.';
 
 /** Does the text make CODEBASE-SPECIFIC claims — a workspace-looking path, a backticked
  *  identifier, or a `call()` — as opposed to answering in plain prose? An answer with none of
@@ -931,6 +911,21 @@ const REACT_SCAFFOLD =
 function isWeakExecutor(router: Router, taskKind: TaskKind): boolean {
   return (router.peekTopSelection(taskKind)?.model?.intelligenceRank ?? 5) >= WEAK_EXECUTOR_RANK;
 }
+
+/** True when the model serving this task is top-two tier — reliable enough for parallel
+ *  tool-calling. The mirror image of isWeakExecutor: instead of "one action per turn",
+ *  strong models are told to BATCH independent calls (the AI SDK already executes a step's
+ *  tool calls concurrently — only the prompt was forbidding it). */
+function isStrongExecutor(router: Router, taskKind: TaskKind): boolean {
+  return (router.peekTopSelection(taskKind)?.model?.intelligenceRank ?? 5) <= 2;
+}
+
+const STRONG_MODEL_SCAFFOLD =
+  '\n\nYou are running on a strong model with reliable parallel tool-calling: when the next '
+  + 'several actions are INDEPENDENT (e.g. reading unrelated files, separate searches), issue '
+  + 'them together in one turn — all results come back together, saving round-trips. Keep calls '
+  + 'sequential only when the next one depends on the previous result, and never batch edits to '
+  + 'the same file.';
 
 /** Scans planner output for file-path-shaped tokens (nested like `src/foo/bar.ts` or bare
  *  root-level like `package.json`) and returns the ones that don't exist in the workspace —
@@ -2014,6 +2009,44 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // just repeat the work in chunks. Default 50: a legit task rarely exceeds 50 steps in a SINGLE
   // turn (long tasks span auto-continue rounds instead), so this only catches true runaways.
   const maxStepsPerTurn = vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxStepsPerTurn', 50);
+  // Verify→fix rounds at end of a mutating turn (tiermux.agent.verifyFixRounds, default 2, 1-4):
+  // each round feeds the verify failure output back once and re-runs the command when the fix
+  // attempt actually changed something. The old hard-coded 1 gave up after a single fix attempt.
+  const verifyFixRounds = Math.min(4, Math.max(1, vscode.workspace.getConfiguration('tiermux.agent').get<number>('verifyFixRounds', 2)));
+  // Track the turn's live checklist (todowrite writes + pipeline seeds) by wrapping onTodos —
+  // the end-of-turn plan repair needs the still-pending steps, and the wrapper keeps every
+  // downstream consumer (UI, step engine) seeing exactly what it saw before. The same wrap
+  // arms the engine-side watchdog: every protocol event (chunk/tool/reasoning/step) stamps
+  // activity, and a turn that goes quiet past its thresholds fires the warning/actionable
+  // callbacks the UI has rendered since the SDK port (see core/watchdog.ts).
+  const userOnTodos = opts.onTodos;
+  const userOnChunk = opts.onChunk;
+  const userOnTool = opts.onTool;
+  const userOnReasoning = opts.onReasoning;
+  const userOnStep = opts.onStep;
+  const watchdog = new TurnWatchdog(
+    {
+      onWarning: (info) => opts.onWatchdogWarning?.(info),
+      onActionable: (info) => opts.onWatchdogActionable?.(info),
+      onDismissed: () => opts.onWatchdogDismissed?.(),
+    },
+    () => !!opts.abortSignal?.aborted,
+  );
+  let turnTodos: TodoItem[] = [];
+  const toolTally = new Map<string, number>();
+  opts = {
+    ...opts,
+    onTodos: (t) => { turnTodos = t; userOnTodos(t); },
+    onChunk: (t) => { watchdog.activity('streaming text'); watchdog.markPartialOutput(); userOnChunk(t); },
+    onTool: (e) => {
+      if (e.state === 'running') toolTally.set(e.name, (toolTally.get(e.name) ?? 0) + 1);
+      watchdog.activity(`${e.name} ${e.state}`);
+      userOnTool(e);
+    },
+    onReasoning: (t) => { watchdog.activity('reasoning'); userOnReasoning(t); },
+    onStep: (p, label) => { watchdog.activity(label); userOnStep(p, label); },
+  };
+  watchdog.start();
   const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
   const lastUserText = contentToString(lastUser?.content ?? '');
   // Feed attachment signals so an image (or a text-less/scanned PDF) upgrades the task to 'vision'
@@ -2103,6 +2136,12 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     // off, says nothing about that model being strong enough to go without it — and OpenCode
     // ships the same one-tool-per-message rule to every free model unconditionally.
     planGuidance = REACT_SCAFFOLD;
+  } else if (opts.mode !== 'plan' && opts.mode !== 'ask' && isStrongExecutor(router, taskKind)) {
+    // The mirror image: a top-two-tier executor gets told to batch INDEPENDENT tool calls —
+    // the SDK already executes a step's calls in parallel, but REACT_SCAFFOLD's one-action
+    // rule (and the weak-model framing it comes from) was the only guidance strong models
+    // ever saw. Middle-tier models get neither scaffold.
+    planGuidance = STRONG_MODEL_SCAFFOLD;
   }
   if (opts.mode === 'plan') {
     // Brainstorm step: only for messages that look like a real task, not a plain question/
@@ -2448,23 +2487,35 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // one proves the project still WORKS. After a mutating turn settles, actually run the verify
   // command (the planner's explicit `Verify:` pick, else auto-detected from the project manifest
   // — package.json scripts / Makefile / Cargo.toml / …; `tiermux.agent.verifyCommand` overrides
-  // or disables). A non-zero exit feeds the failure output back for exactly ONE self-correct
-  // retry, then the command is re-run once; if it still fails, the final answer carries a
-  // deterministic failure note instead of letting an untested "done" stand. `ok === null` (could
-  // not run: declined, disabled, timed out, no command detected) is "no signal" — never treated
-  // as a failure. This is the fleet pipeline's worker gate (implementPipeline.ts verifyCommand)
-  // applied to the single-agent path, with the command auto-detected so the model can't skip it
-  // by never naming one.
+  // or disables). A non-zero exit feeds the failure output back for up to
+  // `tiermux.agent.verifyFixRounds` self-correct rounds (default 2), re-running the command
+  // after each fix attempt that changed something; if it still fails, the final answer carries a
+  // deterministic failure note, and when the checklist still has pending steps a READ-ONLY
+  // planner pass may rewrite them (plan repair — executor routing is never changed by a
+  // verification failure). `ok === null` (could not run: declined, disabled, timed out, no
+  // command detected) is "no signal" — never treated as a failure. This is the fleet pipeline's
+  // worker gate (implementPipeline.ts verifyCommand) applied to the single-agent path, with the
+  // command auto-detected so the model can't skip it by never naming one.
   const verifyCmd = turnVerifyCommand ?? resolveVerifyCommand();
   let verifyGateFailed: string | null = null;
+  let verifyRepairNote: string | null = null;
+  /** How many verify→fix rounds the gate actually ran (for the end-of-turn Work Report). */
+  let verifyFixRoundsUsed = 0;
   // Exposed on AgentResult.verifyOutcome: the step engine keys on 'failed' to refuse accepting
   // a "completed" checklist whose verify command still fails.
   let verifyOutcome: 'passed' | 'failed' | 'unverified' | undefined;
   if (final.hadMutatingToolCall && !final.stopReason && !opts.abortSignal?.aborted && verifyCmd) {
     opts.onStep('verifying', `Verifying with ${verifyCmd}…`);
     let run = await runVerifyCommand(verifyCmd);
-    if (run.ok === false) {
-      diagLog('turn.verifyCmd', `${verifyCmd} exited non-zero after this turn's edits — retrying once with the failure output`);
+    let fixRound = 0;
+    // Bounded verify→fix loop (`tiermux.agent.verifyFixRounds`, default 2). Each round: feed the
+    // failure output back as a nudge, accept the retry only as a whole new attempt result, and
+    // re-run the command only when the retry actually changed something (an unchanged workspace
+    // can only reproduce the same failure). NOTE the invariant: the retry runs under the SAME
+    // routing constraints as the turn itself — verification failure never switches models.
+    while (run.ok === false && fixRound < verifyFixRounds && !opts.abortSignal?.aborted) {
+      fixRound++;
+      diagLog('turn.verifyCmd', `${verifyCmd} exited non-zero after this turn's edits — fix round ${fixRound}/${verifyFixRounds}`);
       const nudged: AgentOpts = {
         ...opts,
         messages: [
@@ -2486,6 +2537,8 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       if (corrected.hadMutatingToolCall && !opts.abortSignal?.aborted) {
         opts.onStep('verifying', `Re-running ${verifyCmd}…`);
         run = await runVerifyCommand(verifyCmd);
+      } else {
+        break;
       }
     }
     if (run.ok === true) {
@@ -2493,9 +2546,35 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       // unverified-claim backstop below.
       final = { ...final, verifiedAfterMutation: true };
       verifyOutcome = 'passed';
+      verifyFixRoundsUsed = fixRound;
     } else if (run.ok === false) {
       verifyGateFailed = verifyCmd;
       verifyOutcome = 'failed';
+      verifyFixRoundsUsed = fixRound;
+      // Read-only plan repair, once per turn, only when the checklist still has pending steps:
+      // the PLANNER model rewrites the remaining steps around the verify failure (planning, not
+      // execution — the executor's routing constraints are untouched, per the invariant). The
+      // rewritten steps replace the pending items on the live checklist, so the step engine's
+      // unaccepted continuation round — which spells out the remaining todos — carries the
+      // repaired plan to the model instead of the discredited one.
+      const pending = turnTodos.filter((t) => t.status !== 'completed').map((t) => t.content);
+      if (pending.length) {
+        diagLog('turn.verifyCmd', 'verify still failing — consulting the planner to repair the remaining steps');
+        const repaired = await repairPlanSteps(
+          router,
+          `The verify command \`${verifyCmd}\` still fails after ${fixRound} fix round(s).\nLast output:\n${run.output.slice(0, 2000)}`,
+          pending,
+        ).catch(() => null);
+        if (repaired?.length) {
+          const completedCount = turnTodos.length - pending.length;
+          const repairedTodos: TodoItem[] = [
+            ...turnTodos.slice(0, completedCount),
+            ...repaired.map((text) => ({ content: text, status: 'pending' as const })),
+          ];
+          userOnTodos(repairedTodos);
+          verifyRepairNote = '> 🔁 **Plan repaired** — verification kept failing, so the remaining steps were rewritten around the failure. The checklist now shows the repaired steps.';
+        }
+      }
     }
   } else if (final.hadMutatingToolCall) {
     // A mutating turn with no verify command available — honest "we don't know" signal for the
@@ -2503,45 +2582,63 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     verifyOutcome = 'unverified';
   }
 
-  // Honesty backstop: the turn edited files, declared the problem solved, and never ran anything
-  // that could have proved it wrong. Flag it rather than letting the claim stand unqualified —
-  // see UNVERIFIED_CLAIM_CAVEAT for why this is deterministic instead of prompt-only. A failed
-  // command gate above replaces this weaker caveat with the observed failure.
+  // ── Deterministic end-of-turn Work Report ──────────────────────────────────────
+  // Every MUTATING turn finishes with the same structured block (ZCode/Claude Code
+  // pattern): resolution status, files, tool usage, and what was actually tested — so
+  // "done" is never ambiguous about verification. Not tested ⇒ the issue is NOT
+  // confirmed resolved; verify failed ⇒ it is NOT resolved. The marker phrases
+  // ('Verification failed', 'Unverified') are load-bearing — e2e suites key on them.
+  // This subsumes the old honesty backstop (a regex-gated caveat): an untested mutating
+  // turn now ALWAYS says so, deterministically rather than prompt-only.
   let finalText = final.text;
-  if (verifyGateFailed) {
-    diagLog('turn.verifyCmd', `verify command still failing after fix attempt — appending failure note`);
-    finalText += `\n\n> ❌ **Verification failed** — \`${verifyGateFailed}\` still exits non-zero after a fix attempt. `
-      + 'The changes above are on disk but not proven to work; re-run the command to see the remaining failure.';
-  } else if (final.hadMutatingToolCall && !final.verifiedAfterMutation && COMPLETION_CLAIM_RE.test(finalText)) {
-    diagLog('turn.unverified', 'completion claim with no verify tool after the last mutating call — appending caveat');
-    finalText += UNVERIFIED_CLAIM_CAVEAT;
-  }
-
-  // Guaranteed recap: a mutating turn should always end with a summary of what changed. If the
-  // model's own final text already recaps the changes, leave it; otherwise run one short synthesis
-  // pass to produce a recap (streamed live above the deterministic footer the host appends from
-  // changedFiles). Skipped on abort/stuck/budget stops — a stopReason terminal turn isn't "done".
+  if (verifyRepairNote) finalText += `\n\n${verifyRepairNote}`;
   const changedFiles = mergeChangedFiles(undefined, final.changedFiles);
+
+  // Prose recap (the WHAT): synthesized only when the model's own text doesn't already
+  // summarize the changes. Skipped on abort/stuck/budget stops — a stopReason terminal
+  // turn isn't "done".
   if (final.hadMutatingToolCall && !final.stopReason && !opts.abortSignal?.aborted && changedFiles?.length && !alreadyRecaps(finalText, changedFiles)) {
     diagLog('turn.recap', 'mutating turn ended without a change summary — synthesizing one');
     const recap = await recapChanges(router, opts, final.workMessages, changedFiles);
     if (recap) finalText = finalText.trim() ? `${finalText.trim()}\n\n${recap}` : recap;
   }
 
-  // Deterministic "Files changed" footer — a compact, always-present recap of WHICH files changed
-  // (the synthesis above is the prose WHAT). Appended (and streamed live) only when the final text
-  // doesn't already list the files, so a turn that already named them isn't duplicated. This is the
-  // guarantee that a mutating turn always surfaces what it changed, independent of model prose.
-  if (changedFiles?.length && !alreadyRecaps(finalText, changedFiles) && !opts.abortSignal?.aborted) {
-    const byStatus = (st: 'created' | 'modified' | 'deleted') => changedFiles.filter((f) => f.status === st).map((f) => f.path);
-    const parts: string[] = [];
-    const created = byStatus('created'), modified = byStatus('modified'), deleted = byStatus('deleted');
-    if (created.length) parts.push(`created: ${created.join(', ')}`);
-    if (modified.length) parts.push(`modified: ${modified.join(', ')}`);
-    if (deleted.length) parts.push(`deleted: ${deleted.join(', ')}`);
-    const footer = `\n\n**Files changed** — ${parts.join('; ')}.`;
-    finalText += footer;
-    opts.onChunk(footer);
+  // The gate's fix-retry REPLACES `final` with the retry's own result, whose
+  // hadMutatingToolCall is false (the retry explained instead of mutating) — so the report
+  // must fire on any verify signal too, not just a mutating final, or a hard gate failure
+  // would lose its ❌ status line entirely.
+  if ((final.hadMutatingToolCall || verifyGateFailed || verifyOutcome) && !opts.abortSignal?.aborted) {
+    const lines: string[] = [];
+    if (verifyOutcome === 'passed') {
+      lines.push(`**✅ Verified** — \`${verifyCmd}\` passed${verifyFixRoundsUsed ? ` (after ${verifyFixRoundsUsed} fix round${verifyFixRoundsUsed === 1 ? '' : 's'})` : ''}.`);
+    } else if (verifyGateFailed) {
+      lines.push(`**❌ Not resolved — Verification failed** — \`${verifyGateFailed}\` still exits non-zero after ${verifyFixRoundsUsed || 1} fix round${verifyFixRoundsUsed === 1 ? '' : 's'}. The changes are on disk, but the issue is NOT resolved — re-run the command to see the remaining failure.`);
+    } else {
+      // The old caveat only fired on a completion-claim regex; the honest default is that
+      // EVERY untested mutating turn says so.
+      const cutShort = final.stopReason ? 'the turn was cut short before verification could run' : 'no verify command ran after the edits';
+      lines.push(`**⚠️ Unverified** — not tested: ${cutShort}. The changes are on disk but untested, so the issue is not confirmed resolved.`);
+    }
+    if (changedFiles?.length) {
+      const byStatus = (st: 'created' | 'modified' | 'deleted') => changedFiles.filter((f) => f.status === st).map((f) => f.path);
+      const parts: string[] = [];
+      const created = byStatus('created'), modified = byStatus('modified'), deleted = byStatus('deleted');
+      if (created.length) parts.push(`created: ${created.join(', ')}`);
+      if (modified.length) parts.push(`modified: ${modified.join(', ')}`);
+      if (deleted.length) parts.push(`deleted: ${deleted.join(', ')}`);
+      // Always present — a structured report may repeat what the prose above already said.
+      lines.push(`**Files changed:** ${parts.join('; ')}.`);
+    }
+    const tally = [...toolTally.entries()].sort((a, b) => b[1] - a[1]);
+    if (tally.length) {
+      const total = tally.reduce((s, [, c]) => s + c, 0);
+      const top = tally.slice(0, 6).map(([name, c]) => `${name}×${c}`).join(', ');
+      const more = tally.length > 6 ? `, +${tally.length - 6} more` : '';
+      lines.push(`**Tools used:** ${total} call${total === 1 ? '' : 's'} — ${top}${more}`);
+    }
+    const report = `\n\n---\n${lines.join('\n')}`;
+    finalText += report;
+    opts.onChunk(report);
   }
 
   // Carry what this turn established into the next one. Done here, after every retry/escalation
@@ -2549,7 +2646,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // standing fact. recordFindings itself refuses any path that isn't a real file.
   recordFindings(opts.sessionId, final.openedFiles, finalText);
 
-  return {
+  const turnResult: AgentResult = {
     text: finalText,
     reasoning: final.reasoning || undefined,
     platform: final.platform,
@@ -2571,4 +2668,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     failed: final.failed && !final.text.trim(),
     errorMessage: final.errorMessage,
   };
+  // Natural end of the turn — disarm the watchdog (fires onDismissed if a card was showing).
+  watchdog.stop();
+  return turnResult;
 }

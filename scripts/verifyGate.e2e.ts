@@ -94,6 +94,9 @@ async function main() {
     ok('gate pass: the verify command actually ran', steps.some((s) => s.startsWith('Verifying with true')));
     ok('gate pass: no Verification-failed note', !result.text.includes('Verification failed'));
     ok('gate pass: observed pass satisfies the honesty backstop (no Unverified badge)', !result.text.includes('Unverified'));
+    ok('report: ✅ Verified status line names the command', result.text.includes('**✅ Verified**') && result.text.includes('`true` passed'));
+    ok('report: the structured block separator is present', result.text.includes('\n---\n'));
+    ok('report: Tools used tally present with counts', /\*\*Tools used:\*\* \d+ calls? — /.test(result.text) && result.text.includes('runCommand×1'));
   }
 
   // --- Test 2: verify fails → one retry with the output; a mutating retry is re-checked ---
@@ -162,6 +165,8 @@ async function main() {
     const result = await runTurn(fakeRouter, makeOpts());
     ok('gate failed: exactly 3 router calls (no re-run after a non-mutating retry)', n === 3);
     ok('gate failed: final text carries the Verification-failed note', result.text.includes('Verification failed'));
+    ok('report: ❌ Not resolved status states the issue is NOT resolved',
+      result.text.includes('**❌ Not resolved') && result.text.includes('NOT resolved'));
     ok('gate failed: the note names the command', result.text.includes('`false`'));
   }
 
@@ -230,6 +235,85 @@ async function main() {
     const result = await runTurn(fakeRouter, makeOpts({ onStep: (_p, label) => steps.push(label) }));
     ok('gate off: no verifying step ran', !steps.some((s) => s.startsWith('Verifying with')));
     ok('gate off: unverified completion claim still gets the honesty badge', result.text.includes('Unverified'));
+    ok('report: ⚠️ Unverified status fires for EVERY untested mutating turn (not just claim-regex hits)',
+      result.text.includes('**⚠️ Unverified**') && result.text.includes('not confirmed resolved'));
+  }
+
+  // --- Test 6: verifyFixRounds=2 (default) — a second fix round runs when the first keeps failing ---
+  {
+    const marker = path.join(workspaceRoot, 'gate-round2-marker.txt');
+    const verifyCmd = `test -f ${JSON.stringify(marker)}`;
+    setConfig({ mixturePipeline: 'off', verifyCommand: verifyCmd });
+    const steps: string[] = [];
+    const routeOpts: any[] = [];
+    const cmd = (id: string, c: string) => baseResponse({ tool_calls: [{ id, type: 'function' as const, function: { name: 'runCommand', arguments: JSON.stringify({ command: c }) } }] });
+    const script = [
+      cmd('r1', 'printf first-edit'),          // initial turn mutation
+      baseResponse({ content: 'Done for now.' }),
+      cmd('r2', 'printf second-edit'),         // fix round 1 mutates, verify still fails
+      baseResponse({ content: 'Adjusted.' }),
+      cmd('r3', `touch ${JSON.stringify(marker)}`), // fix round 2 makes it pass
+      baseResponse({ content: 'Now it passes.' }),
+    ];
+    let n = 0;
+    const fakeRouter = {
+      async route(_m: unknown, opts: unknown) {
+        routeOpts.push(opts ?? {});
+        n++;
+        return { platform: 'custom' as const, model: 'fake', response: script.shift() ?? baseResponse({ content: 'done.' }) };
+      },
+      peekTopSelection: strongExecutor,
+    } as unknown as Router;
+
+    const result = await runTurn(fakeRouter, makeOpts({ onStep: (_p, label) => steps.push(label) }));
+    ok('rounds: second fix round ran and the gate finally passed', result.verifyOutcome === 'passed', `n=${n}`);
+    ok('rounds: exactly the scripted 6 model calls', n === 6, `n=${n}`);
+    ok('rounds: the command was re-run after each mutating fix attempt', steps.filter((s) => s.startsWith('Re-running')).length === 2);
+    ok('rounds: no Verification-failed note on the final pass', !result.text.includes('Verification failed'));
+    // THE invariant: verify failure must never become a model escalation.
+    ok('rounds: no fix-round call ever excluded or re-ranked models',
+      routeOpts.every((o) => !o.excludeModels?.length && o.maxIntelligenceRank === undefined && o.minIntelligenceRank === undefined));
+  }
+
+  // --- Test 7: verify still failing after ALL rounds + pending todos → read-only plan repair ---
+  {
+    setConfig({ mixturePipeline: 'off', verifyCommand: 'false' });
+    const cmd = (id: string, c: string) => baseResponse({ tool_calls: [{ id, type: 'function' as const, function: { name: 'runCommand', arguments: JSON.stringify({ command: c }) } }] });
+    const todoW = baseResponse({ tool_calls: [{ id: 'tw', type: 'function' as const, function: { name: 'todowrite', arguments: JSON.stringify({ todos: [
+      { content: 'Edit src/a.ts', status: 'completed' },
+      { content: 'Fix the flaky teardown', status: 'pending' },
+    ] }) } }] });
+    const script = [
+      todoW,
+      cmd('p1', 'printf edit-one'),
+      baseResponse({ content: 'First attempt done.' }),
+      cmd('p2', 'printf edit-two'),            // fix round 1
+      baseResponse({ content: 'Adjusted.' }),
+      cmd('p3', 'printf edit-three'),          // fix round 2
+      baseResponse({ content: 'Third try.' }),
+      // The read-only planner repair call — served as structured-output JSON.
+      baseResponse({ content: JSON.stringify({ steps: ['Replace the teardown with an afterAll in src/a.ts'] }) }),
+    ];
+    let n = 0;
+    const todoLists: any[] = [];
+    const fakeRouter = {
+      async route() {
+        n++;
+        return { platform: 'custom' as const, model: 'fake', response: script.shift() ?? baseResponse({ content: 'done.' }) };
+      },
+      peekTopSelection: strongExecutor,
+    } as unknown as Router;
+
+    const result = await runTurn(fakeRouter, makeOpts({ onTodos: (t) => todoLists.push(t) }));
+    ok('repair: gate ended failed after both fix rounds', result.verifyOutcome === 'failed', `outcome=${result.verifyOutcome}`);
+    ok('repair: the deterministic failure note is present', result.text.includes('Verification failed'));
+    ok('repair: the plan-repair note is present', result.text.includes('Plan repaired'), result.text.slice(-160));
+    ok('repair: the planner rewrote the pending step on the live checklist',
+      todoLists.length > 0
+      && todoLists[todoLists.length - 1].some((t: any) => t.content === 'Replace the teardown with an afterAll in src/a.ts' && t.status === 'pending'));
+    ok('repair: the completed step survived the rewrite',
+      todoLists[todoLists.length - 1].some((t: any) => t.content === 'Edit src/a.ts' && t.status === 'completed'));
+    ok('repair: exactly the scripted calls (work + 2 fix rounds + 1 planner pass)', n === 8, `n=${n}`);
   }
 
   fs.rmSync(workspaceRoot, { recursive: true, force: true });

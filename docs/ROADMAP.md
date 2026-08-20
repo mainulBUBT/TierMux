@@ -70,7 +70,7 @@ Custom:   user-defined OpenAI-compatible endpoints
 | 🥇 | **Benchmark Automation** | Turn `BENCHMARK_QUERIES.md` into an executable harness to catch regression during routing/model updates. |
 | 🥈 | **Context Management** | Improve windowing for huge repositories, reducing token usage without losing grounding. |
 | 🥉 | **Webview Tech Debt** | Incrementally migrate the vanilla JS imperative DOM webview to a modern strict TS setup, removing `@ts-nocheck`. |
-| — | **Brainstorm → Plan → Implement mode** | An explicit 3-phase mode switch (no code tools in brainstorm → structured plan → full tools in implement) with session continuity. Not started; mostly prompt + mode-flag wiring on top of the existing plan/agent/ask `AgentMode`. |
+| ✅ | **Brainstorm → Plan → Implement** | Delivered 2026-08-21 via the first-class plan runner (no new mode needed): plan mode's brainstorm pre-step → structured plan → approval → `core/planRunner.ts` executes steps one at a time through the step engine — per-step verify acceptance, same-model verify-failure retries, read-only plan repair, resumable across window reloads. Alongside it: the `delegate` sub-agent tool (research + code/worktree modes) and the multi-round verify→fix loop. |
 
 ---
 

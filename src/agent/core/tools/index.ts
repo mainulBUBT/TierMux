@@ -32,11 +32,13 @@ import { createTodoWriteTool } from './ui/todo';
 import { createQuestionTool } from './ui/question';
 import { createMcpTools } from './mcp/mcp';
 import { createExploreTool } from './explore';
+import { createDelegateTool } from './delegate';
 import { createImplementPipelineTool } from './fleet/implementPipeline';
 import { createDiagnosticsTool } from './workspace/diagnostics';
 import { createSymbolGraphTool } from './workspace/symbolGraph';
 import { createDependencyTreeTool } from './workspace/dependencyTree';
 import { createFetchUrlTool } from './network/fetchUrl';
+import { createCheckUrlTool } from './network/checkUrl';
 import { createWebSearchTool } from './network/webSearch';
 import { createDeepSearchTool } from './network/deepSearch';
 import { createRememberTool } from './context/remember';
@@ -74,6 +76,8 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
       runCommand: createShellTool(),
       ...graphTools,
       explore: createExploreTool(router, opts.abortSignal),
+      delegate: createDelegateTool(router, opts.abortSignal),
+      checkUrl: createCheckUrlTool(),
       webSearch: createWebSearchTool(),
       fetchUrl: createFetchUrlTool(),
       deepSearch: createDeepSearchTool(),
@@ -93,9 +97,11 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
     ...graphTools,
     getDiagnostics: createDiagnosticsTool(),
     fetchUrl: createFetchUrlTool(),
+    checkUrl: createCheckUrlTool(),
     webSearch: createWebSearchTool(),
     deepSearch: createDeepSearchTool(),
     explore: createExploreTool(router, opts.abortSignal),
+    delegate: createDelegateTool(router, opts.abortSignal),
     implementPipeline: createImplementPipelineTool(router, opts.abortSignal),
     todowrite: createTodoWriteTool(opts.onTodos),
     question: createQuestionTool(opts.onAskUser),

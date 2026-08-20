@@ -248,7 +248,27 @@ export function createToolApproval(opts: AgentOpts) {
       }
     }
 
-    if (!MUTATING_TOOLS.has(name)) return 'approved';
+    if (!MUTATING_TOOLS.has(name)) {
+      // `delegate` is two tools in one. Research mode is read-only (the nested loop runs under
+      // createSubAgentToolApproval for the secrets gate) and passes like any read tool. Code
+      // mode edits files in a worktree and merges commits into the user's branch — the same
+      // effect class as the mutating tools, so it must clear the SAME approval gate, and is
+      // agent-mode-only (plan/ask never trigger side-effecting delegation).
+      if (name !== 'delegate') return 'approved';
+      const subMode = (toolCall.input as { mode?: unknown })?.mode;
+      if (subMode !== 'code') return 'approved';
+      if (opts.mode !== 'agent') {
+        return { type: 'denied', reason: 'delegate(code) edits files — Agent mode only. Delegate a research task instead, or do it in Agent mode.' };
+      }
+      if (!opts.onPermissionAsk) return 'approved';
+      const desc = (toolCall.input as { description?: unknown })?.description;
+      const resp = await opts.onPermissionAsk({
+        title: 'This tool wants to delegate an implementation task to a sub-agent (edits files in an isolated worktree, then merges into your branch)',
+        pattern: typeof desc === 'string' && desc.trim() ? desc.slice(0, 120) : undefined,
+        toolName: name,
+      });
+      return resp === 'reject' ? { type: 'denied', reason: 'User rejected the delegation.' } : 'approved';
+    }
 
     if (REWRITE_TOOLS.has(name)) {
       const target = toolPaths(toolCall.input)[0];

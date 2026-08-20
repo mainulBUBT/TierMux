@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { ChatContent, ChatContentBlock, ChatMessage, Platform, TodoItem, CustomEndpoint, ReasoningEffort } from './shared/types';
+import type { ChatContent, ChatContentBlock, ChatMessage, Platform, TodoItem, CustomEndpoint, ReasoningEffort, PlanRunState } from './shared/types';
 import type { SecretStore } from './config/secrets';
 import type { SettingsStore } from './config/settingsStore';
 import type { Catalog } from './catalog/catalog';
@@ -10,6 +10,7 @@ import { runAgentStream, runPlanStream, runAskStream, type AgentResult, type Age
 import { findTextInWorkspace } from './context/textSearch';
 import { classifyTask } from './agent/routing';
 import { decideStepRound } from './agent/core/stepEngine';
+import { runPlan } from './agent/core/planRunner';
 import { clearFindings } from './agent/sessionFindings';
 import { PRODUCT_NAME } from './shared/branding';
 import { SETTINGS_META, defaultForSetting } from './settingsMeta';
@@ -23,6 +24,7 @@ import type { SlowModelStore } from './config/slowModel';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem, McpServerConfig } from './messages';
 import type { AnnouncementItem, Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, PlanDataPayload, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
+import { fetchAnnouncements as fetchWorkerAnnouncements, markAnnouncementsSeen, unseenAnnouncementCount } from './catalog/announcements';
 import { normalizeMcpServerConfig } from './mcp/mcpClient';
 import { getNonce } from './util/nonce';
 import { diagLog } from './util/diag';
@@ -36,8 +38,8 @@ import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense, generateHandoff } from './agent/condense';
 import { resolveClarifying, type ClarifyingQuestion } from './agent/clarify';
-import { structurePlanSteps, formatStructuredSteps, extractPlanFromProse } from './agent/planStructurer';
-import { deriveTitleFrom, extractSubjectTerms, looksLikeActionablePlan, looksLikeGroundedAnswer, offTopicCorrection, sanitizeTitle } from './session/titles';
+import { structurePlanSteps, formatStructuredSteps, extractPlanFromProse, repairPlanSteps } from './agent/planStructurer';
+import { deriveTitleFrom, extractSubjectTerms, looksLikeActionablePlan, looksLikeGroundedAnswer, offTopicCorrection, sanitizeTitle, planStepsToTodos } from './session/titles';
 
 import { loadSkills } from './context/skills';
 
@@ -52,6 +54,8 @@ interface ChatDeps {
   modelStats: ModelStatsStore;
   slowModels: SlowModelStore;
   workspaceState: vscode.Memento;
+  /** Global (per-user) state — announcement seen/notified tracking lives here, alongside the catalog cache. */
+  globalState: vscode.Memento;
   generateCommitMessage: () => Promise<void>;
   profiler?: import('./profiler/profilerService').IProfilerService;
   /** Re-attempt the OC engine startup (binary resolve/download + launch). Wired from
@@ -286,6 +290,9 @@ interface Session {
   pendingAskUser: Map<string, (answer: string) => void>;
   /** True while an approved plan is being executed in Agent mode — drives the "Following the approved plan" header. */
   executingPlan?: boolean;
+  /** First-class plan execution state (see core/planRunner.ts). Present while an approved plan
+   *  is running or paused; persisted with the session so a reload can resume from currentStep. */
+  planRun?: PlanRunState;
   checkpoints: CheckpointManager;
   lastWindow: number;
 
@@ -347,6 +354,10 @@ interface StoredSession {
    *  empty on every hydrate — the revert button stayed visible and the confirm dialog still
    *  fired, but silently restored 0 files, quietly breaking a promise the UI kept making. */
   checkpoints?: SerializedCheckpoint[];
+  /** Plan-execution state for the first-class plan runner — persisted so an interrupted plan
+   *  survives a reload. A stored `running` state is demoted to `paused` on hydrate (the run
+   *  itself died with the window) and the webview offers Resume. */
+  planRun?: PlanRunState;
 }
 
 /**
@@ -561,6 +572,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       updatedAt: s.ts ?? Date.now(),
       model: s.model,
       reasoningEffort: s.reasoningEffort as ReasoningEffort | undefined,
+      // A stored 'running' plan died with the window — demote to 'paused' so the webview can
+      // offer Resume instead of showing a plan that claims to still be executing.
+      planRun: s.planRun ? (s.planRun.status === 'running' ? { ...s.planRun, status: 'paused' } : s.planRun) : undefined,
     };
   }
 
@@ -601,6 +615,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         model: s.model, reasoningEffort: s.reasoningEffort, history: s.history, inProgressTurn: s.inProgressTurn,
         lastTodos: s.lastTodos, alwaysAllowTools: s.alwaysAllowTools.size ? [...s.alwaysAllowTools] : undefined,
         checkpoints: s.checkpoints.toJSON(),
+        planRun: s.planRun,
       });
     }
     void this.deps.workspaceState.update(SESSIONS_KEY, others.slice(0, MAX_SESSIONS));
@@ -690,43 +705,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'newProvidersAvailable', message });
   }
 
-  /** Operator tips/announcements worker. Failures are swallowed (logged) — tips are
-   *  non-critical and must never block the panel or throw unhandled rejections. */
-  private static readonly ANNOUNCEMENTS_URL = 'https://tiermux.mainulislam3057.workers.dev/announcements';
-
+  /** Operator tips/announcements. Served by the catalog worker's `/announcements` endpoint
+   *  (URL derived from `tiermux.catalog.url`), newest-first — see catalog/announcements.ts.
+   *  Failures are swallowed — tips are non-critical and must never block the panel. */
+  private lastAnnouncements: AnnouncementItem[] = [];
+  private lastAnnouncementsUpdated: string | undefined;
   async fetchAnnouncements(): Promise<void> {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8000);
-    try {
-      const res = await fetch(ChatViewProvider.ANNOUNCEMENTS_URL, {
-        headers: { Accept: 'application/json' },
-        signal: ctrl.signal,
-        redirect: 'follow',
-      });
-      if (!res.ok) return;
-      const body = await res.json().catch(() => undefined) as
-        | { announcements?: unknown; last_updated?: string } | undefined;
-      if (!body) return;
-      const raw = Array.isArray(body.announcements) ? body.announcements : [];
-      const lastUpdated = typeof body.last_updated === 'string' ? body.last_updated : undefined;
-      const items: AnnouncementItem[] = raw
-        .map((e) => {
-          if (!e || typeof e !== 'object') return undefined;
-          const o = e as { id?: unknown; title?: unknown; details?: unknown };
-          return {
-            id: typeof o.id === 'number' ? o.id : Number(o.id) || 0,
-            title: String(o.title ?? '').trim(),
-            details: String(o.details ?? '').trim(),
-          };
-        })
-        .filter((e): e is AnnouncementItem => !!e && (e.title.length > 0 || e.details.length > 0));
-      // Always push — even an empty list tells the webview to render the "no tips" state.
-      this.post({ type: 'announcements', items, lastUpdated });
-    } catch (err) {
-      console.warn('[tiermux] announcements fetch failed:', err);
-    } finally {
-      clearTimeout(timer);
-    }
+    const base = vscode.workspace.getConfiguration('tiermux').get<string>('catalog.url', '');
+    const res = await fetchWorkerAnnouncements(base);
+    if (res) this.postAnnouncements(res.items, res.lastUpdated);
+  }
+
+  /** Push an announcements snapshot (already newest-first) to the webview with the current
+   *  unseen count. Public so the extension's background catalog tick can refresh the feed and
+   *  the dot without waiting for the webview to become visible. */
+  postAnnouncements(items: AnnouncementItem[], lastUpdated?: string): void {
+    this.lastAnnouncements = items;
+    this.lastAnnouncementsUpdated = lastUpdated;
+    this.post({ type: 'announcements', items, lastUpdated, unseen: unseenAnnouncementCount(this.deps.globalState, items) });
   }
 
   private post(msg: OutMessage): void {
@@ -936,6 +932,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'toggleSettings' });
   }
 
+  /** Open the Tips & Announcements page (from the new-announcement toast's View button). */
+  async showAnnouncements(): Promise<void> {
+    await vscode.commands.executeCommand('tiermux.chat.focus');
+    this.post({ type: 'openAnnouncements' });
+  }
+
   /** Compact the conversation (from the native title bar). */
   async compact(): Promise<void> {
     await vscode.commands.executeCommand('tiermux.chat.focus');
@@ -1083,6 +1085,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'getAnnouncements':
         void this.fetchAnnouncements();
+        break;
+      case 'resumePlan': {
+        // Resume a plan run that was paused by a window reload (or an aborted run): the
+        // persisted planRun state carries the step statuses; executePlanRun continues from
+        // currentStep with the session's persisted history as context.
+        const s = this.current();
+        if (s.planRun && s.planRun.status === 'paused') {
+          const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          s.executingPlan = true;
+          this.post({ type: 'planExecuting', sessionId: s.id, requestId, executing: true });
+          await this.executePlanRun(s, requestId);
+        }
+        break;
+      }
+      case 'markAnnouncementsSeen':
+        await markAnnouncementsSeen(this.deps.globalState, this.lastAnnouncements);
+        this.postAnnouncements(this.lastAnnouncements, this.lastAnnouncementsUpdated);
         break;
       case 'retryEngine':
         this.deps.retryEngine?.();
@@ -1971,6 +1990,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.settlePendingAskUser(s);
     s.executingPlan = false;
+    // A fresh user send starts a new task — a paused/finished plan run from an earlier turn
+    // must not linger (Resume is only offered while no new send has happened).
+    if (s.planRun && s.planRun.status !== 'running') s.planRun = undefined;
     // Snapshot the todo-list reference at send start. onTodos() reassigns s.lastTodos to a NEW
     // array on every todowrite call, so `s.lastTodos !== todosAtSendStart` is a reliable "the
     // agent wrote a plan during THIS send" signal — the autonomous continuation loop below keys
@@ -2111,6 +2133,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const maxAutoContinueRounds = agentCfg.get<number>('maxAutoContinueRounds', 25);
       const maxBudgetContinuations = agentCfg.get<number>('maxBudgetContinuations', 1);
       const maxStuckContinuations = agentCfg.get<number>('maxStuckContinuations', 1);
+      const maxUnacceptedContinuations = agentCfg.get<number>('maxUnacceptedContinuations', 2);
       if (m.mode === 'agent' && autoContinueOn) {
         // Capture the original user request so each continuation round re-injects the goal.
         // After history compaction or a small-window trim the original task can be evicted from
@@ -2140,7 +2163,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             budgetContinuations,
             maxBudgetContinuations,
             unacceptedContinuations,
-            maxUnacceptedContinuations: maxStuckContinuations,
+            maxUnacceptedContinuations,
             allowModelExclusion: isAutoMode,
           });
           if (decision.action === 'stop') {
@@ -2484,10 +2507,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     //    executing ⚡ indicator for the about-to-launch run.
     this.post({ type: 'setMode', sessionId: s.id, mode: 'agent' });
 
-    // 3. Auto-launch an agent turn carrying out the plan. Reuses handleSend (the normal send
-    //    path), exactly like handleAnswerClarifying's agent branch. A fresh requestId so the run
-    //    is tracked independently and the ⚆ indicator is keyed correctly.
+    // 3. First-class plan execution: structure the approved plan into steps and drive them
+    //    through the plan runner (per-step rounds, verify acceptance, bounded same-model
+    //    retries, read-only plan repair, resumable state). Degrades to the legacy single-send
+    //    path when no ≥2-step structure can be extracted (weak free models).
     const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const structuredSteps = await structurePlanSteps(this.deps.router, m.steps)
+      ?? planStepsToTodos(m.steps).map((t) => t.content);
+    if (structuredSteps.length >= 2) {
+      const originalTask = (original ? contentToString(original) : 'the approved plan').replace(/\n\{\s*"type":\s*"(image_url|file)"/g, '').trim().slice(0, 200);
+      s.executingPlan = true;
+      s.planRun = {
+        id: `plan-${Date.now()}`,
+        originalTask,
+        steps: structuredSteps.slice(0, 20).map((text) => ({ text, status: 'pending', attempts: 0 })),
+        currentStep: 0,
+        status: 'running',
+        repairs: 0,
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      this.post({ type: 'planExecuting', sessionId: s.id, requestId, executing: true });
+      this.persist(s.id);
+      await this.executePlanRun(s, requestId);
+      return;
+    }
+
+    // Legacy fallback: unstructurable plan text runs as ONE agent turn, exactly like before.
     this.post({ type: 'planExecuting', sessionId: s.id, requestId, executing: true });
     await this.handleSend({
       type: 'sendMessage',
@@ -2497,6 +2543,78 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       model: s.model ?? 'auto',
       reasoningEffort: s.reasoningEffort ?? 'medium',
     });
+  }
+
+  /**
+   * Drive a session's planRun state through the first-class plan runner (core/planRunner.ts).
+   * Owns the UI lifecycle around the run the same way handleSend does for a single send:
+   * run slot, busy state, checkpoints, streaming callbacks, transcript/history persistence,
+   * and the finish/cleanup path. Resume-safe: called both from handleExecutePlan and from the
+   * webview's Resume button after a reload (state.currentStep picks up where it stopped).
+   */
+  private async executePlanRun(s: Session, requestId: string): Promise<void> {
+    if (!s.planRun) return;
+    s.cancel?.cancel();
+    s.cancel?.dispose();
+    s.cancel = new vscode.CancellationTokenSource();
+    s.activeRequestId = requestId;
+    this.settlePendingAskUser(s);
+
+    const release = await this.acquireRunSlot(s.id);
+    if (s.activeRequestId !== requestId) { release(); return; }
+    this.post({ type: 'busy', sessionId: s.id, busy: true });
+
+    try {
+      await s.checkpoints.begin(requestId, 'plan execution');
+      this.beginInProgressTurn(s, requestId);
+      const cbk = this.agentCallbacks(s, requestId, 'agent');
+      const planState = s.planRun;
+      planState.status = 'running';
+      const result = await runPlan(
+        this.deps.router,
+        this.makeAgentOpts(s, requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model),
+        planState,
+        {
+          repairSteps: (failure, remaining) => repairPlanSteps(this.deps.router, failure, remaining),
+          isActive: () => this.isActiveRun(s, requestId),
+          onState: (st) => {
+            s.planRun = st;
+            this.persist(s.id);
+            this.post({ type: 'planProgress', sessionId: s.id, requestId, state: st });
+          },
+          onTodos: (todos) => {
+            s.lastTodos = todos;
+            this.post({ type: 'todos', sessionId: s.id, requestId, todos, followingPlan: true });
+          },
+          onHistory: (msgs) => { s.history.push(...msgs); this.persist(s.id); },
+        },
+      );
+
+      if (!this.isActiveRun(s, requestId)) return;
+      if (result.state.status !== 'paused') {
+        s.executingPlan = false;
+        // Final summary as a real transcript entry so the finished plan reads as one turn.
+        s.transcript.push({ role: 'assistant', text: result.summary, requestId, ts: Date.now(), historyLen: s.history.length - 1 });
+        s.history.push({ role: 'assistant', content: result.summary });
+        this.post({ type: 'assistantMessage', sessionId: s.id, requestId, text: result.summary, platform: turnPlatformLabel(s.model, result.lastResult, this.deps), model: turnModelLabel(s.model, result.lastResult?.model) });
+      }
+    } catch (e) {
+      if (!this.isActiveRun(s, requestId)) return;
+      this.post({ type: 'error', sessionId: s.id, requestId, message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      release();
+      if (this.isActiveRun(s, requestId)) {
+        s.activeRequestId = undefined;
+        this.clearInProgressTurn(s, requestId);
+        this.settlePendingApprovals(s, false);
+        this.settlePendingAskUser(s);
+        await this.finishCheckpoint(s, requestId);
+        this.persist(s.id);
+        this.post({ type: 'busy', sessionId: s.id, busy: false });
+        this.setStatus(s.id, 'finished');
+        await this.maybeAutoCompact(s);
+      }
+    }
   }
 
   /**

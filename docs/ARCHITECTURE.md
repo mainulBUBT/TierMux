@@ -142,6 +142,22 @@ AI SDK type — see the Layering boundary note above.
 - **`middleware/telemetry.ts`** — `createTelemetryMiddleware({profiler,
   traceId})`, profiler instrumentation via `wrapLanguageModel()` instead of
   manual timer calls.
+- **`watchdog.ts`** — `TurnWatchdog`, the engine-side activity tracker that
+  finally fires the `onWatchdogWarning`/`onWatchdogActionable`/
+  `onWatchdogDismissed` callbacks (the UI side existed since the SDK port;
+  nothing ever triggered it). Stamps every protocol event as activity; a turn
+  quiet past ~45s warns, past ~90s is actionable, any event dismisses.
+- **`planRunner.ts`** — `runPlan(router, opts, state, cfg)`, the first-class
+  plan executor: approved structured steps run one at a time through
+  `runStepTask`, so every step gets its own rounds/continuations and
+  verify-acceptance. A verify-failed step gets ONE same-model retry (identical
+  routing constraints — verification failure never switches models), then a
+  read-only planner repair may rewrite the remaining steps. State persists on
+  the session (`StoredSession.planRun`) so a window reload can resume from
+  `currentStep`. `chatViewProvider.executePlanRun` owns the UI lifecycle.
+- **`stepEngine.ts`** — `decideStepRound` (the shared continue/stop brain
+  behind auto-continue, headless runs, and the plan runner) and `runStepTask`
+  (the headless multi-round driver).
 - **`tools/**`** — one `create*Tool()` factory per tool
   (`filesystem/{read,write,edit,delete}`, `shell/bash`, `workspace/
   {list,glob,grep}`, `ui/{todo,question}`, `mcp/mcp`), assembled by
@@ -154,6 +170,13 @@ AI SDK type — see the Layering boundary note above.
   context` — that mechanism was verified empirically **not** to propagate
   as documented in `ai@7.0.34` (see the comment in `tools/index.ts` and
   `docs/sdk-upgrade.md`, which also has the full upgrade checklist).
+- **`tools/delegate.ts`** — the general-purpose sub-agent (Claude Code's
+  Task-tool pattern): `research` mode runs a read-only investigation on the
+  utility model (bigger than `explore`); `code` mode runs a single fleet-style
+  worker in a disposable git worktree, commits, and merges into the user's
+  branch. Research passes the approval policy like a read tool; code is gated
+  exactly like the mutating tools. Only the sub-agent's report returns, so
+  the main context stays small.
 
 `agent.ts` is the stable contract above `core/`: `AgentOpts`/`AgentResult`/
 `ToolEvent`, and `runAgentStream`/`runPlanStream`/`runAskStream` (each just
