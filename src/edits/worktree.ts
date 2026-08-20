@@ -3,6 +3,7 @@
 import { execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
+import * as fs from 'fs/promises';
 
 const execFile = promisify(execFileCb);
 const TIMEOUT_MS = 15_000;
@@ -41,9 +42,38 @@ export interface WorktreeInfo {
 }
 
 /** Directory (under the repo root) where TierMux parks its linked worktrees. Keeping them in one
- *  place makes cleanup/glob-skipping uniform. `.git` ignores it via the worktree list anyway. */
+ *  place makes cleanup/glob-skipping uniform. */
+export const WORKTREE_DIR_NAME = '.tiermux-worktrees';
+
 export function worktreeDir(repoRoot: string, branch: string): string {
-  return path.join(repoRoot, '.tiermux-worktrees', branch.replace(/[/\\]/g, '_'));
+  return path.join(repoRoot, WORKTREE_DIR_NAME, branch.replace(/[/\\]/g, '_'));
+}
+
+/**
+ * Keep `.tiermux-worktrees/` out of the user's `git status`.
+ *
+ * An older comment here claimed git ignores this via the worktree list. It does not: verified
+ * 2026-08-20, `git status --porcelain` in the main tree reports `?? .tiermux-worktrees/` for as
+ * long as a pipeline run is live. That is a real hazard — a `git add -A` (by the user, or by the
+ * agent itself in another turn) would sweep entire checked-out worktrees into a commit.
+ *
+ * Written to `.git/info/exclude` rather than `.gitignore`: it is repo-local, never committed, and
+ * does not modify a file the user tracks. Best-effort — failing to write it must never break a
+ * pipeline run. Uses `--git-common-dir` so it resolves to the MAIN repo's git dir even when
+ * called from inside a linked worktree.
+ */
+export async function ensureWorktreeDirIgnored(repoRoot: string): Promise<void> {
+  try {
+    const commonDir = (await gitExec(repoRoot, ['rev-parse', '--git-common-dir'])).trim();
+    const gitDir = path.isAbsolute(commonDir) ? commonDir : path.join(repoRoot, commonDir);
+    const excludePath = path.join(gitDir, 'info', 'exclude');
+    const entry = `${WORKTREE_DIR_NAME}/`;
+    let current = '';
+    try { current = await fs.readFile(excludePath, 'utf8'); } catch { /* no exclude file yet */ }
+    if (current.split('\n').some((l) => l.trim() === entry)) return;
+    await fs.mkdir(path.dirname(excludePath), { recursive: true });
+    await fs.appendFile(excludePath, `${current && !current.endsWith('\n') ? '\n' : ''}${entry}\n`, 'utf8');
+  } catch { /* best-effort — never block the pipeline on this */ }
 }
 
 /** Create a linked worktree on a NEW branch off the repo's current HEAD. Branch-per-worker (not
@@ -88,6 +118,34 @@ export async function removeWorktree(repoRoot: string, wtPath: string, opts: { f
 
 export async function deleteBranch(repoRoot: string, branch: string, opts: { force?: boolean } = {}): Promise<void> {
   await gitExec(repoRoot, ['branch', ...(opts.force ? ['-D'] : ['-d']), branch]);
+}
+
+/**
+ * Stage and commit everything a worker changed in its own worktree. Returns false when there was
+ * nothing to commit.
+ *
+ * This is the step whose absence made the whole pipeline a silent no-op: workers edit files but
+ * are forbidden from running git themselves (WORKER_SYSTEM / createWorkerToolApproval), so with
+ * no commit here their branch stayed identical to HEAD. `diffBranch` then reported zero files,
+ * `mergeBranchIntoWorktree` said "Already up to date", and the `finally` cleanup ran
+ * `git worktree remove -f`, DELETING the uncommitted work — while the synthesis still reported
+ * "MERGED". Verified empirically 2026-08-20 on a scratch repo before this was added.
+ *
+ * `-A` (not `-u`) so newly created files are included; a worker that adds a file is the common
+ * case. `--no-verify` because a repo's pre-commit hooks are the user's, and a worker branch is an
+ * intermediate artifact the user has not yet accepted — running arbitrary hooks per worker is
+ * both slow and a side effect they never asked for.
+ */
+export async function commitAll(wtPath: string, message: string): Promise<boolean> {
+  await gitExec(wtPath, ['add', '-A']);
+  // `diff --cached --quiet` exits 1 when there IS something staged — that's the signal to commit.
+  try {
+    await gitExec(wtPath, ['diff', '--cached', '--quiet']);
+    return false; // exit 0 → nothing staged
+  } catch {
+    await gitExec(wtPath, ['commit', '--no-verify', '-m', message]);
+    return true;
+  }
 }
 
 export interface MergeOutcome {

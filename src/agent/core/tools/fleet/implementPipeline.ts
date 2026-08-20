@@ -19,7 +19,8 @@ import { createGrepTool } from '../workspace/grep';
 import { createDiagnosticsTool } from '../workspace/diagnostics';
 import {
   createWorktree, createWorktreeExistingBranch, createBranch, removeWorktree,
-  mergeBranchIntoWorktree, diffBranch, type WorktreeInfo, type MergeOutcome,
+  mergeBranchIntoWorktree, diffBranch, commitAll, ensureWorktreeDirIgnored, gitExec,
+  type WorktreeInfo, type MergeOutcome,
 } from '../../../../edits/worktree';
 import { isGitRepo } from '../../../../edits/gitSnapshot';
 
@@ -132,6 +133,13 @@ export function createImplementPipelineTool(router: Router, abortSignal?: AbortS
       const createdWorktrees: WorktreeInfo[] = [];
       let stagingWt: WorktreeInfo | undefined;
 
+      // Pin the base commit ONCE. Every later diff is relative to this, so the report stays
+      // correct even if the user's HEAD moves during a long run — and, critically, it is a real
+      // SHA rather than 'HEAD', which resolves differently inside each worker's worktree.
+      const baseSha = (await gitExec(repoRoot, ['rev-parse', 'HEAD'])).trim();
+      // Keep the worktree parking directory out of the user's `git status` — see the function.
+      await ensureWorktreeDirIgnored(repoRoot);
+
       try {
         // 2. Staging branch + its own worktree (so merges land there, never in the user's tree).
         await createBranch(repoRoot, stagingBranch, 'HEAD');
@@ -150,7 +158,7 @@ export function createImplementPipelineTool(router: Router, abortSignal?: AbortS
         const workerResults = await Promise.all(items.map((item, i) =>
           runWithWorkspaceRoot(createdWorktrees[i + 1].path, () => runWorker({
             item, planContext: items, branch: workerBranches[i], worktreePath: createdWorktrees[i + 1].path,
-            router, parentAbort: abortSignal, verifyCommand,
+            baseSha, router, parentAbort: abortSignal, verifyCommand,
           })),
         ));
 
@@ -164,7 +172,7 @@ export function createImplementPipelineTool(router: Router, abortSignal?: AbortS
             merges.push({ branch, outcome: { ok: false, message: `Skipped (worker ${r.verifyOk === false ? 'failed verify' : 'errored'}). Branch left for inspection.` }, filesChanged: r.filesChanged });
             continue;
           }
-          const filesChanged = await diffBranch(repoRoot, branch, 'HEAD').catch(() => r.filesChanged);
+          const filesChanged = await diffBranch(repoRoot, branch, baseSha).catch(() => r.filesChanged);
           const outcome = await mergeBranchIntoWorktree(stagingWt!.path, branch);
           merges.push({ branch, outcome, filesChanged });
         }
@@ -189,11 +197,12 @@ export function createImplementPipelineTool(router: Router, abortSignal?: AbortS
     planContext: PlanItem[];
     branch: string;
     worktreePath: string;
+    baseSha: string;
     router: Router;
     parentAbort?: AbortSignal;
     verifyCommand?: string;
   }): Promise<WorkerResult> {
-    const { item, planContext, branch, worktreePath, router, parentAbort, verifyCommand } = args;
+    const { item, planContext, branch, worktreePath, baseSha, router, parentAbort, verifyCommand } = args;
 
     // Full route (no pinned model) → router picks a capable coding model with independent failover.
     const provider = createRouterProvider(router, { taskKind: 'coding', pinnedModel: undefined });
@@ -244,7 +253,29 @@ export function createImplementPipelineTool(router: Router, abortSignal?: AbortS
         }
       }
 
-      const filesChanged = await diffBranch(worktreePath, branch, 'HEAD').catch(() => []);
+      // Commit the worker's edits to its own branch. Without this the branch stays identical to
+      // HEAD, so nothing merges and the `finally` cleanup deletes the work — see commitAll.
+      // Done AFTER verify so the verify command sees the working tree exactly as the worker left
+      // it, and BEFORE diffBranch, which can only see committed work.
+      let committed = false;
+      try {
+        committed = await commitAll(worktreePath, `TierMux worker: ${item.goal}`);
+      } catch (e) {
+        // A commit failure means the work cannot survive cleanup, so this worker has effectively
+        // produced nothing — report it as failed rather than letting synthesize() claim success.
+        return {
+          ok: false,
+          summary: `Worker finished but its changes could not be committed (${e instanceof Error ? e.message : String(e)}), so they were not kept.`,
+          filesChanged: [], verifyOk, verifyOutput,
+        };
+      }
+      if (!committed) {
+        return { ok: true, summary: `${summary}\n\n(No file changes were made.)`, filesChanged: [], verifyOk, verifyOutput };
+      }
+      // Diff against the captured base SHA, never the literal 'HEAD': inside a worker's own
+      // worktree HEAD *is* that worker's branch, so `HEAD...branch` compares the branch to itself
+      // and is always empty — the second reason the pipeline reported "0 files changed".
+      const filesChanged = await diffBranch(worktreePath, branch, baseSha).catch(() => []);
       return { ok: true, summary, filesChanged, verifyOk, verifyOutput };
     } catch (err) {
       // Distinguish a clean abort (Stop button / timeout) from a real failure.
