@@ -161,6 +161,34 @@ function withResumeContext(content: ChatContent, remainingTodos: TodoItem[]): Ch
   return withContextBlock(content, resumeContextBlock(remainingTodos));
 }
 
+/**
+ * Tag a user turn with the mode that governs it, but only when the mode CHANGED.
+ *
+ * Mode reaches the model only through the system prompt and the tool set, and both are swapped
+ * silently. The transcript, meanwhile, is one shared history: switch Agent → Ask and the model
+ * still sees its own `editFile`/`writeFile` calls sitting a few messages back, with nothing
+ * saying those powers are gone. It then tries an edit, gets denied, and burns a turn — or worse,
+ * narrates as though it had made the change. Cline tags every user message for exactly this
+ * reason ("the newest message's mode is what governs right now, regardless of what earlier
+ * messages allowed").
+ *
+ * Only on change, not every message: an unchanged mode is already implied by the system prompt,
+ * and repeating a tag on every turn spends context on free-tier models to say nothing new.
+ */
+function withModeTag(content: ChatContent, mode: AgentMode, previousMode: AgentMode | undefined): ChatContent {
+  if (previousMode === undefined || previousMode === mode) return content;
+  const can = mode === 'agent'
+    ? 'You can edit files and run commands again.'
+    : mode === 'plan'
+      ? 'You can read and run read-only commands, but NOT edit files. Produce a plan, do not implement it.'
+      : 'You can read and run read-only commands, but NOT edit files. Answer the question.';
+  return withContextBlock(
+    content,
+    `[Mode changed: ${previousMode} → ${mode}. This mode governs from now on, whatever earlier `
+    + `messages in this conversation did. ${can}]`,
+  );
+}
+
 /** A short follow-up that leans on a pronoun ("it", "that") or opens with a correction ("no",
  *  "don't", "wait") without naming what it's about — e.g. "no fix it", "make it faster", "undo
  *  that". Unlike {@link isBareContinuation} these aren't a fixed phrase, so weak models (and
@@ -242,6 +270,9 @@ interface Session {
    *  calls to a listed tool auto-approve without re-asking. Session-scoped and in-memory (resets on
    *  reload). A dangerous command is NEVER added here, so it keeps prompting even after an "Always". */
   alwaysAllowTools: Set<string>;
+  /** Mode the previous user turn in this session ran under, so a switch can be announced to the
+   *  model in the transcript itself — see withModeTag. Undefined until the first turn. */
+  lastMode?: AgentMode;
   approvalSeq: number;
   /** Ephemeral interactive cards (approvals / plan / clarifying) awaiting a click, cached so
    *  they re-render when the user switches back to a session whose run is blocked on them. */
@@ -1914,11 +1945,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       && !(m.attachments && m.attachments.length) && s.history.length > 0 && isAmbiguousFollowup(prompt))
       ? lastActionSummary(s.history)
       : null;
-    const historyContent = pendingTodos.length
+    const baseContent = pendingTodos.length
       ? withResumeContext(userContent, pendingTodos)
       : lastAction
         ? withContextBlock(userContent, ambiguousFollowupBlock(lastAction))
         : userContent;
+    // Announce a mode switch in the transcript — the system prompt and tool set change silently,
+    // so without this the model still sees its own edits from a previous Agent turn and assumes
+    // it can keep editing. See withModeTag.
+    const historyContent = withModeTag(baseContent, m.mode as AgentMode, s.lastMode);
+    s.lastMode = m.mode as AgentMode;
     s.history.push({ role: 'user', content: historyContent });
     s.transcript.push({ role: 'user', text: prompt, requestId: m.requestId, ts: Date.now(), historyLen: s.history.length - 1, attachments: m.attachments });
     s.updatedAt = Date.now();

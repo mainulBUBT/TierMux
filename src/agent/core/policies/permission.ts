@@ -20,9 +20,9 @@ export const MUTATING_TOOLS = new Set(['writeFile', 'createFile', 'editFile', 'd
 /** The subset of MUTATING_TOOLS that ask/plan mode still exclude outright — file writes and the
  *  pipeline (which writes files under the hood). `runCommand` is deliberately NOT in this set:
  *  ask/plan are for gathering information and discussing/brainstorming (status checks, running
- *  tests, `git diff`, a linter, a one-off script to inspect data), not for editing the workspace,
- *  so bash gets the same approval-gated treatment there as in agent mode instead of being denied
- *  outright. */
+ *  tests, `git diff`, a linter, a one-off script to inspect data), not for editing the workspace.
+ *  It is not un-gated, though — outside agent mode the approval policy below denies any command
+ *  that isn't read-only, so allowing the tool here does not reopen the shell write path. */
 export const FILE_MUTATING_TOOLS = new Set(['writeFile', 'createFile', 'editFile', 'deleteFile', 'implementPipeline']);
 
 /** Tools with a side effect that's low-risk enough to auto-approve (not in MUTATING_TOOLS, so no
@@ -284,6 +284,26 @@ export function createToolApproval(opts: AgentOpts) {
         return resp === 'reject' ? { type: 'denied', reason } : 'approved';
       }
       if (command && isReadOnlyCommand(command) && !isDangerous(command)) return 'approved';
+      // Ask/plan mode: a non-read-only command is DENIED, not prompted.
+      //
+      // Prompting is not a control here. `autoApprove` defaults to true, and it approves anything
+      // the narrow DANGEROUS denylist doesn't match — so before this gate, ask mode silently ran
+      // `rm src/foo.ts` (no -r/-f, so not "dangerous"), `sed -i`, `echo > file`, `mv`,
+      // `git checkout .`, `npm install`, `curl | sh`. Verified by running the classifiers
+      // 2026-08-20. That made the structural FILE_MUTATING_TOOLS exclusion above pointless: the
+      // model could write any file with `runCommand("cat > f <<EOF")`, and plan mode's documented
+      // "zero side effects" was false.
+      //
+      // Denying (rather than asking) is deliberate and matches Cline's plan-mode command guard,
+      // which rejects mutating shell BEFORE approval or execution. The deny text names the
+      // remedy so the model redirects instead of retrying the same command in a loop.
+      if (command && opts.mode !== 'agent') {
+        return {
+          type: 'denied',
+          reason: `${opts.mode} mode can only run read-only commands (status checks, tests, \`git diff\`, linters). `
+            + `"${command.slice(0, 80)}" would change something. Say what needs to run and suggest Agent mode instead.`,
+        };
+      }
     }
 
     if (!opts.onPermissionAsk) return 'approved'; // no gate wired (e.g. a test harness) — allow

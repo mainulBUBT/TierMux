@@ -160,7 +160,10 @@ const AGENT_MODE_TAIL =
 
 const PLAN_MODE_TAIL =
   '\n\n## Plan mode\n'
-  + 'READ-ONLY: you cannot edit files or run commands.\n\n'
+  + 'READ-ONLY: you cannot edit, create, or delete files. You CAN run read-only commands to '
+  + 'ground the plan (`git status`, `git diff`, `git log`, tests, a linter, `ls`, `cat`) — but '
+  + 'anything that changes the workspace is refused, so do not attempt it. If a step needs a '
+  + 'mutating command, write it into the plan for Agent mode to run.\n\n'
   + '**Question, explanation, or discussion** ("why does X work?", "explain …"): answer directly '
   + 'in flowing prose paragraphs, NOT bullet/numbered lists — that displays as plain text instead '
   + 'of being misread as an executable plan.\n\n'
@@ -186,7 +189,10 @@ const PLAN_MODE_TAIL =
 const ASK_MODE_TAIL =
   '\n\n## Ask mode\n'
   + 'Read-only Q&A: search/read the codebase (readFile, listDir, glob, grep, explore) to ground '
-  + 'your answer, but no edit/create/delete/run. Use a tool only when the question needs it. For '
+  + 'your answer. No edit/create/delete. You CAN run read-only commands (`git status`, `git diff`, '
+  + '`git log`, tests, a linter, `ls`, `cat`) when the answer depends on real output — anything '
+  + 'that changes the workspace is refused, so suggest Agent mode for it instead of trying. '
+  + 'Use a tool only when the question needs it. For '
   + 'something current or outside this codebase, use `webSearch` — not a local search for info '
   + 'that was never going to be there. `fetchUrl` to read a promising result\'s full content when '
   + "the snippet isn't enough. Tool call fails or you lack one: don't dwell on it, answer from "

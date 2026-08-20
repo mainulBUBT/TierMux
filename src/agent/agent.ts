@@ -151,12 +151,15 @@ export async function runAgentStream(router: Router, opts: AgentOpts, _tools?: u
   return (await loadCore())(router, { ...opts, mode: 'agent' });
 }
 
-/** Plan mode: read-only, no write/edit/delete/runCommand/question tools. */
+/** Plan mode: no write/edit/delete tools, and `runCommand` is guarded to read-only commands
+ *  (see the mode gate in policies/permission.ts). MCP tools are excluded too — an arbitrary
+ *  server's side effects can't be introspected. */
 export async function runPlanStream(router: Router, opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
   return (await loadCore())(router, { ...opts, mode: 'plan' });
 }
 
-/** Ask mode: read-only Q&A, no edits, no bash. */
+/** Ask mode: read-only Q&A — no edits; bash is available but guarded to read-only commands
+ *  (see the mode gate in policies/permission.ts). */
 export async function runAskStream(router: Router, opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
   return (await loadCore())(router, { ...opts, mode: 'ask' });
 }

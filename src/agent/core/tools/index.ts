@@ -59,10 +59,10 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
   const graphTools: ToolSet = graphToolsEnabled()
     ? { getSymbolGraph: createSymbolGraphTool(), getDependencyTree: createDependencyTreeTool() }
     : {};
-  // Ask mode: read-only codebase search plus shell — no file write/edit/delete. `runCommand`
-  // is allowed here (approval-gated same as agent mode, see permission.ts) so the model can run
-  // status/inspection commands (tests, git diff, a linter) while discussing, without being able
-  // to touch the workspace. Router.route() streams fine with tools attached (routerProvider.ts
+  // Ask mode: read-only codebase search plus shell — no file write/edit/delete. `runCommand` is
+  // allowed here so the model can run status/inspection commands (tests, git diff, a linter) while
+  // discussing; permission.ts denies any command that isn't read-only outside agent mode, so this
+  // cannot be used to touch the workspace. Router.route() streams fine with tools attached (routerProvider.ts
   // accumulates tool-call deltas internally), so this no longer needs the "zero tools" workaround
   // it once did.
   if (opts.mode === 'ask') {
@@ -112,9 +112,16 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
   // Also excludes low-risk-but-side-effecting tools (e.g. `remember`) that aren't gated by
   // approval but still shouldn't run during a mode that's meant to produce zero file-write side
   // effects.
+  // MCP tool names are collected before filtering: an MCP server exposes arbitrary third-party
+  // tools, including writing ones, and nothing in FILE_MUTATING_TOOLS knows their names. Leaving
+  // them in plan mode meant a mode documented as producing zero side effects could call any write
+  // tool a connected server happened to offer. Excluding the whole namespace is the only safe
+  // rule available — we cannot introspect an arbitrary server's side effects.
+  const mcpToolNames = new Set(Object.keys(createMcpTools(mcp)));
   const filtered: ToolSet = {};
   for (const [name, t] of Object.entries(all)) {
     if (FILE_MUTATING_TOOLS.has(name) || PLAN_MODE_EXTRA_EXCLUDED_TOOLS.has(name)) continue;
+    if (mcpToolNames.has(name)) continue;
     filtered[name] = t;
   }
   // Plan-mode-only pre-flight clarify tool (replaces the ???QUESTIONS??? text sentinel as the
