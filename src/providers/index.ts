@@ -13,7 +13,11 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'nvidia', name: 'NVIDIA NIM', baseUrl: 'https://integrate.api.nvidia.com/v1', forceSingleToolCall: true, keyUrl: 'https://build.nvidia.com' },
   { platform: 'mistral', name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', keyUrl: 'https://console.mistral.ai/api-keys' },
   { platform: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', reasoningStyle: 'openrouter', extraHeaders: { 'HTTP-Referer': 'https://github.com/mainulBUBT/TierMux', 'X-Title': 'tiermux' }, keyUrl: 'https://openrouter.ai/keys' },
-  { platform: 'github', name: 'GitHub Models', baseUrl: 'https://models.github.ai/inference', skipPreflight: true, keyUrl: 'https://github.com/settings/tokens' },
+  // GitHub Models was fully retired on 2026-07-30 — the inference API, catalog, playground and
+  // BYOK are all gone. Verified 2026-08-20: models.github.ai returns HTTP 410
+  // ("github_models_retirement_brownout") and the legacy models.inference.ai.azure.com returns
+  // 404. Kept as a commented-out record so nobody re-adds it from an old README:
+  // { platform: 'github', name: 'GitHub Models', baseUrl: 'https://models.github.ai/inference', ... }
   { platform: 'zhipu', name: 'Zhipu AI', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', keyUrl: 'https://open.bigmodel.cn' },
   { platform: 'huggingface', name: 'HuggingFace Router', baseUrl: 'https://router.huggingface.co/v1', keyUrl: 'https://huggingface.co/settings/tokens' },
   { platform: 'ollama', name: 'Ollama Cloud', baseUrl: 'https://ollama.com/v1', timeoutMs: 120000, skipPreflight: true, keyUrl: 'https://ollama.com/settings/keys' },

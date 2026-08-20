@@ -3,12 +3,36 @@
 const MIN_MS = 60_000;
 const DAY_MS = 86_400_000;
 
+/**
+ * Conservative stand-ins for a limit the catalog declares as exactly `0`.
+ *
+ * `0` is never a real rate limit — it means the source spreadsheet cell was blank or garbled.
+ * The old falsy check (`if (!rpmLimit && !rpdLimit) return true`) read it as "no limit at all",
+ * so the models that looked MOST restricted were the only ones with no throttling whatsoever,
+ * and they hammered their provider straight into 429s. Guessing low is the safe direction: an
+ * over-tight guess costs some throughput, an over-loose one costs the whole provider.
+ *
+ * `null`/`undefined` still mean genuinely unlimited — that is the custom-endpoint case (local
+ * llama.cpp / LM Studio), where there really is no quota. Every catalogued model carries a
+ * positive number, so the two cases never collide.
+ */
+const UNKNOWN_RPM = 5;
+const UNKNOWN_RPD = 200;
+
+/** Resolve a declared limit: `null` = unlimited, `0` = unknown (use a conservative floor). */
+function declared(limit: number | null, fallback: number): number | null {
+  if (limit === null || limit === undefined) return null;
+  return limit > 0 ? limit : fallback;
+}
+
 export class RateTracker {
 
   private ts = new Map<string, number[]>();
 
   /** True if sending now would stay within both the per-minute and per-day limits. */
-  canSend(platform: string, modelId: string, rpmLimit: number | null, rpdLimit: number | null): boolean {
+  canSend(platform: string, modelId: string, rpmRaw: number | null, rpdRaw: number | null): boolean {
+    const rpmLimit = declared(rpmRaw, UNKNOWN_RPM);
+    const rpdLimit = declared(rpdRaw, UNKNOWN_RPD);
     if (!rpmLimit && !rpdLimit) return true;
     const now = Date.now();
     const key = `${platform}::${modelId}`;
@@ -34,7 +58,9 @@ export class RateTracker {
    * either one is exhausted. Models with no declared limit report 1 (neutral, not "infinite
    * headroom") so they neither gain nor lose against limited peers.
    */
-  headroom(platform: string, modelId: string, rpmLimit: number | null, rpdLimit: number | null): number {
+  headroom(platform: string, modelId: string, rpmRaw: number | null, rpdRaw: number | null): number {
+    const rpmLimit = declared(rpmRaw, UNKNOWN_RPM);
+    const rpdLimit = declared(rpdRaw, UNKNOWN_RPD);
     if (!rpmLimit && !rpdLimit) return 1;
     const now = Date.now();
     const stamps = this.prune(`${platform}::${modelId}`, now);
@@ -56,7 +82,8 @@ export class RateTracker {
   }
 
   /** How many ms until this model is under its RPM limit again (0 = ready now). */
-  rpmCooldownMs(platform: string, modelId: string, rpmLimit: number | null): number {
+  rpmCooldownMs(platform: string, modelId: string, rpmRaw: number | null): number {
+    const rpmLimit = declared(rpmRaw, UNKNOWN_RPM);
     if (!rpmLimit) return 0;
     const now = Date.now();
     const key = `${platform}::${modelId}`;

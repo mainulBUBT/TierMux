@@ -140,6 +140,20 @@ if (personalHits.length) {
 }
 } // end if (!NO_ADVISORY)
 
+// Catalog sanity — structural only (--offline), so a publish never depends on provider uptime or
+// on being online at all. The networked checks live in `npm run validate:catalog`, which
+// `sync:catalog` runs automatically. This exists because the shipped catalog once carried 8 models
+// that no longer existed at any provider, and nothing in the repo would ever have noticed.
+try {
+  execSync("node scripts/validate-catalog.mjs --offline", { stdio: "pipe" });
+  console.log(`${GREEN}✓${RESET} Model catalog structurally valid`);
+} catch (e) {
+  blocking = true;
+  console.error(`\n${RED}✗ Model catalog has structural errors${RESET}`);
+  console.error(String(e.stdout ?? "").trim() || String(e.message));
+  console.error(`${DIM}  Run \`npm run validate:catalog\` for the full report (including live provider checks).${RESET}`);
+}
+
 if (blocking) {
   console.error(
     `\n${RED}Push blocked.${RESET} Fix the issue(s) above, or bypass for this push with \`git push --no-verify\` only if you are certain.`,
