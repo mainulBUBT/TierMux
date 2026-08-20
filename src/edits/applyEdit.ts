@@ -22,6 +22,37 @@ class ProposedContentProvider implements vscode.TextDocumentContentProvider {
   }
 }
 
+/** Leading whitespace of a line (''  when there is none). */
+function leadingWs(line: string): string {
+  return /^[ \t]*/.exec(line)?.[0] ?? '';
+}
+
+/**
+ * Re-indent `replace` by however much the real matched text was indented relative to what the
+ * model wrote as `search`.
+ *
+ * Only meaningful alongside the whitespace-tolerant matcher: if the model's search text was
+ * flush-left but the real code sits inside a class body, inserting `replace` verbatim would
+ * un-indent the block it just rewrote. Aider does the same correction for the same reason.
+ *
+ * Bails out unchanged whenever the two indents are not a clean prefix of one another (mixed tabs
+ * and spaces) — guessing there is how a matcher turns a valid edit into broken whitespace.
+ */
+function reindentTo(matched: string, search: string, replace: string): string {
+  const matchedIndent = leadingWs(matched.split('\n')[0]);
+  const searchIndent = leadingWs(search.replace(/^(?:[ \t]*\r?\n)*/, '').split('\n')[0]);
+  if (matchedIndent === searchIndent) return replace;
+  if (matchedIndent.startsWith(searchIndent)) {
+    const extra = matchedIndent.slice(searchIndent.length);
+    return replace.split('\n').map((l) => (l.trim() === '' ? l : extra + l)).join('\n');
+  }
+  if (searchIndent.startsWith(matchedIndent)) {
+    const drop = searchIndent.slice(matchedIndent.length);
+    return replace.split('\n').map((l) => (l.startsWith(drop) ? l.slice(drop.length) : l)).join('\n');
+  }
+  return replace; // mixed tabs/spaces — don't guess
+}
+
 export interface EditResult {
   applied: boolean;
   error?: string;
@@ -101,14 +132,83 @@ export class EditGate {
   /** Locates `search` in `text`, requiring exactly one occurrence. A non-unique hunk would
    *  otherwise silently patch whichever occurrence `indexOf` happens to find first — easy to hit
    *  in files with repeated boilerplate (e.g. duplicated script blocks), and it corrupts the file
-   *  without any error. */
-  private locateUnique(text: string, search: string): { idx: number } | { error: string } {
+   *  without any error.
+   *
+   *  Returns the matched LENGTH as well as the offset, because the whitespace-tolerant fallback
+   *  below can match a span whose length differs from `search.length`. */
+  private locateUnique(text: string, search: string): { idx: number; len: number } | { error: string } {
     const idx = text.indexOf(search);
-    if (idx === -1) return { error: 'Search text not found in file.' };
-    if (text.indexOf(search, idx + 1) !== -1) {
-      return { error: 'Search text matches multiple locations in file — include more surrounding context to make it unique.' };
+    if (idx !== -1) {
+      if (text.indexOf(search, idx + 1) !== -1) {
+        return { error: 'Search text matches multiple locations in file — include more surrounding context to make it unique.' };
+      }
+      return { idx, len: search.length };
     }
-    return { idx };
+    return this.locateFlexible(text, search);
+  }
+
+  /**
+   * Whitespace-tolerant, line-based fallback for when exact `indexOf` fails.
+   *
+   * "Search text not found in file" is the single most common weak-model edit failure, and it is
+   * almost never a wrong location — it is one space of indentation, a trailing space, or CRLF vs
+   * LF. Aider's editblock matcher has the same tiers for the same reason, and it costs zero extra
+   * model requests, which matters far more here than tokens: a failed edit costs a whole retry
+   * turn against a free tier's request quota.
+   *
+   * Deliberately conservative — it relaxes ONLY leading/trailing whitespace per line:
+   *  - lines are compared trimmed, so indentation and trailing spaces are ignored (`\r` is
+   *    whitespace, so CRLF files match LF search text for free)
+   *  - blank lines at the pattern's edges are dropped
+   *  - the match must still be UNIQUE. Two candidate spans is an error, never a guess.
+   * It never reorders, skips, or fuzzy-matches line CONTENT — a single differing character on any
+   * line still fails, so this cannot silently patch the wrong code.
+   */
+  private locateFlexible(text: string, search: string): { idx: number; len: number } | { error: string } {
+    const notFound = { error: 'Search text not found in file.' };
+    const pattern = search.split('\n').map((l) => l.trim());
+    let a = 0;
+    let b = pattern.length;
+    while (a < b && pattern[a] === '') a++;
+    while (b > a && pattern[b - 1] === '') b--;
+    const pat = pattern.slice(a, b);
+    if (pat.length === 0) return notFound;
+
+    // Offsets are computed against the ORIGINAL text (never a normalised copy) so the returned
+    // index always addresses the real buffer — normalising first is how this kind of matcher
+    // ends up off by one byte per CRLF and corrupts the file.
+    const lines = text.split('\n');
+    const offsets: number[] = [];
+    let acc = 0;
+    for (const line of lines) { offsets.push(acc); acc += line.length + 1; }
+
+    const found: Array<{ idx: number; len: number }> = [];
+    for (let i = 0; i + pat.length <= lines.length; i++) {
+      let hit = true;
+      for (let j = 0; j < pat.length; j++) {
+        if (lines[i + j].trim() !== pat[j]) { hit = false; break; }
+      }
+      if (!hit) continue;
+      const last = i + pat.length - 1;
+      found.push({ idx: offsets[i], len: offsets[last] + lines[last].length - offsets[i] });
+      if (found.length > 1) {
+        return { error: 'Search text matches multiple locations in file — include more surrounding context to make it unique.' };
+      }
+    }
+    return found.length === 1 ? found[0] : notFound;
+  }
+
+  /**
+   * Apply one {search, replace} hunk to `text`, or explain why it could not be applied.
+   *
+   * Shared by every edit entry point so the matching tiers and the re-indent below can never
+   * drift between the single-hunk and multi-hunk paths.
+   */
+  applyHunk(text: string, search: string, replace: string): { text: string } | { error: string } {
+    const located = this.locateUnique(text, search);
+    if ('error' in located) return { error: located.error };
+    const matched = text.slice(located.idx, located.idx + located.len);
+    return { text: text.slice(0, located.idx) + reindentTo(matched, search, replace) + text.slice(located.idx + located.len) };
   }
 
   /** Shows the diff, purely informational — no confirmation asked. Used by the `*Approved`
@@ -209,10 +309,9 @@ export class EditGate {
     return this.withLock(uri, async () => {
       const current = await this.readIfExists(uri);
       if (current === undefined) return { applied: false, error: 'File not found.' };
-      const located = this.locateUnique(current, search);
-      if ('error' in located) return { applied: false, error: located.error };
-      const proposed = current.slice(0, located.idx) + replace + current.slice(located.idx + search.length);
-      return this.writeCore(uri, proposed, ctx);
+      const hunk = this.applyHunk(current, search, replace);
+      if ('error' in hunk) return { applied: false, error: hunk.error };
+      return this.writeCore(uri, hunk.text, ctx);
     });
   }
 
@@ -234,10 +333,9 @@ export class EditGate {
     return this.withLock(uri, async () => {
       const current = await this.readIfExists(uri);
       if (current === undefined) return { applied: false, error: 'File not found.' };
-      const located = this.locateUnique(current, search);
-      if ('error' in located) return { applied: false, error: located.error };
-      const proposed = current.slice(0, located.idx) + replace + current.slice(located.idx + search.length);
-      return this.applyDirect(uri, proposed, `Write ${vscode.workspace.asRelativePath(uri)}`, ctx);
+      const hunk = this.applyHunk(current, search, replace);
+      if ('error' in hunk) return { applied: false, error: hunk.error };
+      return this.applyDirect(uri, hunk.text, `Write ${vscode.workspace.asRelativePath(uri)}`, ctx);
     });
   }
 
@@ -254,9 +352,9 @@ export class EditGate {
       for (let i = 0; i < hunks.length; i++) {
         const { search, replace } = hunks[i];
         if (!search) return { applied: false, error: `Hunk ${i + 1}: missing "search" text.` };
-        const located = this.locateUnique(buffer, search);
-        if ('error' in located) return { applied: false, error: `Hunk ${i + 1}: ${located.error}` };
-        buffer = buffer.slice(0, located.idx) + replace + buffer.slice(located.idx + search.length);
+        const hunk = this.applyHunk(buffer, search, replace);
+        if ('error' in hunk) return { applied: false, error: `Hunk ${i + 1}: ${hunk.error}` };
+        buffer = hunk.text;
       }
       return this.applyDirect(uri, buffer, `Write ${vscode.workspace.asRelativePath(uri)}`, ctx);
     });
