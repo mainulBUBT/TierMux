@@ -15,7 +15,7 @@ import type { ChatMessage, ChatContentBlock } from '../../shared/types';
 import type { AgentOpts, AgentResult } from '../agent';
 import { classifyTaskCore, attachmentKindsFromContent, type TaskKind, type ClassifySignals } from '../routing';
 import { assessAnswerQuality, TASK_WORD_FLOOR } from '../answerQuality';
-import { judgeFulfillment, JUDGEABLE_TASK_KINDS } from '../fulfillment';
+import { judgeFulfillment, compareAnswers, JUDGEABLE_TASK_KINDS } from '../fulfillment';
 import { contentToString } from '../content';
 import { buildSystemPrompt } from '../promptBuilder';
 import { recordFindings } from '../sessionFindings';
@@ -26,7 +26,8 @@ import { createToolSet } from './tools';
 import { getMcpManager } from './tools/mcp/manager';
 import { NEW_DIAGNOSTICS_MARKER, waitForWorkspaceDiagnosticsSettled, workspaceErrorSignatures, newErrorsSince } from './tools/workspace/formatDiagnostics';
 import { resolveVerifyCommand, runVerifyCommand } from './tools/workspace/verifyCommand';
-import { AnchorStore, stripAnchorBlock } from './anchors';
+import { resolveWorkspacePath } from './tools/resolvePath';
+import { AnchorStore, stripAnchorBlock, renderTouchedFiles } from './anchors';
 import { planStepsToTodos } from '../../session/titles';
 import { stepDifficultyOf, type StepDifficulty } from '../stepDifficulty';
 import { diagLog } from '../../util/diag';
@@ -504,13 +505,94 @@ const CREATE_TASK_RE = /\b(?:make|create|build|write|add|fix|implement|develop|g
  *  dump is what the bench already found scores retrieval without the model citing anything. */
 const ANCHOR_TOOLS = new Set(['readFile']);
 
+/** Mutating, path-taking tools whose target is pinned into the anchor store after the write lands
+ *  (see AnchorStore.pin). `deleteFile` is absent — there is nothing left to read back. */
+const PIN_ON_MUTATION_TOOLS = new Set(['writeFile', 'createFile', 'editFile']);
+/** Ceiling on a pinned file's retained text. digest() sizes the block itself; this only stops one
+ *  very large edited file from dominating the store before it gets there. */
+const PIN_CONTENT_CAP = 12_000;
+
+// `runCommand` is deliberately absent here despite returning bulk output: it's in
+// MUTATING_TOOLS and the whole point of the split above is that mutating results are "the
+// turn's memory of what it has already done" and are never pruned. It used to be listed
+// alongside the read-only tools by mistake, which meant test/build output from earlier in a
+// long multi-file turn could silently vanish — contradicting the very design comment above it.
 const PRUNE_TOOL_POLICY = [
   {
     type: 'before-last-2-messages' as const,
     tools: ['readFile', 'grep', 'glob', 'listDir', 'explore', 'getSymbolGraph', 'getDependencyTree',
-      'getDiagnostics', 'runCommand', 'webSearch', 'deepSearch', 'fetchUrl'],
+      'getDiagnostics', 'webSearch', 'deepSearch', 'fetchUrl'],
   },
 ];
+
+/** The same tool set as a lookup, for `blankStaleToolResults`. */
+const PRUNABLE_TOOLS = new Set(PRUNE_TOOL_POLICY[0].tools);
+
+/** Opens a blanked tool result. Also the idempotence key — a result already blanked is skipped on
+ *  the next pass, so re-running this every step can't nest placeholders. */
+const STALE_RESULT_MARKER = '[trimmed]';
+/** Below this, blanking saves less than the placeholder costs. */
+const MIN_BLANK_CHARS = 400;
+
+/**
+ * Replace stale read-tool output with a one-line placeholder, KEEPING the call record.
+ *
+ * This is the difference between "the model can't see that file's contents any more" and "the
+ * model has no idea it ever opened that file". `pruneMessages` does the latter: it removes a tool
+ * result together with the assistant message that called it, so after a prune the transcript
+ * contains no evidence the call ever happened. On a multi-file task that is precisely the failure
+ * the user reported — the agent re-reads files it already read, and contradicts decisions it
+ * already made, because the record of having made them is gone.
+ *
+ * Blanking the body instead keeps the (cheap) call record and drops only the (expensive) payload,
+ * so the model still sees "I ran readFile(src/foo.ts) earlier" and can re-run it deliberately.
+ * It is also structurally safer than removal: nothing is added or deleted, so a tool-call can
+ * never be orphaned from its result (AI_MissingToolResultsError) the way hand-filtering risks.
+ * Cline does the same thing, rewriting superseded reads to "[outdated - see the latest file
+ * content]" rather than dropping them.
+ */
+export function blankStaleToolResults(messages: CoreMessage[]): { messages: CoreMessage[]; blanked: number } {
+  // Same window as PRUNE_TOOL_POLICY's 'before-last-2-messages': the last two messages are the
+  // model's active working set and must stay verbatim.
+  const keepFrom = messages.length - 2;
+  if (keepFrom <= 0) return { messages, blanked: 0 };
+  // A tool result names its tool but not its arguments, so the path comes from the paired call.
+  // Without it the placeholder degrades to "some readFile ran", which is nearly useless.
+  const pathById = new Map<string, string>();
+  for (const m of messages) {
+    if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
+    for (const part of m.content as Array<Record<string, unknown>>) {
+      if (part?.type !== 'tool-call' || typeof part.toolCallId !== 'string') continue;
+      const p = pathArgOf(part.input);
+      if (p) pathById.set(part.toolCallId, p);
+    }
+  }
+  let blanked = 0;
+  const out = messages.map((m, i) => {
+    if (i >= keepFrom || m.role !== 'tool' || !Array.isArray(m.content)) return m;
+    let changed = false;
+    const content = (m.content as Array<Record<string, unknown>>).map((part) => {
+      if (part?.type !== 'tool-result' || !PRUNABLE_TOOLS.has(part.toolName as string)) return part;
+      const output = part.output as { type?: string; value?: unknown } | undefined;
+      if (output?.type !== 'text' || typeof output.value !== 'string') return part;
+      if (output.value.length <= MIN_BLANK_CHARS || output.value.startsWith(STALE_RESULT_MARKER)) return part;
+      changed = true;
+      blanked++;
+      const path = pathById.get(part.toolCallId as string);
+      const what = `${part.toolName as string}${path ? `(${path})` : ''}`;
+      return {
+        ...part,
+        output: {
+          ...output,
+          value: `${STALE_RESULT_MARKER} You ran ${what} earlier this turn; its output was trimmed to save context. `
+            + 'Run it again only if you actually need the contents — do not redo work you already did.',
+        },
+      };
+    });
+    return changed ? ({ ...m, content } as CoreMessage) : m;
+  });
+  return { messages: out, blanked };
+}
 
 /** Intelligence rank at/above which an executor counts as "weak" for the planner→execute
  *  pipeline — rank 3+ means a mid-tier-or-worse model will serve the turn, so a planner step
@@ -1426,13 +1508,31 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
         if (pruneAtTokens > 0) {
           const before = roughTokens(messages);
           if (before >= pruneAtTokens) {
-            const pruned = pruneMessages({
-              messages: messages as any,
+            // Cheapest effective step first: blank the stale read payloads but keep their call
+            // records (see blankStaleToolResults). This recovers nearly all the tokens that
+            // deleting would, without destroying the model's record of what it has already done.
+            const { messages: blankedMsgs, blanked } = blankStaleToolResults(messages);
+            let pruned = pruneMessages({
+              messages: blankedMsgs as any,
+              // Tool results are handled by the blanking pass above; only reasoning is dropped
+              // here, so no call/result pair is ever removed on this path.
               reasoning: 'before-last-message',
-              toolCalls: PRUNE_TOOL_POLICY,
               emptyMessages: 'remove',
             }) as unknown as CoreMessage[];
-            diagLog('turn.prune', `~${before}tok ≥ ${pruneAtTokens} → pruned ${messages.length}→${pruned.length} msgs (~${roughTokens(pruned)}tok)`);
+            // Backstop: on a genuinely enormous transcript (hundreds of calls, or bulk that isn't
+            // in a prunable tool's result at all) blanking may not be enough. Only then fall back
+            // to real eviction — accepting the loss of call records because exceeding the context
+            // window loses everything.
+            if (roughTokens(pruned) >= pruneAtTokens) {
+              pruned = pruneMessages({
+                messages: pruned as any,
+                reasoning: 'before-last-message',
+                toolCalls: PRUNE_TOOL_POLICY,
+                emptyMessages: 'remove',
+              }) as unknown as CoreMessage[];
+              diagLog('turn.prune', `still ~${roughTokens(pruned)}tok after blanking ${blanked} result(s) — fell back to eviction`);
+            }
+            diagLog('turn.prune', `~${before}tok ≥ ${pruneAtTokens} → blanked ${blanked}, ${messages.length}→${pruned.length} msgs (~${roughTokens(pruned)}tok)`);
             out.messages = pruned as any;
             // Late re-anchoring — see anchors.ts. Pruning just removed the read results; put a
             // bounded copy of the same files back so the model is not answering about code it can
@@ -1441,10 +1541,18 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
             // Re-runs every pruned step (continuous re-anchoring, which is the mechanism that
             // works), and strips its own previous block first so copies can never stack.
             const digest = anchors.digest(reanchorChars);
-            if (digest) {
+            // The paths-only manifest goes in even when the content digest doesn't fit (or is
+            // capped at 4 files): on a 5+ file task the earliest files fall out of BOTH the raw
+            // history and the digest, and search-derived context is never re-anchored at all, so
+            // without this the model loses any trace it already handled them and re-reads or
+            // contradicts its own earlier decisions. Paths cost almost nothing.
+            const manifest = renderTouchedFiles(openedFiles, changedFilesMap);
+            if (digest || manifest) {
               const base = stripAnchorBlock(out.messages as Array<{ role: string; content: unknown }>);
-              out.messages = [...base, { role: 'user', content: digest }] as any;
-              diagLog('turn.reanchor', `re-showed ${anchors.size} read file(s), ~${digest.length} chars, after prune`);
+              const blocks = [digest, manifest].filter(Boolean)
+                .map((content) => ({ role: 'user', content }));
+              out.messages = [...base, ...blocks] as any;
+              diagLog('turn.reanchor', `re-showed ${anchors.size} read file(s), ~${digest.length} chars, + ${manifest ? 'manifest' : 'no manifest'}, after prune`);
             }
           }
         }
@@ -1656,6 +1764,22 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
         if (reanchorChars > 0 && ANCHOR_TOOLS.has(part.toolName) && typeof detail === 'string') {
           const p = pathArgOf(part.input);
           if (p) anchors.record(p, detail, stepIndex);
+        }
+        // Pin the file this edit just changed, with its POST-edit content read back from disk.
+        // Done on the result (not the call) so the write has actually landed. This is Aider's
+        // never-prune-the-working-set idea: the files under active edit outrank merely-read files
+        // for the digest's limited slots, and the model sees what the file IS now rather than the
+        // pre-edit copy its original readFile returned.
+        if (reanchorChars > 0 && PIN_ON_MUTATION_TOOLS.has(part.toolName)) {
+          const p = pathArgOf(part.input);
+          if (p) {
+            try {
+              const bytes = await vscode.workspace.fs.readFile(resolveWorkspacePath(p));
+              // Same head-of-file rationale as AnchorStore's excerpts, and a hard ceiling so one
+              // huge edited file can't monopolise the re-anchor budget before digest() sizes it.
+              anchors.pin(p, new TextDecoder().decode(bytes).slice(0, PIN_CONTENT_CAP), stepIndex);
+            } catch { /* deleted, binary, or outside the workspace — nothing to pin */ }
+          }
         }
         // A SUCCESSFUL completion (not 'tool-error') of one of these means verifyNoteFor already
         // ran inside the tool's own execute() — see SELF_VERIFYING_TOOLS. Only counts for the
@@ -2176,9 +2300,17 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       messages: [...opts.messages, { role: 'assistant', content: first.text }, { role: 'user', content: FORCE_GROUND_NUDGE }],
     };
     const grounded = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn);
-    // Only take the retry if it actually went and looked — otherwise keep the original rather than
-    // swapping one ungrounded answer for another.
-    if (grounded.hadToolCalls && grounded.text.trim()) final = grounded;
+    // Only take the retry if it actually went and looked, AND a real comparison judge (not a
+    // word-count heuristic) confirms it's actually the better answer to the ORIGINAL question —
+    // a "go read the code" nudge can come back with a terse, on-a-tangent "here's what I found
+    // in file X" that answers a sub-question instead of the one the user asked. Measured
+    // complaint (2026-08-20): a good first answer got replaced by a short unrelated one after
+    // this retry fired on a normal, correct, code-referencing answer.
+    if (grounded.hadToolCalls && grounded.text.trim()) {
+      const cmp = await compareAnswers(router, lastUserText, first.text, grounded.text, `${first.platform}::${first.model}`);
+      if (cmp.pick === 'B') final = grounded;
+      else diagLog('turn.ungrounded', `comparison judge kept the original over the grounded retry (${cmp.reason})`);
+    }
   }
 
   // Excludes an askQuestions turn: its empty `text` is correct (the questions ARE the response,
@@ -2232,9 +2364,24 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
         excludeModels: [excludeKey],
         maxIntelligenceRank: 2, // top-tier models only — the point of escalating is a smarter retry
       }, planGuidance);
-      // Keep the escalated attempt only if it actually produced something — an empty/failed
-      // retry is worse than the first attempt's own (already-synthesized) progress report.
-      if (escalated.text.trim()) final = escalated;
+      // Keep the escalated attempt if it produced something — but when the ONLY reason we
+      // escalated was the semantic fulfillment judge, confirm with a real comparison first.
+      //
+      // The split matters. `quality.weak` / `stuck` / `showed-code-no-tool` are deterministic
+      // signals that the first answer is genuinely bad, so replacing it is safe and comparing
+      // would just risk keeping a known-bad answer (compareAnswers deliberately defaults to the
+      // original on any failure). `unfulfilled:` is a single LLM opinion and the one path prone
+      // to false positives on terse-but-correct answers — and escalation re-runs from
+      // `opts.messages` with no memory of `first`, so an unchecked swap there is exactly how a
+      // good answer got replaced by a short, unrelated one (measured complaint 2026-08-20).
+      if (escalated.text.trim()) {
+        if (!escalateWhy.startsWith('unfulfilled:')) final = escalated;
+        else {
+          const cmp = await compareAnswers(router, lastUserText, first.text, escalated.text, excludeKey);
+          if (cmp.pick === 'B') final = escalated;
+          else diagLog('turn.escalate', `comparison judge kept the original over the judge-triggered retry (${cmp.reason})`);
+        }
+      }
     }
   }
 

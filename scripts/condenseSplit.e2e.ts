@@ -78,6 +78,58 @@ async function main(): Promise<void> {
   const tooShort = await condenseHistory(plainChat.slice(0, 4), fakeRouter('X'));
   ok('a short session is left alone', tooShort === null);
 
+  /* The file list is the load-bearing part of a summary on a multi-file task: it is what stops the
+   * agent forgetting which files it already touched. SUMMARY_SYSTEM mandates the section, but a
+   * prompt is a request, not a guarantee — and free models drop mandated sections under load. So
+   * it is enforced in code, and merged FORWARD so a file touched before an earlier compaction is
+   * not silently dropped once its messages age out. */
+  console.log('\n— Files section: enforced in code, not trusted to the model —');
+  {
+    const call = (name: string, path: string, id: string): ChatMessage => ({
+      role: 'assistant', content: '',
+      tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify({ path }) } }],
+    });
+    const withFiles: ChatMessage[] = [
+      { role: 'user', content: 'refactor the checkout flow' },
+      call('readFile', 'src/checkout/cart.ts', 't1'),
+      { role: 'tool', tool_call_id: 't1', content: 'contents' },
+      call('editFile', 'src/checkout/pay.ts', 't2'),
+      { role: 'tool', tool_call_id: 't2', content: 'edited' },
+      { role: 'assistant', content: 'done with those two' },
+    ];
+    for (let i = 0; i < 20; i++) withFiles.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `follow-up ${i}` });
+
+    // The failure mode this exists to catch: a model that ignores the mandated section entirely.
+    const omitted = await condenseHistory(withFiles, fakeRouter('## Goal\nrefactor\n\n## Done\nsome work'));
+    ok('a summary with NO files section gets one appended', !!omitted?.summary.includes('## Files & symbols touched'));
+    ok('the appended section names a file that was read', !!omitted?.summary.includes('src/checkout/cart.ts'));
+    ok('the appended section names a file that was edited', !!omitted?.summary.includes('src/checkout/pay.ts'));
+
+    // A model that wrote the section, but incompletely — the union must keep BOTH.
+    const partial = await condenseHistory(
+      withFiles,
+      fakeRouter('## Goal\nrefactor\n\n## Files & symbols touched\n- src/checkout/cart.ts — the Cart type\n\n## Next steps\nfinish'),
+    );
+    ok('the model\'s own annotated entry is preserved', !!partial?.summary.includes('cart.ts — the Cart type'));
+    ok('a file the model omitted is merged in', !!partial?.summary.includes('src/checkout/pay.ts'));
+    ok('the annotated entry is not duplicated as a bare path', (partial?.summary.match(/src\/checkout\/cart\.ts/g) ?? []).length === 1);
+    ok('other sections survive the rewrite', !!partial?.summary.includes('## Next steps') && !!partial?.summary.includes('## Goal'));
+
+    // Merge-forward: a SECOND compaction whose prefix contains the first summary must carry that
+    // summary's paths onward, even though the tool calls that produced them are long gone.
+    const secondRound: ChatMessage[] = [
+      { role: 'user', content: 'start' },
+      { role: 'user', content: 'Summary of the earlier conversation:\n## Goal\nrefactor\n\n## Files & symbols touched\n- src/legacy/old.ts — the thing from before\n\n## Next steps\ngo' },
+      { role: 'assistant', content: 'continuing' },
+      call('readFile', 'src/brand/new.ts', 't9'),
+      { role: 'tool', tool_call_id: 't9', content: 'contents' },
+    ];
+    for (let i = 0; i < 20; i++) secondRound.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `later ${i}` });
+    const merged = await condenseHistory(secondRound, fakeRouter('## Goal\nrefactor\n\n## Done\nmore work'));
+    ok('a path from the PREVIOUS summary survives the next compaction', !!merged?.summary.includes('src/legacy/old.ts'));
+    ok('the newly touched file is there too', !!merged?.summary.includes('src/brand/new.ts'));
+  }
+
   console.log(bad === 0 ? '\nALL PASS' : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);
 }

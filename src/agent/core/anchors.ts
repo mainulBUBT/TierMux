@@ -29,15 +29,25 @@ interface Anchor {
   path: string;
   content: string;
   step: number;
+  /** This file was EDITED this turn, not merely read — see AnchorStore.pin. */
+  pinned: boolean;
 }
 
 /** Marker opening the injected block. Also the idempotence key: any previous block is stripped
  *  before a new one is appended, so re-injecting every step can never stack copies. */
 export const ANCHOR_BLOCK_MARKER = '## Files you read this turn (re-shown — older tool output was trimmed)';
 
+/** Marker opening the touched-files manifest. Stripped and re-injected exactly like the anchor
+ *  block, for the same idempotence reason. */
+export const MANIFEST_BLOCK_MARKER = '## Files you have already touched this turn';
+
 /** Files given a slice of the budget. Past this, excerpts get too small to carry meaning — better
  *  to show 4 files usefully than 12 uselessly, and the freshest reads are the relevant ones. */
 const MAX_ANCHORED_FILES = 4;
+
+/** Ceiling on manifest entries. A path is ~40 chars, so even 40 entries is well under 2K chars —
+ *  but an unbounded list on a repo-wide sweep would become the bloat this file exists to avoid. */
+const MAX_MANIFEST_FILES = 40;
 /** Floor per file. If the budget can't give each file at least this much, fewer files are shown
  *  rather than shrinking every excerpt into uselessness. */
 const MIN_EXCERPT_CHARS = 400;
@@ -55,10 +65,26 @@ export class AnchorStore {
   private readonly anchors = new Map<string, Anchor>();
 
   /** Record (or refresh) a file's content. A re-read replaces the older copy and becomes the
-   *  freshest entry — the model re-read it for a reason. */
+   *  freshest entry — the model re-read it for a reason. Never clears an existing pin: a file
+   *  that was edited stays part of the working set even if it is later merely re-read. */
   record(path: string, content: string, step: number): void {
     if (!path || !content.trim()) return;
-    this.anchors.set(path, { path, content, step });
+    const pinned = this.anchors.get(path)?.pinned ?? false;
+    this.anchors.set(path, { path, content, step, pinned });
+  }
+
+  /**
+   * Mark a file as part of the turn's active working set, with its CURRENT on-disk content.
+   *
+   * Aider never prunes the files under active edit — it re-reads their full contents from disk on
+   * every request, so the working set is always present and never stale. This is that idea inside
+   * the existing budget: an edited file is pinned ahead of merely-read files when the digest picks
+   * what to re-show, and `content` is the post-edit text, so the model doesn't reason about a
+   * version of the file it already replaced.
+   */
+  pin(path: string, content: string, step: number): void {
+    if (!path || !content.trim()) return;
+    this.anchors.set(path, { path, content, step, pinned: true });
   }
 
   get size(): number {
@@ -79,8 +105,15 @@ export class AnchorStore {
     const available = budgetChars - header.length;
     if (available < MIN_EXCERPT_CHARS) return '';
 
-    // Keep the N freshest, then re-sort ascending so the newest still lands last.
-    const shown = ordered.slice(-MAX_ANCHORED_FILES);
+    // Pinned files (edited this turn) claim slots first: on a multi-file task the files the model
+    // CHANGED matter more than whatever it happened to read most recently, and losing them is the
+    // specific failure this whole module exists to prevent. Remaining slots go to the freshest
+    // reads, then the union is re-sorted ascending so the newest still lands nearest the tail.
+    const pinned = ordered.filter((a) => a.pinned);
+    const unpinned = ordered.filter((a) => !a.pinned);
+    const takePinned = pinned.slice(-MAX_ANCHORED_FILES);
+    const room = MAX_ANCHORED_FILES - takePinned.length;
+    const shown = [...(room > 0 ? unpinned.slice(-room) : []), ...takePinned].sort((a, b) => a.step - b.step);
     // Shrink the file count until each survivor clears the floor, rather than showing everything
     // at a width too small to be usable. `overheadFor` is exact rather than a guessed constant —
     // an approximate reservation is what let a 500-char budget emit a 503-char block.
@@ -118,6 +151,40 @@ export class AnchorStore {
 }
 
 /**
+ * A compact list of every file the turn has opened or changed so far — paths only, no content.
+ *
+ * This is the floor beneath re-anchoring. `digest()` above can only afford to re-show the 4
+ * freshest files' CONTENT, and search results (grep/explore/…) get no re-anchoring at all, so on
+ * a task spanning 5+ files the earliest ones vanish from the model's view entirely — it loses not
+ * just their content but any trace it ever opened them, and starts re-reading or contradicting
+ * decisions it already made. Paths are cheap enough to always keep, so the model at minimum
+ * always knows the shape of its own work-in-progress.
+ */
+export function renderTouchedFiles(
+  openedFiles: readonly string[],
+  changedFiles: ReadonlyMap<string, 'created' | 'modified' | 'deleted'>,
+): string {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const [path, status] of changedFiles) {
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    lines.push(`- ${path} — ${status} by you this turn`);
+  }
+  for (const path of openedFiles) {
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    lines.push(`- ${path} — read`);
+  }
+  if (!lines.length) return '';
+  // Freshest last, matching digest()'s ordering rationale: the prompt tail is best attended.
+  const shown = lines.slice(-MAX_MANIFEST_FILES);
+  const omitted = lines.length - shown.length;
+  const note = omitted > 0 ? `\n_(…and ${omitted} more)_` : '';
+  return `${MANIFEST_BLOCK_MARKER}\n${shown.join('\n')}${note}`;
+}
+
+/**
  * Remove a previously injected block from a message list. `prepareStep` may run many times on a
  * growing history; without this, each pass would append another copy and re-anchoring would
  * become the context bloat it exists to prevent.
@@ -126,6 +193,6 @@ export function stripAnchorBlock<T extends { role: string; content: unknown }>(m
   return messages.filter((m) => !(
     m.role === 'user'
     && typeof m.content === 'string'
-    && m.content.startsWith(ANCHOR_BLOCK_MARKER)
+    && (m.content.startsWith(ANCHOR_BLOCK_MARKER) || m.content.startsWith(MANIFEST_BLOCK_MARKER))
   ));
 }

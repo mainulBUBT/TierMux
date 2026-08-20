@@ -14,7 +14,8 @@
  *
  * Run: npm run test:e2e:reanchor
  */
-import { AnchorStore, stripAnchorBlock, ANCHOR_BLOCK_MARKER } from '../src/agent/core/anchors';
+import { AnchorStore, stripAnchorBlock, renderTouchedFiles, ANCHOR_BLOCK_MARKER, MANIFEST_BLOCK_MARKER } from '../src/agent/core/anchors';
+import { blankStaleToolResults } from '../src/agent/core/loop';
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = '') => {
@@ -135,6 +136,111 @@ console.log('\n— stripAnchorBlock touches nothing else —');
   check('a user message merely MENTIONING the marker is kept', (() => {
     const tricky: Msg[] = [{ role: 'user', content: `please explain ${ANCHOR_BLOCK_MARKER} to me` }];
     return stripAnchorBlock(tricky).length === 1; // startsWith, not includes
+  })());
+  check('the manifest block is stripped too', (() => {
+    const msgs2: Msg[] = [
+      { role: 'user', content: 'real' },
+      { role: 'user', content: `${MANIFEST_BLOCK_MARKER}\n- a.ts — read` },
+    ];
+    return stripAnchorBlock(msgs2).length === 1;
+  })());
+}
+
+console.log('\n— Pinned working set: edited files outrank merely-read ones —');
+{
+  // Aider never prunes the files under active edit. Within our fixed 4-slot budget, that means an
+  // edited file must not be pushed out by later reads of unrelated files.
+  const s = new AnchorStore();
+  s.record('read1.ts', body('read1', 40), 1);
+  s.pin('edited.ts', body('EDITED', 40), 2);
+  for (let i = 0; i < 6; i++) s.record(`later${i}.ts`, body(`later${i}`, 40), 10 + i);
+  const d = s.digest(20_000);
+  check('the edited file survives 6 later reads', d.includes('edited.ts'));
+  check('the oldest unpinned read is dropped instead', !d.includes('read1.ts'));
+  check('freshest reads still fill the remaining slots', d.includes('later5.ts'));
+  check('a re-read does not clear an existing pin', (() => {
+    const t = new AnchorStore();
+    t.pin('p.ts', 'pinned body', 1);
+    t.record('p.ts', 'later plain read', 2);
+    for (let i = 0; i < 6; i++) t.record(`x${i}.ts`, body(`x${i}`, 40), 10 + i);
+    return t.digest(20_000).includes('p.ts');
+  })());
+  check('pin refreshes content to the post-edit text', (() => {
+    const t = new AnchorStore();
+    t.record('f.ts', 'BEFORE the edit', 1);
+    t.pin('f.ts', 'AFTER the edit', 2);
+    const out = t.digest(20_000);
+    return out.includes('AFTER the edit') && !out.includes('BEFORE the edit');
+  })());
+  check('blank pin content is ignored', (() => {
+    const t = new AnchorStore();
+    t.pin('empty.ts', '   ', 1);
+    return t.size === 0;
+  })());
+}
+
+console.log('\n— Blanking keeps the call record that eviction destroys —');
+{
+  const toolMsg = (id: string, name: string, value: string) => ({
+    role: 'tool' as const,
+    content: [{ type: 'tool-result', toolCallId: id, toolName: name, output: { type: 'text', value } }],
+  });
+  const callMsg = (id: string, name: string, path: string) => ({
+    role: 'assistant' as const,
+    content: [{ type: 'tool-call', toolCallId: id, toolName: name, input: { path } }],
+  });
+  const msgs = [
+    { role: 'user' as const, content: 'do the thing' },
+    callMsg('c1', 'readFile', 'src/big.ts'),
+    toolMsg('c1', 'readFile', body('huge file line', 500)),
+    callMsg('c2', 'editFile', 'src/big.ts'),
+    toolMsg('c2', 'editFile', 'Edited src/big.ts.'),
+    { role: 'assistant' as const, content: 'done' },
+    { role: 'user' as const, content: 'now the next one' },
+  ] as never[];
+  const { messages: out, blanked } = blankStaleToolResults(msgs);
+  const flat = JSON.stringify(out);
+  check('a stale read payload is blanked', blanked === 1, `blanked=${blanked}`);
+  check('the huge body is gone', !flat.includes('huge file line'));
+  check('the call record survives', flat.includes('"toolName":"readFile"') && flat.includes('src/big.ts'));
+  check('the placeholder names what was run', flat.includes('readFile(src/big.ts)'));
+  check('message count is unchanged (nothing orphaned)', out.length === msgs.length);
+  check('the small mutating result is untouched', flat.includes('Edited src/big.ts.'));
+  check('blanking is idempotent', blankStaleToolResults(out as never[]).blanked === 0);
+  check('the last two messages are never blanked', (() => {
+    const recent = [
+      { role: 'user' as const, content: 'x' },
+      callMsg('c9', 'readFile', 'src/recent.ts'),
+      toolMsg('c9', 'readFile', body('recent content', 500)),
+    ] as never[];
+    return blankStaleToolResults(recent).blanked === 0;
+  })());
+}
+
+console.log('\n— Touched-files manifest: the floor beneath re-anchoring —');
+{
+  const changed = new Map<string, 'created' | 'modified' | 'deleted'>([
+    ['src/a.ts', 'modified'],
+    ['src/new.ts', 'created'],
+  ]);
+  const out = renderTouchedFiles(['src/a.ts', 'src/read-only.ts'], changed);
+  check('empty in, empty out', renderTouchedFiles([], new Map()) === '');
+  check('starts with its marker so it can be stripped', out.startsWith(MANIFEST_BLOCK_MARKER));
+  check('names a changed file with its status', out.includes('src/new.ts — created'));
+  check('names a read-only file', out.includes('src/read-only.ts — read'));
+  check('a file both read and edited appears once, as edited', (() => {
+    const hits = out.split('\n').filter((l) => l.includes('src/a.ts'));
+    return hits.length === 1 && hits[0].includes('modified');
+  })());
+  check('survives past the content-digest 4-file cap', (() => {
+    const many = Array.from({ length: 9 }, (_, i) => `src/f${i}.ts`);
+    const m = renderTouchedFiles(many, new Map());
+    return many.every((p) => m.includes(p));
+  })());
+  check('caps a runaway list and says how many were omitted', (() => {
+    const huge = Array.from({ length: 60 }, (_, i) => `src/g${i}.ts`);
+    const m = renderTouchedFiles(huge, new Map());
+    return m.includes('and 20 more');
   })());
 }
 

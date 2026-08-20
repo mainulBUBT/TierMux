@@ -25,6 +25,11 @@ const FulfillmentSchema = z.object({
   reason: z.string(),
 });
 
+const CompareSchema = z.object({
+  pick: z.enum(['A', 'B']),
+  reason: z.string(),
+});
+
 /** Task kinds worth judging. Skipped for trivial/chat/ask/vision: those are conversational, a
  *  follow-up question or short reply is legitimate, and judging them would waste a model call. */
 export const JUDGEABLE_TASK_KINDS = new Set<TaskKind>(['agent', 'coding', 'debug', 'longContext', 'plan']);
@@ -79,5 +84,55 @@ export async function judgeFulfillment(
     return { fulfilled, reason: (result.output?.reason ?? '').trim() };
   } catch {
     return fallback; // best-effort — never escalate on a judge failure
+  }
+}
+
+/**
+ * Ask a (different, stronger) model to pick which of two candidate replies better answers
+ * `userRequest` — used by loop.ts's retry/escalation paths before swapping `first`'s answer for
+ * a re-run's answer, so a retry can no longer replace a good, on-topic reply with a worse or
+ * unrelated one just because it produced non-empty text. Defaults to keeping `answerA` (the
+ * original) on any judge failure — never let a flaky comparison discard a working answer.
+ * `excludeModel` keeps the judge off whichever model is being compared, when known.
+ */
+export async function compareAnswers(
+  router: Router,
+  userRequest: string,
+  answerA: string,
+  answerB: string,
+  excludeModel?: string,
+): Promise<{ pick: 'A' | 'B'; reason: string }> {
+  const fallback = { pick: 'A' as const, reason: '' };
+  if (!userRequest.trim() || !answerB.trim()) return fallback;
+  if (!answerA.trim()) return { pick: 'B', reason: 'original was empty' };
+  try {
+    const model = createRouterProvider(router, {
+      taskKind: 'plan',
+      excludeModels: excludeModel ? [excludeModel] : undefined,
+      maxIntelligenceRank: 2,
+    });
+    const result = await generateText({
+      model,
+      system:
+        'You are comparing two candidate AI assistant replies to the SAME user request, to decide '
+        + 'which one to keep. Pick A or B — whichever more directly, completely, and correctly '
+        + 'answers what the user actually asked. Prefer the reply that stays ON-TOPIC for the '
+        + 'original request over one that is technically well-written but answers a narrower or '
+        + 'different question, even if it came from more research. A reply that ignores or '
+        + 'contradicts part of the request loses to one that addresses all of it. If both are '
+        + 'roughly equally good, pick A (the original — no reason to prefer a re-run). '
+        + 'REASON: one short clause.',
+      prompt:
+        `USER REQUEST:\n${userRequest.slice(0, 4000)}\n\n`
+        + `REPLY A:\n${answerA.slice(0, 6000)}\n\n`
+        + `REPLY B:\n${answerB.slice(0, 6000)}\n\n`
+        + `Which reply should be kept, A or B?`,
+      output: Output.object({ schema: CompareSchema }),
+      abortSignal: AbortSignal.timeout(20000),
+    });
+    const pick = result.output?.pick === 'B' ? 'B' : 'A';
+    return { pick, reason: (result.output?.reason ?? '').trim() };
+  } catch {
+    return fallback; // best-effort — never discard the original on a judge failure
   }
 }
