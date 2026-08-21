@@ -106,11 +106,14 @@ export class OpenAICompatProvider extends BaseProvider {
 
   private buildBody(messages: ChatMessage[], modelId: string, options: CompletionOptions | undefined, stream: boolean): string {
 
-    const wireMessages = this.flattenContent
+    // Assistant `content: null` alongside tool_calls is valid OpenAI wire, but plenty of
+    // gateways/proxies choke on a literal null when replaying history — normalize to "".
+    const wireMessages = (this.flattenContent
       ? flattenMessageContent(messages)
       : messages.map((m) => m.content === null || m.content === undefined || typeof m.content === 'string'
           ? m
-          : { ...m, content: stripFileBlocks(m.content) });
+          : { ...m, content: stripFileBlocks(m.content) })
+    ).map((m) => (m.role === 'assistant' && m.content === null && m.tool_calls?.length ? { ...m, content: '' } : m));
 
     const wireModel = this.platform === 'custom' && modelId.includes('::')
       ? modelId.split('::').slice(1).join('::')

@@ -17,7 +17,14 @@ const DEFAULT_LINE_LIMIT = 800;
 // budget before any single file gets a useful slice.
 const MAX_PATHS_PER_CALL = 8;
 
-/** Read one file, applying the same offset/limit windowing every path in a batched call shares. */
+/** Read one file, applying the same offset/limit windowing every path in a batched call shares.
+ *
+ *  Output shape (the Claude Code / OpenCode convention): the slice is wrapped in
+ *  `<file path="…">…</file>` and every line is prefixed with a `cat -n`-style, right-aligned
+ *  line number + tab. Two quality effects: the model can cite `path:line` precisely, and the
+ *  line numbers anchor its eye for deriving exact `editFile` search strings (which must NOT
+ *  include the numbers — stated in editFile's description).
+ */
 async function readOne(path: string, offset?: number, limit?: number): Promise<string> {
   const uri = resolveWorkspacePath(path);
   let text: string;
@@ -32,7 +39,11 @@ async function readOne(path: string, offset?: number, limit?: number): Promise<s
   const count = limit && limit > 0 ? limit : DEFAULT_LINE_LIMIT;
   const slice = lines.slice(start, start + count);
   const lastLine = start + slice.length; // 1-based end line actually returned
-  let body = slice.join('\n');
+
+  // Pad line numbers to a common width so the code column stays aligned (cat -n behavior).
+  const width = String(lastLine).length;
+  const numbered = slice.map((line, i) => `${String(start + i + 1).padStart(width)}\t${line}`);
+  let body = `<file path="${path}">\n${numbered.join('\n')}\n</file>`;
 
   // Tell the model when there's more BELOW the returned window, and exactly how to fetch it.
   if (lastLine < lines.length) {
@@ -67,11 +78,12 @@ export function createReadTool() {
 
       // Batched: cap the COMBINED output, not per-file, so N files share one budget instead of
       // each independently claiming the full MAX_CHARS (which would make a batch call worse than
-      // N separate calls instead of better).
+      // N separate calls instead of better). Each section carries its own <file path> tag, so no
+      // extra `===` header is needed.
       const perFileBudget = Math.floor(MAX_CHARS / paths.length);
       const sections = await Promise.all(paths.map(async (p) => {
         const body = await readOne(p, offset, limit);
-        return `=== ${p} ===\n${capToolOutput(body, perFileBudget, `Narrow with a smaller "limit", or read ${p} alone for the full window.`)}`;
+        return capToolOutput(body, perFileBudget, `Narrow with a smaller "limit", or read ${p} alone for the full window.`);
       }));
       return sections.join('\n\n');
     },

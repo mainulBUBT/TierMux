@@ -50,7 +50,8 @@
       ],
       "insight": "frontier·fast; Free tier: 8K context cap",
       "origInputPricePer1M": 0.35,
-      "origOutputPricePer1M": 0.75
+      "origOutputPricePer1M": 0.75,
+      "outputTokenLimit": 32768
     },
     {
       "platform": "cerebras",
@@ -201,7 +202,8 @@
       ],
       "insight": "OpenAI open-weight model optimized for reasoning, coding, and agentic workflows.",
       "origInputPricePer1M": 0.35,
-      "origOutputPricePer1M": 0.75
+      "origOutputPricePer1M": 0.75,
+      "outputTokenLimit": 32768
     },
     {
       "platform": "cloudflare",
@@ -429,7 +431,8 @@
         "reasoner",
         "vision",
         "free"
-      ]
+      ],
+      "outputTokenLimit": 65536
     },
     {
       "platform": "google",
@@ -453,7 +456,8 @@
         "general",
         "vision",
         "free"
-      ]
+      ],
+      "outputTokenLimit": 65536
     },
     {
       "platform": "google",
@@ -527,7 +531,8 @@
         "free"
       ],
       "origInputPricePer1M": 0.15,
-      "origOutputPricePer1M": 0.6
+      "origOutputPricePer1M": 0.6,
+      "outputTokenLimit": 32768
     },
     {
       "platform": "groq",
@@ -549,7 +554,8 @@
         "free"
       ],
       "origInputPricePer1M": 0.075,
-      "origOutputPricePer1M": 0.3
+      "origOutputPricePer1M": 0.3,
+      "outputTokenLimit": 32768
     },
     {
       "platform": "groq",
@@ -1099,7 +1105,8 @@
         "free"
       ],
       "origInputPricePer1M": 0.15,
-      "origOutputPricePer1M": 0.6
+      "origOutputPricePer1M": 0.6,
+      "outputTokenLimit": 32768
     },
     {
       "platform": "opencode",
@@ -1292,7 +1299,8 @@
       ],
       "insight": "Lightweight and fast",
       "origInputPricePer1M": 0.03,
-      "origOutputPricePer1M": 0.13
+      "origOutputPricePer1M": 0.13,
+      "outputTokenLimit": 32768
     },
     {
       "platform": "openrouter",
@@ -1416,7 +1424,8 @@
         "free"
       ],
       "origInputPricePer1M": 0.09,
-      "origOutputPricePer1M": 0.43
+      "origOutputPricePer1M": 0.43,
+      "outputTokenLimit": 32768
     },
     {
       "platform": "ovh",
@@ -1439,7 +1448,8 @@
         "free"
       ],
       "origInputPricePer1M": 0.04,
-      "origOutputPricePer1M": 0.15
+      "origOutputPricePer1M": 0.15,
+      "outputTokenLimit": 32768
     },
     {
       "platform": "ovh",
@@ -1582,7 +1592,8 @@
       ],
       "insight": "Free tier; no credit card",
       "origInputPricePer1M": 0.22,
-      "origOutputPricePer1M": 0.59
+      "origOutputPricePer1M": 0.59,
+      "outputTokenLimit": 32768
     },
     {
       "platform": "sambanova",

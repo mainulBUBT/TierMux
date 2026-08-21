@@ -45,6 +45,11 @@ export interface SelectionContext {
   isVision: boolean;
   /** When 'high'/'xhigh', the profile layers a `reasoner` boost into capability. */
   reasoningEffort?: ReasoningEffort;
+  /** Epoch-ms each model last SUCCESSFULLY served any request (key `${platform}::${modelId}`).
+   *  Feeds tied-band rotation: the least-recently-served peer (never served = oldest) gets the
+   *  next turn, so equal-quality models share load instead of one eating every request until
+   *  it 429s. Missing map / unknown key = never served. */
+  lastServedAt?: Map<string, number>;
 }
 
 export type SkipReason =
@@ -259,27 +264,46 @@ export class ScoringEngine {
     // ---- Order by score desc ----
     const sorted = [...scored].sort((a, b) => b.score - a.score);
 
-    // ---- Margin-gated exploration: promote a random statistically-tied candidate. ----
+    // ---- Margin-gated rotation: quota-aware spreading within the statistically-tied band. ----
     // Deliberately spans the whole tied band rather than just index 1. Swapping only the
     // top-2 made every model at rank 3+ unreachable *by construction* — with a 91-model
     // catalog that permanently exercised two entries per task kind while the rest of the
     // free-tier quota sat idle and unmeasured (a model that never runs never earns the
-    // samples that would let it rank). Gated candidates can't be explored into: `skip`
+    // samples that would let it rank). Gated candidates can't be rotated into: `skip`
     // covers unhealthy/no-key/missing-capability, and the rate-limited 0.05× demotion
     // drops a model far outside any sane margin.
-    if (sorted.length >= 2 && rng() < SCORING_CONFIG.explorationRate) {
-      const top = sorted[0].score;
-      if (top > 0) {
-        // Collect eligible indices, stepping *over* gated candidates rather than stopping at
-        // them — a single unhealthy model at index 1 must not hide the healthy peers behind it.
-        const band: number[] = [];
-        for (let i = 1; i < sorted.length; i++) {
-          if ((top - sorted[i].score) / top > SCORING_CONFIG.explorationMargin) break;
-          if (!sorted[i].skip) band.push(i);
+    //
+    // The promotion itself is deterministic, not random: the least-recently-SERVED tied peer
+    // (never served counts as oldest) takes the seat, headroom breaking exact ties. Random
+    // exploration could re-pick the model that just served; LRS rotation guarantees the tied
+    // band takes actual turns. Two triggers, either suffices:
+    //   1. Quota pressure — a tied peer has meaningfully more headroom than the incumbent
+    //      (fresh vs partially-burned today), so traffic moves BEFORE the 429 cliff.
+    //   2. The legacy exploration dice roll — keeps unmeasured models earning samples.
+    if (sorted.length >= 2 && !sorted[0].skip && sorted[0].score > 0) {
+      const top = sorted[0];
+      const topHeadroom = ctx.runtime.get(top.k)?.headroom ?? 1;
+      const band: number[] = [];
+      for (let i = 1; i < sorted.length; i++) {
+        if ((top.score - sorted[i].score) / top.score > SCORING_CONFIG.explorationMargin) break;
+        if (!sorted[i].skip) band.push(i);
+      }
+      const quotaPressure = band.some((i) => (ctx.runtime.get(sorted[i].k)?.headroom ?? 1) > topHeadroom + 0.15);
+      if (band.length > 0 && (quotaPressure || rng() < SCORING_CONFIG.explorationRate)) {
+        const served = (i: number): number => ctx.lastServedAt?.get(sorted[i].k) ?? 0;
+        const headroomOf = (i: number): number => ctx.runtime.get(sorted[i].k)?.headroom ?? 1;
+        // The TOP participates in the comparison too: a never-served (or freshest-quota)
+        // incumbent must not be displaced by an equal-or-worse band member — promotion is
+        // for peers that are strictly better on the rotation axis.
+        let chosen = 0;
+        for (const i of band) {
+          if (served(i) < served(chosen) || (served(i) === served(chosen) && headroomOf(i) > headroomOf(chosen))) {
+            chosen = i;
+          }
         }
-        if (band.length > 0) {
-          const [chosen] = sorted.splice(band[Math.floor(rng() * band.length)], 1);
-          sorted.unshift(chosen);
+        if (chosen > 0) {
+          const [rotated] = sorted.splice(chosen, 1);
+          sorted.unshift(rotated);
         }
       }
     }

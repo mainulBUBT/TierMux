@@ -14,7 +14,11 @@ const TIMEOUT_MS = 15_000;
 
 export function createGrepTool() {
   return tool({
-    description: 'Search file contents in the workspace for a regex pattern (ripgrep-backed).',
+    description:
+      'Search file contents in the workspace for a regex pattern (ripgrep-backed). Results are `path:line:text` per match. '
+      + 'ALWAYS narrow the scope: pass `glob` (e.g. "*.ts") or `path` (a subdirectory) — a whole-workspace grep is a last '
+      + 'resort, not a first move; prefer a targeted pattern like "functionName" over a generic one. Caps at 200 matches '
+      + 'per file and ~20KB of output — narrow rather than paging through noise.',
     inputSchema: z.object({
       pattern: z.string().describe('Regex pattern to search for.'),
       path: z.string().optional().describe('Workspace-relative path to search within (optional, defaults to the whole workspace).'),

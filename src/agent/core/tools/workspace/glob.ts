@@ -51,7 +51,10 @@ async function globInRoot(root: string, pattern: string): Promise<string[]> {
 
 export function createGlobTool() {
   return tool({
-    description: 'Find files in the workspace matching a glob pattern (e.g. "src/**/*.ts").',
+    description:
+      'Find files in the workspace matching a glob pattern (e.g. "src/**/*.ts"). Prefer this over `listDir` or a shell '
+      + '`ls`/`find` when you are looking for files BY NAME or extension — it is faster, cheaper, and returns paths ready '
+      + 'to feed readFile. Caps at 200 results; make the pattern more specific rather than paging.',
     inputSchema: z.object({ pattern: z.string().describe('Glob pattern, relative to the workspace root.') }),
     execute: async ({ pattern }: { pattern: string }) => {
       if (!pattern) throw new Error('Missing required "pattern" argument.');

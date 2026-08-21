@@ -20,9 +20,11 @@ const hunkSchema = z.object({
 export function createEditTool() {
   return tool({
     description:
-      'Replace exact blocks of text in a file. `search` must match existing file content exactly (including whitespace). '
-      + 'For multiple changes in the SAME file, pass `edits: [{search, replace}, ...]` — they apply atomically in one read/write '
-      + 'instead of N separate calls. Use the single `search`/`replace` form for a one-off change.',
+      'Replace exact blocks of text in a file. You must have read the file this turn (with readFile) before editing — '
+      + 'this tool fails on a file you have not read. `search` must match the file content EXACTLY, including whitespace '
+      + 'and indentation; readFile output shows `cat -n`-style line numbers — those are annotations, never include them '
+      + 'in `search`. For multiple changes in the SAME file, pass `edits: [{search, replace}, ...]` — they apply atomically '
+      + 'in one read/write instead of N separate calls. Use the single `search`/`replace` form for a one-off change.',
     inputSchema: z.object({
       path: z.string().describe('Workspace-relative file path.'),
       search: z.string().optional().describe('Exact existing text to find (single-hunk form).'),

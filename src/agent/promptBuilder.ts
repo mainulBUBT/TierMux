@@ -36,37 +36,100 @@ export function setExtensionPath(p: string): void {
  *  sort alphabetically after all of these. */
 const AGENT_FILE_ORDER = ['identity.md', 'behavior.md', 'ask-format.md', 'research.md'];
 
-/** Loads `.tiermux/agent/*.md` scaffolding + project rules/memory/skills index, reading fresh
- *  every call (no caching) — editing `.tiermux/memory.md` takes effect on the very next turn. */
-async function loadAgentInstructions(extPath: string, workspaceRoot?: string, taskKind?: TaskKind, mode?: AgentMode, userText?: string): Promise<{ agentPrompt: string; instructions: string }> {
+/** Workspace files `instructions` is derived from — statted (never content-read) to key the
+ *  prompt cache below. Must stay in sync with projectRules.ts / userMemory.ts. */
+const INSTRUCTION_SOURCES = [
+  '.tiermux/prompt.md', 'AGENTS.md', 'CLAUDE.md', '.cursorrules', '.windsurfrules',
+  '.github/copilot-instructions.md', '.tiermux/memory.md',
+];
+
+/** mtime+size stamp of one path ('' when absent). */
+function fileStamp(p: string): string {
+  try {
+    const s = fs.statSync(p);
+    return `${s.mtimeMs}:${s.size}`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Prompt-source cache. The scaffolding/memory/rules files were re-read from disk on EVERY
+ * buildSystemPrompt call — once per attempt, and a retry-heavy turn pays it repeatedly. The
+ * OUTPUT string was already deterministic, so this is purely I/O elimination: stat the
+ * sources (cheap), and only re-read content when a stamp actually moved. Freshness semantics
+ * are unchanged — editing memory.md still takes effect on the very next turn, because the
+ * stamp changes the moment the file is written.
+ *
+ * A side benefit for provider-side implicit prompt caching: fewer moving parts between
+ * attempts of one turn means the system-prompt prefix stays byte-identical, so Gemini/
+ * OpenRouter-style prefix reuse actually engages across the turn's steps.
+ */
+const promptSourceCache = new Map<string, { stamp: string; base: string; memory: string; rules: string }>();
+
+/** Sections between these markers exist only for weak/mid-tier executors (extra hand-holding a
+ *  frontier model doesn't need — GPT-5-Codex ships a notably SHORTER prompt). Stripped from the
+ *  assembled base when `weakModel` is false; edit the scaffolding freely, the markers are the
+ *  contract. */
+const WEAK_ONLY_OPEN = /<!--[ \t]*weak-only[ \t]*-->/g;
+const WEAK_ONLY_CLOSE = /<!--[ \t]*\/weak-only[ \t]*-->/g;
+
+/** Loads `.tiermux/agent/*.md` scaffolding + project rules/memory/skills index. Content is
+ *  cached against source stamps (see promptSourceCache) — an edit still invalidates
+ *  immediately via its mtime, so changes take effect on the very next turn. */
+async function loadAgentInstructions(extPath: string, workspaceRoot?: string, taskKind?: TaskKind, mode?: AgentMode, userText?: string, weakModel = true): Promise<{ agentPrompt: string; instructions: string }> {
   const agentDir = path.join(extPath, '.tiermux', 'agent');
   const skipFiles = new Set(taskKind ? SKIP_FILES_FOR_TASK_KIND[taskKind] ?? [] : []);
   // ask-format.md documents the askQuestions pre-flight clarify tool, and PLAN_MODE_TAIL is
   // the only place that asks for it — agent/ask mode were paying ~1.3KB of prompt for a protocol
   // they never use, competing for a free model's attention with rules that do apply.
   if (mode && mode !== 'plan') skipFiles.add('ask-format.md');
-  let base: string;
+  const skipKey = `${[...skipFiles].sort().join(',')}|weak=${weakModel ? 1 : 0}`;
+
+  let stamp = '';
   try {
-    const files = fs.readdirSync(agentDir)
-      .filter((f) => f.endsWith('.md') && !skipFiles.has(f))
-      .sort((a, b) => {
-        const ia = AGENT_FILE_ORDER.indexOf(a);
-        const ib = AGENT_FILE_ORDER.indexOf(b);
-        if (ia === -1 && ib === -1) return a.localeCompare(b);
-        if (ia === -1) return 1;
-        if (ib === -1) return -1;
-        return ia - ib;
-      });
-    if (!files.length) throw new Error('no .md files found');
-    base = files
-      .map((f) => { try { return fs.readFileSync(path.join(agentDir, f), 'utf8').trim(); } catch { return ''; } })
-      .filter(Boolean)
-      .join('\n\n');
+    stamp = fs.readdirSync(agentDir).sort().map((f) => `${f}:${fileStamp(path.join(agentDir, f))}`).join('|');
   } catch {
-    base = '# Identity\nYou are TierMux, an AI coding assistant.';
+    stamp = `unreadable:${Date.now()}`; // never cache an agent dir we can't see
   }
-  const memory = await loadUserMemory().catch(() => '');
-  const rules = await loadProjectRules().catch(() => '');
+  if (workspaceRoot) {
+    for (const rel of INSTRUCTION_SOURCES) stamp += `;${rel}:${fileStamp(path.join(workspaceRoot, rel))}`;
+  }
+
+  const cached = promptSourceCache.get(skipKey);
+  if (!cached || cached.stamp !== stamp) {
+    let base: string;
+    try {
+      const files = fs.readdirSync(agentDir)
+        .filter((f) => f.endsWith('.md') && !skipFiles.has(f))
+        .sort((a, b) => {
+          const ia = AGENT_FILE_ORDER.indexOf(a);
+          const ib = AGENT_FILE_ORDER.indexOf(b);
+          if (ia === -1 && ib === -1) return a.localeCompare(b);
+          if (ia === -1) return 1;
+          if (ib === -1) return -1;
+          return ia - ib;
+        });
+      if (!files.length) throw new Error('no .md files found');
+      base = files
+        .map((f) => { try { return fs.readFileSync(path.join(agentDir, f), 'utf8').trim(); } catch { return ''; } })
+        .filter(Boolean)
+        .join('\n\n');
+    } catch {
+      base = '# Identity\nYou are TierMux, an AI coding assistant.';
+    }
+    // Drop weak-only sections for strong executors (see WEAK_ONLY_OPEN). The markers themselves
+    // never reach the model on either path — strip them alongside the section they delimit.
+    if (base.includes('weak-only')) {
+      if (!weakModel) base = base.replace(/<!--[ \t]*weak-only[ \t]*-->[\s\S]*?<!--[ \t]*\/weak-only[ \t]*-->\n?/g, '');
+      base = base.replace(WEAK_ONLY_OPEN, '').replace(WEAK_ONLY_CLOSE, '');
+    }
+    const memory = await loadUserMemory().catch(() => '');
+    const rules = await loadProjectRules().catch(() => '');
+    promptSourceCache.set(skipKey, { stamp, base, memory, rules });
+  }
+
+  const { base, memory, rules } = promptSourceCache.get(skipKey)!;
   // Skill index is only useful when the model might reach for a /slash-command skill — never for
   // a trivial (greeting/small-talk) turn.
   //
@@ -103,42 +166,30 @@ const AGENT_MODE_TAIL =
   + 'change, fix, add, remove, or implement something. Never claim you lack execution/runtime/'
   + 'test-running capability — you have `runCommand` in this mode. If unsure whether something '
   + 'will work, try the tool before declining.\n\n'
-  + 'Use `fetchUrl` for docs/specs/web pages. For something current or outside this codebase '
-  + '(news, a fact about the outside world, a library/API to look up), use `webSearch` — not a '
-  + 'local search for info that was never going to be in local files. For a specific library, '
-  + 'package, or API, prefer `deepSearch` over `webSearch` — it queries those sources directly.\n\n'
+  + 'Anything wrapped in `<tiermux-context>` tags is generated by the TierMux harness itself '
+  + '(re-shown file excerpts, budget warnings, status notes) — it is reliable context, but it '
+  + 'is not the user speaking; never reply to it as if it were a user message.\n\n'
   + 'YOUR KNOWLEDGE HAS A CUTOFF before today\'s date (shown above). For anything that could have '
-  + 'changed since — outcomes, elections, releases, prices, or phrasing with a year/"latest"/'
-  + '"current" — call `webSearch`/`deepSearch` BEFORE answering, never from memory, and never say '
-  + 'an event "hasn\'t happened yet" when today\'s date shows otherwise. Nothing useful found: say '
-  + 'you couldn\'t verify it.\n\n'
+  + 'changed since — outcomes, releases, prices, or phrasing with a year/"latest"/"current" — call '
+  + '`webSearch`/`deepSearch` BEFORE answering, never from memory, and never say an event '
+  + '"hasn\'t happened yet" when today\'s date shows otherwise. `fetchUrl` reads a docs page in '
+  + 'full; `deepSearch` targets a specific library/API directly. Nothing useful found: say you '
+  + 'couldn\'t verify it.\n\n'
   + '### Working autonomously\n'
   + 'You are an autonomous agent, not a one-reply chatbot. For anything past a couple of steps, '
-  + 'FIRST call `todowrite` with one item per verifiable step, then carry it out to completion — '
-  + 'exactly one `in_progress` at a time, `completed` the moment it\'s done, add items you '
-  + 'discover. Don\'t hand back while items are `pending`/`in_progress`. Before the LAST item, '
-  + 'verify your own work (`getDiagnostics`, confirm the change satisfies the request). Stop early '
-  + 'only on a genuine blocker (missing info only the user has, consent needed, repeated failure) '
-  + 'and say plainly what\'s blocking and what\'s done. Skip the todo list for a one-step task.\n\n'
-  + '### Parallel work via `implementPipeline`\n'
-  + 'For a task that splits into INDEPENDENT, NON-OVERLAPPING multi-file subtasks (e.g. "implement '
-  + 'features A, B, and C, each in its own module"), you can author a `plan` of disjoint subtasks '
-  + '(each item lists its OWN files — no two items share a file) and call `implementPipeline`. It '
-  + 'runs the subtasks in parallel as worker sub-agents, each in a private git worktree, then merges '
-  + 'them into a staging branch (your working tree is untouched). Use it ONLY for genuinely '
-  + 'parallelizable work — it costs ~N× a normal turn, and shared-file subtasks will conflict. For '
-  + 'a single-file fix, tightly-coupled steps, or anything sequential, just do the work yourself '
-  + 'with the normal edit tools. Partition first; if you can\'t make the file sets disjoint, run '
-  + 'those parts sequentially instead.\n\n'
-  + '### Delegating one sub-task via `delegate`\n'
-  + '`delegate` hands ONE self-contained sub-task to an isolated sub-agent and returns only its '
-  + 'report, keeping your context small. Use mode `research` for a deeper read-only investigation '
-  + 'than `explore` (trace a flow across files, compare approaches with evidence, inventory '
-  + 'usages). Use mode `code` for ONE focused implementation you don\'t need to iterate on '
-  + 'interactively — the sub-agent works in a disposable git worktree, verifies, commits, and '
-  + 'merges into your branch. Write a complete task statement (goal + scope + acceptance '
-  + 'criteria); a vague task comes back vague. Don\'t delegate a step you\'ll immediately redo or '
-  + 'adjust yourself.\n\n'
+  + 'call `todowrite` FIRST and carry the list to completion (the tool states the rules). Verify '
+  + 'your own work before the last item; stop early only on a genuine blocker, saying plainly '
+  + 'what blocks and what is done. For INDEPENDENT non-overlapping multi-file subtasks, '
+  + '`implementPipeline` runs them as parallel workers in isolated worktrees; hand ONE '
+  + 'self-contained subtask to `delegate` to keep your context small — both tools carry their '
+  + 'full usage guidance in their own descriptions.\n\n'
+  + '### Testing web features end-to-end\n'
+  + 'After adding or changing a WEB feature, prove it over HTTP, never from code alone: start '
+  + 'the dev server BACKGROUNDed (`nohup … & echo $! > /tmp/tiermux-dev.pid`), poll readiness '
+  + 'with `checkUrl`, exercise the changed behavior (`checkUrl` with a `marker` or '
+  + '`render: true`; POST/PUT via `runCommand` curl), and ALWAYS kill the server when done '
+  + '(`kill $(cat /tmp/tiermux-dev.pid)`). The live-URL result is what separates "Verified" '
+  + 'from "Unverified" in your final report.\n\n'
   + '### Structured finish (critical)\n'
   + 'When you finish a piece of work, end your reply with a SHORT structured summary of your '
   + 'own — 2-4 lines: what you changed, how you verified it (exact command/result), and what '
@@ -146,35 +197,16 @@ const AGENT_MODE_TAIL =
   + 'fix; if you could not test it, say "not tested" plainly. A deterministic report block is '
   + 'appended below your reply, so an untested claim will be visible either way — honesty '
   + 'here is what the user trusts.\n\n'
-  + '### Testing web features end-to-end\n'
-  + 'After adding or changing a WEB feature (page, route, API, form), never claim it works from '
-  + 'code alone — prove it over HTTP:\n'
-  + '1. Detect the stack: `artisan`/`composer.json` → `php artisan serve --port=8090`; '
-  + '`package.json` `dev`/`start` script → `npm run dev` (vite/next use `--port`/`-p`); existing '
-  + '`docker-compose.yml` → `docker compose up -d`. Reuse a server that is already running if '
-  + '`checkUrl` proves it responds.\n'
-  + '2. Start it in the BACKGROUND so the call returns immediately — never block on a foreground '
-  + 'server:\n'
-  + 'nohup php artisan serve --port=8090 > /tmp/tiermux-dev.log 2>&1 & echo $! > /tmp/tiermux-dev.pid\n'
-  + '3. Poll readiness with `checkUrl http://127.0.0.1:8090` (retry twice with a short sleep if '
-  + 'it is not up yet). Then exercise the changed behavior: pages via `checkUrl` with a `marker` '
-  + 'the working feature must show (use `render: true` for JavaScript-rendered pages, '
-  + '`expectStatus` for guards/404s); form submissions and POST/PUT API calls via '
-  + '`runCommand` curl (`curl -s -X POST -d ... http://127.0.0.1:8090/orders`), then verify the '
-  + 'result via `checkUrl`/the database as appropriate.\n'
-  + '4. ALWAYS clean up when done, even after a failure: `kill $(cat /tmp/tiermux-dev.pid)`.\n'
-  + 'The live-URL result is what separates "Verified" from "Unverified" in your final report.\n\n'
   + '### Ground changes in the existing project (critical)\n'
   + 'Before editing a file, read the relevant part of it (and anything it clearly depends on) — '
   + 'never edit blind from the request text alone, and never reimplement something that may already '
-  + 'exist elsewhere in the project. Match the project\'s existing patterns (naming, structure, '
-  + 'libraries already in use) instead of introducing a different approach of your own. If the '
-  + 'request names a feature/file/system, find and open it first (grep/glob/explore) — a '
-  + 'plausible-sounding guessed path or symbol is how an edit lands on the wrong file or duplicates '
-  + 'logic that already exists.\n\n'
+  + 'exist elsewhere. Match the project\'s existing patterns (naming, structure, libraries) instead '
+  + 'of introducing a different approach of your own. If the request names a feature/file/system, '
+  + 'find and open it first — a plausible-sounding guessed path is how an edit lands on the wrong '
+  + 'file or duplicates existing logic.\n\n'
   + '### Using tools reliably (critical)\n'
-  + 'NEVER announce an action without performing it — "Let me read the file" and then stopping is '
-  + 'a FAILURE, nothing changes. Every time you\'re about to describe doing something, emit the '
+  + 'NEVER announce an action without performing it — "Let me read the file" and then stopping is a '
+  + 'FAILURE, nothing changes. Every time you\'re about to describe doing something, emit the '
   + 'tool call instead.\n\n'
   + 'Always prefer native tool-calling. If you cannot emit a native call, emit it as text in '
   + 'EXACTLY this format — a real call will run from it:\n'
@@ -188,9 +220,8 @@ const AGENT_MODE_TAIL =
   + '### Shell command strategy\n'
   + '`runCommand` has no terminal — no pager, no input prompt. Run ONE command per call, not a '
   + '`&&`/`;` chain — a swallowed exit code hides which part failed. Never a pager (`less`, `git '
-  + 'log` without `--no-pager`) or an interactive/`-i` flag (`git rebase -i`, `npm init` without '
-  + '`-y`) — it will hang waiting for input that never comes. Pipe through `head`/`tail`/`grep` to '
-  + 'narrow noisy output.';
+  + 'log` without `--no-pager`) or an interactive/`-i` flag — it will hang waiting for input that '
+  + 'never comes. Pipe through `head`/`tail`/`grep` to narrow noisy output.';
 
 const PLAN_MODE_TAIL =
   '\n\n## Plan mode\n'
@@ -257,6 +288,21 @@ function modeTail(mode: AgentMode): string {
   return AGENT_MODE_TAIL;
 }
 
+/** `tiermux.agent.terseReplies` — a soft output-token saver (the "Caveman" idea from 9router,
+ *  gentler wording): models pad answers with restatements and preamble; an explicit brevity
+ *  instruction cuts completion tokens on every turn. Off by default: terseness trades user
+ *  rapport for tokens, which is a user call, not ours. */
+function terseTail(): string {
+  try {
+    if (!vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('terseReplies', false)) return '';
+  } catch {
+    return '';
+  }
+  return '\n\nAnswer tersely: no preamble, no restating the question, no "In conclusion". '
+    + 'Lead with the answer/verdict, then only the explanation the user actually needs. '
+    + 'Code and commands unchanged — brevity applies to prose only.';
+}
+
 /** Grounds the model against its training cutoff — without this, free/local models guess
  *  a "today" from training data and produce date-confused answers (e.g. claiming "today is
  *  2024" while citing a 2026 event in the same breath). */
@@ -267,13 +313,22 @@ function todayLine(): string {
 
 /** `sessionId` appends this conversation's findings note (see sessionFindings.ts). It belongs in
  *  the SYSTEM prompt specifically: the message history it summarises is exactly what pruning and
- *  condensation throw away, and the system prompt is the only part rebuilt intact every turn. */
-export async function buildSystemPrompt(mode: AgentMode, taskKind?: TaskKind, sessionId?: string, userText?: string): Promise<string> {
+ *  condensation throw away, and the system prompt is the only part rebuilt intact every turn.
+ *
+ *  `weakModel` (from the turn's ExecutionProfile) strips `<!-- weak-only -->…<!-- /weak-only -->`
+ *  sections from the scaffolding for strong executors — the single conditional cut; no
+ *  per-provider prompt forks (opencode's own maintainers called those unjustified drift).
+ *
+ *  Assembly order is a cache contract (Claude Code's __SYSTEM_PROMPT_DYNAMIC_BOUNDARY__ idea):
+ *  stable core first (scaffolding + mode tail), session-stable next (rules/memory/skills),
+ *  volatile last (date, findings). Providers that do exact-prefix caching (OpenRouter, DeepSeek)
+ *  then hit on every byte up to the boundary instead of missing on a mid-prompt date change. */
+export async function buildSystemPrompt(mode: AgentMode, taskKind?: TaskKind, sessionId?: string, userText?: string, weakModel = true): Promise<string> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const findings = findingsPrompt(sessionId);
   if (!extensionPath) {
     return '# Identity\nYou are TierMux, an AI coding assistant.' + modeTail(mode) + `\n\n${todayLine()}` + findings;
   }
-  const { agentPrompt, instructions } = await loadAgentInstructions(extensionPath, workspaceRoot, taskKind, mode, userText);
-  return [agentPrompt + modeTail(mode), todayLine(), instructions].filter(Boolean).join('\n\n') + findings;
+  const { agentPrompt, instructions } = await loadAgentInstructions(extensionPath, workspaceRoot, taskKind, mode, userText, weakModel);
+  return [agentPrompt + modeTail(mode), instructions, todayLine()].filter(Boolean).join('\n\n') + terseTail() + findings;
 }

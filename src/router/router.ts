@@ -12,6 +12,7 @@ import { resolveProvider } from '../providers';
 import type { CompletionOptions } from '../providers/options';
 import { fitMessages, inputBudget, estimateTokens, estimateMessagesTokens } from '../agent/budget';
 import { orderForTask, type TaskKind } from '../agent/routing';
+import { defaultMaxOutputTokens } from '../agent/executionProfile';
 import { contentToString } from '../agent/content';
 import { diagLog } from '../util/diag';
 import { VISION_BLIND } from '../agent/answerQuality';
@@ -25,6 +26,8 @@ import type { ModelStatsStore } from '../config/modelStats';
 import type { SlowModelStore } from '../config/slowModel';
 import { SLOW_LATENCY_MS } from '../config/slowModel';
 import { RateTracker } from './rateTracker';
+import type { QuotaStore } from '../config/quotaStore';
+import { getMockPlayer, buildMockCompletion, getCassetteRecorder } from './mockFixture';
 import { LatencyTracker } from './latencyTracker';
 import type { MetricsStore, MetricSample } from './metricsStore';
 import { ScoringEngine, type SelectionContext, type HealthState, type RationaleEntry, type CandidateRuntime } from './scoring';
@@ -214,6 +217,20 @@ export interface RouteOptions extends CompletionOptions {
   onReasoning?: (text: string) => void;
   /** Profiler: notified per provider attempt (ok or fail). Not emitted for preflight skips. */
   onProviderAttempt?: (info: { platform: string; model: string; status: 'ok' | 'fail'; latencyMs: number; errorType?: string; reason?: string }) => void;
+  /** @internal set by routeHedged — liveness mirror of the TTFT signal: fired on ANY provider
+   *  chunk (content, reasoning, keepalive, usage-only). Used to decide the delayed-hedge race
+   *  without exposing router internals on the public options. */
+  _onProviderAlive?: () => void;
+  /** @internal set by routeHedged — fired when the primary loop starts an HTTP attempt on a
+   *  candidate, so the hedge can exclude the model the primary is CURRENTLY on (not just the
+   *  ones it already failed through onFailover). Without this, a silent-but-not-yet-failed
+   *  primary would be re-picked by the hedge — double request to the same dead candidate. */
+  _onCandidateStart?: (platform: string, modelId: string) => void;
+  /** @internal set by routeHedged — when this signal is aborted, the sibling hedge/primary
+   *  request won the race: the loser must exit QUIETLY (no health penalty, no negative
+   *  metrics — the model was merely slower, not broken; the winner's stream is already
+   *  serving the user). */
+  _hedgeLostSignal?: AbortSignal;
 }
 
 interface RouteResult {
@@ -388,8 +405,10 @@ export class Router {
    *  Verified against the catalog: the free models actually observed in bench runs resolve to
    *  ranks 1–3, so this admits the top two tiers and excludes the tail. */
   private static readonly SESSION_PIN_MAX_RANK = 2;
-  private rateTracker = new RateTracker();
+  private rateTracker: RateTracker;
   private latencyTracker = new LatencyTracker();
+  /** Epoch-ms of each model's last successful serve — feeds tied-band rotation in ScoringEngine. */
+  private lastServedAt = new Map<string, number>();
   /**
    * Per-model health cache — a circuit breaker with three effective states.
    * `ok` = closed (healthy). `bad` within its cooldown = open (skip without
@@ -414,7 +433,12 @@ export class Router {
     private readonly slowModels?: SlowModelStore,
     private readonly metrics?: MetricsStore,
     private readonly scoring?: ScoringEngine,
-  ) {}
+    quotaStore?: QuotaStore,
+  ) {
+    // Hydrated from the persistent ledger when present, so a window reload keeps the
+    // RPM/RPD windows already consumed this minute/day instead of re-hammering providers.
+    this.rateTracker = new RateTracker(quotaStore);
+  }
 
   private smartScoringActive(): boolean {
     return smartScoringEnabled && !!this.scoring && !!this.metrics;
@@ -599,7 +623,7 @@ export class Router {
           : true;
       runtime.set(`${e.platform}::${e.modelId}`, { health, canSend, hasKey: true, capable, headroom, providerLoad });
     }
-    return { taskKind: kind, entries, runtime, requireTools: !!opts.requireTools, isVision: kind === 'vision', reasoningEffort: opts.reasoningEffort };
+    return { taskKind: kind, entries, runtime, requireTools: !!opts.requireTools, isVision: kind === 'vision', reasoningEffort: opts.reasoningEffort, lastServedAt: this.lastServedAt };
   }
 
   /**
@@ -945,6 +969,29 @@ export class Router {
    */
   private async fakeRoute(messages: ChatMessage[], opts: RouteOptions): Promise<RouteResult> {
     diagLog('router.fake', `taskKind=${opts.taskKind ?? '<none>'} tools=${opts.tools?.length ?? 0}`);
+
+    // Scripted fixture first — a MockPlayer queue for this taskKind (or its exhausted default)
+    // replaces the canned dummy entirely, so a whole weak-model scenario (tool call → dialect
+    // text → paste-in-chat → nudge → recovery) replays deterministically with zero tokens.
+    const scripted = getMockPlayer()?.next(opts.taskKind);
+    if (scripted) {
+      const { message, finish_reason } = buildMockCompletion(scripted.respond);
+      if (finish_reason === 'stop' && typeof message.content === 'string' && opts.onChunk) opts.onChunk(message.content);
+      return {
+        response: {
+          id: 'mock-completion',
+          object: 'chat.completion',
+          created: Date.now(),
+          model: 'mock-model',
+          choices: [{ index: 0, message, finish_reason }],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        },
+        platform: 'fake' as Platform,
+        model: 'mock-model',
+        runtimeName: 'Mock (scripted fixture)',
+      };
+    }
+
     const lastMessageWasToolResult = messages[messages.length - 1]?.role === 'tool';
     const firstTool = opts.tools?.[0];
     const wantsToolCall = !!firstTool && !lastMessageWasToolResult;
@@ -999,10 +1046,146 @@ export class Router {
 
   async route(messages: ChatMessage[], opts: RouteOptions = {}): Promise<RouteResult> {
     if (process.env.TIERMUX_FAKE_MODEL === '1') return this.fakeRoute(messages, opts);
+    return this.routeHedged(messages, opts);
+  }
 
+  /** Hedging config: 0 / `tiermux.hedging:false` disables; otherwise clamped below the TTFT
+   *  gate so the hedge always fires before single-candidate fast-failover would. */
+  private hedgeDelayMs(): number {
+    if (!vscodeConfigBoolean('tiermux.hedging', true)) return 0;
+    const v = vscodeConfigNumber('tiermux.hedgeDelayMs', 2500);
+    if (v <= 0) return 0;
+    const ttft = this.ttftTimeoutMs();
+    return ttft > 0 ? Math.min(v, Math.max(500, ttft - 500)) : v;
+  }
+
+  /**
+   * DELAYED HEDGING (lightweight request racing) around the serial failover loop.
+   *
+   * The serial loop is correct but pays wall-clock for every silent candidate: a model that
+   * accepts the connection then says nothing burns the full TTFT window (8s default) before
+   * failover even starts. Full racing (two live streams always) doubles token cost and was
+   * deliberately rejected (see ttftTimeoutMs). This is the middle path:
+   *
+   *   t=0      primary request starts (the normal top-ranked candidate)
+   *   t=hedged if primary has produced NO provider chunk at all → start the NEXT candidate
+   *            concurrently, excluding everything primary already tried
+   *   first wire chunk from either side wins; the loser is aborted immediately
+   *
+   * Common case (primary healthy): the hedge never fires — zero extra tokens. Slow case: the
+   * user waits hedgeDelayMs (2.5s default) instead of the full serial chain. Both sides
+   * record against the rate tracker, so quota stays honest.
+   *
+   * Raced on "any provider chunk" (same signal the TTFT gate uses), NOT on first user-visible
+   * content — a healthy model streaming a long tool-call JSON stays 'alive' and is never
+   * double-served. The loser exits through `_hedgeLostSignal` without health/metrics
+   * penalties (slow ≠ broken). Skipped for: pinned/forced models, non-streaming turns,
+   * disabled config, or an already-aborted request.
+   */
+  private routeHedged(messages: ChatMessage[], opts: RouteOptions): Promise<RouteResult> {
+    const hedgeMs = this.hedgeDelayMs();
+    const canHedge =
+      hedgeMs > 0 &&
+      !!opts.onChunk &&
+      !(opts.model && opts.model !== 'auto') &&
+      !opts.abortSignal?.aborted;
+    if (!canHedge) return this.routeSerial(messages, opts);
+
+    const userSignal = opts.abortSignal;
+    const primaryCtrl = new AbortController();
+    const hedgeCtrl = new AbortController();
+    const onUserAbort = (): void => {
+      primaryCtrl.abort();
+      hedgeCtrl.abort();
+    };
+    userSignal?.addEventListener('abort', onUserAbort, { once: true });
+
+    /** Winner of the liveness race; until set, both sides may stream. Set synchronously on the
+     *  first provider chunk of either side — single-threaded JS makes this a clean arbiter. */
+    let winner: 'primary' | 'hedge' | undefined;
+    /** Models the primary loop has already moved past (its onFailover stream) — the hedge
+     *  excludes them so the two loops don't re-try the same dead candidate. */
+    const primaryTried = new Set<string>(opts.exclude ?? []);
+
+    const claimWin = (who: 'primary' | 'hedge'): void => {
+      if (winner !== undefined) return;
+      winner = who;
+      (who === 'primary' ? hedgeCtrl : primaryCtrl).abort();
+    };
+
+    const primaryOpts: RouteOptions = {
+      ...opts,
+      abortSignal: primaryCtrl.signal,
+      _hedgeLostSignal: hedgeCtrl.signal,
+      _onProviderAlive: () => claimWin('primary'),
+      _onCandidateStart: (p, m) => primaryTried.add(`${p}::${m}`),
+      onChunk: (t: string) => {
+        if (winner !== undefined && winner !== 'primary') return; // lost — suppress duplicate output
+        claimWin('primary');
+        opts.onChunk!(t);
+      },
+      onFailover: opts.onFailover
+        ? (info) => {
+          primaryTried.add(`${info.from.platform}::${info.from.modelId}`);
+          opts.onFailover!(info);
+        }
+        : (info) => {
+          primaryTried.add(`${info.from.platform}::${info.from.modelId}`);
+        },
+    };
+
+    return new Promise<RouteResult>((resolve, reject) => {
+      let hedgePromise: Promise<RouteResult> | undefined;
+      const hedgeTimer = setTimeout(() => {
+        if (winner !== undefined) return; // primary already alive; nothing to hedge
+        const hedgeOpts: RouteOptions = {
+          ...opts,
+          exclude: [...primaryTried],
+          abortSignal: hedgeCtrl.signal,
+          _hedgeLostSignal: primaryCtrl.signal,
+          _onProviderAlive: () => claimWin('hedge'),
+          onChunk: (t: string) => {
+            if (winner !== undefined && winner !== 'hedge') return;
+            claimWin('hedge');
+            opts.onChunk!(t);
+          },
+          // Duplicate UI chatter from the shadow request is noise — the user follows the
+          // winner's stream; per-attempt profiler events still flow.
+          onFailover: undefined,
+          onKeyRotated: undefined,
+          onSelectionRationale: undefined,
+        };
+        hedgePromise = this.routeSerial(messages, hedgeOpts);
+        hedgePromise.then(resolve, (hedgeErr: unknown) => {
+          // Hedge lost the liveness race (aborted away) or genuinely failed. If primary is
+          // still live its own settlement below decides; if primary already won this is a
+          // no-op (outer promise settled).
+          if (winner === 'hedge') reject(hedgeErr);
+        });
+      }, hedgeMs);
+
+      this.routeSerial(messages, primaryOpts).then((res) => {
+        clearTimeout(hedgeTimer);
+        claimWin('primary'); // a completed result wins even if it never emitted a chunk
+        if (winner === 'primary') resolve(res);
+      }, (err: unknown) => {
+        clearTimeout(hedgeTimer);
+        if (winner === 'hedge') return; // hedge owns the turn; its settlement decides
+        if (hedgePromise) {
+          // Primary is dead and a hedge is in flight — keep waiting for it before failing.
+          hedgePromise.then(resolve, () => reject(err));
+        } else {
+          hedgeCtrl.abort();
+          reject(err);
+        }
+      });
+    }).finally(() => {
+      userSignal?.removeEventListener('abort', onUserAbort);
+    });
+  }
+
+  private async routeSerial(messages: ChatMessage[], opts: RouteOptions): Promise<RouteResult> {
     const failures: Array<{ platform: Platform; model: string; reason: string; detail?: string }> = [];
-    const maxOut = opts.max_tokens ?? 4096;
-
     const sentTools = !!(opts.tools && opts.tools.length);
     const toolsTokens = sentTools ? estimateTokens(JSON.stringify(opts.tools)) : 0;
 
@@ -1014,6 +1197,11 @@ export class Router {
 
     let cands = this.candidates(opts);
     const forced = !!(opts.model && opts.model !== 'auto');
+    // Output budget sentinel for context reservation. The actual wire value is computed per
+    // candidate (its own model's reasoning flag + declared cap) from the SAME helper, so the
+    // reservation approximates from the likely winner — the top candidate after filtering.
+    const sentinelModel = cands.length ? this.catalog.find(cands[0].platform, cands[0].modelId) : undefined;
+    const maxOut = opts.max_tokens ?? defaultMaxOutputTokens(sentinelModel);
     // Drop candidates on providers that aren't auth-ready (not keyless AND no key stored). They'd
     // be skipped at request time anyway (no_api_key), but excluding them here keeps them out of the
     // selection rationale and avoids a wasted key-resolution round-trip per candidate. A forced/
@@ -1072,6 +1260,29 @@ export class Router {
           const notSlow = cands.filter((e) => !this.slowModels!.isSlow(e.platform, e.modelId));
           const slow = cands.filter((e) => this.slowModels!.isSlow(e.platform, e.modelId));
           if (slow.length > 0 && notSlow.length > 0) cands = [...notSlow, ...slow];
+        }
+      }
+    }
+
+    // Session model lock (OpenCode-style per-session continuity): Smart Auto scoring re-ranks
+    // every turn, which let one conversation drift across models with different ideas of what
+    // the earlier turns meant. When a session has a pin and the pinned model is still a viable
+    // candidate — healthy, quota available, not flagged slow, capable tier — it takes the seat
+    // back from the scorer. A real failure (429s, health=bad, slow) still rotates: the lock
+    // holds only while the model actually can serve.
+    if (vscodeConfigBoolean('tiermux.agent.sessionModelLock', true) && !forced && opts.sessionId && cands.length > 1) {
+      const lockKey = this.sessionPin.get(opts.sessionId);
+      const idx = lockKey ? cands.findIndex((e) => `${e.platform}::${e.modelId}` === lockKey) : -1;
+      if (idx > 0) {
+        const entry = cands[idx];
+        const m = this.catalog.find(entry.platform, entry.modelId);
+        const healthy = this.healthOf(entry.platform, entry.modelId) !== 'bad';
+        const canSend = m ? this.rateTracker.canSend(entry.platform, entry.modelId, m.rpmLimit, m.rpdLimit) : true;
+        const notSlow = !this.slowModels?.isSlow(entry.platform, entry.modelId);
+        const capable = !m || m.intelligenceRank <= Router.SESSION_PIN_MAX_RANK;
+        if (healthy && canSend && notSlow && capable) {
+          cands = [entry, ...cands.slice(0, idx), ...cands.slice(idx + 1)];
+          diagLog('router.sessionLock', `session ${opts.sessionId} locked to ${lockKey} (healthy, quota ok)`);
         }
       }
     }
@@ -1163,14 +1374,12 @@ export class Router {
         temperature: opts.temperature,
         // Floor the output budget when the caller didn't set one. Without this, `max_tokens` is
         // omitted from the request and the provider applies its own (often low) default — a
-        // long single-stream answer (e.g. Ask mode) then hits the cap mid-answer. Matches the
-        // non-streaming sentinel (`opts.max_tokens ?? 4096`) used for context reservation above.
-        // Reasoning models share this budget with their hidden `<think>` output, so the plain
-        // 4096 floor lets thinking alone exhaust it — the answer gets cut to nothing and
-        // ThinkStripper discards the rest, producing a "successful" but empty turn (seen via
-        // gateways like Kilo that don't set a platform-level defaultMaxTokens the way the
-        // dedicated Poolside platform does). Give reasoning models double the room.
-        max_tokens: opts.max_tokens ?? (model?.supportsReasoning ? 8192 : 4096),
+        // long single-stream answer (e.g. Ask mode) then hits the cap mid-answer. The old flat
+        // 4096/8192 floors truncated mid-answer on free tiers and leaned on the continuation
+        // stitcher (up to 4 extra calls) to band-aid it; the profile helper raises the floor
+        // (reasoning models get double room for hidden <think> output) while a declared
+        // outputTokenLimit always caps below it.
+        max_tokens: opts.max_tokens ?? defaultMaxOutputTokens(model),
         top_p: opts.top_p,
         tools: opts.tools,
         tool_choice: opts.tool_choice,
@@ -1195,6 +1404,9 @@ export class Router {
         try {
           let response: ChatCompletionResponse;
 
+          // Attempt starting on this candidate — the hedge race watches this to exclude the
+          // primary's CURRENT model, not just its already-failed ones.
+          opts._onCandidateStart?.(entry.platform, entry.modelId);
           this.rateTracker.record(entry.platform, entry.modelId);
 
           const wantsStream = !!opts.onChunk;
@@ -1247,6 +1459,9 @@ export class Router {
                 // live and responding — clear the TTFT fast-failover timer on the first one so it
                 // can't fire mid-stream. The normal timeoutMs still bounds the rest of the stream.
                 if (ttftTimer) { clearTimeout(ttftTimer); ttftTimer = undefined; }
+                // Same liveness signal feeds the delayed-hedge race (routeHedged): first wire
+                // chunk from either the primary or the hedge claims the turn; the loser aborts.
+                opts._onProviderAlive?.();
                 if (chunk.usage) finalUsage = chunk.usage;
                 const choice0 = chunk.choices?.[0];
                 if (choice0?.finish_reason) streamFinishReason = choice0.finish_reason;
@@ -1460,6 +1675,10 @@ export class Router {
           this.usageStore?.addRequest(entry.platform, entry.modelId, response.usage?.prompt_tokens || 0, response.usage?.completion_tokens || 0, response.usage?.reasoning_tokens);
           this.secrets.setStatus(entry.platform, 'healthy');
           this.markHealth(entry.platform, entry.modelId, 'ok');
+          // Serving recency for tied-band rotation (ScoringEngine.rank) — recorded for every
+          // success regardless of taskKind, so the least-recently-served peer calculation
+          // spans all traffic, not just one label.
+          this.lastServedAt.set(`${entry.platform}::${entry.modelId}`, Date.now());
 
           if (opts.taskKind) {
             const modelKey2 = `${entry.platform}::${entry.modelId}`;
@@ -1503,9 +1722,26 @@ export class Router {
             opts.onSelectionRationale?.({ taskKind: pickedRank.taskKind, picked: entry, rationale });
           }
           diagLog('router.served', `${entry.platform}::${entry.modelId} runtimeName="${(provider as any).runtimeName ?? ''}" usage=${JSON.stringify(response.usage)} contentLen=${contentToString(responseContent).length}`);
+          // Cassette recording (TIERMUX_RECORD_CASSETTE): snapshot the raw winning response
+          // with enough context (taskKind, offered tools, last role) to replay it offline as a
+          // mock fixture — record a real session once, test it forever without tokens.
+          getCassetteRecorder()?.record({
+            taskKind: opts.taskKind,
+            tools: opts.tools?.map((t) => t.function.name),
+            lastRole: messages[messages.length - 1]?.role,
+            response,
+          });
           return { response, platform: entry.platform, model: entry.modelId, runtimeName: (provider as any).runtimeName };
         } catch (err) {
           if (ttftTimer) { clearTimeout(ttftTimer); ttftTimer = undefined; }
+          // Lost the delayed-hedge race (routeHedged): the sibling request is already streaming
+          // to the user. Exit QUIETLY — no markHealth, no negative metrics, no retry waits. This
+          // model wasn't broken, it was merely slower than its peer; penalizing it would bench a
+          // healthy candidate for 60s+ on every hedge.
+          if (opts._hedgeLostSignal?.aborted) {
+            failures.push({ platform: entry.platform, model: entry.modelId, reason: 'hedged_away' });
+            break candidates;
+          }
           let { reason, failoverable, retryAfterMs, detail } = classify(err);
           // If our own TTFT fast-failover timer aborted this candidate (no chunk within ttftMs),
           // label it as a timeout rather than a generic network error — it's more accurate and
@@ -1602,6 +1838,17 @@ function vscodeConfigString(key: string, fallback: string): string {
     const vscode = require('vscode') as typeof import('vscode');
     const dot = key.lastIndexOf('.');
     return vscode.workspace.getConfiguration(key.slice(0, dot)).get<string>(key.slice(dot + 1), fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+function vscodeConfigBoolean(key: string, fallback: boolean): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const vscode = require('vscode') as typeof import('vscode');
+    const dot = key.lastIndexOf('.');
+    return vscode.workspace.getConfiguration(key.slice(0, dot)).get<boolean>(key.slice(dot + 1), fallback);
   } catch {
     return fallback;
   }

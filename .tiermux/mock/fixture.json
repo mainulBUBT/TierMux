@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "description": "Sample mock script: a tool call, a rescued text-dialect call, then a final answer. Safe in any workspace. Copy this file and edit the steps to script your own scenario — see src/router/mockFixture.ts for the full format (native tool calls, dialect text, sub-agent queues by taskKind, cassettes).",
+  "steps": [
+    {
+      "taskKind": "agent",
+      "tool": "readFile",
+      "args": { "path": "README.md" }
+    },
+    {
+      "taskKind": "agent",
+      "dialect": "<function=readFile>{\"path\": \"package.json\"}</function>"
+    },
+    {
+      "taskKind": "agent",
+      "text": "I read the project files. Ask me to make a change, or edit the steps in .tiermux/mock/fixture.json to script what the mock model does next."
+    }
+  ],
+  "default": {
+    "text": "[mock] Script exhausted — add steps to .tiermux/mock/fixture.json (or set TIERMUX_MOCK_FIXTURE to another file)."
+  }
+}

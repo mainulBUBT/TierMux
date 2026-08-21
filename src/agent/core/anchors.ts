@@ -36,10 +36,22 @@ interface Anchor {
 /** Marker opening the injected block. Also the idempotence key: any previous block is stripped
  *  before a new one is appended, so re-injecting every step can never stack copies. */
 export const ANCHOR_BLOCK_MARKER = '## Files you read this turn (re-shown — older tool output was trimmed)';
-
 /** Marker opening the touched-files manifest. Stripped and re-injected exactly like the anchor
  *  block, for the same idempotence reason. */
 export const MANIFEST_BLOCK_MARKER = '## Files you have already touched this turn';
+
+/**
+ * Harness-injected context (re-anchor digests, manifests, budget warnings) is wrapped in this
+ * tag — the `<system-reminder>` pattern, wire-agnostic. The system prompt defines the tag's
+ * semantics once ("harness-generated status, not user speech"), so a model can't mistake an
+ * injected nudge for something the user said. Consistency of the delimiter matters more than
+ * its exact spelling; every injection site must use these constants.
+ */
+export const TIERMUX_CONTEXT_OPEN = '<tiermux-context>';
+export const TIERMUX_CONTEXT_CLOSE = '</tiermux-context>';
+export function wrapTiermuxContext(body: string): string {
+  return `${TIERMUX_CONTEXT_OPEN}\n${body}\n${TIERMUX_CONTEXT_CLOSE}`;
+}
 
 /** Files given a slice of the budget. Past this, excerpts get too small to carry meaning — better
  *  to show 4 files usefully than 12 uselessly, and the freshest reads are the relevant ones. */
@@ -102,7 +114,9 @@ export class AnchorStore {
     // file is the best-attended one. Sorting ascending by step puts the newest read closest.
     const ordered = [...this.anchors.values()].sort((a, b) => a.step - b.step);
     const header = `${ANCHOR_BLOCK_MARKER}\n`;
-    const available = budgetChars - header.length;
+    // Reserve the <tiermux-context> wrapper's own chars so the content budget is real.
+    const tagOverhead = TIERMUX_CONTEXT_OPEN.length + TIERMUX_CONTEXT_CLOSE.length + 2;
+    const available = budgetChars - header.length - tagOverhead;
     if (available < MIN_EXCERPT_CHARS) return '';
 
     // Pinned files (edited this turn) claim slots first: on a multi-file task the files the model
@@ -145,8 +159,10 @@ export class AnchorStore {
     const out = header + parts.join('\n');
     // Belt and braces. Every branch above is bounded, but this block is injected on a turn that
     // ALREADY crossed the prune threshold, so "usually within budget" is not good enough — an
-    // oversized block would re-trigger the pruning it exists to compensate for.
-    return out.length <= budgetChars ? out : out.slice(0, budgetChars);
+    // oversized block would re-trigger the pruning it exists to compensate for. The context-tag
+    // overhead is reserved up front so the clamp can never cut the closing tag off.
+    const tagged = wrapTiermuxContext(out);
+    return tagged.length <= budgetChars ? tagged : tagged.slice(0, budgetChars - TIERMUX_CONTEXT_CLOSE.length) + TIERMUX_CONTEXT_CLOSE;
   }
 }
 
@@ -181,18 +197,24 @@ export function renderTouchedFiles(
   const shown = lines.slice(-MAX_MANIFEST_FILES);
   const omitted = lines.length - shown.length;
   const note = omitted > 0 ? `\n_(…and ${omitted} more)_` : '';
-  return `${MANIFEST_BLOCK_MARKER}\n${shown.join('\n')}${note}`;
+  return wrapTiermuxContext(`${MANIFEST_BLOCK_MARKER}\n${shown.join('\n')}${note}`);
 }
 
 /**
  * Remove a previously injected block from a message list. `prepareStep` may run many times on a
  * growing history; without this, each pass would append another copy and re-anchoring would
- * become the context bloat it exists to prevent.
+ * become the context bloat it exists to prevent. Matches both the current wrapped form and the
+ * older unwrapped markers still present in sessions persisted before the tag existed.
  */
 export function stripAnchorBlock<T extends { role: string; content: unknown }>(messages: T[]): T[] {
   return messages.filter((m) => !(
     m.role === 'user'
     && typeof m.content === 'string'
-    && (m.content.startsWith(ANCHOR_BLOCK_MARKER) || m.content.startsWith(MANIFEST_BLOCK_MARKER))
+    && (m.content.startsWith(ANCHOR_BLOCK_MARKER)
+      || m.content.startsWith(MANIFEST_BLOCK_MARKER)
+      // Wrapped form — but ONLY anchor/manifest blocks: other <tiermux-context> injections
+      // (budget warnings) are one-shot per turn and must survive later prepareStep passes.
+      || (m.content.startsWith(TIERMUX_CONTEXT_OPEN)
+        && (m.content.includes(ANCHOR_BLOCK_MARKER) || m.content.includes(MANIFEST_BLOCK_MARKER))))
   ));
 }

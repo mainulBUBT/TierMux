@@ -1,5 +1,7 @@
 
 
+import type { QuotaStore } from '../config/quotaStore';
+
 const MIN_MS = 60_000;
 const DAY_MS = 86_400_000;
 
@@ -29,6 +31,15 @@ export class RateTracker {
 
   private ts = new Map<string, number[]>();
 
+  /**
+   * @param store Optional persistent ledger. When given, the tracker hydrates its windows from
+   *  the last session's stamps (so a window reload keeps respecting RPM/RPD already consumed)
+   *  and writes each model's stamps back (debounced inside the store).
+   */
+  constructor(private readonly store?: QuotaStore) {
+    if (store) this.ts = store.snapshot();
+  }
+
   /** True if sending now would stay within both the per-minute and per-day limits. */
   canSend(platform: string, modelId: string, rpmRaw: number | null, rpdRaw: number | null): boolean {
     const rpmLimit = declared(rpmRaw, UNKNOWN_RPM);
@@ -49,6 +60,7 @@ export class RateTracker {
     const stamps = this.prune(key, now);
     stamps.push(now);
     this.ts.set(key, stamps);
+    this.store?.setStamps(key, stamps);
   }
 
   /**

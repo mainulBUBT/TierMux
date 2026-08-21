@@ -12,7 +12,10 @@ const MAX_CHARS = 10_000;
 
 export function createListDirTool() {
   return tool({
-    description: 'List the files and folders directly inside a workspace directory.',
+    description:
+      'List the files and folders directly inside ONE workspace directory (non-recursive). Use it to see what lives in a '
+      + 'folder; use `glob` when you are looking for files by name/pattern anywhere, and `grep` when you are looking for '
+      + 'content — not filenames.',
     inputSchema: z.object({ path: z.string().optional().describe('Workspace-relative directory path (empty for the workspace root).') }),
     execute: async ({ path }: { path?: string }) => {
       const uri = resolveWorkspacePath(path ?? '');

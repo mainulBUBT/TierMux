@@ -14,7 +14,7 @@
  *
  * Run: npm run test:e2e:reanchor
  */
-import { AnchorStore, stripAnchorBlock, renderTouchedFiles, ANCHOR_BLOCK_MARKER, MANIFEST_BLOCK_MARKER } from '../src/agent/core/anchors';
+import { AnchorStore, stripAnchorBlock, renderTouchedFiles, ANCHOR_BLOCK_MARKER, MANIFEST_BLOCK_MARKER, TIERMUX_CONTEXT_OPEN } from '../src/agent/core/anchors';
 import { blankStaleToolResults } from '../src/agent/core/loop';
 
 let failures = 0;
@@ -115,7 +115,10 @@ console.log('\n— Idempotence: re-injecting every pruned step must not stack co
   for (let i = 0; i < 10; i++) {
     msgs = [...stripAnchorBlock(msgs), { role: 'user', content: digest }];
   }
-  const blocks = msgs.filter((m) => typeof m.content === 'string' && (m.content as string).startsWith(ANCHOR_BLOCK_MARKER));
+  // Blocks are wrapped in <tiermux-context> since the tagged-injection change; count both the
+  // wrapped form and the legacy bare-marker form (persisted histories may still carry it).
+  const isBlock = (c: unknown): boolean => typeof c === 'string' && (c.startsWith(TIERMUX_CONTEXT_OPEN) || c.startsWith(ANCHOR_BLOCK_MARKER));
+  const blocks = msgs.filter((m) => isBlock(m.content));
   check('exactly one block after 10 injections', blocks.length === 1, `got ${blocks.length}`);
   check('message count stays flat', msgs.length === 3, `got ${msgs.length}`);
   check('the real conversation survives', msgs[0].content === 'original request' && msgs[1].content === 'working on it');
@@ -225,7 +228,7 @@ console.log('\n— Touched-files manifest: the floor beneath re-anchoring —');
   ]);
   const out = renderTouchedFiles(['src/a.ts', 'src/read-only.ts'], changed);
   check('empty in, empty out', renderTouchedFiles([], new Map()) === '');
-  check('starts with its marker so it can be stripped', out.startsWith(MANIFEST_BLOCK_MARKER));
+  check('starts with its wrapper (and carries the marker) so it can be stripped', out.startsWith(TIERMUX_CONTEXT_OPEN) && out.includes(MANIFEST_BLOCK_MARKER));
   check('names a changed file with its status', out.includes('src/new.ts — created'));
   check('names a read-only file', out.includes('src/read-only.ts — read'));
   check('a file both read and edited appears once, as edited', (() => {

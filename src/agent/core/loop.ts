@@ -24,14 +24,16 @@ import { createRouterProvider } from './routerProvider';
 import { createTelemetryMiddleware } from './middleware/telemetry';
 import { createToolApproval, MUTATING_TOOLS } from './policies/permission';
 import { createToolSet } from './tools';
+import { compactToolResult, toolCompactionLevel } from './tools/compactResult';
 import { getMcpManager } from './tools/mcp/manager';
 import { NEW_DIAGNOSTICS_MARKER, waitForWorkspaceDiagnosticsSettled, workspaceErrorSignatures, newErrorsSince } from './tools/workspace/formatDiagnostics';
 import { resolveVerifyCommand, runVerifyCommand } from './tools/workspace/verifyCommand';
 import { resolveWorkspacePath } from './tools/resolvePath';
-import { AnchorStore, stripAnchorBlock, renderTouchedFiles } from './anchors';
+import { AnchorStore, stripAnchorBlock, renderTouchedFiles, wrapTiermuxContext } from './anchors';
 import { TurnWatchdog } from './watchdog';
 import { planStepsToTodos } from '../../session/titles';
 import { stepDifficultyOf, type StepDifficulty } from '../stepDifficulty';
+import { resolveExecutionProfile, STRONG_RANK_MAX, UNKNOWN_RANK } from '../executionProfile';
 import { diagLog } from '../../util/diag';
 import { repairToolArguments, sanitizeToolName } from '../toolArgs';
 import type { ClarifyingQuestion } from '../clarify';
@@ -547,15 +549,60 @@ export function blankStaleToolResults(messages: CoreMessage[]): { messages: Core
       if (p) pathById.set(part.toolCallId, p);
     }
   }
+
+  // runCommand supersession (the exception to "mutating results are never pruned"): a LATER
+  // run of the SAME command makes an earlier run's bulk output redundant — the fifth `npm
+  // test` of a verify-fix loop doesn't need the first four verbatim (~30k chars each, all
+  // re-billed every step). Only the newest result of each command stays in full; superseded
+  // ones blank to a placeholder that keeps the trailing exit-code notes. The newest run is
+  // NEVER blanked, wherever it sits, so the turn's final verification state always survives.
+  const cmdById = new Map<string, string>();
+  for (const m of messages) {
+    if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
+    for (const part of m.content as Array<Record<string, unknown>>) {
+      if (part?.type !== 'tool-call' || part.toolName !== 'runCommand' || typeof part.toolCallId !== 'string') continue;
+      const c = (part.input as { command?: unknown } | undefined)?.command;
+      if (typeof c === 'string' && c.trim()) cmdById.set(part.toolCallId, c.trim());
+    }
+  }
+  const lastResultIdxByCmd = new Map<string, number>();
+  messages.forEach((m, i) => {
+    if (m.role !== 'tool' || !Array.isArray(m.content)) return;
+    for (const part of m.content as Array<Record<string, unknown>>) {
+      if (part?.type !== 'tool-result' || part.toolName !== 'runCommand') continue;
+      const cmd = cmdById.get(part.toolCallId as string);
+      if (cmd) lastResultIdxByCmd.set(cmd, i);
+    }
+  });
+
   let blanked = 0;
   const out = messages.map((m, i) => {
     if (i >= keepFrom || m.role !== 'tool' || !Array.isArray(m.content)) return m;
     let changed = false;
     const content = (m.content as Array<Record<string, unknown>>).map((part) => {
-      if (part?.type !== 'tool-result' || !PRUNABLE_TOOLS.has(part.toolName as string)) return part;
+      if (part?.type !== 'tool-result') return part;
       const output = part.output as { type?: string; value?: unknown } | undefined;
       if (output?.type !== 'text' || typeof output.value !== 'string') return part;
       if (output.value.length <= MIN_BLANK_CHARS || output.value.startsWith(STALE_RESULT_MARKER)) return part;
+
+      if (part.toolName === 'runCommand') {
+        const cmd = cmdById.get(part.toolCallId as string);
+        // Superseded only when a strictly LATER result for the same command exists.
+        if (!cmd || (lastResultIdxByCmd.get(cmd) ?? -1) <= i) return part;
+        changed = true;
+        blanked++;
+        // Keep the trailing "[Exit code: N …]" notes block so pass/fail history survives.
+        const trailing = /\n?(\[[^\[\]\n]*\])\s*$/.exec(output.value)?.[1] ?? '';
+        return {
+          ...part,
+          output: {
+            ...output,
+            value: `${STALE_RESULT_MARKER} Superseded earlier run of \`${cmd.slice(0, 80)}\` — a newer run of the same command exists below.${trailing ? ` ${trailing}` : ''}`,
+          },
+        };
+      }
+
+      if (!PRUNABLE_TOOLS.has(part.toolName as string)) return part;
       changed = true;
       blanked++;
       const path = pathById.get(part.toolCallId as string);
@@ -574,15 +621,12 @@ export function blankStaleToolResults(messages: CoreMessage[]): { messages: Core
   return { messages: out, blanked };
 }
 
-/** Intelligence rank at/above which an executor counts as "weak" for the planner→execute
- *  pipeline — rank 3+ means a mid-tier-or-worse model will serve the turn, so a planner step
- *  that decomposes the task first is worth its latency. Lower = smarter; 1 is frontier. */
-const WEAK_EXECUTOR_RANK = 3;
-
 /** Step routing (Phase 2): `easy` steps (reads/searches/lookups) route to the cheap pool —
  *  intelligenceRank >= 3. A cheap model reading a file correctly is exactly as correct as a
- *  frontier model reading it; the only thing being spent is quota that a later `hard` step
- *  will need. Unknown models (custom endpoints) always pass the filter inside Router. */
+ *  frontier model reading a file; the only thing being spent is quota that a later `hard` step
+ *  will need. Unknown models (custom endpoints) always pass the filter inside Router.
+ *  (Weak/strong EXECUTOR decisions live in executionProfile.ts — WEAK_EXECUTOR_RANK moved there
+ *  as WEAK_RANK_MIN/STRONG_RANK_MAX so loop, router, and prompts share one resolution.) */
 const EASY_STEP_MIN_RANK = 3;
 /** `hard` steps (tricky edits, refactors, debugging) get the same top-tier-only constraint the
  *  quality escalation uses — this is where model intelligence actually changes outcomes. */
@@ -907,9 +951,11 @@ const REACT_SCAFFOLD =
   + 'could not find, rather than searching again in a loop.';
 
 /** True when the model that will actually serve this task is mid-tier or worse — the condition
- *  REACT_SCAFFOLD exists for. Read-only peek; does not commit the router to a selection. */
+ *  REACT_SCAFFOLD exists for. Read-only peek; does not commit the router to a selection.
+ *  Delegates to the ExecutionProfile so every strength-dependent decision reads the same
+ *  resolved shape (see executionProfile.ts). */
 function isWeakExecutor(router: Router, taskKind: TaskKind): boolean {
-  return (router.peekTopSelection(taskKind)?.model?.intelligenceRank ?? 5) >= WEAK_EXECUTOR_RANK;
+  return resolveExecutionProfile(router.peekTopSelection(taskKind)?.model).useWeakModelScaffolding;
 }
 
 /** True when the model serving this task is top-two tier — reliable enough for parallel
@@ -917,7 +963,36 @@ function isWeakExecutor(router: Router, taskKind: TaskKind): boolean {
  *  strong models are told to BATCH independent calls (the AI SDK already executes a step's
  *  tool calls concurrently — only the prompt was forbidding it). */
 function isStrongExecutor(router: Router, taskKind: TaskKind): boolean {
-  return (router.peekTopSelection(taskKind)?.model?.intelligenceRank ?? 5) <= 2;
+  return resolveExecutionProfile(router.peekTopSelection(taskKind)?.model).strong;
+}
+
+/** Multi-step smells that DO deserve a planner pass even on a short request: step-joining
+ *  conjunctions, a numbered/bulleted list, or several file references. */
+const MULTI_STEP_JOINER = /\b(?:then|after that|and then|next,|also|plus|both)\b/i;
+const LIST_SHAPE = /^\s*(?:\d+[\.)]|[-*])\s+/m;
+/** Only plausible code/config file extensions count as file references — a bare `.{1,5}`
+ *  pattern counted `console.log` (and `node.next`, `v1.2.3`) as a second "file", wrongly
+ *  forcing single-file fixes through the planner. */
+const CODE_FILE_REF = /(?:^|[\s([{,:"'`])([\w@.-]+\/)*[\w@-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|py|rb|go|rs|java|php|cs|swift|kt|c|h|cpp|hpp|css|scss|html|htm|md|yml|yaml|toml|sh|bash|sql|vue|svelte|xml|txt)\b/gi;
+
+/** Planner gate: true when the request is a confident, short, single-action task that needs no
+ *  decomposition — "fix the typo in utils.ts", "add the import to main.ts". Pure heuristic
+ *  (regex classifyTaskCore + shape checks), zero LLM cost. Anything ambiguous errs toward
+ *  PLANNING (returns false). Exported for the planner-gate e2e. */
+export function plannerUnnecessary(text: string): boolean {
+  const t = (text || '').trim();
+  if (!t || t.length > 220) return false;
+  // Self-contained kind check: the gate only ever matters for the mixture-eligible ACTION
+  // kinds, and requiring one here keeps a question or greeting from green-lighting a skip
+  // if a future call site forgets the eligibility filter.
+  const { kind, confident } = classifyTaskCore(t);
+  if (!confident) return false;
+  if (kind !== 'agent' && kind !== 'coding' && kind !== 'debug') return false;
+  if (LIST_SHAPE.test(t)) return false;
+  if (MULTI_STEP_JOINER.test(t)) return false;
+  const fileRefs = t.match(CODE_FILE_REF) ?? [];
+  if (fileRefs.length > 1) return false;
+  return true;
 }
 
 const STRONG_MODEL_SCAFFOLD =
@@ -1439,11 +1514,48 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
   // "Original request:" line into it: the trigger words ride along, so a matched skill stays
   // active for every round of a multi-step task instead of silently dropping after round 1.
   const lastUserForSkill = [...opts.messages].reverse().find((m) => m.role === 'user');
-  const system = (await buildSystemPrompt(opts.mode, taskKind, opts.sessionId, contentToString(lastUserForSkill?.content ?? '')))
+  // weakModel comes from the ExecutionProfile inline (reanchorChars pattern: runAttempt's
+  // positional signature is already long) — same taskKind ⇒ same profile as runTurn's resolution.
+  const system = (await buildSystemPrompt(
+    opts.mode, taskKind, opts.sessionId, contentToString(lastUserForSkill?.content ?? ''),
+    resolveExecutionProfile(router.peekTopSelection(taskKind)?.model).useWeakModelScaffolding,
+  ))
     + (planGuidance ?? '');
   diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · buildSystemPrompt done`);
   const tools = createToolSet(opts, getMcpManager(), router);
   diagLog('turn.gate', `traceId=${opts.sessionId ?? '<none>'} · createToolSet done (${Object.keys(tools).length} tools)`);
+
+  // Tool circuit breaker (fail-closed discipline borrowed from dsh, turn-local). A tool that
+  // keeps THROWING — a dead MCP server, a broken shell — gets retried by the model until
+  // stuckStop's exact-repeat ×3 or the token budget; noteToolSoftFailure benches MODELS, not
+  // tools. Three consecutive failures of one tool this attempt: later steps drop it from
+  // activeTools (below), and any call already in flight reports itself disabled in the result
+  // so the model sees WHY and changes approach instead of hammering a fourth time.
+  const toolFailStreak = new Map<string, number>();
+  const brokenTools = new Set<string>();
+  for (const [name, t] of Object.entries(tools)) {
+    const toolObj = t as { execute?: (input: unknown, ...rest: unknown[]) => Promise<unknown> };
+    if (typeof toolObj?.execute !== 'function') continue; // askQuestions & approval-only tools
+    const orig = toolObj.execute.bind(toolObj);
+    toolObj.execute = async (input: unknown, ...rest: unknown[]) => {
+      if (brokenTools.has(name)) {
+        return `[TierMux] ${name} was disabled for the rest of this turn after repeated failures. Use a different tool or finish without it.`;
+      }
+      try {
+        const out = await orig(input, ...rest);
+        toolFailStreak.set(name, 0);
+        return out;
+      } catch (err) {
+        const streak = (toolFailStreak.get(name) ?? 0) + 1;
+        toolFailStreak.set(name, streak);
+        if (streak >= 3 && !brokenTools.has(name)) {
+          brokenTools.add(name);
+          diagLog('turn.toolBreaker', `${name} disabled after ${streak} consecutive failures (last: ${err instanceof Error ? err.message : String(err)})`);
+        }
+        throw err; // this failure still surfaces normally; only FUTURE calls are blocked
+      }
+    };
+  }
 
   let text = '';
   let reasoning = '';
@@ -1566,7 +1678,7 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
           if (!hasMutated && !budgetNudged && usedSoFar > maxTurnTokens * BUDGET_NUDGE_THRESHOLD) {
             budgetNudged = true;
             diagLog('turn.budgetNudge', `~${usedSoFar}tok > ${Math.round(maxTurnTokens * BUDGET_NUDGE_THRESHOLD)}tok (${Math.round(BUDGET_NUDGE_THRESHOLD * 100)}% of budget) with no mutating call yet — nudging to act now`);
-            out.messages = [...(out.messages ?? messages), { role: 'user', content: BUDGET_NUDGE }] as any;
+            out.messages = [...(out.messages ?? messages), { role: 'user', content: wrapTiermuxContext(BUDGET_NUDGE) }] as any;
           }
           // Escalation: the nudge above is words, and a weak model can just ignore words — measured
           // live 2026-08-10, a run got the nudge, kept reading anyway (a DIFFERENT file each time,
@@ -1584,11 +1696,16 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
               if (!budgetForced) {
                 budgetForced = true;
                 diagLog('turn.budgetForce', `~${usedSoFar}tok > ${Math.round(maxTurnTokens * BUDGET_FORCE_THRESHOLD)}tok (${Math.round(BUDGET_FORCE_THRESHOLD * 100)}% of budget) with no mutating call yet — restricting to [${forced.join(', ')}] only`);
-                out.messages = [...(out.messages ?? messages), { role: 'user', content: BUDGET_FORCE_NUDGE }] as any;
+                out.messages = [...(out.messages ?? messages), { role: 'user', content: wrapTiermuxContext(BUDGET_FORCE_NUDGE) }] as any;
               }
-              out.activeTools = forced as any;
+              out.activeTools = forced.filter((name) => !brokenTools.has(name)) as any;
             }
           }
+        }
+        // Circuit-breaker filter, independent of budget pressure: a tripped tool leaves the
+        // step's toolset entirely so the model physically cannot burn another round on it.
+        if (brokenTools.size > 0 && !out.activeTools) {
+          out.activeTools = Object.keys(tools).filter((name) => !brokenTools.has(name)) as any;
         }
         return out;
       },
@@ -1827,8 +1944,16 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
         tool_calls: calls.map((tc) => ({ id: tc.toolCallId, type: 'function' as const, function: { name: tc.toolName, arguments: JSON.stringify(tc.input ?? {}) } })),
       });
       const settled = new Set<string>();
+      // id → name, so the compaction pass below can apply per-tool policy (runCommand
+      // head+tail, search line-caps, readFile verbatim) — toolResults carry only the id.
+      const nameById = new Map(calls.map((tc) => [tc.toolCallId as string, tc.toolName as string]));
+      const compaction = toolCompactionLevel();
       for (const tr of step.toolResults ?? []) {
-        workMessages.push({ role: 'tool', content: typeof tr.output === 'string' ? tr.output : JSON.stringify(tr.output ?? ''), tool_call_id: tr.toolCallId });
+        const raw = typeof tr.output === 'string' ? tr.output : JSON.stringify(tr.output ?? '');
+        // RTK-style compaction BEFORE the result enters history: the model (and the persisted
+        // session) never carries the bulk of a 30k-char command output it only needs the ends of.
+        const content = compactToolResult(nameById.get(tr.toolCallId), raw, compaction);
+        workMessages.push({ role: 'tool', content, tool_call_id: tr.toolCallId });
         settled.add(tr.toolCallId);
       }
       // A tool call that THREW is reported as a `tool-error` part on `step.content`, and never
@@ -1972,9 +2097,11 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
  *  was tuned for the smallest free windows — on any model with a larger context it evicts read
  *  results the model is still actively using (one capped readFile is ~7.5k tokens, so after ~2
  *  reads everything older vanished), which reads to the user as "the agent forgot what it just
- *  looked at". 40% of the window, clamped to [12k, 60k]: small-window models keep the tight
- *  pruning they need, large-window models keep their context. Only used when the user hasn't set
- *  tiermux.agent.pruneAtTokens explicitly — a deliberate value always wins. */
+ *  looked at". 85% of the window (PRUNE_TARGET_FRACTION), clamped [12k, 120k] via the
+ *  ExecutionProfile: the old 0.40 blanked tool evidence far too early on large-window models —
+ *  the single biggest "model forgot what it read" quality killer (OpenCode compacts at ~90%).
+ *  Only used when the user hasn't set tiermux.agent.pruneAtTokens explicitly — a deliberate
+ *  value always wins. */
 function adaptivePruneAtTokens(router: Router, taskKind: TaskKind): number {
   const cfg = vscode.workspace.getConfiguration('tiermux.agent');
   const base = cfg.get<number>('pruneAtTokens', 12_000);
@@ -1982,10 +2109,11 @@ function adaptivePruneAtTokens(router: Router, taskKind: TaskKind): number {
   const ins = typeof cfg.inspect === 'function' ? cfg.inspect<number>('pruneAtTokens') : undefined;
   const userSet = ins && (ins.globalValue !== undefined || ins.workspaceValue !== undefined
     || ins.workspaceFolderValue !== undefined || ins.globalLanguageValue !== undefined);
-  if (userSet) return base;
-  const window = router.peekTopSelection(taskKind)?.model?.contextWindow;
-  if (!window || window <= 0) return base;
-  return Math.min(Math.max(Math.floor(window * 0.4), 12_000), 60_000);
+  // A value differing from the shipped default is treated as deliberate even where inspect()
+  // can't confirm it (test shims, exotic hosts) — silently overriding a tuned threshold with
+  // the profile target would be worse than honoring a possibly-stale one.
+  if (userSet || base !== 12_000) return base;
+  return resolveExecutionProfile(router.peekTopSelection(taskKind)?.model).pruneTarget;
 }
 
 export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentResult> {
@@ -2085,16 +2213,26 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     && opts.mode !== 'plan' && opts.mode !== 'ask'
     && !opts.pinnedModel
     && (taskKind === 'agent' || taskKind === 'coding' || taskKind === 'debug' || taskKind === 'longContext');
-  if (mixtureEligible) {
+  // Planner gate (dsh-inspired round-trip consciousness): a confident, short, single-action
+  // request gets no decomposition pass. The planner is one FULL serial LLM round-trip before
+  // any work starts — on an RPM-limited free tier that is often the difference between
+  // "instant" and "waited out a rate limit" (the exact complaint that motivated hedging).
+  // Only 'auto' may skip: 'on' is the user explicitly forcing the full pipeline (todo seeding,
+  // Verify: extraction — the step-routing contract), and an explicit choice is never
+  // overridden by a heuristic. Skipping only the PLANNER: scaffold selection below still
+  // runs, and the end-of-turn verify command falls back to manifest auto-detection.
+  const plannerGate = vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('plannerGate', true);
+  const simpleAction = mixtureEligible && plannerGate && mixture === 'auto' && plannerUnnecessary(lastUserText);
+  if (mixtureEligible && !simpleAction) {
     const top = router.peekTopSelection(taskKind);
-    const executorRank = top?.model?.intelligenceRank ?? 5;
+    const profile = resolveExecutionProfile(top?.model);
     // 'auto' now plans for EVERY eligible action task, not just weak executors: the plan is
     // also what seeds the todo checklist (the step-wise completion contract below) and the
     // verify command for the end-of-turn command gate, which a strong executor benefits from
     // just as much — "capable model" and "never drifts from a 6-step task" are not the same
     // claim. 'on' additionally forces the weak-executor scaffold; 'off' skips everything.
-    const scaffold = mixture === 'on' || executorRank >= WEAK_EXECUTOR_RANK;
-    diagLog('turn.pipeline', `planner step before execute (executor ${top?.entry.platform}/${top?.entry.modelId ?? '?'} rank ${executorRank}, mode=${mixture})`);
+    const scaffold = mixture === 'on' || profile.useWeakModelScaffolding;
+    diagLog('turn.pipeline', `planner step before execute (executor ${top?.entry.platform}/${top?.entry.modelId ?? '?'} rank ${profile.modelRank}, mode=${mixture})`);
     const plan = await runPlannerStep(router, opts);
     let guidance = '';
     if (plan.trim()) {
@@ -2388,7 +2526,16 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     const judgeFloor = (TASK_WORD_FLOOR[taskKind as Exclude<typeof taskKind, 'trivial'>] ?? 12) * 1.5;
     const judgeWords = first.text.trim().split(/\s+/).filter(Boolean).length;
     const borderline = quality.score > 0 || judgeWords < judgeFloor;
-    if (!shouldEscalate && borderline && JUDGEABLE_TASK_KINDS.has(taskKind) && first.text.trim()) {
+    // ExecutionProfile rule (useAnswerJudge): strong executors (rank ≤ 2) skip the LLM judge —
+    // they self-correct in-loop (the Codex/ZCode pattern), so the cascade mostly adds latency
+    // and context pollution for them. The DETERMINISTIC signals above (stuck, weak-shape,
+    // showed-code-no-tool) still apply to every model — only the semantic judge call is gated.
+    // The typeof guard keeps the e2e fake-router harnesses (minimal Router stubs) runnable.
+    const servedRank = typeof router.intelligenceRankOf === 'function'
+      ? router.intelligenceRankOf(first.platform! as Parameters<Router['intelligenceRankOf']>[0], first.model!)
+      : undefined;
+    const useAnswerJudge = (servedRank ?? UNKNOWN_RANK) > STRONG_RANK_MAX;
+    if (!shouldEscalate && useAnswerJudge && borderline && JUDGEABLE_TASK_KINDS.has(taskKind) && first.text.trim()) {
       const excludeKey = `${first.platform}::${first.model}`;
       const judge = await judgeFulfillment(router, lastUserText, first.text, taskKind, excludeKey);
       if (!judge.fulfilled) {
@@ -2515,6 +2662,19 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     // routing constraints as the turn itself — verification failure never switches models.
     while (run.ok === false && fixRound < verifyFixRounds && !opts.abortSignal?.aborted) {
       fixRound++;
+      // Pressure gate (dsh-style pre-request check): a fix round re-sends the whole turn
+      // transcript plus the failure output. When that already crowds the routed model's
+      // context window, the fix attempt starts in (or immediately hits) trimming/eviction —
+      // or a 413-overflow failover chain on the router — burning quota and serial-failover
+      // latency to reproduce a failure it can no longer reason about. Skip the round; the
+      // turn surfaces as verification-failed with the real command output instead.
+      const ctxWindow = router.peekTopSelection(taskKind)?.model?.contextWindow ?? 32_768;
+      const projected = roughTokens([...opts.messages, ...final.workMessages] as unknown as CoreMessage[])
+        + Math.ceil(run.output.slice(0, 4_000).length / 4) + 1_000 /* nudge + system overhead */;
+      if (projected > ctxWindow * 0.8) {
+        diagLog('turn.verifyCmd', `fix round ${fixRound} skipped — transcript ~${projected}tok crowds the ~${ctxWindow}tok window; surfacing as failed`);
+        break;
+      }
       diagLog('turn.verifyCmd', `${verifyCmd} exited non-zero after this turn's edits — fix round ${fixRound}/${verifyFixRounds}`);
       const nudged: AgentOpts = {
         ...opts,
@@ -2612,12 +2772,20 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     if (verifyOutcome === 'passed') {
       lines.push(`**✅ Verified** — \`${verifyCmd}\` passed${verifyFixRoundsUsed ? ` (after ${verifyFixRoundsUsed} fix round${verifyFixRoundsUsed === 1 ? '' : 's'})` : ''}.`);
     } else if (verifyGateFailed) {
-      lines.push(`**❌ Not resolved — Verification failed** — \`${verifyGateFailed}\` still exits non-zero after ${verifyFixRoundsUsed || 1} fix round${verifyFixRoundsUsed === 1 ? '' : 's'}. The changes are on disk, but the issue is NOT resolved — re-run the command to see the remaining failure.`);
+      const rounds = verifyFixRoundsUsed || 1;
+      lines.push(`**❌ Verification failed** — \`${verifyGateFailed}\` still fails after ${rounds} fix round${rounds === 1 ? '' : 's'}. Your changes are saved, but the issue isn't fully resolved yet — re-run the command to see what's left, or ask me to keep fixing it.`);
     } else {
       // The old caveat only fired on a completion-claim regex; the honest default is that
-      // EVERY untested mutating turn says so.
-      const cutShort = final.stopReason ? 'the turn was cut short before verification could run' : 'no verify command ran after the edits';
-      lines.push(`**⚠️ Unverified** — not tested: ${cutShort}. The changes are on disk but untested, so the issue is not confirmed resolved.`);
+      // EVERY untested mutating turn says so. Lead with what IS true (the changes are saved),
+      // then why they're untested and one concrete thing the user can do next — a bare
+      // failure verdict on finished work reads as "nothing happened" and users stop trusting it.
+      const reason = final.stopReason
+        ? 'the run ended before the final check could run'
+        : 'this project has no test command I could run';
+      const next = final.stopReason
+        ? 'Ask me to verify the changes, or give them a quick look yourself.'
+        : 'Give the changes a quick look — or tell me which command tests this project and I\'ll run it.';
+      lines.push(`**⚠️ Unverified** — your changes are saved but not tested yet (${reason}). ${next}`);
     }
     if (changedFiles?.length) {
       const byStatus = (st: 'created' | 'modified' | 'deleted') => changedFiles.filter((f) => f.status === st).map((f) => f.path);

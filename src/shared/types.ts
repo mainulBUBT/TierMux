@@ -133,6 +133,9 @@ export interface CatalogModel {
   released?: string;
   sizeLabel: string;
   contextWindow: number | null;
+  /** Declared max OUTPUT tokens (models.dev-style limit.output). Null/undefined = unknown —
+   *  the router then applies its own floor without a cap (see defaultMaxOutputTokens). */
+  outputTokenLimit?: number | null;
   rpmLimit: number | null;
   rpdLimit: number | null;
   monthlyTokenBudget: string;

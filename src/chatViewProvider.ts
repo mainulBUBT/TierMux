@@ -37,6 +37,7 @@ import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSu
 import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense, generateHandoff } from './agent/condense';
+import { resolveExecutionProfile } from './agent/executionProfile';
 import { resolveClarifying, type ClarifyingQuestion } from './agent/clarify';
 import { structurePlanSteps, formatStructuredSteps, extractPlanFromProse, repairPlanSteps } from './agent/planStructurer';
 import { deriveTitleFrom, extractSubjectTerms, looksLikeActionablePlan, looksLikeGroundedAnswer, offTopicCorrection, sanitizeTitle, planStepsToTodos } from './session/titles';
@@ -1765,6 +1766,48 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } catch { /* file may have moved — best-effort */ }
   }
 
+  /** Per-session auto-condense cooldown — a failed or insufficient condense must not retry on
+   *  every send (each attempt is a real LLM call against rate-limited free tiers). */
+  private autoCondenseAt = new Map<string, number>();
+  private static readonly AUTO_CONDENSE_COOLDOWN_MS = 10 * 60_000;
+
+  /**
+   * Automatic between-turn compaction. When the session history exceeds ~80% of the routed
+   * model's context window (and is long enough for condenseHistory to act on), summarize the
+   * older turns in place — same mechanism as /compact, just triggered by pressure instead of
+   * the user noticing slowness. Runs before the turn starts so the model begins with headroom
+   * rather than discovering the wall mid-turn.
+   */
+  private async maybeAutoCondense(s: Session): Promise<void> {
+    try {
+      if (!vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('autoCondense', true)) return;
+      const last = this.autoCondenseAt.get(s.id) ?? 0;
+      if (Date.now() - last < ChatViewProvider.AUTO_CONDENSE_COOLDOWN_MS) return;
+      if (!shouldCondense(s.history)) return;
+      const profile = resolveExecutionProfile(this.deps.router.peekTopSelection('chat')?.model);
+      const tokens = estimateMessagesTokens(s.history);
+      if (tokens <= profile.contextWindow * 0.8) return;
+      this.autoCondenseAt.set(s.id, Date.now());
+      const r = await condenseHistory(
+        s.history,
+        this.deps.router,
+        s.livePlatform && s.liveModel ? `${s.livePlatform}/${s.liveModel}` : undefined,
+      );
+      if (!r) return; // condense.ts already retried with a different model before giving up
+      const after = estimateMessagesTokens(r.messages);
+      s.history = r.messages;
+      this.persist(s.id);
+      this.post({
+        type: 'notice', sessionId: s.id, icon: 'compress',
+        text: `Context auto-compacted — ~${Math.round(tokens / 1000)}k → ~${Math.round(after / 1000)}k tokens `
+          + `(was approaching the model's ~${Math.round(profile.contextWindow / 1000)}k window). `
+          + 'Earlier turns summarized; recent turns kept verbatim.',
+      });
+    } catch {
+      // Best-effort: a failed auto-condense must never block or fail the user's turn.
+    }
+  }
+
   private async handleCompact(s: Session): Promise<void> {
     if (!shouldCondense(s.history)) {
       this.post({ type: 'notice', sessionId: s.id, text: 'Not enough conversation to compact yet.' });
@@ -2032,6 +2075,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
       this.beginInProgressTurn(s, m.requestId);
+      // Auto-condense (the /compact trigger, automatic): when the session history already
+      // crowds the routed model's context window, summarize BEFORE the turn so the model
+      // starts with room instead of mid-turn pruning evicting evidence. Cooldown-bounded so
+      // a failed condense never retries on every send. Manual /compact is unaffected.
+      await this.maybeAutoCondense(s);
       const cbk = this.agentCallbacks(s, m.requestId, m.mode as Mode);
       const sdkMode = m.mode as AgentMode;
       const runner = sdkMode === 'plan' ? runPlanStream : sdkMode === 'ask' ? runAskStream : runAgentStream;

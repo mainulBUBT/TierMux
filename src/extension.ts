@@ -6,6 +6,7 @@ import { SecretStore } from './config/secrets';
 import { SettingsStore } from './config/settingsStore';
 import { UsageTracker } from './config/usage';
 import { UsageStore } from './config/usageStore';
+import { QuotaStore } from './config/quotaStore';
 import { ModelStatsStore } from './config/modelStats';
 import { SlowModelStore } from './config/slowModel';
 import { Router, setSmartScoring } from './router/router';
@@ -131,11 +132,12 @@ export function activate(context: vscode.ExtensionContext): void {
     void backgroundCatalogSync();
     const usage = new UsageTracker();
     const usageStore = new UsageStore(context.globalState);
+    const quotaStore = new QuotaStore(context.globalState);
     const modelStats = new ModelStatsStore(context.globalState);
     const slowModels = new SlowModelStore(context.globalState);
     const metrics = new MetricsStore(context.globalState);
     const scoring = new ScoringEngine(catalog, metrics, modelStats);
-    const router = new Router(secrets, settings, catalog, usage, modelStats, usageStore, slowModels, metrics, scoring);
+    const router = new Router(secrets, settings, catalog, usage, modelStats, usageStore, slowModels, metrics, scoring, quotaStore);
 
     let profiler: IProfilerService = createProfiler(
       vscode.workspace.getConfiguration('tiermux.profiler').get<boolean>('enabled', false),

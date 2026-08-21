@@ -33,6 +33,16 @@ npm run watch      # esbuild rebuilds on save
 
 > Editing **`media/`** (webview `main.js` / `main.css`) only needs a dev-window reload — it's served directly, not bundled. Editing **`src/`** needs a rebuild (the watcher handles it), then a reload.
 
+## Testing without tokens (mock model)
+
+Three ways to run the full agent with **zero API calls** — no keys, no enabled models needed:
+
+1. **Canned fake (quick smoke):** launch config *"Run Extension (Fake Model — no tokens)"* (sets `TIERMUX_FAKE_MODEL=1`). Every turn makes one dummy tool call, then answers with canned text.
+2. **Scripted fixture (scenarios):** launch config *"Run Extension (Mock Fixture — scripted scenario, no tokens)"*. Edit `.tiermux/mock/fixture.json` to script what the "model" does, step by step — native tool calls, plain text, or raw weak-model dialect (`<function=readFile>{…}</function>`) that exercises the rescue/nudge recovery paths. Steps queue **per taskKind** (`agent` = main turn, `coding`/`reasoning` = sub-agents like `delegate`/`implementPipeline`, `*` = any), so a parent turn and its sub-agents each play their own movie. Point `TIERMUX_MOCK_FIXTURE` at any other file to switch scenarios.
+3. **Cassette (record once, replay forever):** run a REAL session with `TIERMUX_RECORD_CASSETTE=/path/cassette.json` set in the launch env. Every successful `Router.route()` response is appended verbatim. Convert it to a replayable fixture with `cassetteToFixture()` (`src/router/mockFixture.ts`), or just study the file to see exactly what a model sent.
+
+Contract tests: `npm run test:e2e:mock-fixture` (queue semantics, full `runTurn()` over a fixture incl. dialect rescue, cassette round-trip). Most loop behavior can be developed this way — only prompt-tuning ("does the model actually listen?") still needs real tokens.
+
 ## Scripts
 
 | Command | What it does |

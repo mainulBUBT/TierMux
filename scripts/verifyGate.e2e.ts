@@ -165,8 +165,8 @@ async function main() {
     const result = await runTurn(fakeRouter, makeOpts());
     ok('gate failed: exactly 3 router calls (no re-run after a non-mutating retry)', n === 3);
     ok('gate failed: final text carries the Verification-failed note', result.text.includes('Verification failed'));
-    ok('report: ❌ Not resolved status states the issue is NOT resolved',
-      result.text.includes('**❌ Not resolved') && result.text.includes('NOT resolved'));
+    ok('report: ❌ Verification-failed status states the issue is not fully resolved',
+      result.text.includes('**❌ Verification failed**') && result.text.includes("isn't fully resolved yet"));
     ok('gate failed: the note names the command', result.text.includes('`false`'));
   }
 
@@ -236,7 +236,7 @@ async function main() {
     ok('gate off: no verifying step ran', !steps.some((s) => s.startsWith('Verifying with')));
     ok('gate off: unverified completion claim still gets the honesty badge', result.text.includes('Unverified'));
     ok('report: ⚠️ Unverified status fires for EVERY untested mutating turn (not just claim-regex hits)',
-      result.text.includes('**⚠️ Unverified**') && result.text.includes('not confirmed resolved'));
+      result.text.includes('**⚠️ Unverified**') && result.text.includes('not tested yet'));
   }
 
   // --- Test 6: verifyFixRounds=2 (default) — a second fix round runs when the first keeps failing ---

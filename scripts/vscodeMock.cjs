@@ -20,7 +20,28 @@ const vscodeMock = {
     // globalThis.__tiermuxTestConfig (e.g. `{ mixturePipeline: 'off' }` to keep the
     // planner step out of router-call-count assertions) — see the e2e scripts.
     getConfiguration: () => ({ get: (key, def) => (globalThis.__tiermuxTestConfig && Object.prototype.hasOwnProperty.call(globalThis.__tiermuxTestConfig, key) ? globalThis.__tiermuxTestConfig[key] : def) }),
-    fs: {},
+    // Real-disk-backed workspace.fs. Seam tests (reanchor, prune-threshold, prompt-diet…)
+    // exercise the REAL tools, which read/write through vscode.workspace.fs — an empty {}
+    // made every readFile fail with "File not found", leaving those tests asserting against
+    // phantom data. Backed by node:fs so tmp-dir fixtures read back exactly as written.
+    fs: (() => {
+      const fsp = require('fs').promises;
+      const p = (uri) => uri.fsPath ?? uri.path;
+      return {
+        readFile: async (uri) => fsp.readFile(p(uri)),
+        writeFile: async (uri, content) => fsp.writeFile(p(uri), content),
+        stat: async (uri) => {
+          const s = await fsp.stat(p(uri));
+          return { ...s, type: s.isDirectory() ? 2 : 1, size: s.size, mtime: s.mtime, isDirectory: () => s.isDirectory(), isFile: () => s.isFile() };
+        },
+        createDirectory: async (uri) => fsp.mkdir(p(uri), { recursive: true }),
+        delete: async (uri) => fsp.rm(p(uri), { recursive: true, force: true }),
+        readDirectory: async (uri) => {
+          const ents = await fsp.readdir(p(uri), { withFileTypes: true });
+          return ents.map((e) => [e.name, e.isDirectory() ? 2 : 1]);
+        },
+      };
+    })(),
     findFiles: async () => [],
     asRelativePath: (u) => (u && u.fsPath) || String(u),
   },
