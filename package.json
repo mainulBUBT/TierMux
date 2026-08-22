@@ -257,19 +257,19 @@
           "group": "navigation@2"
         },
         {
-          "command": "tiermux.compactChat",
+          "command": "tiermux.openModelSettings",
           "when": "view == tiermux.chat",
           "group": "navigation@3"
         },
         {
-          "command": "tiermux.generateHandoff",
+          "command": "tiermux.compactChat",
           "when": "view == tiermux.chat",
-          "group": "navigation@4"
+          "group": "1_tiermux@1"
         },
         {
-          "command": "tiermux.openModelSettings",
+          "command": "tiermux.generateHandoff",
           "when": "view == tiermux.chat",
-          "group": "navigation@5"
+          "group": "1_tiermux@2"
         }
       ],
       "editor/context": [
@@ -715,7 +715,11 @@
     "test:e2e:circuit": "esbuild scripts/circuitBreaker.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/circuitBreaker.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/circuitBreaker.e2e.cjs",
     "test:e2e:scoring": "esbuild scripts/scoring.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/scoring.e2e.cjs && node dist/scoring.e2e.cjs",
     "test:e2e:tiermuxWeb": "esbuild scripts/tiermuxWeb.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:jsdom --outfile=dist/tiermuxWeb.e2e.cjs && node dist/tiermuxWeb.e2e.cjs",
+    "test:e2e:unifiedDiff": "esbuild scripts/unifiedDiff.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/unifiedDiff.e2e.cjs && node dist/unifiedDiff.e2e.cjs",
+    "test:e2e:workReport": "esbuild scripts/workReport.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/workReport.e2e.cjs && node dist/workReport.e2e.cjs",
+    "test:e2e:toolDiff": "esbuild scripts/toolDiff.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:jsdom --outfile=dist/toolDiff.e2e.cjs && node -r ./scripts/webDomMock.cjs dist/toolDiff.e2e.cjs",
     "test:e2e:smart-routing": "esbuild scripts/smartRouting.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/smartRouting.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/smartRouting.e2e.cjs",
+    "test:e2e:cooldown-recovery": "esbuild scripts/cooldownRecovery.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/cooldownRecovery.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/cooldownRecovery.e2e.cjs",
     "test:e2e:vision-classify": "esbuild scripts/visionClassify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/visionClassify.e2e.cjs && node dist/visionClassify.e2e.cjs",
     "test:e2e:core": "esbuild scripts/coreLoop.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/coreLoop.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/coreLoop.e2e.cjs",
     "test:e2e:plan-escalation": "esbuild scripts/planEscalation.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planEscalation.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planEscalation.e2e.cjs",

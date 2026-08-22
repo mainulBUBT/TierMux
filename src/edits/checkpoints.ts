@@ -43,12 +43,15 @@ export function registerCheckpointContentProvider(): vscode.Disposable {
 let diffTokenSeq = 0;
 
 interface Snapshot { uri: vscode.Uri; rel: string; before: string | null }
-interface Checkpoint { id: string; requestId: string; label: string; ts: number; snaps: Map<string, Snapshot>; beginTree?: string }
+interface Checkpoint { id: string; requestId: string; label: string; ts: number; snaps: Map<string, Snapshot>; beginTree?: string; touched: Set<string> }
 
 /** JSON-serializable form of a Checkpoint, for persisting across an extension host restart. */
 export interface SerializedCheckpoint {
   id: string; requestId: string; label: string; ts: number; beginTree?: string;
   snaps: Array<{ uri: string; rel: string; before: string | null }>;
+  /** Paths TIERMUX itself edited this turn (edit-tool writes + attributed shell edits). Pre-dates
+   *  this field being tracked → absent on old persisted sessions. */
+  touched?: string[];
 }
 
 export class CheckpointManager {
@@ -64,6 +67,7 @@ export class CheckpointManager {
       this.checkpoints = restored.map((c) => ({
         id: c.id, requestId: c.requestId, label: c.label, ts: c.ts, beginTree: c.beginTree,
         snaps: new Map(c.snaps.map((s) => [s.uri, { uri: vscode.Uri.parse(s.uri), rel: s.rel, before: s.before }])),
+        touched: new Set(c.touched ?? []),
       }));
       this.counter = restored.length;
     }
@@ -77,6 +81,7 @@ export class CheckpointManager {
     return this.checkpoints.map((c) => ({
       id: c.id, requestId: c.requestId, label: c.label, ts: c.ts, beginTree: c.beginTree,
       snaps: [...c.snaps.values()].map((s) => ({ uri: s.uri.toString(), rel: s.rel, before: s.before })),
+      touched: [...c.touched],
     }));
   }
 
@@ -89,7 +94,7 @@ export class CheckpointManager {
    */
   async begin(requestId: string, label: string): Promise<void> {
     const beginTree = this.cwd ? await captureWorkingTree(this.cwd) : undefined;
-    this.current = { id: `cp${++this.counter}`, requestId, label, ts: Date.now(), snaps: new Map(), beginTree: beginTree ?? undefined };
+    this.current = { id: `cp${++this.counter}`, requestId, label, ts: Date.now(), snaps: new Map(), beginTree: beginTree ?? undefined, touched: new Set() };
   }
 
   /** Record a file's pre-edit content the first time it's touched in this turn. */
@@ -97,8 +102,17 @@ export class CheckpointManager {
     const cp = this.current;
     if (!cp) return;
     const key = uri.toString();
+    cp.touched.add(vscode.workspace.asRelativePath(uri));
     if (cp.snaps.has(key)) return; // keep the earliest pre-turn state
     cp.snaps.set(key, { uri, rel: vscode.workspace.asRelativePath(uri), before });
+  }
+
+  /** Mark paths as TIERMUX-edited without a content snapshot — used for changes attributed to
+   *  the agent's shell commands, where only the path set (not the pre-content) is known. */
+  recordTouched(rels: string[]): void {
+    const cp = this.current;
+    if (!cp) return;
+    for (const rel of rels) cp.touched.add(rel);
   }
 
   /** Finalize the current checkpoint; keep it if it captured edits OR a git begin tree. */
@@ -177,6 +191,37 @@ export class CheckpointManager {
     const seen = new Set(gitFiles.map((f) => f.rel));
     for (const f of snapFiles) if (!seen.has(f.rel)) gitFiles.push(f);
     return gitFiles;
+  }
+
+  /** Paths TIERMUX itself edited from checkpoint `id` onward — edit-tool writes (record())
+   *  plus changes attributed to the agent's shell commands (recordTouched()). */
+  private aggregateTouchedSince(id: string): Set<string> {
+    const start = this.checkpoints.findIndex((c) => c.id === id);
+    const touched = new Set<string>();
+    if (start < 0) return touched;
+    for (let i = start; i < this.checkpoints.length; i++) {
+      for (const rel of this.checkpoints[i].touched) touched.add(rel);
+    }
+    return touched;
+  }
+
+  /**
+   * changedFiles() filtered to what TIERMUX itself edited — the set the pinned composer
+   * "changed files" overview shows. Without this filter the bar lists EVERY workspace change
+   * since the session's first turn (the user's own edits, build output, other tools), which
+   * misrepresents the review list as agent work. Revert semantics (restore/`Undo all`) still
+   * use the full changedFiles() set. Falls back to unfiltered when no touched data exists
+   * (checkpoints persisted before touched-tracking was added).
+   */
+  async agentChangedFiles(id: string): Promise<CheckpointFile[]> {
+    const all = await this.changedFiles(id);
+    const touched = this.aggregateTouchedSince(id);
+    if (!touched.size) return all;
+    // Snap rels are TierMux-edited by definition — also honor them directly so a
+    // record()-stored rel that differs in convention from the git rel (workspace root ≠
+    // repo root) still matches its own snap-sourced entry.
+    const snapRels = new Set([...this.aggregateSince(id).values()].map((s) => s.rel));
+    return all.filter((f) => touched.has(f.rel) || snapRels.has(f.rel));
   }
 
   /** Restore the workspace to its state before this message. Returns # restored. */

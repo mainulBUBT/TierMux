@@ -10,6 +10,7 @@
  */
 
 import { send } from '../bridge';
+import { fmtDuration } from '../format';
 
 // ----- Types ---------------------------------------------------------------
 
@@ -55,11 +56,7 @@ export interface WatchdogContext {
 // ----- Helpers ---------------------------------------------------------------
 
 function fmtElapsed(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return r ? `${m}m ${r}s` : `${m}m`;
+  return fmtDuration(Math.max(0, Math.round(ms / 1000)));
 }
 
 function activityLine(label?: string, ageMs?: number): string {
@@ -79,11 +76,14 @@ function ensureCard(ctx: WatchdogContext, requestId: string): { target: Target; 
 
 // ----- Handlers ---------------------------------------------------------------
 
-/** Informational only — no buttons, no action implied. */
+/** Informational only — no buttons, no action implied. Worded to answer "is this broken?"
+ *  up front: free-tier models routinely queue 30-60s before their first token, so the notice
+ *  names the likely cause instead of sounding like a failure. */
 export function handleWatchdogWarning(ctx: WatchdogContext, msg: WatchdogWarningMessage): void {
   const { el } = ensureCard(ctx, msg.requestId);
   el.className = 'watchdog-notice';
-  el.textContent = `No response for ${fmtElapsed(msg.elapsedMs)}. The model may still be working.`;
+  const last = msg.lastActivityLabel ? ` (last: ${msg.lastActivityLabel})` : '';
+  el.textContent = `Still working — waiting on the model for ${fmtElapsed(msg.elapsedMs)}${last}. Free models can queue for a while; the Stop button always works.`;
   el.title = activityLine(msg.lastActivityLabel, msg.lastActivityAgeMs);
   ctx.scrollDown();
 }

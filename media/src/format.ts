@@ -40,6 +40,18 @@ export function fmtUsd(n: number): string {
   return '$' + n.toFixed(2);
 }
 
+// Human duration: 42 -> "42s", 182 -> "3m 2s", 3755 -> "1hr 2m", 90000 -> "25hr".
+// Seconds stay bare only under a minute; above that the largest two significant units
+// carry the display (a live timer never needs "1hr 2m 3s" precision).
+export function fmtDuration(totalSeconds: number): string {
+  const s = Math.max(0, Math.round(totalSeconds || 0));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return s % 60 ? `${m}m ${s % 60}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  return m % 60 ? `${h}hr ${m % 60}m` : `${h}hr`;
+}
+
 export function fmtSessionDate(ts?: number | string | Date | null): string {
   if (!ts) return '';
   const d = new Date(ts);

@@ -31,10 +31,10 @@ const realNow = Date.now;
 Date.now = () => clock;
 
 // slow model on a skipPreflight platform (no preflight fetch to reason about),
-// fast model on another skipPreflight platform. Equal catalog fitness so RUNTIME
+// fast model on another platform. Equal catalog fitness so RUNTIME
 // (learned latency) is the only thing that can separate them.
 const SLOW: FallbackEntry = { platform: 'ollama' as Platform, modelId: 'slow-model', enabled: true, priority: 0 };
-const FAST: FallbackEntry = { platform: 'github' as Platform, modelId: 'fast-model', enabled: true, priority: 1 };
+const FAST: FallbackEntry = { platform: 'groq' as Platform, modelId: 'fast-model', enabled: true, priority: 1 };
 const LATENCY: Record<string, number> = { 'slow-model': 20_000, 'fast-model': 800 };
 
 function model(e: FallbackEntry): CatalogModel {
@@ -120,12 +120,12 @@ async function main() {
     // Force each model a few times so its real latency lands in MetricsStore via
     // the router's own success-recording code (not a synthetic seed()).
     for (let i = 0; i < 5; i++) {
-      await router.route(msgs, { model: 'github::fast-model', taskKind: 'chat' });
+      await router.route(msgs, { model: 'groq::fast-model', taskKind: 'chat' });
       await router.route(msgs, { model: 'ollama::slow-model', taskKind: 'chat' });
     }
 
     const slowAgg = metrics.modelAgg('ollama', 'slow-model', 'chat');
-    const fastAgg = metrics.modelAgg('github', 'fast-model', 'chat');
+    const fastAgg = metrics.modelAgg('groq', 'fast-model', 'chat');
     ok('warm-up: slow model latency learned (~20s baseline)', metrics.totalBaseline(slowAgg) > 10_000);
     ok('warm-up: fast model latency learned (~0.8s baseline)', metrics.totalBaseline(fastAgg) < 3_000);
     ok('warm-up: both models sampled >= minSamples', metrics.sampleCount(slowAgg) >= 3 && metrics.sampleCount(fastAgg) >= 3);
@@ -150,7 +150,7 @@ async function main() {
           pickedFirst = info.picked ? `${info.picked.platform}::${info.picked.modelId}` : '';
         },
       });
-      if (pickedFirst === 'github::fast-model') fastFirst++;
+      if (pickedFirst === 'groq::fast-model') fastFirst++;
       if (res.model === 'fast-model') fastServed++;
     }
 

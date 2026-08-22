@@ -115,5 +115,27 @@ export async function restoreToTree(cwd: string, beginTree: string): Promise<num
 }
 
 async function pathExists(p: vscode.Uri): Promise<boolean> {
-  try { await vscode.workspace.fs.stat(p); return true; } catch { return false; }
+  try { await vscode.workspace.fs.stat(p); } catch { return false; }
+  return true;
+}
+
+/**
+ * Workspace-relative paths git currently reports as dirty (tracked + untracked, non-ignored),
+ * mapped to their full `git status --porcelain` line (status codes + path). Cheap (no tree
+ * write), used to attribute workspace changes to the agent's shell commands: a path whose
+ * line appears/changes between just-before and just-after a command was edited by that
+ * command. Renames ("XY old -> new") are keyed by the NEW path.
+ */
+export async function statusLines(cwd: string): Promise<Map<string, string>> {
+  const out = await git(cwd, ['status', '--porcelain']);
+  const map = new Map<string, string>();
+  for (const line of out.split('\n')) {
+    const t = line.trimEnd();
+    if (!t) continue;
+    let p = t.slice(3);
+    const arrow = p.indexOf(' -> ');
+    if (arrow !== -1) p = p.slice(arrow + 4);
+    if (p) map.set(p.replace(/^"|"$/g, ''), t);
+  }
+  return map;
 }

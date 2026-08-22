@@ -1,5 +1,6 @@
 // Wire protocol between the extension host and the chat webview.
 import type { CatalogModel, FallbackEntry, KeyStatus, Mode, Platform, PlanRunState, ReasoningEffort, TodoItem } from './shared/types';
+import type { WorkReportData } from './shared/workReport';
 import type { ClarifyingQuestion } from './agent/clarify';
 import type { McpServerConfig } from './mcp/mcpClient';
 export type { McpServerConfig, McpLocalServerConfig, McpRemoteServerConfig, McpOAuthConfig } from './mcp/mcpClient';
@@ -173,6 +174,9 @@ export interface MentionItem {
 export type InMessage =
   | { type: 'ready' }
   | { type: 'sendMessage'; requestId: string; text: string; mode: Mode; model: string; reasoningEffort: ReasoningEffort; attachments?: Attachment[]; attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'> }
+  /** "Run checks" on a ResultCard: re-run the project's verify command outside a turn and
+   *  post the outcome as its own bubble — no model call, no edits. See runManualVerify. */
+  | { type: 'verifyTurn'; sessionId: string }
   | { type: 'approvePlan'; requestId: string; approved: boolean; steps: string }
   | { type: 'executePlan'; requestId: string; steps: string }
   | { type: 'deferPlan'; requestId: string; steps: string }
@@ -280,6 +284,11 @@ export interface TranscriptMessage {
   /** Present on user turns that had one — replayed as attachment chips on re-render
    *  (session switch/reload) and restored to the composer by "Revert to here". */
   attachments?: Attachment[];
+  /** Structured end-of-turn report — the CANONICAL representation a replay renders as a
+   *  ResultCard. When present, `.text` also carries the legacy markdown serialization
+   *  (renderLegacyMarkdown) purely so pre-WorkReportData readers keep working; new code
+   *  must render from here and never parse that markdown back. */
+  workReport?: WorkReportData;
 }
 
 /** Live status of a session, shown as a dot on its tab. */
@@ -303,6 +312,11 @@ export type OutMessage =
   // SAME requestId — the model/usage footer is deferred to the eventual final answer bubble
   // (a new requestId, once the user answers) instead of showing on the question-asking turn.
   | { type: 'assistantMessage'; sessionId: string; requestId: string; text: string; reasoning?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean; noFooter?: boolean }
+  // Structured end-of-turn report — posted right after the assistantMessage it belongs to.
+  // The webview mounts a ResultCard on the live turn target AND stores it for replay parity
+  // (same component renders both paths). `text` in the paired assistantMessage deliberately
+  // carries NO report markdown — the card replaces that legacy serialization.
+  | { type: 'workReport'; sessionId: string; requestId: string; report: WorkReportData }
   | { type: 'assistantChunk'; sessionId: string; requestId: string; text: string }
   // Retract the live text draft: text that streamed as a tentative chat reply turned out to be
   // narration from a tool-planning step (a tool call just arrived in the same step). That text is
@@ -341,6 +355,7 @@ export type OutMessage =
   | { type: 'keyRotated'; sessionId: string; requestId: string; platform: string; platformName: string; keyIndex: number; keyTotal: number }
   | { type: 'attachmentAdded'; attachment: Attachment }
   | { type: 'insertMention'; text: string }
+  /** Host→webview hint that a mention was inserted (see openFilePicker flows). */
   | { type: 'mentionResults'; queryId: number; items: MentionItem[] }
   | { type: 'grepResults'; queryId: number; items: Array<{ path: string; lineNumber: number; lineText: string }> }
   | { type: 'mcpRegistryResults'; queryId: number; items: McpRegistryItem[]; error?: string }

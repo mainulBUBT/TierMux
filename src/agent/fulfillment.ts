@@ -16,7 +16,7 @@
 //    maxIntelligenceRank), so a weak model is never asked to grade its own non-answer.
 import { generateText, Output } from 'ai';
 import { z } from 'zod';
-import type { Router } from '../router/router';
+import type { Router, RouteOptions } from '../router/router';
 import type { TaskKind } from './routing';
 import { createRouterProvider } from './core/routerProvider';
 
@@ -45,6 +45,7 @@ export async function judgeFulfillment(
   assistantReply: string,
   _taskKind: TaskKind,
   excludeModel?: string,
+  usageSink?: RouteOptions['onUsage'],
 ): Promise<{ fulfilled: boolean; reason: string }> {
   const fallback = { fulfilled: true, reason: '' };
   if (!userRequest.trim() || !assistantReply.trim()) return fallback;
@@ -53,6 +54,7 @@ export async function judgeFulfillment(
       taskKind: 'plan', // light, reasoning-shaped routing for the judge turn
       excludeModels: excludeModel ? [excludeModel] : undefined,
       maxIntelligenceRank: 2, // a capable judge — never the weak model under review
+      usageSink,
     });
     const result = await generateText({
       model,
@@ -101,6 +103,7 @@ export async function compareAnswers(
   answerA: string,
   answerB: string,
   excludeModel?: string,
+  usageSink?: RouteOptions['onUsage'],
 ): Promise<{ pick: 'A' | 'B'; reason: string }> {
   const fallback = { pick: 'A' as const, reason: '' };
   if (!userRequest.trim() || !answerB.trim()) return fallback;
@@ -110,6 +113,7 @@ export async function compareAnswers(
       taskKind: 'plan',
       excludeModels: excludeModel ? [excludeModel] : undefined,
       maxIntelligenceRank: 2,
+      usageSink,
     });
     const result = await generateText({
       model,

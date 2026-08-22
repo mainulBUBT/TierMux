@@ -36,8 +36,13 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   // answer — an unset/small max_tokens lets it exhaust the budget mid-<think>, which
   // ThinkStripper correctly discards, producing an empty (but billed) turn.
   { platform: 'poolside', name: 'Poolside', baseUrl: 'https://inference.poolside.ai/v1', timeoutMs: 120000, skipPreflight: true, defaultMaxTokens: 8192, keyUrl: 'https://poolside.ai' },
-  { platform: 'tokenrouter', name: "Token Router", baseUrl: "https://api.tokenrouter.com/v1", skipPreflight: true, timeoutMs: 600000 }, // auto-synced
   { platform: 'nararouter', name: "Nara Router", baseUrl: "https://router.bynara.id/v1", skipPreflight: true, timeoutMs: 600000 }, // auto-synced
+  { platform: 'aionlabs', name: "Aion Labs", baseUrl: "https://api.aionlabs.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://www.aionlabs.ai/accounts/login/" }, // auto-synced
+  { platform: 'chatanywhere', name: "ChatAnywhere", baseUrl: "https://api.chatanywhere.org/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://chatanywhere.tech/" }, // auto-synced
+  { platform: 'openadapter', name: "OpenAdapter", baseUrl: "https://api.openadapter.in/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://dashboard.openadapter.in/" }, // auto-synced
+  { platform: 'orcarouter', name: "OrcaRouter", baseUrl: "https://api.orcarouter.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://www.orcarouter.ai/" }, // auto-synced
+  { platform: 'requesty', name: "Requesty", baseUrl: "https://router.requesty.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://app.requesty.ai/sign-up" }, // auto-synced
+  { platform: 'router9', name: "Router9", baseUrl: "https://api.router9.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://www.router9.com/login" }, // auto-synced
 ];
 
 const providers = new Map<Platform, BaseProvider>();

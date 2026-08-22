@@ -660,6 +660,22 @@ details[open].reasoning summary::before { content: '▾ '; }
 }
 .changed-bar .cb-file:hover { background: var(--vscode-list-hoverBackground); border-color: var(--vscode-focusBorder); }
 .changed-bar .cb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Per-extension tile so file types are scannable at a glance (no icon assets shipped —
+   a 2–4 letter ext on a tinted chip, colored by language family). */
+.cb-ext {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 15px; padding: 0 3px;
+  font-size: 8.5px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase;
+  border-radius: 4px; line-height: 1;
+}
+.cb-ext.code   { background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 22%, transparent); color: var(--vscode-charts-blue, #3794ff); }
+.cb-ext.data   { background: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 22%, transparent); color: var(--vscode-charts-yellow, #cca700); }
+.cb-ext.style  { background: color-mix(in srgb, var(--vscode-charts-purple, #a350dd) 22%, transparent); color: var(--vscode-charts-purple, #a350dd); }
+.cb-ext.text   { background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.18)); color: var(--vscode-descriptionForeground, #888); }
+.cb-ext.lang   { background: color-mix(in srgb, var(--vscode-charts-green, #2ea043) 22%, transparent); color: var(--vscode-charts-green, #2ea043); }
+.cb-ext.markup { background: color-mix(in srgb, var(--vscode-charts-orange, #d18616) 22%, transparent); color: var(--vscode-charts-orange, #d18616); }
+.cb-ext.img    { background: color-mix(in srgb, var(--vscode-charts-red, #c33) 18%, transparent); color: var(--vscode-charts-red, #c33); }
+.cb-ext.misc   { background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.18)); color: var(--vscode-descriptionForeground, #888); }
 .changed-bar .cb-badge {
   flex: 0 0 auto; font-size: 9px; font-weight: 700; width: 13px; text-align: center;
   border-radius: 3px; color: #fff;
@@ -822,8 +838,9 @@ details[open].reasoning summary::before { content: '▾ '; }
   border: none; outline: none; padding: 2px 4px; font-family: inherit; font-size: inherit;
 }
 .input-wrap textarea::placeholder { color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground)); opacity: .85; }
-/* The toolbar is a single row that must never wrap: the left group (mode/model/reasoning)
-   shrinks first, the right group (toggles/send) stays fixed-size and pinned to the end. */
+/* The toolbar is a single row that must never wrap: the left group (agent picker, model
+   picker, attach) shrinks first, the right group (toggles/send) stays fixed-size and pinned
+   to the end. */
 .toolbar { display: flex; align-items: center; flex-wrap: nowrap; gap: 6px; min-width: 0; }
 .tgroup { display: flex; align-items: center; flex-wrap: nowrap; gap: 4px; min-width: 0; }
 .tgroup:not(.right) { flex: 1 1 auto; min-width: 0; }
@@ -838,22 +855,8 @@ details[open].reasoning summary::before { content: '▾ '; }
 }
 .pill:hover { background: var(--vscode-toolbar-hoverBackground); border-color: var(--vscode-focusBorder); }
 .pill:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
-.pill-icon { flex: 0 0 auto; display: inline-flex; align-items: center; opacity: .8; }
-.pill-icon svg { display: block; }
-button#model-btn {
-  position: relative; max-width: 120px; text-align: left;
-  display: inline-flex; align-items: center;
-}
-/* Agent-type (mode) pill reads as the primary control in the toolbar: a filled chip with its
-   own accent tint, rather than the plain outline the other pills use. */
-.agent-type-btn {
-  max-width: 100px; flex-shrink: 0;
-  background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
-  border-color: transparent; font-weight: 600;
-}
-.agent-type-btn:hover { background: var(--vscode-badge-background); filter: brightness(1.1); }
-.agent-type-btn .chev { opacity: .6; margin-left: -1px; }
-.agent-type-btn .chev svg { width: 9px; height: 9px; }
+/* The agent-type and model pickers are tm--prefixed components now
+   (media/src/ui/components/{AgentPicker,ModelPicker}.ts + styles/components/composer.css). */
 
 /* Auto-approve toggle pill: dim when off, accent-filled when on. */
 .toggle-pill {
@@ -901,93 +904,17 @@ button#model-btn {
 [data-tooltip]:hover::after {
   opacity: 1;
 }
-button#model-btn .mb-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 0; }
 
-/* One shared down-chevron for the mode / model / effort controls so they match.
-   Native <select> arrows are removed; the glyph uses currentColor for theme parity. */
-.select-wrap { position: relative; display: inline-flex; min-width: 0; flex: 0 1 64px; }
-/* No dropdown caret — matches the caret-less mode/model pills for a clean, consistent toolbar. */
-.select-wrap > select.pill { appearance: none; -webkit-appearance: none; max-width: none; width: 100%; }
-
-/* Custom scrollable, searchable model dropdown */
-/* Mode picker (custom dropdown: short name on the button, name + description in the list) */
-.mode-picker { position: relative; min-width: 0; }
-.mode-pop {
-  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 50;
-  width: 250px; max-height: 50vh; overflow-y: auto;
-  background: var(--vscode-dropdown-background, var(--vscode-editor-background));
-  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
-  border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, .45); padding: 4px;
-}
-.mode-pop.hidden { display: none; }
-.mode-item { display: flex; align-items: flex-start; gap: 8px; padding: 7px 8px; border-radius: 6px; cursor: pointer; }
-.mode-item:hover { background: var(--vscode-list-hoverBackground); }
-.mode-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
-.mode-item-icon { flex: 0 0 auto; display: inline-flex; align-items: center; margin-top: 1px; opacity: .75; }
-.mode-item-icon svg { display: block; }
-.mode-item.selected .mode-item-icon { opacity: 1; }
-.mode-item-body { min-width: 0; }
-.mode-item-label { font-size: 12px; font-weight: 600; }
-.mode-item-desc { font-size: 11px; opacity: .7; margin-top: 2px; line-height: 1.35; }
-.mode-item.selected .mode-item-desc { opacity: .9; }
-button#mode-btn .mode-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 0; }
-button#mode-btn.executing .mode-label {
-  color: var(--vscode-textLink-foreground, #4daafc);
-  animation: state-pulse 1.2s ease-in-out infinite;
-}
-
-.model-picker { position: relative; min-width: 0; }
-.model-pop {
-  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 50;
-  width: 260px; max-height: 50vh; overflow-y: auto;
-  background: var(--vscode-dropdown-background, var(--vscode-editor-background));
-  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
-  border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, .45); padding: 4px;
-}
-.model-pop.hidden { display: none; }
-#model-search {
-  width: 100%; box-sizing: border-box; margin-bottom: 4px; padding: 4px 6px;
-  background: var(--vscode-input-background); color: var(--vscode-input-foreground);
-  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 4px;
-  position: sticky; top: 0; font-size: 12px;
-}
-.model-group { font-size: 10px; text-transform: uppercase; letter-spacing: .03em; opacity: .55; padding: 6px 6px 2px; }
-.model-item {
-  padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;
-  display: flex; align-items: center; gap: 8px;
-}
-.model-item .mi-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
-.model-item .mi-caps { display: flex; gap: 3px; flex: 0 0 auto; }
-.model-item:hover { background: var(--vscode-list-hoverBackground); }
-.model-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
-.model-item.deprecated .mi-label { opacity: .5; text-decoration: line-through; }
-.model-item .mi-deprecated {
-  flex: 0 0 auto; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
-  padding: 1px 5px; border-radius: 3px; color: #fff; background: var(--vscode-errorForeground, #c33);
-}
-.model-item.slow .mi-label { opacity: .7; }
-.model-item .mi-slow {
-  flex: 0 0 auto; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
-  padding: 1px 5px; border-radius: 3px; color: #fff; background: var(--vscode-editorWarning-foreground, #d18616);
-}
-.model-item.off .mi-label { opacity: .55; }
-.model-item .mi-off {
-  flex: 0 0 auto; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
-  padding: 1px 5px; border-radius: 3px; color: var(--vscode-descriptionForeground, #888);
-  background: var(--vscode-badge-background, rgba(128,128,128,.18));
-}
+/* Mode + model pickers: superseded by the tm--prefixed components in
+   styles/components/composer.css (AgentPicker / ModelPicker + shared popover chrome). */
 
 /* Disabled pill (e.g. reasoning control on a non-reasoning model) */
 .pill:disabled { opacity: .45; cursor: not-allowed; }
 
 /* Responsive composer — VS Code sidebars/panels routinely get docked well under 400px. The
-   toolbar's left group (agent type / model / reasoning) already shrinks continuously via flex
-   as the panel narrows; below this width it also drops the least-used control (reasoning
-   effort) so the primary row (agent type / model / auto-approve / send) never wraps or clips. */
+   toolbar's left group (agent type / model) shrinks continuously via flex as the panel
+   narrows; the pickers' own narrow-width clamps live in styles/components/composer.css. */
 @media (max-width: 300px) {
-  .select-wrap { display: none; }
-  .agent-type-btn { max-width: 76px; }
-  button#model-btn { max-width: 80px; }
   .input-wrap { padding: 8px 8px 6px; }
 }
 
@@ -1037,10 +964,27 @@ button.compact-divider { background: none; font: inherit; color: inherit; displa
 button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; cursor: pointer; border-radius: 4px; padding: 4px 10px; }
 button.primary:hover { background: var(--vscode-button-hoverBackground); }
 button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: none; cursor: pointer; border-radius: 4px; padding: 4px 10px; }
-.footer { font-size: 11px; opacity: .65; padding: 2px 2px 0; }
-.footer-clickable { cursor: pointer; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.footer-clickable:hover, .footer-clickable:focus-visible { opacity: 1; color: var(--vscode-textLink-foreground, #4daafc); }
+/* Composer footer — usage summary as quiet stat chips (tokens / requests / saved / ctx).
+   The whole footer row remains one click target that opens Settings ▸ Usage. */
+.footer { padding: 2px 2px 0; display: flex; }
+.footer-clickable { cursor: pointer; border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.footer-clickable:hover, .footer-clickable:focus-visible { color: var(--vscode-textLink-foreground, #4daafc); }
 .footer-clickable:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.footer .footer-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10.5px; font-weight: 600;
+  padding: 2px 8px; border-radius: 999px;
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.12));
+  color: var(--vscode-foreground); opacity: .85;
+  transition: opacity .12s ease, background .12s ease;
+}
+.footer .footer-chip + .footer-chip { margin-left: 4px; }
+.footer .footer-chip .fc-icon { display: inline-flex; opacity: .6; }
+.footer .footer-chip .fc-icon svg { width: 11px; height: 11px; }
+.footer .footer-chip.warn { color: var(--vscode-editorWarning-foreground, #c9930a); }
+.footer .footer-chip.warn .fc-icon { opacity: .8; }
+.footer .footer-chip.footer-empty { font-weight: 400; opacity: .7; }
+.footer-clickable:hover .footer-chip { opacity: 1; background: var(--vscode-list-hoverBackground); }
 .usage-data-section { margin-top: 4px; }
 .usage-stats { display: flex; flex-direction: column; gap: 3px; margin: 6px 0 10px; }
 .usage-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 8px; margin-bottom: 6px; }
@@ -1412,3 +1356,76 @@ details[open].tm-card-collapsible > summary::before { content: '▾ '; }
   border: 2px solid var(--tm-border); border-top-color: var(--tm-progress);
   animation: idx-spin .8s linear infinite;
 }
+
+
+
+/* ── Composer polish pass (modern-agent look) ─────────────────────────────── */
+
+/* Context-pressure gauge: a ring + explicit percentage (a ring alone was too subtle to
+   read at a glance). Blue while healthy, amber past 70%; exact numbers in the tooltip. */
+.ctx-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: var(--tm-radius-full, 999px);
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.14));
+  color: var(--vscode-foreground);
+  font-size: 10px;
+  font-weight: 600;
+}
+.ctx-chip.hidden { display: none; }
+.ctx-chip .ctx-pct { color: var(--vscode-descriptionForeground, var(--vscode-foreground)); }
+.ctx-chip .ctx-ring { transform: rotate(-90deg); flex: 0 0 auto; }
+.ctx-chip .ctx-ring circle { fill: none; stroke-width: 3; }
+.ctx-chip .ctx-ring .ring-bg { stroke: var(--vscode-panel-border, rgba(127,127,127,.45)); }
+.ctx-chip .ctx-ring .ring-fg {
+  stroke: var(--vscode-progressBar-background, #0a84ff);
+  stroke-linecap: round;
+  transition: stroke-dashoffset .3s ease;
+}
+.ctx-chip.warn .ctx-ring .ring-fg { stroke: var(--vscode-editorWarning-foreground, #c9930a); }
+.ctx-chip.warn .ctx-pct { color: var(--vscode-editorWarning-foreground, #c9930a); }
+
+/* Hints row: one quiet micro-line under the textarea, not a board of key caps. */
+.input-hints { gap: 14px; padding: 0 6px; font-size: 10px; opacity: .5; }
+.input-hints .hint-key {
+  font-family: inherit; font-weight: 600;
+  background: transparent; border-radius: 0; padding: 0;
+}
+
+/* Toolbar icon buttons read as quiet circles (ChatGPT-composer style): no borders at rest,
+   a soft round hover, one consistent hit area — so the pickers (mode/model/reasoning) carry
+   the labels and the icons stay calm. */
+.toolbar .icon-btn-sm,
+.toggle-pill.icon-only-sm {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  border-color: transparent;
+  background: transparent;
+}
+.toolbar .icon-btn-sm:hover { background: var(--vscode-toolbar-hoverBackground); }
+.toggle-pill.icon-only-sm.on {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+/* Reasoning-effort select styled like its sibling pills: native chrome replaced with a
+   shared 24px control + custom chevron, so the toolbar reads as one family of controls. */
+.select-wrap select.pill {
+  appearance: none; -webkit-appearance: none;
+  height: 24px; padding-right: 20px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8'><path d='M1 2.5 L4 5.5 L7 2.5' fill='none' stroke='%23888' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat; background-position: right 6px center; background-size: 8px;
+}
+.select-wrap select.pill:hover { background-color: var(--vscode-toolbar-hoverBackground); }
+
+/* One consistent control height across the whole toolbar row. */
+.toolbar .pill { height: 24px; }
+.toolbar { gap: 5px; }
+.tgroup.right .icon-btn-sm,
+.toggle-pill.icon-only-sm { border-radius: 50%; }

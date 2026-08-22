@@ -12,6 +12,7 @@ import * as path from 'path';
 import { z } from 'zod';
 import type { Router } from '../../router/router';
 import type { ChatMessage, ChatContentBlock, TodoItem } from '../../shared/types';
+import type { WorkReportData } from '../../shared/workReport';
 import type { AgentOpts, AgentResult } from '../agent';
 import { repairPlanSteps } from '../planStructurer';
 import { classifyTaskCore, attachmentKindsFromContent, type TaskKind, type ClassifySignals } from '../routing';
@@ -317,11 +318,16 @@ const MAYBE_CAPABILITY_DECLINE_RE = /\b(cannot|can'?t|unable|don'?t have|no acce
  *  `catch { return null }`. Exported so scripts/falseCapabilityDecline.e2e.ts can unit-test it
  *  directly, bypassing the full runTurn() pipeline (found unreliable for triggering classify-
  *  style calls through a fake-Router harness — see repairToolCallTier3.e2e.ts's own history). */
-export async function detectFalseCapabilityDecline(router: Router, text: string, abortSignal?: AbortSignal): Promise<boolean> {
+export async function detectFalseCapabilityDecline(
+  router: Router,
+  text: string,
+  abortSignal?: AbortSignal,
+  usageSink?: AgentOpts['usageSink'],
+): Promise<boolean> {
   if (NO_RUNTIME_ACCESS_RE.test(text)) return true;
   if (!MAYBE_CAPABILITY_DECLINE_RE.test(text)) return false; // not decline-shaped — skip the call entirely
   try {
-    const provider = createRouterProvider(router, { taskKind: 'trivial' });
+    const provider = createRouterProvider(router, { taskKind: 'trivial', usageSink });
     const timeout = AbortSignal.timeout(4000);
     const signal = abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout;
     const { object } = await generateObject({
@@ -896,7 +902,7 @@ async function recapChanges(
 ): Promise<string> {
   opts.onStep('synthesizing', 'Summarizing changes…');
   try {
-    const provider = createRouterProvider(router, { taskKind: 'trivial' });
+    const provider = createRouterProvider(router, { taskKind: 'trivial', usageSink: opts.usageSink });
     const changeList = changedFiles.map((f) => `- ${f.path} (${f.status})`).join('\n');
     const messages = toCoreMessages([...opts.messages, ...workMessages]);
     messages.push({ role: 'user', content: `Summarize what you just changed. In 1-3 sentences, name the files you edited and what the change does. Files touched:\n${changeList}` });
@@ -1032,6 +1038,7 @@ async function runPlannerStep(router: Router, opts: AgentOpts): Promise<string> 
       onKeyRotated: opts.onKeyRotated,
       onModelSelected: (p, m, rt) => opts.onModel(p, m, rt),
       onSelectionRationale: opts.onSelectionRationale,
+      usageSink: opts.usageSink,
     });
     const languageModel = wrapLanguageModel({
       model: provider,
@@ -1092,6 +1099,7 @@ async function runBrainstormStep(router: Router, opts: AgentOpts): Promise<strin
       onKeyRotated: opts.onKeyRotated,
       onModelSelected: (p, m, rt) => opts.onModel(p, m, rt),
       onSelectionRationale: opts.onSelectionRationale,
+      usageSink: opts.usageSink,
     });
     const timeout = AbortSignal.timeout(8000);
     const { object } = await generateObject({
@@ -1165,11 +1173,16 @@ const TASK_KIND_VALUES = ['trivial', 'chat', 'agent', 'coding', 'debug', 'longCo
  *  Uses `output: 'enum'` (not a full object schema) since the model just needs to pick one label,
  *  and a short abort timeout + broad try/catch so a flaky/incapable free model never blocks the
  *  turn — any failure just falls back to the regex guess it already had. */
-async function classifyTaskSmart(router: Router, text: string, signals?: ClassifySignals): Promise<TaskKind> {
+async function classifyTaskSmart(
+  router: Router,
+  text: string,
+  signals?: ClassifySignals,
+  usageSink?: AgentOpts['usageSink'],
+): Promise<TaskKind> {
   const { kind, confident } = classifyTaskCore(text, signals);
   if (confident) return kind;
   try {
-    const provider = createRouterProvider(router, { taskKind: 'trivial' });
+    const provider = createRouterProvider(router, { taskKind: 'trivial', usageSink });
     const { object } = await generateObject({
       model: provider,
       output: 'enum',
@@ -1210,7 +1223,11 @@ async function classifyTaskSmart(router: Router, text: string, signals?: Classif
  *    something the SDK does automatically; TierMux didn't use it before this.
  *  Returns null (drop the call, let the SDK report the error back to the model) when no repair
  *  produces a valid result — never fabricate an unrelated tool call. */
-function createRepairToolCall(router: Router, abortSignal?: AbortSignal): NonNullable<Parameters<typeof streamText>[0]['repairToolCall']> {
+function createRepairToolCall(
+  router: Router,
+  abortSignal?: AbortSignal,
+  usageSink?: AgentOpts['usageSink'],
+): NonNullable<Parameters<typeof streamText>[0]['repairToolCall']> {
   return async ({ toolCall, tools, error, inputSchema }) => {
     if (InvalidToolInputError.isInstance(error)) {
       const schema = await Promise.resolve(inputSchema({ toolName: toolCall.toolName })).catch(() => undefined);
@@ -1222,7 +1239,7 @@ function createRepairToolCall(router: Router, abortSignal?: AbortSignal): NonNul
           return { ...toolCall, input: repaired };
         } catch { /* fall through to Tier 3 */ }
       }
-      return (await tryModelRepair(toolCall, tools, error.message, schema, router, abortSignal)) as any;
+      return (await tryModelRepair(toolCall, tools, error.message, schema, router, abortSignal, usageSink)) as any;
     }
     if (NoSuchToolError.isInstance(error)) {
       const fixedName = resolveToolName(sanitizeToolName(toolCall.toolName), tools);
@@ -1233,7 +1250,7 @@ function createRepairToolCall(router: Router, abortSignal?: AbortSignal): NonNul
       // Tool name is too scrambled to resolve deterministically — no schema to repair args
       // against either. Tier 3's prompt gets the full active tool-name list in this case so the
       // model can pick the right tool AND fix the arguments in one shot.
-      return (await tryModelRepair(toolCall, tools, error.message, undefined, router, abortSignal)) as any;
+      return (await tryModelRepair(toolCall, tools, error.message, undefined, router, abortSignal, usageSink)) as any;
     }
     return null;
   };
@@ -1255,13 +1272,14 @@ export async function tryModelRepair(
   schema: unknown,
   router: Router,
   abortSignal?: AbortSignal,
+  usageSink?: AgentOpts['usageSink'],
 ): Promise<({ toolName: string; input: string } & Record<string, unknown>) | null> {
   diagLog('turn.repairToolCall.tier3_attempt', `${toolCall.toolName}: ${errorMessage}`);
   const timeout = AbortSignal.timeout(4000);
   const signal = abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout;
   try {
     const utility = await router.pickUtilityModel();
-    const provider = createRouterProvider(router, { taskKind: 'reasoning', pinnedModel: utility });
+    const provider = createRouterProvider(router, { taskKind: 'reasoning', pinnedModel: utility, usageSink });
     const toolNames = Object.keys(tools);
     const prompt = schema
       ? `A tool call failed validation.\nTool: ${toolCall.toolName}\nSchema: ${JSON.stringify(schema)}\nArguments: ${toolCall.input}\nError: ${errorMessage}\n\nReply with ONLY the corrected JSON arguments object matching the schema. No explanation, no markdown.`
@@ -1499,6 +1517,7 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
     excludeModels: escalation?.excludeModels ?? (hasCallerExclude ? opts.excludeModels : undefined),
     maxIntelligenceRank: stepRoute.maxIntelligenceRank,
     minIntelligenceRank: stepRoute.minIntelligenceRank,
+    usageSink: opts.usageSink,
     onFailover: opts.onFailover,
     onKeyRotated: opts.onKeyRotated,
     onModelSelected: (p, m, rt) => { platform = p; model = m; runtimeName = rt; opts.onModel(p, m, rt); },
@@ -1598,7 +1617,7 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
       messages: toCoreMessages(opts.messages) as any,
       tools: tools as any,
       toolApproval: createToolApproval(opts) as any,
-      repairToolCall: createRepairToolCall(router, opts.abortSignal),
+      repairToolCall: createRepairToolCall(router, opts.abortSignal, opts.usageSink),
       // No hard step-count cap — a long multi-step task no longer pauses just for running past an
       // arbitrary iteration count (see the Resume-button "paused" path, now unreachable for a
       // normal in-progress task). budgetStop/stuckStop are the remaining backstops against a
@@ -2152,6 +2171,9 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   const userOnTool = opts.onTool;
   const userOnReasoning = opts.onReasoning;
   const userOnStep = opts.onStep;
+  const userOnModel = opts.onModel;
+  const userOnKeyRotated = opts.onKeyRotated;
+  const userOnSelectionRationale = opts.onSelectionRationale;
   const watchdog = new TurnWatchdog(
     {
       onWarning: (info) => opts.onWatchdogWarning?.(info),
@@ -2162,17 +2184,58 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   );
   let turnTodos: TodoItem[] = [];
   const toolTally = new Map<string, number>();
+  // ── Turn telemetry accumulation (single source for the WorkReport) ─────────────────
+  // inputTokens/outputTokens accumulate across EVERY model call of the turn (provider-
+  // reported via RouteOptions.onUsage); lastContext tracks the most recent request's window
+  // pressure — see src/shared/workReport.ts for the authoritative semantics.
+  const turnStartMs = Date.now();
+  const turnUsage = {
+    input: 0,
+    output: 0,
+    lastModel: 'unknown',
+    lastContext: undefined as undefined | { contextTokens: number; contextWindow: number; percent: number },
+  };
+  const usageSink: NonNullable<AgentOpts['usageSink']> = (info) => {
+    turnUsage.input += info.inputTokens;
+    turnUsage.output += info.outputTokens;
+    if (info.model) turnUsage.lastModel = info.model;
+    if (info.contextWindow && info.contextWindow > 0) {
+      turnUsage.lastContext = {
+        contextTokens: info.contextTokens,
+        contextWindow: info.contextWindow,
+        percent: Math.min(100, Math.floor((info.contextTokens / info.contextWindow) * 100)),
+      };
+    }
+  };
+  let failoverCount = 0;
+  let reasoningBlocks = 0;
+  let inReasoning = false;
+  const userOnFailover = opts.onFailover;
   opts = {
     ...opts,
+    usageSink,
     onTodos: (t) => { turnTodos = t; userOnTodos(t); },
-    onChunk: (t) => { watchdog.activity('streaming text'); watchdog.markPartialOutput(); userOnChunk(t); },
+    onChunk: (t) => { inReasoning = false; watchdog.activity('streaming text'); watchdog.markPartialOutput(); userOnChunk(t); },
     onTool: (e) => {
+      inReasoning = false;
       if (e.state === 'running') toolTally.set(e.name, (toolTally.get(e.name) ?? 0) + 1);
+      watchdog.noteTool(e.state === 'running'); // executing tool = known work; see watchdog.noteTool
       watchdog.activity(`${e.name} ${e.state}`);
       userOnTool(e);
     },
-    onReasoning: (t) => { watchdog.activity('reasoning'); userOnReasoning(t); },
+    onReasoning: (t) => {
+      if (!inReasoning) { reasoningBlocks++; inReasoning = true; }
+      watchdog.activity('reasoning'); userOnReasoning(t);
+    },
     onStep: (p, label) => { watchdog.activity(label); userOnStep(p, label); },
+    // Router-level progress counts as activity too: a rate-limit backoff, a failover chain,
+    // or a fresh model attempt can legitimately produce NO protocol events for 45s+ — without
+    // these stamps the watchdog warned mid-retry, telling the user "no response" exactly when
+    // the router was most visibly working.
+    onModel: (p, m, rt) => { watchdog.activity(`routing → ${p}/${m}`); userOnModel(p, m, rt); },
+    onKeyRotated: (info) => { watchdog.activity(`key rotated → ${info.keyIndex}/${info.keyTotal}`); userOnKeyRotated?.(info); },
+    onSelectionRationale: (info) => { watchdog.activity(info.picked ? `selected ${info.picked}` : 'model selection'); userOnSelectionRationale?.(info); },
+    onFailover: (from, reason) => { failoverCount++; watchdog.activity(`failover from ${from} (${reason})`); userOnFailover?.(from, reason); },
   };
   watchdog.start();
   const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
@@ -2188,7 +2251,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // the plan-mode quality floor/escalation below unreachable dead code.
   const taskKind = opts.mode === 'plan'
     ? 'plan'
-    : await classifyTaskSmart(router, lastUserText, { attachmentKinds, attachments: attachmentKinds.length, mentions: opts.mentionCount });
+    : await classifyTaskSmart(router, lastUserText, { attachmentKinds, attachments: attachmentKinds.length, mentions: opts.mentionCount }, opts.usageSink);
 
   // Once the running tool-loop context passes this many tokens, prune stale tool outputs and old
   // reasoning BEFORE each step so a long, tool-heavy turn stops re-sending megabytes of grep/read
@@ -2369,7 +2432,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // didn't already explain the miss, so the classify call stays rare.
   let falseCapabilityDecline = false;
   if (canRetryToolUse && opts.mode === 'agent' && !announcedNoAction && !declinedWebSearch && !pastedCodeInsteadOfActing && !askedPermissionInsteadOfActing) {
-    falseCapabilityDecline = await detectFalseCapabilityDecline(router, first.text.trim(), opts.abortSignal);
+    falseCapabilityDecline = await detectFalseCapabilityDecline(router, first.text.trim(), opts.abortSignal, opts.usageSink);
   }
   if (canRetryToolUse && (announcedNoAction || pastedCodeInsteadOfActing || askedPermissionInsteadOfActing || declinedWebSearch || falseCapabilityDecline)) {
     const nudgeText = declinedWebSearch ? FORCE_WEBSEARCH_NUDGE : falseCapabilityDecline ? FORCE_RUNTIME_ACCESS_NUDGE : FORCE_ACTION_NUDGE;
@@ -2484,7 +2547,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     // complaint (2026-08-20): a good first answer got replaced by a short unrelated one after
     // this retry fired on a normal, correct, code-referencing answer.
     if (grounded.hadToolCalls && grounded.text.trim()) {
-      const cmp = await compareAnswers(router, lastUserText, first.text, grounded.text, `${first.platform}::${first.model}`);
+      const cmp = await compareAnswers(router, lastUserText, first.text, grounded.text, `${first.platform}::${first.model}`, opts.usageSink);
       if (cmp.pick === 'B') final = grounded;
       else diagLog('turn.ungrounded', `comparison judge kept the original over the grounded retry (${cmp.reason})`);
     }
@@ -2537,7 +2600,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     const useAnswerJudge = (servedRank ?? UNKNOWN_RANK) > STRONG_RANK_MAX;
     if (!shouldEscalate && useAnswerJudge && borderline && JUDGEABLE_TASK_KINDS.has(taskKind) && first.text.trim()) {
       const excludeKey = `${first.platform}::${first.model}`;
-      const judge = await judgeFulfillment(router, lastUserText, first.text, taskKind, excludeKey);
+      const judge = await judgeFulfillment(router, lastUserText, first.text, taskKind, excludeKey, opts.usageSink);
       if (!judge.fulfilled) {
         shouldEscalate = true;
         escalateWhy = `unfulfilled:${judge.reason.slice(0, 48)}`;
@@ -2563,7 +2626,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       if (escalated.text.trim()) {
         if (!escalateWhy.startsWith('unfulfilled:')) final = escalated;
         else {
-          const cmp = await compareAnswers(router, lastUserText, first.text, escalated.text, excludeKey);
+          const cmp = await compareAnswers(router, lastUserText, first.text, escalated.text, excludeKey, opts.usageSink);
           if (cmp.pick === 'B') final = escalated;
           else diagLog('turn.escalate', `comparison judge kept the original over the judge-triggered retry (${cmp.reason})`);
         }
@@ -2766,47 +2829,37 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // The gate's fix-retry REPLACES `final` with the retry's own result, whose
   // hadMutatingToolCall is false (the retry explained instead of mutating) — so the report
   // must fire on any verify signal too, not just a mutating final, or a hard gate failure
-  // would lose its ❌ status line entirely.
+  // would lose its ❌ status entirely. The report is STRUCTURED (WorkReportData): the host
+  // persists it on the transcript entry and posts it to the webview, which renders a
+  // ResultCard. The legacy markdown form lives in renderLegacyMarkdown — emitted by the HOST
+  // for old-transcript compat, never parsed back.
+  let workReport: WorkReportData | undefined;
   if ((final.hadMutatingToolCall || verifyGateFailed || verifyOutcome) && !opts.abortSignal?.aborted) {
-    const lines: string[] = [];
-    if (verifyOutcome === 'passed') {
-      lines.push(`**✅ Verified** — \`${verifyCmd}\` passed${verifyFixRoundsUsed ? ` (after ${verifyFixRoundsUsed} fix round${verifyFixRoundsUsed === 1 ? '' : 's'})` : ''}.`);
-    } else if (verifyGateFailed) {
-      const rounds = verifyFixRoundsUsed || 1;
-      lines.push(`**❌ Verification failed** — \`${verifyGateFailed}\` still fails after ${rounds} fix round${rounds === 1 ? '' : 's'}. Your changes are saved, but the issue isn't fully resolved yet — re-run the command to see what's left, or ask me to keep fixing it.`);
-    } else {
-      // The old caveat only fired on a completion-claim regex; the honest default is that
-      // EVERY untested mutating turn says so. Lead with what IS true (the changes are saved),
-      // then why they're untested and one concrete thing the user can do next — a bare
-      // failure verdict on finished work reads as "nothing happened" and users stop trusting it.
-      const reason = final.stopReason
-        ? 'the run ended before the final check could run'
-        : 'this project has no test command I could run';
-      const next = final.stopReason
-        ? 'Ask me to verify the changes, or give them a quick look yourself.'
-        : 'Give the changes a quick look — or tell me which command tests this project and I\'ll run it.';
-      lines.push(`**⚠️ Unverified** — your changes are saved but not tested yet (${reason}). ${next}`);
-    }
-    if (changedFiles?.length) {
-      const byStatus = (st: 'created' | 'modified' | 'deleted') => changedFiles.filter((f) => f.status === st).map((f) => f.path);
-      const parts: string[] = [];
-      const created = byStatus('created'), modified = byStatus('modified'), deleted = byStatus('deleted');
-      if (created.length) parts.push(`created: ${created.join(', ')}`);
-      if (modified.length) parts.push(`modified: ${modified.join(', ')}`);
-      if (deleted.length) parts.push(`deleted: ${deleted.join(', ')}`);
-      // Always present — a structured report may repeat what the prose above already said.
-      lines.push(`**Files changed:** ${parts.join('; ')}.`);
-    }
-    const tally = [...toolTally.entries()].sort((a, b) => b[1] - a[1]);
-    if (tally.length) {
-      const total = tally.reduce((s, [, c]) => s + c, 0);
-      const top = tally.slice(0, 6).map(([name, c]) => `${name}×${c}`).join(', ');
-      const more = tally.length > 6 ? `, +${tally.length - 6} more` : '';
-      lines.push(`**Tools used:** ${total} call${total === 1 ? '' : 's'} — ${top}${more}`);
-    }
-    const report = `\n\n---\n${lines.join('\n')}`;
-    finalText += report;
-    opts.onChunk(report);
+    const toolTallyList = [...toolTally.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
+    workReport = {
+      version: 1,
+      verifyOutcome: verifyOutcome === 'passed' ? 'verified' : verifyGateFailed ? 'failed' : 'unverified',
+      verifyCmd: verifyOutcome === 'passed' || verifyGateFailed ? verifyCmd : undefined,
+      fixRounds: verifyFixRoundsUsed,
+      changedFiles: (changedFiles ?? []).map((f) => ({
+        path: f.path,
+        status: f.status === 'created' ? 'A' as const : f.status === 'modified' ? 'M' as const : 'D' as const,
+      })),
+      toolTally: toolTallyList,
+      stopReason: final.stopReason ?? '',
+      telemetry: {
+        model: turnUsage.lastModel,
+        taskKind,
+        inputTokens: turnUsage.input,
+        outputTokens: turnUsage.output,
+        toolCalls: toolTallyList.reduce((s, t) => s + t.count, 0),
+        thoughts: reasoningBlocks,
+        failovers: failoverCount,
+        elapsedMs: Date.now() - turnStartMs,
+      },
+      context: turnUsage.lastContext,
+      // checkpointId is stamped by the host (it owns the requestId); see workReport.ts.
+    };
   }
 
   // Carry what this turn established into the next one. Done here, after every retry/escalation
@@ -2835,6 +2888,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     // matching comment in runAttempt's own `failed` computation above.
     failed: final.failed && !final.text.trim(),
     errorMessage: final.errorMessage,
+    workReport,
   };
   // Natural end of the turn — disarm the watchdog (fires onDismissed if a card was showing).
   watchdog.stop();

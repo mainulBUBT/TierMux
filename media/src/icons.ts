@@ -46,4 +46,7 @@ export const ICON = {
   // Circled "+" for the composer's attach button — reads as "add content" rather than the
   // more literal paperclip, matching the modern add-anything affordance in chat composers.
   addCircle: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>',
+  // Filled 4-point star — the "Auto / smart" glyph on the model picker (spark reads as a
+  // settings "sun"; this one reads as the modern AI-sparkle used for auto-selection).
+  sparkle: '<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M12 2c.6 4.9 2.9 7.2 7.8 7.8-4.9.6-7.2 2.9-7.8 7.8-.6-4.9-2.9-7.2-7.8-7.8C9.1 9.2 11.4 6.9 12 2z"/></svg>',
 };

@@ -7,14 +7,17 @@
 // @ts-nocheck
 /* TierMux — webview controller (vanilla TS, bundled by esbuild). */
 import { ICON } from './icons';
-import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate } from './format';
+import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate, fmtDuration } from './format';
 import { send } from './bridge';
 import type { RxMessage } from './bridge';
 import { $, escapeHtml, showToast } from './dom';
 import { renderMarkdown } from './markdown';
+import { stripLegacyMarkdown } from '../../src/shared/workReport';
 import { renderPdfToPageImages, PDF_MAX_RENDER_PAGES } from './pdfPages';
-import { buildReasoningBlock, updateReasoningBlock, buildToolCard, toolLabel, activityFor, STATE_ICON } from './ui/tool/ToolCard';
-import { createPlan, planDataFromStepText, planDataFromTodos } from './ui/components';
+import { buildReasoningBlock, updateReasoningBlock, buildToolCard, buildEditDiff, toolLabel, activityFor, STATE_ICON } from './ui/tool/ToolCard';
+import { createPlan, planDataFromStepText, planDataFromTodos, createResultCard } from './ui/components';
+import { createAgentPicker } from './ui/components/AgentPicker';
+import { createModelPicker } from './ui/components/ModelPicker';
 import { handleAssistantStart } from './handlers/assistantStart';
 import { handleAgentStep } from './handlers/agentStep';
 import { handleToolStatus } from './handlers/toolStatus';
@@ -101,35 +104,18 @@ const STATE_LABEL = {
       <div class="input-wrap">
         <div id="ac-pop" class="ac-pop hidden"></div>
         <textarea id="input" placeholder="What would you like to know?" title="Enter to send · Shift+Enter for newline · @ for files · / for commands · /fix /tests /commit"></textarea>
+        <div class="input-hints hidden" id="input-hints"><span><span class="hint-key">/</span> commands</span><span><span class="hint-key">@</span> files</span><span><span class="hint-key">Shift+Enter</span> newline</span></div>
         <div class="toolbar">
           <div class="tgroup">
-            <div class="mode-picker agent-type-picker">
-              <button type="button" id="mode-btn" class="pill agent-type-btn" title="Agent type — how the assistant handles your message">
-                <span class="pill-icon mode-icon">${ICON.spark}</span><span class="mode-label">Ask</span><span class="pill-icon chev">${ICON.chevron}</span>
-              </button>
-              <div id="mode-pop" class="mode-pop hidden"></div>
-            </div>
-            <div class="model-picker">
-              <button type="button" id="model-btn" class="pill" title="Model"><span class="pill-icon">${ICON.chip}</span><span class="mb-label">Auto</span></button>
-              <div id="model-pop" class="model-pop hidden">
-                <input id="model-search" type="text" placeholder="Search models…" />
-                <div id="model-list"></div>
-              </div>
-            </div>
-            <span class="select-wrap">
-              <select id="reasoning" title="Reasoning effort" class="pill" disabled>
-                <option value="off">Off</option>
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-                <option value="xhigh">Very High</option>
-              </select>
-            </span>
+            <div id="agent-picker-slot"></div>
+            <div id="model-picker-slot"></div>
+            <button class="icon-btn icon-btn-sm" id="btn-attach" aria-label="Add files" data-tooltip="Add files">${ICON.addCircle}</button>
+            <span id="ctx-chip" class="ctx-chip hidden" title="Context usage of the most recent request"></span>
           </div>
+          <span class="toolbar-sep" aria-hidden="true"></span>
           <div class="tgroup right">
             <button type="button" id="auto-btn" class="pill toggle-pill icon-only-sm" aria-pressed="false" aria-label="Auto-approve — run commands and apply edits without asking, for an uninterrupted flow. Dangerous commands (rm -rf, force push, sudo…) still ask. Off = review each step." data-tooltip="Auto-approve — run commands and edit files without asking first. Dangerous operations still confirm. Toggle on for an uninterrupted flow.">${ICON.zap}</button>
             <button class="icon-btn icon-btn-sm" id="btn-announcements" aria-label="Tips &amp; announcements" data-tooltip="Tips &amp; announcements">${ICON.info}<span class="an-dot hidden" id="an-dot"></span></button>
-            <button class="icon-btn icon-btn-sm" id="btn-attach" aria-label="Add files" data-tooltip="Add files">${ICON.addCircle}</button>
             <button class="send-btn" id="btn-send" title="Send (Enter)">${ICON.send}</button>
           </div>
         </div>
@@ -269,54 +255,51 @@ const STATE_LABEL = {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goToUsageSettings(); }
   });
   const input = $('#input');
-  const reasoningSel = $('#reasoning');
   const chipsEl = $('#chips');
-  const modelBtn = $('#model-btn');
-  const modelBtnLabel = $('.mb-label', modelBtn);
-  const modelPop = $('#model-pop');
-  const modelSearch = $('#model-search');
-  const modelList = $('#model-list');
   let currentModel = 'auto';
+  let currentReasoning = 'off';
 
-  // Mode picker (custom dropdown: button shows the short name, list shows name + description).
+  // Agent types (modes) — data for the AgentPicker component. The value rides on every
+  // sendMessage; labels/descriptions/caps are presentation for the picker's rich cards.
   const MODES = [
-    { value: 'ask', label: 'Ask', icon: ICON.search, desc: 'Read-only Q&A — answers a direct question, or talks through options and trade-offs for an open-ended one. Cannot edit files or run commands.' },
-    { value: 'plan', label: 'Plan', icon: ICON.checkSquare, desc: 'Researches the code by reading and searching it, proposes a plan, then edits only after you approve.' },
-    { value: 'agent', label: 'Agent', icon: ICON.zap, desc: 'Full agent — reads, edits files, runs commands, and tracks a live task list.' },
+    { value: 'ask', label: 'Ask', icon: ICON.search, desc: 'Read-only Q&A — answers a direct question, or talks through options and trade-offs for an open-ended one. Cannot edit files or run commands.', caps: ['read-only'] },
+    { value: 'plan', label: 'Plan', icon: ICON.checkSquare, desc: 'Researches the code by reading and searching it, proposes a plan, then edits only after you approve.', caps: ['research', 'edits after approval'] },
+    { value: 'agent', label: 'Agent', icon: ICON.zap, desc: 'Full agent — reads, edits files, runs commands, and tracks a live task list.', caps: ['edits files', 'runs commands', 'task list'] },
   ];
   let currentMode = 'ask';
-  const modeBtn = $('#mode-btn');
-  const modeBtnLabel = $('.mode-label', modeBtn);
-  const modeBtnIcon = $('.mode-icon', modeBtn);
-  const modePop = $('#mode-pop');
-  function buildModePicker() {
-    modePop.innerHTML = '';
-    MODES.forEach((m) => {
-      const item = document.createElement('div');
-      item.className = 'mode-item' + (m.value === currentMode ? ' selected' : '');
-      const icon = document.createElement('span'); icon.className = 'mode-item-icon'; icon.innerHTML = m.icon;
-      const body = document.createElement('div'); body.className = 'mode-item-body';
-      const lbl = document.createElement('div'); lbl.className = 'mode-item-label'; lbl.textContent = m.label;
-      const desc = document.createElement('div'); desc.className = 'mode-item-desc'; desc.textContent = m.desc;
-      body.appendChild(lbl); body.appendChild(desc);
-      item.appendChild(icon); item.appendChild(body);
-      item.addEventListener('click', () => setMode(m.value));
-      modePop.appendChild(item);
-    });
-  }
+
+  // Per-mode composer placeholders (Claude-Code-style: the input hints at what the mode does).
+  const MODE_PLACEHOLDERS = {
+    ask: 'Ask anything about this workspace…',
+    plan: 'Describe what to build — I\'ll research and propose a plan…',
+    agent: 'Describe a task — I\'ll read, edit files, and run commands to complete it…',
+  } as const;
+
+  // Agent + model pickers (ui/components/AgentPicker, ModelPicker): rendering and popover
+  // behavior live in the components; the selected values stay HERE because they ride on
+  // every sendMessage and on the per-session composer state.
+  const agentPicker = createAgentPicker({
+    modes: MODES,
+    value: currentMode,
+    onChange: (v) => setMode(v),
+  });
+  $('#agent-picker-slot').appendChild(agentPicker.el);
+  const modelPicker = createModelPicker({
+    value: currentModel,
+    reasoning: currentReasoning,
+    onChange: (value, label) => setModel(value, label),
+    onReasoningChange: (effort) => { currentReasoning = effort; },
+  });
+  $('#model-picker-slot').appendChild(modelPicker.el);
+
   function setMode(value) {
     const m = MODES.find((x) => x.value === value) || MODES[0];
     currentMode = m.value;
-    modeBtnLabel.textContent = m.label;
-    modeBtnIcon.innerHTML = m.icon;
-    modeBtn.title = m.desc;
-    closeModePop();
+    agentPicker.setValue(m.value);
+    input.placeholder = MODE_PLACEHOLDERS[currentMode as keyof typeof MODE_PLACEHOLDERS] || input.placeholder;
   }
-  function openModePop() { buildModePicker(); modePop.classList.remove('hidden'); }
-  function closeModePop() { modePop.classList.add('hidden'); }
-  modeBtn.addEventListener('click', (e) => { e.stopPropagation(); modePop.classList.contains('hidden') ? openModePop() : closeModePop(); });
 
-  // Visual-only "executing an approved plan" state on the mode pill — never touches
+  // Visual-only "executing an approved plan" state on the agent pill — never touches
   // `currentMode` (the user's next-message mode selection is untouched). Keyed by
   // requestId so a stale/mismatched `executing:false` from a different run (or a leftover
   // one from a superseded session view) can't clear an indicator for a still-running plan.
@@ -324,16 +307,11 @@ const STATE_LABEL = {
   function setPlanExecuting(requestId, executing) {
     if (executing) {
       executingPlanRequestId = requestId;
-      modeBtn.classList.add('executing');
-      modeBtnLabel.innerHTML = `Agent ${ICON.zap}`;
-      modeBtn.title = 'Executing approved plan…';
+      agentPicker.setExecuting(true);
     } else {
       if (executingPlanRequestId !== requestId) return;
       executingPlanRequestId = null;
-      modeBtn.classList.remove('executing');
-      const m = MODES.find((x) => x.value === currentMode) || MODES[0];
-      modeBtnLabel.textContent = m.label;
-      modeBtn.title = m.desc;
+      agentPicker.setExecuting(false);
     }
   }
 
@@ -940,8 +918,12 @@ const STATE_LABEL = {
     clearEmpty();
     const el = document.createElement('div');
     el.className = 'msg assistant';
-    el._copyText = text;
     details = details || {};
+    // With a structured report present, `.text` still carries the legacy markdown serialization
+    // for old readers — strip it here (shared emit/strip implementation) and render ONLY the
+    // ResultCard below. New data never round-trips through markdown.
+    const displayText = details.workReport ? stripLegacyMarkdown(text || '', details.workReport) : (text || '');
+    el._copyText = displayText;
     const steps = (details.steps || []).filter(Boolean);
     const hasReasoning = !!details.reasoning && !steps.some((s) => s.name === 'reasoning');
 
@@ -968,23 +950,35 @@ const STATE_LABEL = {
     });
 
     // Main answer text at the end (matches live: text segment appended after tool cards).
-    if (text) {
+    if (displayText) {
       const seg = document.createElement('div'); seg.className = 'flow-text bubble';
-      seg.appendChild(renderMarkdown(text));
+      seg.appendChild(renderMarkdown(displayText));
       flow.appendChild(seg);
     }
 
     // Collapse tool cards/reasoning into "Worked for Ns" — same treatment the live run got via
     // finalizeWork. Without this, reopening/switching back to a session showed every tool call as
     // a flat, uncollapsed list instead of matching what it looked like while live.
-    collapseFlowTimeline(flow, secs, null);
+    collapseFlowTimeline(flow, secs, null,
+      details.workReport ? [`${fmtTokens(details.workReport.telemetry.inputTokens + details.workReport.telemetry.outputTokens)} tok`] : undefined);
+
+    // Structured work report → the SAME ResultCard the live turn mounted (live == replay).
+    // Entries persisted before WorkReportData have none and just keep their legacy markdown.
+    if (details.workReport) {
+      const report = details.workReport;
+      const card = createResultCard(report, {
+        onDiffFile: (p) => send({ type: 'diffCheckpointFile', id: report.checkpointId || '', uri: p }),
+        onVerify: () => send({ type: 'verifyTurn', sessionId: viewedSessionId || '' }),
+      });
+      if (card) flow.appendChild(card);
+    }
 
     // Only attach flow if it has children (pure-text ask-mode: just the text seg).
     if (flow.children.length) el.appendChild(flow);
 
     let footStr = (model || '');
     if (details.usage) footStr += `  ·  ${fmtUsage(details.usage)}`;
-    if (secs != null) footStr += `  ·  ${secs}s`;
+    if (secs != null) footStr += `  ·  ${fmtDuration(secs)}`;
     el.appendChild(assistantFooter(el, footStr, ts));
     (currentTurn || activeThreadEl).appendChild(el);
   }
@@ -1016,7 +1010,7 @@ const STATE_LABEL = {
     el.appendChild(bubble);
     (currentTurn || activeThreadEl).appendChild(el);
     const modelStr = model ? `${platform || ''}/${model}` : '';
-    t = { el, body: bubble, tools: flow, flow, currentText: null, statusEl, statusLabel: statusEl.querySelector('.agent-label'), statusCaret: statusEl.querySelector('.agent-caret'), statusElapsed: statusEl.querySelector('.agent-elapsed'), toolRunning: false, activeTool: null, model: modelStr, requestId };
+    t = { el, body: bubble, tools: flow, flow, currentText: null, statusEl, statusLabel: statusEl.querySelector('.agent-label'), statusCaret: statusEl.querySelector('.agent-caret'), statusElapsed: statusEl.querySelector('.agent-elapsed'), toolRunning: false, activeTool: null, model: modelStr, requestId, workReport: null };
     targets.set(requestId, t);
     scrollDown();
     return t;
@@ -1156,7 +1150,7 @@ const STATE_LABEL = {
     const update = () => {
       const t = targetsRef.get(requestId);
       if (!t || !t.statusElapsed) return;
-      t.statusElapsed.textContent = Math.max(0, Math.round((Date.now() - start) / 1000)) + 's';
+      t.statusElapsed.textContent = fmtDuration(Math.max(0, Math.round((Date.now() - start) / 1000)));
       // Roll the whimsical thinking verb on a random 2–5s cadence while in the
       // thinking phase and no tool is running (a running tool owns the label via
       // its own activity verb).
@@ -1184,7 +1178,7 @@ const STATE_LABEL = {
   // (renderAssistantStatic, used after closing/reopening or switching sessions) — without this
   // being shared, a reopened session showed every tool call as a flat, uncollapsed list instead of
   // matching what the live run looked like, because only the live path used to call it.
-  function collapseFlowTimeline(flow, elapsedSeconds, planEl) {
+  function collapseFlowTimeline(flow, elapsedSeconds, planEl, extraStats) {
     if (!flow) return;
 
     // Drop empty text segments — multiple tool calls each reset currentText, leaving
@@ -1230,9 +1224,12 @@ const STATE_LABEL = {
     const toolCount = timelineNodes.filter((el) => el.classList.contains('tm-tool-card')).length;
     const thinkCount = timelineNodes.filter((el) => el.classList.contains('tm-reasoning')).length;
     const parts = [];
-    if (elapsedSeconds != null) parts.push(`Worked for ${elapsedSeconds}s`);
+    if (elapsedSeconds != null) parts.push(`Worked for ${fmtDuration(elapsedSeconds)}`);
     if (toolCount) parts.push(`${toolCount} tool use${toolCount !== 1 ? 's' : ''}`);
     if (thinkCount) parts.push(`${thinkCount} thought${thinkCount !== 1 ? 's' : ''}`);
+    // Token totals come from the turn's WorkReportData.telemetry when present — the single
+    // accounting source; the summary never recomputes them.
+    if (extraStats && extraStats.length) parts.push(...extraStats);
 
     const det = document.createElement('details');
     det.className = 'work-summary';
@@ -1262,7 +1259,11 @@ const STATE_LABEL = {
     t.currentText = null;
     if (!t.flow) return;
     const elapsed = t.startedAt ? Math.round((Date.now() - t.startedAt) / 1000) : null;
-    collapseFlowTimeline(t.flow, elapsed, t.planEl);
+    // The workReport message precedes assistantMessage, so the telemetry is already here when
+    // the flow collapses — feed its token totals into the "Worked for Ns" summary.
+    const rep = t.workReport;
+    collapseFlowTimeline(t.flow, elapsed, t.planEl,
+      rep ? [`${fmtTokens(rep.telemetry.inputTokens + rep.telemetry.outputTokens)} tok`] : undefined);
     scrollDown();
   }
 
@@ -1284,12 +1285,12 @@ const STATE_LABEL = {
     deactivatePane();
     send({
       type: 'sendMessage', requestId, text,
-      mode: currentMode, model: currentModel, reasoningEffort: reasoningSel.value,
+      mode: currentMode, model: currentModel, reasoningEffort: currentReasoning,
       attachments: pendingAttachments,
       attachmentKinds: pendingAttachments.map((a) => a.kind),
     });
     input.value = '';
-    autoGrow(); // reset the textarea back to one line after sending (don't leave it stuck tall)
+    syncComposer(); // regrow + hints + send button after clearing
     pendingAttachments = [];
     renderChips();
     updateSendEnabled();
@@ -1305,7 +1306,14 @@ const STATE_LABEL = {
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submitChat(); }
   });
-  input.addEventListener('input', () => { autoGrow(); updateAutocomplete(); updateSendEnabled(); });
+  input.addEventListener('input', () => { autoGrow(); updateAutocomplete(); updateSendEnabled(); updateInputHints(); });
+  // Empty-input hint row: visible only while the composer has nothing typed.
+  const inputHints = $('#input-hints');
+  function updateInputHints() {
+    inputHints.classList.toggle('hidden', input.value.trim().length > 0);
+  }
+  /** Programmatic composer writes bypass the 'input' event — call this after setting value. */
+  function syncComposer() { autoGrow(); updateSendEnabled(); updateInputHints(); }
   input.addEventListener('click', updateAutocomplete);
   input.addEventListener('blur', () => setTimeout(closeAc, 120));
   function autoGrow() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 220) + 'px'; }
@@ -1328,18 +1336,18 @@ const STATE_LABEL = {
       draft: input.value,
       model: currentModel,
       mode: currentMode,
-      reasoning: reasoningSel.value,
+      reasoning: currentReasoning,
       attachments: pendingAttachments.slice(),
     });
   }
   function loadComposer(id) {
     const c = composerState.get(id);
     input.value = c ? c.draft : '';
+    syncComposer();
     setMode(c ? c.mode : currentMode);
     currentModel = c ? c.model : 'auto';
-    rebuildModelPicker(); // syncs the model button label + reasoning availability to currentModel
-    reasoningSel.value = c ? c.reasoning : 'off';
-    updateReasoningAvailability();
+    currentReasoning = c ? c.reasoning : 'off';
+    rebuildModelPicker(); // syncs the model pill label + reasoning availability to currentModel
     pendingAttachments = c && c.attachments ? c.attachments.slice() : [];
     renderChips();
     autoGrow();
@@ -1350,30 +1358,48 @@ const STATE_LABEL = {
 
   $('#btn-attach').addEventListener('click', () => send({ type: 'attachFromWorkspace' }));
   $('#btn-announcements').addEventListener('click', () => toggleAnnouncements());
-  // Close transient popups when the view loses focus or is hidden (e.g. switching tabs).
-  window.addEventListener('blur', () => { closeModelPop(); closeModePop(); closeAc(); });
-  document.addEventListener('visibilitychange', () => { if (document.hidden) { closeModelPop(); closeModePop(); closeAc(); } });
+  // The picker popovers close themselves (ui/primitives/Popover owns click-away, Escape,
+  // window blur and tab-hide); only the @// autocomplete popup is closed by hand here.
+  window.addEventListener('blur', () => { closeAc(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) closeAc(); });
 
-  // Custom model dropdown (scrollable + searchable).
-  modelBtn.addEventListener('click', (e) => { e.stopPropagation(); modelPop.classList.contains('hidden') ? openModelPop() : closeModelPop(); });
-  modelSearch.addEventListener('input', filterModels);
-  modelSearch.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModelPop(); });
-  document.addEventListener('click', (e) => { if (!e.target.closest('.model-picker')) closeModelPop(); if (!e.target.closest('.mode-picker')) closeModePop(); });
-
-  function openModelPop() { modelPop.classList.remove('hidden'); modelSearch.value = ''; filterModels(); modelSearch.focus(); }
-  function closeModelPop() { modelPop.classList.add('hidden'); }
   function setModel(value, label) {
     currentModel = value;
-    modelBtnLabel.textContent = label || value;
-    modelBtn.title = label || value;
-    modelList.querySelectorAll('.model-item').forEach((it) => it.classList.toggle('selected', it.dataset.value === value));
-    closeModelPop();
+    modelPicker.setValue(value, label); // also ends any serving indicator — an explicit pick wins
     updateReasoningAvailability();
   }
-  function filterModels() {
-    const q = modelSearch.value.trim().toLowerCase();
-    modelList.querySelectorAll('.model-item').forEach((it) => { it.style.display = !q || it.textContent.toLowerCase().includes(q) ? '' : 'none'; });
-    modelList.querySelectorAll('.model-group').forEach((h) => { h.style.display = q ? 'none' : ''; });
+
+  // ── Serving-model state machine on the model pill: selected → serving:A → (failover)
+  // serving:B → selected. assistantStart is re-posted by the host on EVERY model selection
+  // (including failovers), so it drives the serving states; busy:false — posted in the turn
+  // lifecycle's finally — always resets to the user's selection. ──
+  function enterServingModel(modelLabel) {
+    if (modelLabel) modelPicker.setServing(modelLabel);
+  }
+  function resetServingModel() {
+    modelPicker.setServing(null);
+  }
+
+  // ── Context-pressure chip: a circular ring gauge showing how much of the SERVING model's
+  // window the most recent request used (from WorkReportData.context — never recomputed).
+  // Amber past 70%; hover keeps the exact numbers. ──
+  const ctxChip = $('#ctx-chip');
+  function updateContextChip(report) {
+    const c = report && report.context;
+    if (!c || !c.contextWindow || !(c.percent >= 0)) { ctxChip.classList.add('hidden'); return; }
+    ctxChip.classList.remove('hidden');
+    ctxChip.classList.toggle('warn', c.percent > 70);
+    const r = 6.5;
+    const circ = 2 * Math.PI * r;
+    const off = circ * (1 - Math.min(100, Math.max(0, c.percent)) / 100);
+    // Ring + explicit percentage readout — a ring alone was easy to miss at a glance.
+    ctxChip.innerHTML =
+      `<svg class="ctx-ring" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">`
+      + `<circle class="ring-bg" cx="8" cy="8" r="${r}"></circle>`
+      + `<circle class="ring-fg" cx="8" cy="8" r="${r}" stroke-dasharray="${circ.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"></circle>`
+      + `</svg>`
+      + `<span class="ctx-pct">${c.percent}%</span>`;
+    ctxChip.title = `Context: ${c.percent}% — last request used ~${fmtTokens(c.contextTokens)} of the serving model's ${fmtTokens(c.contextWindow)}-token window`;
   }
 
   // Image + PDF paste: clipboard data carries images, but not PDFs. We still keep
@@ -1680,51 +1706,30 @@ const STATE_LABEL = {
     } else {
       supports = true; // auto may land on a reasoning model
     }
-    reasoningSel.disabled = !supports;
-    reasoningSel.title = supports ? 'Reasoning effort' : 'This model has no reasoning mode';
-    if (!supports) reasoningSel.value = 'off';
+    if (!supports) currentReasoning = 'off';
+    // The segmented control lives inside the model picker popover — reflect value + disabled.
+    modelPicker.setReasoning(currentReasoning, !supports);
   }
 
   // ---------- model picker ----------
-  function addModelItem(value, label, m, off) {
-    const item = document.createElement('div');
-    const deprecated = (state.deprecated || []).includes(value);
-    const slow = !deprecated && (state.slow || []).includes(value);
-    item.className = 'model-item' + (value === currentModel ? ' selected' : '') + (deprecated ? ' deprecated' : '') + (slow ? ' slow' : '') + (off ? ' off' : '');
-    item.dataset.value = value;
-    const lbl = document.createElement('span');
-    lbl.className = 'mi-label';
-    lbl.textContent = label;
-    item.appendChild(lbl);
-    if (deprecated) {
-      const tag = document.createElement('span');
-      tag.className = 'mi-deprecated';
-      tag.textContent = 'unavailable';
-      tag.title = 'The provider returned “not found” for this model — it looks deprecated or removed. Auto skips it.';
-      item.appendChild(tag);
-    } else if (slow) {
-      const tag = document.createElement('span');
-      tag.className = 'mi-slow';
-      tag.textContent = 'slow';
-      tag.title = 'A recent response took 8s or longer. Auto deprioritizes this model for 30 minutes — you can still select it directly.';
-      item.appendChild(tag);
-    } else if (off) {
-      const tag = document.createElement('span');
-      tag.className = 'mi-off';
-      tag.textContent = 'off';
-      tag.title = 'Not in your enabled chain — Auto will not pick it, but pinning routes to it directly. Enable it in Settings to include it in Auto.';
-      item.appendChild(tag);
+  function rebuildModelPicker() {
+    const options = getEnabledModelOptions();
+    modelPicker.setOptions({ options, deprecated: state.deprecated || [], slow: state.slow || [] });
+    // Sync the pill label to the current selection ('auto' → Auto, pinned → its label,
+    // unknown pin → the bare model id).
+    const hit = options.find((opt) => opt.value === currentModel);
+    modelPicker.setValue(currentModel, hit ? hit.label : undefined);
+    // A pinned model is honored as-is — the message goes to THAT model only (the router
+    // isolates it to a single candidate). Only 'auto' triggers smart routing. Previously a
+    // pinned model that fell out of the enabled set (provider toggled, catalog refresh, …)
+    // was silently rewritten to 'auto', which then rerouted the turn to whatever Auto ranked
+    // first — surfacing as a different provider name than the one picked. Keep the pin and
+    // surface the unavailability instead, so the user re-picks deliberately.
+    if (currentModel !== 'auto' && !hit) {
+      const bare = currentModel.split('::').slice(1).join('::') || currentModel;
+      showComposerStatus(`${bare} is no longer in the enabled set — still pinned (Auto routing off). Re-pick or switch to Auto.`);
     }
-    const caps = [];
-    if (m) { if (m.supportsTools) caps.push('T'); if (m.supportsVision) caps.push('V'); if (m.supportsReasoning) caps.push('R'); }
-    if (caps.length) {
-      const c = document.createElement('span');
-      c.className = 'mi-caps';
-      c.innerHTML = caps.map((x) => `<span class="cap" title="${x === 'T' ? 'tools' : x === 'V' ? 'vision' : 'reasoning'}">${x}</span>`).join('');
-      item.appendChild(c);
-    }
-    item.addEventListener('click', () => setModel(value, label));
-    modelList.appendChild(item);
+    updateReasoningAvailability();
   }
   /** Every model the picker (and any other model dropdown) should offer: enabled on an
    *  active platform, or an enabled custom-endpoint model. Single source of truth so the
@@ -1780,41 +1785,6 @@ const STATE_LABEL = {
     for (const opt of options) if (!groupOrder.has(opt.group)) groupOrder.set(opt.group, g++);
     options.sort((a, b) => groupOrder.get(a.group) - groupOrder.get(b.group));
     return options;
-  }
-
-  function rebuildModelPicker() {
-    modelList.innerHTML = '';
-    addModelItem('auto', 'Auto (smart routing)');
-    const options = getEnabledModelOptions();
-    let lastGroup = null;
-    let selectedLabel = null;
-    options.forEach((opt) => {
-      if (opt.group !== lastGroup) {
-        lastGroup = opt.group;
-        const h = document.createElement('div');
-        h.className = 'model-group';
-        h.textContent = opt.group;
-        modelList.appendChild(h);
-      }
-      addModelItem(opt.value, opt.label, opt.model, opt.off);
-      if (opt.value === currentModel) selectedLabel = opt.label;
-    });
-    // A pinned model is honored as-is — the message goes to THAT model only (the router
-    // isolates it to a single candidate). Only 'auto' triggers smart routing. Previously a
-    // pinned model that fell out of the enabled set (provider toggled, catalog refresh, …)
-    // was silently rewritten to 'auto', which then rerouted the turn to whatever Auto ranked
-    // first — surfacing as a different provider name than the one picked. Keep the pin and
-    // surface the unavailability instead, so the user re-picks deliberately.
-    const enabledValues = new Set(options.map((opt) => opt.value));
-    if (currentModel !== 'auto' && !enabledValues.has(currentModel)) {
-      const bare = currentModel.split('::').slice(1).join('::') || currentModel;
-      showComposerStatus(`${bare} is no longer in the enabled set — still pinned (Auto routing off). Re-pick or switch to Auto.`);
-    }
-    // Keep the button label in sync with the current selection.
-    if (currentModel === 'auto') { modelBtnLabel.textContent = 'Auto'; modelBtn.title = 'Auto (smart routing)'; }
-    else if (selectedLabel) { modelBtnLabel.textContent = selectedLabel; modelBtn.title = selectedLabel; }
-    else { const bare = currentModel.split('::').slice(1).join('::') || currentModel; modelBtnLabel.textContent = bare; modelBtn.title = bare; }
-    updateReasoningAvailability();
   }
 
   // ---------- @ / / autocomplete ----------
@@ -1993,11 +1963,10 @@ const STATE_LABEL = {
     
     let hasBody = false;
     if (editArgs && editArgs.old_string != null && editArgs.new_string != null) {
-      // Inline diff for patch-style edits
+      // Threshold-gated unified diff (same builder the static card uses — live == replay).
       pre.textContent = '';
-      pre.className = 'tm-tool-card-output diff-view';
-      pre.appendChild(buildInlineDiff(editArgs.old_string, editArgs.new_string));
-      body.classList.remove('hidden');
+      body.replaceWith(buildEditDiff(String(editArgs.old_string), String(editArgs.new_string),
+        typeof editArgs.path === 'string' ? editArgs.path : undefined));
       hasBody = true;
     } else if (msg.detail) {
       pre.className = 'tm-tool-card-output';
@@ -2057,7 +2026,7 @@ const STATE_LABEL = {
   // Populated by the 'customEndpointModels' host reply; read while rendering each endpoint card.
   const fetchedEndpointModels = new Map();
   function toggleSettings() {
-    closeModelPop();
+    modelPicker.close();
     closeAc();
     settingsOpen = !settingsOpen;
     settingsEl.classList.toggle('active', settingsOpen);
@@ -3473,7 +3442,7 @@ const STATE_LABEL = {
   // (otherwise unchanged) render logic below writes into the right session's DOM regardless of
   // which session is currently being viewed. 'switchSession' is included so its case body can
   // use the returned `existed` flag to tell a brand-new pane from an already-live one.
-  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'watchdogWarning', 'watchdogActionable', 'watchdogDismissed', 'todos', 'planData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
+  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'watchdogWarning', 'watchdogActionable', 'watchdogDismissed', 'todos', 'planData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'workReport', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
 
   // ---------- inbound messages ----------
   window.addEventListener('message', (event) => {
@@ -3554,8 +3523,14 @@ const STATE_LABEL = {
           statusTimers.clear();
         }
         if (!paneCtx.existed || rebuildInPlace) {
-          (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts, mm.attachments) : renderAssistantStatic(mm.text, mm.model, mm.ts, mm.secs, { reasoning: mm.reasoning, steps: mm.steps, usage: mm.usage }));
+          (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts, mm.attachments) : renderAssistantStatic(mm.text, mm.model, mm.ts, mm.secs, { reasoning: mm.reasoning, steps: mm.steps, usage: mm.usage, workReport: mm.workReport }));
           if (!(msg.messages || []).length) renderEmpty();
+        }
+        // Context chip reflects the session being entered — its most recent workReport's
+        // context telemetry (replay uses the SAME field the live message carried).
+        for (let i = (msg.messages || []).length - 1; i >= 0; i--) {
+          const mm = msg.messages[i];
+          if (mm.role === 'assistant' && mm.workReport) { updateContextChip(mm.workReport); break; }
         }
         loadComposer(viewedSessionId); // restore the entering session's draft/settings
         scrollDown();
@@ -3574,6 +3549,7 @@ const STATE_LABEL = {
       }
       case 'setInput':
         input.value = msg.text || '';
+        syncComposer();
         // "Revert to here" restores the reverted turn's attachments too — otherwise the
         // file just vanishes (its extracted text was only ever embedded into the MODEL's
         // history, never into this composer text, so there was nothing left to show).
@@ -3595,6 +3571,10 @@ const STATE_LABEL = {
       case 'assistantStart': {
         const ctx = createHandlerContext();
         handleAssistantStart(ctx, msg);
+        // Serving indicator (viewed session only — the composer is singular): shows the model
+        // actually serving this turn; a failover re-posts assistantStart with the new model,
+        // flipping serving:A → serving:B. Reset happens on busy:false.
+        if (!msg.sessionId || msg.sessionId === viewedSessionId) enterServingModel(msg.model || '');
         break;
       }
       case 'agentStep': {
@@ -3994,6 +3974,22 @@ const STATE_LABEL = {
         // The canonical reply bubble is already rendered above (draft → canonical reconciliation).
         t._wasStreamed = false;
         finalizeWork(msg.requestId);
+        // Structured work report → ResultCard, mounted after the collapse so it sits BELOW the
+        // answer (live). Replay mounts the identical component from entry.workReport.
+        let turnFailovers = 0;
+        if (t.workReport) {
+          const report = t.workReport;
+          t.workReport = null;
+          turnFailovers = report.telemetry.failovers || 0;
+          const card = createResultCard(report, {
+            onDiffFile: (p) => send({ type: 'diffCheckpointFile', id: report.checkpointId || '', uri: p }),
+            onVerify: () => send({ type: 'verifyTurn', sessionId: viewedSessionId || '' }),
+          });
+          if (card) {
+            if (t.flow && t.flow.parentNode) t.flow.appendChild(card);
+            else t.el.appendChild(card);
+          }
+        }
         // The final message carries the model that actually answered — use it as
         // the source of truth so the footer never blanks (e.g. when a forced model
         // failed over before assistantStart could set t.model).
@@ -4006,8 +4002,11 @@ const STATE_LABEL = {
           if (msg.usage) usageStr = `  ·  ${fmtUsage(msg.usage)}`;
           const startedAt = t.startedAt ?? startTimes.get(msg.requestId);
           const secs = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
-          const durStr = secs != null ? `  ·  ${secs}s` : '';
-          const foot = assistantFooter(t.el, (t.model || '') + usageStr + durStr, Date.now(), msg.requestId, t.rationale);
+          const durStr = secs != null ? `  ·  ${fmtDuration(secs)}` : '';
+          // Failover count comes from the turn's telemetry (single source) — the silent
+          // failoverNotice chatter stays hidden, but the reroute shows as ⟳ N in the footer.
+          const failStr = turnFailovers > 0 ? `  ·  ⟳ ${turnFailovers}` : '';
+          const foot = assistantFooter(t.el, (t.model || '') + usageStr + durStr + failStr, Date.now(), msg.requestId, t.rationale);
           t.footActs = foot._acts; // so a late-arriving selectionRationale can still attach its (?)
           t.el.appendChild(foot);
         }
@@ -4022,6 +4021,17 @@ const STATE_LABEL = {
           t.el.appendChild(resume);
         }
         scrollDown();
+        break;
+      }
+      case 'workReport': {
+        // The host posts this right BEFORE the paired assistantMessage. Store it on the turn
+        // target; the assistantMessage handler mounts the ResultCard AFTER finalizeWork so
+        // the DOM order is [collapsed work summary] → [answer text] → [ResultCard] — the same
+        // order replay renders, keeping live == replay.
+        const t = ensureTarget(msg.requestId);
+        t.workReport = msg.report;
+        // Context-pressure chip reflects the VIEWED session's most recent request only.
+        if (!msg.sessionId || msg.sessionId === viewedSessionId) updateContextChip(msg.report);
         break;
       }
       case 'usageTotals':
@@ -4048,8 +4058,7 @@ const STATE_LABEL = {
         const pos = (before + insert).length;
         input.setSelectionRange(pos, pos);
         input.focus();
-        autoGrow();
-        updateSendEnabled();
+        syncComposer();
         break;
       }
       case 'attachmentAdded': {
@@ -4145,6 +4154,8 @@ const STATE_LABEL = {
           sb.title = busy ? 'Stop' : 'Send (Enter)';
           sb.classList.toggle('stopping', busy);
           updateSendEnabled();
+          // Turn lifecycle finally: the serving indicator always returns to the user's pick.
+          if (!busy) resetServingModel();
         }
         // Backstop: any run that ended without a terminal message (e.g. plan mode's early
         // return) still flips busy off — clear any lingering live status in THIS message's
@@ -4549,6 +4560,21 @@ const STATE_LABEL = {
     }
   }
 
+  /** Color family for a file extension's tile in the changed-files bar — scannable at a
+   *  glance (code/data/style/...) without shipping per-language icon assets. */
+  function extTileClass(rel) {
+    const base = rel.split('/').pop() || '';
+    const ext = (base.includes('.') ? base.split('.').pop() : '').toLowerCase();
+    if (['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs'].includes(ext)) return 'code';
+    if (['json', 'yaml', 'yml', 'toml', 'lock'].includes(ext)) return 'data';
+    if (['css', 'scss', 'less', 'sass'].includes(ext)) return 'style';
+    if (['md', 'mdx', 'txt', 'rst'].includes(ext)) return 'text';
+    if (['py', 'rb', 'go', 'rs', 'java', 'kt', 'c', 'h', 'cpp', 'hpp', 'cs', 'swift', 'php'].includes(ext)) return 'lang';
+    if (['html', 'htm', 'xml', 'svg', 'vue'].includes(ext)) return 'markup';
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'ico'].includes(ext)) return 'img';
+    return 'misc';
+  }
+
   function renderChangedBar(msg) {
     const bar = $('#changed-bar');
     if (!bar) return;
@@ -4560,7 +4586,8 @@ const STATE_LABEL = {
     const chevron = document.createElement('button'); chevron.className = 'cb-chevron';
     chevron.innerHTML = ICON.chevron; chevron.title = changedBarCollapsed ? 'Expand' : 'Collapse';
     const title = document.createElement('span'); title.className = 'cb-title';
-    title.textContent = `✎ ${files.length} changed`;
+    title.textContent = `✎ ${files.length} edited`;
+    title.title = 'Files TierMux edited this session — click one to open its diff';
     const toggle = () => {
       changedBarCollapsed = !changedBarCollapsed;
       bar.classList.toggle('collapsed', changedBarCollapsed);
@@ -4578,12 +4605,18 @@ const STATE_LABEL = {
     const list = document.createElement('div'); list.className = 'cb-files';
     files.forEach((f) => {
       const chip = document.createElement('button'); chip.className = 'cb-file';
+      const base = f.rel.split('/').pop() || '';
+      const ext = (base.includes('.') ? base.split('.').pop() : '').toLowerCase().slice(0, 4);
+      const tile = document.createElement('span');
+      tile.className = 'cb-ext ' + extTileClass(f.rel);
+      tile.textContent = ext || '·';
+      tile.title = f.rel;
       const badge = document.createElement('span'); badge.className = 'cb-badge cp-' + f.status;
       badge.textContent = CP_STATUS[f.status] || '?';
       const name = document.createElement('span'); name.className = 'cb-name';
       name.textContent = f.rel.split('/').pop();
       chip.title = `${f.rel} — open diff`;
-      chip.appendChild(badge); chip.appendChild(name);
+      chip.appendChild(tile); chip.appendChild(badge); chip.appendChild(name);
       chip.addEventListener('click', () => send({ type: 'diffCheckpointFile', id: msg.id, uri: f.uri }));
       list.appendChild(chip);
     });
@@ -4591,24 +4624,34 @@ const STATE_LABEL = {
     bar.classList.remove('hidden');
   }
 
+  /** Footer usage summary as quiet stat chips (tokens / requests / saved / context) —
+   *  readable at a glance, tooltips carry the exact wording. Click opens Usage settings. */
   function updateFooter(totals) {
     if (!totals) return;
-    const parts = [];
+    const chips = [];
     const lt = totals.lifetime;
     const hasUsage = lt && (lt.totalTokens > 0 || lt.totalRequests > 0 || lt.estimatedSavingsUsd > 0);
     if (hasUsage) {
-      parts.push(`<strong>Lifetime:</strong> ${fmtCompact(lt.totalTokens)} tokens`);
-      parts.push(`<strong>Requests:</strong> ${fmtCompact(lt.totalRequests)}`);
-      parts.push(`<strong>Saved:</strong> ${fmtUsd(lt.estimatedSavingsUsd)}`);
-    } else {
-      parts.push('<strong>No usage yet</strong>');
+      chips.push({ icon: ICON.chip, title: 'Lifetime tokens used across all sessions', value: fmtCompact(lt.totalTokens) });
+      chips.push({ icon: ICON.send, title: 'Requests sent', value: fmtCompact(lt.totalRequests) });
+      if (lt.estimatedSavingsUsd > 0) chips.push({ icon: ICON.check, title: 'Estimated savings vs flagship-model pricing', value: fmtUsd(lt.estimatedSavingsUsd) });
     }
     if (totals.context && totals.context.window) {
       const t = totals.context.tokens, w = totals.context.window;
       const pct = Math.min(100, Math.round((t / w) * 100));
-      parts.push(`<strong>Ctx:</strong> ${fmtCompact(t)} / ${fmtCompact(w)} (${pct}%)`);
+      chips.push({
+        icon: ICON.compress,
+        title: `Context: ${pct}% — ${fmtCompact(t)} / ${fmtCompact(w)} tokens on the current session`,
+        value: `${pct}%`,
+        warn: pct > 70,
+      });
     }
-    $('#footer').innerHTML = parts.join(' &middot; ');
+    const footer = $('#footer');
+    footer.innerHTML = chips.length
+      ? chips.map((c) =>
+          `<span class="footer-chip${c.warn ? ' warn' : ''}" title="${escapeHtml(c.title)}">`
+          + `<span class="fc-icon">${c.icon}</span>${escapeHtml(c.value)}</span>`).join('')
+      : '<span class="footer-chip footer-empty">No usage yet</span>';
   }
 
   // Render the "Usage data" card inside the Others tab. Safe to call before

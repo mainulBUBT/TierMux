@@ -19,11 +19,14 @@ import { AllModelsFailedError } from './router/router';
 import type { McpManager } from './mcp/mcpManager';
 import { CheckpointManager, type SerializedCheckpoint } from './edits/checkpoints';
 import { isDangerous } from './edits/commandGate';
+import { statusLines } from './edits/gitSnapshot';
 import type { ModelStatsStore, Vote } from './config/modelStats';
 import type { SlowModelStore } from './config/slowModel';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem, McpServerConfig } from './messages';
 import type { AnnouncementItem, Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, PlanDataPayload, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
+import { renderLegacyMarkdown } from './shared/workReport';
+import { resolveVerifyCommand, runVerifyCommand } from './agent/core/tools/workspace/verifyCommand';
 import { fetchAnnouncements as fetchWorkerAnnouncements, markAnnouncementsSeen, unseenAnnouncementCount } from './catalog/announcements';
 import { normalizeMcpServerConfig } from './mcp/mcpClient';
 import { getNonce } from './util/nonce';
@@ -310,6 +313,11 @@ interface Session {
   /** Tool steps accumulated per active requestId, attached to the assistant transcript entry at
    *  turn completion so a re-rendered message (e.g. after "Revert to here") keeps its step list. */
   liveSteps: Map<string, TranscriptStep[]>;
+  /** git-status snapshot (porcelain lines) captured just BEFORE each agent shell command runs,
+   *  keyed by toolCallId — diffed against a just-after snapshot to attribute workspace edits to
+   *  the agent's commands (see onTool in agentCallbacks). Edit-tool writes don't need this;
+   *  they're attributed via CheckpointManager.record(). */
+  commandBaselines: Map<string, Promise<Map<string, string>>>;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   /** How many `@mentions` resolved into context on the most recent send — carried through to
@@ -336,6 +344,9 @@ interface StoredSession {
   transcript: TranscriptMessage[];
   model?: string;
   reasoningEffort?: string;
+  /** The user renamed this session by hand — its title is locked against all auto-titling,
+   *  persisted so the protection survives a reload (see maybeGenerateTitle/hydrateSession). */
+  userRenamedTitle?: boolean;
   /** Full model-facing conversation history. Persisted (in addition to `transcript`, the UI
    *  display log) so the model's actual memory of the conversation survives a VSCode/extension
    *  restart — without this, every session reload wiped the LLM-facing history back to empty
@@ -531,6 +542,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       checkpoints: new CheckpointManager(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath),
       lastWindow: 0,
       liveSteps: new Map(),
+      commandBaselines: new Map(),
       model: undefined,
       reasoningEffort: undefined,
     };
@@ -557,7 +569,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       history: recovered?.length ? [...(s.history ?? []), ...recovered] : (s.history ?? []),
       transcript,
       title: s.title,
-      titleGenerated: !!s.title || (s.transcript?.some((t) => t.role === 'user') ?? false),
+      // The 'Starting Conversation' stand-in is NOT a generated title — a session that only
+      // ever saw small talk still gets its one-shot real title on its first real message.
+      titleGenerated: !!(s.title && s.title.trim() !== 'Starting Conversation') || !!s.userRenamedTitle,
       pendingApprovals: new Map(),
       pendingPermissions: new Map(),
       alwaysAllowTools: new Set(s.alwaysAllowTools ?? []),
@@ -569,6 +583,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       checkpoints: new CheckpointManager(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, s.checkpoints),
       lastWindow: 0,
       liveSteps: new Map(),
+      commandBaselines: new Map(),
       createdAt: s.ts ?? Date.now(),
       updatedAt: s.ts ?? Date.now(),
       model: s.model,
@@ -614,6 +629,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       others.unshift({
         id: s.id, title: s.title ?? this.deriveTitle(s), ts: Date.now(), transcript: s.transcript,
         model: s.model, reasoningEffort: s.reasoningEffort, history: s.history, inProgressTurn: s.inProgressTurn,
+        userRenamedTitle: s.userRenamedTitle,
         lastTodos: s.lastTodos, alwaysAllowTools: s.alwaysAllowTools.size ? [...s.alwaysAllowTools] : undefined,
         checkpoints: s.checkpoints.toJSON(),
         planRun: s.planRun,
@@ -981,6 +997,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const s = this.current();
     if (!t || t === (s.title ?? this.deriveTitle(s))) return;
     s.title = t;
+    s.userRenamedTitle = true; // user-chosen name sticks — auto-titling never overrides it
     this.persist(s.id); // saves + pushes the new title to chrome and webview header
   }
 
@@ -1332,8 +1349,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'restoreCheckpoint':
         await this.handleRestoreCheckpoint(this.current(), m.id);
         break;
-      case 'diffCheckpointFile':
-        this.current().checkpoints.openDiff(m.id, m.uri);
+      case 'diffCheckpointFile': {
+        // WorkReportData.changedFiles carry tool-arg paths (workspace-relative), while
+        // CheckpointManager snapshots are keyed by absolute uri.toString(). Resolve bare
+        // relative paths against the workspace root; real URIs pass through untouched.
+        const s = this.current();
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+        const uriStr = m.uri.includes('://') || !root ? m.uri : vscode.Uri.joinPath(root, m.uri).toString();
+        s.checkpoints.openDiff(m.id, uriStr);
+        break;
+      }
+      case 'verifyTurn':
+        await this.runManualVerify(this.current());
         break;
       case 'revertTo':
         await this.handleRevertTo(this.current(), m.requestId);
@@ -2349,12 +2376,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Feed the pinned "changed files" bar above the composer. The earliest checkpoint
    * aggregates every edit made this session (cumulative semantics), so its file set is
    * the full review list and its id is what "Undo all" restores. Empty set hides the bar.
+   * agentChangedFiles() filters to what TIERMUX itself edited — the user's own concurrent
+   * edits / build output don't belong in the agent's review list.
    */
   private async postChangedFilesBar(s: Session): Promise<void> {
     const cps = s.checkpoints.list();
     if (!cps.length) { this.post({ type: 'changedFiles', sessionId: s.id, id: '', files: [] }); return; }
     const id = cps[0].id;
-    const files = await s.checkpoints.changedFiles(id);
+    const files = await s.checkpoints.agentChangedFiles(id);
     this.post({ type: 'changedFiles', sessionId: s.id, id, files });
   }
 
@@ -2666,6 +2695,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * "Run checks" on a ResultCard: re-run the project's verify command OUTSIDE a turn and post
+   * the outcome as its own bubble. Pure command execution — no model call, no edits — so it's
+   * the honest answer to "is this actually done?" without asking the agent anything.
+   */
+  private async runManualVerify(s: Session): Promise<void> {
+    if (s.activeRequestId) {
+      this.post({ type: 'notice', sessionId: s.id, text: 'Skipped — a turn is still running. Try again once it finishes.' });
+      return;
+    }
+    const cmd = resolveVerifyCommand();
+    if (!cmd) {
+      this.post({ type: 'notice', sessionId: s.id, text: 'No test/build command detected in this workspace — tell me which command to use and I\'ll remember it.' });
+      return;
+    }
+    const requestId = `verify-${Date.now()}`;
+    this.post({ type: 'notice', sessionId: s.id, text: `Running \`${cmd}\`…` });
+    const run = await runVerifyCommand(cmd);
+    if (!this.isActiveRun(s, requestId)) return; // superseded mid-check — drop the result
+    const text = run.ok === true
+      ? `✅ Verified — \`${cmd}\` passed. Your changes are in good shape.`
+      : run.ok === false
+        ? `❌ \`${cmd}\` fails right now:\n\`\`\`\n${run.output.slice(0, 1500)}\n\`\`\`\nAsk me to fix these failures and I'll take another pass.`
+        : `⚠️ Couldn't run \`${cmd}\` (declined or timed out).`;
+    this.post({ type: 'assistantMessage', sessionId: s.id, requestId, text, noFooter: true });
+  }
+
+  /**
    * Append an agent run's outcome to the conversation history. Agent/Debug runs return
    * their full working transcript (tool calls + results + final answer) as workMessages —
    * persisting that is what lets a paused/failed run resume with memory instead of redoing
@@ -2685,15 +2741,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private pushAssistantTurn(s: Session, requestId: string, result: AgentResult, sentAt: number, usage?: { promptTokens: number; completionTokens: number; reasoningTokens?: number; totalTokens: number }): void {
     const steps = s.liveSteps.get(requestId);
     s.liveSteps.delete(requestId);
+    // The transcript is the durable structured representation: when the turn produced a
+    // WorkReportData, it is persisted ON the entry (canonical) and posted to the webview
+    // (live ResultCard). `.text` additionally carries the legacy markdown serialization so
+    // transcripts written before WorkReportData keep rendering — new code renders from the
+    // structured field and never parses that markdown back.
+    let text = result.text;
+    if (result.workReport) {
+      text += renderLegacyMarkdown(result.workReport); // LEGACY TRANSCRIPT SERIALIZATION — remove after the minimum supported transcript migration window.
+      this.post({ type: 'workReport', sessionId: s.id, requestId, report: result.workReport });
+    }
     s.transcript.push({
       role: 'assistant',
-      text: result.text,
+      text,
       model: result.model ? `${result.runtimeName ?? result.platform}/${result.model}` : undefined,
       ts: Date.now(),
       secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)),
       reasoning: result.reasoning || undefined,
       usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, reasoningTokens: usage.reasoningTokens } : undefined,
       steps: steps && steps.length ? steps : undefined,
+      workReport: result.workReport,
     });
   }
 
@@ -2839,6 +2906,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         if (i >= 0) steps[i] = entry; else steps.push(entry);
         s.liveSteps.set(requestId, steps);
+
+        // Attribute shell-command workspace edits to the agent: snapshot git's dirty set just
+        // before the command runs, diff just after. Files whose porcelain line appeared or
+        // changed were edited BY the command → mark them TierMux-touched so the changed-files
+        // overview (agentChangedFiles) includes them. The user editing a file exactly WHILE a
+        // command runs would misattribute — a rare, acceptable window. Edit-tool writes don't
+        // need this; record() already tags them.
+        if (e.name === 'runCommand') {
+          const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+          if (cwd) {
+            if (mappedState === 'running' && !s.commandBaselines.has(e.toolCallId)) {
+              s.commandBaselines.set(e.toolCallId, statusLines(cwd));
+            } else if (mappedState === 'done' || mappedState === 'error') {
+              const before = s.commandBaselines.get(e.toolCallId);
+              s.commandBaselines.delete(e.toolCallId);
+              if (before) {
+                void before.then(async (pre) => {
+                  const post = await statusLines(cwd);
+                  const changed: string[] = [];
+                  for (const [p, line] of post) if (pre.get(p) !== line) changed.push(p);
+                  if (changed.length) s.checkpoints.recordTouched(changed);
+                });
+              }
+            }
+          }
+        }
+
         if (WRITE_TOOL_NAMES.has(e.name) && s.liveActivity !== 'Modifications') {
           s.liveActivity = 'Modifications';
           this.postSessionList();
@@ -3306,6 +3400,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Best-effort: ask a free LLM for a short title from the user's first message. */
   private async maybeGenerateTitle(s: Session): Promise<void> {
     if (s.titleGenerated || s.userRenamedTitle) return;
+    // Once a REAL title exists it sticks for the session's lifetime — the only replaceable
+    // state is the untitled placeholders (empty, or the trivial-first-message stand-in).
+    // This is what keeps "title changes every message" from ever happening: generation is
+    // a one-shot upgrade path, never an ongoing rewrite.
+    const existing = (s.title ?? '').trim();
+    if (existing && existing !== 'Starting Conversation') { s.titleGenerated = true; return; }
     const users = s.transcript.filter((t) => t.role === 'user');
     if (!users.length) return;
 
@@ -3410,11 +3510,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <link href="${uri('vendor/diff2html.min.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/tokens.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/plan.css')}" rel="stylesheet" nonce="${nonce}" />
-  <link href="${uri('styles/components/checkpoint.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/tool-card.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/reasoning.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/approval-card.css')}" rel="stylesheet" nonce="${nonce}" />
+  <link href="${uri('styles/components/result-card.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/terminal.css')}" rel="stylesheet" nonce="${nonce}" />
+  <link href="${uri('styles/components/composer.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('main.css')}" rel="stylesheet" nonce="${nonce}" />
   <title>${PRODUCT_NAME}</title>
 </head>

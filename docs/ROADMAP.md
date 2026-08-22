@@ -1,82 +1,104 @@
-# TierMux — Project Roadmap
+# TierMux — Roadmap
 
-**Last updated:** 2026-07-27
+**Last updated:** 2026-08-23 · version line: 2.1.x
 
 ---
 
-## Feature status
+## Status at a glance
 
-### Core features — ✅ Complete
+| Area | State |
+|---|---|
+| In-process agent engine (AI SDK `streamText()`, no external CLI) | ✅ Shipped |
+| Router: multi-provider failover, key rotation, cooldowns, quarantine | ✅ Shipped |
+| Smart Auto scoring engine + per-turn *"Why this model?"* rationale | ✅ Shipped |
+| Plan mode runner: per-step verify → bounded retry → read-only plan repair, resumable across reloads | ✅ Shipped |
+| Step engine shared by auto-continue / headless runs / plan runner | ✅ Shipped |
+| Sub-agent tool `delegate` (read-only research + git-worktree code workers) | ✅ Shipped |
+| Turn watchdog (~45 s warn / ~90 s actionable), session auto-compaction, handoff notes | ✅ Shipped |
+| Checkpoints & revert, diff/command approval gates, secrets read guard | ✅ Shipped |
+| Providers: **30 built-in platforms** (4 keyless) + unlimited custom endpoints, remote catalog auto-update | ✅ Shipped |
+| Benchmark harnesses: routing latency + agent-quality merge gate | ✅ Shipped |
+| Zero-token testing: mock-fixture scenarios, recorded cassettes, fake model | ✅ Shipped |
+| MCP servers, custom skills (`.tiermux/skills/`), embeddings auto-context | ✅ Shipped |
+| Webview tech debt: remove `@ts-nocheck` | 🚧 In progress |
+| Browser verification tool (agent can see a rendered page) | 🔬 Design phase ([docs/BROWSER_VERIFY_TOOL.md](BROWSER_VERIFY_TOOL.md)) |
+
+---
+
+## Feature checklists
+
+### Core — ✅ Complete
 ```
-[x] Streaming responses
-[x] Multi-provider failover
-[x] Agent tool calling (in-process, built on the AI SDK — OpenCode fully removed 2026-07)
+[x] Streaming responses (Ask streams token-by-token; tool turns buffer cleanly)
+[x] Multi-provider failover with silent key rotation
+[x] Agent tool calling — in-process on the AI SDK (OpenCode fully removed 2026-07)
 [x] Diff approval & Terminal approval gates
-[x] Checkpoints & Revert capabilities
-[x] Session replay / History
-[x] Keyless fallback chain
-[x] Custom endpoints
+[x] Checkpoints & revert
+[x] Session replay / history / search
+[x] Keyless fallback chain (works with zero configuration)
+[x] Custom OpenAI-compatible endpoints
 ```
 
-### Reliability/agent-loop features (adopted from an awesome-opencode review) — ✅ Complete
+### Reliability & agent-loop hardening — ✅ Complete
 ```
-[x] .env/secrets read guard — deny/prompt readFile/glob on .env*, *.pem, id_rsa*, .npmrc,
+[x] .env/secrets read guard — deny/prompt reads of .env*, *.pem, id_rsa*, .npmrc,
     .aws/, .ssh/, *credentials* (src/agent/core/policies/permission.ts)
 [x] Shell-strategy prompt — no &&-chains, no pagers, no -i flags, one command per step
     (src/agent/promptBuilder.ts)
-[x] Handoff prompt — tiermux.generateHandoff command, goal/done/next/open-decisions note
-    (src/agent/condense.ts generateHandoff, src/agent/prompts.ts HANDOFF_SYSTEM)
-[x] Plan annotation — structurePlanSteps() wired into Plan mode's turn completion, feeding
-    the existing per-step accept/reject/edit UI (media/src/ui/components/Plan.ts) cleaner,
-    model-structured steps instead of only a regex bullet/number parse; posted non-blocking
-    (plan card shows instantly, upgrades in place) — chatViewProvider.ts upgradePlanSteps()
-[x] Self-correct retry (Ralph-Wiggum-style) — one bounded retry when an edit/write tool's
-    own post-edit diagnostic check finds a NEW error, nudging the model to fix it instead of
-    silently finishing on a broken file (src/agent/core/loop.ts runTurn)
+[x] Handoff prompt — tiermux.generateHandoff copies a goal/done/next/open-decisions note
+[x] Plan annotation — model-structured steps feed the per-step accept/reject/edit UI,
+    posted non-blocking so the plan card renders instantly and upgrades in place
+[x] Self-correct retry — one bounded retry when an edit's own diagnostic check finds a
+    NEW error the agent just introduced (src/agent/core/loop.ts runTurn)
+[x] Mode guard — Ask/Plan cannot run mutating shell commands; mode switches announced
 ```
 
-### Providers — ✅ 22 Supported
+### Providers — ✅ 30 built-in platforms, 145+ catalog models
 ```
-Keyless:  kilo · pollinations · ovh
-Keyed:    groq · cerebras · nvidia · mistral · openrouter · github · zhipu · huggingface · ollama · llm7 · agnes · sambanova · siliconflow · zenmux · cohere
-Native:   google (AI Studio) · cloudflare (Workers AI)
-Custom:   user-defined OpenAI-compatible endpoints
+Keyless (zero setup, 4):   kilo · pollinations · ovh · opencode zen
+Free-key tiers (24):       groq · cerebras · nvidia · mistral · openrouter · zhipu ·
+                           huggingface · ollama cloud · llm7 · agnes · sambanova ·
+                           siliconflow · zenmux · kenari · llmgateway · poolside ·
+                           nararouter · aionlabs · chatanywhere · openadapter ·
+                           orcarouter · requesty · router9 · cohere
+Native adapters (2):       google (AI Studio) · cloudflare (Workers AI)
+Custom:                    any OpenAI-compatible endpoint (vLLM, LiteLLM, LM Studio,
+                           local Ollama, llama.cpp, Azure OpenAI…)
+
+GitHub Models retired upstream 2026-07-30 and was removed from the registry;
+catalog validation now checks live provider APIs and drops retired models automatically.
 ```
 
-### UI (Webview) — ✅ Complete
+### UI (webview) — ✅ Complete, polish ongoing
 ```
-[x] Settings panel (providers/mcp/usage/others tabs)
+[x] Settings panel (providers / mcp / usage / others tabs)
 [x] History dropdown + search
 [x] Composer: attachments, images, paste, drag-drop
 [x] @mention / slash autocomplete
 [x] Auto-approve toggle
 [x] MCP servers config + registry browse
-```
-
-### Architecture — 🚧 Next Steps
-```
-[x] Headless agent loop (AI SDK `streamText()` + a custom Router-backed provider — see docs/ARCHITECTURE.md)
-[x] Telemetry profiler (live + noop)
-[ ] Test Coverage: Benchmark harness execution
-[ ] Technical Debt: Remove @ts-nocheck in webview
+[x] Model & agent pickers, result cards, popover primitives
+[ ] Strict-TS migration of remaining imperative webview code (@ts-nocheck removal)
 ```
 
 ---
 
-## High-ROI Candidates for Next Phase
+## Next up — prioritized
 
 | Priority | Area | Goal |
 |----------|------|------|
-| 🥇 | **Benchmark Automation** | Turn `BENCHMARK_QUERIES.md` into an executable harness to catch regression during routing/model updates. |
-| 🥈 | **Context Management** | Improve windowing for huge repositories, reducing token usage without losing grounding. |
-| 🥉 | **Webview Tech Debt** | Incrementally migrate the vanilla JS imperative DOM webview to a modern strict TS setup, removing `@ts-nocheck`. |
-| ✅ | **Brainstorm → Plan → Implement** | Delivered 2026-08-21 via the first-class plan runner (no new mode needed): plan mode's brainstorm pre-step → structured plan → approval → `core/planRunner.ts` executes steps one at a time through the step engine — per-step verify acceptance, same-model verify-failure retries, read-only plan repair, resumable across window reloads. Alongside it: the `delegate` sub-agent tool (research + code/worktree modes) and the multi-round verify→fix loop. |
+| 🥇 | **Benchmark automation** | Grow the seeded dataset toward the full 50-query target and run the quality merge gate on every routing/model change. |
+| 🥈 | **Context management** | Better windowing for huge repositories — cut token usage without losing grounding. |
+| 🥉 | **Webview tech debt** | Incrementally migrate the imperative vanilla-JS webview to strict TS, removing `@ts-nocheck`. |
+| 4 | **Browser verification** | Let the agent screenshot/console-inspect a running page (localhost-capable, no paid backend — see [docs/BROWSER_VERIFY_TOOL.md](BROWSER_VERIFY_TOOL.md)). |
+| 5 | **Adaptive Orchestrator** | Single typed entry point for every model call (CHAT/AGENT/INLINE/BACKGROUND) — design preserved in [docs/ARCHITECTURE.md](ARCHITECTURE.md#roadmap-phase-3--not-yet-implemented). |
+| 6 | **Capability resolver** | Consume `CatalogModel` capability bits (CODING/REASONING/VISION/TOOLS/LONG_CTX/CHEAP/FAST) as real routing filters via `Router.capabilities(needs)`. |
 
 ---
 
-## Principles for Future Development
+## Principles for future development
 
-1. **Measurable Changes:** Any new retrieval logic or model capability must prove itself via benchmarks before merging.
-2. **Free-Tier First:** TierMux routes heavily through free LLM tiers. Architecture must remain resilient to sudden rate limits, 500s, and API changes.
-3. **No Lock-in:** Ensure the Router stays provider-agnostic and AI-SDK-agnostic — it exposes `route()` and knows nothing about `LanguageModel`/`Tool`/`streamText`.
-
+1. **Measurable changes.** Any new retrieval logic or model capability must prove itself via the benchmark before merging.
+2. **Free-tier first.** TierMux routes heavily through free LLM tiers; the architecture must stay resilient to sudden rate limits, 500s, and API changes by design, not by luck.
+3. **No lock-in.** The Router stays provider-agnostic and AI-SDK-agnostic — it exposes `route()` and knows nothing about `LanguageModel`/`Tool`/`streamText`.
+4. **More capacity is always additive.** New providers, new keys, new models must slot in without config migrations — the remote catalog exists precisely so users gain headroom without updating the extension.

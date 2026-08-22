@@ -54,6 +54,10 @@ export interface AgentResult {
    *  NOT accepted": a model marking its todos completed while the verify command fails gets one
    *  focused extra round instead of a handshake. */
   verifyOutcome?: 'passed' | 'failed' | 'unverified';
+  /** Structured end-of-turn report (loop.ts builds it; the host persists it in the transcript
+   *  as the canonical representation and posts it to the webview for the ResultCard). The
+   *  legacy markdown block in `text` is compatibility serialization only. */
+  workReport?: import('../shared/workReport').WorkReportData;
 }
 
 /** Smart Auto scoring rationale for a route() call this run triggered — "why this model?".
@@ -131,6 +135,10 @@ export interface AgentOpts {
   onWatchdogWarning?: (info: { elapsedMs: number; lastActivity?: WatchdogActivity }) => void;
   onWatchdogActionable?: (info: { elapsedMs: number; lastActivity?: WatchdogActivity; hasPartialOutput: boolean }) => void;
   onWatchdogDismissed?: () => void;
+  /** Turn telemetry sink — set by runTurn itself (not callers); every model call the turn
+   *  makes (planner, executor, judges, recap) reports its provider-measured usage here so
+   *  WorkReportData.telemetry reflects the WHOLE turn. See src/shared/workReport.ts. */
+  usageSink?: (info: { inputTokens: number; outputTokens: number; contextTokens: number; contextWindow?: number; model: string }) => void;
   /** Profiler service — always called (NoopProfiler when disabled). */
   profiler?: IProfilerService;
 }

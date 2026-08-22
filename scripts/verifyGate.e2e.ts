@@ -92,11 +92,11 @@ async function main() {
     const result = await runTurn(fakeRouter, makeOpts({ onStep: (_p, label) => steps.push(label) }));
     ok('gate pass: exactly 2 router calls (no retry on a passing gate)', n === 2);
     ok('gate pass: the verify command actually ran', steps.some((s) => s.startsWith('Verifying with true')));
-    ok('gate pass: no Verification-failed note', !result.text.includes('Verification failed'));
-    ok('gate pass: observed pass satisfies the honesty backstop (no Unverified badge)', !result.text.includes('Unverified'));
-    ok('report: ✅ Verified status line names the command', result.text.includes('**✅ Verified**') && result.text.includes('`true` passed'));
-    ok('report: the structured block separator is present', result.text.includes('\n---\n'));
-    ok('report: Tools used tally present with counts', /\*\*Tools used:\*\* \d+ calls? — /.test(result.text) && result.text.includes('runCommand×1'));
+    ok('gate pass: no Verification-failed note', result.workReport?.verifyOutcome !== 'failed' && !result.text.includes('Verification failed'));
+    ok('gate pass: observed pass satisfies the honesty backstop (no Unverified badge)', result.workReport?.verifyOutcome === 'verified');
+    ok('report: ✅ Verified outcome names the command', result.workReport?.verifyOutcome === 'verified' && result.workReport?.verifyCmd === 'true');
+    ok('report: structured WorkReportData present (version 1)', result.workReport?.version === 1);
+    ok('report: tool tally present with counts', (result.workReport?.toolTally ?? []).some((t) => t.name === 'runCommand' && t.count === 1));
   }
 
   // --- Test 2: verify fails → one retry with the output; a mutating retry is re-checked ---
@@ -136,7 +136,7 @@ async function main() {
     const retryText = JSON.stringify(routeCalls[2].messages);
     // (Command substring is checked by marker name — JSON.stringify escapes the quoted path.)
     ok('gate retry: nudge carries the failure output and command', retryText.includes('FAILED') && retryText.includes('gate-ok-marker.txt'));
-    ok('gate retry: a mutating retry gets re-checked and a pass clears the failure', !result.text.includes('Verification failed'));
+    ok('gate retry: a mutating retry gets re-checked and a pass clears the failure', result.workReport?.verifyOutcome === 'verified');
     ok('gate retry: final answer is the retry\'s text', result.text.includes('Now fixed for real.'));
   }
 
@@ -164,10 +164,10 @@ async function main() {
 
     const result = await runTurn(fakeRouter, makeOpts());
     ok('gate failed: exactly 3 router calls (no re-run after a non-mutating retry)', n === 3);
-    ok('gate failed: final text carries the Verification-failed note', result.text.includes('Verification failed'));
-    ok('report: ❌ Verification-failed status states the issue is not fully resolved',
-      result.text.includes('**❌ Verification failed**') && result.text.includes("isn't fully resolved yet"));
-    ok('gate failed: the note names the command', result.text.includes('`false`'));
+    ok('gate failed: the turn reports verifyOutcome=failed', result.workReport?.verifyOutcome === 'failed');
+    ok('report: ❌ Verification-failed carries fixRounds from the gate',
+      result.workReport?.verifyOutcome === 'failed' && result.workReport!.fixRounds >= 1);
+    ok('gate failed: the report names the command', result.workReport?.verifyCmd === 'false');
   }
 
   // --- Test 4: planner seeds the todo checklist and its Verify: line drives the gate ---
@@ -210,7 +210,7 @@ async function main() {
     ok('planner: todo checklist seeded from the plan steps', todoLists.length > 0 && todoLists[0].length === 2);
     ok('planner: first seeded todo is in_progress, rest pending', todoLists[0][0].status === 'in_progress' && todoLists[0][1].status === 'pending');
     ok('planner: Verify: line drove the command gate (overriding verifyCommand "off")', steps.some((s) => s.startsWith('Verifying with true')));
-    ok('planner: gate passed, no caveats', !result.text.includes('Verification failed') && !result.text.includes('Unverified'));
+    ok('planner: gate passed, no caveats', result.workReport?.verifyOutcome === 'verified');
   }
 
   // --- Test 5: verifyCommand 'off' (and no planner Verify: line) → gate skipped, badge path intact ---
@@ -234,9 +234,9 @@ async function main() {
 
     const result = await runTurn(fakeRouter, makeOpts({ onStep: (_p, label) => steps.push(label) }));
     ok('gate off: no verifying step ran', !steps.some((s) => s.startsWith('Verifying with')));
-    ok('gate off: unverified completion claim still gets the honesty badge', result.text.includes('Unverified'));
-    ok('report: ⚠️ Unverified status fires for EVERY untested mutating turn (not just claim-regex hits)',
-      result.text.includes('**⚠️ Unverified**') && result.text.includes('not tested yet'));
+    ok('gate off: untested mutating turn still reports unverified', result.workReport?.verifyOutcome === 'unverified');
+    ok('report: ⚠️ Unverified fires for EVERY untested mutating turn (not just claim-regex hits)',
+      result.workReport?.verifyOutcome === 'unverified' && !result.workReport?.verifyCmd);
   }
 
   // --- Test 6: verifyFixRounds=2 (default) — a second fix round runs when the first keeps failing ---
@@ -269,7 +269,7 @@ async function main() {
     ok('rounds: second fix round ran and the gate finally passed', result.verifyOutcome === 'passed', `n=${n}`);
     ok('rounds: exactly the scripted 6 model calls', n === 6, `n=${n}`);
     ok('rounds: the command was re-run after each mutating fix attempt', steps.filter((s) => s.startsWith('Re-running')).length === 2);
-    ok('rounds: no Verification-failed note on the final pass', !result.text.includes('Verification failed'));
+    ok('rounds: no Verification-failed outcome on the final pass', result.workReport?.verifyOutcome === 'verified');
     // THE invariant: verify failure must never become a model escalation.
     ok('rounds: no fix-round call ever excluded or re-ranked models',
       routeOpts.every((o) => !o.excludeModels?.length && o.maxIntelligenceRank === undefined && o.minIntelligenceRank === undefined));
@@ -306,7 +306,7 @@ async function main() {
 
     const result = await runTurn(fakeRouter, makeOpts({ onTodos: (t) => todoLists.push(t) }));
     ok('repair: gate ended failed after both fix rounds', result.verifyOutcome === 'failed', `outcome=${result.verifyOutcome}`);
-    ok('repair: the deterministic failure note is present', result.text.includes('Verification failed'));
+    ok('repair: the deterministic failed verdict is reported', result.workReport?.verifyOutcome === 'failed');
     ok('repair: the plan-repair note is present', result.text.includes('Plan repaired'), result.text.slice(-160));
     ok('repair: the planner rewrote the pending step on the live checklist',
       todoLists.length > 0

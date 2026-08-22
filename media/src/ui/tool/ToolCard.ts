@@ -9,12 +9,27 @@
  */
 
 import { renderMarkdown } from '../../markdown';
+import { fmtDuration } from '../../format';
 import { el } from '../dom';
 import { createCollapse } from '../primitives/Collapse';
+import { unifiedDiff } from '../../format/unifiedDiff';
 
 // ========== Constants ==========
 
 export const STATE_ICON = { running: null, done: '✓', error: '✗' } as const;
+
+// ── Edit-diff preview thresholds (Chat-UX-parity plan; boundary-tested in scripts/toolDiff.e2e.ts).
+// A change under BOTH inline caps renders as a rich diff2html view directly in the card body;
+// between the inline caps and the preview ceiling it renders collapsed behind a <details>;
+// at/over the ceiling only a summary line is shown (the saved file itself is always the
+// source of truth). ──
+/** Changed lines below which the diff renders expanded inline. */
+export const INLINE_DIFF_MAX_CHANGED_LINES = 400;
+/** Diff byte size below which the diff renders expanded inline (CRLF normalized first). */
+export const INLINE_DIFF_MAX_BYTES = 50 * 1024;
+/** Changed lines above which no full diff is rendered at all — just a summary note. */
+export const DIFF_PREVIEW_MAX_CHANGED_LINES = 2000;
+
 const STATE_LABEL = { 
   running: 'Running', 
   done: 'Completed', 
@@ -86,9 +101,9 @@ export function buildReasoningBlock(text: string, tc?: string, isStreaming?: boo
   });
 
   // Vercel AI Elements "Reasoning" trigger: "Thinking…" + pulsing dot while live,
-  // "Thought for N seconds" once settled (durationMs from the host). Chevron rotates on open.
+  // "Thought for 42s / 3m 2s / 1hr 2m" once settled (durationMs from the host). Chevron rotates on open.
   const durationLabel = !isStreaming && durationMs && durationMs > 0
-    ? `Thought for ${Math.max(1, Math.round(durationMs / 1000))}s`
+    ? `Thought for ${fmtDuration(Math.max(1, durationMs / 1000))}`
     : isStreaming ? 'Thinking' : 'Thought';
 
   const header = el('div', { class: 'tm-reasoning-header' },
@@ -130,7 +145,7 @@ export function updateReasoningBlock(block: HTMLElement, text: string, done?: bo
     pulse?.classList.remove('on');
     if (label) {
       label.textContent = durationMs && durationMs > 0
-        ? `Thought for ${Math.max(1, Math.round(durationMs / 1000))}s`
+        ? `Thought for ${fmtDuration(Math.max(1, durationMs / 1000))}`
         : 'Thought';
     }
   } else {
@@ -186,14 +201,18 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
   const mdSource = markdownDocSource(step);
 
   let hasBody = false;
+  // The node new bodies swap in for — createToolBody's <details> when unused as-is.
+  let bodyAnchor: HTMLElement = more;
   if (mdSource != null) {
     pre.replaceWith(buildMarkdownDoc(mdSource));
     hasBody = true;
   } else if (editArgsStatic && 'old_string' in editArgsStatic && 'new_string' in editArgsStatic) {
-    pre.className = 'tm-tool-card-output diff-view';
-    pre.appendChild(buildInlineDiff(String(editArgsStatic.old_string), String(editArgsStatic.new_string)));
+    // Real unified diff via diff2html (inline / collapsed / summary by threshold), replacing
+    // the generic "View output" collapse entirely.
+    bodyAnchor = buildEditDiff(String(editArgsStatic.old_string), String(editArgsStatic.new_string),
+      typeof editArgsStatic.path === 'string' ? editArgsStatic.path : undefined);
+    more.replaceWith(bodyAnchor);
     hasBody = true;
-    // Body stays collapsed by default (compact chip row); click the header to expand.
   } else {
     const argStr = (step.args && typeof step.args === 'object') ? JSON.stringify(step.args, null, 2) : String(step.args || '');
     const parts: string[] = [];
@@ -216,7 +235,7 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
     const progress = el('div', { class: 'tm-tool-card-progress' },
       el('div', { class: 'tm-tool-card-progress-bar' })
     );
-    card.insertBefore(progress, more);
+    card.insertBefore(progress, bodyAnchor);
   }
 
   // Add click handler for header toggling
@@ -467,25 +486,81 @@ function buildMarkdownDoc(md: string): HTMLElement {
   return root;
 }
 
-/**
- * Build a simple before/after diff fragment for inline edit display.
- * Returns a DocumentFragment with styled diff lines.
- */
-function buildInlineDiff(oldStr: string, newStr: string): DocumentFragment {
-  const frag = document.createDocumentFragment();
-  String(oldStr).split('\n').forEach((l) => {
-    const row = document.createElement('div');
-    row.className = 'diff-del';
-    row.textContent = '− ' + l;
-    frag.appendChild(row);
-  });
-  String(newStr).split('\n').forEach((l) => {
-    const row = document.createElement('div');
-    row.className = 'diff-add';
-    row.textContent = '+ ' + l;
-    frag.appendChild(row);
-  });
-  return frag;
+// ── Edit diffs: unified diff → diff2html, gated by the named thresholds above ──────────
+
+function countChangedLines(diff: string): number {
+  let n = 0;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue; // file headers
+    if (line.startsWith('+') || line.startsWith('-')) n++;
+  }
+  return n;
+}
+
+/** Render a unified-diff string through the vendor diff2html global. Returns null when the
+ *  vendor isn't loaded (lazy script) or rejects — callers fall back to a plain <pre>. Same
+ *  sink markdown.ts uses for ```diff fences. */
+function renderDiff2Html(diffText: string): HTMLElement | null {
+  const d2h = window.Diff2Html;
+  if (!d2h) return null;
+  try {
+    const html = d2h.html(diffText, { drawFileList: false, matching: 'lines', outputFormat: 'line-by-line' });
+    if (!html || !html.trim()) return null;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'd2h-wrapper';
+    wrapper.innerHTML = html;
+    return wrapper;
+  } catch {
+    return null;
+  }
+}
+
+/** Build the body for an edit tool card from before/after text. ToolCard consumes UNIFIED-DIFF
+ *  STRINGS only (via unifiedDiff) — never ad-hoc −/+ fragments. Rendering tier by the plan's
+ *  named constants: ≤ both inline caps → expanded rich diff; over an inline cap but under the
+ *  preview ceiling → same rich diff collapsed behind a "View diff" disclosure; at/over the
+ *  ceiling → summary note only. */
+export function buildEditDiff(oldStr: string, newStr: string, path?: string): HTMLElement {
+  const box = el('div', { class: 'tm-edit-diff' });
+  const oldText = String(oldStr ?? '');
+  const newText = String(newStr ?? '');
+  const labels = path ? { oldLabel: `a/${path}`, newLabel: `b/${path}` } : {};
+  const diff = unifiedDiff(oldText, newText, labels);
+
+  if (!diff.trim()) {
+    // No textual difference after normalization (e.g. a CRLF↔LF-only rewrite).
+    box.append(el('div', { class: 'tm-diff-summary' }, 'No content change (line endings only).'));
+    return box;
+  }
+
+  const changed = countChangedLines(diff);
+  const bytes = new TextEncoder().encode(diff).length;
+
+  // Over the preview ceiling: no full diff at all.
+  if (changed >= DIFF_PREVIEW_MAX_CHANGED_LINES) {
+    box.append(el('div', { class: 'tm-diff-summary' },
+      `${changed.toLocaleString()} changed lines — too large to render here. The saved file has the full content.`));
+    return box;
+  }
+
+  let view = renderDiff2Html(diff);
+  if (!view) {
+    // Vendor not loaded / rejected — plain unified text keeps the info visible either way.
+    const pre = el('pre', { class: 'tm-tool-card-output diff-view' });
+    pre.textContent = diff;
+    view = pre;
+  }
+
+  if (changed >= INLINE_DIFF_MAX_CHANGED_LINES || bytes > INLINE_DIFF_MAX_BYTES) {
+    const det = el('details', { class: 'tm-edit-diff-collapsed' },
+      el('summary', null, `View diff · ${changed.toLocaleString()} changed line${changed === 1 ? '' : 's'}`),
+      view,
+    );
+    box.append(det);
+  } else {
+    box.append(view);
+  }
+  return box;
 }
 
 // ========== Types ==========

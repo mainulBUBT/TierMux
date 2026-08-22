@@ -217,6 +217,11 @@ export interface RouteOptions extends CompletionOptions {
   onReasoning?: (text: string) => void;
   /** Profiler: notified per provider attempt (ok or fail). Not emitted for preflight skips. */
   onProviderAttempt?: (info: { platform: string; model: string; status: 'ok' | 'fail'; latencyMs: number; errorType?: string; reason?: string }) => void;
+  /** Turn telemetry sink: called on every SUCCESSFUL completion with the provider-reported
+   *  usage of that call. `contextTokens` (== that request's prompt tokens) and the serving
+   *  model's `contextWindow` describe the MOST RECENT request — window pressure, not turn
+   *  accounting (see src/shared/workReport.ts for the authoritative semantics). */
+  onUsage?: (info: { inputTokens: number; outputTokens: number; contextTokens: number; contextWindow?: number; model: string }) => void;
   /** @internal set by routeHedged — liveness mirror of the TTFT signal: fired on ANY provider
    *  chunk (content, reasoning, keepalive, usage-only). Used to decide the delayed-hedge race
    *  without exposing router internals on the public options. */
@@ -421,6 +426,10 @@ export class Router {
   private health = new Map<string, { state: 'ok' | 'bad'; at: number; reason?: string; failureStreak: number; probing?: boolean }>();
   private static readonly HEALTH_BASE_TTL_MS = 60_000;
   private static readonly HEALTH_MAX_TTL_MS = 10 * 60_000;
+  /** Longest rate-limit cooldown route() will sleep off before attempting a last-resort
+   *  candidate (see the cooldown check at the top of the candidates loop). Longer cooldowns
+   *  are attempted immediately instead of blocking the turn — bounded latency either way. */
+  private static readonly COOLDOWN_WAIT_CAP_MS = 15_000;
   private static readonly PING_TIMEOUT_MS = 1200;
 
   constructor(
@@ -821,7 +830,20 @@ export class Router {
     }
 
     const ready = list.filter((e) => this.secrets.cooldownRemaining(e.platform) === 0);
-    if (ready.length > 0) return ready;
+    if (ready.length > 0) {
+      // Keep providers in a rate-limit cooldown IN the list (after every ready candidate)
+      // instead of dropping them. One 429 used to exclude the WHOLE provider from the turn:
+      // with a chain heavy on free routers, most of it could be cooling down at once, the
+      // ready remainder could be just 1–2 models, and their failure ended the turn with
+      // "All 2 configured models are unavailable" while dozens of enabled models sat in a
+      // seconds-long cooldown the router never waited out. These last-resort entries are
+      // only reached when every ready candidate has failed; short cooldowns are slept off
+      // there (see the cooldown check at the top of the candidates loop in route()).
+      const cooling = list
+        .filter((e) => this.secrets.cooldownRemaining(e.platform) > 0)
+        .sort((a, b) => this.secrets.cooldownRemaining(a.platform) - this.secrets.cooldownRemaining(b.platform));
+      return [...ready, ...cooling];
+    }
     return [...list].sort(
       (a, b) => this.secrets.cooldownRemaining(a.platform) - this.secrets.cooldownRemaining(b.platform),
     );
@@ -829,6 +851,22 @@ export class Router {
 
   private rateLimitCooldownMs(): number {
     return vscodeConfigNumber('tiermux.rateLimitCooldownMs', 60000);
+  }
+
+  /** Sleep `ms`, resolving early if `abortSignal` fires (Stop button / sub-agent ceiling) —
+   *  a cooldown wait must never outlive the user's patience for the whole turn. */
+  private waitCooldown(ms: number, abortSignal?: AbortSignal): Promise<void> {
+    if (ms <= 0 || abortSignal?.aborted) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer);
+        abortSignal?.removeEventListener('abort', onAbort);
+        resolve();
+      };
+      const onAbort = (): void => done();
+      const timer = setTimeout(done, ms);
+      abortSignal?.addEventListener('abort', onAbort);
+    });
   }
 
   private timeoutMs(): number {
@@ -1287,6 +1325,19 @@ export class Router {
       }
     }
 
+    // Re-assert ready-before-cooling AFTER the re-ranking steps above. candidates() orders
+    // it that way, but neither the Smart-Auto scorer nor the complexity/latency sorts know
+    // about platform rate-limit cooldowns — left alone they can float a cooling model over
+    // healthy ready ones and burn requests on a provider we already know is 429ing.
+    if (!forced && cands.length > 1) {
+      const cooling = cands.filter((e) => this.secrets.cooldownRemaining(e.platform) > 0);
+      if (cooling.length > 0 && cooling.length < cands.length) {
+        const ready = cands.filter((e) => this.secrets.cooldownRemaining(e.platform) === 0);
+        diagLog('router.candidates', `${ready.length} ready candidate(s) kept ahead of ${cooling.length} rate-limit-cooling one(s)`);
+        cands = [...ready, ...cooling];
+      }
+    }
+
     // Warm the leading candidates' pre-flight health CONCURRENTLY before the serial failover
     // loop, so a cold session doesn't pay one serial PING_TIMEOUT_MS per candidate. Best-effort:
     // results land in the `health` cache the loop already reads, and preflightPing never throws.
@@ -1308,6 +1359,21 @@ export class Router {
       if (retryCount >= MAX_RETRIES) {
         failures.push({ platform: entry.platform, model: entry.modelId, reason: `tried ${MAX_RETRIES} times` });
         continue;
+      }
+
+      // Last-resort candidate (appended past the ready set by candidates()): its provider is
+      // in a rate-limit cooldown. A SHORT cooldown is worth waiting out — that is the
+      // difference between "Auto recovered after a few seconds" and a dead turn — while a
+      // long one is attempted immediately, same as the old all-cooling path (a fresh 429
+      // just failovers through the normal machinery).
+      const cooldownLeft = this.secrets.cooldownRemaining(entry.platform);
+      if (cooldownLeft > 0 && cooldownLeft <= Router.COOLDOWN_WAIT_CAP_MS) {
+        diagLog('router.cooldown', `${entry.platform}::${entry.modelId} rate-limit cooldown ${cooldownLeft}ms left — waiting it out`);
+        await this.waitCooldown(cooldownLeft, opts.abortSignal);
+        if (opts.abortSignal?.aborted) {
+          failures.push({ platform: entry.platform, model: entry.modelId, reason: 'aborted' });
+          break candidates;
+        }
       }
 
       const provider = resolveProvider(entry.platform, entry.modelId, this.settings.getCustomEndpoints());
@@ -1672,6 +1738,16 @@ export class Router {
             : { ok: true, ttftMs, totalMs: elapsedMs, rateLimited: false }) satisfies MetricSample);
           this.maybeMarkSlow(entry.platform, entry.modelId, kind, elapsedMs, ttftMs);
           this.usage.add(response.usage);
+          // Turn-telemetry sink (see RouteOptions.onUsage): every successful call reports its
+          // provider-measured usage; the last call's prompt tokens + serving window describe
+          // current context pressure.
+          opts.onUsage?.({
+            inputTokens: response.usage?.prompt_tokens ?? 0,
+            outputTokens: response.usage?.completion_tokens ?? 0,
+            contextTokens: response.usage?.prompt_tokens ?? 0,
+            contextWindow: model?.contextWindow ?? undefined,
+            model: `${entry.platform}/${entry.modelId}`,
+          });
           this.usageStore?.addRequest(entry.platform, entry.modelId, response.usage?.prompt_tokens || 0, response.usage?.completion_tokens || 0, response.usage?.reasoning_tokens);
           this.secrets.setStatus(entry.platform, 'healthy');
           this.markHealth(entry.platform, entry.modelId, 'ok');

@@ -4,7 +4,8 @@
 ## Identity
 
 **TierMux** = a VS Code extension that routes every AI request to the best
-free model across 22 LLM providers, with automatic failover, key rotation,
+free model across 30 built-in LLM providers (plus unlimited user-defined
+OpenAI-compatible endpoints), with automatic failover, key rotation,
 rate-limit cooldowns, and quality-based escalation.
 
 Agent execution runs **in-process**, built directly on the **AI SDK**
@@ -19,7 +20,7 @@ see "History" below.)
 
 ```
 chatViewProvider.ts → agent.ts → core/loop.ts (streamText) →
-  core/routerProvider.ts → TierMux Router → 22+ Free Providers
+  core/routerProvider.ts → TierMux Router → 30 Built-in Providers (+ custom)
 ```
 
 ---
@@ -66,9 +67,9 @@ chatViewProvider.ts → agent.ts → core/loop.ts (streamText) →
 │  └────────────────────────┬─────────────────────────────────────┘  │
 │                           │                                        │
 │  ┌────────────────────────▼─────────────────────────────────────┐  │
-│  │  22+ Provider Adapters (src/providers/*.ts)                  │  │
-│  │  18 OpenAI-compat (Groq, Mistral, Cerebras, …) + Google +    │  │
-│  │  Cloudflare + Cohere + custom OpenAI-compatible endpoints    │  │
+│  │  30 Provider Adapters (src/providers/*.ts)                    │  │
+│  │  28 OpenAI-compat (Groq, Mistral, Cerebras, gateways, …) +    │  │
+│  │  Google + Cloudflare + custom OpenAI-compatible endpoints     │  │
 │  └─────────────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -108,10 +109,12 @@ changes its APIs, only `agent/core/` changes.
 
 ### Provider adapters — `src/providers/*.ts`
 
-18 OpenAI-compat providers (Groq, Mistral, Cerebras, OpenRouter, etc.) +
-bespoke adapters for Google Gemini and Cloudflare Workers AI + Cohere +
-arbitrary `custom` OpenAI-compatible endpoints. Untouched by the OpenCode
-removal / AI SDK migration — the Router calls them exactly as before.
+28 OpenAI-compatible providers (Groq, Mistral, Cerebras, OpenRouter, the
+gateway tiers, etc.) + bespoke adapters for Google Gemini and Cloudflare
+Workers AI + arbitrary `custom` OpenAI-compatible endpoints. A remote-catalog
+upsert path (`upsertCompatFromCatalog`) can register brand-new compat platforms
+without an extension update. Untouched by the OpenCode removal / AI SDK
+migration — the Router calls them exactly as before.
 
 ### Agent core — `src/agent/core/`
 

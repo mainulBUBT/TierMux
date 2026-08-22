@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Synced from remote /models JSON — 106 models from 24 providers.",
+  "note": "Synced from remote /models JSON — 145 models from 29 providers.",
   "models": [
     {
       "platform": "agnes",
@@ -36,8 +36,8 @@
       "released": "2025-08",
       "sizeLabel": "Frontier",
       "contextWindow": 131072,
-      "rpmLimit": 5,
-      "rpdLimit": 7200,
+      "rpmLimit": 30,
+      "rpdLimit": 14400,
       "monthlyTokenBudget": "$5 trial, 30d",
       "supportsTools": true,
       "supportsVision": false,
@@ -52,31 +52,6 @@
       "origInputPricePer1M": 0.35,
       "origOutputPricePer1M": 0.75,
       "outputTokenLimit": 32768
-    },
-    {
-      "platform": "cerebras",
-      "modelId": "zai-glm-4.7",
-      "displayName": "GLM-4.7 (Cerebras)",
-      "intelligenceRank": 3,
-      "speedRank": 1,
-      "released": "2025-07",
-      "sizeLabel": "Large",
-      "contextWindow": 131072,
-      "rpmLimit": 5,
-      "rpdLimit": 7200,
-      "monthlyTokenBudget": "$5 trial, 30d",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "insight": "Free tier: 8K context cap",
-      "origInputPricePer1M": 0.6,
-      "origOutputPricePer1M": 2.2,
-      "tags": [
-        "general",
-        "planner",
-        "reasoner",
-        "free"
-      ]
     },
     {
       "platform": "cerebras",
@@ -592,19 +567,21 @@
       "sizeLabel": "309B MoE (15B Active)",
       "contextWindow": 1000000,
       "rpmLimit": 5,
-      "rpdLimit": 1000,
+      "rpdLimit": 50,
       "monthlyTokenBudget": "TRUE",
       "supportsTools": true,
       "supportsVision": true,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "vision",
         "general",
+        "coding",
+        "planner",
         "free"
       ],
       "insight": "Xiaomi",
-      "origInputPricePer1M": 0.14,
-      "origOutputPricePer1M": 0.28
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "kenari",
@@ -618,17 +595,19 @@
       "rpmLimit": 5,
       "rpdLimit": 50,
       "monthlyTokenBudget": "TRUE",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": true,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "vision",
         "general",
+        "coding",
+        "planner",
         "free"
       ],
       "insight": "DeepSeek",
-      "origInputPricePer1M": 0.14,
-      "origOutputPricePer1M": 0.28
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "kilo",
@@ -746,8 +725,8 @@
         "planner",
         "free"
       ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
+      "origInputPricePer1M": 0.06,
+      "origOutputPricePer1M": 0.12
     },
     {
       "platform": "kilo",
@@ -799,8 +778,8 @@
         "free"
       ],
       "insight": "Main Kilo router selecting backend free models dynamically",
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
+      "origInputPricePer1M": 0.1,
+      "origOutputPricePer1M": 0.3
     },
     {
       "platform": "llm7",
@@ -924,6 +903,49 @@
     },
     {
       "platform": "mistral",
+      "modelId": "mistral-large-2411",
+      "displayName": "Mistral Large 3",
+      "intelligenceRank": 2,
+      "speedRank": 4,
+      "contextWindow": 256000,
+      "rpmLimit": 5,
+      "rpdLimit": 7200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "planner",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.5,
+      "origOutputPricePer1M": 1.5
+    },
+    {
+      "platform": "mistral",
+      "modelId": "pixtral-large-2411",
+      "displayName": "Pixtral Large",
+      "intelligenceRank": 3,
+      "speedRank": 4,
+      "contextWindow": 128000,
+      "rpmLimit": 5,
+      "rpdLimit": 7200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "vision",
+        "free"
+      ],
+      "origInputPricePer1M": 2,
+      "origOutputPricePer1M": 6
+    },
+    {
+      "platform": "mistral",
       "modelId": "codestral-2501",
       "displayName": "Codestral (Mistral)",
       "intelligenceRank": 3,
@@ -968,6 +990,26 @@
         "vision",
         "free"
       ]
+    },
+    {
+      "platform": "mistral",
+      "modelId": "open-mistral-nemo",
+      "displayName": "Mistral Nemo (12B)",
+      "intelligenceRank": 5,
+      "speedRank": 3,
+      "contextWindow": 128000,
+      "rpmLimit": 5,
+      "rpdLimit": 7200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.02,
+      "origOutputPricePer1M": 0.04
     },
     {
       "platform": "nvidia",
@@ -1110,30 +1152,6 @@
     },
     {
       "platform": "opencode",
-      "modelId": "deepseek-v4-flash-free",
-      "displayName": "DeepSeek V4 Flash (OpenCode Zen)",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "released": "2026-05",
-      "sizeLabel": "Frontier",
-      "contextWindow": 131072,
-      "rpmLimit": 10,
-      "rpdLimit": 1000,
-      "monthlyTokenBudget": "~free",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "origInputPricePer1M": 0.14,
-      "origOutputPricePer1M": 0.28,
-      "tags": [
-        "coding",
-        "reasoner",
-        "planner",
-        "free"
-      ]
-    },
-    {
-      "platform": "opencode",
       "modelId": "nemotron-3-ultra-free",
       "displayName": "Nemotron 3 Ultra (OpenCode Zen)",
       "intelligenceRank": 2,
@@ -1145,7 +1163,7 @@
       "rpdLimit": 1000,
       "monthlyTokenBudget": "~free",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "origInputPricePer1M": 0.65,
       "origOutputPricePer1M": 3.25,
@@ -1153,6 +1171,7 @@
         "coding",
         "reasoner",
         "planner",
+        "vision",
         "free"
       ]
     },
@@ -1169,12 +1188,13 @@
       "rpdLimit": 1000,
       "monthlyTokenBudget": "~free",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
         "coding",
         "reasoner",
         "planner",
+        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.14,
@@ -1193,17 +1213,18 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "Unlimited (fair use)",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
         "coding",
         "reasoner",
         "planner",
+        "vision",
         "free"
       ],
       "insight": "Free reasoning model with tool calling and structured outputs. OpenCode dynamically routes requests to different backend models.",
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
+      "origInputPricePer1M": 0.65,
+      "origOutputPricePer1M": 3.25
     },
     {
       "platform": "opencode",
@@ -1216,12 +1237,13 @@
       "rpdLimit": 1000,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
         "coding",
         "reasoner",
         "planner",
+        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.1,
@@ -1249,8 +1271,8 @@
         "free"
       ],
       "insight": "Smaller Ultra variant; $10 top-up unlocks 1000 RPD",
-      "origInputPricePer1M": 0.09,
-      "origOutputPricePer1M": 0.45
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "openrouter",
@@ -1275,8 +1297,8 @@
         "free"
       ],
       "insight": "Strong small multimodal model",
-      "origInputPricePer1M": 0.09,
-      "origOutputPricePer1M": 0.34
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "openrouter",
@@ -1294,12 +1316,11 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
-        "general",
-        "free"
+        "general"
       ],
       "insight": "Lightweight and fast",
-      "origInputPricePer1M": 0.03,
-      "origOutputPricePer1M": 0.13,
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4,
       "outputTokenLimit": 32768
     },
     {
@@ -1323,8 +1344,8 @@
         "free"
       ],
       "insight": "Fast coding focused model",
-      "origInputPricePer1M": 0.0375,
-      "origOutputPricePer1M": 0.15
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "openrouter",
@@ -1350,8 +1371,8 @@
         "free"
       ],
       "insight": "Randomly routes to available free models",
-      "origInputPricePer1M": 0.1,
-      "origOutputPricePer1M": 0.4
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "openrouter",
@@ -1373,8 +1394,8 @@
         "planner",
         "free"
       ],
-      "origInputPricePer1M": 0.1,
-      "origOutputPricePer1M": 0.2
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "ovh",
@@ -1734,8 +1755,8 @@
         "planner",
         "free"
       ],
-      "origInputPricePer1M": 0.06,
-      "origOutputPricePer1M": 0.12
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "kenari",
@@ -1745,7 +1766,7 @@
       "speedRank": 3,
       "contextWindow": 262144,
       "rpmLimit": 5,
-      "rpdLimit": 1000,
+      "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
@@ -1757,8 +1778,8 @@
         "coding",
         "free"
       ],
-      "origInputPricePer1M": 0.1,
-      "origOutputPricePer1M": 0.2
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "kenari",
@@ -1768,7 +1789,7 @@
       "speedRank": 2,
       "contextWindow": 202752,
       "rpmLimit": 5,
-      "rpdLimit": 200,
+      "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
@@ -1779,8 +1800,8 @@
         "planner",
         "free"
       ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "agnes",
@@ -1804,28 +1825,6 @@
       ],
       "origInputPricePer1M": 0.03,
       "origOutputPricePer1M": 0.15
-    },
-    {
-      "platform": "tokenrouter",
-      "modelId": "moonshotai/kimi-k3-free",
-      "displayName": "Kimi K3",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 15,
-      "rpdLimit": 500,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "coding",
-        "reasoner",
-        "planner",
-        "free"
-      ],
-      "origInputPricePer1M": 3,
-      "origOutputPricePer1M": 15
     },
     {
       "platform": "nararouter",
@@ -1929,8 +1928,8 @@
       "intelligenceRank": 4,
       "speedRank": 2,
       "contextWindow": 262000,
-      "rpmLimit": 15,
-      "rpdLimit": 500,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
@@ -1941,8 +1940,8 @@
         "general",
         "free"
       ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 1.15
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "nararouter",
@@ -1996,8 +1995,8 @@
       "intelligenceRank": 3,
       "speedRank": 2,
       "contextWindow": 262000,
-      "rpmLimit": 5,
-      "rpdLimit": 200,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
       "supportsVision": false,
@@ -2006,8 +2005,8 @@
         "general",
         "free"
       ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
+      "origInputPricePer1M": 0.02,
+      "origOutputPricePer1M": 0.06
     },
     {
       "platform": "groq",
@@ -2042,13 +2041,14 @@
       "rpdLimit": 100,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
         "general",
         "coding",
         "reasoner",
         "planner",
+        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.13,
@@ -2062,7 +2062,7 @@
       "speedRank": 3,
       "contextWindow": 1000000,
       "rpmLimit": 5,
-      "rpdLimit": 150,
+      "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
@@ -2073,8 +2073,8 @@
         "planner",
         "free"
       ],
-      "origInputPricePer1M": 0.1,
-      "origOutputPricePer1M": 0.25
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "kilo",
@@ -2131,12 +2131,13 @@
       "rpdLimit": 100,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
         "general",
         "reasoner",
         "planner",
+        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.05,
@@ -2182,8 +2183,8 @@
         "general",
         "free"
       ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "openrouter",
@@ -2204,8 +2205,1109 @@
         "planner",
         "free"
       ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "kenari",
+      "modelId": "mistral-large:free",
+      "displayName": "Mistral Large",
+      "intelligenceRank": 2,
+      "speedRank": 4,
+      "contextWindow": 128000,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "reasoner",
+        "planner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "kenari",
+      "modelId": "agnes-2-5-flash:free",
+      "displayName": "Agnes 2 5 Flash",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 512000,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "kenari",
+      "modelId": "agnes-2-0-flash:free",
+      "displayName": "Agnes 2 0 Flash",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 255976,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "coding",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "kenari",
+      "modelId": "hy3:free",
+      "displayName": "Hy3 Free",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262144,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "reasoner",
+        "planner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "kenari",
+      "modelId": "laguna-xs-2-1:free",
+      "displayName": "Laguna Xs 2.1 Free",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262144,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "coding",
+        "reasoner",
+        "planner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "kenari",
+      "modelId": "mistral-medium-3-5:free",
+      "displayName": "Mistral Medium 3.5",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 262144,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "planner",
+        "reasoner",
+        "vision",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "kilo",
+      "modelId": "dots-studio/dots-3-note-preview:free",
+      "displayName": "Dots Studio: Dots3-Note Preview",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 512000,
+      "rpmLimit": 20,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "planner",
+        "coding",
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.2,
+      "origOutputPricePer1M": 0.8
+    },
+    {
+      "platform": "openrouter",
+      "modelId": "dots-studio/dots-3-note-preview:free",
+      "displayName": "Dots Studio: Dots3-Note Preview (free)",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 512000,
+      "rpmLimit": 20,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "planner",
+        "coding",
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "openrouter",
+      "modelId": "z-ai/glm-5.2:free",
+      "displayName": "Z.ai: GLM 5.2",
+      "intelligenceRank": 1,
+      "speedRank": 3,
+      "contextWindow": 256000,
+      "rpmLimit": 10,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "general",
+        "code",
+        "planner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "opencode",
+      "modelId": "muse-spark-1.2-contributor-free",
+      "displayName": "Muse Spark 1.2 Contributor",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 60,
+      "rpdLimit": 7500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "planner",
+        "reasoner",
+        "vision",
+        "free"
+      ],
       "origInputPricePer1M": 0.1,
+      "origOutputPricePer1M": 0.2
+    },
+    {
+      "platform": "openadapter",
+      "modelId": "0G-DeepSeek-v4-Flash",
+      "displayName": "0G DeepSeek V4 Flash",
+      "intelligenceRank": 2,
+      "speedRank": 2,
+      "contextWindow": 256000,
+      "rpmLimit": 0.035,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "planner",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.14,
+      "origOutputPricePer1M": 0.28
+    },
+    {
+      "platform": "opencode",
+      "modelId": "x-preview-f-free",
+      "displayName": "Ox Alpha",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 20,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "planner",
+        "reasoner",
+        "vision",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "openrouter",
+      "modelId": "stealth/ox-alpha",
+      "displayName": "Ox Alpha",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 20,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "vision",
+        "general",
+        "planner",
+        "coding",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "kenari",
+      "modelId": "muse-spark-1-2-contributor:free",
+      "displayName": "Muse Spark 1.2 Contributor",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "planner",
+        "reasoner",
+        "vision",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "kenari",
+      "modelId": "ox-alpha:free",
+      "displayName": "Ox Alpha",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "vision",
+        "general",
+        "planner",
+        "coding",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "router9",
+      "modelId": "minimax/minimax-m3",
+      "displayName": "Minimax M3",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 2,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "vision",
+        "general",
+        "coding",
+        "planner",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.45,
+      "origOutputPricePer1M": 1.8
+    },
+    {
+      "platform": "orcarouter",
+      "modelId": "orcarouter/free",
+      "displayName": "OrcaRouter",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 10,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "planner",
+        "reasoner",
+        "router",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "orcarouter",
+      "modelId": "deepseek/deepseek-v4-flash-free",
+      "displayName": "DeepSeek V4 Flash",
+      "intelligenceRank": 1,
+      "speedRank": 2,
+      "contextWindow": 1048576,
+      "rpmLimit": 10,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "planner",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.15,
+      "origOutputPricePer1M": 0.29
+    },
+    {
+      "platform": "orcarouter",
+      "modelId": "deepseek/deepseek-v4-pro-free",
+      "displayName": "DeepSeek V4 Pro",
+      "intelligenceRank": 2,
+      "speedRank": 4,
+      "contextWindow": null,
+      "rpmLimit": 10,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "planner",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.44,
+      "origOutputPricePer1M": 0.87
+    },
+    {
+      "platform": "orcarouter",
+      "modelId": "qwen/qwen3.8-27b-free",
+      "displayName": "Qwen 3.8 27B",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 65536,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "planner",
+        "reasoner",
+        "vision",
+        "free"
+      ],
+      "origInputPricePer1M": 0.33,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "orcarouter",
+      "modelId": "tencent/hy3-free",
+      "displayName": "Tencent Hy3 Free",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "planner",
+        "reasoner",
+        "vision",
+        "free"
+      ],
+      "origInputPricePer1M": 0.13,
+      "origOutputPricePer1M": 0.53
+    },
+    {
+      "platform": "chatanywhere",
+      "modelId": "gpt-3.5-turbo",
+      "displayName": "GPT-3.5 Turbo",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 16385,
+      "rpmLimit": 15,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.5,
+      "origOutputPricePer1M": 1.5
+    },
+    {
+      "platform": "chatanywhere",
+      "modelId": "gpt-4o",
+      "displayName": "GPT-4o",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 128000,
+      "rpmLimit": 15,
+      "rpdLimit": 5,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 2.5,
+      "origOutputPricePer1M": 10
+    },
+    {
+      "platform": "chatanywhere",
+      "modelId": "gpt-4o-mini",
+      "displayName": "GPT-4o mini",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 128000,
+      "rpmLimit": 15,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.15,
+      "origOutputPricePer1M": 0.6
+    },
+    {
+      "platform": "chatanywhere",
+      "modelId": "gpt-4.1",
+      "displayName": "GPT-4.1",
+      "intelligenceRank": 1,
+      "speedRank": 3,
+      "contextWindow": 1047576,
+      "rpmLimit": 15,
+      "rpdLimit": 5,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 2,
+      "origOutputPricePer1M": 8
+    },
+    {
+      "platform": "chatanywhere",
+      "modelId": "gpt-4.1-mini",
+      "displayName": "GPT-4.1 mini",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 1047576,
+      "rpmLimit": 15,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.4,
+      "origOutputPricePer1M": 1.6
+    },
+    {
+      "platform": "chatanywhere",
+      "modelId": "gpt-4.1-nano",
+      "displayName": "GPT-4.1 nano",
+      "intelligenceRank": 1,
+      "speedRank": 2,
+      "contextWindow": 1047576,
+      "rpmLimit": 15,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.1,
+      "origOutputPricePer1M": 0.4
+    },
+    {
+      "platform": "chatanywhere",
+      "modelId": "gpt-5",
+      "displayName": "GPT-5",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 400000,
+      "rpmLimit": 15,
+      "rpdLimit": 5,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 1.25,
+      "origOutputPricePer1M": 10
+    },
+    {
+      "platform": "chatanywhere",
+      "modelId": "gpt-5-mini",
+      "displayName": "GPT-5 mini",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 400000,
+      "rpmLimit": 15,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.25,
+      "origOutputPricePer1M": 2
+    },
+    {
+      "platform": "chatanywhere",
+      "modelId": "gpt-5-nano",
+      "displayName": "GPT-5 nano",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 400000,
+      "rpmLimit": 15,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.05,
+      "origOutputPricePer1M": 0.4
+    },
+    {
+      "platform": "chatanywhere",
+      "modelId": "deepseek-v3.2",
+      "displayName": "DeepSeek V3.2",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 128000,
+      "rpmLimit": 15,
+      "rpdLimit": 30,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.17,
       "origOutputPricePer1M": 0.25
+    },
+    {
+      "platform": "chatanywhere",
+      "modelId": "deepseek-v4-flash",
+      "displayName": "DeepSeek V4 Flash",
+      "intelligenceRank": 2,
+      "speedRank": 2,
+      "contextWindow": 128000,
+      "rpmLimit": 15,
+      "rpdLimit": 30,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.17,
+      "origOutputPricePer1M": 0.5
+    },
+    {
+      "platform": "chatanywhere",
+      "modelId": "deepseek-v4-pro",
+      "displayName": "DeepSeek V4 Pro",
+      "intelligenceRank": 2,
+      "speedRank": 4,
+      "contextWindow": 128000,
+      "rpmLimit": 15,
+      "rpdLimit": 30,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.63,
+      "origOutputPricePer1M": 1.88
+    },
+    {
+      "platform": "chatanywhere",
+      "modelId": "deepseek-r1",
+      "displayName": "DeepSeek R1",
+      "intelligenceRank": 1,
+      "speedRank": 3,
+      "contextWindow": 128000,
+      "rpmLimit": 15,
+      "rpdLimit": 30,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.55,
+      "origOutputPricePer1M": 2.19
+    },
+    {
+      "platform": "aionlabs",
+      "modelId": "aion-labs/aion-2.0",
+      "displayName": "Aion 2.0",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 131072,
+      "rpmLimit": 15,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner"
+      ],
+      "origInputPricePer1M": 0.8,
+      "origOutputPricePer1M": 1.6
+    },
+    {
+      "platform": "aionlabs",
+      "modelId": "aion-labs/aion-3.0",
+      "displayName": "Aion 3.0",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 131072,
+      "rpmLimit": 15,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner"
+      ],
+      "origInputPricePer1M": 3,
+      "origOutputPricePer1M": 6
+    },
+    {
+      "platform": "aionlabs",
+      "modelId": "aion-labs/aion-3.0-mini",
+      "displayName": "Aion 3.0 Mini",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 131072,
+      "rpmLimit": 15,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner"
+      ],
+      "origInputPricePer1M": 0.7,
+      "origOutputPricePer1M": 1.4
+    },
+    {
+      "platform": "aionlabs",
+      "modelId": "aion-labs/aion-rp-llama-3.1-8b",
+      "displayName": "Aion-RP 1.0 (8B)",
+      "intelligenceRank": 5,
+      "speedRank": 2,
+      "contextWindow": 32768,
+      "rpmLimit": 15,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general"
+      ],
+      "origInputPricePer1M": 0.8,
+      "origOutputPricePer1M": 1.6
+    },
+    {
+      "platform": "requesty",
+      "modelId": "mistral/leanstral-1-5",
+      "displayName": "Leanstral 1.5",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262144,
+      "rpmLimit": 20,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.1,
+      "origOutputPricePer1M": 0.3
+    },
+    {
+      "platform": "requesty",
+      "modelId": "novita/inclusionai/ling-3.0-tiny",
+      "displayName": "Ling 3.0 Tiny",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 262144,
+      "rpmLimit": 20,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.02,
+      "origOutputPricePer1M": 0.06
+    },
+    {
+      "platform": "requesty",
+      "modelId": "google/gemma-4-31b-it",
+      "displayName": "Gemma 4 31B IT",
+      "intelligenceRank": 3,
+      "speedRank": 4,
+      "contextWindow": 262144,
+      "rpmLimit": 20,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "coding",
+        "free"
+      ],
+      "origInputPricePer1M": 0.1,
+      "origOutputPricePer1M": 0.34
+    },
+    {
+      "platform": "requesty",
+      "modelId": "poolside/laguna-m.1",
+      "displayName": "Laguna M.1",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 32768,
+      "rpmLimit": 20,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.15,
+      "origOutputPricePer1M": 0.3
+    },
+    {
+      "platform": "requesty",
+      "modelId": "poolside/laguna-xs.2",
+      "displayName": "Laguna XS.2",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 32768,
+      "rpmLimit": 20,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.06,
+      "origOutputPricePer1M": 0.12
+    },
+    {
+      "platform": "requesty",
+      "modelId": "nvidia/muse-glimmer-30b",
+      "displayName": "Muse Glimmer 30B",
+      "intelligenceRank": 3,
+      "speedRank": 4,
+      "contextWindow": 131072,
+      "rpmLimit": 20,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.3,
+      "origOutputPricePer1M": 1.1
+    },
+    {
+      "platform": "requesty",
+      "modelId": "nvidia/nemotron-3.5-lightning-30b-a3b",
+      "displayName": "Nemotron 3.5 Lightning 30B",
+      "intelligenceRank": 2,
+      "speedRank": 4,
+      "contextWindow": 1048576,
+      "rpmLimit": 20,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.08,
+      "origOutputPricePer1M": 0.2
+    },
+    {
+      "platform": "requesty",
+      "modelId": "nvidia/nemotron-3-super-120b-a12b",
+      "displayName": "Nemotron 3 Super 120B",
+      "intelligenceRank": 2,
+      "speedRank": 4,
+      "contextWindow": 1048576,
+      "rpmLimit": 20,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.09,
+      "origOutputPricePer1M": 0.45
+    },
+    {
+      "platform": "requesty",
+      "modelId": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+      "displayName": "Nemotron 3 Nano Omni 30B Reasoning",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 131072,
+      "rpmLimit": 20,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.06,
+      "origOutputPricePer1M": 0.25
+    },
+    {
+      "platform": "requesty",
+      "modelId": "nvidia/nemotron-3-nano-30b-a3b",
+      "displayName": "Nemotron 3 Nano 30B",
+      "intelligenceRank": 2,
+      "speedRank": 2,
+      "contextWindow": 262144,
+      "rpmLimit": 20,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.05,
+      "origOutputPricePer1M": 0.2
+    },
+    {
+      "platform": "requesty",
+      "modelId": "nvidia/nemotron-3.5-content-safety",
+      "displayName": "Nemotron 3.5 Content Safety",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 131072,
+      "rpmLimit": 20,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.05,
+      "origOutputPricePer1M": 0.2
+    },
+    {
+      "platform": "requesty",
+      "modelId": "nvidia/nemotron-3-ultra-550b-a55b",
+      "displayName": "Nemotron 3 Ultra 550B",
+      "intelligenceRank": 1,
+      "speedRank": 5,
+      "contextWindow": 1048576,
+      "rpmLimit": 20,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.65,
+      "origOutputPricePer1M": 3.25
+    },
+    {
+      "platform": "tokenrouter",
+      "modelId": "moonshotai/kimi-k3-free",
+      "displayName": "Kimi K3",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": null,
+      "rpmLimit": 15,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "coding",
+        "reasoner",
+        "planner",
+        "free"
+      ],
+      "origInputPricePer1M": 3,
+      "origOutputPricePer1M": 15
     },
     {
       "platform": "llmgateway",

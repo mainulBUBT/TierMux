@@ -28,6 +28,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { RETIRED_MODEL_KEYS } from './retiredModels.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const WORKER_URL = 'https://tiermux.mainulislam3057.workers.dev/';
@@ -230,6 +231,9 @@ async function main() {
       }
       const live = src.ids(r.body);
       for (const m of rows) {
+        // Known-retired (see scripts/retiredModels.mjs): the bundled catalog already drops
+        // them; a stale worker row here is expected until the worker refreshes — not an error.
+        if (RETIRED_MODEL_KEYS.has(`${m.platform}||${m.modelId}`)) continue;
         // OpenRouter ids carry variant suffixes (`:free`); the base id is what the list contains.
         const base = m.modelId.replace(/:(free|extended|thinking|nitro|floor|online|exacto)$/, '');
         if (!live.has(m.modelId) && !live.has(base)) {

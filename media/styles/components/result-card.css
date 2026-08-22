@@ -1,0 +1,80 @@
+/* ResultCard — structured end-of-turn work report (WorkReportData).
+   Mounted by BOTH the live turn (`workReport` message) and replay
+   (renderAssistantStatic reads entry.workReport), so one stylesheet serves both.
+
+   Compact by design: token/model/duration telemetry stays in the message footer — this card
+   carries only verification status, what changed, and the verify action. */
+
+.tm-result-card {
+  margin-top: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 8px;
+  font-size: 12px;
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127, 127, 127, 0.08));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tm-result-card .rc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tm-result-card .rc-status {
+  font-weight: 600;
+}
+.tm-result-card .rc-status.rc-verified { color: var(--vscode-testing-iconPassed, #2e7d32); }
+.tm-result-card .rc-status.rc-failed { color: var(--vscode-errorForeground, #c33); }
+.tm-result-card .rc-status.rc-unverified { color: var(--vscode-editorWarning-foreground, #c9930a); }
+
+.tm-result-card .rc-cmd {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.15));
+  border: 1px solid var(--vscode-panel-border);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tm-result-card .rc-pill {
+  font-size: 10.5px;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  opacity: 0.85;
+}
+
+/* The card's reason to exist: turn "unverified/failed" into ONE click. */
+.tm-result-card .rc-actions { display: flex; }
+.tm-result-card .rc-verify-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, #0a84ff);
+  border: none;
+  border-radius: 12px;
+  padding: 3px 12px;
+  cursor: pointer;
+}
+.tm-result-card .rc-verify-btn:hover { filter: brightness(1.1); }
+
+.tm-result-card .rc-files { display: flex; flex-direction: column; gap: 2px; }
+.tm-result-card .cp-file.rc-clickable:hover { background: var(--vscode-list-hoverBackground); }
+.tm-result-card .rc-more { opacity: 0.7; padding: 2px 4px; }
+
+/* Untested turns: no verdict badge, just a quiet suggestion row. */
+.tm-result-card.rc-quiet { padding: 5px 10px; }
+.tm-result-card .rc-actions { align-items: center; gap: 10px; }
+.tm-result-card .rc-hint {
+  font-size: 11.5px;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+}

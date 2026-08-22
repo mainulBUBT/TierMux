@@ -1,0 +1,247 @@
+/* TierMux composer — modern agent-wise toolbar controls.
+ *
+ * Covers the redesigned prompt-input toolbar pieces: the shared popover chrome, the
+ * agent-type picker (primary, per-mode tinted), the model picker (search + reasoning
+ * segmented control + provider-grouped list), the toolbar divider, and narrow-sidebar
+ * responsive rules. Everything is tm--prefixed and built on the --tm-* tokens; the
+ * legacy .pill/.toolbar rules these sit alongside stay in main.css.
+ */
+
+/* ── Shared popover chrome ── */
+.tm-pop-wrap { position: relative; display: inline-flex; min-width: 0; flex: 0 1 auto; }
+.tm-popover {
+  position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 50;
+  display: none; flex-direction: column; min-width: 0;
+  background: var(--tm-surface-dropdown);
+  border: 1px solid var(--tm-border-dropdown);
+  border-radius: var(--tm-radius-lg);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  padding: var(--tm-gap-sm);
+}
+.tm-popover.tm-open {
+  display: flex;
+  transform-origin: bottom left;
+  animation: tm-pop-in 120ms ease;
+}
+@keyframes tm-pop-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.tm-pop-title {
+  font-size: var(--tm-text-xs); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--tm-fg-muted);
+  padding: var(--tm-gap-sm) var(--tm-gap-sm) var(--tm-gap-xs);
+}
+
+/* Small capability chip (agent cards, and reusable elsewhere). */
+.tm-cap {
+  font-size: 9px; font-weight: 600; line-height: 1.4;
+  padding: 1px 7px; border-radius: var(--tm-radius-full);
+  background: var(--tm-surface-panel); color: var(--tm-fg-muted);
+  border: 1px solid var(--tm-card-border);
+  white-space: nowrap;
+}
+
+/* ── Agent picker ── */
+/* The primary composer control: a filled, per-mode tinted pill (ask = neutral,
+   plan = blue, agent = accent) — it must read as "what kind of agent am I talking to"
+   at a glance, unlike the quieter outline model pill beside it. */
+.tm-agent-trigger {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 9px 0 10px;
+  border-radius: var(--tm-radius-full);
+  border: 1px solid transparent;
+  font-size: 11.5px; font-weight: 600;
+  cursor: pointer; max-width: 118px; min-width: 0;
+  transition: filter var(--tm-transition-fast), background var(--tm-transition-fast);
+}
+.tm-agent-trigger .tm-agent-label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 0 1 auto; min-width: 0;
+}
+.tm-agent-trigger .tm-agent-trigger-icon { flex: 0 0 auto; display: inline-flex; }
+.tm-agent-trigger .tm-agent-trigger-chev { flex: 0 0 auto; display: inline-flex; opacity: 0.65; }
+.tm-agent-trigger .tm-agent-trigger-chev svg { width: 9px; height: 9px; }
+.tm-agent-trigger:focus-visible { outline: 1px solid var(--tm-border-focus); outline-offset: 1px; }
+.tm-agent-trigger.executing .tm-agent-label { color: var(--tm-fg-link); animation: state-pulse 1.2s ease-in-out infinite; }
+.tm-agent-exec-zap { display: inline-flex; margin-left: 2px; }
+
+.tm-agent-ask {
+  background: var(--tm-surface-panel); color: var(--tm-fg);
+  border-color: var(--tm-card-border);
+}
+.tm-agent-plan {
+  background: color-mix(in srgb, var(--tm-info) 15%, transparent);
+  color: var(--tm-info);
+}
+.tm-agent-agent {
+  background: color-mix(in srgb, var(--tm-accent) 20%, transparent);
+  color: var(--tm-accent);
+}
+.tm-agent-trigger:hover { filter: brightness(1.15); }
+
+.tm-agent-pop { width: 288px; }
+.tm-agent-list { display: flex; flex-direction: column; gap: 2px; }
+.tm-agent-item {
+  display: flex; align-items: flex-start; gap: var(--tm-gap-md);
+  padding: var(--tm-gap-md); border-radius: var(--tm-radius-md);
+  cursor: pointer;
+}
+.tm-agent-item:hover { background: var(--tm-hover); }
+.tm-agent-item.selected { background: var(--tm-selection-active); }
+.tm-agent-item-icon {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; margin-top: 1px;
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-surface-panel); color: var(--tm-fg-muted);
+}
+.tm-agent-item.selected .tm-agent-item-icon { color: var(--tm-fg); }
+.tm-agent-item-body { flex: 1 1 auto; min-width: 0; }
+.tm-agent-item-name { font-size: var(--tm-text-base); font-weight: 600; color: var(--tm-fg); }
+.tm-agent-item-desc {
+  font-size: var(--tm-text-sm); color: var(--tm-fg-muted);
+  line-height: 1.4; margin-top: 2px;
+}
+.tm-agent-item-caps { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.tm-agent-item-check { flex: 0 0 auto; display: inline-flex; margin-top: 4px; opacity: 0.9; }
+
+/* ── Model picker ── */
+/* A quiet outline pill — secondary to the agent picker. Auto gets the sparkle + a
+   subtle info tint so the recommended default stands out; "serving" pulses while a
+   turn is being answered by that model. */
+.tm-model-trigger {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 10px;
+  border-radius: var(--tm-radius-full);
+  background: transparent; color: var(--tm-fg);
+  border: 1px solid var(--tm-border);
+  font-size: 11px; cursor: pointer;
+  max-width: 150px; min-width: 0;
+  transition: background var(--tm-transition-fast), border-color var(--tm-transition-fast);
+}
+.tm-model-trigger:hover { background: var(--tm-hover-toolbar); border-color: var(--tm-border-focus); }
+.tm-model-trigger:focus-visible { outline: 1px solid var(--tm-border-focus); outline-offset: 1px; }
+.tm-model-trigger .tm-model-trigger-icon { flex: 0 0 auto; display: inline-flex; opacity: 0.85; }
+.tm-model-trigger .tm-model-label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 0 1 auto; min-width: 0;
+}
+.tm-model-trigger.tm-is-auto { border-color: color-mix(in srgb, var(--tm-info) 45%, var(--tm-border)); }
+.tm-model-trigger.tm-is-auto .tm-model-trigger-icon { color: var(--tm-info); opacity: 1; }
+.tm-model-trigger.tm-serving .tm-model-label { color: var(--tm-fg-link); animation: state-pulse 1.2s ease-in-out infinite; }
+
+.tm-model-pop { width: 296px; max-height: 52vh; }
+.tm-model-search {
+  width: 100%; box-sizing: border-box; flex: 0 0 auto;
+  margin-bottom: var(--tm-gap-sm); padding: 4px 8px;
+  font-size: var(--tm-text-base);
+  background: var(--tm-surface-input); color: var(--tm-fg-input);
+  border: 1px solid var(--tm-border-input);
+  border-radius: var(--tm-radius-md);
+}
+.tm-model-search:focus { outline: none; border-color: var(--tm-border-focus); }
+
+/* Reasoning effort — segmented control inside the popover (a per-model property,
+   so it lives with the model choice, not in the toolbar). */
+.tm-reasoning {
+  flex: 0 0 auto; display: flex; align-items: center; gap: var(--tm-gap-md);
+  padding: 2px var(--tm-gap-sm) var(--tm-gap-sm);
+  flex-wrap: wrap;
+}
+.tm-reasoning-label { font-size: var(--tm-text-sm); color: var(--tm-fg-muted); font-weight: 600; }
+.tm-reasoning-seg {
+  display: inline-flex; flex: 1 1 auto; min-width: 0;
+  background: var(--tm-surface-panel);
+  border: 1px solid var(--tm-card-border);
+  border-radius: var(--tm-radius-full);
+  padding: 2px; gap: 2px;
+}
+.tm-reasoning-seg.tm-disabled { opacity: 0.45; }
+.tm-seg-btn {
+  flex: 1 1 0; min-width: 0;
+  padding: 2px 0; border: none; border-radius: var(--tm-radius-full);
+  background: transparent; color: var(--tm-fg-muted);
+  font-size: 10px; font-weight: 600; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: background var(--tm-transition-fast), color var(--tm-transition-fast);
+}
+.tm-seg-btn:hover:not(:disabled) { color: var(--tm-fg); }
+.tm-seg-btn.active { background: var(--tm-accent); color: var(--tm-accent-fg); }
+.tm-seg-btn:disabled { cursor: not-allowed; }
+.tm-reasoning-note {
+  flex: 1 1 100%; font-size: var(--tm-text-xs); color: var(--tm-fg-muted);
+  padding: 0 var(--tm-gap-xs) var(--tm-gap-xs);
+}
+.tm-reasoning-note.hidden { display: none; }
+
+.tm-model-list { flex: 1 1 auto; overflow-y: auto; min-height: 0; scrollbar-width: thin; }
+.tm-model-group {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--tm-fg-muted); opacity: 0.85;
+  padding: var(--tm-gap-md) var(--tm-gap-sm) var(--tm-gap-xs);
+}
+.tm-model-item {
+  display: flex; align-items: center; gap: var(--tm-gap-md);
+  padding: 4px var(--tm-gap-sm); border-radius: var(--tm-radius-md);
+  cursor: pointer; font-size: var(--tm-text-base); color: var(--tm-fg);
+}
+.tm-model-item:hover { background: var(--tm-hover); }
+.tm-model-item.selected { background: var(--tm-selection-active); }
+.tm-model-item .tm-model-item-label {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tm-model-item.deprecated .tm-model-item-label { opacity: 0.5; text-decoration: line-through; }
+.tm-model-item.slow .tm-model-item-label { opacity: 0.7; }
+.tm-model-item.off .tm-model-item-label { opacity: 0.55; }
+
+/* Capability chips (T / V / R). */
+.tm-caps { display: flex; gap: 3px; flex: 0 0 auto; }
+.tm-caps i {
+  font-style: normal; font-size: 8.5px; font-weight: 700;
+  width: 14px; text-align: center; line-height: 13px;
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-surface-panel); color: var(--tm-fg-muted);
+  border: 1px solid var(--tm-card-border);
+}
+
+/* Status tags. */
+.tm-tag {
+  flex: 0 0 auto; font-size: 9px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.03em; padding: 1px 5px; border-radius: var(--tm-radius-sm);
+  color: #fff; background: var(--tm-error);
+}
+.tm-tag-slow { background: var(--tm-warning); }
+.tm-tag-off {
+  color: var(--tm-fg-muted);
+  background: var(--tm-badge-bg); border: 1px solid var(--tm-card-border);
+}
+.tm-model-item-check { flex: 0 0 auto; display: inline-flex; opacity: 0.9; }
+
+/* The Auto (smart routing) row reads as a first-class choice, not just another row. */
+.tm-model-auto { padding: var(--tm-gap-sm); }
+.tm-model-auto .tm-model-auto-icon { flex: 0 0 auto; display: inline-flex; color: var(--tm-info); }
+.tm-model-auto .tm-model-item-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.tm-model-auto .tm-model-item-name { font-size: var(--tm-text-base); font-weight: 600; color: var(--tm-fg); }
+.tm-model-auto .tm-model-item-desc {
+  font-size: var(--tm-text-xs); color: var(--tm-fg-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── Toolbar divider between the control cluster and the action cluster ── */
+.toolbar-sep {
+  flex: 0 0 auto; width: 1px; height: 16px;
+  background: var(--tm-border); opacity: 0.7; margin: 0 2px;
+}
+
+/* ── Responsive — VS Code sidebars dock well under 400px. The agent/model triggers
+   shrink by their labels; below 300px clamp them so the primary row (agent / model /
+   auto-approve / send) never wraps or clips. ── */
+@media (max-width: 300px) {
+  .tm-agent-trigger { max-width: 84px; padding: 0 7px 0 8px; }
+  .tm-agent-trigger .tm-agent-label { max-width: 44px; }
+  .tm-model-trigger { max-width: 88px; }
+  .tm-model-trigger .tm-model-label { max-width: 56px; }
+  .toolbar-sep { display: none; }
+}

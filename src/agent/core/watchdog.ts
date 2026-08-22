@@ -33,6 +33,7 @@ export class TurnWatchdog {
   private warned = false;
   private actionableFired = false;
   private partialOutput = false;
+  private toolExecuting = false;
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
@@ -70,6 +71,16 @@ export class TurnWatchdog {
     this.partialOutput = true;
   }
 
+  /** A tool is executing (true on 'running', false on 'done'/'error'). An executing tool is
+   *  KNOWN work — a build/test/grep can legitimately run minutes between its start and end
+   *  events — so the informational warning is suppressed while one runs. The actionable
+   *  threshold still fires (a tool wedged past actionableMs is exactly what the action card
+   *  with "Restart Request" exists for), and this never touches `last`: only real protocol
+   *  events stamp activity. */
+  noteTool(active: boolean): void {
+    this.toolExecuting = active;
+  }
+
   private tick(): void {
     if (this.isAborted() || this.actionableFired) {
       if (this.timer) clearInterval(this.timer);
@@ -78,7 +89,7 @@ export class TurnWatchdog {
     }
     const idle = Date.now() - this.last.atMs;
     if (!this.warned) {
-      if (idle >= this.warningMs) {
+      if (idle >= this.warningMs && !this.toolExecuting) {
         this.warned = true;
         this.hooks.onWarning?.({ elapsedMs: idle, lastActivity: this.last });
       }

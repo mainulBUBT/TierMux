@@ -252,7 +252,30 @@ async function main() {
         (m) => workerPlatforms.has(m.platform) && !survivorKeys.has(`${m.platform}||${m.modelId}`),
       )
     : [];
-  const finalModels = [...out, ...externallyCurated];
+  // Models the worker still serves but the UPSTREAM provider has already retired — the live
+  // validator flags these as guaranteed failures. Dropped at sync time so every
+  // `npm run build` doesn't re-add them; the shared list lives in scripts/retiredModels.mjs
+  // and is honored by validate-catalog.mjs too (a stale worker row there is not an error).
+  const RETIRED_MODEL_KEYS = (await import('./retiredModels.mjs')).RETIRED_MODEL_KEYS;
+  // Rate-field sanitizer for worker-served values the validator rejects:
+  //  - rpm/rpd of 0 is a blank source cell, never "unlimited" → conservative family floor
+  //    (matches the nararouter flash tier: 10 rpm / 250 rpd).
+  //  - an rpdLimit the RPM cannot possibly reach in a day is a token count that leaked into
+  //    the column → cap at the RPM-implied ceiling (rpm × 1440).
+  // Upstream re-priced a model the worker still tags free — keep the tag out or the
+  // validator (correctly) fails the build on "users would be billed".
+  const NO_LONGER_FREE = new Set(['openrouter||openai/gpt-oss-20b:free']);
+  const sanitizeRates = (m) => {
+    if (!m.rpmLimit || m.rpmLimit <= 0) m.rpmLimit = 10;
+    if (!m.rpdLimit || m.rpdLimit <= 0) m.rpdLimit = 250;
+    const ceiling = m.rpmLimit * 1440;
+    if (m.rpdLimit > 100_000 && m.rpdLimit > ceiling) m.rpdLimit = ceiling;
+    if (NO_LONGER_FREE.has(`${m.platform}||${m.modelId}`)) m.tags = (m.tags ?? []).filter((t) => t !== 'free');
+    return m;
+  };
+  const finalModels = [...out, ...externallyCurated]
+    .filter((m) => !RETIRED_MODEL_KEYS.has(`${m.platform}||${m.modelId}`))
+    .map(sanitizeRates);
 
   const providers = new Set(finalModels.map((m) => m.platform));
   const output = {

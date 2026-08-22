@@ -27,6 +27,12 @@ export type Platform =
   | 'poolside'
   | 'tokenrouter'
   | 'nararouter'
+  | 'aionlabs'
+  | 'chatanywhere'
+  | 'openadapter'
+  | 'orcarouter'
+  | 'requesty'
+  | 'router9'
   | 'custom';
 
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';

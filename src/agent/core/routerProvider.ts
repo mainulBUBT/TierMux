@@ -46,6 +46,9 @@ export interface RouterProviderOptions {
   /** Step routing (Phase 2): only consider models at most this smart (the cheap pool for easy
    *  plan steps) — forwarded to Router.route()'s `minIntelligenceRank`. */
   minIntelligenceRank?: number;
+  /** Turn telemetry sink — forwarded to Router.route()'s onUsage so the turn accumulates
+   *  provider-reported token usage from every model call it makes. */
+  usageSink?: RouteOptions['onUsage'];
 }
 
 const routeKey = (e: { platform: string; modelId: string }): string => `${e.platform}::${e.modelId}`;
@@ -233,6 +236,7 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         exclude: providerOpts.excludeModels,
         maxIntelligenceRank: providerOpts.maxIntelligenceRank,
         minIntelligenceRank: providerOpts.minIntelligenceRank,
+        onUsage: providerOpts.usageSink,
         abortSignal: options.abortSignal,
         hasRawPdfPart: hasRawPdfPart(messages),
       };
@@ -301,6 +305,7 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         exclude: providerOpts.excludeModels,
         maxIntelligenceRank: providerOpts.maxIntelligenceRank,
         minIntelligenceRank: providerOpts.minIntelligenceRank,
+        onUsage: providerOpts.usageSink,
         abortSignal: options.abortSignal,
         hasRawPdfPart: hasRawPdfPart(messages),
       };
