@@ -88,11 +88,7 @@ function notifyRemovedModels(keys: string[]): void {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  console.log('[tiermux-bench-debug] activate() STARTED');
-
-  // Windows-specific: handle path issues
   const extensionPath = context.extensionUri.fsPath;
-  console.log('[tiermux-bench-debug] Extension path:', extensionPath);
 
   try {
     const catalog = new Catalog(extensionPath);
@@ -440,7 +436,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       }),
     );
-    console.log('[tiermux-bench-debug] activate() COMPLETED — all commands registered');
+
 
     context.subscriptions.push(
       ...registerEditorCommands(chat),

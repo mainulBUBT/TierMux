@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Synced from remote /models JSON — 145 models from 29 providers.",
+  "note": "Synced from remote /models JSON — 148 models from 29 providers.",
   "models": [
     {
       "platform": "agnes",
@@ -3286,6 +3286,74 @@
       ],
       "origInputPricePer1M": 0.65,
       "origOutputPricePer1M": 3.25
+    },
+    {
+      "platform": "kilo",
+      "modelId": "stealth/ox-alpha",
+      "displayName": "Ox Alpha",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 20,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "vision",
+        "general",
+        "planner",
+        "coding",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "kilo",
+      "modelId": "meituan/longcat-2.0-free",
+      "displayName": "Meituan: LongCat 2.0",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048756,
+      "rpmLimit": 5,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.3,
+      "origOutputPricePer1M": 1.2
+    },
+    {
+      "platform": "kenari",
+      "modelId": "qwen3-8-27b:free",
+      "displayName": "Qwen 3.8 27B",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262000,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "planner",
+        "reasoner",
+        "vision",
+        "free"
+      ],
+      "origInputPricePer1M": 0.33,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "tokenrouter",
