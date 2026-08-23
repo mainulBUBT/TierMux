@@ -50,9 +50,15 @@ const BADGE_CLS = { A: 'cp-created', M: 'cp-modified', D: 'cp-deleted' } as cons
 /** Build the card from the WHOLE report object. Returns NULL when there is nothing the user
  *  needs to be told — a verified pass is the expected outcome, not news (the agent always
  *  verifies when it can), so success renders SILENT. The card only speaks when it changes
- *  what the user should do next: untested work (Run checks) or a failed gate (Re-run). */
+ *  what the user should do next: untested work (Run checks) or a failed gate (Re-run).
+ *
+ *  "Untested" is only actionable when this workspace HAS a check to run. When no stack in it
+ *  offers one (verifyAvailable === false), there is no button that would do anything and no
+ *  question worth asking — so the card stays silent too, rather than labelling every turn of
+ *  every command-less project as untested. */
 export function createResultCard(report: WorkReportData, opts?: ResultCardOptions): HTMLElement | null {
   if (report.verifyOutcome === 'verified' || report.verifyOutcome === 'changes-only') return null;
+  if (report.verifyOutcome === 'unverified' && report.verifyAvailable === false) return null;
 
   const meta = OUTCOME_META[report.verifyOutcome] ?? OUTCOME_META.unverified;
   const quiet = report.verifyOutcome === 'unverified';

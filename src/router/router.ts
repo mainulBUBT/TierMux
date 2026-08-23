@@ -9,6 +9,7 @@ import type {
 } from '../shared/types';
 import { ProviderHttpError } from '../providers/base';
 import { resolveProvider } from '../providers';
+import { probeLocalServer, localContextAdvice, type LocalServerInfo } from '../providers/localServers';
 import type { CompletionOptions } from '../providers/options';
 import { fitMessages, inputBudget, estimateTokens, estimateMessagesTokens } from '../agent/budget';
 import { orderForTask, type TaskKind } from '../agent/routing';
@@ -64,6 +65,15 @@ const THINK_OPEN_RE = /<(think|thinking|thought|reasoning)>/i;
 const THINK_CLOSE_RE = /<\/(think|thinking|thought|reasoning)>/i;
 const OPEN_TAG_PREFIXES = ['<think>', '<thinking>', '<thought>', '<reasoning>'];
 const CLOSE_TAG_PREFIXES = ['</think>', '</thinking>', '</thought>', '</reasoning>'];
+
+/** Lower an output-token request to something a small local context can actually honour. Returns
+ *  `want` unchanged when there is no known window or the window is comfortable — this only ever
+ *  shrinks, so it cannot make a cloud model's budget worse. */
+export function clampOutputToContext(want: number, contextWindow: number | undefined): number {
+  if (!contextWindow || contextWindow <= 0) return want;
+  const cap = Math.max(512, Math.floor(contextWindow / 4));
+  return Math.min(want, cap);
+}
 
 export class ThinkStripper {
   private buf = '';
@@ -390,6 +400,28 @@ function parseRetryFromBody(text: string): number | undefined {
 export class Router {
   /** Last model (platform::modelId) that succeeded for each task kind — tried first next time. */
   private lastGood = new Map<TaskKind, string>();
+
+  /**
+   * Ask the local server behind a custom endpoint what context window it currently has for this
+   * model. `modelId` arrives in the `<endpointId>::<upstreamModel>` form, and the upstream half is
+   * what the server knows the model by.
+   *
+   * Only custom endpoints reach here, and probeLocalServer itself declines anything that is not a
+   * localhost/LAN address — a hosted OpenAI-compatible endpoint is never probed.
+   */
+  private async probeLocalEndpoint(modelId: string): Promise<LocalServerInfo | undefined> {
+    const epId = modelId.split('::')[0];
+    const upstream = modelId.split('::').slice(1).join('::');
+    if (!upstream) return undefined;
+    const endpoint = this.settings.getCustomEndpoints().find((ep) => ep.id === epId);
+    if (!endpoint) return undefined;
+    const info = await probeLocalServer(endpoint.baseUrl, upstream);
+    if (info) {
+      diagLog('router.local-server', `${endpoint.name} → ${info.kind} contextWindow=${info.contextWindow ?? 'unknown'}`);
+    }
+    return info;
+  }
+
   /**
    * Last model that successfully served each CHAT SESSION — tried first next time, ahead of the
    * per-taskKind `lastGood` pin.
@@ -1447,6 +1479,15 @@ export class Router {
       }
 
       const provider = resolveProvider(entry.platform, entry.modelId, this.settings.getCustomEndpoints());
+      // Local servers (LM Studio, Ollama, llama.cpp, KoboldCpp, vLLM) have no catalog entry, so
+      // `model?.contextWindow` is undefined and inputBudget falls back to 32768 — while the server
+      // may have loaded the model with 4096. The prompt then does not fit, the server truncates or
+      // returns nothing, and the turn comes back empty with no explanation. Ask the server what it
+      // actually has; the result is cached and every probe is best-effort, so a server that does
+      // not answer costs one short request and changes nothing.
+      const localInfo = entry.platform === 'custom'
+        ? await this.probeLocalEndpoint(entry.modelId).catch(() => undefined)
+        : undefined;
       if (!provider) {
         failures.push({ platform: entry.platform, model: entry.modelId, reason: 'no_provider' });
         opts.onProviderAttempt?.({ platform: entry.platform, model: entry.modelId, status: 'fail', latencyMs: 0, errorType: 'not_found', reason: 'no_provider' });
@@ -1515,7 +1556,11 @@ export class Router {
         // stitcher (up to 4 extra calls) to band-aid it; the profile helper raises the floor
         // (reasoning models get double room for hidden <think> output) while a declared
         // outputTokenLimit always caps below it.
-        max_tokens: opts.max_tokens ?? defaultMaxOutputTokens(model),
+        // On a local server the output budget shares one window with the prompt: asking a
+        // 4096-context model for 8192 output tokens either errors or leaves nothing for the
+        // conversation. Cap the request at a quarter of the loaded window so the prompt keeps
+        // three quarters — never RAISING the caller's number, only lowering an impossible one.
+        max_tokens: clampOutputToContext(opts.max_tokens ?? defaultMaxOutputTokens(model), localInfo?.contextWindow),
         top_p: opts.top_p,
         tools: opts.tools,
         tool_choice: opts.tool_choice,
@@ -1531,7 +1576,10 @@ export class Router {
       let triedTrim = false;
       for (;;) {
 
-        const fitted = fitMessages(messages, inputBudget(model?.contextWindow, maxOut, reserved)).messages;
+        // A probed local window beats the catalog (there is none for a custom endpoint) and beats
+        // inputBudget's 32768 default, which is the number that silently breaks local servers.
+        const contextWindow = localInfo?.contextWindow ?? model?.contextWindow;
+        const fitted = fitMessages(messages, inputBudget(contextWindow, maxOut, reserved)).messages;
         const t0 = Date.now();
         // Start the TTFT timer for this attempt: if no chunk arrives within ttftMs, the composite
         // abort signal fires and the stream loop below throws → failover. Cleared on first chunk.
@@ -1788,8 +1836,14 @@ export class Router {
             this.metrics?.record(entry.platform, entry.modelId, opts.taskKind ?? 'chat', {
               ok: false, failureType: 'other', totalMs: Date.now() - t0, rateLimited: false,
             } satisfies MetricSample);
-            failures.push({ platform: entry.platform, model: entry.modelId, reason: 'empty_response' });
-            opts.onFailover?.({ from: entry, reason: 'empty_response' });
+            // The overwhelmingly common cause on a local server: the prompt did not fit the
+            // context the model was loaded with, so it was truncated into nothing. Say that, and
+            // say how to fix it — a bare "empty_response" leaves the user with a blank bubble and
+            // no idea that Context Length is the knob.
+            const advice = localInfo && localContextAdvice(localInfo, estimateMessagesTokens(fitted));
+            if (advice) diagLog('router.empty', advice);
+            failures.push({ platform: entry.platform, model: entry.modelId, reason: advice || 'empty_response' });
+            opts.onFailover?.({ from: entry, reason: advice || 'empty_response' });
             continue candidates;
           }
 

@@ -2712,7 +2712,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     const cmd = resolveVerifyCommand();
     if (!cmd) {
-      this.post({ type: 'notice', sessionId: s.id, text: 'No test/build command detected in this workspace — tell me which command to use and I\'ll remember it.' });
+      // Reachable only from an older card (current ones hide the action when no command
+      // exists). Say it once, factually, and point at the setting — no standing request.
+      this.post({ type: 'notice', sessionId: s.id, text: 'Nothing to run — no test or build command was found for this workspace\'s stack. Set `tiermux.agent.verifyCommand` to name one.' });
       return;
     }
     const requestId = `verify-${Date.now()}`;

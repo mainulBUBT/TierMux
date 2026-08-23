@@ -126,7 +126,11 @@ async function main() {
       history[0].content.includes('[Plan execution — step 1 of 3]') && history[0].content.includes('Update src/b.ts'));
     ok('final checklist fully completed', lastTodos === 3);
     ok('todos emitted at least once per step transition', todoEmits.length >= 3);
-    ok('summary states completion with verification stats', result.summary.includes('3/3 step(s) done') && result.summary.includes('⚠️ 3 untested'));
+    // Verification is OFF here, so there is no check the user could have run: the summary
+    // reports progress and says nothing about testing. Flagging "untested" would blame the
+    // run for a property of the workspace/settings — see WorkReportData.verifyAvailable.
+    ok('summary states completion without an untested warning when no check exists',
+      result.summary.includes('3/3 step(s) done') && !result.summary.includes('untested'));
   }
 
   console.log('\n— verify failure: same-model retry, plan repair, no routing escalation —');
@@ -230,6 +234,56 @@ async function main() {
     ok('resumed run finished', resumed.state.status === 'done');
     ok('resume did not redo step 1 (9 calls total)', n === 9, `${n} calls`);
     ok('resume summary counts all steps', resumed.summary.includes('3/3 step(s) done'));
+  }
+
+  console.log('\n— stuck step (no tool calls, degenerate text): counts as a failure, gets retry + repair —');
+  {
+    // Regression for the bug where a `stopReason: 'stuck'` step (the model produced only a
+    // friendly "couldn't finish" fallback line, no error, no verify command run) slipped past
+    // `stepFailed` (which only checked `verifyOutcome`/`failed`) and would have been silently
+    // marked 'done' with nothing built. `stepFailed` now also checks `stopReason === 'stuck'`.
+    (globalThis as any).__tiermuxTestConfig = { mixturePipeline: 'off', verifyCommand: 'off' };
+    const repeatedLine = 'Let me check the affiliate registration flow next.';
+    const stuckContent = { content: Array(6).fill(repeatedLine).join('\n') }; // triggers hasDegenerateTextRepetition
+    const doneContent = (s: string) => ({ content: s });
+    const todoW = (id: string) => ({ tool_calls: [toolCall(id, 'todowrite', { todos: [{ content: 'Build the page', status: 'completed', difficulty: 'hard' }] })] });
+    const script: Array<Record<string, unknown>> = [
+      // Attempt 1: degenerate repetition detector fires mid-stream; runTurn's own internal
+      // recovery (nudges/re-attempts) exhausts itself too — takes several rounds in practice,
+      // not just one — before genuinely giving up and surfacing stopReason:'stuck' to planRunner.
+      stuckContent, stuckContent, stuckContent, stuckContent, stuckContent, stuckContent,
+      // Attempt 2 (planRunner's own same-model retry, failure output injected): stuck again,
+      // exhausting its own internal recovery too — planRunner's one allowed retry is spent for real.
+      stuckContent, stuckContent, stuckContent, stuckContent, stuckContent, stuckContent,
+      // Repaired step: succeeds cleanly.
+      todoW('t1'), doneContent('Built it.'),
+    ];
+    const routeOpts: any[] = [];
+    const fakeRouter = {
+      async route(_m: unknown, opts: unknown) {
+        routeOpts.push(opts ?? {});
+        const next = script.shift();
+        return { platform: 'custom' as const, model: 'fake', response: baseResponse(next ?? { content: 'done.' }) };
+      },
+      peekTopSelection: () => ({ entry: { platform: 'custom', modelId: 'fake', enabled: true, priority: 0 }, model: { intelligenceRank: 1 } }),
+    } as unknown as Router;
+
+    const repairCalls: Array<{ failure: string; remaining: string[] }> = [];
+    const state = makeState(['Create/implement the affiliate registration page']);
+    const result = await runPlan(fakeRouter, makeOpts(), state, {
+      repairSteps: async (failure, remaining) => {
+        repairCalls.push({ failure, remaining });
+        return ['Create/implement the affiliate registration page (simplified)'];
+      },
+      onTodos: () => {},
+      onHistory: () => {},
+      onState: () => {},
+    });
+    ok('stuck step was retried once (same model) before repair', routeOpts.length >= 2, `${routeOpts.length} route calls`);
+    ok('plan repair was consulted for the stuck step', repairCalls.length === 1, `${repairCalls.length} calls`);
+    ok('repair saw the stuck step in the failure text', repairCalls[0]?.failure.includes('Create/implement') ?? false);
+    ok('repaired step ran and the plan finished (not silently marked done on the stuck text)',
+      result.state.status === 'done' && result.state.repairs === 1 && result.state.steps[0]?.text.includes('simplified'));
   }
 
   console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL PASS');

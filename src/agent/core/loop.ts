@@ -1482,6 +1482,40 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
     return streak >= 4;
   };
 
+  // A weak model pushed past its real capacity (huge accumulated tool-result context, a long
+  // multi-step investigation) can degenerate a different way than repetition: incoherent
+  // multi-script token salad — fragments of Cyrillic/CJK/Arabic/Bengali/etc. mixed mid-sentence
+  // with no repeating line for hasDegenerateTextRepetition to catch, but nothing legitimate ever
+  // looks like this. A real bilingual reply (e.g. English+Bengali) stays within one or two
+  // scripts; genuine garbage scatters 4+. Counts letters only (skips digits/punctuation/space) in
+  // the recent tail, so a stray emoji or a code snippet's occasional non-ASCII comment can't trip it.
+  const SCRIPT_RANGES: Array<[RegExp, number]> = [
+    [/[ -]/, 0], // Latin/ASCII — code, English, most punctuation
+    [/[À-ɏ]/, 0], // Latin extended (accented Latin scripts)
+    [/[Ͱ-Ͽ]/, 1], // Greek
+    [/[Ѐ-ӿ]/, 2], // Cyrillic
+    [/[؀-ۿ]/, 3], // Arabic
+    [/[ऀ-ॿ]/, 4], // Devanagari
+    [/[ঀ-৿]/, 5], // Bengali
+    [/[฀-๿]/, 6], // Thai
+    [/[぀-ヿ]/, 7], // Hiragana/Katakana
+    [/[一-鿿]/, 8], // Han (CJK)
+    [/[가-힯]/, 9], // Hangul
+  ];
+  const hasScriptSaladGarbage = (text: string): boolean => {
+    const tail = text.slice(-1000);
+    const counts = new Map<number, number>();
+    for (const ch of tail) {
+      if (!/\p{L}/u.test(ch)) continue;
+      for (const [re, bucket] of SCRIPT_RANGES) {
+        if (re.test(ch)) { counts.set(bucket, (counts.get(bucket) ?? 0) + 1); break; }
+      }
+    }
+    let present = 0;
+    for (const n of counts.values()) if (n >= 3) present++;
+    return present >= 4;
+  };
+
   let platform: string | undefined;
   let model: string | undefined;
   let runtimeName: string | undefined;
@@ -1832,6 +1866,11 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
           if (hasDegenerateTextRepetition(stepText)) {
             stopReason = 'stuck';
             diagLog('turn.stop', `stuck: degenerate text repetition detected (~${stepText.length} chars, no tool calls)`);
+            break;
+          }
+          if (hasScriptSaladGarbage(stepText)) {
+            stopReason = 'stuck';
+            diagLog('turn.stop', `stuck: multi-script garbage output detected (~${stepText.length} chars, no tool calls)`);
             break;
           }
         }
@@ -2850,6 +2889,10 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     workReport = {
       version: 1,
       verifyOutcome: reportOutcome,
+      // Whether ANY stack in this workspace offered a verify command (see detectVerifyCommand).
+      // false ⇒ the UI stays silent about verification instead of flagging every turn as
+      // untested and asking the user for a command the project simply doesn't have.
+      verifyAvailable: !!verifyCmd,
       verifyCmd: verifyOutcome === 'passed' || verifyGateFailed ? verifyCmd : undefined,
       fixRounds: verifyFixRoundsUsed,
       changedFiles: (changedFiles ?? []).map((f) => ({

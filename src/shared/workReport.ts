@@ -58,6 +58,13 @@ export interface WorkReportData {
   /** Persisted in transcripts — readers switch on this for forward compatibility. */
   version: 1;
   verifyOutcome: 'verified' | 'failed' | 'unverified' | 'changes-only';
+  /** Whether a verify command existed for this workspace AT ALL (any stack — see
+   *  detectVerifyCommand). false ⇒ "unverified" is a property of the PROJECT, not of the turn:
+   *  there is nothing the user could click and nothing worth telling them, so the UI stays
+   *  silent instead of flagging untested work and asking for a command. Optional for
+   *  forward/backward compat — transcripts written before this field are treated as `true`
+   *  (the old, always-offer behavior). */
+  verifyAvailable?: boolean;
   verifyCmd?: string;
   fixRounds: number;
   changedFiles: WorkReportChangedFile[];
@@ -90,12 +97,21 @@ export function renderLegacyMarkdown(report: WorkReportData): string {
     lines.push(`**❌ Verification failed** — \`${report.verifyCmd}\` still fails after ${r} fix round${r === 1 ? '' : 's'}. Your changes are saved, but the issue isn't fully resolved yet — re-run the command to see what's left, or ask me to keep fixing it.`);
   } else if (report.verifyOutcome === 'changes-only') {
     lines.push('**✅ Changes applied** — your changes are saved to disk.');
+  } else if (report.verifyAvailable === false) {
+    // No test/build command exists in this workspace for ANY stack. Flagging the turn as
+    // untested (and asking for a command) blames the turn for a property of the project, on
+    // every single turn — pure noise. State what IS true and stop there.
+    lines.push('**\u2705 Changes applied** \u2014 your changes are saved to disk.');
   } else {
     // The honest default: EVERY untested mutating turn says so. Lead with what IS true (the
     // changes are saved), then why they're untested and one concrete next step.
+    // A command DOES exist here (verifyAvailable !== false), so "no test command" would be a
+    // lie for anything but a legacy transcript that predates the flag.
     const reason = report.stopReason
       ? 'the run ended before the final check could run'
-      : 'this project has no test command I could run';
+      : report.verifyAvailable
+        ? 'the final check didn\'t run this turn'
+        : 'this project has no test command I could run';
     const next = report.stopReason
       ? 'Ask me to verify the changes, or give them a quick look yourself.'
       : 'Give the changes a quick look — or tell me which command tests this project and I\'ll run it.';

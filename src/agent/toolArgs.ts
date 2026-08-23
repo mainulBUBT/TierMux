@@ -543,6 +543,38 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     }
   }
 
+  if (calls.length === 0) {
+    // Shape 9: the plain Claude/Anthropic-style `<invoke name="X"><parameter name="Y">value
+    // </parameter></invoke>` dialect (optionally namespaced, e.g. `<invoke>`), emitted as
+    // plain content when a provider serves an Anthropic-trained model without wiring the tools
+    // API. Distinct from shape 5 (DeepSeek's DSML dialect uses the fullwidth ｜ wrapper around
+    // "invoke"/"parameter"; this has none) and shape 6 (Hermes/Qwen's `<function=NAME>` /
+    // `<parameter=KEY>` attribute-free tags). Captured from a 2026-08-23 run: the model narrated
+    // "Let me check CarpoolBooking for rider_notes." then emitted this exact XML as its final
+    // answer text instead of a real tool call — no shape above matched it, so nothing ran and the
+    // raw markup streamed to the user as the reply. Closing tags are optional to tolerate a
+    // response truncated mid-call.
+    const invokeTag = /<(?:\w+:)?invoke\s+name="([a-zA-Z0-9_\-]+)"[^>]*>/g;
+    while ((m = invokeTag.exec(text)) !== null) {
+      const name = m[1];
+      if (!toolNames.has(name)) { invokeTag.lastIndex = m.index + m[0].length; continue; }
+      const closeRe = /<\/(?:\w+:)?invoke>/g;
+      closeRe.lastIndex = m.index + m[0].length;
+      const close = closeRe.exec(text);
+      const bodyEnd = close ? close.index : text.length;
+      const body = text.slice(m.index + m[0].length, bodyEnd);
+      const args: Record<string, unknown> = {};
+      const paramTag = /<(?:\w+:)?parameter\s+name="([a-zA-Z0-9_\-]+)"[^>]*>([\s\S]*?)(?:<\/(?:\w+:)?parameter>|$)/g;
+      let p: RegExpExecArray | null;
+      while ((p = paramTag.exec(body)) !== null) {
+        const raw = p[2].replace(/^[ \t]*\r?\n/, '').replace(/\r?\n[ \t]*$/, '');
+        args[p[1]] = raw.includes('\n') ? raw : coerceInlineArgValue(raw);
+      }
+      calls.push({ name, arguments: JSON.stringify(args) });
+      invokeTag.lastIndex = close ? close.index + close[0].length : text.length;
+    }
+  }
+
   // Cheap insurance now that shapes 1, 6, 7 and 8 all scan the full text: collapse identical
   // (name, arguments) pairs so no dialect overlap can ever run the same tool call twice.
   const seen = new Set<string>();

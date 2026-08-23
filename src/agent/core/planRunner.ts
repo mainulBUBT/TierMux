@@ -179,8 +179,12 @@ export async function runPlan(router: Router, opts: AgentOpts, state: PlanRunSta
       { role: 'assistant', content: result.text || '(step produced no summary)' },
     ]);
 
-    // Verify-failed retry: same model, same constraints, failure output injected.
-    if ((result.verifyOutcome === 'failed' || result.failed) && step.attempts < maxStepAttempts && isActive()) {
+    // Verify-failed retry: same model, same constraints, failure output injected. A `stuck`
+    // stop counts as a failure here too — the step's own text is a friendly "couldn't produce
+    // an answer" fallback (non-empty), so without this it slips past `result.failed` and
+    // `verifyOutcome` (neither set) and the step would silently be marked 'done' with nothing
+    // actually built, instead of going through the same retry/repair path a real failure gets.
+    if ((result.verifyOutcome === 'failed' || result.failed || result.stopReason === 'stuck') && step.attempts < maxStepAttempts && isActive()) {
       step.attempts += 1;
       mutate(state, cfg);
       const failureOutput = result.verifyOutcome === 'failed'
@@ -197,7 +201,7 @@ export async function runPlan(router: Router, opts: AgentOpts, state: PlanRunSta
       ]);
     }
 
-    const stepFailed = result.verifyOutcome === 'failed' || result.failed === true;
+    const stepFailed = result.verifyOutcome === 'failed' || result.failed === true || result.stopReason === 'stuck';
 
     // Read-only plan repair: rewrite the remaining steps around what actually failed.
     if (stepFailed && state.repairs < maxPlanRepairs && cfg.repairSteps && isActive()) {
@@ -238,7 +242,10 @@ export async function runPlan(router: Router, opts: AgentOpts, state: PlanRunSta
     }
 
     step.status = 'done';
-    if (result.verifyOutcome === 'passed') verifiedSteps += 1; else untestedSteps += 1;
+    // "Untested" is only worth counting when the workspace HAS a check to run; in a project
+    // with no verify command for any stack it would tally every step as a warning forever.
+    if (result.verifyOutcome === 'passed') verifiedSteps += 1;
+    else if (result.workReport?.verifyAvailable !== false) untestedSteps += 1;
     consecutiveFailed = 0;
     state.currentStep = i + 1;
     mutate(state, cfg);

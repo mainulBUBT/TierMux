@@ -9,7 +9,6 @@ Both should return nothing. If either finds something, rotate the credential fir
 
 ## 2. Known-sensitive paths — confirm still gitignored
 - `.vscode/settings.json` — history leaked a real `mimo.apiKey` on 2026-07-11 (commit `fb8068f`). Key was rotated; file is now gitignored. If you ever re-add `.vscode/` tracking, strip secrets from it first.
-- `.tiermux/opencode.jsonc`, `.tiermux/opencode/config.json` — may contain provider keys, already gitignored.
 - `.claude/`, `.kilo/`, `.kilocode/`, `.benchmarks/` — local tool state, already gitignored.
 
 ## 3. Personal/local info sanity check

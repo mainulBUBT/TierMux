@@ -72,6 +72,18 @@ console.log('workReport.e2e');
   const md = renderLegacyMarkdown(baseReport({ verifyOutcome: 'changes-only' }));
   assert(md.includes('**✅ Changes applied**'), 'changes-only outcome renders');
 }
+{
+  // No verify command exists for ANY stack in this workspace ⇒ "untested" is a property of the
+  // project, not of the turn. Saying so every turn (and asking for a command) is noise, so the
+  // report states what IS true and stops. Absent field ⇒ old behavior, for existing transcripts.
+  const quiet = renderLegacyMarkdown(baseReport({ verifyOutcome: 'unverified', verifyAvailable: false }));
+  assert(!quiet.includes('Unverified') && quiet.includes('**✅ Changes applied**'),
+    'unverified + no command available: no untested warning, no request for a command');
+  const loud = renderLegacyMarkdown(baseReport({ verifyOutcome: 'unverified', verifyAvailable: true }));
+  assert(loud.includes('**⚠️ Unverified**'), 'unverified + a command exists: still says so');
+  assert(renderLegacyMarkdown(baseReport({ verifyOutcome: 'unverified' })).includes('**⚠️ Unverified**'),
+    'unverified with the field absent (legacy transcript): unchanged');
+}
 
 // ── Files grouping (A/M/D → created/modified/deleted wording) ────────────────────────────
 {

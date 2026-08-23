@@ -22,6 +22,21 @@ ok('git status', isReadOnlyCommand('git status'));
 ok('git diff', isReadOnlyCommand('git diff HEAD~1'));
 ok('git log', isReadOnlyCommand('git log --oneline -5'));
 ok('grep pattern file', isReadOnlyCommand('grep -rn "pattern" src/'));
+
+// Every git command `.tiermux/agent/research.md` tells the model to reach for on a history
+// question must actually clear this gate — the prompt promises they run in Ask and Plan mode,
+// and that promise is only true if the classifier agrees. A model told to run `git blame` that
+// then gets denied would fall back to the code search that produced the original bad answer
+// ("no symbol named 'last commit' exists in this codebase").
+for (const cmd of [
+  'git log -1',
+  'git log --oneline -20',
+  'git show abc1234 --stat',
+  'git blame -L 40,60 src/router/router.ts',
+  'git diff',
+  'git branch --show-current',
+  'git status',
+]) ok(`research.md promises: ${cmd}`, isReadOnlyCommand(cmd));
 ok('pwd', isReadOnlyCommand('pwd'));
 ok('find without -delete/-exec', isReadOnlyCommand('find . -name "*.ts"'));
 ok('chained read-only (&&)', isReadOnlyCommand('ls && git status'));

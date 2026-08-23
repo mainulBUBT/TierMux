@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { loadUserMemory } from '../context/userMemory';
 import { loadProjectRules } from '../context/projectRules';
+import { projectProfilePrompt } from '../context/projectProfile';
 import { loadSkills, matchSkill, invokedSkill, skillBodyPrompt, skillIndexPrompt } from '../context/skills';
 import type { Skill } from '../context/skills';
 import { resolveDesignSystem, designSystemPrompt } from '../context/designSystem';
@@ -213,7 +214,13 @@ async function loadAgentInstructions(extPath: string, workspaceRoot?: string, ta
     const index = skillIndexPrompt(extPath, workspaceRoot, active?.name);
     skills = [body, ds ? designSystemPrompt(ds) : '', index].filter(Boolean).join('\n\n');
   }
-  return { agentPrompt: base, instructions: [rules, memory, skills].filter(Boolean).join('\n\n') };
+  // The stack/layout facts (context/projectProfile.ts). research.md teaches HOW to look; this
+  // says WHAT the model is looking at, so the first search lands in the right tree instead of
+  // rediscovering the project's shape every turn. Skipped for trivial turns for the same reason
+  // research.md is — a greeting never needs a repo map. Derived from disk and cached on the
+  // manifests' stamps, so it stays in the session-stable half of the prompt.
+  const profile = taskKind === 'trivial' ? '' : projectProfilePrompt(workspaceRoot);
+  return { agentPrompt: base, instructions: [profile, rules, memory, skills].filter(Boolean).join('\n\n') };
 }
 
 /**

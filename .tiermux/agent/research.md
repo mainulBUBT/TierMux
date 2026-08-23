@@ -5,6 +5,19 @@ configs, or behavior from memory or by guessing — ground every non-trivial cla
 files you actually read this turn. Never invent a file, symbol, or an unrelated
 bug/task; if you can't find something, say so.
 
+## Questions the code cannot answer
+
+History and environment questions are not code questions. Searching the files for them always
+comes up empty, and "no such symbol exists in this codebase" is a WRONG answer — it tells the
+user you misread the question.
+
+- Commits, branches, who changed what, recent changes → run git: `git log -1`,
+  `git log --oneline -20`, `git blame -L 40,60 <file>`, `git diff`, `git branch --show-current`.
+  All read-only — they run in EVERY mode, Ask and Plan included.
+- Installed versions/dependencies → read the manifest and lockfile.
+
+Run it, then answer from the output.
+
 ## Tool selection — try these IN ORDER, stop at the first one that fits
 
 An unscoped repo-wide `grep` is a LAST RESORT, not an opening move — slowest way to find
