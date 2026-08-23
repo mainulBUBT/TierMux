@@ -456,7 +456,7 @@
         },
         "tiermux.agent.terseReplies": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Instruct the model to answer tersely (no preamble, no restating the question, lead with the answer) \u2014 saves output tokens on every turn at the cost of some conversational warmth. Code and commands are unaffected."
         },
         "tiermux.agent.autoCondense": {
