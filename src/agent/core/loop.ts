@@ -189,12 +189,50 @@ const SYNTH_SUFFIX_STUCK =
   + 'is a progress report, not a final answer. Do NOT call a tool or emit tool-call syntax of any '
   + 'kind (no <function=…>, no <tool_call>, no JSON action blob) — you no longer have tools '
   + 'available in this step; write prose only.';
+/** System-prompt tail for a budget/step-cap stop (stopReason 'budget'): the turn ran out of
+ *  runway mid-task — not stuck, just capped. Ask for a HANDOFF, not a final answer: done /
+ *  remaining / next step, so the auto-continue loop (or the user's "continue") picks up from a
+ *  clean state instead of a false-completion summary. Mirrors Codex's budget_limit wrap-up
+ *  template ("summarize useful progress, identify remaining work, leave a clear next step") and
+ *  OpenCode's MAX_STEPS_PROMPT ("summary of work done… list of remaining tasks… recommendations"). */
+const SYNTH_SUFFIX_BUDGET =
+  '\n\nYou were stopped because this turn reached its token/step budget before the task was '
+  + 'finished. Using ONLY what you learned from the tool results above, write a HANDOFF progress '
+  + 'report — do NOT claim the task is complete. Three short parts: (1) what is already done '
+  + '(files changed, what works), (2) what remains, as a short ordered list, (3) the single next '
+  + 'step to take. Do NOT call a tool or emit tool-call syntax of any kind (no <function=…>, no '
+  + '<tool_call>, no JSON action blob) — you no longer have tools available in this step; write '
+  + 'prose only.';
 
 /** A reply that ENDS on an announced action ("…let me read the file and fix it:") — a weak model's
  *  classic "all talk, no action" turn. Matched only at the tail so a genuine explanation that
  *  merely mentions an action mid-text doesn't trip it. Combined with hadToolCalls===false in
  *  runTurn to detect a turn that promised work but called no tool. */
 const ACTION_INTENT_RE = /\b(let me|i'?ll|i will|let'?s|i'?m going to|now i'?ll|i can|i'?d|i should|let me go ahead and)\b[^.!?\n]*\b(read|open|look at|inspect|examine|check|review|fix|edit|update|change|modify|rewrite|replace|implement|create|add|remove|delete|run|execute|search|grep|find|explore|apply|write)\b[^.!?\n]*[:.]?\s*$/i;
+
+/** Same intent vocabulary as ACTION_INTENT_RE, but per-SENTENCE and WITHOUT the tail anchor —
+ *  the building block for narrationWall below. */
+const NARRATION_SENTENCE_RE = /\b(let me|i'?ll|i will|let'?s|i'?m going to|now i'?ll|i should|we'?ll|next i'?ll|then i'?ll)\b[^.!?\n]{0,140}?\b(read|open|look at|inspect|examine|check|review|fix|edit|update|change|modify|rewrite|replace|implement|create|add|remove|delete|run|execute|search|grep|find|explore|apply|write|investigate|analyze|compare|verify|scan)\b/i;
+
+/** The "narration wall" failure shape (captured live 2026-08-23, nemotron free, on
+ *  "and more issues?"): the model spends its whole reply ANNOUNCING an investigation —
+ *  "Let me look at… Let me re-read… I should also check…" — sentence after sentence, with
+ *  none of it performed. ACTION_INTENT_RE misses it twice over: it is TAIL-anchored (a reply
+ *  whose last line isn't an action slips past), and the retry paths gate on wantsAction /
+ *  actionTask, which a short follow-up question classifies as 'chat' — so the narration
+ *  became the final answer and the agent "stopped" with no retry and no explanation.
+ *
+ *  A narration WALL is a failure on its own terms regardless of task classification: ≥2
+ *  intent sentences making up at least half the reply means the model described work instead
+ *  of doing it (or instead of answering). Gated to agent mode at the call sites. */
+function narrationWall(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < 40 || trimmed.length > 4000) return false;
+  const sentences = trimmed.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter((s) => s.length >= 8);
+  if (sentences.length < 2) return false;
+  const intents = sentences.filter((s) => NARRATION_SENTENCE_RE.test(s));
+  return intents.length >= 2 && intents.length / sentences.length >= 0.5;
+}
 
 /** A DIFFERENT "all talk, no action" shape than ACTION_INTENT_RE: instead of announcing an action
  *  and stopping, the model explains what to change and pastes the fix as a fenced code block —
@@ -260,6 +298,20 @@ function forceToolRepairNudge(detail: string): string {
     + 'Common causes: a JSON array/object argument was sent as an escaped STRING instead of a real '
     + 'array/object, or an argument name that does not exist in the tool\'s schema. Call the SAME '
     + 'tool again with corrected arguments — do not repeat the same malformed call.';
+}
+
+/** Escalating-repeat reminder — the dsh repeat-tool-reminder pattern. Injected as a user turn by
+ *  prepareStep when the SAME exact tool call has landed twice CONSECUTIVELY: one full step before
+ *  stuckStop's ×3 hard stop, so the model gets a fresh context to change arguments or approach
+ *  instead of being cut off mid-task (the hard stop stays as the backstop if it repeats anyway).
+ *  `callKey` is the canonical tool+args key, pre-trimmed by the caller. */
+function repeatReminder(callKey: string, run: number): string {
+  return `You have now made the exact same tool call ${run} times in a row with identical arguments `
+    + `(${callKey}) and it has not advanced the task. Do NOT issue it again unchanged. `
+    + 'Re-read the previous result carefully: if it did not give you what you need, change '
+    + 'something real — different arguments, a different tool, or a different approach entirely. '
+    + 'If you are genuinely blocked, say so plainly and state what you need instead of repeating '
+    + 'the call.';
 }
 
 /** Nudge appended (as a user turn) when the model answered an action task by PASTING the code in
@@ -804,15 +856,19 @@ async function forceSynthesis(
   workMessages: ChatMessage[],
   onChunk: (t: string) => void,
   onReasoning: (d: string) => void,
-  stuck?: boolean,
+  stopKind?: 'stuck' | 'budget',
 ): Promise<string> {
-  opts.onStep('synthesizing', stuck ? 'Summarizing progress so far…' : 'Writing answer…');
+  opts.onStep('synthesizing', stopKind ? 'Summarizing progress so far…' : 'Writing answer…');
   try {
     const messages = shrinkForSynthesis(toCoreMessages([...opts.messages, ...workMessages]) as CoreMessage[]);
-    messages.push({ role: 'user', content: stuck ? 'You got stuck — summarize your findings and what remains unresolved.' : 'Based on the tool results above, give your final answer now.' });
+    messages.push({ role: 'user', content: stopKind === 'stuck'
+      ? 'You got stuck — summarize your findings and what remains unresolved.'
+      : stopKind === 'budget'
+        ? 'The turn budget ran out before you finished — write your handoff now: what is done, what remains, and the next step.'
+        : 'Based on the tool results above, give your final answer now.' });
     const synth = streamText({
       model: languageModel as any,
-      system: (system || '') + (stuck ? SYNTH_SUFFIX_STUCK : SYNTH_SUFFIX),
+      system: (system || '') + (stopKind === 'stuck' ? SYNTH_SUFFIX_STUCK : stopKind === 'budget' ? SYNTH_SUFFIX_BUDGET : SYNTH_SUFFIX),
       messages: messages as any,
       // No `tools` + single-step stop → the model cannot delegate again, it must answer.
       stopWhen: [isStepCount(1)],
@@ -1362,6 +1418,9 @@ async function runAttempt(
   let askQuestionsCall: { toolCallId: string; questions: ClarifyingQuestion[] } | undefined;
   // Fires-once guard for the budget-approaching nudge in prepareStep below.
   let budgetNudged = false;
+  // Distinct call keys already given the escalating repeat reminder in prepareStep below — one
+  // reminder per key per turn; a model that keeps looping after the reminder hits stuckStop.
+  const repeatNudgedKeys = new Set<string>();
   // Fires-once guard for the DIAGNOSTIC message on the hard tool-restriction escalation below —
   // the restriction itself (`out.activeTools`) re-applies every step past the threshold, this
   // flag only stops the explanatory nudge message from repeating each time.
@@ -1373,18 +1432,35 @@ async function runAttempt(
     return false;
   };
   // Weak free models frequently re-issue the identical tool call (e.g. grep "failover" 4×) and
-  // spin to the step cap without progress. Stop once any exact (tool + args) call has been made
-  // 3 times in this turn — clearly stuck, not deliberate repetition.
-  const stuckStop = ({ steps }: { steps: Array<{ toolCalls?: Array<{ toolName?: string; input?: unknown }> }> }): boolean => {
-    const counts = new Map<string, number>();
+  // spin to the step cap without progress. Stop only on a CONSECUTIVE run of the exact same
+  // (tool + args) call. The old whole-turn TOTAL count (any 3 identical calls ANYWHERE) falsely
+  // killed long edit→verify cycles: runCommand(npm test) after edit 1, 2 and 3 is the normal
+  // shape of a multi-file task, not a stall. OpenCode's doom_loop and dsh's repeat guard both
+  // count the trailing run, not the total. THRESHOLDS (2026-08-23 recalibration, live feedback):
+  // ×2 back-to-back is LEGITIMATE work — re-reading a file after a failed edit, re-issuing a
+  // createFile that errored — so it must stay silent; the escalating reminder fires at ×3
+  // (prepareStep) and the hard stop at ×5, the dsh 3/5 shape. Bookkeeping tools
+  // (todowrite/remember/question/askQuestions) neither count NOR break the run — dsh excludes
+  // todo_write precisely so bookkeeping interleaved into a loop can't launder it.
+  const BOOKKEEPING_TOOLS = new Set(['todowrite', 'remember', 'question', 'askQuestions']);
+  /** Longest trailing CONSECUTIVE run of one identical non-bookkeeping tool call, walking calls
+   *  in order across all steps. `{ run: 0 }` when nothing repeats back-to-back. */
+  const trailingRepeatRun = (steps: Array<{ toolCalls?: Array<{ toolName?: string; input?: unknown }> }>): { key: string; run: number } => {
+    let key = '';
+    let run = 0;
     for (const s of steps) {
       for (const tc of s.toolCalls ?? []) {
-        const key = `${tc.toolName}:${JSON.stringify(tc.input ?? {})}`;
-        const n = (counts.get(key) ?? 0) + 1;
-        counts.set(key, n);
-        if (n >= 3) { stopReason = 'stuck'; diagLog('turn.stop', `stuck: repeated ${key.slice(0, 80)} ×${n}`); return true; }
+        if (!tc.toolName || BOOKKEEPING_TOOLS.has(tc.toolName)) continue;
+        const k = `${tc.toolName}:${JSON.stringify(tc.input ?? {})}`;
+        if (k === key) run++;
+        else { key = k; run = 1; }
       }
     }
+    return { key, run };
+  };
+  const stuckStop = ({ steps }: { steps: Array<{ toolCalls?: Array<{ toolName?: string; input?: unknown }> }> }): boolean => {
+    const { key, run } = trailingRepeatRun(steps);
+    if (run >= 5) { stopReason = 'stuck'; diagLog('turn.stop', `stuck: ${run} consecutive identical calls ${key.slice(0, 80)}`); return true; }
     return false;
   };
 /** Canonical form of a tool call for near-duplicate detection: tool name + arguments with keys
@@ -1755,6 +1831,22 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
             }
           }
         }
+        // Escalating repeat guard (dsh's repeat-tool-reminder shape): the exact same call twice
+        // in a row is the warning band — inject the reminder BEFORE stuckStop's ×3 hard stop so
+        // the model gets one fresh step to change course. Once per distinct call key per turn;
+        // bookkeeping calls never count (trailingRepeatRun skips them entirely).
+        const rep = trailingRepeatRun(steps);
+        // ×3, not ×2: a single legitimate re-read (after a failed edit) or a createFile retried
+        // after an error is ×2 back-to-back and must NOT nag (2026-08-23 live feedback — the ×2
+        // notice fired on normal work and read as noise).
+        if (rep.run >= 3 && !repeatNudgedKeys.has(rep.key)) {
+          repeatNudgedKeys.add(rep.key);
+          diagLog('turn.repeatNudge', `same exact call ×${rep.run} (${rep.key.slice(0, 80)}) — injecting reminder before hard stop`);
+          // Surfaced as a notice too: without this the guard is invisible — the user only ever
+          // saw the turn end in a stuck stop and never learned the harness tried to prevent it.
+          opts.onWarning?.(`Repeated the same tool call (${rep.key.split(':')[0]} ×${rep.run}) — nudging the model to change approach before it's stopped.`);
+          out.messages = [...(out.messages ?? messages), { role: 'user', content: wrapTiermuxContext(repeatReminder(rep.key.slice(0, 200), rep.run)) }] as any;
+        }
         // Circuit-breaker filter, independent of budget pressure: a tripped tool leaves the
         // step's toolset entirely so the model physically cannot burn another round on it.
         if (brokenTools.size > 0 && !out.activeTools) {
@@ -2055,7 +2147,7 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
     // Skip when askQuestionsCall is set — the model deliberately stopped to ask the user, an
     // empty `text` here is correct (the questions ARE the response), not a synthesis failure.
     if (!text.trim() && hadToolCalls && !paused && !opts.abortSignal?.aborted && !askQuestionsCall) {
-      text = await forceSynthesis(languageModel, system, opts, workMessages, (t) => opts.onChunk(t), (d) => { reasoning += d; opts.onReasoning(d); }, stopReason === 'stuck') || text;
+      text = await forceSynthesis(languageModel, system, opts, workMessages, (t) => opts.onChunk(t), (d) => { reasoning += d; opts.onReasoning(d); }, stopReason === 'stuck' || stopReason === 'budget' ? stopReason : undefined) || text;
       if (text.trim()) workMessages.push({ role: 'assistant', content: text });
     }
 
@@ -2071,6 +2163,8 @@ function normalizedToolCallKey(toolName: string, input: unknown): string {
     if (!text.trim() && !paused && !streamErrored && !askQuestionsCall) {
       text = stopReason === 'stuck'
         ? 'Stopped: the model kept repeating the same action without making progress, and couldn\'t summarize its findings either. Try rephrasing the request, or switch models.'
+        : stopReason === 'budget'
+        ? 'Stopped: this turn reached its token/step budget before finishing. The work so far is kept in the conversation — send "continue" to pick up where it left off.'
         : hadToolCalls
         ? 'I looked into this and ran some tools, but couldn\'t produce a final answer. Try rephrasing the request, or switch to a stronger model.'
         : 'I wasn\'t able to produce a response. Try rephrasing the request, or switch to a stronger model.';
@@ -2175,15 +2269,15 @@ function adaptivePruneAtTokens(router: Router, taskKind: TaskKind): number {
 }
 
 export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentResult> {
-  // Hard per-turn token ceiling (0 = off). With the step-count cap removed, this is now the
-  // ONLY backstop against a runaway loop besides stuckStop's exact-repeat detection — hence a
-  // real non-zero default rather than 0/off. A stuck free-model turn was observed burning
-  // ~367k tokens before stuckStop caught it; this caps that kind of run earlier even when
-  // stuckStop's narrower exact-repeat check doesn't fire. Default 200k (was 500k): a single turn
-  // burning past ~200k is almost always a runaway free-tier loop, and the lower ceiling makes the
-  // budget backstop bite well before the user-perceived stall. Large legit multi-file tasks aren't
-  // hurt — auto-continue + maxBudgetContinuations still extend the run across rounds.
-  const maxTurnTokens = vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxTurnTokens', 200_000);
+  // OFF BY DEFAULT (2026-08-23, user direction). The budget counts CUMULATIVE spend — every
+  // step re-pays the whole prompt — so a normal multi-step task on a ~50k context crossed the
+  // old 200k default after a handful of steps and the turn "budget-stopped" mid-plan, something
+  // no other coding agent does (they compact only at the context-window limit, a physical
+  // boundary normal work never reaches). Runaway protection no longer needs this cap: the
+  // consecutive-repeat stuck stop + escalating reminder, the near-duplicate exploration cap,
+  // the 50-step ceiling, per-step pruning, and between-round compaction all exist now. A user
+  // who WANTS a hard spend cap can still set a number (e.g. 200000); 0/absent = unlimited.
+  const maxTurnTokens = vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxTurnTokens', 0);
   // Cap on read-only tool calls before the first mutating one (see explorationStop above). 0 disables.
   const maxExplorationCalls = vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxExplorationCalls', 20);
   // Hard per-turn STEP ceiling (0 = off). With the step-count cap removed, a turn making many
@@ -2444,7 +2538,11 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   const actionTask = wantsAction || CREATE_TASK_RE.test(lastUserText);
   // final !== first: the tool-call-repair retry above already spent this turn's one retry.
   const canRetryToolUse = final === first && !first.hadToolCalls && !first.stopReason && !opts.abortSignal?.aborted;
-  const announcedNoAction = actionTask && ACTION_INTENT_RE.test(first.text.trim());
+  // Narration-wall alternative trigger (agent mode only): see narrationWall. Unlike the
+  // ACTION_INTENT_RE tail check this needs no action-task classification — "and more issues?"
+  // classifies as 'chat' while still requiring the model to DO the investigation it narrates.
+  const announcedNoAction = (actionTask && ACTION_INTENT_RE.test(first.text.trim()))
+    || (opts.mode === 'agent' && narrationWall(first.text));
   // The "explained + pasted code instead of calling editFile/writeFile" shape — see
   // CODE_FENCE_RE's doc comment. Only for action task kinds (a real 'chat'/'trivial' question is
   // legitimately answered with an example snippet), and only when nothing already explains the
@@ -2495,6 +2593,17 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     // exception is a first attempt with no text at all, where any text beats blank (defensive —
     // every trigger above requires non-empty text, so this shouldn't be reachable today).
     if (acted.hadToolCalls || (!first.text.trim() && acted.text.trim())) final = acted;
+    else if (!opts.pinnedModel && first.platform && first.model && !opts.abortSignal?.aborted) {
+      // Auto-mode model failover (2026-08-23, user feedback: "failover not works"): a model that
+      // describes work instead of performing it even AFTER the use-the-tool nudge is a MODEL
+      // failure, not a task failure — hand the same nudged context to a DIFFERENT model instead
+      // of telling the user to switch manually. Rank deliberately unconstrained (99): the point
+      // is excluding the offender, not demanding a top-tier model the free pool may not have.
+      const excludeKey = `${first.platform}::${first.model}`;
+      diagLog('turn.forceAction', `same-model retry still didn't act — failing over, excluding ${excludeKey}`);
+      const failedOver = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn, { excludeModels: [excludeKey], maxIntelligenceRank: 99 });
+      if (failedOver.hadToolCalls) final = failedOver;
+    }
   }
 
   // Announced-action-but-stopped AFTER tools already ran. The force-action retry above is gated on
@@ -2508,7 +2617,11 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // the ONE action it announced. Same model, one shot, accepted only if it actually made a tool call.
   const announcedAfterWork = final === first && first.hadToolCalls
     && !first.stopReason && !opts.abortSignal?.aborted
-    && wantsAction && ACTION_INTENT_RE.test(first.text.trim());
+    && ((wantsAction && ACTION_INTENT_RE.test(first.text.trim()))
+      // Narration wall after real work (agent mode): the model edited a file, then closed with
+      // a wall of announced-but-unperformed next steps. The tail-anchored regex misses replies
+      // whose last line isn't an action sentence; the wall detector doesn't.
+      || (opts.mode === 'agent' && narrationWall(first.text)));
   if (announcedAfterWork) {
     diagLog('turn.forceAction', `announcedNoAction after prior tool calls: continuing with a use-the-tool nudge`);
     router.noteToolSoftFailure(first.platform, first.model);
@@ -2520,6 +2633,15 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     // Take the continuation only if it actually performed the announced action (a tool call ran) —
     // a retry that just re-describes the plan or answers in prose has not advanced anything.
     if (acted.hadToolCalls) final = acted;
+    else if (!opts.pinnedModel && first.platform && first.model && !opts.abortSignal?.aborted) {
+      // Auto-mode model failover — same rationale as the zero-tool path above: continuing the
+      // announced action is a model-capability test the current model just failed twice; the
+      // transcript (work already done) rides along, so a different model finishes the plan.
+      const excludeKey = `${first.platform}::${first.model}`;
+      diagLog('turn.forceAction', `announced-after-work retry still didn't act — failing over, excluding ${excludeKey}`);
+      const failedOver = await runAttempt(router, nudged, taskKind, pruneAtTokens, maxTurnTokens, maxExplorationCalls, maxStepsPerTurn, { excludeModels: [excludeKey], maxIntelligenceRank: 99 });
+      if (failedOver.hadToolCalls) final = failedOver;
+    }
   }
 
   // Pasted-code-after-reads — the single most common "all talk, no action" shape on weaker models:
@@ -2859,6 +2981,15 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   // Prose recap (the WHAT): synthesized only when the model's own text doesn't already
   // summarize the changes. Skipped on abort/stuck/budget stops — a stopReason terminal
   // turn isn't "done".
+  // Honest-stop notice for a surviving narration wall: every retry above already had its
+  // chance and either acted (replacing `final`) or was rejected for not acting. Reaching here
+  // with narrationWall still true means the turn genuinely ends on described-but-unperformed
+  // work — the old behavior showed the narration as if it were an answer ("still stopped!"
+  // with no explanation). Name it plainly instead.
+  if (opts.mode === 'agent' && !final.stopReason && !opts.abortSignal?.aborted
+    && narrationWall(finalText) && !/described actions without performing/i.test(finalText)) {
+    finalText += '\n\n_⚠ This reply describes actions without performing them — no tool ran for the plan above. Send "continue" to retry, or switch models._';
+  }
   if (final.hadMutatingToolCall && !final.stopReason && !opts.abortSignal?.aborted && changedFiles?.length && !alreadyRecaps(finalText, changedFiles)) {
     diagLog('turn.recap', 'mutating turn ended without a change summary — synthesizing one');
     const recap = await recapChanges(router, opts, final.workMessages, changedFiles);
