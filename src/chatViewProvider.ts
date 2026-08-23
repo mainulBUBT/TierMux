@@ -2223,6 +2223,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // short: first 200 chars). `prompt` is the raw user text; strip attachment blocks since
         // those are separate context, not goal text.
         const originalTask = prompt.replace(/\n\{\s*"type":\s*"(image_url|file)"/g, '').trim();
+        // One between-rounds compaction per send (see the budget-stop recovery below).
+        let condensedThisSend = false;
+        const autoCondenseOn = agentCfg.get<boolean>('autoCondense', true);
         let budgetContinuations = 0;
         let stuckContinuations = 0;
         let unacceptedContinuations = 0;
@@ -2256,6 +2259,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           unacceptedContinuations = decision.unacceptedContinuations;
 
           this.persistAgentTurn(s, result);
+          // Budget-stop recovery (2026-08-23, live repro: 450k input tokens over two rounds on
+          // kilo/poolside, then "Stopped with unfinished work — 1/2 steps done"). The budget
+          // continuation used to re-send the SAME oversized history — tool outputs and all — so
+          // it re-tripped the 200k turn budget almost immediately and the single allowed
+          // budget continuation (maxBudgetContinuations=1) was spent on nothing. Between-turns
+          // auto-condense can't catch this: it runs before a send, gated at 80% of the model's
+          // ADVERTISED window (a large-window free model never crosses it mid-session). So on a
+          // budget stop, compact the history right here — same /compact machinery — once per
+          // send, only when there's enough history for the condense call to pay for itself.
+          if (result.stopReason === 'budget' && !condensedThisSend && autoCondenseOn
+              && shouldCondense(s.history) && estimateMessagesTokens(s.history) > 30_000) {
+            condensedThisSend = true;
+            const beforeTokens = estimateMessagesTokens(s.history);
+            const condensed = await condenseHistory(
+              s.history,
+              this.deps.router,
+              s.livePlatform && s.liveModel ? `${s.livePlatform}/${s.liveModel}` : undefined,
+            );
+            if (condensed) {
+              s.history = condensed.messages;
+              this.persist(s.id);
+              this.post({
+                type: 'notice', sessionId: s.id, icon: 'compress',
+                text: `Context auto-compacted between rounds — ~${Math.round(beforeTokens / 1000)}k → ~${Math.round(estimateMessagesTokens(condensed.messages) / 1000)}k tokens. `
+                  + 'The turn hit its token budget, so the retry would have re-sent the full history and stopped again.',
+              });
+            }
+          }
           s.history.push({ role: 'user', content: decision.message });
           if (decision.difficulty && decision.difficulty !== 'medium') {
             const stepTodo = sendTodos.find((t) => t.status !== 'completed');

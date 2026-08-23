@@ -27,7 +27,7 @@ export const SETTINGS_META: SettingMeta[] = [
   { key: 'agent.commandApproval', label: 'Command approval mode', type: 'enum', enum: ['always', 'allowlist', 'never'],
     desc: 'How the agent\'s runCommand tool is gated before running shell commands.' },
   { key: 'agent.maxTurnTokens', label: 'Max turn tokens', type: 'number', min: 0, max: 2000000,
-    desc: 'Hard token ceiling for a single agent turn (0 = no limit) — the main safety brake against a runaway/stuck turn now that there is no step-count cap.' },
+    desc: 'Cumulative token ceiling for a single agent turn. 0 (default) = unlimited: long tasks finish in one go, and runaway turns are still caught by the repeat/exploration/step-cap guards. Set a number only if you want a hard spend cap.' },
   { key: 'agent.maxExplorationCalls', label: 'Max exploration calls', type: 'number', min: 0, max: 200,
     desc: 'Maximum read-only search/read calls before the first file edit or command in a turn (0 = no limit). Stops a model that keeps re-searching the same thing with slightly different wording instead of acting.' },
   { key: 'agent.maxConcurrentRuns', label: 'Max concurrent runs', type: 'number', min: 1, max: 10,

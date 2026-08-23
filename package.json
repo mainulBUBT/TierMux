@@ -206,18 +206,6 @@
         "icon": "$(compass)"
       },
       {
-        "command": "tiermux.showTelemetry",
-        "title": "Show Telemetry",
-        "category": "TierMux",
-        "icon": "$(graph-line)"
-      },
-      {
-        "command": "tiermux.resetTelemetry",
-        "title": "Reset Telemetry",
-        "category": "TierMux",
-        "icon": "$(refresh)"
-      },
-      {
         "command": "tiermux.bench",
         "title": "Run Benchmark",
         "category": "TierMux"
@@ -349,8 +337,8 @@
         },
         "tiermux.agent.maxTurnTokens": {
           "type": "number",
-          "default": 200000,
-          "description": "Hard token ceiling for a single agent turn (0 = no limit). There is no step-count cap anymore, so this — along with stuck-loop detection — is the main safety brake against a runaway turn draining free-tier quota. Default 200k: a turn past ~200k is almost always a runaway free-tier loop. Large multi-file tasks still complete via auto-continue + maxBudgetContinuations across rounds."
+          "default": 0,
+          "description": "Cumulative token ceiling for a single agent turn. 0 (default) = no limit — runaway turns are still caught by the repeat/exploration/step-cap guards and context pruning, so normal long tasks no longer stop mid-plan (this budget counts the prompt re-send on every step, which a plain multi-step task crosses quickly). Set a number (e.g. 200000) only if you want a hard spend cap."
         },
         "tiermux.agent.maxExplorationCalls": {
           "type": "number",
@@ -577,12 +565,12 @@
         "tiermux.requestTimeoutMs": {
           "type": "number",
           "default": 30000,
-          "description": "Per-provider request timeout (ms) before failing over to the next model."
+          "description": "Per-provider request timeout (ms) before failing over to the next model. Custom OpenAI-compatible endpoints run uncapped (local models take as long as they take; the Stop button is the brake)."
         },
         "tiermux.ttftTimeoutMs": {
           "type": "number",
           "default": 8000,
-          "description": "Time-to-first-token fast failover (lightweight hedging) for streaming requests. If a model accepts the connection but emits no chunk within this many ms, abort it and fail over to the next candidate instead of waiting the full requestTimeoutMs. Catches models that pass preflight then hang mid-stream — the case the ping can't detect. Any first chunk (content, reasoning, or keepalive) clears the timer. 0 disables. Clamped to requestTimeoutMs."
+          "description": "Time-to-first-token fast failover (lightweight hedging) for streaming requests. If a model accepts the connection but emits no chunk within this many ms, abort it and fail over to the next candidate instead of waiting the full requestTimeoutMs. Catches models that pass preflight then hang mid-stream — the case the ping can't detect. Any first chunk (content, reasoning, or keepalive) clears the timer. 0 disables. Clamped to requestTimeoutMs. Custom OpenAI-compatible endpoints have the gate disabled entirely (local models need their load + prefill time before the first token, and no cloud pool can serve that model faster)."
         },
         "tiermux.rateLimitCooldownMs": {
           "type": "number",
@@ -745,6 +733,9 @@
     "test:e2e:unverified-badge": "esbuild scripts/unverifiedBadge.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/unverifiedBadge.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/unverifiedBadge.e2e.cjs",
     "test:e2e:checkpoint-persist": "esbuild scripts/checkpointPersist.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/checkpointPersist.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/checkpointPersist.e2e.cjs",
     "test:e2e:stuck-continue": "esbuild scripts/stuckContinue.e2e.ts --bundle --platform=node --format=cjs --outfile=dist/stuckContinue.e2e.cjs && node dist/stuckContinue.e2e.cjs",
+    "test:e2e:repeat-guard": "esbuild scripts/repeatGuard.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/repeatGuard.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/repeatGuard.e2e.cjs",
+    "test:e2e:prompt-contract": "esbuild scripts/promptContract.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/promptContract.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/promptContract.e2e.cjs",
+    "test:e2e:ttft-floor": "esbuild scripts/ttftFloor.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/ttftFloor.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/ttftFloor.e2e.cjs",
     "test:e2e:plan-structurer": "esbuild scripts/planStructurer.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planStructurer.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planStructurer.e2e.cjs",
     "test:e2e:remember-memory": "esbuild scripts/rememberMemory.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rememberMemory.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/rememberMemory.e2e.cjs",
     "test:e2e:remember-memory-load": "esbuild scripts/rememberMemoryLoad.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rememberMemoryLoad.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/rememberMemoryLoad.e2e.cjs",
@@ -811,7 +802,7 @@
     "prepare": "husky"
   },
   "devDependencies": {
-    "@types/node": "^20.14.0",
+    "@types/node": "^20.19.43",
     "@types/pdf-parse": "^1.1.5",
     "@types/shell-quote": "^1.7.5",
     "@types/vscode": "^1.93.0",
