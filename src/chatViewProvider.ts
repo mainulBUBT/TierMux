@@ -2347,7 +2347,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const pinned = turnModelLabel(s.model, result.model);
       const hasQuestions = !!(agentClar.questions && agentClar.questions.length);
 
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: pinned, paused: result.paused, noFooter: hasQuestions });
+      // One-click Continue affordance (the dsh / Claude Code plan-review pattern): a turn that
+      // ended with unfinished plan items — or on a narration-wall honest-stop note — is
+      // resumable exactly like a paused turn (handleResume re-runs with the full transcript in
+      // memory, no work repeated). Surface the webview's existing Continue button for those
+      // stops too, instead of telling the user to type "continue" (2026-08-23 live feedback:
+      // "agent understands the remaining task but why did it stop").
+      const resumable = !hasQuestions && !result.failed && (result.paused
+        || finalRemainingTodos.length > 0
+        || /describes actions without performing/i.test(displayText));
+
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: pinned, paused: resumable, noFooter: hasQuestions });
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
       if (hasQuestions) {
         s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: agentClar.questions!, mode: m.mode as 'plan' | 'agent' };
