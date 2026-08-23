@@ -1151,10 +1151,65 @@ export class Router {
       (who === 'primary' ? hedgeCtrl : primaryCtrl).abort();
     };
 
+    // The two loops rank independently (the hedge excludes everything primary already tried),
+    // so each emits its own rationale — but only ONE of them ends up serving the turn. When the
+    // hedge won, "Why this model?" still showed the primary's top pick as Selected while the
+    // footer named the hedge's model.
+    //
+    // The primary's rationale is still forwarded LIVE, exactly as before: it is what puts the (?)
+    // on the footer, and making the UI wait for settle made the button depend on a single
+    // end-of-route emission — one lost emission and the affordance disappears entirely. Instead
+    // both sides are ALSO buffered, and a final corrected emission at settle re-stamps `selected`
+    // onto the model that actually served. Worst case the panel is briefly optimistic and then
+    // corrected; it can no longer be silently absent.
+    type RationaleInfo = Parameters<NonNullable<RouteOptions['onSelectionRationale']>>[0];
+    const wantRationale = opts.onSelectionRationale;
+    let primaryRationale: RationaleInfo | undefined;
+    let hedgeRationale: RationaleInfo | undefined;
+    /** Emit the winning side's rationale with `selected` moved onto the served entry. Mirrors
+     *  routeSerial's own in-loop correction, but across the primary/hedge boundary — the loser's
+     *  ranking never describes the turn the user is looking at. */
+    const emitRationale = (res: RouteResult): void => {
+      if (!wantRationale) return;
+      const has = (info?: RationaleInfo): boolean =>
+        !!info?.rationale.some((r) => r.platform === res.platform && r.modelId === res.model);
+      // Prefer the side that actually ranked the served model; fall back to the winner's own
+      // ranking, then to whatever exists (a forced/single-candidate side emits nothing).
+      const sideWon = winner === 'hedge' ? hedgeRationale : primaryRationale;
+      const info = has(sideWon) ? sideWon
+        : has(primaryRationale) ? primaryRationale
+          : has(hedgeRationale) ? hedgeRationale
+            : sideWon ?? primaryRationale ?? hedgeRationale;
+      if (!info) return;
+      const rationale = info.rationale.map((r) => {
+        const isRealWinner = r.platform === res.platform && r.modelId === res.model;
+        if (isRealWinner === r.selected) return r;
+        return {
+          ...r,
+          selected: isRealWinner,
+          reason: isRealWinner
+            ? 'Selected — served the request (ranked lower; the top pick failed to serve)'
+            : 'Not selected: ranked #1 but failed to serve',
+        };
+      });
+      const picked = rationale.find((r) => r.selected);
+      diagLog('router.rationale', `settle → served=${res.platform}::${res.model} entries=${rationale.length} selected=${picked ? `${picked.platform}::${picked.modelId}` : '<none>'} side=${winner ?? '<unset>'}`);
+      wantRationale({
+        taskKind: info.taskKind,
+        // Downstream only reads platform+modelId (routeKey); enabled/priority are shape filler
+        // for FallbackEntry — the served model is by definition enabled and was tried first.
+        picked: picked
+          ? { platform: picked.platform as Platform, modelId: picked.modelId, enabled: true, priority: 0 }
+          : info.picked,
+        rationale,
+      });
+    };
+
     const primaryOpts: RouteOptions = {
       ...opts,
       abortSignal: primaryCtrl.signal,
       _hedgeLostSignal: hedgeCtrl.signal,
+      onSelectionRationale: wantRationale ? (info) => { primaryRationale = info; wantRationale(info); } : undefined,
       _onProviderAlive: () => claimWin('primary'),
       _onCandidateStart: (p, m) => primaryTried.add(`${p}::${m}`),
       onChunk: (t: string) => {
@@ -1173,6 +1228,18 @@ export class Router {
     };
 
     return new Promise<RouteResult>((resolve, reject) => {
+      /** Single exit point for a winning result: report the rationale for the model that
+       *  actually served, then hand the result up. */
+      let settled = false;
+      const settle = (res: RouteResult): void => {
+        // The loser can still RESOLVE (it finished before its abort landed). Without this guard
+        // its result would emit a second rationale, re-marking a model that never served —
+        // reintroducing the very mismatch this fixes, mirrored.
+        if (settled) return;
+        settled = true;
+        emitRationale(res);
+        resolve(res);
+      };
       let hedgePromise: Promise<RouteResult> | undefined;
       const hedgeTimer = setTimeout(() => {
         if (winner !== undefined) return; // primary already alive; nothing to hedge
@@ -1191,10 +1258,13 @@ export class Router {
           // winner's stream; per-attempt profiler events still flow.
           onFailover: undefined,
           onKeyRotated: undefined,
-          onSelectionRationale: undefined,
+          // Buffered, not forwarded: a live emit from the shadow request is duplicate chatter,
+          // but if the hedge WINS its ranking is the one that explains the answer the user got —
+          // emitRationale() picks the right side at settle.
+          onSelectionRationale: wantRationale ? (info) => { hedgeRationale = info; } : undefined,
         };
         hedgePromise = this.routeSerial(messages, hedgeOpts);
-        hedgePromise.then(resolve, (hedgeErr: unknown) => {
+        hedgePromise.then(settle, (hedgeErr: unknown) => {
           // Hedge lost the liveness race (aborted away) or genuinely failed. If primary is
           // still live its own settlement below decides; if primary already won this is a
           // no-op (outer promise settled).
@@ -1205,13 +1275,13 @@ export class Router {
       this.routeSerial(messages, primaryOpts).then((res) => {
         clearTimeout(hedgeTimer);
         claimWin('primary'); // a completed result wins even if it never emitted a chunk
-        if (winner === 'primary') resolve(res);
+        if (winner === 'primary') settle(res);
       }, (err: unknown) => {
         clearTimeout(hedgeTimer);
         if (winner === 'hedge') return; // hedge owns the turn; its settlement decides
         if (hedgePromise) {
           // Primary is dead and a hedge is in flight — keep waiting for it before failing.
-          hedgePromise.then(resolve, () => reject(err));
+          hedgePromise.then(settle, () => reject(err));
         } else {
           hedgeCtrl.abort();
           reject(err);

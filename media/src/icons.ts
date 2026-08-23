@@ -2,6 +2,7 @@
 // Stateless, side-effect free — safe to import from anywhere in the webview.
 
 export const ICON = {
+  // Paperclip — the composer's "Add files" button, sitting right after the model picker.
   attach: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a5 5 0 0 1-7.07-7.07l9.19-9.19a3.5 3.5 0 0 1 4.95 4.95l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>',
   selection: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
   send: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>',
@@ -43,9 +44,6 @@ export const ICON = {
   compress: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 15 4 15 4 20"/><polyline points="15 9 20 9 20 4"/><line x1="4" y1="20" x2="10" y2="14"/><line x1="20" y1="4" x2="14" y2="10"/></svg>',
   // Small close glyph for removable chip buttons.
   x: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>',
-  // Circled "+" for the composer's attach button — reads as "add content" rather than the
-  // more literal paperclip, matching the modern add-anything affordance in chat composers.
-  addCircle: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>',
   // Filled 4-point star — the "Auto / smart" glyph on the model picker (spark reads as a
   // settings "sun"; this one reads as the modern AI-sparkle used for auto-selection).
   sparkle: '<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M12 2c.6 4.9 2.9 7.2 7.8 7.8-4.9.6-7.2 2.9-7.8 7.8-.6-4.9-2.9-7.2-7.8-7.8C9.1 9.2 11.4 6.9 12 2z"/></svg>',

@@ -30,3 +30,4 @@ bin/**
 .benchmarks/**
 tsconfig.webview.json
 resources/bin/**
+!.tiermux/design/**

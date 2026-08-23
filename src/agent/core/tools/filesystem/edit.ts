@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { getEditGate } from '../gates';
 import { resolveWorkspacePath } from '../resolvePath';
 import { verifyNoteFor } from '../workspace/formatDiagnostics';
+import { designNoteFor } from '../workspace/designLint';
 
 const hunkSchema = z.object({
   search: z.string().describe('Exact existing text to find.'),
@@ -46,7 +47,12 @@ export function createEditTool() {
       if (!result.applied) throw new Error(result.error ?? 'Edit was not applied.');
       // Self-correct loop: surface any NEW error diagnostic in the same tool round instead of
       // relying on the model to remember a separate getDiagnostics call at the end of the task.
-      return `Edited ${path}.${await verifyNoteFor(uri)}`;
+      // The design note is the same idea for design-system rules, over only the text this call
+      // ADDED (the `replace` side) — pre-existing violations in the file are not this edit's.
+      const added = Array.isArray(edits) && edits.length > 0
+        ? edits.map((e) => e.replace).join('\n')
+        : replace ?? '';
+      return `Edited ${path}.${await verifyNoteFor(uri)}${designNoteFor(uri, added)}`;
     },
   });
 }

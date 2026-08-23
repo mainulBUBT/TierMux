@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { getEditGate } from '../gates';
 import { resolveWorkspacePath } from '../resolvePath';
 import { verifyNoteFor } from '../workspace/formatDiagnostics';
+import { designNoteFor } from '../workspace/designLint';
 
 /** Covers both `writeFile` (overwrite/create) and `createFile` (must not already exist) — same
  *  tool names chatViewProvider.ts's FILE_WRITE_TOOL_NAMES already expects for checkpoint/UI
@@ -26,7 +27,9 @@ export function createWriteFileTool(createOnly: boolean) {
       if (!result.applied) throw new Error(result.error ?? 'Edit was not applied.');
       // Self-correct loop: surface any NEW error diagnostic in the same tool round instead of
       // relying on the model to remember a separate getDiagnostics call at the end of the task.
-      return `Wrote ${path}.${await verifyNoteFor(uri)}`;
+      // A write owns the whole file, so all of it counts as this call's added text — see
+      // designLint.ts for why the lint only ever looks at what the model itself wrote.
+      return `Wrote ${path}.${await verifyNoteFor(uri)}${designNoteFor(uri, content)}`;
     },
   });
 }

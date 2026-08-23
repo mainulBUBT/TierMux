@@ -17,22 +17,31 @@ export interface Skill {
    *  consistent design system", so description-keyword matching would miss the very cases that
    *  most need the skill while firing on unrelated ones. */
   triggers: string[];
+  /** `design: true` frontmatter — marks this as a UI/design skill. Two consequences, both in
+   *  promptBuilder: the resolved DESIGN.md (see context/designSystem.ts) is injected alongside the
+   *  body, and the skill stays active for a few follow-up turns in the same session. The second
+   *  matters because matchSkill only ever sees the LATEST user message: "make the sidebar look
+   *  better" activates the skill, but the very next turn — "now the header too" — carries no
+   *  trigger phrase, so without stickiness the design rules silently vanish mid-task and the model
+   *  falls back to its defaults on turn two. */
+  design: boolean;
   /** Absolute path to the folder the skill file lives in — lets multi-file skill packages
    *  (SKILL.md + references/scripts/examples, e.g. the obra/superpowers convention) resolve
    *  their own relative paths; without it the agent has no way to find sibling files. */
   dir: string;
 }
 
-function parseSkillFile(raw: string): { description: string; prompt: string; triggers: string[] } {
+function parseSkillFile(raw: string): { description: string; prompt: string; triggers: string[]; design: boolean } {
   const m = /^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/.exec(raw);
-  if (!m) return { description: '', prompt: raw.trim(), triggers: [] };
+  if (!m) return { description: '', prompt: raw.trim(), triggers: [], design: false };
   const descMatch = /^description:\s*(.+)$/m.exec(m[1]);
   const trigMatch = /^triggers:\s*(.+)$/m.exec(m[1]);
   const triggers = (trigMatch?.[1] ?? '')
     .split(',')
     .map((t) => t.trim().toLowerCase())
     .filter(Boolean);
-  return { description: descMatch ? descMatch[1].trim() : '', prompt: m[2].trim(), triggers };
+  const design = /^design:\s*true\s*$/mi.test(m[1]);
+  return { description: descMatch ? descMatch[1].trim() : '', prompt: m[2].trim(), triggers, design };
 }
 
 function loadDir(dir: string, into: Map<string, Skill>): void {
@@ -43,8 +52,8 @@ function loadDir(dir: string, into: Map<string, Skill>): void {
     const name = path.basename(f, '.md').toLowerCase();
     try {
       const raw = fs.readFileSync(path.join(dir, f), 'utf8');
-      const { description, prompt, triggers } = parseSkillFile(raw);
-      if (prompt) into.set(name, { name, description, prompt, triggers, dir });
+      const { description, prompt, triggers, design } = parseSkillFile(raw);
+      if (prompt) into.set(name, { name, description, prompt, triggers, design, dir });
     } catch { /* skip unreadable file */ }
   }
 }
@@ -65,8 +74,8 @@ function loadUniversalDir(dir: string, into: Map<string, Skill>): void {
     try {
       const skillDir = path.join(dir, entry.name);
       const raw = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8');
-      const { description, prompt, triggers } = parseSkillFile(raw);
-      if (prompt) into.set(name, { name, description, prompt, triggers, dir: skillDir });
+      const { description, prompt, triggers, design } = parseSkillFile(raw);
+      if (prompt) into.set(name, { name, description, prompt, triggers, design, dir: skillDir });
     } catch { /* no SKILL.md in this subfolder */ }
   }
 }
@@ -127,6 +136,31 @@ function containsPhrase(haystack: string, phrase: string): boolean {
 }
 
 /**
+ * True when this skill's own body is already sitting inside `text`. On the explicit `/name` path
+ * chatViewProvider substitutes the whole skill body INTO the user message, so its triggers are
+ * trivially present there; matching it again would inject the same ~3KB a second time, into the
+ * system prompt. Detected by the body's opening text rather than a caller-passed flag, so the
+ * guard holds for any caller.
+ */
+function isInvoked(text: string, sk: Skill): boolean {
+  const head = sk.prompt.slice(0, 60).toLowerCase().trim();
+  return !!head && text.includes(head);
+}
+
+/**
+ * The skill the user explicitly ran via `/name` this turn, recognised from its substituted body.
+ * Its instructions are already in front of the model, so the body must NOT be injected again —
+ * but the caller still needs to know WHICH skill is active, to attach the design system and to
+ * arm stickiness. Without this, typing `/design` was the one path that got no design system.
+ */
+export function invokedSkill(text: string, skills: Map<string, Skill>): Skill | undefined {
+  const t = (text || '').toLowerCase();
+  if (!t.trim()) return undefined;
+  for (const sk of skills.values()) if (isInvoked(t, sk)) return sk;
+  return undefined;
+}
+
+/**
  * The skill whose `triggers:` best match this request, or undefined. Precision-first by design:
  * only skills that explicitly declare triggers can ever auto-activate, and the LONGEST matching
  * trigger phrase wins so a specific skill ("landing page") beats a general one ("page") rather
@@ -141,12 +175,7 @@ export function matchSkill(text: string, skills: Map<string, Skill>): Skill | un
   let bestLen = 0;
   let bestHits = 0;
   for (const sk of skills.values()) {
-    // Already-invoked guard: on the explicit `/name` path the provider has substituted this
-    // skill's whole body INTO the user message, so its triggers are trivially present. Matching
-    // it again would inject the same 3KB a second time, into the system prompt. Detect by the
-    // body's own opening text rather than a caller-passed flag, so the guard holds for any caller.
-    const head = sk.prompt.slice(0, 60).toLowerCase().trim();
-    if (head && t.includes(head)) continue;
+    if (isInvoked(t, sk)) continue; // see isInvoked: body already substituted into the user message
     let longest = 0;
     let hits = 0;
     for (const trig of sk.triggers) {

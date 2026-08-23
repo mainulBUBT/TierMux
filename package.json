@@ -758,6 +758,7 @@
     "test:e2e:delegate-tool": "esbuild scripts/delegateTool.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/delegateTool.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/delegateTool.e2e.cjs",
     "test:e2e:check-url": "esbuild scripts/checkUrl.e2e.ts --bundle --platform=node --format=cjs --outfile=dist/checkUrl.e2e.cjs && node dist/checkUrl.e2e.cjs",
     "test:e2e:reanchor": "esbuild scripts/reanchor.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/reanchor.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/reanchor.e2e.cjs",
+    "test:e2e:design-system": "esbuild scripts/designSystem.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/designSystem.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/designSystem.e2e.cjs",
     "test:e2e:skill-match": "esbuild scripts/skillMatch.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/skillMatch.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/skillMatch.e2e.cjs",
     "test:e2e:rescue-xml": "esbuild scripts/rescueXml.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rescueXml.e2e.cjs && node dist/rescueXml.e2e.cjs",
     "test:e2e:fit-messages": "esbuild scripts/fitMessages.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/fitMessages.e2e.cjs && node dist/fitMessages.e2e.cjs",

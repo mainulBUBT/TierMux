@@ -24,7 +24,7 @@ import type { ModelStatsStore, Vote } from './config/modelStats';
 import type { SlowModelStore } from './config/slowModel';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem, McpServerConfig } from './messages';
-import type { AnnouncementItem, Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, PlanDataPayload, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
+import type { AnnouncementItem, Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, PlanDataPayload, SelectionRationale, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
 import { renderLegacyMarkdown } from './shared/workReport';
 import { resolveVerifyCommand, runVerifyCommand } from './agent/core/tools/workspace/verifyCommand';
 import { fetchAnnouncements as fetchWorkerAnnouncements, markAnnouncementsSeen, unseenAnnouncementCount } from './catalog/announcements';
@@ -313,6 +313,10 @@ interface Session {
   /** Tool steps accumulated per active requestId, attached to the assistant transcript entry at
    *  turn completion so a re-rendered message (e.g. after "Revert to here") keeps its step list. */
   liveSteps: Map<string, TranscriptStep[]>;
+  /** Last selection rationale reported for each in-flight requestId, so pushAssistantTurn can
+   *  persist it on the transcript entry (the (?) popover must survive a reload). Same
+   *  keyed-by-requestId lifecycle as liveSteps: set while running, drained at turn end. */
+  liveRationale: Map<string, SelectionRationale>;
   /** git-status snapshot (porcelain lines) captured just BEFORE each agent shell command runs,
    *  keyed by toolCallId — diffed against a just-after snapshot to attribute workspace edits to
    *  the agent's commands (see onTool in agentCallbacks). Edit-tool writes don't need this;
@@ -542,6 +546,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       checkpoints: new CheckpointManager(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath),
       lastWindow: 0,
       liveSteps: new Map(),
+      liveRationale: new Map(),
       commandBaselines: new Map(),
       model: undefined,
       reasoningEffort: undefined,
@@ -583,6 +588,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       checkpoints: new CheckpointManager(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, s.checkpoints),
       lastWindow: 0,
       liveSteps: new Map(),
+      liveRationale: new Map(),
       commandBaselines: new Map(),
       createdAt: s.ts ?? Date.now(),
       updatedAt: s.ts ?? Date.now(),
@@ -2741,6 +2747,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private pushAssistantTurn(s: Session, requestId: string, result: AgentResult, sentAt: number, usage?: { promptTokens: number; completionTokens: number; reasoningTokens?: number; totalTokens: number }): void {
     const steps = s.liveSteps.get(requestId);
     s.liveSteps.delete(requestId);
+    const rationale = s.liveRationale.get(requestId);
+    s.liveRationale.delete(requestId);
     // The transcript is the durable structured representation: when the turn produced a
     // WorkReportData, it is persisted ON the entry (canonical) and posted to the webview
     // (live ResultCard). `.text` additionally carries the legacy markdown serialization so
@@ -2761,12 +2769,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.transcript.push({
       role: 'assistant',
       text,
+      // Carried so a replayed footer can vote (voteCtx is keyed by it). "Revert to here" only
+      // ever matches role==='user' entries, so this can't be mistaken for a revert anchor.
+      requestId,
       model: result.model ? `${result.runtimeName ?? result.platform}/${result.model}` : undefined,
       ts: Date.now(),
       secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)),
       reasoning: result.reasoning || undefined,
       usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, reasoningTokens: usage.reasoningTokens } : undefined,
       steps: steps && steps.length ? steps : undefined,
+      rationale: rationale && rationale.entries.length ? rationale : undefined,
       workReport: report,
     });
   }
@@ -3024,19 +3036,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'failoverNotice', sessionId: s.id, requestId, from: `${displayNameForEntry({ platform: platformId, modelId }, this.deps)}/${modelId}`, reason });
       },
       onSelectionRationale: (info) => {
-        if (!live()) return;
+        if (!live()) { diagLog('chat.rationale', `requestId=${requestId} DROPPED — run no longer active`); return; }
         const toName = (key: string): string => {
           const sep = key.indexOf('::');
           const platformId = sep >= 0 ? key.slice(0, sep) : key;
           const modelId = sep >= 0 ? key.slice(sep + 2) : '';
           return `${displayNameForEntry({ platform: platformId, modelId }, this.deps)}/${modelId}`;
         };
-        this.post({
-          type: 'selectionRationale', sessionId: s.id, requestId,
-          taskKind: info.taskKind,
+        const rationale: SelectionRationale = {
           picked: info.picked ? toName(info.picked) : undefined,
           entries: info.entries.map((e) => ({ ...e, model: toName(e.model) })),
-        });
+        };
+        // Keep the latest for this turn — an agent turn routes many times, and the last report
+        // describes the model that produced the final answer (the one the footer names).
+        s.liveRationale.set(requestId, rationale);
+        diagLog('chat.rationale', `requestId=${requestId} entries=${rationale.entries.length} picked=${rationale.picked ?? '<none>'} → posted`);
+        this.post({ type: 'selectionRationale', sessionId: s.id, requestId, taskKind: info.taskKind, ...rationale });
       },
       onKeyRotated: (info) => {
         if (!live()) return;

@@ -1,0 +1,209 @@
+<!doctype html>
+<!--
+  REFERENCE — the "concrete references" leg of the design triangle.
+
+  This is not a design to copy verbatim and it is not a brand. It is the set of STATES a
+  professionally built interface has and an AI-generated one usually doesn't: hover, focus-visible,
+  active, disabled, empty, loading, error, overflow, long-string, and both themes. Read the markup
+  and CSS below and reproduce the *patterns* using the tokens from the DESIGN SYSTEM block in your
+  prompt — not the placeholder values here.
+
+  Deliberately built from CSS custom properties with no framework, no icon pack and no web font,
+  so it can be read as a plain file and adapted to any project.
+
+  Checklist this file exists to make concrete:
+    1. every interactive element has 4 states (hover / focus-visible / active / disabled)
+    2. every list has an empty state, a loading state and an error state
+    3. overflow is handled: ellipsis, wrapping, or scroll inside its own container
+    4. focus rings are visible and never removed
+    5. light and dark both work, from one token block
+-->
+<meta charset="utf-8">
+<title>States reference</title>
+<style>
+  /* ---- Token block. In a real project these come from the project's own DESIGN.md. ---- */
+  :root {
+    --bg: #ffffff;
+    --surface: #f7f7f8;
+    --border: #e4e4e7;
+    --text: #18181b;
+    --text-muted: #71717a;
+    --accent: #2563eb;
+    --accent-hover: #1d4ed8;
+    --accent-fg: #ffffff;
+    --danger: #dc2626;
+    --space-1: 4px;  --space-2: 8px;  --space-3: 12px;
+    --space-4: 16px; --space-6: 24px; --space-8: 32px;
+    --radius-sm: 4px; --radius: 8px;
+    --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --ease: cubic-bezier(.2, 0, 0, 1);
+  }
+  /* One override block, not a second palette. */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #09090b; --surface: #18181b; --border: #27272a;
+      --text: #fafafa; --text-muted: #a1a1aa;
+      --accent: #3b82f6; --accent-hover: #60a5fa;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #09090b; --surface: #18181b; --border: #27272a;
+    --text: #fafafa; --text-muted: #a1a1aa;
+    --accent: #3b82f6; --accent-hover: #60a5fa;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: var(--space-8);
+    background: var(--bg); color: var(--text);
+    font: 400 14px/1.5 var(--font);
+  }
+  h2 {
+    margin: var(--space-8) 0 var(--space-3);
+    font-size: 13px; font-weight: 600; letter-spacing: .02em;
+    color: var(--text-muted);
+  }
+  h2:first-of-type { margin-top: 0; }
+  .row { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+
+  /* ---- 1. Four states on every interactive element ------------------------------------- */
+  .btn {
+    display: inline-flex; align-items: center; gap: var(--space-2);
+    padding: var(--space-2) 14px;
+    border: 1px solid transparent; border-radius: var(--radius);
+    background: var(--accent); color: var(--accent-fg);
+    font: 500 14px/1 var(--font); cursor: pointer;
+    transition: background 150ms var(--ease);
+  }
+  .btn:hover { background: var(--accent-hover); }
+  /* :focus-visible, not :focus — a mouse click must not paint a ring, a Tab must. */
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn:active { background: var(--accent-hover); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn--secondary {
+    background: transparent; color: var(--text); border-color: var(--border);
+  }
+  .btn--secondary:hover { background: var(--surface); }
+
+  .input {
+    width: 220px; padding: var(--space-2) 10px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--surface); color: var(--text);
+    font: 400 14px/1.4 var(--font);
+  }
+  .input::placeholder { color: var(--text-muted); }
+  .input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+  .input:disabled { opacity: .5; cursor: not-allowed; }
+  .input[aria-invalid="true"] { border-color: var(--danger); }
+
+  /* ---- 2. The states a list actually needs ---------------------------------------------- */
+  .panel {
+    max-width: 420px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); overflow: hidden;
+  }
+  .panel__row {
+    display: flex; align-items: center; gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--border);
+    /* min-width:0 is what lets the ellipsis below actually engage inside a flex row. */
+    min-width: 0;
+  }
+  .panel__row:last-child { border-bottom: 0; }
+  .panel__row:hover { background: var(--bg); }
+  .truncate { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { color: var(--text-muted); font-size: 13px; flex-shrink: 0; }
+
+  /* Empty / loading / error are states, not afterthoughts: same box, centred, muted, with the
+     one action that resolves them. */
+  .state {
+    display: flex; flex-direction: column; align-items: center; gap: var(--space-2);
+    padding: var(--space-8) var(--space-4); text-align: center; color: var(--text-muted);
+  }
+  .state strong { color: var(--text); font-weight: 500; }
+  .skeleton {
+    height: 12px; border-radius: var(--radius-sm);
+    background: linear-gradient(90deg, var(--border) 25%, var(--bg) 50%, var(--border) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.2s linear infinite;
+  }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  /* Motion is opt-out-able. */
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+  .state--error { color: var(--danger); }
+
+  /* ---- 3. Content that does not fit ------------------------------------------------------ */
+  .break { overflow-wrap: anywhere; max-width: 420px; }
+  .scroll-x { max-width: 420px; overflow-x: auto; }
+  .scroll-x pre {
+    margin: 0; padding: var(--space-3);
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    font: 400 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  /* ---- 4. Collapse to one column, in source order ---------------------------------------- */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-4); max-width: 640px; }
+  @media (max-width: 768px) {
+    .grid { grid-template-columns: 1fr; }
+    .btn { min-height: 44px; } /* touch target */
+  }
+  .card { padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+</style>
+
+<h2>Buttons — hover, focus-visible, active, disabled</h2>
+<div class="row">
+  <button class="btn">Primary</button>
+  <button class="btn btn--secondary">Secondary</button>
+  <button class="btn" disabled>Disabled</button>
+</div>
+
+<h2>Inputs — placeholder, focus, invalid, disabled</h2>
+<div class="row">
+  <input class="input" placeholder="Search…">
+  <input class="input" aria-invalid="true" value="not-an-email">
+  <input class="input" value="Locked" disabled>
+</div>
+
+<h2>List — populated, with overflow handled</h2>
+<div class="panel">
+  <div class="panel__row"><span class="truncate">src/context/designSystem.ts</span><span class="meta">2m</span></div>
+  <div class="panel__row"><span class="truncate">a-file-with-an-unreasonably-long-name-that-must-not-push-the-timestamp-off-the-edge.tsx</span><span class="meta">1h</span></div>
+</div>
+
+<h2>List — empty state</h2>
+<div class="panel">
+  <div class="state">
+    <strong>No files yet</strong>
+    <span>Files you open will show up here.</span>
+    <button class="btn" style="margin-top:var(--space-2)">Open a file</button>
+  </div>
+</div>
+
+<h2>List — loading state</h2>
+<div class="panel">
+  <div class="panel__row"><span class="skeleton" style="width:60%"></span></div>
+  <div class="panel__row"><span class="skeleton" style="width:40%"></span></div>
+  <div class="panel__row"><span class="skeleton" style="width:75%"></span></div>
+</div>
+
+<h2>List — error state</h2>
+<div class="panel">
+  <div class="state state--error">
+    <strong>Could not load files</strong>
+    <span>The workspace folder is unavailable.</span>
+    <button class="btn btn--secondary" style="margin-top:var(--space-2)">Retry</button>
+  </div>
+</div>
+
+<h2>Unbreakable strings and wide content</h2>
+<p class="break">wss://exceptionally-long-host-name.internal.example.com/socket/v2/channel?token=abcdefghijklmnop</p>
+<div class="scroll-x"><pre>const result = await router.resolve({ taskKind, sessionId, budget, weakModel: true });</pre></div>
+
+<h2>Grid that collapses at 768px</h2>
+<div class="grid">
+  <div class="card">One</div>
+  <div class="card">Two</div>
+  <div class="card">Three</div>
+</div>

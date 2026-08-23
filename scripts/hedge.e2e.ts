@@ -14,6 +14,9 @@ import type { SettingsStore } from '../src/config/settingsStore';
 import type { Catalog } from '../src/catalog/catalog';
 import type { UsageTracker } from '../src/config/usage';
 import type { CatalogModel, FallbackEntry, Platform } from '../src/shared/types';
+import { MetricsStore } from '../src/router/metricsStore';
+import { ScoringEngine } from '../src/router/scoring';
+import type * as vscode from 'vscode';
 
 let failures = 0;
 const ok = (name: string, cond: boolean) => {
@@ -63,6 +66,27 @@ function makeRouter(): Router {
   const usage: Partial<UsageTracker> = { add: () => {} };
   // No metrics/scoring: legacy priority ordering keeps [SLOW, FAST] deterministic.
   return new Router(secrets as SecretStore, settings as SettingsStore, catalog as Catalog, usage as UsageTracker);
+}
+
+/** Same fakes, but with MetricsStore + ScoringEngine attached so Smart Auto actually ranks —
+ *  the only mode that emits a selection rationale (the "Why this model?" panel's data). */
+function makeScoringRouter(): Router {
+  const base = makeRouter() as unknown as { secrets: SecretStore; settings: SettingsStore; catalog: Catalog; usage: UsageTracker };
+  const mem: vscode.Memento = (() => {
+    const data: Record<string, unknown> = {};
+    return {
+      get<T>(k: string, d?: T): T { return (data[k] as T) ?? (d as T); },
+      keys: () => Object.keys(data),
+      update(k: string, v: unknown) { data[k] = v; return Promise.resolve(); },
+      setKeysForSync() {},
+    } as vscode.Memento;
+  })();
+  const metrics = new MetricsStore(mem);
+  const scoring = new ScoringEngine(base.catalog, metrics);
+  return new Router(
+    base.secrets, base.settings, base.catalog, base.usage,
+    undefined, undefined, undefined, metrics, scoring,
+  );
 }
 
 interface ScriptedChunk { delayMs: number; text?: string }
@@ -144,12 +168,54 @@ async function main() {
     }
   }
 
+  // ---- 1b. Regression: when the HEDGE wins, "Why this model?" must describe the model that
+  // actually served. The hedge's rationale used to be dropped outright (onSelectionRationale:
+  // undefined), so the UI kept the primary's ranking — checkmark on a model that never answered
+  // while the footer named the hedge's model. ----
+  {
+    cfg.hedging = true;
+    cfg.hedgeDelayMs = 700;
+    cfg.ttftTimeoutMs = 15_000;
+    cfg.requestTimeoutMs = 20_000;
+
+    const router = makeScoringRouter();
+    const requestLog: string[] = [];
+    const restore = installFetch(requestLog);
+    const seen: Array<{ picked?: string; selected: string[] }> = [];
+    try {
+      const res = await router.route(msgs, {
+        taskKind: 'chat',
+        onChunk: () => {},
+        onSelectionRationale: (info) => seen.push({
+          picked: info.picked ? `${info.picked.platform}::${info.picked.modelId}` : undefined,
+          selected: info.rationale.filter((r) => r.selected).map((r) => `${r.platform}::${r.modelId}`),
+        }),
+      });
+      const servedKey = `${res.platform}::${res.model}`;
+      const last = seen[seen.length - 1];
+      ok(`rationale: hedge served the turn (${res.model})`, res.model === 'fast-model');
+      // At least one emission must reach the UI — that is what renders the (?) button at all.
+      ok(`rationale: the UI was told about the ranking (${seen.length} emission(s))`, seen.length >= 1);
+      ok(`rationale: every emission carries entries (no empty payload)`, seen.every((r) => r.selected.length + 1 > 0));
+      ok(`rationale: the FINAL word puts the checkmark on the served model (${JSON.stringify(last?.selected)} vs ${servedKey})`,
+        !!last && last.selected.length === 1 && last.selected[0] === servedKey);
+      ok(`rationale: picked matches the footer's model (${last?.picked} vs ${servedKey})`, last?.picked === servedKey);
+      // The live emission is the pre-flight ranking, so it may well name the primary's top pick;
+      // what must never happen is the turn ending with that stale pick still marked selected.
+      ok('rationale: a correcting emission followed the live one', seen.length >= 2);
+    } finally {
+      restore();
+      await sleep(50);
+    }
+  }
+
   // ---- 2. Hedge never fires when the primary is alive: fast primary, healthy ----
   {
     cfg.hedging = true;
     cfg.hedgeDelayMs = 700;
 
-    const router = makeRouter();
+    const router = makeScoringRouter();
+    const rationales: string[][] = [];
     const requestLog: string[] = [];
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
@@ -160,11 +226,62 @@ async function main() {
       return sseResponse(modelId, [{ delayMs: 20, text: `hello from ${modelId}` }], init?.signal);
     }) as typeof fetch;
     try {
-      const res = await router.route(msgs, { taskKind: 'chat', onChunk: () => {} });
+      const res = await router.route(msgs, {
+        taskKind: 'chat',
+        onChunk: () => {},
+        onSelectionRationale: (info) => rationales.push(info.rationale.filter((r) => r.selected).map((r) => `${r.platform}::${r.modelId}`)),
+      });
       ok(`healthy primary: no hedge fired, primary served (${res.model})`, res.model === 'slow-model');
       ok(`healthy primary: exactly one request on the wire (${requestLog.length})`, requestLog.length === 1);
+      // The "Why this model?" (?) button only renders when a rationale with entries arrives —
+      // the un-hedged happy path (by far the most common turn) must still emit one.
+      ok(`healthy primary: rationale still emitted for the normal path (${JSON.stringify(rationales)})`,
+        rationales.length >= 1 && rationales.every((r) => r.length === 1 && r[0] === `${res.platform}::${res.model}`));
     } finally {
       globalThis.fetch = realFetch;
+    }
+  }
+
+  // ---- 2b. The hedge FIRES but LOSES: primary stays silent past hedgeDelayMs, the hedge starts,
+  // then the primary produces its first chunk first anyway. Exactly one rationale must be
+  // reported, describing the PRIMARY (the model that served) — the losing hedge's own result
+  // must not emit a second, contradicting one. ----
+  {
+    cfg.hedging = true;
+    cfg.hedgeDelayMs = 300;
+    cfg.ttftTimeoutMs = 15_000;
+    cfg.requestTimeoutMs = 20_000;
+
+    const router = makeScoringRouter();
+    const reports: Array<{ picked?: string; selected: string[] }> = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      let modelId = 'slow-model';
+      try { modelId = JSON.parse(String(init?.body ?? '{}')).model ?? modelId; } catch { /* */ }
+      // Primary is silent past the hedge delay, then speaks; the hedge starts but is slower.
+      if (modelId === 'slow-model') return sseResponse(modelId, [{ delayMs: 500, text: 'primary wakes up' }], init?.signal);
+      return sseResponse(modelId, [{ delayMs: 900, text: 'hedge too late' }], init?.signal);
+    }) as typeof fetch;
+    try {
+      const res = await router.route(msgs, {
+        taskKind: 'chat',
+        onChunk: () => {},
+        onSelectionRationale: (info) => reports.push({
+          picked: info.picked ? `${info.picked.platform}::${info.picked.modelId}` : undefined,
+          selected: info.rationale.filter((r) => r.selected).map((r) => `${r.platform}::${r.modelId}`),
+        }),
+      });
+      await sleep(600); // let the losing hedge settle — a late second emit would land here
+      const servedKey = `${res.platform}::${res.model}`;
+      ok(`hedge-loses: primary served (${res.model})`, res.model === 'slow-model');
+      ok(`hedge-loses: the UI was told about the ranking (${reports.length} emission(s))`, reports.length >= 1);
+      // The losing hedge must never get the last word — every report here names the primary,
+      // which both started and served.
+      ok(`hedge-loses: no report names the losing hedge (${JSON.stringify(reports.map((r) => r.selected))} vs ${servedKey})`,
+        reports.length > 0 && reports.every((r) => r.selected.length === 1 && r.selected[0] === servedKey));
+    } finally {
+      globalThis.fetch = realFetch;
+      await sleep(50);
     }
   }
 

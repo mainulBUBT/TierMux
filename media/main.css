@@ -981,9 +981,30 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .footer .footer-chip + .footer-chip { margin-left: 4px; }
 .footer .footer-chip .fc-icon { display: inline-flex; opacity: .6; }
 .footer .footer-chip .fc-icon svg { width: 11px; height: 11px; }
+/* The number keeps the weight; the word sits back so a row of chips still scans as data
+   rather than prose, while never leaving a bare figure unexplained. */
+.footer .footer-chip .fc-value { font-variant-numeric: tabular-nums; }
+.footer .footer-chip .fc-label { font-weight: 500; opacity: .62; }
+/* Context meter — replaces the icon on that one chip. Fixed width so the chips either side
+   don't shift as the bar fills during a conversation. */
+.footer .footer-chip .fc-meter {
+  width: 18px; height: 3px; border-radius: 999px; overflow: hidden; flex: none;
+  background: var(--vscode-foreground); opacity: .25;
+}
+.footer .footer-chip .fc-meter-fill {
+  display: block; height: 100%; border-radius: inherit;
+  background: currentColor; transition: width .3s ease;
+}
 .footer .footer-chip.warn { color: var(--vscode-editorWarning-foreground, #c9930a); }
 .footer .footer-chip.warn .fc-icon { opacity: .8; }
+.footer .footer-chip.warn .fc-meter { opacity: .45; }
 .footer .footer-chip.footer-empty { font-weight: 400; opacity: .7; }
+/* Narrow sidebar: the labels are the first thing to go, leaving exactly the compact chips
+   this footer showed before — the tooltips still carry the full wording. */
+.footer-clickable { container-type: inline-size; }
+@container (max-width: 340px) {
+  .footer .footer-chip .fc-label { display: none; }
+}
 .footer-clickable:hover .footer-chip { opacity: 1; background: var(--vscode-list-hoverBackground); }
 .usage-data-section { margin-top: 4px; }
 .usage-stats { display: flex; flex-direction: column; gap: 3px; margin: 6px 0 10px; }

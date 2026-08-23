@@ -284,11 +284,35 @@ export interface TranscriptMessage {
   /** Present on user turns that had one — replayed as attachment chips on re-render
    *  (session switch/reload) and restored to the composer by "Revert to here". */
   attachments?: Attachment[];
+  /** The turn's model-scoring rationale, as reported for the model that ACTUALLY served —
+   *  replayed so the footer's "Why this model?" (?) survives a reload/session switch. Live-only
+   *  before this field existed, so it silently vanished on every re-render. */
+  rationale?: SelectionRationale;
   /** Structured end-of-turn report — the CANONICAL representation a replay renders as a
    *  ResultCard. When present, `.text` also carries the legacy markdown serialization
    *  (renderLegacyMarkdown) purely so pre-WorkReportData readers keep working; new code
    *  must render from here and never parse that markdown back. */
   workReport?: WorkReportData;
+}
+
+/** One scored candidate in the "Why this model?" panel. `model` is a display string
+ *  ("Provider/model-id"), already resolved host-side. */
+export interface SelectionRationaleEntry {
+  model: string;
+  selected: boolean;
+  score: number;
+  capability: number;
+  runtime: number;
+  preference: number;
+  confidence: number;
+  reason: string;
+  skip?: string;
+}
+
+/** The scoring rationale for one turn — what the (?) popover renders. */
+export interface SelectionRationale {
+  picked?: string;
+  entries: SelectionRationaleEntry[];
 }
 
 /** Live status of a session, shown as a dot on its tab. */
@@ -351,7 +375,7 @@ export type OutMessage =
   | { type: 'watchdogWarning'; sessionId: string; requestId: string; elapsedMs: number; lastActivityLabel?: string; lastActivityAgeMs?: number }
   | { type: 'watchdogActionable'; sessionId: string; requestId: string; elapsedMs: number; lastActivityLabel?: string; lastActivityAgeMs?: number; hasPartialOutput: boolean }
   | { type: 'watchdogDismissed'; sessionId: string; requestId: string }
-  | { type: 'selectionRationale'; sessionId: string; requestId: string; taskKind: string; picked?: string; entries: Array<{ model: string; selected: boolean; score: number; capability: number; runtime: number; preference: number; confidence: number; reason: string; skip?: string }> }
+  | { type: 'selectionRationale'; sessionId: string; requestId: string; taskKind: string; picked?: string; entries: SelectionRationaleEntry[] }
   | { type: 'keyRotated'; sessionId: string; requestId: string; platform: string; platformName: string; keyIndex: number; keyTotal: number }
   | { type: 'attachmentAdded'; attachment: Attachment }
   | { type: 'insertMention'; text: string }

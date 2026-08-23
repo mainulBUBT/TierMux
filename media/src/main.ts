@@ -109,7 +109,7 @@ const STATE_LABEL = {
           <div class="tgroup">
             <div id="agent-picker-slot"></div>
             <div id="model-picker-slot"></div>
-            <button class="icon-btn icon-btn-sm" id="btn-attach" aria-label="Add files" data-tooltip="Add files">${ICON.addCircle}</button>
+            <button class="icon-btn icon-btn-sm" id="btn-attach" aria-label="Add files" data-tooltip="Add files">${ICON.attach}</button>
             <span id="ctx-chip" class="ctx-chip hidden" title="Context usage of the most recent request"></span>
           </div>
           <span class="toolbar-sep" aria-hidden="true"></span>
@@ -979,7 +979,10 @@ const STATE_LABEL = {
     let footStr = (model || '');
     if (details.usage) footStr += `  ·  ${fmtUsage(details.usage)}`;
     if (secs != null) footStr += `  ·  ${fmtDuration(secs)}`;
-    el.appendChild(assistantFooter(el, footStr, ts));
+    // Pass requestId + rationale so a replayed turn keeps the SAME footer affordances a live one
+    // has: working like/dislike votes and the "Why this model?" (?) popover. Both used to be
+    // dropped here, so every reload/session switch silently stripped them from the transcript.
+    el.appendChild(assistantFooter(el, footStr, ts, details.requestId, details.rationale));
     (currentTurn || activeThreadEl).appendChild(el);
   }
 
@@ -3523,7 +3526,7 @@ const STATE_LABEL = {
           statusTimers.clear();
         }
         if (!paneCtx.existed || rebuildInPlace) {
-          (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts, mm.attachments) : renderAssistantStatic(mm.text, mm.model, mm.ts, mm.secs, { reasoning: mm.reasoning, steps: mm.steps, usage: mm.usage, workReport: mm.workReport }));
+          (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts, mm.attachments) : renderAssistantStatic(mm.text, mm.model, mm.ts, mm.secs, { reasoning: mm.reasoning, steps: mm.steps, usage: mm.usage, workReport: mm.workReport, rationale: mm.rationale, requestId: mm.requestId }));
           if (!(msg.messages || []).length) renderEmpty();
         }
         // Context chip reflects the session being entered — its most recent workReport's
@@ -4624,33 +4627,57 @@ const STATE_LABEL = {
     bar.classList.remove('hidden');
   }
 
-  /** Footer usage summary as quiet stat chips (tokens / requests / saved / context) —
-   *  readable at a glance, tooltips carry the exact wording. Click opens Usage settings. */
+  /** Footer usage summary as quiet stat chips (tokens / requests / saved / context).
+   *
+   *  Every chip carries a WORD, not just a number: a bare row of "73.5M · 4.8K · $7.75 · 13%"
+   *  is unreadable without hovering each one, and an icon alone can't disambiguate them (a
+   *  checkmark beside a dollar amount reads as "paid", when it means "saved"). The label is the
+   *  primary affordance and the tooltip stays as the long form. In a panel too narrow to fit the
+   *  labels, a container query drops them and the chips fall back to today's compact numbers.
+   *
+   *  Context gets a meter rather than a bare percentage — it is the only live, actionable value
+   *  here (the others are lifetime totals), and a filling bar communicates "how full" instantly. */
   function updateFooter(totals) {
     if (!totals) return;
     const chips = [];
     const lt = totals.lifetime;
     const hasUsage = lt && (lt.totalTokens > 0 || lt.totalRequests > 0 || lt.estimatedSavingsUsd > 0);
     if (hasUsage) {
-      chips.push({ icon: ICON.chip, title: 'Lifetime tokens used across all sessions', value: fmtCompact(lt.totalTokens) });
-      chips.push({ icon: ICON.send, title: 'Requests sent', value: fmtCompact(lt.totalRequests) });
-      if (lt.estimatedSavingsUsd > 0) chips.push({ icon: ICON.check, title: 'Estimated savings vs flagship-model pricing', value: fmtUsd(lt.estimatedSavingsUsd) });
+      chips.push({
+        icon: ICON.chip, label: 'tokens', value: fmtCompact(lt.totalTokens),
+        title: `${fmtTokens(lt.totalTokens)} tokens used across all sessions, all time`,
+      });
+      chips.push({
+        icon: ICON.send, label: lt.totalRequests === 1 ? 'request' : 'requests', value: fmtCompact(lt.totalRequests),
+        title: `${(lt.totalRequests || 0).toLocaleString()} model requests sent, all time`,
+      });
+      if (lt.estimatedSavingsUsd > 0) {
+        chips.push({
+          icon: ICON.check, label: 'saved', value: fmtUsd(lt.estimatedSavingsUsd),
+          title: `Roughly ${fmtUsd(lt.estimatedSavingsUsd)} not spent — what this usage would have cost at flagship-model pricing, versus $0 on free tiers`,
+        });
+      }
     }
     if (totals.context && totals.context.window) {
       const t = totals.context.tokens, w = totals.context.window;
       const pct = Math.min(100, Math.round((t / w) * 100));
       chips.push({
-        icon: ICON.compress,
-        title: `Context: ${pct}% — ${fmtCompact(t)} / ${fmtCompact(w)} tokens on the current session`,
-        value: `${pct}%`,
-        warn: pct > 70,
+        icon: ICON.compress, label: 'context', value: `${pct}%`, meter: pct, warn: pct > 70,
+        title: `This conversation fills ${pct}% of the model's memory (${fmtTokens(t)} of ${fmtTokens(w)} tokens).`
+          + (pct > 70 ? ' Older turns get condensed as it approaches 100%.' : ''),
       });
     }
     const footer = $('#footer');
     footer.innerHTML = chips.length
-      ? chips.map((c) =>
-          `<span class="footer-chip${c.warn ? ' warn' : ''}" title="${escapeHtml(c.title)}">`
-          + `<span class="fc-icon">${c.icon}</span>${escapeHtml(c.value)}</span>`).join('')
+      ? chips.map((c) => {
+          const meter = c.meter != null
+            ? `<span class="fc-meter" aria-hidden="true"><span class="fc-meter-fill" style="width:${c.meter}%"></span></span>`
+            : `<span class="fc-icon">${c.icon}</span>`;
+          return `<span class="footer-chip${c.warn ? ' warn' : ''}" title="${escapeHtml(c.title)}">`
+            + meter
+            + `<span class="fc-value">${escapeHtml(c.value)}</span>`
+            + `<span class="fc-label">${escapeHtml(c.label)}</span></span>`;
+        }).join('')
       : '<span class="footer-chip footer-empty">No usage yet</span>';
   }
 

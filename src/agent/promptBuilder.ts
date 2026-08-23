@@ -5,7 +5,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { loadUserMemory } from '../context/userMemory';
 import { loadProjectRules } from '../context/projectRules';
-import { loadSkills, matchSkill, skillBodyPrompt, skillIndexPrompt } from '../context/skills';
+import { loadSkills, matchSkill, invokedSkill, skillBodyPrompt, skillIndexPrompt } from '../context/skills';
+import type { Skill } from '../context/skills';
+import { resolveDesignSystem, designSystemPrompt } from '../context/designSystem';
 import { findingsPrompt } from './sessionFindings';
 import type { TaskKind } from './routing';
 import type { AgentMode } from './agent';
@@ -25,10 +27,55 @@ const SKIP_FILES_FOR_TASK_KIND: Partial<Record<TaskKind, string[]>> = {
   trivial: ['research.md'],
 };
 
+/** How many follow-up turns a `design: true` skill stays active after its last real match.
+ *  Bounded on purpose: the point is to survive "now the header too", not to pin design rules to a
+ *  session forever. Three turns covers the normal shape of a UI task; after that the ~2KB stops
+ *  being paid by turns that are no longer about design. */
+const STICKY_TURNS = 3;
+
+/** Per-session carry-over for design skills, keyed by sessionId. Process-local and unbounded only
+ *  in the number of live sessions (one small record each), same as the other session maps here. */
+const stickySkills = new Map<string, { name: string; left: number }>();
+
+/** Arms or clears the carry-over after a real match. A NON-design skill matching clears it: the
+ *  user has moved on to a different kind of task, and stacking design rules onto /tests is exactly
+ *  the prompt conflict the auto-match rules exist to avoid. */
+function noteStickySkill(sessionId: string | undefined, matched: Skill | undefined): void {
+  if (!sessionId || !matched) return;
+  if (matched.design) stickySkills.set(sessionId, { name: matched.name, left: STICKY_TURNS });
+  else stickySkills.delete(sessionId);
+}
+
+/** The design skill carried over from an earlier turn of this session, consuming one of its
+ *  remaining turns. Only reached when nothing matched this turn. */
+function resolveStickySkill(sessionId: string | undefined, all: Map<string, Skill>, autoMatchOk: boolean): Skill | undefined {
+  if (!sessionId || !autoMatchOk) return undefined;
+  const st = stickySkills.get(sessionId);
+  if (!st) return undefined;
+  const sk = all.get(st.name);
+  // The skill file was deleted or renamed mid-session — drop the carry-over rather than keep a
+  // dangling name around.
+  if (!sk?.design) { stickySkills.delete(sessionId); return undefined; }
+  if (--st.left <= 0) stickySkills.delete(sessionId);
+  return sk;
+}
+
+/** Drops a session's design carry-over — called when its chat session ends. */
+export function clearSessionSkillState(sessionId: string): void {
+  stickySkills.delete(sessionId);
+}
+
 let extensionPath: string | undefined;
 /** Set once at activation so buildSystemPrompt can locate `.tiermux/agent/*.md`. */
 export function setExtensionPath(p: string): void {
   extensionPath = p;
+}
+
+/** The extension path set at activation, for the few places outside prompt assembly that need to
+ *  reach bundled `.tiermux/` assets (e.g. the design lint resolving the design system presets).
+ *  A getter rather than a hard-coded publisher.name id, which drifts. */
+export function getExtensionPath(): string | undefined {
+  return extensionPath;
 }
 
 /** Explicit concatenation order for `.tiermux/agent/*.md` — identity MUST lead ("You are
@@ -77,7 +124,7 @@ const WEAK_ONLY_CLOSE = /<!--[ \t]*\/weak-only[ \t]*-->/g;
 /** Loads `.tiermux/agent/*.md` scaffolding + project rules/memory/skills index. Content is
  *  cached against source stamps (see promptSourceCache) — an edit still invalidates
  *  immediately via its mtime, so changes take effect on the very next turn. */
-async function loadAgentInstructions(extPath: string, workspaceRoot?: string, taskKind?: TaskKind, mode?: AgentMode, userText?: string, weakModel = true): Promise<{ agentPrompt: string; instructions: string }> {
+async function loadAgentInstructions(extPath: string, workspaceRoot?: string, taskKind?: TaskKind, mode?: AgentMode, userText?: string, weakModel = true, sessionId?: string): Promise<{ agentPrompt: string; instructions: string }> {
   const agentDir = path.join(extPath, '.tiermux', 'agent');
   const skipFiles = new Set(taskKind ? SKIP_FILES_FOR_TASK_KIND[taskKind] ?? [] : []);
   // ask-format.md documents the askQuestions pre-flight clarify tool, and PLAN_MODE_TAIL is
@@ -148,9 +195,23 @@ async function loadAgentInstructions(extPath: string, workspaceRoot?: string, ta
   let skills = '';
   if (taskKind !== 'trivial') {
     const autoMatchOk = !mode || mode === 'agent';
-    const matched = userText && autoMatchOk ? matchSkill(userText, loadSkills(extPath, workspaceRoot)) : undefined;
-    const index = skillIndexPrompt(extPath, workspaceRoot, matched?.name);
-    skills = matched ? [skillBodyPrompt(matched), index].filter(Boolean).join('\n\n') : index;
+    const all = loadSkills(extPath, workspaceRoot);
+    // `/design` typed explicitly: the body is already in the user message (invokedSkill), so it
+    // must not be injected again — but it still counts as "a design skill is active" for the
+    // design system and for stickiness below.
+    const invoked = userText ? invokedSkill(userText, all) : undefined;
+    const matched = !invoked && userText && autoMatchOk ? matchSkill(userText, all) : undefined;
+    const sticky = invoked || matched ? undefined : resolveStickySkill(sessionId, all, autoMatchOk);
+    const active = invoked ?? matched ?? sticky;
+    noteStickySkill(sessionId, invoked ?? matched);
+
+    // The design system is resolved only for a skill that declared `design: true`, so a turn that
+    // matched /fix or /tests pays nothing for it. See context/designSystem.ts for why this is
+    // extracted in TypeScript instead of asked of the model.
+    const ds = active?.design ? resolveDesignSystem(extPath, workspaceRoot) : undefined;
+    const body = active && active !== invoked ? skillBodyPrompt(active) : '';
+    const index = skillIndexPrompt(extPath, workspaceRoot, active?.name);
+    skills = [body, ds ? designSystemPrompt(ds) : '', index].filter(Boolean).join('\n\n');
   }
   return { agentPrompt: base, instructions: [rules, memory, skills].filter(Boolean).join('\n\n') };
 }
@@ -331,7 +392,7 @@ export async function buildSystemPrompt(mode: AgentMode, taskKind?: TaskKind, se
   if (!extensionPath) {
     return '# Identity\nYou are TierMux, an AI coding assistant.' + modeTail(mode) + terseTail() + `\n\n${todayLine()}` + findings;
   }
-  const { agentPrompt, instructions } = await loadAgentInstructions(extensionPath, workspaceRoot, taskKind, mode, userText, weakModel);
+  const { agentPrompt, instructions } = await loadAgentInstructions(extensionPath, workspaceRoot, taskKind, mode, userText, weakModel, sessionId);
   // terseTail rides with the mode tail — it is constant text, so it belongs in the STABLE core;
   // appended after todayLine() it would sit behind the volatile date and break exact-prefix caching.
   return [agentPrompt + modeTail(mode) + terseTail(), instructions, todayLine()].filter(Boolean).join('\n\n') + findings;
