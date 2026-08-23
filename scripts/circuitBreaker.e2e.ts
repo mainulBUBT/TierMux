@@ -106,10 +106,13 @@ async function main() {
   }
 
   // --- Scenario 6: skipPreflight providers bypass the breaker entirely ------
-  // 'github' is registered with skipPreflight: true (src/providers/index.ts).
+  // 'zenmux' is registered with skipPreflight: true (src/providers/index.ts). This scenario
+  // originally used 'github', which was retired from the registry on 2026-08-20 (GitHub Models
+  // shutdown, HTTP 410) — resolveProvider('github') now returns undefined, so route() failed
+  // with no_provider before the skipPreflight behavior was ever exercised.
   {
     const r = makeRouter() as any;
-    (r as Router as any).markHealth('github', 'test-model', 'bad', 'network'); // simulate a very recent failure
+    (r as Router as any).markHealth('zenmux', 'test-model', 'bad', 'network'); // simulate a very recent failure
     let fetchCalls = 0;
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async () => {
@@ -125,7 +128,7 @@ async function main() {
       } as unknown as Response;
     }) as typeof fetch;
     try {
-      const result = await (r as Router).route([{ role: 'user', content: 'hello' }], { model: 'github::test-model' });
+      const result = await (r as Router).route([{ role: 'user', content: 'hello' }], { model: 'zenmux::test-model' });
       ok('S6: skipPreflight provider still attempted despite cached "bad" state', fetchCalls === 1);
       ok('S6: request succeeded', result.model === 'test-model');
     } finally {
