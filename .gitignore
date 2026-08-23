@@ -37,3 +37,6 @@ extensionPath/
 .env
 .env.*
 !.env.example
+
+# Ad-hoc debug scratch scripts (never part of a build or test run)
+scripts/tmp/
