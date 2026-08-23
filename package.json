@@ -454,6 +454,18 @@
           "default": "light",
           "description": "Compact bulky tool results before they enter the model's context: 'light' keeps only the head and tail of large runCommand outputs (the model keeps the outcome and final status); 'aggressive' additionally line-caps search-shaped results (grep/glob/listDir/webSearch). File reads, edit results, and diagnostics are never compacted. 'off' keeps every result verbatim."
         },
+        "tiermux.profiler.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Collect per-turn performance traces (latency, tokens, fallbacks) into an in-memory ring buffer, viewable from the TierMux profiler command."
+        },
+        "tiermux.profiler.ringSize": {
+          "type": "number",
+          "default": 200,
+          "minimum": 10,
+          "maximum": 10000,
+          "description": "Maximum number of recent turns the profiler keeps in its ring buffer."
+        },
         "tiermux.agent.terseReplies": {
           "type": "boolean",
           "default": true,

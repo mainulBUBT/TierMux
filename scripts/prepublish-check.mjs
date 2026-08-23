@@ -3,6 +3,7 @@
 //   1. Secret scan over tracked files      -> FAIL on hit
 //   2. Known-sensitive paths tracked        -> FAIL on hit
 //   3. Personal/local info sanity           -> WARN only (too noisy to block)
+//   4. Settings rows all declared in pkg    -> FAIL on hit
 // Intended to run as a git pre-push hook (via husky) and is also safe to run
 // manually: `node scripts/prepublish-check.mjs`.
 //
@@ -11,6 +12,7 @@
 // and confirmed safe, so the gate stays quiet without weakening real detection.
 
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 const NO_ADVISORY = process.argv.includes("--no-advisory");
 
@@ -139,6 +141,33 @@ if (personalHits.length) {
   console.log(`${GREEN}✓${RESET} Personal-info scan clean`);
 }
 } // end if (!NO_ADVISORY)
+
+// Settings contract — every row the settings panel renders must be a REGISTERED configuration
+// key. An undeclared key silently breaks both directions: getConfiguration().get() returns
+// undefined (so the panel shows the type's zero value, not the real default), and update() throws
+// "not a registered configuration", so the toggle can't even be flipped. Cheap to get wrong —
+// SETTINGS_META and package.json are edited in different files — and invisible until a user
+// clicks the control, so it is checked on every push.
+try {
+  const pkgProps = (() => {
+    const c = JSON.parse(readFileSync("package.json", "utf8")).contributes.configuration;
+    return Array.isArray(c) ? Object.assign({}, ...c.map((x) => x.properties)) : c.properties;
+  })();
+  const meta = readFileSync("src/settingsMeta.ts", "utf8");
+  const undeclared = [...meta.matchAll(/key: '([^']+)'/g)]
+    .map((m) => `tiermux.${m[1]}`)
+    .filter((k) => !pkgProps[k]);
+  if (undeclared.length) {
+    blocking = true;
+    console.error(`\n${RED}✗ Settings rows with no package.json declaration${RESET}`);
+    for (const k of undeclared) console.error(`  ${k}`);
+    console.error(`${DIM}  Add each to contributes.configuration (with the same default the code passes to get()).${RESET}`);
+  } else {
+    console.log(`${GREEN}✓${RESET} Settings rows all declared`);
+  }
+} catch (e) {
+  console.log(`${YELLOW}⚠ Settings-contract check skipped: ${e.message}${RESET}`);
+}
 
 // Catalog sanity — structural only (--offline), so a publish never depends on provider uptime or
 // on being online at all. The networked checks live in `npm run validate:catalog`, which
