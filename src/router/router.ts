@@ -458,10 +458,27 @@ export class Router {
   private health = new Map<string, { state: 'ok' | 'bad'; at: number; reason?: string; failureStreak: number; probing?: boolean }>();
   private static readonly HEALTH_BASE_TTL_MS = 60_000;
   private static readonly HEALTH_MAX_TTL_MS = 10 * 60_000;
-  /** Longest rate-limit cooldown route() will sleep off before attempting a last-resort
-   *  candidate (see the cooldown check at the top of the candidates loop). Longer cooldowns
-   *  are attempted immediately instead of blocking the turn — bounded latency either way. */
-  private static readonly COOLDOWN_WAIT_CAP_MS = 15_000;
+  /** Longest rate-limit cooldown route() will sleep off PER last-resort candidate (see the
+   *  cooldown check at the top of the candidates loop), and the TOTAL wait budget across all
+   *  such waits in one route() call. Longer cooldowns are attempted immediately instead of
+   *  blocking — bounded latency either way.
+   *
+   *  Task-kind aware (2026-08-23, user feedback: free-tier agents kept dying mid-task on rate
+   *  limits — rotation worked, but the moment EVERY candidate was cooling, a >15s cooldown was
+   *  not waited out, the fresh attempt re-429'd, and the whole turn failed). A chat answer
+   *  should not hang 60s; an agent turn that has already burned a minute of work SHOULD wait —
+   *  a bounded wait that completes the task beats a dead turn. Total budget stops serial waits
+   *  from stacking across many cooling candidates. */
+  private static readonly CHAT_COOLDOWN_WAIT_CAP_MS = 15_000;
+  private static readonly AGENT_COOLDOWN_WAIT_CAP_MS = 60_000;
+  private static readonly CHAT_COOLDOWN_TOTAL_MS = 20_000;
+  private static readonly AGENT_COOLDOWN_TOTAL_MS = 90_000;
+  private cooldownWaitCapMs(taskKind?: string): { perCandidate: number; total: number } {
+    const agentish = taskKind === 'agent' || taskKind === 'coding' || taskKind === 'debug' || taskKind === 'longContext';
+    return agentish
+      ? { perCandidate: Router.AGENT_COOLDOWN_WAIT_CAP_MS, total: Router.AGENT_COOLDOWN_TOTAL_MS }
+      : { perCandidate: Router.CHAT_COOLDOWN_WAIT_CAP_MS, total: Router.CHAT_COOLDOWN_TOTAL_MS };
+  }
   private static readonly PING_TIMEOUT_MS = 1200;
 
   constructor(
@@ -909,6 +926,9 @@ export class Router {
    *  to survive cold starts; honor the provider's declared minimum so a user-tuned 60s setting
    *  doesn't accidentally cap a slow provider below what it needs. */
   private timeoutMsFor(provider: { timeoutMs?: number }): number {
+    // An explicit 0 is the provider declaring "no request cap" (custom/local endpoints) —
+    // not a floor of 0ms. Must be checked before Math.max, which would lift it to the global.
+    if (provider.timeoutMs === 0) return 0;
     const floor = provider.timeoutMs ?? 0;
     return Math.max(this.timeoutMs(), floor);
   }
@@ -924,6 +944,22 @@ export class Router {
     const v = vscodeConfigNumber('tiermux.ttftTimeoutMs', 8000);
     if (v <= 0) return 0;
     return Math.min(v, this.timeoutMs());
+  }
+
+  /** Per-candidate TTFT: the global gate, raised to the provider's declared floor (custom
+   *  OpenAI-compatible endpoints — local models — set 60s; see BaseProvider.ttftTimeoutMs),
+   *  then clamped to that provider's own request timeout so the gate can never outlive the
+   *  request. Same shape as timeoutMsFor: the provider floor wins over the user's global
+   *  number because a local model physically cannot emit a first token faster than its load +
+   *  prefill time. A floor never re-enables a globally-disabled gate (user set 0). */
+  private ttftTimeoutMsFor(provider: { ttftTimeoutMs?: number }): number {
+    // Provider declared 0 = NO gate for this provider (custom/local endpoints): wait as long
+    // as the model needs for its first token; the user's Stop button is the only brake.
+    if (provider.ttftTimeoutMs === 0) return 0;
+    const base = this.ttftTimeoutMs();
+    if (base <= 0) return 0;
+    const floor = provider.ttftTimeoutMs ?? 0;
+    return Math.min(Math.max(base, floor), this.timeoutMsFor(provider as { timeoutMs?: number }));
   }
 
   /** Exponential cooldown for a given consecutive-failure streak, capped at `HEALTH_MAX_TTL_MS`. */
@@ -1446,6 +1482,10 @@ export class Router {
     // Skipped for a forced/pinned model (single candidate — nothing to overlap).
     if (!forced) await this.preflightWarmup(cands, opts.abortSignal);
 
+    // Total rate-limit cooldown wait spent in THIS route() call (see cooldownWaitCapMs) — the
+    // budget that keeps serial cooling candidates from stacking waits without bound.
+    let cooldownWaited = 0;
+
     candidates: for (const entry of cands) {
       // Once aborted (Stop button, or a sub-agent's own wall-clock ceiling), stop trying MORE
       // candidates immediately — without this, an abort only cancelled the CURRENTLY in-flight
@@ -1467,10 +1507,15 @@ export class Router {
       // in a rate-limit cooldown. A SHORT cooldown is worth waiting out — that is the
       // difference between "Auto recovered after a few seconds" and a dead turn — while a
       // long one is attempted immediately, same as the old all-cooling path (a fresh 429
-      // just failovers through the normal machinery).
+      // just failovers through the normal machinery). Caps are task-kind aware (see
+      // cooldownWaitCapMs) and the TOTAL waited across candidates is budgeted so serial
+      // cooling candidates can't stack waits without bound.
+      const cooldownCaps = this.cooldownWaitCapMs(opts.taskKind);
       const cooldownLeft = this.secrets.cooldownRemaining(entry.platform);
-      if (cooldownLeft > 0 && cooldownLeft <= Router.COOLDOWN_WAIT_CAP_MS) {
-        diagLog('router.cooldown', `${entry.platform}::${entry.modelId} rate-limit cooldown ${cooldownLeft}ms left — waiting it out`);
+      const waitable = Math.min(cooldownLeft, cooldownCaps.perCandidate, cooldownCaps.total - cooldownWaited);
+      if (cooldownLeft > 0 && waitable >= cooldownLeft) {
+        cooldownWaited += cooldownLeft;
+        diagLog('router.cooldown', `${entry.platform}::${entry.modelId} rate-limit cooldown ${cooldownLeft}ms left — waiting it out (${cooldownCaps.total - cooldownWaited}ms budget left)`);
         await this.waitCooldown(cooldownLeft, opts.abortSignal);
         if (opts.abortSignal?.aborted) {
           failures.push({ platform: entry.platform, model: entry.modelId, reason: 'aborted' });
@@ -1541,7 +1586,7 @@ export class Router {
       // without touching opts.abortSignal (so the Stop button stays independent). Non-streaming
       // requests use opts.abortSignal directly; the normal timeoutMs governs them.
       const wantsStreamPre = !!opts.onChunk;
-      const ttftMs = wantsStreamPre ? this.ttftTimeoutMs() : 0;
+      const ttftMs = wantsStreamPre ? this.ttftTimeoutMsFor(provider) : 0;
       const ttftController = ttftMs > 0 ? new AbortController() : undefined;
       const perCandidateAbort = ttftController && opts.abortSignal
         ? AbortSignal.any([opts.abortSignal, ttftController.signal])

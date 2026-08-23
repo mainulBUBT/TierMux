@@ -78,7 +78,14 @@ for (const c of COMPAT) registerCompat(c);
 
 // Local LLM servers (llama.cpp, LM Studio, koboldcpp, etc.) are often CPU-bound and
 // can take far longer per turn than cloud APIs, especially for long/agentic completions.
-const CUSTOM_TIMEOUT_MS = 600000;
+//
+// UNCAPPED BY REQUEST (2026-08-23, user direction): a 10-minute cap still executed long local
+// generations mid-answer. Custom endpoints now run with NO request timeout and NO TTFT gate —
+// the model takes as long as it takes (cold VRAM load + prefill + generation), and the only
+// brakes are the user's Stop button and the watchdog notice. Cloud failover math doesn't apply:
+// there is no faster pool to fail over TO for a model that only exists on the user's machine.
+const CUSTOM_TIMEOUT_MS = 0;
+const CUSTOM_TTFT_MS = 0;
 
 export function resolveProvider(
   platform: Platform,
@@ -100,6 +107,7 @@ export function resolveProvider(
       baseUrl: endpoint.baseUrl.replace(/\/+$/, ''),
       extraHeaders: endpoint.extraHeaders,
       timeoutMs: CUSTOM_TIMEOUT_MS,
+      ttftTimeoutMs: CUSTOM_TTFT_MS,
 
       skipPreflight: true,
     });

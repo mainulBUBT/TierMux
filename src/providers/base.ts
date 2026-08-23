@@ -45,6 +45,12 @@ export abstract class BaseProvider {
   preflightTimeoutMs?: number;
   /** Skip the preflight ping entirely for this provider (e.g. slow platforms where ping costs real time). */
   skipPreflight = false;
+  /** Per-provider TTFT fast-failover policy: undefined = the global tiermux.ttftTimeoutMs rules
+   *  unchanged; a positive number = a FLOOR on the global gate (cloud-tuned 8s would otherwise
+   *  abort a slow-to-start provider before its first token); 0 = NO gate for this provider —
+   *  custom endpoints (local models on the user's hardware) run uncapped, waiting as long as
+   *  the model needs for load + prefill, with only the user's Stop button as the brake. */
+  ttftTimeoutMs?: number;
   /**
    * Whether this provider actually forwards a `type:'file'` content block (raw PDF bytes) to the
    * underlying API, as opposed to silently dropping it. Distinct from image support — most
@@ -90,19 +96,23 @@ export abstract class BaseProvider {
    *  our own timeout-based controller — previously it was silently overwritten below, so an
    *  external cancellation (Stop button, a sub-agent's own timeout) never reached the actual
    *  in-flight request and only stopped FUTURE calls, not the one currently hanging. */
+  /** timeoutMs <= 0 runs with NO self-imposed timeout — only the caller's abortSignal governs
+   *  (Stop button, sub-agent timeouts). Used by custom endpoints: a local model on the user's
+   *  own hardware may legally take arbitrarily long (cold load + long generations), and there
+   *  is no cloud failover pool that could serve it faster. */
   protected async fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 60000): Promise<Response> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
     const signal = init.signal ? AbortSignal.any([init.signal as AbortSignal, controller.signal]) : controller.signal;
     try {
       return await fetch(url, { ...init, signal });
     } catch (e) {
-      if (controller.signal.aborted) {
+      if (timeout !== undefined && controller.signal.aborted) {
         throw new ProviderHttpError(`${this.name} request timed out after ${timeoutMs}ms`, 408);
       }
       throw e;
     } finally {
-      clearTimeout(timeout);
+      if (timeout !== undefined) clearTimeout(timeout);
     }
   }
 

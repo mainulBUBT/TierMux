@@ -36,6 +36,8 @@ export interface OpenAICompatOpts {
   preflightTimeoutMs?: number;
   /** Skip the preflight ping entirely for this provider. */
   skipPreflight?: boolean;
+  /** Per-provider TTFT fast-failover floor (see BaseProvider.ttftTimeoutMs). */
+  ttftTimeoutMs?: number;
   /**
    * Floor applied to `max_tokens` when the caller doesn't specify one (OC often
    * doesn't). Needed for providers whose reasoning isn't optional and shares the
@@ -75,6 +77,7 @@ export class OpenAICompatProvider extends BaseProvider {
     this.flattenContent = opts.flattenContent ?? false;
     this.preflightTimeoutMs = opts.preflightTimeoutMs;
     this.skipPreflight = opts.skipPreflight ?? false;
+    this.ttftTimeoutMs = opts.ttftTimeoutMs;
     this.defaultMaxTokens = opts.defaultMaxTokens;
   }
 

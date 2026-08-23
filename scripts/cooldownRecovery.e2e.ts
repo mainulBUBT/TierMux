@@ -123,6 +123,25 @@ const MSGS = [{ role: 'user' as const, content: 'hi' }];
 async function main() {
   const restore = installFetch();
 
+  // ---- Scenario 0: cooldown wait caps are task-kind aware (agent work waits longer) ----
+  // 2026-08-23: free-tier agent turns died the moment every candidate was cooling with a
+  // >15s cooldown; agent taskKinds now get a 60s per-candidate / 90s total wait budget so
+  // rotation can actually out-wait a rate-limit window and complete the task, while chat
+  // answers keep the snappy 15s/20s caps.
+  {
+    const r = makeRouter() as any;
+    const agent = r.cooldownWaitCapMs('agent');
+    ok('S0: agent turn waits up to 60s for one cooling candidate', agent.perCandidate === 60_000);
+    ok('S0: agent turn has a 90s total wait budget', agent.total === 90_000);
+    ok('S0: coding/debug/longContext get the agent caps too',
+      r.cooldownWaitCapMs('coding').perCandidate === 60_000
+      && r.cooldownWaitCapMs('debug').total === 90_000
+      && r.cooldownWaitCapMs('longContext').perCandidate === 60_000);
+    const chat = r.cooldownWaitCapMs('chat');
+    ok('S0: chat answer keeps the snappy 15s/20s caps', chat.perCandidate === 15_000 && chat.total === 20_000);
+    ok('S0: no taskKind falls back to the chat caps', r.cooldownWaitCapMs(undefined).perCandidate === 15_000);
+  }
+
   try {
     // ---- Scenario 1: happy path — a cooling provider must NOT be contacted at all ----
     {
