@@ -280,6 +280,17 @@ export class CheckpointManager {
     return this.checkpoints.find((c) => c.requestId === requestId)?.id;
   }
 
+  /** Like {@link idForRequest}, but also matches the turn still IN FLIGHT. The Work Report is
+   *  stamped when the assistant turn is pushed to the transcript, which happens before
+   *  finishCheckpoint() commits — so the turn's own checkpoint is still `current` and
+   *  idForRequest alone would return undefined for every live turn. A commit that discards the
+   *  checkpoint (no edits captured) leaves a stale id behind, which is harmless: such a turn has
+   *  no changed files to click, and openDiff() no-ops on an unknown id. */
+  idForTurn(requestId: string): string | undefined {
+    if (this.current?.requestId === requestId) return this.current.id;
+    return this.idForRequest(requestId);
+  }
+
   /** Forget checkpoints belonging to reverted turns. */
   dropByRequestIds(ids: string[]): void {
     const set = new Set(ids);

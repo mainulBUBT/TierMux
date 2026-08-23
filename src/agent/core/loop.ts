@@ -2836,9 +2836,20 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   let workReport: WorkReportData | undefined;
   if ((final.hadMutatingToolCall || verifyGateFailed || verifyOutcome) && !opts.abortSignal?.aborted) {
     const toolTallyList = [...toolTally.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
+    // 'changes-only' (✅ Changes applied) vs 'unverified' (⚠️ untested) — the distinction the
+    // gate alone can't make. The honest default stays 'unverified' for a turn that never checked
+    // its own work. But when no verify command existed AND the agent itself ran a real
+    // verification tool after its last edit (VERIFY_TOOLS ⇒ verifiedAfterMutation), the changes
+    // WERE exercised; scaring the user with "not tested yet" is as wrong as claiming 'verified',
+    // which would name a passing command that never ran. A stopReason turn is never "done", so
+    // it keeps the untested wording regardless.
+    const reportOutcome = verifyOutcome === 'passed' ? 'verified' as const
+      : verifyGateFailed ? 'failed' as const
+      : final.verifiedAfterMutation && !final.stopReason ? 'changes-only' as const
+      : 'unverified' as const;
     workReport = {
       version: 1,
-      verifyOutcome: verifyOutcome === 'passed' ? 'verified' : verifyGateFailed ? 'failed' : 'unverified',
+      verifyOutcome: reportOutcome,
       verifyCmd: verifyOutcome === 'passed' || verifyGateFailed ? verifyCmd : undefined,
       fixRounds: verifyFixRoundsUsed,
       changedFiles: (changedFiles ?? []).map((f) => ({

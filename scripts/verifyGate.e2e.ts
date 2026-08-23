@@ -11,6 +11,7 @@
 //   3. verify command still fails after the retry → deterministic "Verification failed" note
 //   4. planner step (mixture 'on') seeds the todo checklist and its `Verify:` line drives the gate
 //   5. verifyCommand 'off' → gate skipped, the old Unverified-claim badge still applies
+//  5b. verifyCommand 'off' but a VERIFY_TOOLS call followed the mutation → 'changes-only'
 //
 // Run: npm run test:e2e:verify-gate
 import * as fs from 'fs';
@@ -237,6 +238,40 @@ async function main() {
     ok('gate off: untested mutating turn still reports unverified', result.workReport?.verifyOutcome === 'unverified');
     ok('report: ⚠️ Unverified fires for EVERY untested mutating turn (not just claim-regex hits)',
       result.workReport?.verifyOutcome === 'unverified' && !result.workReport?.verifyCmd);
+  }
+
+  // --- Test 5b: gate off, but the AGENT verified its own work → 'changes-only', not 'unverified' ---
+  // The distinction the gate alone can't make: no verify command exists, yet a VERIFY_TOOLS call
+  // landed after the last mutation, so the changes WERE exercised. Claiming 'verified' would name
+  // a command that never ran; claiming 'unverified' would scare the user about work that was
+  // actually checked.
+  {
+    setConfig({ mixturePipeline: 'off', verifyCommand: 'off' });
+    let n = 0;
+    const fakeRouter = {
+      async route() {
+        n++;
+        if (n === 1) {
+          return {
+            platform: 'custom' as const, model: 'fake',
+            response: baseResponse({ tool_calls: [{ id: 'g5b1', type: 'function' as const, function: { name: 'runCommand', arguments: JSON.stringify({ command: 'printf edited-the-file' }) } }] }),
+          };
+        }
+        if (n === 2) {
+          return {
+            platform: 'custom' as const, model: 'fake',
+            response: baseResponse({ tool_calls: [{ id: 'g5b2', type: 'function' as const, function: { name: 'getDiagnostics', arguments: '{}' } }] }),
+          };
+        }
+        return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'Done.' }) };
+      },
+      peekTopSelection: strongExecutor,
+    } as unknown as Router;
+
+    const result = await runTurn(fakeRouter, makeOpts());
+    ok('self-verified: outcome is changes-only, not the scary unverified copy',
+      result.workReport?.verifyOutcome === 'changes-only', `outcome=${result.workReport?.verifyOutcome}`);
+    ok('self-verified: no command is named (none ran)', !result.workReport?.verifyCmd);
   }
 
   // --- Test 6: verifyFixRounds=2 (default) — a second fix round runs when the first keeps failing ---

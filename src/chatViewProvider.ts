@@ -2747,9 +2747,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // transcripts written before WorkReportData keep rendering — new code renders from the
     // structured field and never parses that markdown back.
     let text = result.text;
-    if (result.workReport) {
-      text += renderLegacyMarkdown(result.workReport); // LEGACY TRANSCRIPT SERIALIZATION — remove after the minimum supported transcript migration window.
-      this.post({ type: 'workReport', sessionId: s.id, requestId, report: result.workReport });
+    // The agent loop leaves `checkpointId` unset (it has no requestId); the HOST owns the turn
+    // identity, so it is stamped here — before the report is posted OR persisted, so the live
+    // ResultCard and its replay resolve the same immutable baseline. Without it every
+    // changed-file row renders unclickable and `diffCheckpointFile` is unreachable.
+    const report = result.workReport
+      ? { ...result.workReport, checkpointId: s.checkpoints.idForTurn(requestId) }
+      : undefined;
+    if (report) {
+      text += renderLegacyMarkdown(report); // LEGACY TRANSCRIPT SERIALIZATION — remove after the minimum supported transcript migration window.
+      this.post({ type: 'workReport', sessionId: s.id, requestId, report });
     }
     s.transcript.push({
       role: 'assistant',
@@ -2760,7 +2767,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       reasoning: result.reasoning || undefined,
       usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, reasoningTokens: usage.reasoningTokens } : undefined,
       steps: steps && steps.length ? steps : undefined,
-      workReport: result.workReport,
+      workReport: report,
     });
   }
 
