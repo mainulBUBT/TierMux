@@ -40,3 +40,9 @@ extensionPath/
 
 # Ad-hoc debug scratch scripts (never part of a build or test run)
 scripts/tmp/
+
+# Webview bundle (esbuild: media/src/main.ts -> media/main.js). Generated exactly like
+# dist/extension.js, which has always been untracked — packaging already requires a build
+# (npm run build / package:all / publish all run it), so tracking this only added ~5k-line
+# diffs to every commit that touched the webview.
+media/main.js
