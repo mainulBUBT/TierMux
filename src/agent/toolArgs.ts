@@ -189,6 +189,70 @@ interface RescuedCall {
   arguments: string;
 }
 
+/** Imagined tool names weak models use in TEXT dialects, mapped to the real registry names.
+ *  Mirrors loop.ts's TOOL_NAME_ALIASES role for NATIVE calls: the native path resolves a
+ *  scrambled name and retries, but the text-dialect path dropped the call outright — captured
+ *  live 2026-08-23 (complex-task harness): dots-studio emitted
+ *  `<invoke name="read"><parameter name="file">src/agent/core/loop.ts</parameter>…`, shape 9
+ *  parsed it fine, `toolNames.has('read')` failed, and the raw dialect streamed to the user as
+ *  the final answer with zero tools run — the exact "garbage text, nothing happened" symptom. */
+const DIALECT_NAME_ALIASES: Record<string, string> = {
+  read: 'readFile', open: 'readFile', view: 'readFile',
+  write: 'writeFile', create: 'createFile', create_file: 'createFile', new_file: 'createFile',
+  edit: 'editFile', replace: 'editFile', modify: 'editFile', str_replace: 'editFile',
+  delete: 'deleteFile', remove: 'deleteFile',
+  search: 'grep', find: 'grep', grep_search: 'grep',
+  list: 'listDir', ls: 'listDir', list_files: 'listDir', glob_search: 'glob',
+  bash: 'runCommand', shell: 'runCommand', exec: 'runCommand', execute: 'runCommand', terminal: 'runCommand',
+  todo: 'todowrite', update_plan: 'todowrite', set_todos: 'todowrite',
+};
+
+/** Resolve a dialect-emitted tool name to a REGISTERED name: exact, then case/underscore-
+ *  insensitive (`read_file` → `readFile`), then the alias table above. Never returns a tool
+ *  the caller didn't register — same rule as loop.ts's resolveToolName, so a mode-withheld
+ *  tool (e.g. edits in plan mode) can't be smuggled in by a dialect alias. */
+export function resolveDialectToolName(name: string, toolNames: Set<string>): string | undefined {
+  if (!name) return undefined;
+  if (toolNames.has(name)) return name;
+  const key = name.toLowerCase().replace(/[_\-\s]/g, '');
+  for (const real of toolNames) {
+    if (real.toLowerCase().replace(/[_\-\s]/g, '') === key) return real;
+  }
+  const alias = DIALECT_NAME_ALIASES[key];
+  return alias && toolNames.has(alias) ? alias : undefined;
+}
+
+/** Common parameter-name aliases for the tools a dialect tends to imagine: `file`/`filename`
+ *  for readFile's `path`, `query`/`keyword` for grep's `pattern`, `cmd`/`command_to_run` for
+ *  runCommand's `command`. Applied ONLY when the real parameter is absent — never overrides an
+ *  argument the model got right. Cheap structural fixups: no schema, no coercion. */
+const DIALECT_PARAM_ALIASES: Record<string, Record<string, string>> = {
+  readFile: { file: 'path', filename: 'path', file_path: 'path', filepath: 'path' },
+  writeFile: { file: 'path', filename: 'path', file_path: 'path', filepath: 'path', text: 'content', contents: 'content' },
+  createFile: { file: 'path', filename: 'path', file_path: 'path', filepath: 'path', text: 'content', contents: 'content' },
+  editFile: { file: 'path', filename: 'path', file_path: 'path', filepath: 'path', old_text: 'search', old_string: 'search', find: 'search', new_text: 'replace', new_string: 'replace', replacement: 'replace' },
+  deleteFile: { file: 'path', filename: 'path', file_path: 'path', filepath: 'path' },
+  grep: { query: 'pattern', keyword: 'pattern', search: 'pattern', regex: 'pattern' },
+  runCommand: { cmd: 'command', command_to_run: 'command', shell_command: 'command' },
+};
+
+/** Rename a rescued call's imagined parameter names to the real ones (in place, on the parsed
+ *  object). Returns the canonical arguments JSON string. Best-effort: an unparseable argument
+ *  payload passes through untouched — schema validation downstream (repairToolArguments /
+ *  Zod) reports anything still wrong as a fail-soft tool error the model can correct. */
+function normalizeDialectParams(name: string, argsJson: string): string {
+  const aliases = DIALECT_PARAM_ALIASES[name];
+  if (!aliases) return argsJson;
+  let parsed: Record<string, unknown>;
+  try { parsed = JSON.parse(argsJson); } catch { return argsJson; }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return argsJson;
+  let changed = false;
+  for (const [from, to] of Object.entries(aliases)) {
+    if (from in parsed && !(to in parsed)) { parsed[to] = parsed[from]; delete parsed[from]; changed = true; }
+  }
+  return changed ? JSON.stringify(parsed) : argsJson;
+}
+
 /** Scan one balanced JSON object out of `text`, starting from the opening `{` at index `start`.
  *  Walks the string tracking string-literal / escape state so a `}` INSIDE a string value does
  *  NOT end the capture — writeFile/editFile `content`/`replace` routinely contain code with
@@ -285,14 +349,14 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
   // branch that would have parsed it correctly. Measured cost: an edit that wrote nothing.
   const fnAnchor = /<function=([a-zA-Z0-9_\-]+)[^>]*>/g;
   while ((m = fnAnchor.exec(text)) !== null) {
-    const name = m[1];
+    const resolved = resolveDialectToolName(m[1], toolNames);
     const after = m.index + m[0].length;
-    if (!toolNames.has(name)) continue;
+    if (!resolved) continue;
     const jsonStart = jsonBodyStart(text, after);
     if (jsonStart < 0) continue;
     const obj = balancedJsonFrom(text, jsonStart);
     if (!obj) continue;
-    calls.push({ name, arguments: obj.text });
+    calls.push({ name: resolved, arguments: normalizeDialectParams(resolved, obj.text) });
     fnAnchor.lastIndex = obj.end;
   }
 
@@ -302,14 +366,14 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     // `arguments` object so braces inside it survive.
     const blobAnchor = /\{\s*"name"\s*:\s*"([a-zA-Z0-9_\-]+)"\s*,\s*"arguments"\s*:/g;
     while ((m = blobAnchor.exec(text)) !== null) {
-      const name = m[1];
-      if (!toolNames.has(name)) continue;
+      const resolved = resolveDialectToolName(m[1], toolNames);
+      if (!resolved) continue;
       const obj = firstBalancedJson(text, m.index);
       if (!obj) continue;
       let parsed: { arguments?: unknown };
       try { parsed = JSON.parse(obj.text); } catch { blobAnchor.lastIndex = m.index + m[0].length; continue; }
       const lifted = liftArgsPayload(parsed?.arguments);
-      if (lifted !== null) calls.push({ name, arguments: lifted });
+      if (lifted !== null) calls.push({ name: resolved, arguments: normalizeDialectParams(resolved, lifted) });
       blobAnchor.lastIndex = obj.end;
     }
   }
@@ -320,14 +384,14 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     // don't speak the tools API). Same balanced capture, lifting `parameters`.
     const typedAnchor = /\{\s*"type"\s*:\s*"function"\s*,\s*"name"\s*:\s*"([a-zA-Z0-9_\-]+)"\s*,\s*"parameters"\s*:/g;
     while ((m = typedAnchor.exec(text)) !== null) {
-      const name = m[1];
-      if (!toolNames.has(name)) continue;
+      const resolved = resolveDialectToolName(m[1], toolNames);
+      if (!resolved) continue;
       const obj = firstBalancedJson(text, m.index);
       if (!obj) continue;
       let parsed: { parameters?: unknown };
       try { parsed = JSON.parse(obj.text); } catch { typedAnchor.lastIndex = m.index + m[0].length; continue; }
       const lifted = liftArgsPayload(parsed?.parameters);
-      if (lifted !== null) calls.push({ name, arguments: lifted });
+      if (lifted !== null) calls.push({ name: resolved, arguments: normalizeDialectParams(resolved, lifted) });
       typedAnchor.lastIndex = obj.end;
     }
   }
@@ -346,13 +410,13 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     // final answer and the turn died with no tool ever running.
     const tcTag = /<tool_call>\s*([a-zA-Z0-9_.\-]+)\s*([\s\S]*?)(?:<\/tool_call>|$)/g;
     while ((m = tcTag.exec(text)) !== null) {
-      const name = m[1];
-      if (!toolNames.has(name)) continue;
+      const resolved = resolveDialectToolName(m[1], toolNames);
+      if (!resolved) continue;
       const args: Record<string, unknown> = {};
       const pair = /<arg_key>\s*([\s\S]*?)\s*<\/arg_key>\s*<arg_value>\s*([\s\S]*?)\s*<\/arg_value>/g;
       let p: RegExpExecArray | null;
       while ((p = pair.exec(m[2])) !== null) args[p[1]] = coerceInlineArgValue(p[2]);
-      calls.push({ name, arguments: JSON.stringify(args) });
+      calls.push({ name: resolved, arguments: normalizeDialectParams(resolved, JSON.stringify(args)) });
     }
   }
 
@@ -367,8 +431,8 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     // means "treat as a literal string" (DSML has no other type marker), so it skips JSON coercion.
     const invokeTag = /<｜+DSML｜+invoke\s+name="([a-zA-Z0-9_\-]+)"[^>]*>/g;
     while ((m = invokeTag.exec(text)) !== null) {
-      const name = m[1];
-      if (!toolNames.has(name)) { invokeTag.lastIndex = m.index + m[0].length; continue; }
+      const resolved = resolveDialectToolName(m[1], toolNames);
+      if (!resolved) { invokeTag.lastIndex = m.index + m[0].length; continue; }
       const closeRe = /<\/｜+DSML｜+invoke>/g;
       closeRe.lastIndex = m.index + m[0].length;
       const close = closeRe.exec(text);
@@ -381,7 +445,7 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
         const [, pname, attrs, raw] = p;
         args[pname] = /string\s*=\s*"true"/.test(attrs) ? raw.trim() : coerceInlineArgValue(raw);
       }
-      calls.push({ name, arguments: JSON.stringify(args) });
+      calls.push({ name: resolved, arguments: normalizeDialectParams(resolved, JSON.stringify(args)) });
       invokeTag.lastIndex = close ? close.index + close[0].length : text.length;
     }
   }
@@ -414,10 +478,10 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     // response truncated mid-call.
     const fnParamAnchor = /<function=([a-zA-Z0-9_\-]+)[^>]*>/g;
     while ((m = fnParamAnchor.exec(text)) !== null) {
-      const name = m[1];
+      const resolved = resolveDialectToolName(m[1], toolNames);
       const bodyStart = m.index + m[0].length;
       fnParamAnchor.lastIndex = bodyStart;
-      if (!toolNames.has(name)) continue;
+      if (!resolved) continue;
       // This occurrence has a JSON body — shape 1 already claimed it. Skipping here is what keeps
       // the two shapes exclusive now that both run unconditionally.
       if (jsonBodyStart(text, bodyStart) >= 0) continue;
@@ -440,7 +504,7 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
       // the turn died with the raw XML shown as the answer. Safe now only because the
       // `jsonBodyStart` check above already excluded shape 1's occurrences: without it this would
       // push a duplicate `{}` call for every JSON-bodied one.
-      calls.push({ name, arguments: JSON.stringify(args) });
+      calls.push({ name: resolved, arguments: normalizeDialectParams(resolved, JSON.stringify(args)) });
       if (close) fnParamAnchor.lastIndex = close.index + close[0].length;
     }
   }
@@ -461,8 +525,8 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     // dedupe pass below collapses any overlap.
     const pyAnchor = /(?:<tool_call_start>\|?\s*)?\[([a-zA-Z0-9_\-]+)\s*\(/g;
     while ((m = pyAnchor.exec(text)) !== null) {
-      const name = m[1];
-      if (!toolNames.has(name)) continue;
+      const resolved = resolveDialectToolName(m[1], toolNames);
+      if (!resolved) continue;
       // Scan the kwarg list by hand: `key='value'` / key="value" / bare token, comma-separated.
       // Values are python-style single-OR-double-quoted strings whose contents may hold commas,
       // brackets, and escaped quotes — a naive split(',') breaks on the first comma inside a path.
@@ -506,7 +570,7 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
       // mid-emit text or an accidental `[readFile(` in prose doesn't run a half-parsed call
       // with silently-missing arguments.
       if (!matchedClose) continue;
-      calls.push({ name, arguments: JSON.stringify(args) });
+      calls.push({ name: resolved, arguments: normalizeDialectParams(resolved, JSON.stringify(args)) });
       pyAnchor.lastIndex = Math.max(pyAnchor.lastIndex, i);
     }
   }
@@ -524,9 +588,7 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     // resolution instead of dropping the call.
     const chanAnchor = /<\|channel\|>\s*commentary\s+to\s*=\s*functions\.([a-zA-Z0-9_\-]+)/g;
     while ((m = chanAnchor.exec(text)) !== null) {
-      const emitted = m[1];
-      const resolved = toolNames.has(emitted) ? emitted
-        : [...toolNames].find((t) => t.replace(/_/g, '').toLowerCase() === emitted.replace(/_/g, '').toLowerCase());
+      const resolved = resolveDialectToolName(m[1], toolNames);
       if (!resolved) continue;
       const after = m.index + m[0].length;
       // Args follow `json=` after a <|constrain|> marker; fall back to the first `{` after
@@ -538,7 +600,7 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
       if (braceAt < 0) continue;
       const obj = balancedJsonFrom(text, braceAt);
       if (!obj) continue;
-      calls.push({ name: resolved, arguments: obj.text });
+      calls.push({ name: resolved, arguments: normalizeDialectParams(resolved, obj.text) });
       chanAnchor.lastIndex = obj.end;
     }
   }
@@ -556,8 +618,8 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     // response truncated mid-call.
     const invokeTag = /<(?:\w+:)?invoke\s+name="([a-zA-Z0-9_\-]+)"[^>]*>/g;
     while ((m = invokeTag.exec(text)) !== null) {
-      const name = m[1];
-      if (!toolNames.has(name)) { invokeTag.lastIndex = m.index + m[0].length; continue; }
+      const resolved = resolveDialectToolName(m[1], toolNames);
+      if (!resolved) { invokeTag.lastIndex = m.index + m[0].length; continue; }
       const closeRe = /<\/(?:\w+:)?invoke>/g;
       closeRe.lastIndex = m.index + m[0].length;
       const close = closeRe.exec(text);
@@ -570,7 +632,7 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
         const raw = p[2].replace(/^[ \t]*\r?\n/, '').replace(/\r?\n[ \t]*$/, '');
         args[p[1]] = raw.includes('\n') ? raw : coerceInlineArgValue(raw);
       }
-      calls.push({ name, arguments: JSON.stringify(args) });
+      calls.push({ name: resolved, arguments: normalizeDialectParams(resolved, JSON.stringify(args)) });
       invokeTag.lastIndex = close ? close.index + close[0].length : text.length;
     }
   }
