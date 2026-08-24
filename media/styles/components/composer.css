@@ -44,17 +44,18 @@
 }
 
 /* ── Agent picker ── */
-/* The primary composer control: a filled, per-mode tinted pill (ask = neutral,
-   plan = blue, agent = accent) — it must read as "what kind of agent am I talking to"
-   at a glance, unlike the quieter outline model pill beside it. */
+/* One STANDARD capsule shape across the whole toolbar (agent, model, reasoning): quiet
+   outline pill on the shared tokens. The mode signal is a subtle icon tint, not a fill —
+   the old per-mode tinted fills made the row read as three different design systems. */
 .tm-agent-trigger {
   display: inline-flex; align-items: center; gap: 5px;
   height: 26px; padding: 0 9px 0 10px;
   border-radius: var(--tm-radius-full);
-  border: 1px solid transparent;
+  background: transparent; color: var(--tm-fg);
+  border: 1px solid var(--tm-border);
   font-size: 11.5px; font-weight: 600;
   cursor: pointer; max-width: 118px; min-width: 0;
-  transition: filter var(--tm-transition-fast), background var(--tm-transition-fast);
+  transition: background var(--tm-transition-fast), border-color var(--tm-transition-fast);
 }
 .tm-agent-trigger .tm-agent-label {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -64,22 +65,14 @@
 .tm-agent-trigger .tm-agent-trigger-chev { flex: 0 0 auto; display: inline-flex; opacity: 0.65; }
 .tm-agent-trigger .tm-agent-trigger-chev svg { width: 9px; height: 9px; }
 .tm-agent-trigger:focus-visible { outline: 1px solid var(--tm-border-focus); outline-offset: 1px; }
+.tm-agent-trigger:hover { background: var(--tm-hover-toolbar); border-color: var(--tm-border-focus); }
 .tm-agent-trigger.executing .tm-agent-label { color: var(--tm-fg-link); animation: state-pulse 1.2s ease-in-out infinite; }
 .tm-agent-exec-zap { display: inline-flex; margin-left: 2px; }
 
-.tm-agent-ask {
-  background: var(--tm-surface-panel); color: var(--tm-fg);
-  border-color: var(--tm-card-border);
-}
-.tm-agent-plan {
-  background: color-mix(in srgb, var(--tm-info) 15%, transparent);
-  color: var(--tm-info);
-}
-.tm-agent-agent {
-  background: color-mix(in srgb, var(--tm-accent) 20%, transparent);
-  color: var(--tm-accent);
-}
-.tm-agent-trigger:hover { filter: brightness(1.15); }
+/* Mode signal = icon tint only; the pill itself stays the standard outline. */
+.tm-agent-ask .tm-agent-trigger-icon { color: var(--tm-fg-muted); }
+.tm-agent-plan .tm-agent-trigger-icon { color: var(--tm-info); }
+.tm-agent-agent .tm-agent-trigger-icon { color: var(--tm-accent); }
 
 .tm-agent-pop { width: 288px; }
 .tm-agent-list { display: flex; flex-direction: column; gap: 2px; }
@@ -117,7 +110,7 @@
   background: transparent; color: var(--tm-fg);
   border: 1px solid var(--tm-border);
   font-size: 11px; cursor: pointer;
-  max-width: 150px; min-width: 0;
+  width: 150px;
   transition: background var(--tm-transition-fast), border-color var(--tm-transition-fast);
 }
 .tm-model-trigger:hover { background: var(--tm-hover-toolbar); border-color: var(--tm-border-focus); }
@@ -235,13 +228,111 @@
   background: var(--tm-border); opacity: 0.7; margin: 0 2px;
 }
 
+/* ── Working state — the composer's active border while the agent runs ── */
+/* The input itself signals the run: accent border + soft pulsing ring. Focus keeps its
+   own ring; the two share the token so they never fight. */
+.composer.working .input-wrap {
+  border-color: color-mix(in srgb, var(--tm-accent) 70%, var(--vscode-input-border, transparent));
+  animation: tm-working-pulse 2.2s ease-in-out infinite;
+}
+.composer.working .input-wrap:focus-within {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--tm-accent) 55%, transparent), 0 2px 10px rgba(0, 0, 0, .18);
+}
+@keyframes tm-working-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--tm-accent) 45%, transparent), 0 1px 3px rgba(0, 0, 0, .12); }
+  50%      { box-shadow: 0 0 0 1px color-mix(in srgb, var(--tm-accent) 18%, transparent), 0 1px 3px rgba(0, 0, 0, .12); }
+}
+
+/* ── Todo bar + bottom sheet ── */
+/* Collapsed-by-default checklist bar above the composer. The whole bar is the toggle;
+   the sheet slides up from it (same dropdown surface language as .tm-popover). */
+.tm-todobar-wrap { position: relative; display: flex; flex-direction: column; }
+.tm-todobar {
+  display: flex; align-items: center; gap: 7px;
+  width: 100%; box-sizing: border-box;
+  height: 28px; padding: 0 4px 0 10px;
+  background: var(--tm-surface-panel); color: var(--tm-fg);
+  border: 1px solid var(--tm-card-border);
+  border-radius: var(--tm-radius-full);
+  font-size: 11px; text-align: left; cursor: pointer;
+  transition: background var(--tm-transition-fast), border-color var(--tm-transition-fast);
+}
+.tm-todobar:hover { background: var(--tm-hover-toolbar); border-color: var(--tm-border-focus); }
+.tm-todobar.hidden { display: none; }
+.tm-todobar-icon { flex: 0 0 auto; display: inline-flex; color: var(--tm-fg-muted); }
+.tm-todobar.running .tm-todobar-icon { color: var(--tm-accent); animation: state-pulse 1.2s ease-in-out infinite; }
+.tm-todobar-count { flex: 0 0 auto; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tm-todobar-text {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--tm-fg-muted);
+}
+.tm-todobar.running .tm-todobar-text { color: var(--tm-fg); }
+.tm-todobar.preparing .tm-todobar-text { font-style: italic; }
+.tm-todobar-aux { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; }
+.tm-todobar-resume, .tm-todobar-close {
+  border: 1px solid var(--tm-card-border); border-radius: var(--tm-radius-full);
+  background: transparent; color: var(--tm-fg-muted);
+  font-size: 10px; font-weight: 600; line-height: 1;
+  padding: 3px 8px; cursor: pointer;
+}
+.tm-todobar-resume:hover { color: var(--tm-fg); border-color: var(--tm-border-focus); background: var(--tm-hover-toolbar); }
+.tm-todobar-close { padding: 3px 6px; font-size: 12px; }
+.tm-todobar-close:hover { color: var(--tm-fg); border-color: var(--tm-border-focus); }
+.tm-todobar-chev { flex: 0 0 auto; color: var(--tm-fg-muted); font-size: 10px; padding: 0 6px 0 2px; }
+
+/* The sheet — anchored above the bar, capped height, internally scrollable. */
+.tm-todosheet {
+  position: absolute; bottom: calc(100% + 6px); left: 0; right: 0; z-index: 60;
+  display: flex; flex-direction: column;
+  max-height: 42vh; min-height: 0;
+  background: var(--tm-surface-dropdown);
+  border: 1px solid var(--tm-border-dropdown);
+  border-radius: var(--tm-radius-lg);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  padding: var(--tm-gap-sm);
+  transform-origin: bottom center;
+  animation: tm-sheet-up 140ms ease;
+}
+.tm-todosheet.hidden { display: none; }
+@keyframes tm-sheet-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.tm-todosheet-head {
+  display: flex; align-items: center; gap: 8px;
+  flex: 0 0 auto; padding: 2px var(--tm-gap-sm) var(--tm-gap-sm);
+}
+.tm-todosheet-title { font-size: var(--tm-text-base); font-weight: 600; color: var(--tm-fg); }
+.tm-todosheet-count { font-size: var(--tm-text-sm); color: var(--tm-fg-muted); font-variant-numeric: tabular-nums; }
+.tm-todosheet-min {
+  margin-left: auto; flex: 0 0 auto;
+  border: 1px solid var(--tm-card-border); border-radius: var(--tm-radius-sm);
+  background: transparent; color: var(--tm-fg-muted);
+  width: 20px; height: 20px; font-size: 11px; line-height: 1; cursor: pointer;
+}
+.tm-todosheet-min:hover { color: var(--tm-fg); border-color: var(--tm-border-focus); background: var(--tm-hover-toolbar); }
+.tm-todosheet-list { flex: 1 1 auto; overflow-y: auto; min-height: 0; scrollbar-width: thin; display: flex; flex-direction: column; gap: 2px; }
+.tm-todosheet-empty { padding: var(--tm-gap-sm); font-size: var(--tm-text-sm); color: var(--tm-fg-muted); font-style: italic; }
+.tm-todosheet-step { display: flex; align-items: flex-start; gap: 8px; padding: 4px var(--tm-gap-sm); border-radius: var(--tm-radius-md); font-size: var(--tm-text-base); color: var(--tm-fg); }
+.tm-todosheet-step.active { background: var(--tm-selection-active); }
+.tm-todosheet-marker { flex: 0 0 auto; width: 12px; text-align: center; font-weight: 700; }
+.tm-todosheet-marker.done { color: var(--tm-success, #2ea043); }
+.tm-todosheet-marker.active { color: var(--tm-accent); animation: state-pulse 1.2s ease-in-out infinite; }
+.tm-todosheet-marker.pending { color: var(--tm-fg-muted); }
+.tm-todosheet-marker.failed { color: var(--tm-error); }
+.tm-todosheet-step.done .tm-todosheet-text { color: var(--tm-fg-muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--tm-fg-muted) 50%, transparent); }
+.tm-todosheet-step.pending .tm-todosheet-text { color: var(--tm-fg-muted); }
+.tm-todosheet-step.failed .tm-todosheet-text { color: var(--tm-fg); }
+.tm-todosheet-text { min-width: 0; overflow-wrap: anywhere; }
+
 /* ── Responsive — VS Code sidebars dock well under 400px. The agent/model triggers
    shrink by their labels; below 300px clamp them so the primary row (agent / model /
    auto-approve / send) never wraps or clips. ── */
 @media (max-width: 300px) {
   .tm-agent-trigger { max-width: 84px; padding: 0 7px 0 8px; }
   .tm-agent-trigger .tm-agent-label { max-width: 44px; }
-  .tm-model-trigger { max-width: 88px; }
+  .tm-model-trigger { width: 88px; }
   .tm-model-trigger .tm-model-label { max-width: 56px; }
   .toolbar-sep { display: none; }
 }

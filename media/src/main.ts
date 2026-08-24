@@ -11,13 +11,14 @@ import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate, fmtDu
 import { send } from './bridge';
 import type { RxMessage } from './bridge';
 import { $, escapeHtml, showToast } from './dom';
-import { renderMarkdown } from './markdown';
+import { renderMarkdown, appendStreamCursor } from './markdown';
 import { stripLegacyMarkdown } from '../../src/shared/workReport';
 import { renderPdfToPageImages, PDF_MAX_RENDER_PAGES } from './pdfPages';
 import { buildReasoningBlock, updateReasoningBlock, buildToolCard, buildEditDiff, toolLabel, activityFor, STATE_ICON } from './ui/tool/ToolCard';
 import { createPlan, planDataFromStepText, planDataFromTodos, createResultCard } from './ui/components';
 import { createAgentPicker } from './ui/components/AgentPicker';
 import { createModelPicker } from './ui/components/ModelPicker';
+import { createTodoSheet } from './ui/components/TodoSheet';
 import { handleAssistantStart } from './handlers/assistantStart';
 import { handleAgentStep } from './handlers/agentStep';
 import { handleToolStatus } from './handlers/toolStatus';
@@ -233,6 +234,14 @@ const STATE_LABEL = {
   const sessionTabsEl = $('#session-tabs');
   const settingsEl = $('#settings');
   const composer = $('#composer');
+  // Checklist bar + bottom sheet (replaces the old one-line plan-progress banner): collapsed
+  // by default; click opens the full step list above the composer. Fed from 'todos' (agent
+  // checklist), 'planProgress' (plan runner), and the Execute click's preparing state.
+  const todoSheet = createTodoSheet({
+    onResume: () => send({ type: 'resumePlan' }),
+    onDismiss: () => todoSheet.update(null),
+  });
+  $('#plan-progress-bar').replaceWith(todoSheet.root);
   const footerEl = $('#footer');
   // Footer summary → Settings ▸ Usage. Opens settings (if closed) and switches
   // tab without reloading/recreating the webview, then scrolls the
@@ -3592,8 +3601,14 @@ const STATE_LABEL = {
         const title = msg.followingPlan ? 'Following the approved plan' : 'Tasks';
         const data = planDataFromTodos(title, msg.todos || []);
         const next = createPlan({ data, mode: 'live' });
+        next.classList.add('collapsed'); // the composer's todo bar + sheet carries the live view
         if (t.planEl) t.planEl.replaceWith(next); else t.flow.insertBefore(next, t.flow.firstChild);
         t.planEl = next;
+        todoSheet.update({
+          title: msg.followingPlan ? 'Plan' : 'Tasks',
+          steps: (msg.todos || []).map((td) => ({ text: td.content, status: td.status === 'completed' ? 'done' : td.status === 'in_progress' ? 'active' : 'pending' })),
+          running: busy,
+        });
         scrollDown();
         break;
       }
@@ -3601,6 +3616,7 @@ const STATE_LABEL = {
         // Plan progress → mount/swap the Plan component at t.planEl (same slot as 'todos').
         const t = ensureTarget(msg.requestId);
         const next = createPlan({ data: msg.data, mode: 'live' });
+        next.classList.add('collapsed');
         if (t.planEl) t.planEl.replaceWith(next); else t.flow.insertBefore(next, t.flow.firstChild);
         t.planEl = next;
         scrollDown();
@@ -3783,7 +3799,12 @@ const STATE_LABEL = {
           settled,
           summary: settled ? undefined : summary,
           onApprove: (steps) => send({ type: 'approvePlan', requestId: newId(), approved: true, steps }),
-          onExecute: (steps) => send({ type: 'executePlan', requestId: newId(), steps }),
+          onExecute: (steps) => {
+            send({ type: 'executePlan', requestId: newId(), steps });
+            // Switching to Agent mode and spinning up the runner takes a moment — say so
+            // instead of showing nothing between the click and the first progress state.
+            todoSheet.update({ title: 'Plan', steps: [], preparing: true, running: true });
+          },
           onDiscard: () => send({ type: 'approvePlan', requestId: newId(), approved: false, steps: '' }),
           onDefer: (steps) => {
             const note = document.createElement('div'); note.className = 'tm-plan-note';
@@ -3912,7 +3933,10 @@ const STATE_LABEL = {
           requestAnimationFrame(() => {
             seg._pending = false;
             seg.innerHTML = '';
-            seg.appendChild(renderMarkdown(stripClarifyBlock(seg._buf)));
+            const rendered = renderMarkdown(stripClarifyBlock(seg._buf));
+            seg.appendChild(rendered);
+            // One caret on the true final line (nested lists included) — see appendStreamCursor.
+            appendStreamCursor(rendered);
             if (!sid || sid === viewedSessionId) scrollDown();
           });
         }
@@ -4152,6 +4176,7 @@ const STATE_LABEL = {
         // — a background session's busy flip must not touch it.
         if (!msg.sessionId || msg.sessionId === viewedSessionId) {
           busy = msg.busy;
+          composer.classList.toggle('working', busy);
           const sb = $('#btn-send');
           sb.innerHTML = busy ? ICON.stop : ICON.send;
           sb.title = busy ? 'Stop' : 'Send (Enter)';
@@ -4418,41 +4443,29 @@ const STATE_LABEL = {
    *  terminal summary when done/failed. The step checklist itself renders through the
    *  normal todos path; this bar carries only run status. */
   function renderPlanProgress(state) {
-    const bar = $('#plan-progress-bar');
-    if (!bar) return;
-    if (!state || state.status === 'aborted') { bar.classList.add('hidden'); return; }
-    const done = (state.steps || []).filter((st) => st.status === 'done').length;
-    const total = (state.steps || []).length;
-    const current = state.steps && state.steps[state.currentStep];
-    bar.innerHTML = '';
-    const head = document.createElement('div'); head.className = 'cb-head';
-    const icon = document.createElement('span'); icon.className = 'cb-icon';
-    icon.innerHTML = ICON.checkSquare;
-    const title = document.createElement('span'); title.className = 'cb-title';
-    if (state.status === 'running') {
-      title.textContent = `Plan · step ${Math.min(state.currentStep + 1, total)}/${total}${current ? ` — ${current.text.slice(0, 80)}` : ''}`;
-    } else if (state.status === 'paused') {
-      title.textContent = `Plan paused at step ${Math.min(state.currentStep + 1, total)}/${total} (${done} done)`;
-    } else if (state.status === 'failed') {
-      title.textContent = `Plan stopped — a step failed verification (${done}/${total} done)`;
-    } else {
-      title.textContent = `Plan completed (${done}/${total} steps)`;
-    }
-    head.appendChild(icon); head.appendChild(title);
-    if (state.status === 'paused') {
-      const resume = document.createElement('button'); resume.className = 'cb-action';
-      resume.textContent = 'Resume';
-      resume.addEventListener('click', () => { send({ type: 'resumePlan' }); bar.classList.add('hidden'); });
-      head.appendChild(resume);
-    }
-    if (state.status !== 'running') {
-      const close = document.createElement('button'); close.className = 'cb-close'; close.textContent = '×';
-      close.title = 'Dismiss';
-      close.addEventListener('click', () => { bar.classList.add('hidden'); });
-      head.appendChild(close);
-    }
-    bar.appendChild(head);
-    bar.classList.remove('hidden');
+    if (!state || state.status === 'aborted') { todoSheet.update(null); return; }
+    const status = state.status || 'done';
+    const steps = (state.steps || []).map((st, i) => ({
+      text: st.text,
+      status: st.status === 'done' ? 'done'
+        : st.status === 'failed' ? 'failed'
+        : status === 'running' && i === state.currentStep ? 'active'
+        : 'pending',
+    }));
+    const done = steps.filter((s) => s.status === 'done').length;
+    const total = steps.length;
+    const currentStep = Math.min((state.currentStep ?? 0) + 1, Math.max(total, 1));
+    todoSheet.update({
+      title: 'Plan',
+      steps,
+      running: status === 'running',
+      paused: status === 'paused',
+      finished: status !== 'running' && status !== 'paused',
+      note: status === 'failed' ? `Plan stopped — a step failed verification (${done}/${total} done)`
+        : status === 'done' ? `Plan completed (${done}/${total} steps)`
+        : status === 'paused' ? `Paused at step ${currentStep}/${total} (${done} done)`
+        : undefined,
+    });
   }
 
   /** Dismissible "new providers available" banner — same one-shot, dismiss-on-close

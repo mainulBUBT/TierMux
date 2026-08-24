@@ -105,12 +105,18 @@ export function createModelPicker(init: ModelPickerInit): ModelPickerHandle {
   const listEl = el('div', { class: 'tm-model-list' });
 
   // ── trigger ──
+  // Auto stays "Auto" on the pill even while a turn is being served — the whole point of
+  // Auto is the user doesn't pick a model, so swapping the label to whatever it picked
+  // under the hood would just be noise. The actual model still shows in the tooltip.
+  // A pinned model still swaps its label to the serving one (e.g. on failover), since
+  // that's a real deviation from the user's explicit pick.
   function renderTrigger() {
-    trigger.classList.toggle('tm-is-auto', value === 'auto' && !serving);
+    const isAuto = value === 'auto';
+    trigger.classList.toggle('tm-is-auto', isAuto);
     trigger.classList.toggle('tm-serving', !!serving);
-    triggerIconEl.innerHTML = value === 'auto' && !serving ? ICON.sparkle : ICON.chip;
-    labelEl.textContent = serving || label;
-    trigger.title = serving ? `Serving this turn: ${serving}` : (value === 'auto' ? 'Auto (smart routing)' : label);
+    triggerIconEl.innerHTML = isAuto ? ICON.sparkle : ICON.chip;
+    labelEl.textContent = isAuto ? 'Auto' : (serving || label);
+    trigger.title = serving ? `Serving this turn: ${serving}` : (isAuto ? 'Auto (smart routing)' : label);
   }
 
   // ── reasoning segmented control ──
