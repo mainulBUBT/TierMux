@@ -135,26 +135,19 @@ async function main() {
 
   console.log('\n— verify failure: same-model retry, plan repair, no routing escalation —');
   {
+    // Simple core (2026-08-24): verify runs ONCE per round as observation. Every model round
+    // is scripted as a FIXED two-call shape — one response carrying todowrite+runCommand
+    // together, then a text response — so any round structure (planRunner retry, stepEngine
+    // acceptance rounds) consumes identical pairs and always ends verify-failed, until the
+    // repair callback flips verification off for the repaired step.
     (globalThis as any).__tiermuxTestConfig = { mixturePipeline: 'off', verifyCommand: 'false' };
-    // Engine shape per round (verify always runs 'false'): mutation → natural finish → verify
-    // fails → VERIFY_FAILED_NUDGE retry (text-only, so the gate settles) → round ends 'failed'.
-    // Attempt 1 = round 1 + one unaccepted round; attempt 2 = the same shape; then the
-    // repaired step runs with verification turned off and passes.
-    const text = (s: string) => ({ content: s });
-    const cmd = (id: string, c: string) => ({ tool_calls: [toolCall(id, 'runCommand', { command: c })] });
-    const todoW = (id: string) => ({ tool_calls: [toolCall(id, 'todowrite', { todos: [{ content: 'Edit src/b.ts', status: 'completed', difficulty: 'hard' }] })] });
-    const script: Array<Record<string, unknown>> = [
-      // Attempt 1 — round 1
-      todoW('t1'), cmd('c1', 'printf one'), text('Fixed it.'), text('Adjusted the import path.'),
-      // Attempt 1 — unaccepted round 2
-      cmd('c2', 'printf two'), text('Reran.'), text('Tweaked again.'),
-      // Attempt 2 — round 1
-      todoW('t2'), cmd('c3', 'printf three'), text('Fixed again.'), text('Adjusted once more.'),
-      // Attempt 2 — unaccepted round 2
-      cmd('c4', 'printf four'), text('Reran again.'), text('Tweaked differently.'),
-      // Repaired step (verify off from here)
-      todoW('t3'), cmd('c5', 'printf five'), text('Done.'),
-    ];
+    const toolsResp = () => ({ tool_calls: [
+      toolCall('t1', 'todowrite', { todos: [{ content: 'Edit src/b.ts', status: 'completed', difficulty: 'hard' }] }),
+      toolCall('c1', 'runCommand', { command: 'printf one' }),
+    ] });
+    const textResp = () => ({ content: 'Fixed it.' });
+    const script: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < 14; i++) script.push(i % 2 === 0 ? toolsResp() : textResp());
     const routeOpts: any[] = [];
     const fakeRouter = {
       async route(_m: unknown, opts: unknown) {
@@ -185,11 +178,8 @@ async function main() {
 
     // THE invariant: verify failure must never become a model escalation.
     ok('no verify-failure call ever requested a model exclusion', routeOpts.every((o) => !o.excludeModels || !o.excludeModels.length));
-    const constraintOf = (o: any) => JSON.stringify({ max: o?.maxIntelligenceRank ?? null, min: o?.minIntelligenceRank ?? null, excl: o?.excludeModels ?? null });
-    // Attempt 1 = first 7 route calls, attempt 2 = next 7 — identical constraint sets.
-    const a1 = new Set(routeOpts.slice(0, 7).map(constraintOf));
-    const a2 = new Set(routeOpts.slice(7, 14).map(constraintOf));
-    ok('retry attempt ran under the identical routing constraints', a1.size === a2.size && [...a1].every((c) => a2.has(c)), `a1=${[...a1].join('|')} a2=${[...a2].join('|')}`);
+    ok('every call ran under identical (unconstrained) routing — no rank constraint appeared',
+      routeOpts.every((o) => o?.maxIntelligenceRank === undefined && o?.minIntelligenceRank === undefined));
   }
 
   console.log('\n— pause & resume: an aborted run parks and continues without redoing work —');
@@ -236,55 +226,10 @@ async function main() {
     ok('resume summary counts all steps', resumed.summary.includes('3/3 step(s) done'));
   }
 
-  console.log('\n— stuck step (no tool calls, degenerate text): counts as a failure, gets retry + repair —');
-  {
-    // Regression for the bug where a `stopReason: 'stuck'` step (the model produced only a
-    // friendly "couldn't finish" fallback line, no error, no verify command run) slipped past
-    // `stepFailed` (which only checked `verifyOutcome`/`failed`) and would have been silently
-    // marked 'done' with nothing built. `stepFailed` now also checks `stopReason === 'stuck'`.
-    (globalThis as any).__tiermuxTestConfig = { mixturePipeline: 'off', verifyCommand: 'off' };
-    const repeatedLine = 'Let me check the affiliate registration flow next.';
-    const stuckContent = { content: Array(6).fill(repeatedLine).join('\n') }; // triggers hasDegenerateTextRepetition
-    const doneContent = (s: string) => ({ content: s });
-    const todoW = (id: string) => ({ tool_calls: [toolCall(id, 'todowrite', { todos: [{ content: 'Build the page', status: 'completed', difficulty: 'hard' }] })] });
-    const script: Array<Record<string, unknown>> = [
-      // Attempt 1: degenerate repetition detector fires mid-stream; runTurn's own internal
-      // recovery (nudges/re-attempts) exhausts itself too — takes several rounds in practice,
-      // not just one — before genuinely giving up and surfacing stopReason:'stuck' to planRunner.
-      stuckContent, stuckContent, stuckContent, stuckContent, stuckContent, stuckContent,
-      // Attempt 2 (planRunner's own same-model retry, failure output injected): stuck again,
-      // exhausting its own internal recovery too — planRunner's one allowed retry is spent for real.
-      stuckContent, stuckContent, stuckContent, stuckContent, stuckContent, stuckContent,
-      // Repaired step: succeeds cleanly.
-      todoW('t1'), doneContent('Built it.'),
-    ];
-    const routeOpts: any[] = [];
-    const fakeRouter = {
-      async route(_m: unknown, opts: unknown) {
-        routeOpts.push(opts ?? {});
-        const next = script.shift();
-        return { platform: 'custom' as const, model: 'fake', response: baseResponse(next ?? { content: 'done.' }) };
-      },
-      peekTopSelection: () => ({ entry: { platform: 'custom', modelId: 'fake', enabled: true, priority: 0 }, model: { intelligenceRank: 1 } }),
-    } as unknown as Router;
-
-    const repairCalls: Array<{ failure: string; remaining: string[] }> = [];
-    const state = makeState(['Create/implement the affiliate registration page']);
-    const result = await runPlan(fakeRouter, makeOpts(), state, {
-      repairSteps: async (failure, remaining) => {
-        repairCalls.push({ failure, remaining });
-        return ['Create/implement the affiliate registration page (simplified)'];
-      },
-      onTodos: () => {},
-      onHistory: () => {},
-      onState: () => {},
-    });
-    ok('stuck step was retried once (same model) before repair', routeOpts.length >= 2, `${routeOpts.length} route calls`);
-    ok('plan repair was consulted for the stuck step', repairCalls.length === 1, `${repairCalls.length} calls`);
-    ok('repair saw the stuck step in the failure text', repairCalls[0]?.failure.includes('Create/implement') ?? false);
-    ok('repaired step ran and the plan finished (not silently marked done on the stuck text)',
-      result.state.status === 'done' && result.state.repairs === 1 && result.state.steps[0]?.text.includes('simplified'));
-  }
+  // The stuck-step section (degenerate-repetition detector → stopReason 'stuck' → retry +
+  // repair) was removed with the 2026-08-24 judgment-tower reset: the repetition detector is
+  // deleted, so planRunner's stopReason==='stuck' branch is inert. A text-only step with no
+  // verify signal is now accepted as the model's answer — nobody second-guesses it.
 
   console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL PASS');
   process.exit(failures ? 1 : 0);
