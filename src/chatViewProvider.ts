@@ -9,7 +9,6 @@ import type { Mode } from './shared/types';
 import { runAgentStream, runPlanStream, runAskStream, type AgentResult, type AgentOpts, type AgentMode, type ToolEvent } from './agent/agent';
 import { findTextInWorkspace } from './context/textSearch';
 import { classifyTask } from './agent/routing';
-import { decideStepRound } from './agent/core/stepEngine';
 import { runPlan } from './agent/core/planRunner';
 import { clearFindings } from './agent/sessionFindings';
 import { PRODUCT_NAME } from './shared/branding';
@@ -2198,107 +2197,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       }
 
-      // ── Autonomous continuation loop (todo-driven) ───────────────────────────────────
-      // Turns the engine from single-response into goal-pursuing: the agent writes a plan via the
-      // `todowrite` tool, and this loop keeps re-invoking the model until every planned item is
-      // `completed` (the "visible plan" IS the completion contract — and the verify command is its
-      // arbiter, see decideStepRound's step-acceptance rule). The DECISIONS live in
-      // core/stepEngine.ts (decideStepRound) so headless callers and tests share this exact
-      // brain; this loop owns only the UI effects around each round: persisting the finished
-      // round, pushing the continuation message into history, and the per-round model routing.
-      // A per-send round cap (maxAutoContinueRounds) bounds total autonomy; the Stop button
-      // (isActiveRun/abort) always wins. A plain Q&A turn that never wrote a plan has no pending
-      // todos → this never fires, so simple chats still return in one turn.
-      const agentCfg = vscode.workspace.getConfiguration('tiermux.agent');
-      const autoContinueOn = agentCfg.get<boolean>('autoContinue', true);
-      const maxAutoContinueRounds = agentCfg.get<number>('maxAutoContinueRounds', 25);
-      const maxBudgetContinuations = agentCfg.get<number>('maxBudgetContinuations', 1);
-      const maxStuckContinuations = agentCfg.get<number>('maxStuckContinuations', 1);
-      const maxUnacceptedContinuations = agentCfg.get<number>('maxUnacceptedContinuations', 2);
-      if (m.mode === 'agent' && autoContinueOn) {
-        // Capture the original user request so each continuation round re-injects the goal.
-        // After history compaction or a small-window trim the original task can be evicted from
-        // context, leaving the model working toward a summary it never saw — re-injecting it here
-        // prevents that without increasing the continuation message's cost on tiny windows (kept
-        // short: first 200 chars). `prompt` is the raw user text; strip attachment blocks since
-        // those are separate context, not goal text.
-        const originalTask = prompt.replace(/\n\{\s*"type":\s*"(image_url|file)"/g, '').trim();
-        // One between-rounds compaction per send (see the budget-stop recovery below).
-        let condensedThisSend = false;
-        const autoCondenseOn = agentCfg.get<boolean>('autoCondense', true);
-        let budgetContinuations = 0;
-        let stuckContinuations = 0;
-        let unacceptedContinuations = 0;
-        for (let ac = 0; ac < maxAutoContinueRounds && this.isActiveRun(s, m.requestId); ac++) {
-          // Only todos written during THIS send count (see todosAtSendStart) — stale todos from an
-          // earlier turn must not keep a fresh, unrelated turn spinning.
-          const wroteTodosThisSend = s.lastTodos !== todosAtSendStart;
-          const sendTodos = wroteTodosThisSend ? (s.lastTodos ?? []) : [];
-          // In Auto mode, a stuck round is also given a genuinely different model, not just a
-          // nudge to the same one — an explicit model pin is the user's own choice and stays
-          // untouched even after a stall.
-          const isAutoMode = !s.model || s.model === 'auto';
-          const decision = decideStepRound({
-            todos: sendTodos,
-            result,
-            originalTask,
-            stuckContinuations,
-            maxStuckContinuations,
-            budgetContinuations,
-            maxBudgetContinuations,
-            unacceptedContinuations,
-            maxUnacceptedContinuations,
-            allowModelExclusion: isAutoMode,
-          });
-          if (decision.action === 'stop') {
-            if (sendTodos.length) diagLog('send.autocontinue', `halt: ${decision.reason} after round ${ac}`);
-            break;
-          }
-          stuckContinuations = decision.stuckContinuations;
-          budgetContinuations = decision.budgetContinuations;
-          unacceptedContinuations = decision.unacceptedContinuations;
 
-          this.persistAgentTurn(s, result);
-          // Budget-stop recovery (2026-08-23, live repro: 450k input tokens over two rounds on
-          // kilo/poolside, then "Stopped with unfinished work — 1/2 steps done"). The budget
-          // continuation used to re-send the SAME oversized history — tool outputs and all — so
-          // it re-tripped the 200k turn budget almost immediately and the single allowed
-          // budget continuation (maxBudgetContinuations=1) was spent on nothing. Between-turns
-          // auto-condense can't catch this: it runs before a send, gated at 80% of the model's
-          // ADVERTISED window (a large-window free model never crosses it mid-session). So on a
-          // budget stop, compact the history right here — same /compact machinery — once per
-          // send, only when there's enough history for the condense call to pay for itself.
-          if (result.stopReason === 'budget' && !condensedThisSend && autoCondenseOn
-              && shouldCondense(s.history) && estimateMessagesTokens(s.history) > 30_000) {
-            condensedThisSend = true;
-            const beforeTokens = estimateMessagesTokens(s.history);
-            const condensed = await condenseHistory(
-              s.history,
-              this.deps.router,
-              s.livePlatform && s.liveModel ? `${s.livePlatform}/${s.liveModel}` : undefined,
-            );
-            if (condensed) {
-              s.history = condensed.messages;
-              this.persist(s.id);
-              this.post({
-                type: 'notice', sessionId: s.id, icon: 'compress',
-                text: `Context auto-compacted between rounds — ~${Math.round(beforeTokens / 1000)}k → ~${Math.round(estimateMessagesTokens(condensed.messages) / 1000)}k tokens. `
-                  + 'The turn hit its token budget, so the retry would have re-sent the full history and stopped again.',
-              });
-            }
-          }
-          s.history.push({ role: 'user', content: decision.message });
-          if (decision.difficulty && decision.difficulty !== 'medium') {
-            const stepTodo = sendTodos.find((t) => t.status !== 'completed');
-            diagLog('send.steproute', `round ${ac + 1} (${decision.kind}): routing next todo as ${decision.difficulty} — "${stepTodo?.content.slice(0, 60) ?? '?'}"`);
-          }
-          diagLog('send.autocontinue', `round ${ac + 1}/${maxAutoContinueRounds} · ${decision.reason} · paused=${result.paused}${decision.excludeModels ? ` · excluding ${decision.excludeModels[0]}` : ''}`);
-          result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model, decision.excludeModels, decision.difficulty), {});
-          if (!this.isActiveRun(s, m.requestId)) return;
-        }
-      }
-
-      console.error(`[tiermux][TRACE2] pre-failed-check: result.failed=${result.failed} result.text.length=${result.text.length} result.errorMessage="${result.errorMessage ?? '<undefined>'}" isActiveRun=${this.isActiveRun(s, m.requestId)}`);
       // The turn genuinely failed (router/provider error with no salvageable text or tool
       // calls) — onError already posted a thin error notice from inside runTurn, but that's
       // easy to miss in a chat UI. Show a real reply bubble with the failure reason instead —
@@ -2347,15 +2246,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const pinned = turnModelLabel(s.model, result.model);
       const hasQuestions = !!(agentClar.questions && agentClar.questions.length);
 
-      // One-click Continue affordance (the dsh / Claude Code plan-review pattern): a turn that
-      // ended with unfinished plan items — or on a narration-wall honest-stop note — is
-      // resumable exactly like a paused turn (handleResume re-runs with the full transcript in
-      // memory, no work repeated). Surface the webview's existing Continue button for those
-      // stops too, instead of telling the user to type "continue" (2026-08-23 live feedback:
-      // "agent understands the remaining task but why did it stop").
+      // One-click Continue affordance: a turn that ended with unfinished plan items — or a
+      // step-cap pause — is resumable exactly like a paused turn (handleResume re-runs with
+      // the full transcript in memory, no work repeated). Surface the webview's existing
+      // Continue button for those stops instead of telling the user to type "continue".
       const resumable = !hasQuestions && !result.failed && (result.paused
-        || finalRemainingTodos.length > 0
-        || /describes actions without performing/i.test(displayText));
+        || finalRemainingTodos.length > 0);
 
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: pinned, paused: resumable, noFooter: hasQuestions });
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });

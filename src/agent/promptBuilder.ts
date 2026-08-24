@@ -384,6 +384,54 @@ function todayLine(): string {
   return `Today's date is ${today}.`;
 }
 
+// ── Simple execution core (2026-08-24 reset) ───────────────────────────────────────────
+// The turn loop (core/loop.ts) builds its system prompt HERE. Deliberately small: identity,
+// mode capabilities + grounding rule, date, project profile, user memory, project rules.
+// The scaffolding tower above (behavior.md, research.md, skills index, findings, terse tail)
+// stays on disk as infrastructure but no longer participates in the live prompt — a weak free
+// model follows a short prompt far more reliably than a long contract, and the harness no
+// longer second-guesses answers, so the rules that policed them are not needed in-context.
+
+const SIMPLE_IDENTITY =
+  'You are TierMux, an AI coding assistant working inside the user\'s editor on a real project.\n'
+  + 'You act through tools: read and search the codebase, edit and create files, run commands, search the web.\n'
+  + 'The user\'s latest message is this turn\'s task — answer it or do it.';
+
+const SIMPLE_MODE_TAILS: Record<AgentMode, string> = {
+  agent:
+    '## Agent mode\n'
+    + 'You can edit, write, create, and delete files, and run commands. Only modify files when the task asks for a change.\n'
+    + 'Ground every claim (file, symbol, line, config value) in something you actually read this turn; read the relevant code before editing it and match the project\'s existing patterns.\n'
+    + 'Call the tool instead of describing the action. When you finish, state briefly what changed and how you verified it — or that it is untested.\n'
+    + 'Only a choice the user alone can make (a real preference, a missing credential, a destructive step) goes through the `question` tool; otherwise proceed on a sensible default and state the assumption.',
+  plan:
+    '## Plan mode\n'
+    + 'READ-ONLY: no edits, no mutating commands. Investigate with read/search tools, then reply with a numbered plan — one step per line, each step an imperative naming the real file or symbol it touches, based on code you read this turn.\n'
+    + 'If something is ambiguous in a way that changes the whole approach, call the `askQuestions` tool before planning; otherwise pick sensible defaults and note them in the plan.',
+  ask:
+    '## Ask mode\n'
+    + 'Read-only Q&A: search and read the codebase to ground answers about this project; run read-only commands when the answer depends on real output.\n'
+    + 'Answer directly from what you read. If the question needs an edit or a mutating command, say so and suggest Agent mode. For anything current or outside this codebase, use `webSearch`.',
+};
+
+/** The simple core's system prompt: identity + mode tail + today + profile + memory + rules,
+ *  in cache-friendly order (stable text first, volatile date last). */
+export async function buildSimpleSystemPrompt(mode: AgentMode): Promise<string> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const [memory, rules] = await Promise.all([
+    loadUserMemory().catch(() => ''),
+    loadProjectRules().catch(() => ''),
+  ]);
+  return [
+    SIMPLE_IDENTITY,
+    SIMPLE_MODE_TAILS[mode],
+    projectProfilePrompt(workspaceRoot),
+    rules,
+    memory,
+    todayLine(),
+  ].filter(Boolean).join('\n\n');
+}
+
 /** `sessionId` appends this conversation's findings note (see sessionFindings.ts). It belongs in
  *  the SYSTEM prompt specifically: the message history it summarises is exactly what pruning and
  *  condensation throw away, and the system prompt is the only part rebuilt intact every turn.
