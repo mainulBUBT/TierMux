@@ -188,8 +188,6 @@ async function main() {
       out.continuationMessages.length === 1 && out.continuationMessages[0].content.includes('Edit src/b.ts'));
     ok('headless: final todos all completed', out.todos.length === 2 && out.todos.every((t) => t.status === 'completed'));
     ok('headless: final result carried the last round text', out.result.text.includes('All steps done'));
-    const round2Route = routeOpts[3]; // first route call of round 2
-    ok('headless: round 2 routed to the top tier (hard step)', round2Route?.maxIntelligenceRank === 2);
   }
 
   // ── Part C: step acceptance — verify-failed "completed" checklist gets focused retries ──
@@ -199,25 +197,20 @@ async function main() {
     const fakeRouter = {
       async route() {
         n++;
-        // Round 1: checklist in_progress + mutation; verify 'false' fails → the gate's fix
-        // round nudges (n=4, text-only → no re-run) → still failed. The end-of-turn PLAN
-        // REPAIR then consults the planner (n=5, non-JSON → null, plan kept).
+        // Simple core: verify runs ONCE as observation (no fix rounds, no planner repair),
+        // so each round is exactly three model calls — todowrite, mutation, report.
+        // Round 1: checklist in_progress + mutation; verify 'false' fails.
         if (n === 1) return { platform: 'custom' as const, model: 'fake', response: baseResponse({ tool_calls: [toolCall('t8', 'todowrite', { todos: [
           { content: 'Edit src/b.ts', status: 'in_progress', difficulty: 'hard' },
         ] })] }) };
         if (n === 2) return { platform: 'custom' as const, model: 'fake', response: baseResponse({ tool_calls: [toolCall('a1', 'runCommand', { command: 'printf one' })] }) };
         if (n === 3) return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'Fixed it.' }) };
-        if (n === 4) return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'Cannot reproduce the failure.' }) };
-        if (n === 5) return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'planner repair consult — not JSON, repair declines' }) };
-        // Round 2 (todos continue): mark completed, mutate, report; verify fails again →
-        // fix-round nudge (n=8) → still failed → second repair consult (n=9, declines).
-        if (n === 6) return { platform: 'custom' as const, model: 'fake', response: baseResponse({ tool_calls: [toolCall('t9', 'todowrite', { todos: [
+        // Round 2 (todos continue): mark completed, mutate, report; verify fails again.
+        if (n === 4) return { platform: 'custom' as const, model: 'fake', response: baseResponse({ tool_calls: [toolCall('t9', 'todowrite', { todos: [
           { content: 'Edit src/b.ts', status: 'completed', difficulty: 'hard' },
         ] })] }) };
-        if (n === 7) return { platform: 'custom' as const, model: 'fake', response: baseResponse({ tool_calls: [toolCall('a2', 'runCommand', { command: 'printf two' })] }) };
-        if (n === 8) return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'Done.' }) };
-        if (n === 9) return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'Still cannot fix it.' }) };
-        if (n === 10) return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'second repair consult — declines again' }) };
+        if (n === 5) return { platform: 'custom' as const, model: 'fake', response: baseResponse({ tool_calls: [toolCall('a2', 'runCommand', { command: 'printf two' })] }) };
+        if (n === 6) return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'Done.' }) };
         // Round 3 (unaccepted retry): explain, no mutation → gate skipped → loop stops.
         return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'The test failure predates this change.' }) };
       },

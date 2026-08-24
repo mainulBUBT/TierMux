@@ -1,20 +1,16 @@
-// Prompt-contract lock for the asking rules (behavior.md / ask-format.md / the
-// AGENT_MODE_TAIL in promptBuilder.ts). These files are shipped as editable scaffolding, so
-// nothing type-checks their content — a stray edit can silently drop the "never ask in plain
-// prose" rule and bring back the exact weak-model failure it exists to prevent (the model asks
-// in prose, no interactive card renders, the user concludes the ask mechanism is broken).
-//
-// Asserts, per mode, against the REAL buildSystemPrompt() output:
-// - Plan mode: ask-format.md IS loaded — askQuestions rules, the no-permission-asking rule,
-//   and the turn-ending discipline ("ends with askQuestions or the plan").
-// - Agent mode: ask-format.md is NOT loaded (the existing per-mode skip), but the `question`
-//   tool discipline from AGENT_MODE_TAIL and behavior.md's tool-routed ask line ARE present.
-// - No <!-- weak-only --> scaffolding markers ever leak into a prompt, weak or strong.
+// Prompt-contract lock for the SIMPLE system prompt (2026-08-24 reset). buildSimpleSystemPrompt
+// is string-built in TypeScript, so a stray edit can silently drop a mode's grounding rule or
+// re-import the judgment-era scaffolding. Asserts, per mode, against the REAL
+// buildSimpleSystemPrompt() output:
+// - Identity + mode tail + today's date present in every mode.
+// - Mode-specific capabilities: agent (question tool, verify-or-untested), plan (read-only,
+//   askQuestions before planning, numbered plan), ask (read-only Q&A, webSearch, Agent-mode handoff).
+// - The judgment-era prompt tower is GONE from the live prompt: no behavior.md rules, no
+//   research methodology, no terse-replies instruction, no skills index.
 //
 // Run: npm run test:e2e:prompt-contract
 import * as fs from 'fs';
-import * as path from 'path';
-import { buildSystemPrompt, setExtensionPath } from '../src/agent/promptBuilder';
+import { buildSimpleSystemPrompt } from '../src/agent/promptBuilder';
 
 let failures = 0;
 const ok = (name: string, cond: boolean) => {
@@ -26,47 +22,38 @@ async function main() {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const vscode = require('vscode');
   const root = fs.realpathSync(process.cwd());
-  // buildSystemPrompt reads .tiermux/agent/*.md relative to the extension path — point it at
-  // this repo checkout so the assertions run against the real shipped scaffolding.
-  setExtensionPath(root);
   vscode.workspace.workspaceFolders = [{ uri: { fsPath: root, path: root } }];
 
-  const plan = await buildSystemPrompt('plan', 'coding', 'contract-test', 'add a dark mode toggle', true);
-  const agent = await buildSystemPrompt('agent', 'coding', 'contract-test', 'add a dark mode toggle', true);
-  const agentStrong = await buildSystemPrompt('agent', 'coding', 'contract-test', 'add a dark mode toggle', false);
+  const agent = await buildSimpleSystemPrompt('agent');
+  const plan = await buildSimpleSystemPrompt('plan');
+  const ask = await buildSimpleSystemPrompt('ask');
 
-  // ── Shared scaffolding: behavior.md routes asks to the tool, in every mode ──
-  for (const [label, p] of [['plan', plan], ['agent', agent]] as const) {
-    ok(`${label}: behavior.md routes ambiguous asks to the question tool ("never plain prose")`,
-      p.includes('never plain prose'));
-    ok(`${label}: behavior.md names both per-mode ask tools (askQuestions / question)`,
-      p.includes('askQuestions') && p.includes('question'));
+  // ── Every mode: identity, mode section, today's date ──
+  for (const [label, p] of [['agent', agent], ['plan', plan], ['ask', ask]] as const) {
+    ok(`${label}: identity present`, p.includes('You are TierMux'));
+    ok(`${label}: mode section present`, p.includes(`## ${label === 'agent' ? 'Agent' : label === 'plan' ? 'Plan' : 'Ask'} mode`));
+    ok(`${label}: today's date grounds the cutoff`, /Today's date is \w+, (January|February|March|April|May|June|July|August|September|October|November|December) \d+, \d{4}/.test(p));
   }
 
-  // ── Plan mode: ask-format.md contract ──
-  ok('plan: ask-format.md loaded (askQuestions tool documented)', plan.includes('`askQuestions`'));
-  ok('plan: no-permission-asking rule present', plan.includes('NEVER ask permission to proceed'));
-  ok('plan: turn-ending discipline present (ask tool or the plan)', plan.includes('exactly one of two ways'));
-  ok('plan: options guidance present (recommended first)', plan.toLowerCase().includes('recommended one first'));
+  // ── Mode-specific contract ──
+  ok('agent: `question` tool is the only ask path', agent.includes('`question` tool'));
+  ok('agent: grounding rule (claims from what was read this turn)', agent.includes('read this turn'));
+  ok('agent: verify-or-untested honesty rule', agent.includes('how you verified it'));
+  ok('plan: read-only contract', plan.includes('READ-ONLY'));
+  ok('plan: `askQuestions` before planning when approach-changing', plan.includes('`askQuestions` tool'));
+  ok('plan: numbered plan discipline', plan.includes('numbered plan'));
+  ok('ask: read-only Q&A', ask.includes('Read-only Q&A'));
+  ok('ask: webSearch for current/outside info', ask.includes('`webSearch`'));
+  ok('ask: suggests Agent mode for edits', ask.includes('Agent mode'));
 
-  // ── Agent mode: ask-format skipped, question-tool discipline still present ──
-  ok('agent: ask-format.md skipped (no plan-only turn discipline leaked)', !agent.includes('exactly one of two ways'));
-  ok('agent: question-tool discipline in the mode tail (never a plain-prose question)',
-    agent.includes('never a plain-prose question'));
-  ok('agent: never ask permission to proceed (tail rule)', agent.includes('never ask permission to proceed'));
-
-  // ── Weak-only scaffolding markers must never leak into any prompt ──
-  ok('weak prompt: no weak-only markers leak', !agent.includes('weak-only'));
-  ok('strong prompt: no weak-only markers leak', !agentStrong.includes('weak-only'));
-  // The stripping mechanism is content-conditional: no shipped .md currently declares a
-  // weak-only section, so strong == weak is the CORRECT outcome today. The contract is only
-  // "when a section exists, it must actually strip" — checked by reading the real files.
-  const agentDir = path.join(root, '.tiermux', 'agent');
-  const mdContents = fs.readdirSync(agentDir).filter((f) => f.endsWith('.md'))
-    .map((f) => fs.readFileSync(path.join(agentDir, f), 'utf8'));
-  const hasWeakSections = mdContents.some((c) => c.includes('weak-only'));
-  ok('weak-only stripping applies when a section exists (none shipped today → strong==weak is correct)',
-    !hasWeakSections || agent !== agentStrong);
+  // ── The judgment-era prompt tower must NOT be in the live prompt ──
+  for (const [label, p] of [['agent', agent], ['plan', plan], ['ask', ask]] as const) {
+    ok(`${label}: no behavior.md scaffolding ("Under 4 lines")`, !p.includes('Under 4 lines'));
+    ok(`${label}: no research.md methodology ("Researching the project")`, !p.includes('Researching the project'));
+    ok(`${label}: no terse-replies instruction ("Answer tersely")`, !p.includes('Answer tersely'));
+    ok(`${label}: no skills index`, !p.includes('skill'));
+    ok(`${label}: no weak-only scaffolding markers`, !p.includes('weak-only'));
+  }
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);

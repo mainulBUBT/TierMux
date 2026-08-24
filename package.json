@@ -1,7 +1,7 @@
 {
   "name": "tiermux",
   "displayName": "TierMux",
-  "description": "Free agentic AI coding assistant for VS Code. Multiplexes many free-tier LLM providers into one self-healing surface — auto-routes, auto-fails-over, learns your codebase. Zero setup with keyless providers; bring your own keys anytime.",
+  "description": "Free agentic AI coding assistant for VS Code. Multiplexes many free-tier LLM providers into one self-healing surface \u2014 auto-routes, auto-fails-over, learns your codebase. Zero setup with keyless providers; bring your own keys anytime.",
   "version": "2.1.7",
   "publisher": "mainul-islam",
   "license": "MIT",
@@ -333,58 +333,12 @@
         "tiermux.agent.pruneAtTokens": {
           "type": "number",
           "default": 12000,
-          "description": "During a long agent turn, once the running context passes this many tokens, older tool outputs and reasoning are pruned before each step so the model stops re-sending stale grep/read dumps. Lower = leaner context (cheaper, better for small free-tier windows); 0 disables pruning. When left at the default (not explicitly set), this scales automatically with the routed model's context window (40% of the window, clamped 12k–60k) — set a value here to override the adaptive behavior."
-        },
-        "tiermux.agent.maxTurnTokens": {
-          "type": "number",
-          "default": 0,
-          "description": "Cumulative token ceiling for a single agent turn. 0 (default) = no limit — runaway turns are still caught by the repeat/exploration/step-cap guards and context pruning, so normal long tasks no longer stop mid-plan (this budget counts the prompt re-send on every step, which a plain multi-step task crosses quickly). Set a number (e.g. 200000) only if you want a hard spend cap."
-        },
-        "tiermux.agent.maxExplorationCalls": {
-          "type": "number",
-          "default": 20,
-          "description": "Maximum near-duplicate read-only tool calls (search/read/explore with the same or nearly-identical arguments) allowed before the FIRST file edit/command in a turn (0 = no limit). Distinct reads investigating different files do not count — only near-duplicates that signal the model is thrashing. Catches a weak model re-searching the same thing with slightly different wording forever — never an exact repeat, so stuck-loop detection alone won't catch it."
+          "description": "During a long agent turn, once the running context passes this many tokens, older tool outputs and reasoning are pruned before each step so the model stops re-sending stale grep/read dumps. Lower = leaner context (cheaper, better for small free-tier windows); 0 disables pruning. When left at the default (not explicitly set), this scales automatically with the routed model's context window (40% of the window, clamped 12k\u201360k) \u2014 set a value here to override the adaptive behavior."
         },
         "tiermux.agent.maxStepsPerTurn": {
           "type": "number",
           "default": 50,
-          "description": "Hard ceiling on the number of tool-loop steps in a SINGLE agent turn (0 = no limit). A backstop for the one runaway shape the other brakes miss: many distinct mutating tool calls (none exact-repeating, all 'real progress') that nonetheless sprawl. Fires as a budget-style cutoff (bounded by maxBudgetContinuations), not a resumable pause. Default 50: a legit task rarely exceeds 50 steps in one turn — long tasks span auto-continue rounds instead."
-        },
-        "tiermux.agent.autoContinue": {
-          "type": "boolean",
-          "default": true,
-          "description": "Let the agent work autonomously toward a goal instead of stopping after one response: when it writes a todo-list plan, TierMux keeps re-invoking it until every item is completed (or a safety brake fires). Turn off to make each send a single response, chatbot-style."
-        },
-        "tiermux.agent.maxAutoContinueRounds": {
-          "type": "number",
-          "default": 25,
-          "minimum": 1,
-          "description": "Hard cap on how many times a single send may auto-continue toward its plan's completion. A per-turn backstop on top of the token budget and stuck-loop detection, so an autonomous run can never loop forever. Lower for tighter free-tier control; higher for longer unattended tasks."
-        },
-        "tiermux.agent.maxBudgetContinuations": {
-          "type": "number",
-          "default": 1,
-          "minimum": 0,
-          "description": "How many consecutive per-turn token-budget cutoffs a single send may auto-continue past (each continuation gets a fresh token budget), so a large multi-file task isn't abandoned mid-way the way it would be if a budget cutoff always halted the run. Separate from maxAutoContinueRounds, which bounds total rounds regardless of cause. Default 1 (was 3): a budget cutoff is a strong signal the turn is sprawling, so allow one continuation rather than three before halting. Set to 0 to halt immediately on a budget cutoff. See maxStuckContinuations for the sibling setting covering stuck-loop cutoffs."
-        },
-        "tiermux.agent.maxStuckContinuations": {
-          "type": "number",
-          "default": 1,
-          "minimum": 0,
-          "description": "How many consecutive stuck-loop cutoffs (repeated identical tool calls, or thrashing with no mutating progress) a single send may auto-continue past. Each continuation gets an explicit \"you got stuck, try something genuinely different or move to the next item\" nudge rather than a plain \"keep going\" — without it, a turn that finished 3 of 5 todo items and then stalled on item 4 would halt the whole plan right there, leaving items 4-5 reported as unresolved even though a different approach (or simply moving on to item 5) might well have succeeded. Default 1: give it one genuinely different attempt, but if the SAME approach stalls a second time in a row, halt for real rather than nudging forever. Set to 0 to restore the old always-halt-immediately behavior."
-        },
-        "tiermux.agent.maxUnacceptedContinuations": {
-          "type": "number",
-          "default": 2,
-          "minimum": 0,
-          "description": "How many extra rounds a send may take when the model marks its checklist completed but the verify command still FAILS (step not accepted). Each round is a focused \"the verify command is the arbiter, fix the actual failure\" continuation, and after the final failed round a read-only planner pass may rewrite the remaining steps (plan repair). Has its own setting (it used to reuse maxStuckContinuations) because a failing test suite is far more recoverable than a stuck loop. Default 2."
-        },
-        "tiermux.agent.verifyFixRounds": {
-          "type": "number",
-          "default": 2,
-          "minimum": 1,
-          "maximum": 4,
-          "description": "At the end of a mutating turn, how many verify→fix rounds to attempt when the verify command (auto-detected from the project, or set via verifyCommand) exits non-zero: the failure output is fed back to the SAME model (routing is never changed by a verification failure) and the command re-runs after each fix attempt that changed something. Default 2 (was hard-coded 1)."
+          "description": "Hard ceiling on the number of tool-loop steps in a SINGLE agent turn (0 = no limit). A backstop for the one runaway shape the other brakes miss: many distinct mutating tool calls (none exact-repeating, all 'real progress') that nonetheless sprawl. Fires as a budget-style cutoff (bounded by maxBudgetContinuations), not a resumable pause. Default 50: a legit task rarely exceeds 50 steps in one turn \u2014 long tasks span auto-continue rounds instead."
         },
         "tiermux.agent.maxConcurrentRuns": {
           "type": "number",
@@ -402,16 +356,6 @@
           "default": true,
           "description": "Route Auto requests by learned, per-model runtime metrics (success rate, TTFT vs the model's own baseline, provider health, confidence-weighted) instead of fixed priority. Adapts within minutes when a model or gateway degrades. Turn off to restore priority-only routing."
         },
-        "tiermux.agent.mixturePipeline": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "on",
-            "off"
-          ],
-          "default": "auto",
-          "description": "Planner→execute mixture: a planner-tagged model decomposes the task into a plan (read-only), then a coder/general model executes it with the plan as guidance, the plan's steps seeded as the todo checklist, and its Verify: line used for end-of-turn command verification. 'auto' plans for every action task (agent/coding/debug/longContext); 'on' additionally forces the weak-executor ReAct scaffold; 'off' disables. Ignored when a model is pinned."
-        },
         "tiermux.agent.verifyCommand": {
           "type": "string",
           "default": "auto",
@@ -420,17 +364,7 @@
         "tiermux.agent.reanchorChars": {
           "type": "number",
           "default": 6000,
-          "description": "Late re-anchoring: after stale read results are pruned from a long turn, re-show up to this many characters of the files the model actually read, so it answers about code it can still see rather than from memory. 0 disables. Weak models benefit most — reasoning errors concentrate late in a turn, which is exactly when pruning has removed the evidence."
-        },
-        "tiermux.agent.stepRouting": {
-          "type": "boolean",
-          "default": true,
-          "description": "Route each plan step by its difficulty: [easy] steps (reads/searches) run on the cheap fast model pool, [hard] steps (tricky edits) on top-tier models. Continuation rounds of a multi-step task pick their model from the step they are executing. Turn off to always route by task type only."
-        },
-        "tiermux.agent.plannerGate": {
-          "type": "boolean",
-          "default": true,
-          "description": "Skip the planner step for confident, short, single-action requests (e.g. \"fix the typo in utils.ts\") — a decomposition pass there is one extra serial LLM round-trip before any work starts. Multi-step-shaped requests (lists, several files, joiner words) always plan. The executor scaffold and end-of-turn verification are unaffected."
+          "description": "Late re-anchoring: after stale read results are pruned from a long turn, re-show up to this many characters of the files the model actually read, so it answers about code it can still see rather than from memory. 0 disables. Weak models benefit most \u2014 reasoning errors concentrate late in a turn, which is exactly when pruning has removed the evidence."
         },
         "tiermux.agent.toolCompaction": {
           "type": "string",
@@ -454,20 +388,15 @@
           "maximum": 10000,
           "description": "Maximum number of recent turns the profiler keeps in its ring buffer."
         },
-        "tiermux.agent.terseReplies": {
-          "type": "boolean",
-          "default": true,
-          "description": "Instruct the model to answer tersely (no preamble, no restating the question, lead with the answer) — saves output tokens on every turn at the cost of some conversational warmth. Code and commands are unaffected."
-        },
         "tiermux.agent.autoCondense": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically compact the conversation (summarize older turns) when its history approaches ~80% of the routed model's context window, before a turn starts — so the model begins with headroom instead of losing tool evidence to mid-turn pruning. The manual Compact command still works regardless."
+          "description": "Automatically compact the conversation (summarize older turns) when its history approaches ~80% of the routed model's context window, before a turn starts \u2014 so the model begins with headroom instead of losing tool evidence to mid-turn pruning. The manual Compact command still works regardless."
         },
         "tiermux.agent.sessionModelLock": {
           "type": "boolean",
           "default": true,
-          "description": "Keep one conversation on the model that has been serving it successfully (continuity), instead of letting Auto re-pick every turn. The lock releases automatically on real failure — rate limits, errors, or the model being flagged slow — so failover is never blocked."
+          "description": "Keep one conversation on the model that has been serving it successfully (continuity), instead of letting Auto re-pick every turn. The lock releases automatically on real failure \u2014 rate limits, errors, or the model being flagged slow \u2014 so failover is never blocked."
         },
         "tiermux.agent.scoringTrace": {
           "type": "boolean",
@@ -477,7 +406,7 @@
         "tiermux.agent.diagTrace": {
           "type": "boolean",
           "default": false,
-          "description": "Log the model's path from picker → router → provider → AI SDK (pinned value, resolved candidate, runtimeName, raw usage) to the \"TierMux Diag\" output channel. Temporary diagnostic for the wrong-provider-name / 0-token issue."
+          "description": "Log the model's path from picker \u2192 router \u2192 provider \u2192 AI SDK (pinned value, resolved candidate, runtimeName, raw usage) to the \"TierMux Diag\" output channel. Temporary diagnostic for the wrong-provider-name / 0-token issue."
         },
         "tiermux.agent.commandApproval": {
           "type": "string",
@@ -533,12 +462,12 @@
         "tiermux.graph.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Offer the structural code-graph tools (getSymbolGraph, getDependencyTree) to the agent, giving it cross-file context from imports, exports, and call edges. Turn off to drop both tools from every turn — useful on a very large codebase, where the regex-based graph gets imprecise and the tool descriptions still cost prompt tokens."
+          "description": "Offer the structural code-graph tools (getSymbolGraph, getDependencyTree) to the agent, giving it cross-file context from imports, exports, and call edges. Turn off to drop both tools from every turn \u2014 useful on a very large codebase, where the regex-based graph gets imprecise and the tool descriptions still cost prompt tokens."
         },
         "tiermux.context.includeOpenEditors": {
           "type": "boolean",
           "default": true,
-          "description": "Each turn, silently attach the active editor (the selection, or a slice around the cursor — see ambientSliceRadius) and its live diagnostics to the model-facing prompt. The visible transcript is unchanged; this just lets \"fix this\" resolve to the cursor location."
+          "description": "Each turn, silently attach the active editor (the selection, or a slice around the cursor \u2014 see ambientSliceRadius) and its live diagnostics to the model-facing prompt. The visible transcript is unchanged; this just lets \"fix this\" resolve to the cursor location."
         },
         "tiermux.context.ambientSliceRadius": {
           "type": "number",
@@ -550,7 +479,7 @@
         "tiermux.utilityModel": {
           "type": "string",
           "default": "auto",
-          "description": "Model used for short utility tasks (chat titles, commit messages). 'auto' prefers a strong keyless model so it works without an API key; or pick a specific model in Settings → Others."
+          "description": "Model used for short utility tasks (chat titles, commit messages). 'auto' prefers a strong keyless model so it works without an API key; or pick a specific model in Settings \u2192 Others."
         },
         "tiermux.plan.saveToFile": {
           "type": "boolean",
@@ -570,7 +499,7 @@
         "tiermux.ttftTimeoutMs": {
           "type": "number",
           "default": 8000,
-          "description": "Time-to-first-token fast failover (lightweight hedging) for streaming requests. If a model accepts the connection but emits no chunk within this many ms, abort it and fail over to the next candidate instead of waiting the full requestTimeoutMs. Catches models that pass preflight then hang mid-stream — the case the ping can't detect. Any first chunk (content, reasoning, or keepalive) clears the timer. 0 disables. Clamped to requestTimeoutMs. Custom OpenAI-compatible endpoints have the gate disabled entirely (local models need their load + prefill time before the first token, and no cloud pool can serve that model faster)."
+          "description": "Time-to-first-token fast failover (lightweight hedging) for streaming requests. If a model accepts the connection but emits no chunk within this many ms, abort it and fail over to the next candidate instead of waiting the full requestTimeoutMs. Catches models that pass preflight then hang mid-stream \u2014 the case the ping can't detect. Any first chunk (content, reasoning, or keepalive) clears the timer. 0 disables. Clamped to requestTimeoutMs. Custom OpenAI-compatible endpoints have the gate disabled entirely (local models need their load + prefill time before the first token, and no cloud pool can serve that model faster)."
         },
         "tiermux.rateLimitCooldownMs": {
           "type": "number",
@@ -580,7 +509,7 @@
         "tiermux.hedging": {
           "type": "boolean",
           "default": true,
-          "description": "Delayed request hedging for streaming turns: if the chosen model produces no chunk at all within tiermux.hedgeDelayMs, start the next candidate concurrently and keep whichever responds first (the other is aborted). The hedge never fires when the primary is healthy, so token cost is unchanged in the common case — it only converts 'waited out a slow model' into 'waited ~2.5s'."
+          "description": "Delayed request hedging for streaming turns: if the chosen model produces no chunk at all within tiermux.hedgeDelayMs, start the next candidate concurrently and keep whichever responds first (the other is aborted). The hedge never fires when the primary is healthy, so token cost is unchanged in the common case \u2014 it only converts 'waited out a slow model' into 'waited ~2.5s'."
         },
         "tiermux.hedgeDelayMs": {
           "type": "number",
@@ -590,7 +519,7 @@
         "tiermux.completions.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable Copilot-style inline (ghost-text) completions. Off by default — high request volume against free-tier rate limits."
+          "description": "Enable Copilot-style inline (ghost-text) completions. Off by default \u2014 high request volume against free-tier rate limits."
         },
         "tiermux.completions.model": {
           "type": "string",
@@ -610,7 +539,7 @@
         "tiermux.mcpRegistryUrl": {
           "type": "string",
           "default": "",
-          "description": "Optional URL to a custom curated MCP list (JSON array or {servers:[…]} in this extension's format). When set, it replaces the bundled 'Add a server' list shown when the search box is empty."
+          "description": "Optional URL to a custom curated MCP list (JSON array or {servers:[\u2026]} in this extension's format). When set, it replaces the bundled 'Add a server' list shown when the search box is empty."
         },
         "tiermux.mcpRegistrySearchUrl": {
           "type": "string",
@@ -686,7 +615,7 @@
           "default": 4,
           "minimum": 1,
           "maximum": 8,
-          "description": "Maximum number of worker sub-agents the parallel pipeline (implementPipeline) runs at once. Each worker is a full router-routed loop, so raising this increases token cost (~N×) and rate-limit contention on shared providers."
+          "description": "Maximum number of worker sub-agents the parallel pipeline (implementPipeline) runs at once. Each worker is a full router-routed loop, so raising this increases token cost (~N\u00d7) and rate-limit contention on shared providers."
         },
         "tiermux.fleet.workerMaxSteps": {
           "type": "number",
@@ -723,18 +652,13 @@
     "test:e2e:vision-classify": "esbuild scripts/visionClassify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/visionClassify.e2e.cjs && node dist/visionClassify.e2e.cjs",
     "test:e2e:core": "esbuild scripts/coreLoop.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/coreLoop.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/coreLoop.e2e.cjs",
     "test:e2e:simple-turn": "esbuild scripts/simpleTurn.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/simpleTurn.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/simpleTurn.e2e.cjs",
-    "test:e2e:plan-escalation": "esbuild scripts/planEscalation.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planEscalation.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planEscalation.e2e.cjs",
-    "test:e2e:self-correct": "esbuild scripts/selfCorrect.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/selfCorrect.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/selfCorrect.e2e.cjs",
-    "test:e2e:verify-gate": "esbuild scripts/verifyGate.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/verifyGate.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/verifyGate.e2e.cjs",
     "test:e2e:verify-detect": "esbuild scripts/verifyDetect.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/verifyDetect.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/verifyDetect.e2e.cjs",
     "test:e2e:project-profile": "esbuild scripts/projectProfile.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/projectProfile.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/projectProfile.e2e.cjs",
     "test:e2e:mock-fixture": "esbuild scripts/mockFixture.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/mockFixture.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/mockFixture.e2e.cjs",
-    "test:e2e:step-routing": "esbuild scripts/stepRouting.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/stepRouting.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/stepRouting.e2e.cjs",
     "test:e2e:step-executor": "esbuild scripts/stepExecutor.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/stepExecutor.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/stepExecutor.e2e.cjs",
     "test:e2e:unverified-badge": "esbuild scripts/unverifiedBadge.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/unverifiedBadge.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/unverifiedBadge.e2e.cjs",
     "test:e2e:checkpoint-persist": "esbuild scripts/checkpointPersist.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/checkpointPersist.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/checkpointPersist.e2e.cjs",
     "test:e2e:stuck-continue": "esbuild scripts/stuckContinue.e2e.ts --bundle --platform=node --format=cjs --outfile=dist/stuckContinue.e2e.cjs && node dist/stuckContinue.e2e.cjs",
-    "test:e2e:repeat-guard": "esbuild scripts/repeatGuard.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/repeatGuard.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/repeatGuard.e2e.cjs",
     "test:e2e:prompt-contract": "esbuild scripts/promptContract.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/promptContract.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/promptContract.e2e.cjs",
     "test:e2e:ttft-floor": "esbuild scripts/ttftFloor.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/ttftFloor.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/ttftFloor.e2e.cjs",
     "test:e2e:plan-structurer": "esbuild scripts/planStructurer.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planStructurer.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planStructurer.e2e.cjs",
@@ -742,7 +666,6 @@
     "test:e2e:remember-memory-load": "esbuild scripts/rememberMemoryLoad.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rememberMemoryLoad.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/rememberMemoryLoad.e2e.cjs",
     "test:e2e:ask-questions-flow": "esbuild scripts/askQuestionsFlow.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/askQuestionsFlow.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/askQuestionsFlow.e2e.cjs",
     "test:e2e:repair-tier3": "esbuild scripts/repairToolCallTier3.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/repairToolCallTier3.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/repairToolCallTier3.e2e.cjs",
-    "test:e2e:false-capability-decline": "esbuild scripts/falseCapabilityDecline.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/falseCapabilityDecline.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/falseCapabilityDecline.e2e.cjs",
     "test:e2e:command-classify": "esbuild scripts/commandClassify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/commandClassify.e2e.cjs && node dist/commandClassify.e2e.cjs",
     "test:e2e:terminal-util": "esbuild scripts/terminalUtil.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/terminalUtil.e2e.cjs && node dist/terminalUtil.e2e.cjs",
     "test:e2e:bench-score": "esbuild scripts/benchScore.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/benchScore.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/benchScore.e2e.cjs",
@@ -767,7 +690,6 @@
     "test:e2e:rotation": "esbuild scripts/rotation.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rotation.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/rotation.e2e.cjs",
     "test:e2e:hedge": "esbuild scripts/hedge.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/hedge.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/hedge.e2e.cjs",
     "test:e2e:compact-result": "esbuild scripts/compactResult.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/compactResult.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/compactResult.e2e.cjs",
-    "test:e2e:planner-gate": "esbuild scripts/plannerGate.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/plannerGate.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/plannerGate.e2e.cjs",
     "test:e2e:execution-profile": "esbuild scripts/executionProfile.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/executionProfile.e2e.cjs && node dist/executionProfile.e2e.cjs",
     "test:e2e:read-format": "esbuild scripts/readFormat.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/readFormat.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/readFormat.e2e.cjs",
     "test:e2e:prompt-diet": "esbuild scripts/promptDiet.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/promptDiet.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/promptDiet.e2e.cjs",
@@ -777,14 +699,8 @@
     "test:e2e:edit-match": "esbuild scripts/editMatch.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/editMatch.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/editMatch.e2e.cjs",
     "test:e2e:fleet-commit": "esbuild scripts/fleetCommit.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/fleetCommit.e2e.cjs && node dist/fleetCommit.e2e.cjs",
     "test:e2e:resolve-path": "esbuild scripts/resolvePath.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/resolvePath.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/resolvePath.e2e.cjs",
-    "test:e2e:synth-shrink": "esbuild scripts/synthShrink.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/synthShrink.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/synthShrink.e2e.cjs",
-    "test:e2e:budget-nudge": "esbuild scripts/budgetNudge.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/budgetNudge.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/budgetNudge.e2e.cjs",
     "test:e2e:edit-gate": "esbuild scripts/editGate.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/editGate.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/editGate.e2e.cjs",
     "test:e2e:session-findings": "esbuild scripts/sessionFindings.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/sessionFindings.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/sessionFindings.e2e.cjs",
-    "test:e2e:human-sim": "esbuild scripts/humanSim.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/humanSim.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/humanSim.e2e.cjs",
-    "test:e2e:task-sim": "esbuild scripts/taskSim.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/taskSim.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/taskSim.e2e.cjs",
-    "test:e2e:complex-task": "esbuild scripts/complexTask.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/complexTask.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/complexTask.e2e.cjs",
-    "test:e2e:deflection-repro": "esbuild scripts/deflectionRepro.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/deflectionRepro.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/deflectionRepro.e2e.cjs",
     "bench": "esbuild scripts/bench/runBench.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bench.cjs && node dist/bench.cjs",
     "bench:compare": "esbuild scripts/bench/compare.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/benchCompare.cjs && node dist/benchCompare.cjs",
     "bench:dataset": "esbuild scripts/bench/dataset.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/benchDataset.cjs && node dist/benchDataset.cjs",

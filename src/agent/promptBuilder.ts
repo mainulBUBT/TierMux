@@ -359,23 +359,6 @@ function modeTail(mode: AgentMode): string {
   return AGENT_MODE_TAIL;
 }
 
-/** `tiermux.agent.terseReplies` — a soft output-token saver (the "Caveman" idea from 9router,
- *  gentler wording): models pad answers with restatements and preamble; an explicit brevity
- *  instruction cuts completion tokens on every turn. ON by default — on free tiers output
- *  tokens are the scarce resource, and the instruction only strips prose padding (code and
- *  commands are untouched). Users who want the chattier voice back turn it off. The catch
- *  below keeps test/headless contexts (no vscode config) on the empty tail. */
-function terseTail(): string {
-  try {
-    if (!vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('terseReplies', true)) return '';
-  } catch {
-    return '';
-  }
-  return '\n\nAnswer tersely: no preamble, no restating the question, no "In conclusion". '
-    + 'Lead with the answer/verdict, then only the explanation the user actually needs. '
-    + 'Code and commands unchanged — brevity applies to prose only.';
-}
-
 /** Grounds the model against its training cutoff — without this, free/local models guess
  *  a "today" from training data and produce date-confused answers (e.g. claiming "today is
  *  2024" while citing a 2026 event in the same breath). */
@@ -448,10 +431,10 @@ export async function buildSystemPrompt(mode: AgentMode, taskKind?: TaskKind, se
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const findings = findingsPrompt(sessionId);
   if (!extensionPath) {
-    return '# Identity\nYou are TierMux, an AI coding assistant.' + modeTail(mode) + terseTail() + `\n\n${todayLine()}` + findings;
+    return '# Identity\nYou are TierMux, an AI coding assistant.' + modeTail(mode) + `\n\n${todayLine()}` + findings;
   }
   const { agentPrompt, instructions } = await loadAgentInstructions(extensionPath, workspaceRoot, taskKind, mode, userText, weakModel, sessionId);
   // terseTail rides with the mode tail — it is constant text, so it belongs in the STABLE core;
   // appended after todayLine() it would sit behind the volatile date and break exact-prefix caching.
-  return [agentPrompt + modeTail(mode) + terseTail(), instructions, todayLine()].filter(Boolean).join('\n\n') + findings;
+  return [agentPrompt + modeTail(mode), instructions, todayLine()].filter(Boolean).join('\n\n') + findings;
 }
