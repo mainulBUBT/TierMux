@@ -104,6 +104,35 @@ export function renderMarkdown(md: string): HTMLElement {
   return pre;
 }
 
+/** Block containers whose last child we keep descending through while hunting the element
+ *  that visually ends a streamed message (a trailing nested list's innermost item, the
+ *  paragraph closing a blockquote or a loose li). P/H1–H6 are safe to enter — markdown only
+ *  puts inline content inside them, so the walk always terminates right after. */
+const CURSOR_DESCEND = new Set(['UL', 'OL', 'LI', 'BLOCKQUOTE', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'DIV']);
+
+/**
+ * Append the single streaming caret (`<span class="stream-cursor">▍</span>`) to the one
+ * element that visually ends the message: walk the last-child chain down through list /
+ * blockquote structure and stop at the first non-container, so exactly ONE caret rides the
+ * true last line at any nesting depth. The previous CSS `:last-child::after` approach
+ * matched every sub-list's final item and every paragraph closing a blockquote or loose
+ * li — CSS scopes `:last-child` per parent, so it cannot express "the one globally-last
+ * line" and several carets blinked at once during nested-list streaming.
+ */
+export function appendStreamCursor(root: HTMLElement): void {
+  const cursor = document.createElement('span');
+  cursor.className = 'stream-cursor';
+  cursor.textContent = '▍';
+  let el: HTMLElement = root;
+  for (;;) {
+    const last = el.lastElementChild as HTMLElement | null;
+    if (!last || !CURSOR_DESCEND.has(last.tagName)
+      || last.matches('pre, table, .code-block-wrap, .mermaid-block, .d2h-wrapper')) break;
+    el = last;
+  }
+  el.appendChild(cursor);
+}
+
 // Pull a human-readable language name off a fenced block's <code> element. marked emits
 // `language-xxx`; highlight.js may add its own `hljs` + detected-language class. Returns '' when
 // the fence had no language (a bare ``` block) so the header can fall back to a neutral label.

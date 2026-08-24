@@ -298,15 +298,15 @@ details[open].work-summary > .work-sum-label { opacity: .7; }
 .mermaid-block.rendered.show-source > .mermaid-render { display: none; }
 
 /* Streaming cursor: a soft blinking block trailing the last streamed token, the AI SDK Elements
-   "Response is still writing" affordance. renderMarkdown wraps content in a <div>, so target the
-   last trailing text block *inside* it to keep the cursor inline with the final line. */
-.flow-text.streaming p:last-child::after,
-.flow-text.streaming li:last-child::after,
-.flow-text.streaming h1:last-child::after,
-.flow-text.streaming h2:last-child::after,
-.flow-text.streaming h3:last-child::after,
-.flow-text.streaming h4:last-child::after {
-  content: '▍'; display: inline-block; margin-left: 1px;
+   "Response is still writing" affordance. The caret is a real <span class="stream-cursor"> that
+   appendStreamCursor() (markdown.ts) drops on the ONE element visually ending the message —
+   the old `:last-child::after` selectors matched per parent, so every nested list's final item
+   and every paragraph closing a blockquote/li blinked its own caret at once. Visibility stays
+   keyed on the `streaming` class so the strip-on-finish sites (assistantMessage, finalizeWork,
+   closeTextSegment) hide it exactly as before. */
+.stream-cursor { display: none; }
+.flow-text.streaming .stream-cursor {
+  display: inline-block; margin-left: 1px;
   color: var(--vscode-editorCursor-foreground, currentColor);
   opacity: .7; animation: stream-cursor 1s steps(1) infinite;
   font-weight: 400; vertical-align: baseline;
