@@ -14,13 +14,14 @@
 //          a second answer, force tool calls, or decide the model "failed" semantically.
 // The judgment tower this replaces (detectors, nudges, retry ladders, planners, judges,
 // forced synthesis) lives in git history under the `pre-simple-core` tag.
-import { streamText, generateText, wrapLanguageModel, isStepCount, pruneMessages, NoSuchToolError, InvalidToolInputError } from 'ai';
+import { streamText, generateText, wrapLanguageModel, isStepCount, pruneMessages, NoSuchToolError, InvalidToolInputError, type ModelMessage, type ToolSet, type LanguageModel, type UserContent, type AssistantContent, type ToolModelMessage, type ToolContent, type TextPart, type FilePart } from 'ai';
+import type { LanguageModelV4ToolCall } from '@ai-sdk/provider';
 import * as vscode from 'vscode';
 import type { Router } from '../../router/router';
 import type { ChatMessage, ChatContentBlock } from '../../shared/types';
 import type { WorkReportData } from '../../shared/workReport';
 import type { AgentOpts, AgentResult } from '../agent';
-import { classifyTaskCore, attachmentKindsFromContent, type TaskKind } from '../routing';
+import { classifyTaskCore, attachmentKindsFromContent, isPureVisualDescribe, type TaskKind } from '../routing';
 import { contentToString } from '../content';
 import { buildSimpleSystemPrompt } from '../promptBuilder';
 import { recordFindings } from '../sessionFindings';
@@ -40,8 +41,10 @@ import { diagLog } from '../../util/diag';
 import { repairToolArguments, sanitizeToolName } from '../toolArgs';
 import type { ClarifyingQuestion } from '../clarify';
 
-/** AI SDK ModelMessage shape (loosely typed here — the SDK validates the real shape). */
-type CoreMessage = { role: string; content: unknown };
+/** The transcript's neutral shape IS the SDK's ModelMessage — keeping them identical is what
+ *  lets the streamText/generateText boundaries below stay cast-free (the compiler, not a
+ *  runtime surprise, catches SDK shape drift on upgrade). */
+type CoreMessage = ModelMessage;
 
 // ── ChatMessage → CoreMessage conversion (the transcript's neutral shape) ───────────────
 
@@ -63,9 +66,9 @@ function toFilePart(block: Extract<ChatContentBlock, object>): { type: 'file'; d
 /** Converts a user message's content (string, or a mixed text+attachment block array) into AI
  *  SDK's multi-part user content shape, preserving image/file blocks — flattening to text alone
  *  would silently drop attachments. */
-function toUserContent(content: ChatMessage['content']): unknown {
+function toUserContent(content: ChatMessage['content']): UserContent {
   if (typeof content === 'string' || content == null) return contentToString(content);
-  const parts: unknown[] = [];
+  const parts: Array<TextPart | FilePart> = [];
   for (const block of content) {
     if (typeof block === 'string') { if (block) parts.push({ type: 'text', text: block }); continue; }
     const filePart = toFilePart(block);
@@ -90,7 +93,7 @@ function toCoreMessages(messages: ChatMessage[]): CoreMessage[] {
 
   const mapped = messages.map((m): CoreMessage => {
     if (m.role === 'assistant' && m.tool_calls?.length) {
-      const parts: unknown[] = [];
+      const parts: AssistantContent = [];
       const text = contentToString(m.content);
       if (text) parts.push({ type: 'text', text });
       for (const tc of m.tool_calls) {
@@ -107,7 +110,8 @@ function toCoreMessages(messages: ChatMessage[]): CoreMessage[] {
     if (m.role === 'user') {
       return { role: 'user', content: toUserContent(m.content) };
     }
-    return { role: m.role, content: contentToString(m.content) };
+    // Persisted JSON is untrusted — the role union is asserted, not believed.
+    return { role: m.role, content: contentToString(m.content) } as CoreMessage;
   });
   return sanitizeCoreMessages(mapped);
 }
@@ -120,29 +124,27 @@ function toCoreMessages(messages: ChatMessage[]): CoreMessage[] {
 function sanitizeCoreMessages(msgs: CoreMessage[]): CoreMessage[] {
   const idsWithResult = new Set<string>();
   for (const m of msgs) {
-    if (m.role !== 'tool' || !Array.isArray(m.content)) continue;
-    for (const p of m.content as Array<{ type?: string; toolCallId?: unknown }>) {
-      if (p?.type === 'tool-result' && typeof p.toolCallId === 'string') idsWithResult.add(p.toolCallId);
+    if (m.role !== 'tool') continue;
+    for (const p of m.content) {
+      if (p.type === 'tool-result') idsWithResult.add(p.toolCallId);
     }
   }
   const seenCalls = new Set<string>();
   const out: CoreMessage[] = [];
   for (const m of msgs) {
-    if (m.role === 'assistant' && Array.isArray(m.content)) {
-      const filtered = (m.content as Array<{ type?: string; toolCallId?: string; text?: string }>)
-        .filter((p) => {
-          if (p?.type !== 'tool-call') return true;
-          if (!idsWithResult.has(p.toolCallId ?? '')) return false; // orphan — no result anywhere
-          seenCalls.add(p.toolCallId ?? '');
-          return true;
-        });
+    if (m.role === 'assistant' && typeof m.content !== 'string') { // parts form carries tool-calls
+      const filtered = m.content.filter((p) => {
+        if (p.type !== 'tool-call') return true;
+        if (!idsWithResult.has(p.toolCallId)) return false; // orphan — no result anywhere
+        seenCalls.add(p.toolCallId);
+        return true;
+      });
       if (filtered.length === 0) continue; // assistant msg became empty — drop it
       out.push({ role: 'assistant', content: filtered });
       continue;
     }
-    if (m.role === 'tool' && Array.isArray(m.content)) {
-      const filtered = (m.content as Array<{ type?: string; toolCallId?: string }>)
-        .filter((p) => p?.type === 'tool-result' && seenCalls.has(p.toolCallId ?? ''));
+    if (m.role === 'tool') {
+      const filtered = m.content.filter((p) => p.type === 'tool-result' && seenCalls.has(p.toolCallId));
       if (filtered.length === 0) continue; // result for a call we dropped above
       out.push({ role: 'tool', content: filtered });
       continue;
@@ -233,9 +235,9 @@ export function blankStaleToolResults(messages: CoreMessage[]): { messages: Core
   if (keepFrom <= 0) return { messages, blanked: 0 };
   const pathById = new Map<string, string>();
   for (const m of messages) {
-    if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
-    for (const part of m.content as Array<Record<string, unknown>>) {
-      if (part?.type !== 'tool-call' || typeof part.toolCallId !== 'string') continue;
+    if (m.role !== 'assistant' || typeof m.content === 'string') continue;
+    for (const part of m.content) {
+      if (part.type !== 'tool-call') continue;
       const p = pathArgOf(part.input);
       if (p) pathById.set(part.toolCallId, p);
     }
@@ -243,35 +245,35 @@ export function blankStaleToolResults(messages: CoreMessage[]): { messages: Core
   // runCommand supersession: only the newest result of each command stays in full.
   const cmdById = new Map<string, string>();
   for (const m of messages) {
-    if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
-    for (const part of m.content as Array<Record<string, unknown>>) {
-      if (part?.type !== 'tool-call' || part.toolName !== 'runCommand' || typeof part.toolCallId !== 'string') continue;
+    if (m.role !== 'assistant' || typeof m.content === 'string') continue;
+    for (const part of m.content) {
+      if (part.type !== 'tool-call' || part.toolName !== 'runCommand') continue;
       const c = (part.input as { command?: unknown } | undefined)?.command;
       if (typeof c === 'string' && c.trim()) cmdById.set(part.toolCallId, c.trim());
     }
   }
   const lastResultIdxByCmd = new Map<string, number>();
   messages.forEach((m, i) => {
-    if (m.role !== 'tool' || !Array.isArray(m.content)) return;
-    for (const part of m.content as Array<Record<string, unknown>>) {
-      if (part?.type !== 'tool-result' || part.toolName !== 'runCommand') continue;
-      const cmd = cmdById.get(part.toolCallId as string);
+    if (m.role !== 'tool') return;
+    for (const part of m.content) {
+      if (part.type !== 'tool-result' || part.toolName !== 'runCommand') continue;
+      const cmd = cmdById.get(part.toolCallId);
       if (cmd) lastResultIdxByCmd.set(cmd, i);
     }
   });
 
   let blanked = 0;
   const out = messages.map((m, i) => {
-    if (i >= keepFrom || m.role !== 'tool' || !Array.isArray(m.content)) return m;
+    if (i >= keepFrom || m.role !== 'tool') return m;
     let changed = false;
-    const content = (m.content as Array<Record<string, unknown>>).map((part) => {
-      if (part?.type !== 'tool-result') return part;
+    const content: ToolContent = m.content.map((part) => {
+      if (part.type !== 'tool-result') return part;
       const output = part.output as { type?: string; value?: unknown } | undefined;
       if (output?.type !== 'text' || typeof output.value !== 'string') return part;
       if (output.value.length <= MIN_BLANK_CHARS || output.value.startsWith(STALE_RESULT_MARKER)) return part;
 
       if (part.toolName === 'runCommand') {
-        const cmd = cmdById.get(part.toolCallId as string);
+        const cmd = cmdById.get(part.toolCallId);
         if (!cmd || (lastResultIdxByCmd.get(cmd) ?? -1) <= i) return part;
         changed = true;
         blanked++;
@@ -279,27 +281,27 @@ export function blankStaleToolResults(messages: CoreMessage[]): { messages: Core
         return {
           ...part,
           output: {
-            ...output,
+            type: 'text' as const,
             value: `${STALE_RESULT_MARKER} Superseded earlier run of \`${cmd.slice(0, 80)}\` — a newer run of the same command exists below.${trailing ? ` ${trailing}` : ''}`,
           },
         };
       }
 
-      if (!PRUNABLE_TOOLS.has(part.toolName as string)) return part;
+      if (!PRUNABLE_TOOLS.has(part.toolName)) return part;
       changed = true;
       blanked++;
-      const path = pathById.get(part.toolCallId as string);
-      const what = `${part.toolName as string}${path ? `(${path})` : ''}`;
+      const path = pathById.get(part.toolCallId);
+      const what = `${part.toolName}${path ? `(${path})` : ''}`;
       return {
         ...part,
         output: {
-          ...output,
+          type: 'text' as const,
           value: `${STALE_RESULT_MARKER} You ran ${what} earlier this turn; its output was trimmed to save context. `
-            + 'Run it again only if you actually need the contents — do not redo work you already did.',
+          + 'Run it again only if you actually need the contents — do not redo work you already did.',
         },
       };
     });
-    return changed ? ({ ...m, content } as CoreMessage) : m;
+    return changed ? ({ ...m, content } as ToolModelMessage) : m;
   });
   return { messages: out, blanked };
 }
@@ -333,18 +335,72 @@ function resolveToolName(name: string, tools: Record<string, unknown>): string |
   return alias && tools[alias] ? alias : undefined;
 }
 
+/** LLM task-classifier — the regex's smart sibling (the `classifyTaskSmart` the routing.ts
+ *  comments have promised). Runs by default on every non-trivial turn, BEFORE routing, so the
+ *  model pick reflects what the user actually asked rather than what a regex happened to match.
+ *  Model preference (Router.pickClassifierModel): `tiermux.classifierModel` (user-set) first,
+ *  then the keyless chain opencode → kilo → ovh. Strictly time-boxed (SMART_CLASSIFY_TIMEOUT_MS)
+ *  and fail-safe: timeout, abort, unavailable model, or an unparseable reply all fall back to
+ *  the regex kind — a wrong-but-instant answer beats a late one, and the regex already ran. */
+const SMART_CLASSIFY_TIMEOUT_MS = 3_000;
+const SMART_KINDS = ['trivial', 'chat', 'coding', 'debug', 'vision', 'longContext', 'agent'] as const;
+type SmartKind = typeof SMART_KINDS[number];
+
+export async function classifyTaskSmart(
+  router: Router,
+  text: string,
+  attachmentKinds: ReadonlyArray<'file' | 'image' | 'pdf' | 'doc'>,
+  regexKind: TaskKind,
+  abortSignal?: AbortSignal,
+): Promise<TaskKind> {
+  if (text.trim().length < 4 && attachmentKinds.length === 0) return regexKind; // too short to be worth a call
+  try {
+    const classifierModel = await router.pickClassifierModel();
+    if (!classifierModel) return regexKind; // no keyless/classifier model enabled — regex only
+    const timeout = AbortSignal.timeout(SMART_CLASSIFY_TIMEOUT_MS);
+    const signal = abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout;
+    const provider = createRouterProvider(router, { taskKind: 'reasoning', pinnedModel: classifierModel });
+    const attachments = attachmentKinds.length
+      ? `The user attached: ${attachmentKinds.join(', ')}.\n`
+      : '';
+    const prompt = 'Classify this user request for a coding assistant into exactly ONE task kind.\n'
+      + `Kinds: ${SMART_KINDS.join(', ')}\n`
+      + '- trivial: greeting/small-talk/thanks\n'
+      + '- chat: a question or explanation request about anything\n'
+      + '- coding: an explicit request to write/modify code\n'
+      + '- debug: something is failing/broken and needs investigating\n'
+      + '- vision: the request is about an attached image/pdf itself\n'
+      + '- longContext: a very long document/paste is the subject\n'
+      + '- agent: an action request (edit files, run commands) that is not clearly code-writing\n\n'
+      + `${attachments}User request: ${text.slice(0, 2000)}\n\n`
+      + 'Reply with ONLY a JSON object: {"kind": "<one kind>"} — no explanation, no markdown.';
+    diagLog('turn.classifySmart', `classifier=${classifierModel} regex=${regexKind}`);
+    const { text: reply } = await generateText({ model: provider, prompt, abortSignal: signal });
+    const first = reply.indexOf('{');
+    const last = reply.lastIndexOf('}');
+    if (first === -1 || last <= first) return regexKind;
+    const parsed = JSON.parse(reply.slice(first, last + 1)) as { kind?: string };
+    if (!parsed.kind || !SMART_KINDS.includes(parsed.kind as SmartKind)) return regexKind;
+    const kind = parsed.kind as TaskKind;
+    if (kind !== regexKind) diagLog('turn.classifySmart', `regex=${regexKind} → smart=${kind}`);
+    return kind;
+  } catch {
+    return regexKind; // timeout/abort/parse failure — the regex answer stands
+  }
+}
+
 /** Tier 3 repair: ask a cheap utility model to fix a tool call that deterministic repair
  *  could not. Strictly time-boxed; returns null (drop the call, report as a normal tool
  *  error) when it can't — never fabricates an unrelated call. */
 export async function tryModelRepair(
-  toolCall: { toolName: string; input: string } & Record<string, unknown>,
+  toolCall: LanguageModelV4ToolCall,
   tools: Record<string, unknown>,
   errorMessage: string,
   schema: unknown,
   router: Router,
   abortSignal?: AbortSignal,
   usageSink?: AgentOpts['usageSink'],
-): Promise<({ toolName: string; input: string } & Record<string, unknown>) | null> {
+): Promise<LanguageModelV4ToolCall | null> {
   diagLog('turn.repairToolCall.tier3_attempt', `${toolCall.toolName}: ${errorMessage}`);
   const timeout = AbortSignal.timeout(4000);
   const signal = abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout;
@@ -355,7 +411,7 @@ export async function tryModelRepair(
     const prompt = schema
       ? `A tool call failed validation.\nTool: ${toolCall.toolName}\nSchema: ${JSON.stringify(schema)}\nArguments: ${toolCall.input}\nError: ${errorMessage}\n\nReply with ONLY the corrected JSON arguments object matching the schema. No explanation, no markdown.`
       : `A tool call named "${toolCall.toolName}" does not exist. Valid tool names: ${toolNames.join(', ')}\nArguments: ${toolCall.input}\nError: ${errorMessage}\n\nReply with ONLY a JSON object of the shape {"toolName": "<correct name from the list>", "input": <corrected arguments object>}. No explanation, no markdown.`;
-    const { text } = await generateText({ model: provider as any, prompt, abortSignal: signal } as any);
+    const { text } = await generateText({ model: provider, prompt, abortSignal: signal });
     const first = text.indexOf('{');
     const last = text.lastIndexOf('}');
     if (first === -1 || last === -1 || last <= first) return null;
@@ -393,7 +449,7 @@ function createRepairToolCall(
           return { ...toolCall, input: repaired };
         } catch { /* fall through to Tier 3 */ }
       }
-      return (await tryModelRepair(toolCall, tools, error.message, schema, router, abortSignal, usageSink)) as any;
+      return await tryModelRepair(toolCall, tools, error.message, schema, router, abortSignal, usageSink);
     }
     if (NoSuchToolError.isInstance(error)) {
       const fixedName = resolveToolName(sanitizeToolName(toolCall.toolName), tools);
@@ -401,7 +457,7 @@ function createRepairToolCall(
         diagLog('turn.repairToolCall', `no-such-tool: "${toolCall.toolName}" → "${fixedName}"`);
         return { ...toolCall, toolName: fixedName };
       }
-      return (await tryModelRepair(toolCall, tools, error.message, undefined, router, abortSignal, usageSink)) as any;
+      return await tryModelRepair(toolCall, tools, error.message, undefined, router, abortSignal, usageSink);
     }
     return null;
   };
@@ -414,7 +470,7 @@ function createRepairToolCall(
  *  same model with its own partial in context plus a "resume from the cutoff" instruction,
  *  single-step / no tools, streaming the resume live. */
 async function continueAfterTruncation(
-  languageModel: unknown,
+  languageModel: LanguageModel,
   system: string,
   opts: AgentOpts,
   workMessages: ChatMessage[],
@@ -426,20 +482,20 @@ async function continueAfterTruncation(
     const messages = toCoreMessages([...opts.messages, ...workMessages]);
     messages.push({ role: 'user', content: 'Continue your previous answer exactly where it ended. Do not repeat any text already written — resume from the cutoff and complete the response.' });
     const synth = streamText({
-      model: languageModel as any,
+      model: languageModel,
       system,
-      messages: messages as any,
+      messages,
       stopWhen: [isStepCount(1)],
       abortSignal: opts.abortSignal,
-    } as any);
+    });
     let out = '';
-    for await (const part of (synth as any).fullStream) {
-      if (part.type === 'text-delta') { const t = part.text ?? part.delta ?? ''; out += t; onChunk(t); }
-      else if (part.type === 'reasoning-delta') { const d = part.text ?? part.delta ?? ''; onReasoning(d); }
+    for await (const part of synth.fullStream) {
+      if (part.type === 'text-delta') { const t = part.text; out += t; onChunk(t); }
+      else if (part.type === 'reasoning-delta') { onReasoning(part.text); }
       else if (part.type === 'error') { break; }
     }
     let fr: string | undefined;
-    try { fr = await (synth as any).finishReason; } catch { /* non-fatal */ }
+    try { fr = await synth.finishReason; } catch { /* non-fatal */ }
     return { text: out, finishReason: fr };
   } catch {
     return { text: '', finishReason: undefined }; // best-effort — never mask the partial already shown
@@ -519,6 +575,7 @@ async function runAttempt(
   pruneAtTokens: number,
   maxStepsPerTurn: number,
   providerExclude?: { excludeModels: string[] },
+  pureVisualDescribe = false,
 ): Promise<AttemptResult> {
   // `askQuestions` has no `execute` (human-in-the-loop), so there is no tool-result to feed
   // back — an explicit stop here terminates the turn deterministically when it is called.
@@ -542,17 +599,21 @@ async function runAttempt(
   });
   const languageModel = wrapLanguageModel({
     model: provider,
-    middleware: createTelemetryMiddleware({ profiler: opts.profiler, traceId: opts.sessionId as any }),
+    middleware: createTelemetryMiddleware({ profiler: opts.profiler, traceId: opts.sessionId }),
   });
 
-  const system = await buildSimpleSystemPrompt(opts.mode);
-  const tools = createToolSet(opts, getMcpManager(), router);
+  const system = await buildSimpleSystemPrompt(opts.mode, pureVisualDescribe);
+  // Pure visual-describe turns get NO workspace tools: the attachment is the whole subject, so
+  // there is nothing here to read/edit/run. This is what keeps a model that CAN'T actually see
+  // the image honest — with no repo tools and no repo profile it can only say "I don't see an
+  // image" instead of wandering the workspace and presenting that as the answer.
+  const tools = pureVisualDescribe ? undefined : createToolSet(opts, getMcpManager(), router);
 
   // Tool circuit breaker: a tool that keeps THROWING (dead MCP server, broken shell) is
   // dropped from later steps' activeTools so the model physically can't hammer it.
   const toolFailStreak = new Map<string, number>();
   const brokenTools = new Set<string>();
-  for (const [name, t] of Object.entries(tools)) {
+  for (const [name, t] of Object.entries(tools ?? {})) {
     const toolObj = t as { execute?: (input: unknown, ...rest: unknown[]) => Promise<unknown> };
     if (typeof toolObj?.execute !== 'function') continue; // askQuestions & approval-only tools
     const orig = toolObj.execute.bind(toolObj);
@@ -577,7 +638,7 @@ async function runAttempt(
   }
 
   const askQuestionsStop = ({ steps }: { steps: Array<{ toolCalls?: Array<{ toolName?: string }> }> }): boolean => {
-    if (!tools.askQuestions) return false; // not registered this mode — a name match can't be real
+    if (!tools?.askQuestions) return false; // not registered this mode — a name match can't be real
     for (const s of steps) {
       if ((s.toolCalls ?? []).some((tc) => tc.toolName === 'askQuestions')) {
         stopReason = 'askQuestions';
@@ -598,7 +659,7 @@ async function runAttempt(
   let stepIndex = 0;
   const reanchorChars = vscode.workspace.getConfiguration('tiermux.agent').get<number>('reanchorChars', 6_000);
   const changedFilesMap = new Map<string, 'created' | 'modified' | 'deleted'>();
-  let streamResult: any;
+  let streamResult: ReturnType<typeof streamText<ToolSet>> | undefined;
   // Incremental work transcript, collected part-by-part from the live stream. The `steps`
   // promise REJECTS when the stream errors — without this parallel record, a mid-task
   // provider failure would lose the transcript of work that already ran, and the mechanical
@@ -622,9 +683,9 @@ async function runAttempt(
     streamResult = streamText({
       model: languageModel,
       system,
-      messages: toCoreMessages(opts.messages) as any,
-      tools: tools as any,
-      toolApproval: createToolApproval(opts) as any,
+      messages: toCoreMessages(opts.messages),
+      tools,
+      toolApproval: createToolApproval(opts),
       repairToolCall: createRepairToolCall(router, opts.abortSignal, opts.usageSink),
       // Hard execution limits only: the step cap is a resumable pause (finishReason
       // 'max-steps' → paused:true); askQuestions is a legitimate terminal state.
@@ -633,49 +694,49 @@ async function runAttempt(
       // Per-step context compression (AI SDK native): blank stale read payloads, keep call
       // records, then re-anchor the files still under discussion. Mechanical eviction, not
       // judgment — it protects small context windows.
-      prepareStep: ({ messages }: { messages: CoreMessage[]; steps: Array<{ usage?: { totalTokens?: number } }> }) => {
-        const out: { messages?: CoreMessage[]; activeTools?: string[] } = {};
+      prepareStep: ({ messages }: { messages: ModelMessage[]; steps: Array<{ usage?: { totalTokens?: number } }> }) => {
+        const out: { messages?: ModelMessage[]; activeTools?: string[] } = {};
         if (pruneAtTokens > 0) {
           const before = roughTokens(messages);
           if (before >= pruneAtTokens) {
             const { messages: blankedMsgs, blanked } = blankStaleToolResults(messages);
             let pruned = pruneMessages({
-              messages: blankedMsgs as any,
+              messages: blankedMsgs,
               reasoning: 'before-last-message',
               emptyMessages: 'remove',
-            }) as unknown as CoreMessage[];
+            });
             if (roughTokens(pruned) >= pruneAtTokens) {
               pruned = pruneMessages({
-                messages: pruned as any,
+                messages: pruned,
                 reasoning: 'before-last-message',
                 toolCalls: PRUNE_TOOL_POLICY,
                 emptyMessages: 'remove',
-              }) as unknown as CoreMessage[];
+              });
               diagLog('turn.prune', `still ~${roughTokens(pruned)}tok after blanking ${blanked} result(s) — fell back to eviction`);
             }
             diagLog('turn.prune', `~${before}tok ≥ ${pruneAtTokens} → blanked ${blanked}, ${messages.length}→${pruned.length} msgs (~${roughTokens(pruned)}tok)`);
-            out.messages = pruned as any;
+            out.messages = pruned;
             // Late re-anchoring: put a bounded copy of the evicted files back, plus a
             // paths-only manifest, so the model is not answering about code it can no longer see.
             const digest = anchors.digest(reanchorChars);
             const manifest = renderTouchedFiles(openedFiles, changedFilesMap);
             if (digest || manifest) {
-              const base = stripAnchorBlock(out.messages as Array<{ role: string; content: unknown }>);
+              const base = stripAnchorBlock(out.messages);
               const blocks = [digest, manifest].filter(Boolean)
-                .map((content) => ({ role: 'user', content }));
-              out.messages = [...base, ...blocks] as any;
+                .map((content) => ({ role: 'user' as const, content }));
+              out.messages = [...base, ...blocks];
               diagLog('turn.reanchor', `re-showed ${anchors.size} read file(s), ~${digest.length} chars, + ${manifest ? 'manifest' : 'no manifest'}, after prune`);
             }
           }
         }
-        if (brokenTools.size > 0 && !out.activeTools) {
-          out.activeTools = Object.keys(tools).filter((name) => !brokenTools.has(name)) as any;
+        if (tools && brokenTools.size > 0 && !out.activeTools) {
+          out.activeTools = Object.keys(tools).filter((name) => !brokenTools.has(name));
         }
         return out;
       },
       onStart: () => opts.onStep('thinking', 'Thinking…'),
       onStepStart: () => opts.onStep('thinking', 'Thinking…'),
-    } as any);
+    });
 
     // ── Two-buffer state machine (speculative draft vs canonical reply) ──────────────────
     // Text the model emits in a step that ALSO issues a tool call ("Let me search…") is
@@ -696,6 +757,11 @@ async function runAttempt(
         stepIndex++;
         stepText = ''; stepChatText = ''; stepHasTool = false; streamedThisStep = false;
         stepAssistantIdx = -1;
+        // A new step after one that issued tool calls streams its ANSWER, not more planning
+        // narration — without this reset 'planning' leaked across the step boundary and the
+        // whole next step's reply was misrouted to the reasoning channel (live chat showed
+        // nothing while the answer hid inside the collapsed Thinking block).
+        if (phase === 'planning') phase = 'waiting_final';
       } else if (part.type === 'finish-step') {
         if (stepHasTool) {
           if (stepChatText.trim()) {
@@ -708,7 +774,7 @@ async function runAttempt(
           phase = hadToolCalls ? 'final' : 'text';
         }
       } else if (part.type === 'text-delta') {
-        const t = part.text ?? part.delta ?? '';
+        const t = part.text;
         stepText += t;
         if (phase === 'waiting_final' || phase === 'final' || phase === 'text' || (phase === 'idle' && !hadToolCalls)) {
           streamedThisStep = true;
@@ -721,7 +787,7 @@ async function runAttempt(
         if (phase === 'idle') phase = 'text';
         else if (phase === 'waiting_final') phase = 'final';
       } else if (part.type === 'reasoning-delta') {
-        const d = part.text ?? part.delta ?? ''; reasoning += d; opts.onReasoning(d);
+        const d = part.text; reasoning += d; opts.onReasoning(d);
       } else if (part.type === 'tool-call') {
         hadToolCalls = true; stepHasTool = true; phase = 'planning';
         if (MUTATING_TOOLS.has(part.toolName)) { hadMutatingToolCall = true; verifiedAfterMutation = false; }
@@ -746,7 +812,7 @@ async function runAttempt(
         streamWork[stepAssistantIdx].tool_calls!.push({ id: part.toolCallId, type: 'function', function: { name: part.toolName, arguments: typeof part.input === 'string' ? part.input : JSON.stringify(part.input ?? {}) } });
         // askQuestions has no execute — capture its questions here; the questions ARE the
         // response, and askQuestionsStop ends the turn on this call.
-        if (part.toolName === 'askQuestions' && tools.askQuestions) {
+        if (part.toolName === 'askQuestions' && tools?.askQuestions) {
           const raw = (part.input as { questions?: Array<Partial<ClarifyingQuestion>> } | undefined)?.questions;
           if (raw && raw.length) {
             const q: ClarifyingQuestion[] = raw
@@ -788,10 +854,7 @@ async function runAttempt(
         streamWork.push({ role: 'tool', content: `Tool call failed: ${detail}`, tool_call_id: part.toolCallId });
       } else if (part.type === 'error') {
         streamErrored = true;
-        const etext = (part as { errorText?: unknown }).errorText;
-        streamErrorMessage = typeof etext === 'string' && etext.length > 0
-          ? etext
-          : ((part as { error?: unknown }).error instanceof Error ? (part.error as Error).message : String((part as { error?: unknown }).error ?? ''));
+        streamErrorMessage = part.error instanceof Error ? part.error.message : String(part.error ?? '');
         opts.onError(streamErrorMessage);
       }
     }
@@ -902,9 +965,14 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
   const lastUserText = contentToString(lastUser?.content ?? '');
   const attachmentKinds = lastUser ? attachmentKindsFromContent(lastUser.content) : [];
-  const taskKind = opts.mode === 'plan'
+  let taskKind = opts.mode === 'plan'
     ? ('plan' as TaskKind)
     : classifyTaskCore(lastUserText, { attachmentKinds, attachments: attachmentKinds.length, mentions: opts.mentionCount }).kind;
+  // Smart classify by default (plan mode's kind is structural, trivial turns aren't worth a call):
+  // the LLM classifier re-decides the regex's answer; any failure keeps the regex kind.
+  if (opts.mode !== 'plan' && taskKind !== 'trivial' && !opts.abortSignal?.aborted) {
+    taskKind = await classifyTaskSmart(router, lastUserText, attachmentKinds, taskKind, opts.abortSignal);
+  }
   const pruneAtTokens = adaptivePruneAtTokens(router, taskKind);
 
   // ── Telemetry + watchdog wrapping (protocol events stamp activity; quiet turns warn) ──
@@ -971,8 +1039,13 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     onFailover: (from, reason) => { failoverCount++; watchdog.activity(`failover from ${from} (${reason})`); userOnFailover?.(from, reason); },
   };
 
+  // Pure "describe this image" turns (isPureVisualDescribe): the attachment is the whole
+  // subject, so runAttempt builds their system prompt WITHOUT the repo profile — no Laravel
+  // facts to fuse into a trip-screenshot answer (see the guard's comment in promptBuilder).
+  const pureVisual = isPureVisualDescribe(lastUserText, attachmentKinds.some((k) => k === 'image' || k === 'pdf'));
+
   try {
-    let final = await runAttempt(router, opts, taskKind, pruneAtTokens, maxStepsPerTurn);
+    let final = await runAttempt(router, opts, taskKind, pruneAtTokens, maxStepsPerTurn, undefined, pureVisual);
 
     // ── Mechanical provider-failure continuation (exactly ONE) ──────────────────────────
     // Fires only when provider EXECUTION failed before the task completed (`failed` — a real
@@ -988,7 +1061,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       const fitted = fitMessages(continuationMessages, Math.max(2_000, Math.floor(window * 0.8)));
       if (fitted.trimmed) diagLog('turn.continue', `transcript fitted to ~${Math.floor(window * 0.8)} input tokens for the replacement model`);
       const excludeModels = [...(opts.excludeModels ?? []), excludeKey];
-      const continued = await runAttempt(router, { ...opts, messages: fitted.messages, excludeModels }, taskKind, pruneAtTokens, maxStepsPerTurn, { excludeModels });
+      const continued = await runAttempt(router, { ...opts, messages: fitted.messages, excludeModels }, taskKind, pruneAtTokens, maxStepsPerTurn, { excludeModels }, pureVisual);
       final = {
         ...continued,
         changedFiles: mergeChangedFiles(final.changedFiles, continued.changedFiles),

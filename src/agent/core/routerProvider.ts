@@ -4,7 +4,7 @@
 // (OpenAI wire format, which Router.route() already speaks). No routing decisions, no scoring, no
 // failover logic here — that's all Router.route()'s job. The model being called is still whatever
 // the user picked (GPT/Claude/Qwen/...); this factory does not itself produce "a model."
-import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4GenerateResult, LanguageModelV4StreamResult, LanguageModelV4StreamPart, LanguageModelV4FunctionTool, LanguageModelV4FilePart } from '@ai-sdk/provider';
+import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4GenerateResult, LanguageModelV4StreamResult, LanguageModelV4StreamPart, LanguageModelV4FunctionTool, LanguageModelV4FilePart, LanguageModelV4Usage } from '@ai-sdk/provider';
 import type { Router, RouteOptions } from '../../router/router';
 import type { ChatMessage, ChatToolDefinition, ReasoningEffort } from '../../shared/types';
 import { diagLog } from '../../util/diag';
@@ -105,6 +105,17 @@ function stripJsonFence(text: string): string {
   const t = text.trim();
   const m = /^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i.exec(t);
   return m ? m[1].trim() : t;
+}
+
+/** Build a fully-typed `LanguageModelV4Usage`. The spec requires every sub-field to be PRESENT
+ *  (each typed `number | undefined`, not optional), so a bare `{ total }` object fails the type —
+ *  this helper is what lets doGenerate/doStream return their results without shape casts. The
+ *  router's OpenAI-wire usage only ever carries the two totals; the rest stay undefined. */
+function toV4Usage(promptTokens?: number, completionTokens?: number): LanguageModelV4Usage {
+  return {
+    inputTokens: { total: promptTokens, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+    outputTokens: { total: completionTokens, text: undefined, reasoning: undefined },
+  };
 }
 
 /** Convert AI SDK prompt messages -> TierMux ChatMessage[] (OpenAI-wire format). */
@@ -262,12 +273,9 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
       return {
         content,
         finishReason: { unified: hasCalls ? 'tool-calls' : (rawFR === 'length' ? 'length' : 'stop'), raw: hasCalls ? 'tool_calls' : (rawFR ?? 'stop') },
-        usage: {
-          inputTokens: { total: result.response.usage?.prompt_tokens },
-          outputTokens: { total: result.response.usage?.completion_tokens },
-        },
+        usage: toV4Usage(result.response.usage?.prompt_tokens, result.response.usage?.completion_tokens),
         warnings: [],
-      } as unknown as LanguageModelV4GenerateResult;
+      };
     },
 
     async doStream(options: LanguageModelV4CallOptions): Promise<LanguageModelV4StreamResult> {
@@ -362,8 +370,8 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
         streamController.enqueue({
           type: 'finish',
           finishReason: { unified: hasEffectiveToolCalls ? 'tool-calls' : (rawFR === 'length' ? 'length' : 'stop'), raw: hasEffectiveToolCalls ? 'tool_calls' : (rawFR ?? 'stop') },
-          usage: { inputTokens: { total: result.response.usage?.prompt_tokens }, outputTokens: { total: result.response.usage?.completion_tokens } },
-        } as unknown as LanguageModelV4StreamPart);
+          usage: toV4Usage(result.response.usage?.prompt_tokens, result.response.usage?.completion_tokens),
+        });
         streamController.close();
       }).catch((err: unknown) => {
         // Surface a router.route() rejection (e.g. AllModelsFailedError from a pinned model

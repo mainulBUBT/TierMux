@@ -481,6 +481,11 @@
           "default": "auto",
           "description": "Model used for short utility tasks (chat titles, commit messages). 'auto' prefers a strong keyless model so it works without an API key; or pick a specific model in Settings \u2192 Others."
         },
+        "tiermux.classifierModel": {
+          "type": "string",
+          "default": "auto",
+          "description": "Model the task classifier (Auto routing) uses to decide what kind of request each message is. 'auto' prefers keyless models in order: OpenCode, Kilo Code, OVH. Or pin a specific model as platform::modelId (e.g. opencode::deepseek-v4-flash-free). If unavailable, the built-in regex classifier is used instead."
+        },
         "tiermux.plan.saveToFile": {
           "type": "boolean",
           "default": true,
@@ -494,12 +499,12 @@
         "tiermux.requestTimeoutMs": {
           "type": "number",
           "default": 30000,
-          "description": "Per-provider request timeout (ms) before failing over to the next model. Custom OpenAI-compatible endpoints run uncapped (local models take as long as they take; the Stop button is the brake)."
+          "description": "Per-provider request timeout (ms) before failing over to the next model. Custom OpenAI-compatible endpoints and pinned (non-Auto) models run uncapped — you chose to wait for that model, and the Stop button is the brake."
         },
         "tiermux.ttftTimeoutMs": {
           "type": "number",
           "default": 8000,
-          "description": "Time-to-first-token fast failover (lightweight hedging) for streaming requests. If a model accepts the connection but emits no chunk within this many ms, abort it and fail over to the next candidate instead of waiting the full requestTimeoutMs. Catches models that pass preflight then hang mid-stream \u2014 the case the ping can't detect. Any first chunk (content, reasoning, or keepalive) clears the timer. 0 disables. Clamped to requestTimeoutMs. Custom OpenAI-compatible endpoints have the gate disabled entirely (local models need their load + prefill time before the first token, and no cloud pool can serve that model faster)."
+          "description": "Time-to-first-token fast failover (lightweight hedging) for streaming requests. If a model accepts the connection but emits no chunk within this many ms, abort it and fail over to the next candidate instead of waiting the full requestTimeoutMs. Catches models that pass preflight then hang mid-stream \u2014 the case the ping can't detect. Any first chunk (content, reasoning, or keepalive) clears the timer. 0 disables. Clamped to requestTimeoutMs. Custom OpenAI-compatible endpoints have the gate disabled entirely (local models need their load + prefill time before the first token, and no cloud pool can serve that model faster). Pinned (non-Auto) models also skip the gate \u2014 there is nothing to fail over to, so waiting is the only honest option."
         },
         "tiermux.rateLimitCooldownMs": {
           "type": "number",
@@ -629,6 +634,18 @@
           "minimum": 10000,
           "description": "Wall-clock timeout (ms) for a single pipeline worker. On timeout the worker aborts and its branch is left for inspection; the parent turn's Stop button also aborts all workers."
         },
+        "tiermux.fleet.researchMaxSteps": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "description": "Hard ceiling on the tool-loop step count for the research sub-agent (delegate mode \"research\"). Bigger than explore's quick lookup (6) but still cheap — it runs on a utility model with read-only tools."
+        },
+        "tiermux.fleet.researchTimeoutMs": {
+          "type": "number",
+          "default": 180000,
+          "minimum": 5000,
+          "description": "Wall-clock timeout (ms) for the research sub-agent. Also network-hang protection for slow or stuck free-tier providers, so prefer raising it over disabling it."
+        },
         "tiermux.fleet.stagingBranchPrefix": {
           "type": "string",
           "default": "tiermux/pipeline",
@@ -642,6 +659,8 @@
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
     "test:e2e:circuit": "esbuild scripts/circuitBreaker.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/circuitBreaker.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/circuitBreaker.e2e.cjs",
+    "test:e2e:live-turn": "esbuild scripts/verifyLiveTurn.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/verifyLiveTurn.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/verifyLiveTurn.e2e.cjs",
+    "test:e2e:attach-delivery": "esbuild scripts/verifyAttachDelivery.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/verifyAttachDelivery.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/verifyAttachDelivery.e2e.cjs",
     "test:e2e:scoring": "esbuild scripts/scoring.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/scoring.e2e.cjs && node dist/scoring.e2e.cjs",
     "test:e2e:tiermuxWeb": "esbuild scripts/tiermuxWeb.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:jsdom --outfile=dist/tiermuxWeb.e2e.cjs && node dist/tiermuxWeb.e2e.cjs",
     "test:e2e:unifiedDiff": "esbuild scripts/unifiedDiff.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/unifiedDiff.e2e.cjs && node dist/unifiedDiff.e2e.cjs",
@@ -670,6 +689,7 @@
     "test:e2e:terminal-util": "esbuild scripts/terminalUtil.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/terminalUtil.e2e.cjs && node dist/terminalUtil.e2e.cjs",
     "test:e2e:bench-score": "esbuild scripts/benchScore.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/benchScore.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/benchScore.e2e.cjs",
     "test:e2e:classify": "esbuild scripts/classify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/classify.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/classify.e2e.cjs",
+    "test:e2e:smart-classify": "esbuild scripts/smartClassify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/smartClassify.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/smartClassify.e2e.cjs",
     "test:e2e:announcement-sync": "esbuild scripts/announcementSync.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/announcementSync.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/announcementSync.e2e.cjs",
     "test:e2e:plan-runner": "esbuild scripts/planRunner.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planRunner.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planRunner.e2e.cjs",
     "test:e2e:delegate-tool": "esbuild scripts/delegateTool.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/delegateTool.e2e.cjs && node -r ./scripts/bench/benchVscode.cjs dist/delegateTool.e2e.cjs",

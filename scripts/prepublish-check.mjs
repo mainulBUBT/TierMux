@@ -17,11 +17,11 @@ import { readFileSync } from "node:fs";
 const NO_ADVISORY = process.argv.includes("--no-advisory");
 
 const SECRET_PATTERNS = [
-  "sk-[a-zA-Z0-9]{10,}",
-  "AKIA[0-9A-Z]{16}",
-  "ghp_[a-zA-Z0-9]{30,}",
-  "xox[baprs]-",
-  "AIza[0-9A-Za-z_-]{20,}",
+  "\\bsk-[a-zA-Z0-9_-]{10,}",
+  "\\bAKIA[0-9A-Z]{16}",
+  "\\bghp_[a-zA-Z0-9]{30,}",
+  "\\bxox[baprs]-",
+  "\\bAIza[0-9A-Za-z_-]{20,}",
   "-----BEGIN (RSA|EC|OPENSSH|PRIVATE) KEY-----",
 ];
 

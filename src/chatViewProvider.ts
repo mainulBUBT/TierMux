@@ -2336,7 +2336,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async handleRevertTo(s: Session, requestId: string): Promise<void> {
     const idx = s.transcript.findIndex((t) => t.role === 'user' && t.requestId === requestId);
-    if (idx < 0) return;
+    if (idx < 0) {
+      // A silent return here turned every mismatched revert click into "nothing happens" with
+      // zero diagnosable surface. Say something, and leave the ids in the console for the
+      // mismatch report.
+      console.error('[tiermux] revertTo: requestId not in the viewed session transcript', requestId,
+        'known user requestIds:', s.transcript.filter((t) => t.role === 'user').map((t) => t.requestId));
+      this.post({ type: 'notice', sessionId: s.id, text: 'Revert couldn\'t find that message in the current chat — the view may be stale. Reload the panel (↻) and try again.' });
+      return;
+    }
     const removedText = s.transcript[idx].text;
     const removedAttachments = s.transcript[idx].attachments;
     const removedIds = s.transcript.slice(idx).filter((t) => t.role === 'user' && t.requestId).map((t) => t.requestId!);

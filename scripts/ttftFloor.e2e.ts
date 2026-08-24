@@ -63,13 +63,13 @@ async function main() {
 
   // Cloud providers: the global rules are unchanged.
   ok('no-floor provider: global 8s TTFT default applies', r.ttftTimeoutMsFor({}) === 8_000);
-  ok('no-floor provider: global 30s request timeout applies', r.timeoutMsFor({}) === 30_000);
+  ok('no-floor provider: global 90s request timeout default applies', r.timeoutMsFor({}) === 90_000);
 
   // A positive provider floor remains supported (future slow-cloud providers).
   ok('positive floor within its own request budget survives',
     r.ttftTimeoutMsFor({ ttftTimeoutMs: 60_000, timeoutMs: 600_000 }) === 60_000);
   ok('positive floor clamped to the provider request budget when tighter',
-    r.ttftTimeoutMsFor({ ttftTimeoutMs: 60_000 }) === 30_000);
+    r.ttftTimeoutMsFor({ ttftTimeoutMs: 120_000 }) === 90_000);
 
   // A globally-disabled TTFT gate (user set 0) stays disabled for floor providers.
   (globalThis as any).__tiermuxTestConfig = { ...cfg, ttftTimeoutMs: 0 };
@@ -80,6 +80,16 @@ async function main() {
   ok('user-tuned 4s global never re-caps a custom endpoint', r.ttftTimeoutMsFor(provider) === 0);
 
   (globalThis as any).__tiermuxTestConfig = cfg;
+
+  // Pinned (non-Auto) models: the user explicitly chose to wait for THAT model — there is no
+  // failover the caps would unblock, so a fast abort could only manufacture a "failed
+  // (timeout)". Same policy as custom endpoints: no request cap, no TTFT gate; Stop is the brake.
+  ok('pinned model: request cap lifted (0, not the 90s global)', r.requestCapMs({}, true) === 0);
+  ok('pinned model: explicit caller cap still honored when pinned', r.requestCapMs({}, true, 15_000) === 15_000);
+  ok('pinned model: TTFT gate skipped even while streaming', r.ttftGateMs({}, true, true) === 0);
+  ok('auto keeps the 90s global request cap', r.requestCapMs({}, false) === 90_000);
+  ok('auto streaming keeps the 8s TTFT gate', r.ttftGateMs({}, true, false) === 8_000);
+  ok('non-streaming turns never get a TTFT gate', r.ttftGateMs({}, false, false) === 0);
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
 }

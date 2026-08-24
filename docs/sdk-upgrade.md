@@ -6,7 +6,9 @@ replacement, and remove a custom workaround the moment the SDK grows a native eq
 list is what to re-check every time that dependency is bumped, so those workarounds don't outlive
 the bug they exist for.
 
-Current pinned versions: `ai@^7.0.34`, `@ai-sdk/provider@^4.0.3`, `zod@^4.4.3`.
+Current pinned versions: `ai@^7.0.58`, `@ai-sdk/provider@^4.0.3`, `zod@^4.4.3`. For what TierMux
+does and does not adopt from the SDK at the policy level, see
+[`sdk-adoption-policy.md`](./sdk-adoption-policy.md).
 
 ## 1. Is the `runtimeContext`/`toolsContext` bug fixed?
 
@@ -46,11 +48,13 @@ the time this was built.
 
 ## 4. Has `toolApproval` changed shape?
 
-`core/policies/permission.ts`'s `createToolApproval()` returns a `GenericToolApprovalFunction`
-matching the `ai@7.0.34` shape (`{ toolCall } => 'approved' | 'denied' | {type, reason} | ...`).
+`core/policies/permission.ts`'s approval functions now return the SDK's own imported
+`ToolApprovalStatus` type (since 2026-08-24), so a shape change shows up as a compile error in
+`npm run typecheck` rather than something to diff by hand.
 
 - [ ] Check the new version's type for `toolApproval` (in `streamText`/`generateText`'s options).
       Did the callback signature, the returned status shape, or the per-tool-name-map form change?
+      (A compile error here is the expected signal — fix by following the new type.)
 - [ ] Re-verify the core guarantee this whole mechanism exists for: a denied verdict means the
       tool's `execute()` never runs at all (not just that its effect is discarded afterward) — see
       the "denied toolApproval" test in `scripts/coreLoop.e2e.ts`.
@@ -65,7 +69,9 @@ tool-result/tool-error/error parts) rather than the `onStepStart`/`onToolExecuti
 `onToolExecutionEnd`/`onError` callback options.
 
 - [ ] Check the new version's `fullStream` part-type union — did any part type get renamed, split,
-      or gain new required fields?
+      or gain new required fields? (Since 2026-08-24 the consumer in `loop.ts` is fully typed —
+      `npm run typecheck` catches drift here directly; the old `part.delta`/`errorText` fallbacks
+      for pre-7.0.58 shapes were removed.)
 - [ ] Re-verify the ordering guarantee `chatViewProvider.ts`'s checkpoint recorder depends on:
       `onTool` state `'running'` must fire before that tool's own `execute()` mutates anything —
       see the "ordering" test in `scripts/coreLoop.e2e.ts`.

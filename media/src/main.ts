@@ -849,12 +849,18 @@ const STATE_LABEL = {
       const atts = document.createElement('div'); atts.className = 'msg-attachments';
       for (const a of attachments) {
         if (a.kind === 'image' && a.dataUrl) {
+          // Small square thumb, not the old full preview — one screenshot must not
+          // stretch the bubble into a screenful. Click opens it full-size.
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'msg-att-thumb';
+          btn.title = a.name ? `${a.name} — click to enlarge` : 'Click to enlarge';
           const img = document.createElement('img');
-          img.className = 'msg-att-img';
           img.src = a.dataUrl;
           img.alt = a.name || '';
-          img.title = a.name || '';
-          atts.appendChild(img);
+          btn.appendChild(img);
+          btn.addEventListener('click', () => showLightbox(a.dataUrl, a.name));
+          atts.appendChild(btn);
         } else {
           const span = document.createElement('span');
           span.className = 'msg-att-chip';
@@ -1664,6 +1670,29 @@ const STATE_LABEL = {
       document.body.appendChild(overlay);
       if (inputs.length) setTimeout(() => inputs[0].focus(), 0);
     });
+  }
+
+  /** Full-size viewer for the compact attachment thumbnails in user bubbles.
+   *  Same overlay approach as inlineDialog (the webview sandbox has no allow-modals):
+   *  click anywhere or press Escape to dismiss. */
+  function showLightbox(src, name) {
+    const overlay = document.createElement('div');
+    overlay.className = 'lb-overlay';
+    const img = document.createElement('img');
+    img.src = src;
+    img.alt = name || '';
+    overlay.appendChild(img);
+    if (name) {
+      const cap = document.createElement('div');
+      cap.className = 'lb-cap';
+      cap.textContent = name;
+      overlay.appendChild(cap);
+    }
+    const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+    overlay.addEventListener('click', close);
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(overlay);
   }
 
   /** True unless a specific (non-Auto) model is pinned and its catalog entry says it
@@ -3457,8 +3486,24 @@ const STATE_LABEL = {
   const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'watchdogWarning', 'watchdogActionable', 'watchdogDismissed', 'todos', 'planData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'workReport', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
 
   // ---------- inbound messages ----------
+  // Diagnostic ring: the last 150 host messages with payload sizes. When a turn renders
+  // wrong, `__tmLog()` in the devtools console prints exactly what the host sent (types,
+  // requestIds, text/detail lengths) — the difference between "host posted nothing" and
+  // "webview dropped it" is undecidable without this trace.
+  const tmMsgLog: Array<Record<string, unknown>> = [];
+  (window as any).__tmLog = () => JSON.stringify(tmMsgLog, null, 1);
   window.addEventListener('message', (event) => {
     const msg: RxMessage = event.data;
+    tmMsgLog.push({
+      t: msg.type,
+      r: (msg as any).requestId,
+      text: typeof (msg as any).text === 'string' ? (msg as any).text.length : undefined,
+      detail: typeof (msg as any).detail === 'string' ? (msg as any).detail.length : undefined,
+      reasoning: typeof (msg as any).reasoning === 'string' ? (msg as any).reasoning.length : undefined,
+      model: (msg as any).model,
+    });
+    if (tmMsgLog.length > 150) tmMsgLog.shift();
+    if (msg.type === 'assistantMessage') console.log('[tm] assistantMessage textLen=', ((msg as any).text || '').length, 'requestId=', (msg as any).requestId);
     let paneCtx = null;
     if (msg.sessionId && PANE_SCOPED.has(msg.type)) paneCtx = activatePane(msg.sessionId);
     switch (msg.type) {

@@ -397,9 +397,23 @@ const SIMPLE_MODE_TAILS: Record<AgentMode, string> = {
     + 'Answer directly from what you read. If the question needs an edit or a mutating command, say so and suggest Agent mode. For anything current or outside this codebase, use `webSearch`.',
 };
 
+/** Appended on pure visual-describe turns (see routing.ts's isPureVisualDescribe): the attachment
+ *  IS the subject. Without this — and with the project profile still injected — weak models
+ *  explain screenshots "through" the repo, citing workspace files as if the image proved them. */
+const VISUAL_DESCRIBE_GUARD =
+  '## About the attachment\n'
+  + 'The user is asking about the attached image/document itself. Describe and answer strictly '
+  + 'from what the attachment actually shows. Ignore this workspace\'s code, files, and stack for '
+  + 'this turn — never explain an image by guessing what this project contains.';
+
 /** The simple core's system prompt: identity + mode tail + today + profile + memory + rules,
- *  in cache-friendly order (stable text first, volatile date last). */
-export async function buildSimpleSystemPrompt(mode: AgentMode): Promise<string> {
+ *  in cache-friendly order (stable text first, volatile date last).
+ *
+ *  `pureVisualDescribe` (routing.ts) drops the auto-detected project profile and adds the
+ *  attachment guard — a "what's in this image" turn gets zero repo facts to fuse into its
+ *  answer. Rules and memory stay: they are user-authored instructions, not harness-generated
+ *  repo guesses. */
+export async function buildSimpleSystemPrompt(mode: AgentMode, pureVisualDescribe = false): Promise<string> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const [memory, rules] = await Promise.all([
     loadUserMemory().catch(() => ''),
@@ -408,10 +422,11 @@ export async function buildSimpleSystemPrompt(mode: AgentMode): Promise<string> 
   return [
     SIMPLE_IDENTITY,
     SIMPLE_MODE_TAILS[mode],
-    projectProfilePrompt(workspaceRoot),
+    pureVisualDescribe ? '' : projectProfilePrompt(workspaceRoot),
     rules,
     memory,
     todayLine(),
+    pureVisualDescribe ? VISUAL_DESCRIBE_GUARD : '',
   ].filter(Boolean).join('\n\n');
 }
 

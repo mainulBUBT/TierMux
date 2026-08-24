@@ -136,22 +136,67 @@ async function main() {
     }
   }
 
-  // --- Scenario 7: existing routing behavior is unchanged -------------------
-  // 'groq' has no skipPreflight (default false) — a cached "bad" state should
-  // still skip the model entirely (0 fetch calls), same as pre-hardening.
+  // --- Scenario 7: cached-bad vs a PINNED model — the pick wins --------------
+  // The cached-bad skip exists for Auto's failover ordering, not as a veto over the user's
+  // explicit choice: a pinned model with cached 'bad' health goes straight to the real
+  // request (1 fetch — no preflight ping, 'bad' is not a probe state), and its outcome
+  // refreshes health naturally. Before this, one cached timeout instant-failed every
+  // pinned retry for the whole health window without sending anything.
   {
     const r = makeRouter() as any;
     (r as Router as any).markHealth('groq', 'm7', 'bad', 'network');
+    let fetchCalls = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          id: 'x', object: 'chat.completion', created: 0, model: 'm7',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }),
+      } as unknown as Response;
+    }) as typeof fetch;
+    try {
+      let threw: unknown;
+      let result: { model?: string } | undefined;
+      try {
+        result = await (r as Router).route([{ role: 'user', content: 'hello' }], { model: 'groq::m7' });
+      } catch (e) { threw = e; }
+      ok('S7: pinned model ignores cached-bad skip (real request sent, no ping)', fetchCalls === 1);
+      ok('S7: pinned request succeeds despite cached-bad health', !threw && result?.model === 'm7');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  // --- Scenario 7c: Auto (unpinned) keeps the cached-bad skip ----------------
+  // Same cached-bad state, but routed WITHOUT a pin: the candidate is still skipped
+  // entirely (0 fetch calls) and the failure surfaces as AllModelsFailedError.
+  {
+    const secrets: Partial<SecretStore> = {
+      cooldownRemaining: () => 0, getModelKey: async () => undefined, resolveKey: async () => 'fake-key',
+      isToolIncompatible: () => false, isDeprecated: () => false, setStatus: () => {},
+      setCooldownForKey: () => {}, setCooldown: () => {}, keyCooldownRemaining: () => 0,
+      getKeys: async () => ['fake-key'], markToolIncompatible: () => {}, markDeprecated: () => {},
+    };
+    const settings: Partial<SettingsStore> = {
+      enabledByPriority: () => [{ platform: 'groq', modelId: 'm7c', enabled: true, priority: 0 }] as any,
+      getCustomEndpoints: () => [], getEndpoint: () => undefined,
+    };
+    const r = new Router(secrets as SecretStore, settings as SettingsStore, { find: () => undefined } as unknown as Catalog, { add: () => {} } as UsageTracker) as any;
+    r.markHealth('groq', 'm7c', 'bad', 'network');
     let fetchCalls = 0;
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async () => { fetchCalls++; return { ok: true, status: 200, json: async () => ({}) } as unknown as Response; }) as typeof fetch;
     try {
       let threw: unknown;
       try {
-        await (r as Router).route([{ role: 'user', content: 'hello' }], { model: 'groq::m7' });
+        await (r as Router).route([{ role: 'user', content: 'hello' }]);
       } catch (e) { threw = e; }
-      ok('S7: cached-bad non-skipPreflight model is skipped (no fetch)', fetchCalls === 0);
-      ok('S7: route() surfaces AllModelsFailedError when the only candidate is skipped', threw instanceof AllModelsFailedError);
+      ok('S7c: Auto still skips cached-bad non-skipPreflight model (no fetch)', fetchCalls === 0);
+      ok('S7c: route() surfaces AllModelsFailedError when the only candidate is skipped', threw instanceof AllModelsFailedError);
     } finally {
       globalThis.fetch = realFetch;
     }

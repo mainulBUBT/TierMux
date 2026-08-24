@@ -814,8 +814,18 @@ details[open].reasoning summary::before { content: '▾ '; }
 
 .composer.drag { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -2px; background: var(--vscode-editorHoverBackground); }
 
+/* Sent-message attachments stay compact: images are small square thumbs (click =
+   full-size lightbox below) so a screenshot never stretches the bubble. */
 .msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.msg-att-img { max-width: 200px; max-height: 200px; border-radius: 6px; object-fit: cover; }
+.msg-att-thumb {
+  width: 76px; height: 76px; padding: 0; overflow: hidden; cursor: zoom-in;
+  border: 1px solid var(--tm-card-border); border-radius: var(--tm-radius-md);
+  background: var(--tm-surface-alt);
+  transition: border-color var(--tm-transition-fast);
+}
+.msg-att-thumb:hover { border-color: var(--tm-border-focus); }
+.msg-att-thumb:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.msg-att-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .msg-att-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 6px; border-radius: 10px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
 .msg-att-chip-icon { display: inline-flex; }
 .msg-att-chip-icon svg { width: 12px; height: 12px; }
@@ -1238,6 +1248,23 @@ body.vscode-light .empty-recent-card { background: var(--vscode-editorWidget-bac
   padding: 16px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
+
+/* Full-size image viewer behind the compact .msg-att-thumb thumbnails. Click
+   anywhere (or Escape) dismisses — the cursor hints it. */
+.lb-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  z-index: 1000;
+  cursor: zoom-out;
+}
+.lb-overlay img { max-width: 92%; max-height: 86%; border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); }
+.lb-cap { font-size: 11px; color: #fff; opacity: .75; max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dlg.dlg-danger .dlg-title { color: var(--vscode-errorForeground); }
 .dlg-title { font-weight: 600; font-size: 13px; margin-bottom: 8px; color: var(--vscode-foreground); }
 .dlg-msg { font-size: 12px; color: var(--vscode-descriptionForeground); margin-bottom: 12px; white-space: pre-wrap; }

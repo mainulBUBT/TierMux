@@ -11,7 +11,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { classifyTaskCore } from '../src/agent/routing';
+import { classifyTaskCore, isPureVisualDescribe } from '../src/agent/routing';
 import type { TaskKind } from '../src/agent/routing';
 
 let failures = 0;
@@ -62,6 +62,35 @@ console.log('\n— Must NOT false-positive on English words containing Banglish 
 expect('korean translation library', ['agent', 'chat'], '\\bkor\\b must not match "korean"');
 expect('what kind of file is this?', ['chat'], '"kind" must not match \\bki\\b');
 expect('the banner needs a new colour', ['agent', 'chat'], '"banner" must not match \\bbanao\\b');
+
+/* — Pure visual-describe gating (isPureVisualDescribe) —
+ *
+ * A describe-the-image turn must drop the auto-detected repo profile from its system prompt
+ * (promptBuilder's pureVisualDescribe), or a weak model explains the screenshot "through" the
+ * repo — the 2026-08-24 trip-screen incident cited Laravel image-helper file paths as if the
+ * image proved them. Debug-screenshot and edit-the-screenshot turns are the OPPOSITE: the repo
+ * facts are exactly what helps there, so they must NOT gate.
+ */
+console.log('\n— Pure visual-describe gating (profile must be dropped) —');
+const expectVisual = (text: string, want: boolean, note = '') => {
+  const got = isPureVisualDescribe(text, true);
+  const pass = got === want;
+  if (!pass) failures++;
+  console.log(`${pass ? 'PASS' : 'FAIL'}  pureDescribe=${String(got).padEnd(5)} want=${String(want).padEnd(5)} ${text}${note ? `   (${note})` : ''}`);
+};
+expectVisual('ei image e ki ache bujhao', true, 'the incident message itself');
+expectVisual("what's in this image?", true);
+expectVisual('describe this screenshot', true);
+expectVisual('', true, 'attachment with no caption — describe is the only intent');
+expectVisual('fix this error screenshot', false, 'debug intent keeps the profile');
+expectVisual('login kaj korche na - screenshot dekho', false, 'Banglish debug hint keeps the profile');
+expectVisual('translate this UI to English', false, 'task verb → the image is input, not subject');
+expectVisual('make this design a component', false, 'edit intent');
+expectVisual('explain src/auth.ts in this screenshot', false, 'workspace file referenced → tools must stay');
+expectVisual('explain @notes.md along with the image', false, '@mention → tools must stay');
+// Without a visual attachment the gate never fires, whatever the text:
+if (isPureVisualDescribe('explain this image', false)) { failures++; console.log('FAIL  no-attachment turn must never gate'); }
+else console.log('PASS  no-attachment turn never gates');
 
 /* — Bundled skill bodies —
  *

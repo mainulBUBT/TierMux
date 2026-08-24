@@ -45,8 +45,9 @@
 
 /* ── Agent picker ── */
 /* One STANDARD capsule shape across the whole toolbar (agent, model, reasoning): quiet
-   outline pill on the shared tokens. The mode signal is a subtle icon tint, not a fill —
-   the old per-mode tinted fills made the row read as three different design systems. */
+   outline pill on the shared tokens. The mode is carried by the label text — icon and
+   pill share the standard foreground (per-mode icon tints made the row read as three
+   different design systems). */
 .tm-agent-trigger {
   display: inline-flex; align-items: center; gap: 5px;
   height: 26px; padding: 0 9px 0 10px;
@@ -69,10 +70,8 @@
 .tm-agent-trigger.executing .tm-agent-label { color: var(--tm-fg-link); animation: state-pulse 1.2s ease-in-out infinite; }
 .tm-agent-exec-zap { display: inline-flex; margin-left: 2px; }
 
-/* Mode signal = icon tint only; the pill itself stays the standard outline. */
-.tm-agent-ask .tm-agent-trigger-icon { color: var(--tm-fg-muted); }
-.tm-agent-plan .tm-agent-trigger-icon { color: var(--tm-info); }
-.tm-agent-agent .tm-agent-trigger-icon { color: var(--tm-accent); }
+/* Mode signal lives in the label text; the trigger icon stays the standard
+   foreground like every other toolbar icon (per-mode tints read as inconsistent). */
 
 .tm-agent-pop { width: 288px; }
 .tm-agent-list { display: flex; flex-direction: column; gap: 2px; }
@@ -100,9 +99,10 @@
 .tm-agent-item-check { flex: 0 0 auto; display: inline-flex; margin-top: 4px; opacity: 0.9; }
 
 /* ── Model picker ── */
-/* A quiet outline pill — secondary to the agent picker. Auto gets the sparkle + a
-   subtle info tint so the recommended default stands out; "serving" pulses while a
-   turn is being answered by that model. */
+/* A quiet outline pill — secondary to the agent picker, and visually identical to it:
+   Auto is told apart by the sparkle glyph + label only, so every capsule in the
+   toolbar (agent, model, reasoning) shares one standard border. "serving" pulses
+   while a turn is being answered by that model. */
 .tm-model-trigger {
   display: inline-flex; align-items: center; gap: 5px;
   height: 26px; padding: 0 9px 0 10px;
@@ -120,8 +120,6 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   flex: 0 1 auto; min-width: 0;
 }
-.tm-model-trigger.tm-is-auto { border-color: color-mix(in srgb, var(--tm-info) 45%, var(--tm-border)); }
-.tm-model-trigger.tm-is-auto .tm-model-trigger-icon { color: var(--tm-info); opacity: 1; }
 .tm-model-trigger.tm-serving .tm-model-label { color: var(--tm-fg-link); animation: state-pulse 1.2s ease-in-out infinite; }
 
 .tm-model-pop { width: 296px; max-height: 52vh; }
@@ -214,7 +212,7 @@
 
 /* The Auto (smart routing) row reads as a first-class choice, not just another row. */
 .tm-model-auto { padding: var(--tm-gap-sm); }
-.tm-model-auto .tm-model-auto-icon { flex: 0 0 auto; display: inline-flex; color: var(--tm-info); }
+.tm-model-auto .tm-model-auto-icon { flex: 0 0 auto; display: inline-flex; }
 .tm-model-auto .tm-model-item-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .tm-model-auto .tm-model-item-name { font-size: var(--tm-text-base); font-weight: 600; color: var(--tm-fg); }
 .tm-model-auto .tm-model-item-desc {

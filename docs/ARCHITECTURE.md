@@ -172,7 +172,8 @@ AI SDK type — see the Layering boundary note above.
   closures rather than the AI SDK's `runtimeContext`/`ToolExecutionOptions.
   context` — that mechanism was verified empirically **not** to propagate
   as documented in `ai@7.0.34` (see the comment in `tools/index.ts` and
-  `docs/sdk-upgrade.md`, which also has the full upgrade checklist).
+  `docs/sdk-upgrade.md`, which also has the full upgrade checklist). What the
+  codebase adopts from the SDK at all is governed by `docs/sdk-adoption-policy.md`.
 - **`tools/delegate.ts`** — the general-purpose sub-agent (Claude Code's
   Task-tool pattern): `research` mode runs a read-only investigation on the
   utility model (bigger than `explore`); `code` mode runs a single fleet-style

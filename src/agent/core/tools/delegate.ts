@@ -33,9 +33,11 @@ import {
 import { isGitRepo } from '../../../edits/gitSnapshot';
 
 // Research mode bounds: bigger than explore's quick lookup (6 steps / 20s) but still cheap —
-// 10 steps / 60s on the utility model, read-only tools only.
-const RESEARCH_MAX_STEPS = 10;
-const RESEARCH_TIMEOUT_MS = 60_000;
+// defaults of 20 steps / 3min on the utility model, read-only tools only. Overridable via
+// tiermux.fleet.researchMaxSteps / researchTimeoutMs; the timeout doubles as network-hang
+// protection for stuck free-tier providers, so raising it is safer than removing it.
+const DEFAULT_RESEARCH_MAX_STEPS = 20;
+const DEFAULT_RESEARCH_TIMEOUT_MS = 180_000;
 
 // Code mode reuses the fleet's worker bounds (same settings drive both — a delegated
 // implementation task IS a one-worker pipeline).
@@ -62,6 +64,14 @@ const WORKER_SYSTEM =
   + 'owns git; your edits are committed for you.\n'
   + '- Verify your own work (run the project check/test command if one exists) before finishing.\n'
   + '- Finish with a SHORT summary: what you changed and why, plus verification status. No large diffs.';
+
+function researchConfig() {
+  const cfg = vscode.workspace.getConfiguration('tiermux.fleet');
+  return {
+    maxSteps: cfg.get<number>('researchMaxSteps', DEFAULT_RESEARCH_MAX_STEPS),
+    timeoutMs: cfg.get<number>('researchTimeoutMs', DEFAULT_RESEARCH_TIMEOUT_MS),
+  };
+}
 
 function workerConfig() {
   const cfg = vscode.workspace.getConfiguration('tiermux.fleet');
@@ -96,6 +106,7 @@ export function createDelegateTool(router: Router, abortSignal?: AbortSignal) {
 }
 
 async function runResearchDelegate(task: string, router: Router, abortSignal?: AbortSignal): Promise<string> {
+  const cfg = researchConfig();
   const utility = await router.pickUtilityModel();
   const provider = createRouterProvider(router, { taskKind: 'reasoning', pinnedModel: utility });
 
@@ -107,20 +118,20 @@ async function runResearchDelegate(task: string, router: Router, abortSignal?: A
     getDiagnostics: createDiagnosticsTool(),
   };
 
-  const timeout = AbortSignal.timeout(RESEARCH_TIMEOUT_MS);
+  const timeout = AbortSignal.timeout(cfg.timeoutMs);
   const signal = abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout;
 
   try {
     const result = await generateText({
-      model: provider as any,
+      model: provider,
       system: RESEARCH_SYSTEM,
       prompt: task,
-      tools: tools as any,
-      toolApproval: createSubAgentToolApproval() as any,
-      stopWhen: isStepCount(RESEARCH_MAX_STEPS),
+      tools,
+      toolApproval: createSubAgentToolApproval(),
+      stopWhen: isStepCount(cfg.maxSteps),
       abortSignal: signal,
-    } as any);
-    const text = ((result as any).text ?? '').trim();
+    });
+    const text = (result.text ?? '').trim();
     return text || '(research sub-agent finished but produced no report)';
   } catch (err) {
     // Never throw out of a sub-agent — degrade to a message the main agent can act on.
@@ -167,16 +178,16 @@ async function runCodeDelegate(description: string, task: string, router: Router
       + 'Read the relevant files first, implement the task, verify, then reply with the summary.';
 
     const result = await runWithWorkspaceRoot(worktree.path, () => generateText({
-      model: provider as any,
+      model: provider,
       system: WORKER_SYSTEM,
       prompt,
-      tools: tools as any,
-      toolApproval: createWorkerToolApproval() as any,
+      tools,
+      toolApproval: createWorkerToolApproval(),
       stopWhen: isStepCount(cfg.maxSteps),
       abortSignal: signal,
-    } as any));
+    }));
 
-    const summary = ((result as any).text ?? '').trim() || '(worker produced no summary)';
+    const summary = (result.text ?? '').trim() || '(worker produced no summary)';
 
     // Commit inside the worktree (the branch is checked out there), then merge into the user's
     // current branch. No other writer exists, so a conflict can only mean the user's tree moved

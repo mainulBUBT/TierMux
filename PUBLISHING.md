@@ -2,7 +2,7 @@
 
 ## 1. Secret scan
 ```bash
-git grep -nEI '(sk-[a-zA-Z0-9]{10,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{30,}|xox[baprs]-|AIza[0-9A-Za-z_-]{20,}|-----BEGIN (RSA|EC|OPENSSH|PRIVATE) KEY-----)' -- .
+git grep -nEI '(\bsk-[a-zA-Z0-9_-]{10,}|\bAKIA[0-9A-Z]{16}|\bghp_[a-zA-Z0-9]{30,}|\bxox[baprs]-|\bAIza[0-9A-Za-z_-]{20,}|-----BEGIN (RSA|EC|OPENSSH|PRIVATE) KEY-----)' -- .
 git ls-files | grep -iE '(^|/)\.env'
 ```
 Both should return nothing. If either finds something, rotate the credential first (assume anything committed is burned), then remove it from tracking.

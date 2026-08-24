@@ -5,6 +5,7 @@
 // execute() never runs at all (verified empirically against ai@7.0.34 — see the plan's spike
 // note). This file only decides allow/ask/deny; it never touches execution.
 import * as vscode from 'vscode';
+import type { ToolApprovalStatus } from 'ai';
 import type { AgentOpts } from '../../agent';
 import { isReadOnlyCommand } from '../../../edits/commandClassify';
 import { isDangerous } from '../../../edits/commandGate';
@@ -90,9 +91,8 @@ async function fileExists(uri: string): Promise<boolean> {
   try { await vscode.workspace.fs.stat(vscode.Uri.parse(uri)); return true; } catch { return false; }
 }
 
-interface ToolApprovalStatusObject { type: 'approved' | 'denied' | 'not-applicable' | 'user-approval'; reason?: string }
-type ToolApprovalStatus = ToolApprovalStatusObject | 'approved' | 'denied' | 'not-applicable' | undefined;
-
+/** The SDK's own ToolApprovalStatus (imported above) is the verdict shape; this local interface
+ *  is just the slice of the tool call the policy reads. */
 interface ApprovalToolCall {
   toolName: string;
   input: unknown;

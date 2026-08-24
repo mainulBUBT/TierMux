@@ -112,7 +112,6 @@ export function createModelPicker(init: ModelPickerInit): ModelPickerHandle {
   // that's a real deviation from the user's explicit pick.
   function renderTrigger() {
     const isAuto = value === 'auto';
-    trigger.classList.toggle('tm-is-auto', isAuto);
     trigger.classList.toggle('tm-serving', !!serving);
     triggerIconEl.innerHTML = isAuto ? ICON.sparkle : ICON.chip;
     labelEl.textContent = isAuto ? 'Auto' : (serving || label);

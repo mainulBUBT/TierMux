@@ -86,9 +86,10 @@ export function attachmentKindsFromContent(content: ChatContent): NonNullable<Cl
  * `supportsVision: true`. If no vision model is enabled, falls back to text only.
  */
 /** Same classification as `classifyTask`, but also reports whether a regex actually matched
- *  (`confident`) vs. we fell through to a best-guess default. Weak-model routing correctness
- *  matters more than saving a heuristic's honor — callers that can afford a cheap LLM
- *  double-check (see `classifyTaskSmart` in loop.ts) should only spend it on the `false` case. */
+ *  (`confident`) vs. we fell through to a best-guess default. The regex answer is only the
+ *  FIRST word: `classifyTaskSmart` (loop.ts) re-decides every non-trivial turn with a cheap
+ *  LLM (chain: user-set `tiermux.classifierModel` → opencode → kilo → ovh), bounded by a
+ *  timeout and falling back to this result on any failure. */
 export function classifyTaskCore(text: string, signals?: ClassifySignals): { kind: TaskKind; confident: boolean } {
   const t = (text || '').trim();
   if (!t) return { kind: 'chat', confident: true };
@@ -101,7 +102,6 @@ export function classifyTaskCore(text: string, signals?: ClassifySignals): { kin
   if (t.length > 6000 || (signals?.attachments ?? 0) > 0 || (signals?.mentions ?? 0) >= 3) {
     return { kind: hasVisual ? 'vision' : 'longContext', confident: true };
   }
-
   if (hasVisual) {
     if (DEBUG_HINT.test(t)) return { kind: 'vision', confident: true };  // debug a screenshot/log → vision tool-capable
     if (EXPLAIN_Q.test(t)) return { kind: 'vision', confident: true };   // "what's in this image" → read-only vision
@@ -129,11 +129,31 @@ export function classifyTaskCore(text: string, signals?: ClassifySignals): { kin
   return { kind: 'agent', confident: false };         // ambiguous: assume an action so edits aren't dropped
 }
 
-/** Regex-only classification — synchronous, zero extra latency. Prefer `classifyTaskSmart`
- *  (loop.ts) where an async context and a cheap model are available; this stays for call sites
+/** Regex-only classification — synchronous, zero extra latency. This is the FIRST word only:
+ *  `classifyTaskSmart` (loop.ts) re-decides non-trivial turns with a cheap LLM and falls back
+ *  to this result when no classifier model is available or the call fails. Kept for call sites
  *  that need a sync, no-I/O answer (e.g. filtering trivial messages while picking a session title). */
 export function classifyTask(text: string, signals?: ClassifySignals): TaskKind {
   return classifyTaskCore(text, signals).kind;
+}
+
+/** True for a turn whose ONLY ask is "describe/explain the attached image itself" — an
+ *  explanation request (English or Banglish) with no task/debug intent and no workspace
+ *  reference. These turns run WITHOUT workspace tools and WITHOUT the auto-detected project
+ *  profile: a weak model handed repo facts/tools alongside an app screenshot will fuse the two
+ *  and present repo guesses as facts about the image (observed 2026-08-24/25: a trip-screen
+ *  screenshot "explained" via Laravel file paths, and a repo file walkthrough instead of the
+ *  image). Debug-screenshot turns ("fix this error") deliberately do NOT match — there the
+ *  repo context is exactly what helps. */
+export function isPureVisualDescribe(text: string, hasVisual: boolean): boolean {
+  if (!hasVisual) return false;
+  const t = (text || '').trim();
+  if (!t) return true; // attachment with no caption — describe is the only possible intent
+  if (TASK_VERB.test(t) || DEBUG_HINT.test(t) || BN_TASK_VERB.test(t) || BN_DEBUG_HINT.test(t)) return false;
+  // A workspace reference in the text ("explain src/auth.ts", "@notes.md") means the repo IS
+  // part of the subject — tools must stay so the model can actually read it.
+  if (/@[\w.-]/.test(t) || /(?:^|[\s("'`])((?:[\w.-]+\/)+[\w.-]+\.[a-zA-Z]{1,5})\b/.test(t)) return false;
+  return EXPLAIN_Q.test(t) || EXPLAIN_VERB.test(t) || BN_EXPLAIN_Q.test(t);
 }
 
 /**

@@ -554,6 +554,44 @@ export class Router {
   }
 
   /**
+   * Model for the LLM task-classifier (classifyTaskSmart). Preference order:
+   *  1. `tiermux.classifierModel` (user-pinned `platform::modelId`) if ready,
+   *  2. the default keyless chain — opencode, then kilo, then ovh (fixed favorites first,
+   *     then any ready enabled model on that platform, in settings priority order),
+   *  3. undefined → caller keeps the regex classification (never blocks the turn).
+   */
+  async pickClassifierModel(): Promise<string | undefined> {
+    const chosen = vscodeConfigString('tiermux.classifierModel', 'auto');
+    if (chosen && chosen !== 'auto' && (await this.isReady(chosen))) return chosen;
+
+    const entries = this.settings.enabledByPriority();
+    const enabled = new Set(entries.map((e) => `${e.platform}::${e.modelId}`));
+    const byPlatform = new Map<string, string[]>();
+    for (const e of entries) {
+      const list = byPlatform.get(e.platform) ?? [];
+      list.push(`${e.platform}::${e.modelId}`);
+      byPlatform.set(e.platform, list);
+    }
+    const pick = async (keys: string[]): Promise<string | undefined> => {
+      for (const key of keys) {
+        if (enabled.has(key) && (await this.isReady(key))) return key;
+      }
+      return undefined;
+    };
+
+    const keyless = await pick([
+      'opencode::deepseek-v4-flash-free', 'kilo::kilo-auto/free', 'ovh::gpt-oss-120b',
+    ]);
+    if (keyless) return keyless;
+
+    for (const platform of ['opencode', 'kilo', 'ovh']) {
+      const onPlatform = await pick(byPlatform.get(platform) ?? []);
+      if (onPlatform) return onPlatform;
+    }
+    return undefined;
+  }
+
+  /**
    * Check if a specific `platform::modelId` is ready to route to: enabled in
    * the fallback chain, not in rate-limit cooldown, and has an API key (or is
    * keyless). Used by short-task callers (commit messages, titles) to skip
@@ -919,7 +957,11 @@ export class Router {
   }
 
   private timeoutMs(): number {
-    return vscodeConfigNumber('tiermux.requestTimeoutMs', 30000);
+    // 90s default: many free-router / large reasoning models legitimately take 60–90s before
+    // their first byte (queue wait + prefill). Streaming turns don't feel this — the TTFT
+    // gate (8s) is what moves a silent candidate along there — so the cap mainly buys room
+    // for slow starters on non-streaming calls, where 30s killed them outright.
+    return vscodeConfigNumber('tiermux.requestTimeoutMs', 90000);
   }
 
   /** Per-provider floor: ZenMux and other queued free routers need more than the 60s default
@@ -960,6 +1002,24 @@ export class Router {
     if (base <= 0) return 0;
     const floor = provider.ttftTimeoutMs ?? 0;
     return Math.min(Math.max(base, floor), this.timeoutMsFor(provider as { timeoutMs?: number }));
+  }
+
+  /** Request cap for one candidate (0 = uncapped). A pinned (`forced`) model runs uncapped —
+   *  the user explicitly chose to wait for it, and there is no failover a fast abort would
+   *  unblock, so the cap could only manufacture a "failed (timeout)"; the Stop button is the
+   *  brake. Auto keeps the global cap so a hung candidate can't stall the failover chain. */
+  private requestCapMs(provider: { timeoutMs?: number }, forced: boolean, callerCap?: number): number {
+    if (forced) return callerCap ?? 0;
+    return callerCap ?? this.timeoutMsFor(provider);
+  }
+
+  /** TTFT gate for one candidate (0 = gate off). Off for non-streaming requests and for a
+   *  pinned model — the gate exists to move the failover chain along, and a pinned pick has
+   *  nothing to fail over TO; aborting it mid-silence just fails the turn the user asked
+   *  for. Mirrors the custom-endpoint policy: waiting is the only honest option. */
+  private ttftGateMs(provider: { ttftTimeoutMs?: number }, wantsStream: boolean, forced: boolean): number {
+    if (!wantsStream || forced) return 0;
+    return this.ttftTimeoutMsFor(provider);
   }
 
   /** Exponential cooldown for a given consecutive-failure streak, capped at `HEALTH_MAX_TTL_MS`. */
@@ -1550,7 +1610,12 @@ export class Router {
 
       if (retryCount === 0) {
         const cached = this.healthOf(entry.platform, entry.modelId);
-        if (cached === 'bad' && !provider.skipPreflight) {
+        // The cached-bad skip exists to save Auto's failover chain from re-dialing a model that
+        // just failed. It must NOT veto a PINNED model: the user explicitly picked it to retry,
+        // and one cached 'timeout' would otherwise instant-fail every pinned attempt for the
+        // whole health window without sending a single request (the real request below is its
+        // own probe — its outcome refreshes health naturally).
+        if (cached === 'bad' && !forced && !provider.skipPreflight) {
 
           const reason = this.cachedHealthReason(entry.platform, entry.modelId) ?? 'preflight_failed';
           failures.push({ platform: entry.platform, model: entry.modelId, reason });
@@ -1584,9 +1649,10 @@ export class Router {
       // abort signal that fires on EITHER the user's Stop OR our own TTFT timer. The TTFT abort
       // throws inside the stream loop below → classified 'network' (failoverable) → next candidate,
       // without touching opts.abortSignal (so the Stop button stays independent). Non-streaming
-      // requests use opts.abortSignal directly; the normal timeoutMs governs them.
+      // requests use opts.abortSignal directly; the normal timeoutMs governs them. The gate is
+      // skipped for a pinned model — see ttftGateMs.
       const wantsStreamPre = !!opts.onChunk;
-      const ttftMs = wantsStreamPre ? this.ttftTimeoutMsFor(provider) : 0;
+      const ttftMs = this.ttftGateMs(provider, wantsStreamPre, forced);
       const ttftController = ttftMs > 0 ? new AbortController() : undefined;
       const perCandidateAbort = ttftController && opts.abortSignal
         ? AbortSignal.any([opts.abortSignal, ttftController.signal])
@@ -1612,7 +1678,7 @@ export class Router {
         parallel_tool_calls: opts.parallel_tool_calls,
         reasoningEffort: model?.supportsReasoning ? opts.reasoningEffort : undefined,
         baseUrlOverride: this.settings.getEndpoint(entry.platform),
-        timeoutMs: opts.timeoutMs ?? this.timeoutMsFor(provider as { timeoutMs?: number }),
+        timeoutMs: this.requestCapMs(provider as { timeoutMs?: number }, forced, opts.timeoutMs),
         abortSignal: perCandidateAbort,
         responseFormat: opts.responseFormat,
       };

@@ -55,6 +55,17 @@ async function main() {
     ok(`${label}: no weak-only scaffolding markers`, !p.includes('weak-only'));
   }
 
+  // ── Pure visual-describe turns: repo profile OUT, attachment guard IN ──
+  // The profile's "Stack: …" / "layout: …" lines are what a weak model fuses into an image
+  // answer (2026-08-24 trip-screen incident). buildSimpleSystemPrompt(pureVisualDescribe=true)
+  // must remove them and add the explicit answer-from-the-attachment guard instead.
+  const visual = await buildSimpleSystemPrompt('agent', true);
+  ok('visual: no auto-detected project profile ("## This project")', !visual.includes('## This project'));
+  ok('visual: attachment guard present', visual.includes('## About the attachment'));
+  ok('visual: guard says to ignore workspace code', visual.includes("Ignore this workspace's code"));
+  ok('non-visual keeps the profile (control)', agent.includes('## This project'));
+  ok('non-visual has no attachment guard (control)', !agent.includes('## About the attachment'));
+
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
 }
