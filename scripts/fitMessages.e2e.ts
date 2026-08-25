@@ -74,5 +74,37 @@ ok('no-user input still returns more than the system prompt', noUser.messages.le
 ok('fitted output is within budget or only the reserved task exceeds it',
   estimateMessagesTokens(tight.messages) <= 2_500 || tight.messages.filter((m) => m.role === 'user').length === 1);
 
+// The FIRST user message — the conversation's anchor — must also survive (2026-08-25:
+// a tool-heavy earlier turn evicted the original task entirely, so the follow-up
+// "in short bangla" was answered as a grep query against the leftover tool tail).
+const crowded: ChatMessage[] = [
+  { role: 'system', content: 'sys' },
+  { role: 'user', content: TASK },
+];
+for (let i = 0; i < 10; i++) {
+  crowded.push({ role: 'assistant', content: '', tool_calls: [{ id: `k${i}`, type: 'function', function: { name: 'grep', arguments: '{"pattern":"affiliate"}' } }] });
+  crowded.push({ role: 'tool', tool_call_id: `k${i}`, content: big(20_000) });
+}
+crowded.push({ role: 'user', content: 'in short bangla' });
+const anchored = fitMessages(crowded, 3_000);
+ok('original task survives newest-first eviction as the anchor',
+  anchored.messages.some((m) => m.role === 'user' && String(m.content).includes('affiliate')));
+ok('the follow-up (latest task) is kept too',
+  anchored.messages.some((m) => m.role === 'user' && String(m.content).includes('bangla')));
+ok('anchor leads the fitted window (chronologically first after system)',
+  anchored.messages[1]?.role === 'user');
+
+// A giant anchor is capped, never dropped — and never allowed to eat the window.
+const giantAnchor = fitMessages([
+  { role: 'system', content: 'sys' },
+  { role: 'user', content: big(200_000) },
+  { role: 'assistant', content: 'answer' },
+  { role: 'user', content: 'follow-up question' },
+], 2_500);
+ok('giant anchor is capped with a marker, not dropped',
+  giantAnchor.messages.some((m) => m.role === 'user' && String(m.content).includes('truncated to fit')));
+ok('giant anchor did not evict the latest task',
+  giantAnchor.messages.some((m) => m.role === 'user' && String(m.content).includes('follow-up')));
+
 console.log(bad === 0 ? '\nALL PASS' : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

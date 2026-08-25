@@ -174,9 +174,6 @@ export interface MentionItem {
 export type InMessage =
   | { type: 'ready' }
   | { type: 'sendMessage'; requestId: string; text: string; mode: Mode; model: string; reasoningEffort: ReasoningEffort; attachments?: Attachment[]; attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'> }
-  /** "Run checks" on a ResultCard: re-run the project's verify command outside a turn and
-   *  post the outcome as its own bubble — no model call, no edits. See runManualVerify. */
-  | { type: 'verifyTurn'; sessionId: string }
   | { type: 'approvePlan'; requestId: string; approved: boolean; steps: string }
   | { type: 'executePlan'; requestId: string; steps: string }
   | { type: 'deferPlan'; requestId: string; steps: string }

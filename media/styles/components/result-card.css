@@ -3,7 +3,8 @@
    (renderAssistantStatic reads entry.workReport), so one stylesheet serves both.
 
    Compact by design: token/model/duration telemetry stays in the message footer — this card
-   carries only verification status, what changed, and the verify action. */
+   carries only verification status and what changed. No verify button: the agent owns the
+   recheck (bounded fix rounds run inside the turn). */
 
 .tm-result-card {
   margin-top: 8px;
@@ -50,30 +51,12 @@
   opacity: 0.85;
 }
 
-/* The card's reason to exist: turn "unverified/failed" into ONE click. */
-.tm-result-card .rc-actions { display: flex; }
-.tm-result-card .rc-verify-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--vscode-button-foreground, #fff);
-  background: var(--vscode-button-background, #0a84ff);
-  border: none;
-  border-radius: 12px;
-  padding: 3px 12px;
-  cursor: pointer;
-}
-.tm-result-card .rc-verify-btn:hover { filter: brightness(1.1); }
-
 .tm-result-card .rc-files { display: flex; flex-direction: column; gap: 2px; }
 .tm-result-card .cp-file.rc-clickable:hover { background: var(--vscode-list-hoverBackground); }
 .tm-result-card .rc-more { opacity: 0.7; padding: 2px 4px; }
 
-/* Untested turns: no verdict badge, just a quiet suggestion row. */
+/* Untested turns: no verdict badge, just a quiet note row. */
 .tm-result-card.rc-quiet { padding: 5px 10px; }
-.tm-result-card .rc-actions { align-items: center; gap: 10px; }
 .tm-result-card .rc-hint {
   font-size: 11.5px;
   color: var(--vscode-descriptionForeground, var(--vscode-foreground));

@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Synced from remote /models JSON — 411 models from 29 providers.",
+  "note": "Synced from remote /models JSON — 405 models from 29 providers.",
   "models": [
     {
       "platform": "agnes",
@@ -15,13 +15,10 @@
       "rpdLimit": 28800,
       "monthlyTokenBudget": "~free",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.03,
@@ -43,8 +40,6 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
-        "coding",
         "reasoner",
         "free"
       ],
@@ -69,9 +64,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
-        "vision",
         "free"
       ],
       "insight": "Google Gemma 4 31B optimized for multimodal reasoning across screenshots, documents, diagrams, and design assets with high-throughput inference on Cerebras.",
@@ -92,11 +85,9 @@
       "monthlyTokenBudget": "5.0M input tokens/mo (est.)",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
         "coding",
-        "reasoner",
-        "general",
         "free"
       ],
       "insight": "Purpose-built coding model optimized for code generation, refactoring, debugging, and software engineering tasks.",
@@ -119,8 +110,6 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
-        "planner",
         "reasoner",
         "free"
       ],
@@ -141,11 +130,10 @@
       "rpdLimit": 432000,
       "monthlyTokenBudget": "3.5M input tokens/mo (est.)",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
         "coding",
-        "planner",
         "reasoner",
         "free"
       ],
@@ -169,10 +157,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
-        "planner",
         "reasoner",
-        "general",
         "free"
       ],
       "insight": "OpenAI open-weight model optimized for reasoning, coding, and agentic workflows.",
@@ -196,9 +181,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "planner",
         "reasoner",
-        "general",
         "free"
       ],
       "insight": "Reasoning-focused model excelling at debugging, algorithms, mathematics, and complex problem solving.",
@@ -221,11 +204,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
-        "coding",
-        "planner",
         "reasoner",
-        "vision",
         "free"
       ],
       "insight": "General-purpose long-context MoE model supporting coding, vision, and multi-turn tool calling.",
@@ -246,10 +225,9 @@
       "monthlyTokenBudget": "11.2M input tokens/mo (est.)",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "coding",
         "free"
       ],
       "insight": "Optimized FP8 deployment of Meta's 70B instruction model for fast inference and coding assistance.",
@@ -270,11 +248,9 @@
       "monthlyTokenBudget": "64.9M input tokens/mo (est.)",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "coding",
-        "reasoner",
         "free"
       ],
       "insight": "MoE reasoning model balancing coding quality, speed, and efficient inference.",
@@ -297,10 +273,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
-        "planner",
         "reasoner",
-        "vision",
         "free"
       ],
       "insight": "Flagship multimodal model with vision, reasoning, tool use, OCR, document understanding, and multilingual support.",
@@ -321,12 +294,9 @@
       "monthlyTokenBudget": "1000 calls/mo",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "coding",
-        "planner",
-        "reasoner",
         "free"
       ],
       "insight": "High-performance general-purpose model optimized for coding, RAG, reasoning, and agent workflows.",
@@ -347,10 +317,9 @@
       "monthlyTokenBudget": "1000 calls/mo",
       "supportsTools": true,
       "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "vision",
         "free"
       ],
       "insight": "Document understanding, OCR, chart and image analysis, multimodal conversations, and tool use.",
@@ -373,8 +342,6 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
-        "planner",
         "reasoner",
         "free"
       ],
@@ -398,10 +365,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
-        "planner",
         "reasoner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0.15,
@@ -422,9 +386,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0.075,
@@ -445,10 +407,8 @@
       "monthlyTokenBudget": "~free",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
-        "coding",
-        "reasoner",
         "general",
         "free"
       ],
@@ -469,13 +429,10 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "TRUE",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "vision",
-        "general",
-        "coding",
-        "planner",
+        "reasoner",
         "free"
       ],
       "insight": "Xiaomi",
@@ -496,11 +453,9 @@
       "monthlyTokenBudget": "free",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
         "coding",
-        "reasoner",
-        "planner",
         "free"
       ],
       "insight": "Strong coding agent model with long context and tool support",
@@ -524,8 +479,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "planner",
-        "general",
         "free"
       ],
       "insight": "Top-tier reasoning model with massive context window",
@@ -549,8 +502,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "planner",
-        "general",
         "free"
       ],
       "insight": "Strong reasoning + balanced performance model",
@@ -571,9 +522,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -593,9 +542,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -614,12 +561,9 @@
       "rpdLimit": 4800,
       "monthlyTokenBudget": "free",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "coding",
-        "vision",
-        "reasoner",
         "general",
         "free"
       ],
@@ -640,12 +584,9 @@
       "rpdLimit": 4800,
       "monthlyTokenBudget": "free",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "reasoner",
-        "planner",
-        "vision",
         "general",
         "router",
         "free"
@@ -696,10 +637,7 @@
       "origInputPricePer1M": 0.4,
       "origOutputPricePer1M": 2,
       "tags": [
-        "general",
-        "planner",
         "reasoner",
-        "vision",
         "free"
       ]
     },
@@ -718,8 +656,6 @@
       "supportsReasoning": false,
       "tags": [
         "general",
-        "planner",
-        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.5,
@@ -740,7 +676,6 @@
       "supportsReasoning": false,
       "tags": [
         "general",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 2,
@@ -789,7 +724,6 @@
       "origOutputPricePer1M": 0.6,
       "tags": [
         "general",
-        "vision",
         "free"
       ]
     },
@@ -832,8 +766,6 @@
       "origOutputPricePer1M": 0.45,
       "tags": [
         "reasoner",
-        "planner",
-        "general",
         "free"
       ]
     },
@@ -856,8 +788,6 @@
       "origOutputPricePer1M": 0.2,
       "tags": [
         "reasoner",
-        "planner",
-        "general",
         "free"
       ]
     },
@@ -918,15 +848,12 @@
       "rpdLimit": 1000,
       "monthlyTokenBudget": "~free",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "origInputPricePer1M": 0.65,
       "origOutputPricePer1M": 3.25,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
-        "vision",
         "free"
       ]
     },
@@ -943,13 +870,10 @@
       "rpdLimit": 1000,
       "monthlyTokenBudget": "~free",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.14,
@@ -968,13 +892,10 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "Unlimited (fair use)",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
-        "vision",
         "free"
       ],
       "insight": "Free reasoning model with tool calling and structured outputs. OpenCode dynamically routes requests to different backend models.",
@@ -992,13 +913,10 @@
       "rpdLimit": 1000,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.1,
@@ -1021,8 +939,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "planner",
-        "general",
         "free"
       ],
       "insight": "Smaller Ultra variant; $10 top-up unlocks 1000 RPD",
@@ -1046,9 +962,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "planner",
-        "vision",
-        "general",
         "free"
       ],
       "insight": "Strong small multimodal model",
@@ -1069,10 +982,9 @@
       "monthlyTokenBudget": "~free",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
         "coding",
-        "general",
         "free"
       ],
       "insight": "Fast coding focused model",
@@ -1092,12 +1004,9 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "~free",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "reasoner",
-        "planner",
-        "vision",
         "general",
         "router",
         "free"
@@ -1120,10 +1029,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
-        "coding",
         "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -1143,13 +1049,11 @@
       "monthlyTokenBudget": "anonymous",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "insight": "No key needed; 2 RPM per IP",
       "origInputPricePer1M": 0.4,
       "origOutputPricePer1M": 1.2,
       "tags": [
-        "reasoner",
-        "planner",
         "general",
         "free"
       ]
@@ -1172,8 +1076,6 @@
       "insight": "No key needed; 2 RPM per IP",
       "tags": [
         "reasoner",
-        "planner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0.09,
@@ -1194,10 +1096,10 @@
       "monthlyTokenBudget": "anonymous",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "insight": "No key needed; 2 RPM per IP",
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.04,
@@ -1218,13 +1120,11 @@
       "monthlyTokenBudget": "anonymous",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "insight": "No key needed; 2 RPM per IP",
       "origInputPricePer1M": 0.15,
       "origOutputPricePer1M": 0.6,
       "tags": [
-        "reasoner",
-        "planner",
         "general",
         "free"
       ]
@@ -1243,7 +1143,7 @@
       "monthlyTokenBudget": "anonymous",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "origInputPricePer1M": 0.15,
       "origOutputPricePer1M": 0.6,
       "tags": [
@@ -1267,9 +1167,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
         "free"
       ],
       "insight": "Efficient 33B-A3B model optimized for speed and cost; single-GPU capable.",
@@ -1290,12 +1188,12 @@
       "monthlyTokenBudget": "200K TPD",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "insight": "Free tier; no credit card",
       "origInputPricePer1M": 0.28,
       "origOutputPricePer1M": 0.42,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -1313,12 +1211,12 @@
       "monthlyTokenBudget": "200K TPD",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "insight": "Free tier; no credit card",
       "origInputPricePer1M": 0.27,
       "origOutputPricePer1M": 1.1,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -1338,9 +1236,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
         "free"
       ],
       "insight": "Free tier; no credit card",
@@ -1364,7 +1260,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
-        "coding",
+        "general",
         "free"
       ],
       "insight": "Free tier; no credit card",
@@ -1384,12 +1280,10 @@
       "rpdLimit": 20,
       "monthlyTokenBudget": "200K TPD",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
         "free"
       ],
       "insight": "Free tier; no credit card",
@@ -1416,8 +1310,6 @@
       "origOutputPricePer1M": 0.4,
       "tags": [
         "reasoner",
-        "planner",
-        "general",
         "free"
       ]
     },
@@ -1435,13 +1327,12 @@
       "monthlyTokenBudget": "~free",
       "supportsTools": true,
       "supportsVision": true,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "insight": "1 concurrent request",
       "origInputPricePer1M": 0.06,
       "origOutputPricePer1M": 0.18,
       "tags": [
-        "vision",
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -1459,10 +1350,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -1482,9 +1370,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -1504,10 +1390,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
-        "planner",
-        "coding",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -1527,9 +1410,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -1549,10 +1430,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.03,
@@ -1569,13 +1447,10 @@
       "rpdLimit": 86400,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
-        "planner",
-        "general",
-        "vision",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.03,
@@ -1592,13 +1467,9 @@
       "rpdLimit": 100000,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "coding",
-        "planner",
-        "vison",
-        "reasoner",
         "general",
         "free"
       ],
@@ -1616,14 +1487,10 @@
       "rpdLimit": 50000,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "coding",
         "general",
-        "planner",
-        "reasoner",
-        "vison",
         "free"
       ],
       "origInputPricePer1M": 0.3,
@@ -1640,14 +1507,10 @@
       "rpdLimit": 50000,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "coding",
-        "planner",
         "general",
-        "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.15,
@@ -1665,10 +1528,8 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
-        "coding",
-        "reasoner",
         "general",
         "free"
       ],
@@ -1689,10 +1550,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.06,
@@ -1712,9 +1570,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.1,
@@ -1730,7 +1586,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -1754,9 +1610,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
-        "planner",
-        "coding",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.15,
@@ -1773,14 +1627,10 @@
       "rpdLimit": 100,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
-        "coding",
         "reasoner",
-        "planner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.13,
@@ -1800,9 +1650,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -1823,9 +1671,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
-        "code",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -1843,9 +1688,8 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
-        "reasoner",
         "general",
         "free"
       ],
@@ -1863,13 +1707,10 @@
       "rpdLimit": 100,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
-        "planner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.05,
@@ -1890,8 +1731,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -1909,9 +1748,8 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
-        "reasoner",
         "general",
         "free"
       ],
@@ -1933,8 +1771,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -1952,12 +1788,29 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "coding",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "kenari",
+      "modelId": "agnes-2-0-flash:free",
+      "displayName": "Agnes 2 0 Flash",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 255976,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
         "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -1977,10 +1830,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
-        "coding",
         "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -2000,9 +1850,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -2020,12 +1868,9 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "planner",
-        "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -2042,12 +1887,9 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "reasoner",
-        "planner",
-        "coding",
         "general",
         "free"
       ],
@@ -2065,12 +1907,9 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "reasoner",
-        "planner",
-        "coding",
         "general",
         "free"
       ],
@@ -2092,9 +1931,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
-        "code",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -2111,13 +1947,10 @@
       "rpdLimit": 7500,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "planner",
-        "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.1,
@@ -2137,9 +1970,6 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
-        "coding",
-        "planner",
         "reasoner",
         "free"
       ],
@@ -2157,14 +1987,10 @@
       "rpdLimit": 100,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "coding",
-        "planner",
-        "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -2181,14 +2007,10 @@
       "rpdLimit": 100,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "reasoner",
-        "vision",
         "general",
-        "planner",
-        "coding",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -2205,13 +2027,10 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "planner",
-        "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -2228,14 +2047,10 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "reasoner",
-        "vision",
         "general",
-        "planner",
-        "coding",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -2252,13 +2067,9 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "vision",
-        "general",
-        "coding",
-        "planner",
         "reasoner",
         "free"
       ],
@@ -2277,11 +2088,9 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "planner",
-        "reasoner",
         "router",
         "free"
       ],
@@ -2300,39 +2109,13 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "coding",
-        "planner",
-        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.15,
       "origOutputPricePer1M": 0.29
-    },
-    {
-      "platform": "orcarouter",
-      "modelId": "deepseek/deepseek-v4-pro-free",
-      "displayName": "DeepSeek V4 Pro",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "coding",
-        "planner",
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.44,
-      "origOutputPricePer1M": 0.87
     },
     {
       "platform": "orcarouter",
@@ -2345,14 +2128,10 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "coding",
-        "planner",
-        "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.33,
@@ -2369,14 +2148,10 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
-        "coding",
-        "planner",
         "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.13,
@@ -2493,7 +2268,7 @@
       "rpdLimit": 100,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -2516,7 +2291,6 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
         "free"
       ],
@@ -2534,10 +2308,9 @@
       "rpdLimit": 100,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
         "free"
       ],
@@ -2555,10 +2328,10 @@
       "rpdLimit": 100,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.05,
@@ -2578,7 +2351,6 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
         "free"
       ],
@@ -2639,7 +2411,6 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
         "free"
       ],
@@ -2660,7 +2431,6 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner"
       ],
       "origInputPricePer1M": 0.8,
@@ -2680,7 +2450,6 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner"
       ],
       "origInputPricePer1M": 3,
@@ -2700,7 +2469,6 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner"
       ],
       "origInputPricePer1M": 0.7,
@@ -2737,9 +2505,9 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -2757,9 +2525,8 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
-        "reasoner",
         "general",
         "free"
       ],
@@ -2780,9 +2547,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
-        "coding",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -2803,7 +2568,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -2824,7 +2588,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -2841,11 +2604,10 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -2866,7 +2628,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -2887,7 +2648,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -2907,7 +2667,6 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
         "free"
       ],
@@ -2929,7 +2688,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -2946,11 +2704,10 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -2971,7 +2728,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -2988,14 +2744,10 @@
       "rpdLimit": 100,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "reasoner",
-        "vision",
         "general",
-        "planner",
-        "coding",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -3032,14 +2784,10 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "coding",
-        "planner",
-        "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.33,
@@ -3060,7 +2808,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0.09,
@@ -3081,7 +2828,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0.65,
@@ -3158,13 +2904,14 @@
       "monthlyTokenBudget": "",
       "supportsTools": false,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.075,
-      "origOutputPricePer1M": 0.3
+      "origOutputPricePer1M": 0.3,
+      "outputTokenLimit": 32768
     },
     {
       "platform": "groq",
@@ -3197,9 +2944,9 @@
       "monthlyTokenBudget": "",
       "supportsTools": false,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -3272,11 +3019,10 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -3297,8 +3043,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "planner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -3318,7 +3062,6 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
         "free"
       ],
@@ -3339,7 +3082,6 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
         "free"
       ],
@@ -3387,67 +3129,6 @@
       "origOutputPricePer1M": 0
     },
     {
-      "platform": "openrouter",
-      "modelId": "nvidia/nemotron-3-nano-30b-a3b:free",
-      "displayName": "NVIDIA: Nemotron 3 Nano 30B A3B (free)",
-      "intelligenceRank": 2,
-      "speedRank": 2,
-      "contextWindow": 256000,
-      "rpmLimit": 20,
-      "rpdLimit": 200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openrouter",
-      "modelId": "nvidia/nemotron-nano-12b-v2-vl:free",
-      "displayName": "NVIDIA: Nemotron Nano 12B 2 VL (free)",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": 128000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openrouter",
-      "modelId": "nvidia/nemotron-nano-9b-v2:free",
-      "displayName": "NVIDIA: Nemotron Nano 9B V2 (free)",
-      "intelligenceRank": 5,
-      "speedRank": 2,
-      "contextWindow": 128000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
       "platform": "openadapter",
       "modelId": "0G-DeepSeek-V3",
       "displayName": "0G DeepSeek V3",
@@ -3457,7 +3138,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -3475,11 +3156,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -3493,11 +3174,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -3511,11 +3192,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -3529,11 +3210,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -3547,11 +3228,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -3565,7 +3246,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -3583,7 +3264,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -3623,7 +3304,6 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
         "free"
       ],
@@ -3640,7 +3320,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -3659,13 +3339,10 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "vision",
         "general",
-        "coding",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -3683,7 +3360,7 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
         "general",
         "free"
@@ -3701,7 +3378,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -3720,12 +3397,9 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "reasoner",
-        "planner",
-        "coding",
         "general",
         "free"
       ],
@@ -3746,7 +3420,6 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
         "free"
       ],
@@ -3768,9 +3441,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "planner",
-        "vision",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -3791,9 +3461,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
-        "code",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -3850,13 +3517,10 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
-        "coding",
         "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -3876,9 +3540,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -3896,9 +3558,8 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
-        "reasoner",
         "general",
         "free"
       ],
@@ -3916,11 +3577,10 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -3937,12 +3597,10 @@
       "rpdLimit": 1000,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -3958,34 +3616,13 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/nemotron-3-nano-30b-a3b",
-      "displayName": "NVIDIA: Nemotron 3 Nano 30B A3B (free)",
-      "intelligenceRank": 2,
-      "speedRank": 2,
-      "contextWindow": 256000,
-      "rpmLimit": 20,
-      "rpdLimit": 200,
-      "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
         "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
+      ]
     },
     {
       "platform": "openadapter",
@@ -4001,7 +3638,6 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
         "free"
       ],
@@ -4023,8 +3659,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "planner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -4039,48 +3673,6 @@
       "contextWindow": 1000000,
       "rpmLimit": 3,
       "rpdLimit": 4800,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "planner",
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/nemotron-nano-12b-v2-vl",
-      "displayName": "NVIDIA: Nemotron Nano 12B 2 VL (free)",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": 128000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/nemotron-nano-9b-v2",
-      "displayName": "NVIDIA: Nemotron Nano 9B V2 (free)",
-      "intelligenceRank": 5,
-      "speedRank": 2,
-      "contextWindow": 128000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
@@ -4104,10 +3696,9 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
         "coding",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -4124,14 +3715,10 @@
       "rpdLimit": 100,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "reasoner",
-        "vision",
         "general",
-        "planner",
-        "coding",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -4183,7 +3770,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
@@ -4205,9 +3792,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.1,
@@ -4223,11 +3808,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4241,11 +3826,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4261,9 +3846,9 @@
       "monthlyTokenBudget": "",
       "supportsTools": false,
       "supportsVision": true,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4281,9 +3866,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -4299,11 +3882,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4317,11 +3900,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4335,11 +3918,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4358,9 +3941,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
-        "code",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -4376,11 +3956,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4394,11 +3974,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4412,11 +3992,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4434,13 +4014,12 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.22,
-      "origOutputPricePer1M": 0.59
+      "origOutputPricePer1M": 0.59,
+      "outputTokenLimit": 32768
     },
     {
       "platform": "openadapter",
@@ -4452,11 +4031,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4470,11 +4049,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4489,14 +4068,10 @@
       "rpdLimit": 100,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
-        "coding",
         "reasoner",
-        "planner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.13,
@@ -4512,7 +4087,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -4530,11 +4105,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4552,11 +4127,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
-        "coding",
-        "planner",
         "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.95,
@@ -4572,11 +4143,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4608,7 +4179,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -4626,13 +4197,33 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
         "free"
       ]
+    },
+    {
+      "platform": "openadapter",
+      "modelId": "Llama-3.3-70B",
+      "displayName": "Llama 3.3 70B",
+      "intelligenceRank": 3,
+      "speedRank": 4,
+      "contextWindow": 128000,
+      "rpmLimit": 20,
+      "rpdLimit": 20,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 1.2
     },
     {
       "platform": "openadapter",
@@ -4662,11 +4253,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4698,11 +4289,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4716,11 +4307,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4734,11 +4325,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4752,11 +4343,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4775,8 +4366,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "planner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0.3,
@@ -4793,13 +4382,9 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "vision",
-        "general",
-        "coding",
-        "planner",
         "reasoner",
         "free"
       ],
@@ -4817,13 +4402,10 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "coding",
-        "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -4844,7 +4426,6 @@
       "supportsReasoning": false,
       "tags": [
         "general",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.15,
@@ -4860,11 +4441,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4897,7 +4478,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -4950,7 +4531,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -4968,7 +4549,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -4986,7 +4567,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -5004,7 +4585,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -5022,7 +4603,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -5058,7 +4639,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -5076,7 +4657,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -5095,14 +4676,10 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "coding",
-        "planner",
-        "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.33,
@@ -5118,7 +4695,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -5136,7 +4713,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -5154,8 +4731,8 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -5172,8 +4749,8 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -5192,9 +4769,9 @@
       "monthlyTokenBudget": "",
       "supportsTools": false,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5209,13 +4786,10 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "vision",
         "general",
-        "coding",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -5233,10 +4807,9 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": true,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
-        "vision",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.25,
@@ -5256,33 +4829,11 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.1,
       "origOutputPricePer1M": 0.34
-    },
-    {
-      "platform": "llm7",
-      "modelId": "gpt-oss:20b",
-      "displayName": "GPT-OSS 20B",
-      "intelligenceRank": 4,
-      "speedRank": 3,
-      "contextWindow": 131072,
-      "rpmLimit": 20,
-      "rpdLimit": 200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.6,
-      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "llm7",
@@ -5317,8 +4868,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "planner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0.3,
@@ -5334,7 +4883,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -5393,11 +4942,10 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -5417,7 +4965,6 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
         "free"
       ],
@@ -5435,12 +4982,9 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "reasoner",
-        "planner",
-        "vision",
         "general",
         "router",
         "free"
@@ -5462,14 +5006,12 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
-        "planner",
         "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.3,
-      "origOutputPricePer1M": 2.5
+      "origOutputPricePer1M": 2.5,
+      "outputTokenLimit": 65536
     },
     {
       "platform": "google",
@@ -5481,13 +5023,14 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
-      ]
+      ],
+      "outputTokenLimit": 65536
     },
     {
       "platform": "google",
@@ -5503,7 +5046,6 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
         "free"
       ],
@@ -5524,9 +5066,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.1,
@@ -5542,11 +5082,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5560,11 +5100,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5578,11 +5118,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5596,13 +5136,14 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
-      ]
+      ],
+      "outputTokenLimit": 65536
     },
     {
       "platform": "google",
@@ -5615,12 +5156,13 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
         "free"
-      ]
+      ],
+      "outputTokenLimit": 65536
     },
     {
       "platform": "google",
@@ -5632,11 +5174,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5650,11 +5192,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5668,11 +5210,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5688,10 +5230,9 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": true,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
-        "vision",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.25,
@@ -5709,10 +5250,9 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": true,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
-        "vision",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.25,
@@ -5728,11 +5268,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5746,11 +5286,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5764,11 +5304,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5782,11 +5322,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5800,11 +5340,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5818,11 +5358,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5836,11 +5376,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5854,11 +5394,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5873,7 +5413,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -5890,11 +5430,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5908,11 +5448,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5966,11 +5506,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5984,11 +5524,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -6002,13 +5542,14 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
-      ]
+      ],
+      "outputTokenLimit": 65536
     },
     {
       "platform": "google",
@@ -6020,11 +5561,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -6038,11 +5579,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -6056,11 +5597,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -6074,11 +5615,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -6110,13 +5651,14 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
         "free"
-      ]
+      ],
+      "outputTokenLimit": 65536
     },
     {
       "platform": "google",
@@ -6128,13 +5670,14 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
         "free"
-      ]
+      ],
+      "outputTokenLimit": 65536
     },
     {
       "platform": "google",
@@ -6146,13 +5689,14 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
         "free"
-      ]
+      ],
+      "outputTokenLimit": 65536
     },
     {
       "platform": "google",
@@ -6164,8 +5708,8 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6182,11 +5726,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -6255,7 +5799,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6272,7 +5816,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -6363,13 +5907,10 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "vision",
         "general",
-        "coding",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -6422,7 +5963,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6440,7 +5981,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6493,8 +6034,8 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6515,9 +6056,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
-        "coding",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -6551,7 +6090,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -6569,7 +6108,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -6641,7 +6180,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -6659,7 +6198,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -6677,8 +6216,8 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6695,7 +6234,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -6713,7 +6252,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -6731,8 +6270,8 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6750,7 +6289,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6786,11 +6325,10 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -6807,7 +6345,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6825,7 +6363,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6861,13 +6399,9 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "vision",
-        "general",
-        "coding",
-        "planner",
         "reasoner",
         "free"
       ],
@@ -6902,7 +6436,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -6921,13 +6455,10 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "coding",
-        "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -6943,7 +6474,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -6983,11 +6514,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
-        "coding",
-        "planner",
         "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.95,
@@ -7003,11 +6530,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -7021,7 +6548,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -7040,7 +6567,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -7058,8 +6585,8 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "reasoner",
         "free"
@@ -7076,7 +6603,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -7165,11 +6692,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -7184,10 +6711,10 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -7219,11 +6746,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -7255,11 +6782,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -7273,11 +6800,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -7309,7 +6836,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -7328,7 +6855,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -7349,7 +6876,6 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
         "free"
       ],
@@ -7371,7 +6897,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -7388,11 +6913,10 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
         "general",
-        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -7413,7 +6937,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -7465,7 +6988,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -7503,11 +7026,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -7522,7 +7045,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -7540,7 +7063,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -7612,7 +7135,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -7704,7 +7227,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -7725,14 +7248,12 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
-        "planner",
         "reasoner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0.15,
-      "origOutputPricePer1M": 0.6
+      "origOutputPricePer1M": 0.6,
+      "outputTokenLimit": 32768
     },
     {
       "platform": "nvidia",
@@ -7748,13 +7269,12 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0.075,
-      "origOutputPricePer1M": 0.3
+      "origOutputPricePer1M": 0.3,
+      "outputTokenLimit": 32768
     },
     {
       "platform": "nvidia",
@@ -7770,9 +7290,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.06,
@@ -7789,13 +7307,10 @@
       "rpdLimit": 800,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "coding",
-        "reasoner",
-        "planner",
-        "vision",
+        "general",
         "free"
       ],
       "origInputPricePer1M": 0.26,
@@ -7921,11 +7436,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -7939,11 +7454,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -7958,13 +7473,9 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "vision",
-        "general",
-        "coding",
-        "planner",
         "reasoner",
         "free"
       ],
@@ -7981,11 +7492,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -7999,7 +7510,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -8022,9 +7533,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "general",
-        "code",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -8044,11 +7552,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
-        "coding",
-        "planner",
         "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.95,
@@ -8064,11 +7568,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ]
     },
@@ -8086,11 +7590,12 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
-      "origOutputPricePer1M": 2.4
+      "origOutputPricePer1M": 2.4,
+      "outputTokenLimit": 32768
     },
     {
       "platform": "ollama",
@@ -8104,7 +7609,7 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
         "general",
         "free"
@@ -8126,9 +7631,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "general",
         "reasoner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.1,
@@ -8146,7 +7649,7 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
+      "supportsReasoning": false,
       "tags": [
         "general",
         "free"
@@ -8165,13 +7668,10 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "vision",
         "general",
-        "coding",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -8192,8 +7692,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "planner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0.3,
@@ -8210,11 +7708,10 @@
       "rpdLimit": 432000,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
         "coding",
-        "planner",
         "reasoner",
         "free"
       ],
@@ -8231,7 +7728,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -8250,13 +7747,10 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
       "tags": [
-        "vision",
         "general",
-        "coding",
-        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -8276,14 +7770,12 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
-        "planner",
         "reasoner",
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0.15,
-      "origOutputPricePer1M": 0.6
+      "origOutputPricePer1M": 0.6,
+      "outputTokenLimit": 32768
     },
     {
       "platform": "ollama",
@@ -8296,13 +7788,10 @@
       "rpdLimit": 1000,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.65,
@@ -8318,7 +7807,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -8357,13 +7846,10 @@
       "rpdLimit": 1000,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "coding",
         "reasoner",
-        "planner",
-        "vision",
         "free"
       ],
       "origInputPricePer1M": 0.65,

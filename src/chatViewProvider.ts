@@ -25,7 +25,6 @@ import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem, McpServerConfig } from './messages';
 import type { AnnouncementItem, Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, PlanDataPayload, SelectionRationale, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
 import { renderLegacyMarkdown } from './shared/workReport';
-import { resolveVerifyCommand, runVerifyCommand } from './agent/core/tools/workspace/verifyCommand';
 import { fetchAnnouncements as fetchWorkerAnnouncements, markAnnouncementsSeen, unseenAnnouncementCount } from './catalog/announcements';
 import { normalizeMcpServerConfig } from './mcp/mcpClient';
 import { getNonce } from './util/nonce';
@@ -1364,9 +1363,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.checkpoints.openDiff(m.id, uriStr);
         break;
       }
-      case 'verifyTurn':
-        await this.runManualVerify(this.current());
-        break;
       case 'revertTo':
         await this.handleRevertTo(this.current(), m.requestId);
         break;
@@ -2254,6 +2250,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         || finalRemainingTodos.length > 0);
 
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: pinned, paused: resumable, noFooter: hasQuestions });
+      diagLog('send.postAssistant', `requestId=${m.requestId} · textLen=${(displayText ?? '').length} textHead="${(displayText ?? '').slice(0, 120).replace(/\n/g, '⏎')}" reasoningLen=${(result.reasoning ?? '').length} paused=${resumable}`);
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
       if (hasQuestions) {
         s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: agentClar.questions!, mode: m.mode as 'plan' | 'agent' };
@@ -2643,35 +2640,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.maybeAutoCompact(s);
       }
     }
-  }
-
-  /**
-   * "Run checks" on a ResultCard: re-run the project's verify command OUTSIDE a turn and post
-   * the outcome as its own bubble. Pure command execution — no model call, no edits — so it's
-   * the honest answer to "is this actually done?" without asking the agent anything.
-   */
-  private async runManualVerify(s: Session): Promise<void> {
-    if (s.activeRequestId) {
-      this.post({ type: 'notice', sessionId: s.id, text: 'Skipped — a turn is still running. Try again once it finishes.' });
-      return;
-    }
-    const cmd = resolveVerifyCommand();
-    if (!cmd) {
-      // Reachable only from an older card (current ones hide the action when no command
-      // exists). Say it once, factually, and point at the setting — no standing request.
-      this.post({ type: 'notice', sessionId: s.id, text: 'Nothing to run — no test or build command was found for this workspace\'s stack. Set `tiermux.agent.verifyCommand` to name one.' });
-      return;
-    }
-    const requestId = `verify-${Date.now()}`;
-    this.post({ type: 'notice', sessionId: s.id, text: `Running \`${cmd}\`…` });
-    const run = await runVerifyCommand(cmd);
-    if (!this.isActiveRun(s, requestId)) return; // superseded mid-check — drop the result
-    const text = run.ok === true
-      ? `✅ Verified — \`${cmd}\` passed. Your changes are in good shape.`
-      : run.ok === false
-        ? `❌ \`${cmd}\` fails right now:\n\`\`\`\n${run.output.slice(0, 1500)}\n\`\`\`\nAsk me to fix these failures and I'll take another pass.`
-        : `⚠️ Couldn't run \`${cmd}\` (declined or timed out).`;
-    this.post({ type: 'assistantMessage', sessionId: s.id, requestId, text, noFooter: true });
   }
 
   /**

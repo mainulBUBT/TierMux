@@ -58,6 +58,10 @@ console.log('workReport.e2e');
   const md = renderLegacyMarkdown(baseReport({ verifyOutcome: 'failed', verifyCmd: 'npm test', fixRounds: 2 }));
   assert(md.includes('**❌ Verification failed**'), 'load-bearing marker: Verification failed');
   assert(md.includes('`npm test` still fails after 2 fix rounds.'), 'failed line names cmd + rounds');
+  // The agent owns the recheck (2026-08-25): the copy must never hand the verify command back
+  // to the user — only offer to let the agent keep going.
+  assert(!md.includes('re-run the command'), 'failed copy never asks the user to re-run');
+  assert(md.includes('keep fixing'), 'failed copy offers agent continuation');
 }
 {
   const md = renderLegacyMarkdown(baseReport({ verifyOutcome: 'unverified' }));
@@ -67,6 +71,7 @@ console.log('workReport.e2e');
 {
   const md = renderLegacyMarkdown(baseReport({ verifyOutcome: 'unverified', stopReason: 'budget' }));
   assert(md.includes('run ended before the final check'), 'stopReason switches the untested reason');
+  assert(!md.includes('quick look'), 'untested copy never asks the user to inspect the work');
 }
 {
   const md = renderLegacyMarkdown(baseReport({ verifyOutcome: 'changes-only' }));

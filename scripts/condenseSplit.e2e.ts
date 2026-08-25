@@ -130,6 +130,58 @@ async function main(): Promise<void> {
     ok('the newly touched file is there too', !!merged?.summary.includes('src/brand/new.ts'));
   }
 
+  /* 2026-08-25 live repro: a degenerate model loop left dozens of identical grep round-trips
+   * in the prefix, and the wall of repetition blanked every summarizer attempt — "Compaction
+   * produced no summary after retrying with a different model". The prefix must be mechanically
+   * collapsed BEFORE it reaches the summarizer. */
+  console.log('\n— Degenerate-loop prefix: collapsed before the summarizer sees it —');
+  {
+    const looped: ChatMessage[] = [
+      { role: 'user', content: 'find why +971 is prepended to phone numbers' },
+      { role: 'assistant', content: 'looking' },
+      { role: 'user', content: 'the registration flow specifically' },
+    ];
+    const ARGS = JSON.stringify({ pattern: 'country' });
+    for (let i = 0; i < 12; i++) {
+      looped.push({ role: 'assistant', content: '', tool_calls: [{ id: `g${i}`, type: 'function', function: { name: 'grep', arguments: ARGS } }] });
+      looped.push({ role: 'tool', tool_call_id: `g${i}`, content: 'X'.repeat(3_000) });
+    }
+    looped.push({ role: 'assistant', content: 'findings so far' });
+    // 8 full user/assistant pairs keep the KEEP_TAIL boundary INSIDE these turns, so the
+    // degenerate loop lands in the prefix (what gets summarized), not the verbatim tail.
+    for (let i = 0; i < 8; i++) {
+      looped.push({ role: 'user', content: `later ${i}` });
+      looped.push({ role: 'assistant', content: `reply ${i}` });
+    }
+
+    const seen: ChatMessage[][] = [];
+    const capturing = {
+      async pickUtilityModel() { return 'utility-fake'; },
+      async route(req: ChatMessage[]) {
+        seen.push(req);
+        return {
+          platform: 'custom' as const,
+          model: 'utility',
+          response: {
+            id: 'r', object: 'chat.completion' as const, created: 0, model: 'fake',
+            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+            choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant' as const, content: 'LOOP SUMMARY' } }],
+          },
+        };
+      },
+    } as unknown as Router;
+
+    const loopCondensed = await condenseHistory(looped, capturing);
+    ok('degenerate-loop session still compacts', loopCondensed !== null);
+    const sent = seen[0] ?? [];
+    ok('summarizer received the collapsed run, not 12 copies (first + last + marker)',
+      sent.filter((m) => m.role === 'tool').length === 2 && sent.some((m) => String(m.content).includes('repeated 10 more time')));
+    ok('what the summarizer received is far smaller than the raw history',
+      JSON.stringify(sent).length < JSON.stringify(looped).length);
+    ok('the original question is still in what the summarizer sees',
+      sent.some((m) => String(m.content).includes('+971')));
+  }
+
   console.log(bad === 0 ? '\nALL PASS' : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);
 }

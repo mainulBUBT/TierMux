@@ -111,10 +111,10 @@ const STATE_LABEL = {
             <div id="agent-picker-slot"></div>
             <div id="model-picker-slot"></div>
             <button class="icon-btn icon-btn-sm" id="btn-attach" aria-label="Add files" data-tooltip="Add files">${ICON.attach}</button>
-            <span id="ctx-chip" class="ctx-chip hidden" title="Context usage of the most recent request"></span>
           </div>
           <span class="toolbar-sep" aria-hidden="true"></span>
           <div class="tgroup right">
+            <span id="ctx-chip" class="ctx-chip hidden" title="Context usage of the most recent request"></span>
             <button type="button" id="auto-btn" class="pill toggle-pill icon-only-sm" aria-pressed="false" aria-label="Auto-approve — run commands and apply edits without asking, for an uninterrupted flow. Dangerous commands (rm -rf, force push, sudo…) still ask. Off = review each step." data-tooltip="Auto-approve — run commands and edit files without asking first. Dangerous operations still confirm. Toggle on for an uninterrupted flow.">${ICON.zap}</button>
             <button class="icon-btn icon-btn-sm" id="btn-announcements" aria-label="Tips &amp; announcements" data-tooltip="Tips &amp; announcements">${ICON.info}<span class="an-dot hidden" id="an-dot"></span></button>
             <button class="send-btn" id="btn-send" title="Send (Enter)">${ICON.send}</button>
@@ -342,6 +342,11 @@ const STATE_LABEL = {
   // Chat header: brand + editable session title (rename inline, Enter to save).
   const titleInput = $('#chat-title');
   let lastTitle = '';
+  // Cross-turn error dedup: re-sending the same failing query used to stack one identical
+  // red notice per attempt. We track the most recent .error-notice and, if a new 'error'
+  // message is byte-identical to the previous one within ~5s, replace it with a single
+  // "(repeated N×)" indicator instead of stacking a second (and third, and fourth) line.
+  let lastErrorNotice: HTMLElement | null = null;
   function commitTitle() {
     const v = (titleInput.value || '').trim();
     if (v && v !== lastTitle) { lastTitle = v; send({ type: 'renameSession', title: v }); }
@@ -983,7 +988,6 @@ const STATE_LABEL = {
       const report = details.workReport;
       const card = createResultCard(report, {
         onDiffFile: (p) => send({ type: 'diffCheckpointFile', id: report.checkpointId || '', uri: p }),
-        onVerify: () => send({ type: 'verifyTurn', sessionId: viewedSessionId || '' }),
       });
       if (card) flow.appendChild(card);
     }
@@ -3503,7 +3507,7 @@ const STATE_LABEL = {
       model: (msg as any).model,
     });
     if (tmMsgLog.length > 150) tmMsgLog.shift();
-    if (msg.type === 'assistantMessage') console.log('[tm] assistantMessage textLen=', ((msg as any).text || '').length, 'requestId=', (msg as any).requestId);
+    if (msg.type === 'assistantMessage') console.log('[tm] assistantMessage textLen=', ((msg as any).text || '').length, 'paused=', !!(msg as any).paused, 'noFooter=', !!(msg as any).noFooter, 'requestId=', (msg as any).requestId);
     let paneCtx = null;
     if (msg.sessionId && PANE_SCOPED.has(msg.type)) paneCtx = activatePane(msg.sessionId);
     switch (msg.type) {
@@ -4014,6 +4018,13 @@ const STATE_LABEL = {
       case 'assistantMessage': {
         const t = ensureTarget(msg.requestId);
         stopStatusTimer(msg.requestId, true);
+        // A mid-stream provider error can land BEFORE any assistant text has streamed, in
+        // which case finalizeWork's empty-flow-collapse removed t.flow from the document.
+        // Anything we then append to t.flow would be an orphan — the user only sees the
+        // reply after a reload, when the transcript re-renders from persisted state. If
+        // the flow is detached, re-attach it to the still-connected t.el so the bubble
+        // actually reaches the DOM.
+        if (t.flow && !t.flow.isConnected && t.el) t.el.appendChild(t.flow);
         // Remove streaming cursor from all text segments
         t.flow.querySelectorAll('.streaming').forEach((el) => el.classList.remove('streaming'));
         // Flush any pending streamed text segment immediately (a queued rAF may not have run).
@@ -4031,7 +4042,19 @@ const STATE_LABEL = {
         t.currentText = null;
         {
           const seg = document.createElement('div'); seg.className = 'flow-text bubble';
-          seg.appendChild(renderMarkdown(stripClarifyBlock(msg.text, true)));
+          // If the host sent empty text (e.g. a paused turn, or a reasoning-only turn where the
+          // model burned its token budget on thinking and exited before writing prose), render
+          // a visible, specific placeholder so the user isn't left with a footer + no reply.
+          // The host's own canonical message overrides this whenever it does have text.
+          const rawText = (msg.text || '').trim();
+          const placeholderText = !rawText
+            ? (msg.paused
+                ? '_The model didn\'t produce a final reply before the turn paused. Click **Continue** to resume._'
+                : (msg.reasoning && msg.reasoning.length > 0)
+                  ? '_The model thought through this but didn\'t produce a final answer — it used its token budget on reasoning and exited before writing a reply. Try rephrasing the request, or switch to a model that balances reasoning with output._'
+                  : '_The model didn\'t produce a visible reply for this turn._')
+            : rawText;
+          seg.appendChild(renderMarkdown(stripClarifyBlock(placeholderText, true)));
           t.flow.appendChild(seg);
         }
         // Fold-up 💭 Reasoning disclosure only when no live 🧠 Thinking block already
@@ -4055,7 +4078,6 @@ const STATE_LABEL = {
           turnFailovers = report.telemetry.failovers || 0;
           const card = createResultCard(report, {
             onDiffFile: (p) => send({ type: 'diffCheckpointFile', id: report.checkpointId || '', uri: p }),
-            onVerify: () => send({ type: 'verifyTurn', sessionId: viewedSessionId || '' }),
           });
           if (card) {
             if (t.flow && t.flow.parentNode) t.flow.appendChild(card);
@@ -4203,15 +4225,38 @@ const STATE_LABEL = {
       case 'error': {
         const t = msg.requestId ? ensureTarget(msg.requestId) : null;
         if (msg.requestId) stopStatusTimer(msg.requestId, true);
-        if (msg.requestId) finalizeWork(msg.requestId);
         // Append into the flow (same layer as response text) so it appears directly
-        // after the work summary — not nested inside the outer t.body bubble.
-        const dest = t ? t.flow ?? t.body : (currentTurn || activeThreadEl);
+        // after the work summary — not nested inside the outer t.body bubble. We must
+        // pick a target that is STILL CONNECTED to the document: if the error fires
+        // before any assistant text has streamed (mid-stream provider error), the flow
+        // can be empty and a previous handler may have detached it; the orphan then
+        // swallows the error notice and the user only sees the message after reload,
+        // when the transcript re-renders from persisted state. Fall back to t.body
+        // (the outer bubble) when the flow isn't connected.
+        const dest = t ? (t.flow && t.flow.isConnected ? t.flow : t.body) : (currentTurn || activeThreadEl);
         // Replace any prior error notice for this turn so a failed retry (e.g. an
         // escalated takeover that also errors) can't stack two identical red marks.
         dest.querySelectorAll('.error-notice').forEach((e) => e.remove());
+        // Cross-turn dedup: re-sending the same failing query (or a model that keeps
+        // returning the same 404) used to stack one identical red notice per attempt,
+        // which made the chat unreadable. Bump a per-message counter on the most recent
+        // error notice: if the new error is identical to the last one we just showed
+        // (within ~5s — the user is retrying the same broken thing), replace it with a
+        // single "Same error (N attempts)" line so the count is visible but the chat
+        // stays clean.
+        const now = Date.now();
+        const last = lastErrorNotice;
+        if (last && last.parentNode && (now - last._at) < 5000 && last._text === msg.message) {
+          last._count = (last._count || 1) + 1;
+          last._at = now;
+          last.innerHTML = `${ICON.warning}${escapeHtml(msg.message)} <span class="error-notice-repeat">(repeated ${last._count}×)</span>`;
+          scrollDown();
+          break;
+        }
         const el = document.createElement('div'); el.className = 'error-notice';
         el.innerHTML = `${ICON.warning}${escapeHtml(msg.message)}`;
+        el._at = now; el._text = msg.message; el._count = 1;
+        lastErrorNotice = el;
         dest.appendChild(el);
         scrollDown();
         break;

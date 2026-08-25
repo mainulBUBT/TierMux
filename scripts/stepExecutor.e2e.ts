@@ -192,14 +192,16 @@ async function main() {
 
   // ── Part C: step acceptance — verify-failed "completed" checklist gets focused retries ──
   {
-    (globalThis as any).__tiermuxTestConfig = { mixturePipeline: 'off', verifyCommand: 'false' };
+    // verifyFixRounds: 0 isolates THIS layer (stepEngine acceptance rounds) from the turn
+    // loop's own verify-fix rounds (Part E) — otherwise every mutating round would grow
+    // internal fix attempts and the scripted model-call sequence would diverge.
+    (globalThis as any).__tiermuxTestConfig = { mixturePipeline: 'off', verifyCommand: 'false', verifyFixRounds: 0 };
     let n = 0;
     const fakeRouter = {
       async route() {
         n++;
-        // Simple core: verify runs ONCE as observation (no fix rounds, no planner repair),
-        // so each round is exactly three model calls — todowrite, mutation, report.
-        // Round 1: checklist in_progress + mutation; verify 'false' fails.
+        // With fix rounds off, each round is exactly three model calls — todowrite,
+        // mutation, report. Round 1: checklist in_progress + mutation; verify 'false' fails.
         if (n === 1) return { platform: 'custom' as const, model: 'fake', response: baseResponse({ tool_calls: [toolCall('t8', 'todowrite', { todos: [
           { content: 'Edit src/b.ts', status: 'in_progress', difficulty: 'hard' },
         ] })] }) };
@@ -269,6 +271,63 @@ async function main() {
     })();
     const none = await runTurn(textOnly, makeOpts());
     ok('plumbing: no mutation → verifyOutcome undefined', none.verifyOutcome === undefined);
+  }
+
+  // ── Part E: turn-level verify-fix rounds (loop.ts) — the agent owns the recheck ────
+  // A failed verify command feeds its output back for bounded same-routing fix rounds
+  // INSIDE the turn (2026-08-25); the user is never handed a manual re-run. Pinned here in
+  // isolation; the stepEngine/planRunner layers above run with verifyFixRounds: 0.
+  {
+    const sawMessages: unknown[][] = [];
+    const routingOpts: any[] = [];
+    const fixRoundRouter = () => {
+      let n = 0;
+      return {
+        async route(messages: unknown[], opts: unknown) {
+          sawMessages.push(messages);
+          routingOpts.push(opts ?? {});
+          n++;
+          if (n % 2 === 1) return { platform: 'custom' as const, model: 'fake', response: baseResponse({ tool_calls: [toolCall(`vf${n}`, 'runCommand', { command: 'printf fix' })] }) };
+          return { platform: 'custom' as const, model: 'fake', response: baseResponse({ content: 'Patched.' }) };
+        },
+        peekTopSelection: strongExecutor,
+      } as unknown as Router;
+    };
+
+    // Convergence: the verify command fails on its first run (creates the marker) and passes
+    // on its second (sees it) — so exactly one fix round is needed.
+    const marker = path.join(workspaceRoot, '.vfmarker');
+    fs.rmSync(marker, { force: true });
+    (globalThis as any).__tiermuxTestConfig = {
+      mixturePipeline: 'off',
+      verifyCommand: `test -f ${JSON.stringify(marker)} || { touch ${JSON.stringify(marker)}; exit 1; }`,
+      verifyFixRounds: 2,
+    };
+    sawMessages.length = 0;
+    routingOpts.length = 0;
+    const converged = await runTurn(fixRoundRouter(), makeOpts());
+    ok('fix rounds: verify eventually passes → verifyOutcome=passed', converged.verifyOutcome === 'passed');
+    ok('fix rounds: exactly one fix round was spent', converged.workReport?.fixRounds === 1);
+    ok('fix rounds: one mutating attempt + one fix attempt = 4 model calls', sawMessages.length === 4, `${sawMessages.length} calls`);
+    ok('fix rounds: the fix request carried the scoped failure prompt',
+      sawMessages.length >= 3 && JSON.stringify(sawMessages[2]).includes('[Verify fix — round 1 of 2]'));
+    ok('fix rounds: fix attempt ran under IDENTICAL routing (no model exclusion)',
+      routingOpts.every((o) => !o.excludeModels || !o.excludeModels.length));
+
+    // Exhaustion: the command can never pass — bounded rounds run, then the failure stands.
+    (globalThis as any).__tiermuxTestConfig = { mixturePipeline: 'off', verifyCommand: 'false', verifyFixRounds: 1 };
+    sawMessages.length = 0;
+    const exhausted = await runTurn(fixRoundRouter(), makeOpts());
+    ok('fix rounds: exhaustion → verifyOutcome=failed', exhausted.verifyOutcome === 'failed');
+    ok('fix rounds: the spent rounds are reported', exhausted.workReport?.fixRounds === 1 && exhausted.workReport?.verifyOutcome === 'failed');
+    ok('fix rounds: bounded — attempt + one fix round = 4 model calls, then stop', sawMessages.length === 4, `${sawMessages.length} calls`);
+
+    // Disabled (verifyFixRounds: 0): the failure is reported as-is, no extra model calls.
+    (globalThis as any).__tiermuxTestConfig = { mixturePipeline: 'off', verifyCommand: 'false', verifyFixRounds: 0 };
+    sawMessages.length = 0;
+    const off = await runTurn(fixRoundRouter(), makeOpts());
+    ok('fix rounds: off → failed without any fix attempt', off.verifyOutcome === 'failed' && off.workReport?.fixRounds === 0);
+    ok('fix rounds: off → just the attempt\'s 2 model calls', sawMessages.length === 2, `${sawMessages.length} calls`);
   }
 
   fs.rmSync(workspaceRoot, { recursive: true, force: true });

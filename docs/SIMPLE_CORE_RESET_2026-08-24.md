@@ -4,7 +4,6 @@
 > touching `src/agent/core/loop.ts`, adding a "quality" retry, or reviving a detector. It
 > documents what the reset removed, what it kept, the invariants that must survive, and how to
 > verify all of it.
-
 ## TL;DR — before / after
 
 | | Before (`pre-simple-core` tag) | After |
@@ -67,11 +66,16 @@ detector, stop and re-read this file.
    fallback; keep it.
 7. **A step-cap hit is a resumable pause, not a terminal stop.** `finishReason === 'max-steps'`
    ⇒ `paused: true` ⇒ the UI's Continue/Resume affordance.
-8. **Verify runs ONCE as observation.** After a mutating turn, the project's verify command
-   runs a single time; the outcome feeds the WorkReport honestly ('passed' / 'failed' /
-   'unverified'). No fix rounds, no plan repair inside the loop. (Plan-mode execution keeps
-   ITS OWN retry + repair in `planRunner.ts` / `stepEngine.ts` — that is plan mechanics, not
-   answer judgment.)
+8. **Verify runs once, then bounded mechanical fix rounds.** After a mutating turn, the
+   project's verify command runs; a non-zero exit feeds the failure output back for up to
+   `tiermux.agent.verifyFixRounds` (default 2, 0 = off) same-routing fix rounds, re-verifying
+   after each. The AGENT owns the recheck — the user is never handed a manual re-run. This is
+   mechanical recovery, not judgment: the trigger is the command's exit code (the same signal
+   planRunner's step retry keys on), never answer quality, and the routing constraints never
+   change between rounds. (Reinstated 2026-08-25 with a live repro: a Laravel turn ended on
+   "Shall I proceed…?" while `php artisan test` failed and the UI offered the user a
+   "Re-run checks" button — the exact user-recheck burden this reset's rules say needs an
+   evidence-driven guard.)
 
 ## What was kept (do not "clean these up")
 
@@ -82,7 +86,14 @@ detector, stop and re-read this file.
   (`condense.ts`), active-editor + diagnostics injection, @mentions, deterministic project
   profile, continue/resume context
 - **Token saving:** per-result output caps, `prepareStep` prune + re-anchor (`blankStaleToolResults`,
-  `AnchorStore`), `fitMessages`, cache-ordered prompt assembly (stable → volatile)
+  `AnchorStore`), `fitMessages`, cache-ordered prompt assembly (stable → volatile). Since
+  2025-08-25 the adaptive prune budget (and the continuation fitter) subtract the MEASURED
+  system+tools overhead from the window-fraction target, and the 12k floor no longer exceeds
+  small windows — before that, every model below a ~45k window overflowed BEFORE pruning fired
+  (the "loses context mid-turn" repro). A user-pinned `tiermux.agent.pruneAtTokens` keeps its
+  literal meaning. Below a 40k window the toolset itself is cut to the 10-tool essential set
+  (`tools/index.ts`, ~3.2k vs ~6.3k schema tokens — the small-context-agent pattern: Cline ~10
+  tools, aider none); `npm run test:e2e:toolset-budget` pins it.
 - **SDK-native mechanics:** `stopWhen` `[isStepCount(50), askQuestionsStop]`, `toolApproval`
   (createToolApproval), `repairToolCall` (3-tier incl. `tryModelRepair`), tool circuit breaker
 - **UI contract:** `AgentResult` unchanged; `workReport` (ResultCard), `changedFiles`, todos,
@@ -94,9 +105,11 @@ LLM classify fallback (regex `classifyTaskCore` remains) · mixture planner + to
 `narrationWall` + all action/pasted/permission/decline detectors · force-action nudges ·
 behavioral same-model retry + Auto failover ladder · answer judge (`fulfillment.ts` — file
 deleted) · escalation · forced synthesis + SYNTH suffixes + `shrinkForSynthesis` ·
-stuck/budget/exploration stops · repeat reminders · script-salad detector · verify-fix rounds
-+ in-loop plan repair · LLM change recap · terse-replies tail · chatViewProvider's autonomous
-continuation ladder, budget-stop compaction recovery, narration-stop resumable flow.
+stuck/budget/exploration stops · repeat reminders · script-salad detector · in-loop plan
+repair · LLM change recap · terse-replies tail · chatViewProvider's autonomous continuation
+ladder, budget-stop compaction recovery, narration-stop resumable flow. (The pre-reset
+verify-fix LADDER was deleted with the rest; the bounded exit-code-driven fix rounds of
+2026-08-25 — see invariant 8 — are a different, single-purpose guard, not its resurrection.)
 
 `behavior.md` / `research.md` / skills index / findings remain ON DISK as infrastructure
 (the legacy `buildSystemPrompt` path still compiles and some suites use it) — they are simply

@@ -9,7 +9,7 @@ STEP 1 — USE THE DESIGN SYSTEM YOU WERE GIVEN
 - A `DESIGN SYSTEM (in force for this turn)` block is in your instructions. It was read off this project's own files. Those tokens and values are the answer to "what colour / what spacing / what radius" — do not decide those yourself, and do not go looking for a second source.
 - Read the file(s) you are about to change before writing any styles. Never style markup you have not read.
 - If tokens exist, reuse and extend them. A second parallel palette is a defect, not a style choice.
-- If the design system block is a preset (it says so), define its token block once in the project's main stylesheet, then reference only tokens below it.
+- If the design system block is a preset (it says so), define its token block once in the project's main stylesheet, then reference only tokens below it.`
 
 STEP 2 — PICK THE RIGHT MODE
 - Restyling working UI → keep the existing structure, class names, and layout. Change values, not architecture. The user wants it to look better, not to be rebuilt.

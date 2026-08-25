@@ -35,11 +35,24 @@ import { getMcpManager } from './tools/mcp/manager';
 import { resolveVerifyCommand, runVerifyCommand } from './tools/workspace/verifyCommand';
 import { resolveWorkspacePath } from './tools/resolvePath';
 import { AnchorStore, stripAnchorBlock, renderTouchedFiles } from './anchors';
+import { collapseRepeatedSteps } from './collapseRepeat';
 import { TurnWatchdog } from './watchdog';
 import { resolveExecutionProfile } from '../executionProfile';
 import { diagLog } from '../../util/diag';
 import { repairToolArguments, sanitizeToolName } from '../toolArgs';
 import type { ClarifyingQuestion } from '../clarify';
+
+/** Runtime scrub for the "Next Steps:" / "I will now…" planning-leak pattern. Even with
+ *  a system-prompt instruction telling the model not to narrate its plan in the chat,
+ *  free/weak models occasionally emit a "Next Steps:" or "Let me first…" line BEFORE
+ *  their first tool call in a turn — the state machine routes that first text-delta
+ *  to the chat (since `hadToolCalls` is still false), and the user sees the model
+ *  talking to itself in the reply bubble. When the same step also issues a tool call
+ *  and the streamed chat text starts with one of these markers, retro-route it to
+ *  the reasoning channel and post a retract-draft so the webview drops the in-flight
+ *  segment. Match the start of the *trimmed* text only — a model that buries "next
+ *  steps" mid-paragraph is just enumerating, not narrating. */
+const PLANNING_PREFIX_RE = /^(next\s*steps?:|i\s*(?:will|'ll)\s+now|first,?\s+i\s*(?:will|'ll)|let\s+me\s+(?:first|now|start|check|look|see|search|open|read|run|try)|sure,?\s+(?:let\s+me|i\s*(?:will|'ll))|ok,?\s+(?:let\s+me|i\s*(?:will|'ll))|i'?m\s+going\s+to|i'?m\s+going\s+to\s+(?:now|first)|to\s+(?:start|begin),?\s+i\s*(?:will|'ll))/i;
 
 /** The transcript's neutral shape IS the SDK's ModelMessage — keeping them identical is what
  *  lets the streamText/generateText boundaries below stay cast-free (the compiler, not a
@@ -504,16 +517,16 @@ async function continueAfterTruncation(
 
 /** Pruning threshold scaled to the model that will actually serve the turn (85% of the
  *  context window, clamped [12k, 120k] via the ExecutionProfile). A deliberate user-set
- *  `tiermux.agent.pruneAtTokens` always wins. */
-function adaptivePruneAtTokens(router: Router, taskKind: TaskKind): number {
+ *  `tiermux.agent.pruneAtTokens` always wins and is used literally. */
+function adaptivePruneAtTokens(router: Router, taskKind: TaskKind): { atTokens: number; userSet: boolean } {
   const cfg = vscode.workspace.getConfiguration('tiermux.agent');
   const base = cfg.get<number>('pruneAtTokens', 12_000);
-  if (base <= 0) return 0; // explicitly disabled
+  if (base <= 0) return { atTokens: 0, userSet: true }; // explicitly disabled
   const ins = typeof cfg.inspect === 'function' ? cfg.inspect<number>('pruneAtTokens') : undefined;
   const userSet = ins && (ins.globalValue !== undefined || ins.workspaceValue !== undefined
     || ins.workspaceFolderValue !== undefined || ins.globalLanguageValue !== undefined);
-  if (userSet || base !== 12_000) return base;
-  return resolveExecutionProfile(router.peekTopSelection(taskKind)?.model).pruneTarget;
+  if (userSet || base !== 12_000) return { atTokens: base, userSet: true };
+  return { atTokens: resolveExecutionProfile(router.peekTopSelection(taskKind)?.model).pruneTarget, userSet: false };
 }
 
 // ── The execution core ──────────────────────────────────────────────────────────────────
@@ -524,16 +537,22 @@ interface AttemptResult extends AgentResult {
   hadMutatingToolCall: boolean;
   verifiedAfterMutation: boolean;
   openedFiles: string[];
+  /** Tokens the request spends on the system prompt + tool schemas BEFORE any message — the
+   *  provider counts it against the window, so the prune cascade and the continuation fitter
+   *  must both subtract it from a window-derived message budget. */
+  contextOverheadTokens: number;
 }
 
 /** Reconstruct the work transcript (tool calls + results) from the SDK's resolved steps into
- *  TierMux ChatMessage form, with per-tool compaction and orphan-settling — no tool-call ever
- *  survives without its result. Shared by the success path and the catch path's salvage. */
+ *  TierMux ChatMessage form, with per-tool compaction, orphan-settling (no tool-call ever
+ *  survives without its result), and repeat collapsing. Shared by the success path and the
+ *  catch path's salvage. */
 function appendWorkFromSteps(steps: any[], workMessages: ChatMessage[]): void {
+  const out: ChatMessage[] = [];
   for (const step of steps) {
     const calls: any[] = step.toolCalls ?? [];
     if (calls.length === 0) continue;
-    workMessages.push({
+    out.push({
       role: 'assistant',
       content: step.text || null,
       tool_calls: calls.map((tc) => ({ id: tc.toolCallId, type: 'function' as const, function: { name: tc.toolName, arguments: JSON.stringify(tc.input ?? {}) } })),
@@ -544,7 +563,7 @@ function appendWorkFromSteps(steps: any[], workMessages: ChatMessage[]): void {
     for (const tr of step.toolResults ?? []) {
       const raw = typeof tr.output === 'string' ? tr.output : JSON.stringify(tr.output ?? '');
       const content = compactToolResult(nameById.get(tr.toolCallId), raw, compaction);
-      workMessages.push({ role: 'tool', content, tool_call_id: tr.toolCallId });
+      out.push({ role: 'tool', content, tool_call_id: tr.toolCallId });
       settled.add(tr.toolCallId);
     }
     // A call that THREW (tool-error part) never appears in toolResults — settle it with the
@@ -552,13 +571,13 @@ function appendWorkFromSteps(steps: any[], workMessages: ChatMessage[]): void {
     for (const part of (step.content ?? []) as Array<{ type?: string; toolCallId?: string; error?: unknown }>) {
       if (part?.type !== 'tool-error' || !part.toolCallId || settled.has(part.toolCallId)) continue;
       const msg = part.error instanceof Error ? part.error.message : String(part.error ?? 'unknown error');
-      workMessages.push({ role: 'tool', content: `Tool call failed: ${msg}`, tool_call_id: part.toolCallId });
+      out.push({ role: 'tool', content: `Tool call failed: ${msg}`, tool_call_id: part.toolCallId });
       settled.add(part.toolCallId);
     }
     // askQuestions (no execute) and approval-denied calls: short placeholder, never orphaned.
     for (const tc of calls) {
       if (settled.has(tc.toolCallId)) continue;
-      workMessages.push({
+      out.push({
         role: 'tool',
         content: tc.toolName === 'askQuestions' ? 'Clarification requested.' : 'No result was recorded for this tool call.',
         tool_call_id: tc.toolCallId,
@@ -566,20 +585,23 @@ function appendWorkFromSteps(steps: any[], workMessages: ChatMessage[]): void {
       settled.add(tc.toolCallId);
     }
   }
+  workMessages.push(...collapseRepeatedSteps(out));
 }
 
 async function runAttempt(
   router: Router,
   opts: AgentOpts,
   taskKind: TaskKind,
-  pruneAtTokens: number,
+  prune: { atTokens: number; userSet: boolean },
   maxStepsPerTurn: number,
   providerExclude?: { excludeModels: string[] },
   pureVisualDescribe = false,
 ): Promise<AttemptResult> {
   // `askQuestions` has no `execute` (human-in-the-loop), so there is no tool-result to feed
   // back — an explicit stop here terminates the turn deterministically when it is called.
-  let stopReason: 'askQuestions' | undefined;
+  // 'stuck' is set by stuckLoopStop below — a loop-control guardrail stop, which the caller
+  // treats as HALT (auto-continuing it would just repeat the waste).
+  let stopReason: 'askQuestions' | 'stuck' | undefined;
   let askQuestionsCall: { toolCallId: string; questions: ClarifyingQuestion[] } | undefined;
 
   let platform: string | undefined;
@@ -602,12 +624,39 @@ async function runAttempt(
     middleware: createTelemetryMiddleware({ profiler: opts.profiler, traceId: opts.sessionId }),
   });
 
-  const system = await buildSimpleSystemPrompt(opts.mode, pureVisualDescribe);
+  // The latest user message is the language-detection input for buildSimpleSystemPrompt.
+  // runAttempt is a separately testable seam that doesn't share scope with runTurn's
+  // lastUserText; deriving it here keeps the per-attempt system-prompt rebuild (which fires
+  // on retry too) language-aware.
+  const lastUserForPrompt = [...opts.messages].reverse().find((m) => m.role === 'user');
+  const lastUserTextForPrompt = contentToString(lastUserForPrompt?.content ?? '');
+  // Prior-turn carry-over: the most recent assistant message whose content is non-empty
+  // (skips empty tool-bearers and the synthetic turn-end marker at loop.ts:~1013). This gives
+  // the model the referent for short follow-up reformat requests ("in short", "in bangla",
+  // "translate", "shorter", etc.) so it doesn't reach for `grep` to "find" the words.
+  const lastAssistant = [...opts.messages].reverse().find((m) => m.role === 'assistant' && contentToString(m.content ?? '').trim());
+  const priorAssistantText = lastAssistant ? contentToString(lastAssistant.content) : undefined;
+  const system = await buildSimpleSystemPrompt(opts.mode, pureVisualDescribe, lastUserTextForPrompt, priorAssistantText);
   // Pure visual-describe turns get NO workspace tools: the attachment is the whole subject, so
   // there is nothing here to read/edit/run. This is what keeps a model that CAN'T actually see
   // the image honest — with no repo tools and no repo profile it can only say "I don't see an
   // image" instead of wandering the workspace and presenting that as the answer.
-  const tools = pureVisualDescribe ? undefined : createToolSet(opts, getMcpManager(), router);
+  // The pre-turn window estimate also drives the essential-toolset cut for small windows
+  // (tools/index.ts) — a failover to a different-window model keeps whatever set this turn
+  // started with, the same bounded staleness the prune target already accepts.
+  const servingWindow = router.peekTopSelection(taskKind)?.model?.contextWindow ?? undefined;
+  const tools = pureVisualDescribe ? undefined : createToolSet(opts, getMcpManager(), router, servingWindow);
+
+  // The provider request carries the system prompt and every tool schema IN ADDITION to the
+  // messages. For the 22-tool set that is ~6.5k tokens — on the small/medium free-tier windows
+  // this extension routes to, a window-fraction message budget that ignores it lets the request
+  // overflow BEFORE the prune cascade fires (2026-08-25 live repro: executors "losing context"
+  // mid-turn). Measured per attempt because MCP servers can change the tool set between them.
+  // A user-pinned pruneAtTokens keeps its literal meaning.
+  const contextOverheadTokens = Math.ceil(((tools ? JSON.stringify(tools).length : 0) + system.length) / 4);
+  const messagesBudget = prune.atTokens <= 0 ? 0
+    : prune.userSet ? prune.atTokens
+      : Math.max(2_000, prune.atTokens - contextOverheadTokens);
 
   // Tool circuit breaker: a tool that keeps THROWING (dead MCP server, broken shell) is
   // dropped from later steps' activeTools so the model physically can't hammer it.
@@ -646,6 +695,40 @@ async function runAttempt(
       }
     }
     return false;
+  };
+
+  // Stuck-loop stop: fire when the trailing run of IDENTICAL tool calls (same tool, same
+  // arguments, no different call in between) reaches 3. A model re-issuing the exact same
+  // call three times running is not making progress — it is a degenerate loop (2026-08-25
+  // live repro: ~50 identical grep steps, 280k in / 41.5k out before the step cap noticed).
+  // The failure breaker above only sees calls that THROW; this catches the ones that SUCCEED
+  // every time. 3, not 2: an intentional double-check never issues the same call three times
+  // in a row with nothing between.
+  const STUCK_IDENTICAL_CALLS = 3;
+  const callSig = (name: string | undefined, input: unknown): string =>
+    `${name ?? '?'}::${typeof input === 'string' ? input : JSON.stringify(input ?? {})}`;
+  const stuckLoopStop = ({ steps }: { steps: Array<{ toolCalls?: Array<{ toolName?: string; input?: unknown }> }> }): boolean => {
+    const sigs: string[] = [];
+    for (const s of steps) for (const tc of s.toolCalls ?? []) sigs.push(callSig(tc.toolName, tc.input));
+    if (sigs.length === 0) return false;
+    let run = 0;
+    for (let i = sigs.length - 1; i >= 0 && sigs[i] === sigs[sigs.length - 1]; i--) run++;
+    if (run < STUCK_IDENTICAL_CALLS) return false;
+    stopReason = 'stuck';
+    diagLog('turn.stuckLoop', `stopped after ${run} consecutive identical tool call(s) — arguments unchanged, no progress`);
+    return true;
+  };
+
+  // Step-cap stop with an explicit flag. The previous `finishReason === 'max-steps'` check was
+  // dead code on this SDK version: 'max-steps' is not a FinishReason the SDK ever emits (the
+  // overall finishReason is the last step's, i.e. 'tool-calls'), so the cap fired invisibly
+  // and `paused` was never set. isStepCount(n) checks equality AFTER a step completes, so
+  // `>=` with a `> 0` guard preserves the "0 = off" config meaning.
+  let stepCapFired = false;
+  const stepCapStop = ({ steps }: { steps: unknown[] }): boolean => {
+    if (maxStepsPerTurn <= 0 || steps.length < maxStepsPerTurn) return false;
+    stepCapFired = true;
+    return true;
   };
 
   let text = '';
@@ -687,25 +770,25 @@ async function runAttempt(
       tools,
       toolApproval: createToolApproval(opts),
       repairToolCall: createRepairToolCall(router, opts.abortSignal, opts.usageSink),
-      // Hard execution limits only: the step cap is a resumable pause (finishReason
-      // 'max-steps' → paused:true); askQuestions is a legitimate terminal state.
-      stopWhen: [isStepCount(maxStepsPerTurn), askQuestionsStop],
+      // Hard execution limits only: the step cap is a resumable pause (stepCapFired →
+      // paused:true); a stuck loop and askQuestions are terminal states.
+      stopWhen: [stepCapStop, askQuestionsStop, stuckLoopStop],
       abortSignal: opts.abortSignal,
       // Per-step context compression (AI SDK native): blank stale read payloads, keep call
       // records, then re-anchor the files still under discussion. Mechanical eviction, not
       // judgment — it protects small context windows.
       prepareStep: ({ messages }: { messages: ModelMessage[]; steps: Array<{ usage?: { totalTokens?: number } }> }) => {
         const out: { messages?: ModelMessage[]; activeTools?: string[] } = {};
-        if (pruneAtTokens > 0) {
+        if (messagesBudget > 0) {
           const before = roughTokens(messages);
-          if (before >= pruneAtTokens) {
+          if (before >= messagesBudget) {
             const { messages: blankedMsgs, blanked } = blankStaleToolResults(messages);
             let pruned = pruneMessages({
               messages: blankedMsgs,
               reasoning: 'before-last-message',
               emptyMessages: 'remove',
             });
-            if (roughTokens(pruned) >= pruneAtTokens) {
+            if (roughTokens(pruned) >= messagesBudget) {
               pruned = pruneMessages({
                 messages: pruned,
                 reasoning: 'before-last-message',
@@ -714,7 +797,7 @@ async function runAttempt(
               });
               diagLog('turn.prune', `still ~${roughTokens(pruned)}tok after blanking ${blanked} result(s) — fell back to eviction`);
             }
-            diagLog('turn.prune', `~${before}tok ≥ ${pruneAtTokens} → blanked ${blanked}, ${messages.length}→${pruned.length} msgs (~${roughTokens(pruned)}tok)`);
+            diagLog('turn.prune', `~${before}tok ≥ ${messagesBudget} → blanked ${blanked}, ${messages.length}→${pruned.length} msgs (~${roughTokens(pruned)}tok)`);
             out.messages = pruned;
             // Late re-anchoring: put a bounded copy of the evicted files back, plus a
             // paths-only manifest, so the model is not answering about code it can no longer see.
@@ -745,6 +828,15 @@ async function runAttempt(
     type Phase = 'idle' | 'text' | 'planning' | 'waiting_final' | 'final';
     let phase: Phase = 'idle';
     let finalBuffer = '';
+    // cumulative chat text: the union of every step's streamed prose that reached the
+    // webview (text-delta routed to opts.onChunk). Kept across steps so the canonical
+    // reply text always matches what the user saw streaming live. Without this, a
+    // model that ends with a tool-bearing step or a multi-step stream would have a
+    // canonical `text` (from the LAST pure-text step) that is shorter — or empty —
+    // compared to the live draft, and the assistantMessage handler would wipe the
+    // visible draft to render that smaller/empty string, producing the "tokens
+    // consumed, no bubble" symptom.
+    let cumulativeChatText = '';
     let stepText = '';
     let stepChatText = '';
     let stepHasTool = false;
@@ -766,12 +858,27 @@ async function runAttempt(
         if (stepHasTool) {
           if (stepChatText.trim()) {
             // Narration that streamed to the chat bubble as a draft — route to thinking.
+            // The runtime scrub (PLANNING_PREFIX_RE) also catches the "Next Steps:" /
+            // "I will now…" pattern even when the model emits it in a tool-bearing step
+            // (state machine alone misses this because the first text-delta of a turn with
+            // a later tool call is still routed to chat). The retract-draft message is
+            // posted so the webview can drop the in-flight chat segment.
+            const isPlanning = PLANNING_PREFIX_RE.test(stepChatText.trim());
             reasoning += stepChatText;
             opts.onReasoning(stepChatText);
+            if (isPlanning && streamedThisStep) opts.onRetractDraft?.();
+            // Don't fold planning narration into the cumulative chat text — it never
+            // belonged in the user-visible reply.
+            if (!isPlanning && streamedThisStep) {
+              cumulativeChatText += stepChatText;
+            }
           }
         } else if (stepText.trim()) {
           finalBuffer = stepText;
           phase = hadToolCalls ? 'final' : 'text';
+          // Commit the per-step chat slice to the running cumulative so assistantMessage can
+          // reconcile to the full visible draft, not the LAST pure-text step alone.
+          if (streamedThisStep) cumulativeChatText += stepChatText;
         }
       } else if (part.type === 'text-delta') {
         const t = part.text;
@@ -859,12 +966,21 @@ async function runAttempt(
       }
     }
 
-    text = finalBuffer.trim();
+    // The canonical reply is the LAST pure-text step's text (the loop's prior behavior), but
+    // for multi-step streams where the user already saw earlier steps' prose live, the
+    // cumulative chat text is the truthful answer — the assistantMessage handler otherwise
+    // wipes the visible draft and renders a much shorter (or empty) finalBuffer, producing
+    // the "tokens consumed, no bubble" symptom. Prefer cumulative when it has content the
+    // finalBuffer dropped; otherwise fall back to the last pure-text step.
+    const cum = cumulativeChatText.trim();
+    const fin = finalBuffer.trim();
+    text = cum && cum !== fin ? cum : (fin || cum);
 
-    // 'max-steps' means the step cap fired before a natural finish — a resumable pause.
     let finishReason: string | undefined;
     try { finishReason = await streamResult.finishReason; } catch { /* ignore — non-fatal */ }
-    const paused = finishReason === 'max-steps' && !stopReason;
+    // The step cap fired via stopWhen (stepCapFired) — a resumable pause. A stuck-loop stop is
+    // NOT resumable: continuing it would just resume the identical-call loop.
+    const paused = stepCapFired && !stopReason;
 
     try {
       const steps: any[] = (await streamResult.steps) ?? [];
@@ -875,9 +991,29 @@ async function runAttempt(
     }
     if (!workMessages.length && streamWork.length) {
       flushStreamWork();
-      workMessages.push(...streamWork);
+      workMessages.push(...collapseRepeatedSteps(streamWork));
     }
     if (text.trim()) workMessages.push({ role: 'assistant', content: text });
+
+    // Turn-boundary closer: a persisted transcript that ends on raw tool results makes the
+    // NEXT user message read like one more query appended to the tool stream (2026-08-25
+    // live repro: the follow-up "in short bangla" was answered as a grep for "short, bangla").
+    // An explicit terminal marker tells the next model that the turn ENDED and what follows
+    // is a new instruction. askQuestions turns are excluded — there the next user message is
+    // the ANSWER to the questions, not a new instruction.
+    if (!askQuestionsCall) {
+      const lastWork = workMessages[workMessages.length - 1];
+      if (lastWork && (lastWork.role === 'tool' || (lastWork.role === 'assistant' && lastWork.tool_calls?.length))) {
+        workMessages.push({
+          role: 'assistant',
+          content: stopReason === 'stuck'
+            ? '[Turn stopped: the same tool call was repeating without making progress. Awaiting a new instruction from the user.]'
+            : paused
+              ? '[Turn paused at the step limit before a final answer was produced. Awaiting a new instruction from the user.]'
+              : '[Turn ended without a final text answer. Awaiting a new instruction from the user.]',
+        });
+      }
+    }
 
     // Length-truncation continuation (mechanical: finish_reason 'length' is a transport
     // boundary). Stitch continuations onto the partial so the user sees the full answer.
@@ -901,12 +1037,24 @@ async function runAttempt(
     }
 
     // Last-resort non-empty guarantee (never a blank turn). Skipped when paused (resumable
-    // cutoff), when the real error already surfaced via onError, and for askQuestions turns
-    // (the questions ARE the response).
+    // cutoff — the Continue button is the response), when the real error already surfaced via
+    // onError (the host's `failed` branch renders it), and for askQuestions turns (the
+    // questions card IS the response). A stuck stop gets its own honest message — the generic
+    // "couldn't produce a final answer" would hide why the turn really ended.
+    //
+    // Reasoning-only turns are a real, observed case: thinking-heavy models (minimax-m2, gpt-oss,
+    // qwen3-thinking) can burn a 1:1 reasoning:prose token ratio and exit with 0 output tokens
+    // — the model said "I thought about it" but never produced an answer. The fallback must
+    // cover that exact case (had reasoning, no final prose, no pause, no error, no questions).
+    const sawReasoning = reasoning.trim().length > 0;
     if (!text.trim() && !paused && !streamErrored && !askQuestionsCall) {
-      text = hadToolCalls
-        ? 'I looked into this and ran some tools, but couldn\'t produce a final answer. Try rephrasing the request, or switch to a stronger model.'
-        : 'I wasn\'t able to produce a response. Try rephrasing the request, or switch to a stronger model.';
+      text = stopReason === 'stuck'
+        ? 'I stopped because the same tool call kept repeating with identical arguments and made no progress. Try rephrasing the request, or switch to a stronger model.'
+        : sawReasoning
+          ? 'I thought through this but didn\'t produce a final answer — the model used its budget on reasoning and exited before writing a reply. Try rephrasing the request, or switch to a model that balances reasoning with output.'
+          : hadToolCalls
+            ? 'I looked into this and ran some tools, but couldn\'t produce a final answer. Try rephrasing the request, or switch to a stronger model.'
+            : 'I wasn\'t able to produce a response. Try rephrasing the request, or switch to a stronger model.';
     }
 
     return {
@@ -923,6 +1071,7 @@ async function runAttempt(
       hadMutatingToolCall,
       verifiedAfterMutation,
       openedFiles,
+      contextOverheadTokens,
       failed: streamErrored && !text.trim(),
       errorMessage: streamErrored ? streamErrorMessage : undefined,
       changedFiles: mapChangedFiles(changedFilesMap),
@@ -943,12 +1092,12 @@ async function runAttempt(
       } catch { /* steps rejected — the stream transcript below is the record */ }
       if (!workMessages.length && streamWork.length) {
         flushStreamWork();
-        workMessages.push(...streamWork);
+        workMessages.push(...collapseRepeatedSteps(streamWork));
       }
     }
     return {
       text, reasoning: reasoning.trim(), platform, model, runtimeName, paused: false, workMessages,
-      hadToolCalls, hadMutatingToolCall, verifiedAfterMutation, openedFiles,
+      hadToolCalls, hadMutatingToolCall, verifiedAfterMutation, openedFiles, contextOverheadTokens,
       failed: genuineFailure && !text.trim(), errorMessage: genuineFailure ? errMsg : undefined,
       changedFiles: mapChangedFiles(changedFilesMap),
     };
@@ -956,6 +1105,24 @@ async function runAttempt(
 }
 
 // ── The turn ────────────────────────────────────────────────────────────────────────────
+
+/** The verify-fix continuation message: scoped to the failing command's own output so the
+ *  model fixes the REMAINING failures in place instead of redoing already-completed work
+ *  (the "same work again and again" repro from the 2026-08-25 report). */
+function verifyFixMessage(cmd: string, output: string, round: number, maxRounds: number): string {
+  return [
+    `[Verify fix — round ${round} of ${maxRounds}]`,
+    `The project's verify command \`${cmd}\` still FAILS after your changes:`,
+    '',
+    '```',
+    output.slice(-3000),
+    '```',
+    '',
+    'Fix ONLY these failures. Your earlier work is already saved on disk — do NOT redo completed',
+    'steps, re-create files that already exist, or restart the task. Make the minimal edits that',
+    'make the command pass, then run it yourself to confirm.',
+  ].join('\n');
+}
 
 export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentResult> {
   // Hard per-turn STEP ceiling (0 = off via config; default 50). A cap hit is a
@@ -973,7 +1140,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   if (opts.mode !== 'plan' && taskKind !== 'trivial' && !opts.abortSignal?.aborted) {
     taskKind = await classifyTaskSmart(router, lastUserText, attachmentKinds, taskKind, opts.abortSignal);
   }
-  const pruneAtTokens = adaptivePruneAtTokens(router, taskKind);
+  const prune = adaptivePruneAtTokens(router, taskKind);
 
   // ── Telemetry + watchdog wrapping (protocol events stamp activity; quiet turns warn) ──
   const userOnTodos = opts.onTodos;
@@ -1045,7 +1212,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
   const pureVisual = isPureVisualDescribe(lastUserText, attachmentKinds.some((k) => k === 'image' || k === 'pdf'));
 
   try {
-    let final = await runAttempt(router, opts, taskKind, pruneAtTokens, maxStepsPerTurn, undefined, pureVisual);
+    let final = await runAttempt(router, opts, taskKind, prune, maxStepsPerTurn, undefined, pureVisual);
 
     // ── Mechanical provider-failure continuation (exactly ONE) ──────────────────────────
     // Fires only when provider EXECUTION failed before the task completed (`failed` — a real
@@ -1058,25 +1225,60 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
       diagLog('turn.continue', `provider failure from ${excludeKey} — one mechanical continuation with the accumulated transcript`);
       const continuationMessages = [...opts.messages, ...(final.workMessages ?? [])];
       const window = router.peekTopSelection(taskKind)?.model?.contextWindow ?? 32_768;
-      const fitted = fitMessages(continuationMessages, Math.max(2_000, Math.floor(window * 0.8)));
-      if (fitted.trimmed) diagLog('turn.continue', `transcript fitted to ~${Math.floor(window * 0.8)} input tokens for the replacement model`);
+      // The continuation request carries the same system+tools overhead as the failed attempt —
+      // a window-fraction budget that ignores it reproduces the overflow that just failed the
+      // attempt, on the very call meant to recover from it.
+      const fitBudget = Math.max(2_000, Math.floor(window * 0.8) - final.contextOverheadTokens);
+      const fitted = fitMessages(continuationMessages, fitBudget);
+      if (fitted.trimmed) diagLog('turn.continue', `transcript fitted to ~${fitBudget} input tokens for the replacement model`);
       const excludeModels = [...(opts.excludeModels ?? []), excludeKey];
-      const continued = await runAttempt(router, { ...opts, messages: fitted.messages, excludeModels }, taskKind, pruneAtTokens, maxStepsPerTurn, { excludeModels }, pureVisual);
+      const continued = await runAttempt(router, { ...opts, messages: fitted.messages, excludeModels }, taskKind, prune, maxStepsPerTurn, { excludeModels }, pureVisual);
       final = {
         ...continued,
         changedFiles: mergeChangedFiles(final.changedFiles, continued.changedFiles),
       };
     }
 
-    // ── Command verify (observation only) ───────────────────────────────────────────────
-    // After a mutating turn settles, run the project's verify command ONCE and record the
-    // outcome for the work report. A non-zero exit is reported honestly — the user decides
-    // what happens next; the harness does not re-prompt fix rounds.
+    // ── Command verify + bounded fix rounds ────────────────────────────────────────────
+    // After a mutating turn settles, run the project's verify command. A non-zero exit is
+    // NOT handed to the user to re-check — the agent owns the recheck (live repro, 2026-08-25
+    // user report: a Laravel turn ended on "Shall I proceed…?" while `php artisan test` failed
+    // and the ResultCard offered the user a manual "Re-run checks" button). The failure output
+    // is fed back for bounded same-routing fix rounds (`tiermux.agent.verifyFixRounds`, 0 =
+    // off). This is mechanical recovery, not answer judgment — the trigger is the command's
+    // EXIT CODE, the same signal planRunner's verify-failure retry keys on; no model
+    // escalation, no quality decisions (see docs/SIMPLE_CORE_RESET_2026-08-24.md, invariant 8).
     const verifyCmd = resolveVerifyCommand();
+    const maxFixRounds = vscode.workspace.getConfiguration('tiermux.agent').get<number>('verifyFixRounds', 2);
     let verifyOutcome: 'passed' | 'failed' | 'unverified' | undefined;
+    let fixRounds = 0;
     if (final.hadMutatingToolCall && !opts.abortSignal?.aborted && verifyCmd) {
       opts.onStep('verifying', `Verifying with ${verifyCmd}…`);
-      const run = await runVerifyCommand(verifyCmd);
+      let run = await runVerifyCommand(verifyCmd);
+      while (run.ok === false && fixRounds < maxFixRounds && !opts.abortSignal?.aborted) {
+        fixRounds += 1;
+        opts.onStep('verifying', `Verify failed — fix round ${fixRounds}/${maxFixRounds}…`);
+        const fixPrompt = verifyFixMessage(verifyCmd, run.output, fixRounds, maxFixRounds);
+        const fixMessages: ChatMessage[] = [...(final.workMessages ?? []), { role: 'user', content: fixPrompt }];
+        const fixed = await runAttempt(
+          router,
+          { ...opts, messages: [...opts.messages, ...fixMessages] },
+          taskKind, prune, maxStepsPerTurn,
+        );
+        // The fix round's transcript is part of the SAME turn: merged so persistence keeps one
+        // continuous record and changedFiles stay whole across rounds. The last round's text is
+        // the turn's answer — it reflects the state the final verify actually measured.
+        final = {
+          ...fixed,
+          changedFiles: mergeChangedFiles(final.changedFiles, fixed.changedFiles),
+          workMessages: [...fixMessages, ...(fixed.workMessages ?? [])],
+          verifiedAfterMutation: final.verifiedAfterMutation || fixed.verifiedAfterMutation,
+        };
+        // A provider failure, a clarification request, or a stuck loop inside the fix round is
+        // a stop state, not a signal to loop — re-verifying can't change either.
+        if (fixed.failed || fixed.stopReason === 'askQuestions' || fixed.stopReason === 'stuck') break;
+        run = await runVerifyCommand(verifyCmd);
+      }
       if (run.ok === true) {
         final = { ...final, verifiedAfterMutation: true };
         verifyOutcome = 'passed';
@@ -1100,7 +1302,7 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
         verifyOutcome: reportOutcome,
         verifyAvailable: !!verifyCmd,
         verifyCmd: verifyOutcome === 'passed' || verifyOutcome === 'failed' ? verifyCmd : undefined,
-        fixRounds: 0,
+        fixRounds,
         changedFiles: (final.changedFiles ?? []).map((f) => ({
           path: f.path,
           status: f.status === 'created' ? 'A' as const : f.status === 'modified' ? 'M' as const : 'D' as const,
@@ -1145,3 +1347,4 @@ export async function runTurn(router: Router, opts: AgentOpts): Promise<AgentRes
     watchdog.stop();
   }
 }
+

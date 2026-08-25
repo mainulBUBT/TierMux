@@ -46,6 +46,15 @@ function dropLeadingOrphans(msgs: ChatMessage[]): ChatMessage[] {
  * producing a system-prompt-only request: the provider 400s, or the model answers a
  * question it was never shown. Measured on a realistic turn at a 2.5k budget, the
  * result was literally `["system"]` with the task gone.
+ *
+ * The FIRST user message is likewise reserved as the conversation's anchor — the
+ * original task on a young session, or the rolling summary once compaction has run
+ * (condense.ts emits it as a leading user message). Without it, newest-first filling
+ * across a tool-heavy earlier turn evicts the anchor entirely and the next model call
+ * sees only the previous turn's tool tail; a short follow-up ("in short bangla") is
+ * then read as one more query against that tail instead of an instruction about the
+ * original task (2026-08-25 live repro). The anchor is capped at a fraction of the
+ * budget so a context-enriched first message can't eat the window it protects.
  */
 export function fitMessages(messages: ChatMessage[], maxInputTokens: number): { messages: ChatMessage[]; trimmed: boolean } {
   if (estimateMessagesTokens(messages) <= maxInputTokens) return { messages, trimmed: false };
@@ -61,6 +70,27 @@ export function fitMessages(messages: ChatMessage[], maxInputTokens: number): { 
   // truncation below then shrinks it, which still beats dropping it entirely.
   if (taskIdx >= 0) used += estimateMessagesTokens([rest[taskIdx]]);
 
+  // The conversation anchor (first user message), reserved after the task. Skipped when it
+  // IS the task (single-user-message turn — mid-turn fitting) so normal turns are unaffected.
+  let anchorIdx = -1;
+  let anchor: ChatMessage | undefined;
+  if (taskIdx > 0) {
+    anchorIdx = rest.findIndex((m) => m.role === 'user');
+    if (anchorIdx >= 0 && anchorIdx < taskIdx) {
+      anchor = rest[anchorIdx];
+      const anchorTokens = estimateMessagesTokens([anchor]);
+      const anchorCap = Math.max(200, Math.floor(maxInputTokens * 0.25));
+      if (anchorTokens > anchorCap) {
+        anchor = { ...anchor, content: contentToString(anchor.content).slice(0, Math.floor(anchorCap * 3.3)) + '\n…[original task message truncated to fit]' };
+        used += anchorCap;
+      } else {
+        used += anchorTokens;
+      }
+    } else {
+      anchorIdx = -1;
+    }
+  }
+
   // This turn's own tool loop (everything after the task) is the most valuable remaining
   // context, so it fills before older history.
   const after: ChatMessage[] = [];
@@ -72,12 +102,16 @@ export function fitMessages(messages: ChatMessage[], maxInputTokens: number): { 
   }
 
   const before: ChatMessage[] = [];
-  for (let i = taskIdx - 1; i >= 0; i--) {
+  // Fill down to (but not past) the anchor's index — the anchor itself is already reserved.
+  for (let i = taskIdx - 1; i > anchorIdx; i--) {
     const t = estimateMessagesTokens([rest[i]]);
     if (used + t > maxInputTokens) break;
     before.unshift(rest[i]);
     used += t;
   }
+  // The anchor leads the older-history window: it is chronologically first, and its user
+  // role satisfies the user-boundary invariant below on its own.
+  if (anchor) before.unshift(anchor);
 
   // Start the older-history window on a user boundary so a `tool` result or an assistant
   // tool-call whose partner was trimmed can't lead the list. Safe to empty: the reserved

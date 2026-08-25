@@ -16,7 +16,7 @@
 // Re-check on future AI SDK upgrades.
 import * as vscode from 'vscode';
 import type { ToolSet } from 'ai';
-import type { AgentOpts } from '../../agent';
+import type { AgentOpts, AgentMode } from '../../agent';
 import type { McpManager } from '../../../mcp/mcpManager';
 import type { Router } from '../../../router/router';
 import { FILE_MUTATING_TOOLS, PLAN_MODE_EXTRA_EXCLUDED_TOOLS } from '../policies/permission';
@@ -55,7 +55,51 @@ function graphToolsEnabled(): boolean {
   return vscode.workspace.getConfiguration('tiermux.graph').get<boolean>('enabled', true);
 }
 
-export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, router: Router): ToolSet {
+// ── Small-window essential toolset ──────────────────────────────────────────────────────
+// How open-source small-context agents stay viable: they do not offer big tool surfaces.
+// Cline runs ~10 tools in total; aider uses none (chat-format edits) and sends a graph-ranked
+// signature "repo map" instead of file bodies. The full TierMux agent set is 22 tools ≈ 6.3k
+// tokens of schema — 20–40% of a 16–32k free-tier window before a single message (the same
+// 2026-08-25 "loses context / does wrong work" repro that made the prune budget
+// overhead-aware). Below the limit the model gets the minimal edit loop only.
+
+/** The minimal navigate→edit→verify loop plus the two protocol tools the prompts and the step
+ *  engine reference BY NAME (todowrite is the checklist contract; the system prompt routes
+ *  clarifications through `question`). writeFile upserts, so createFile adds nothing here. */
+const ESSENTIAL_TOOLS = new Set([
+  'readFile', 'writeFile', 'editFile', 'listDir', 'glob', 'grep',
+  'runCommand', 'getDiagnostics', 'todowrite', 'question',
+]);
+
+/** Context windows strictly below this get the essential-only set (undefined/0 → full set,
+ *  the safe default when the window isn't known). 40k sits between the 32k and 64k catalog
+ *  bands: at 64k+ the ~6.3k schema cost is noise; at 32k and below it is a fifth of the
+ *  window or more. */
+export const SMALL_WINDOW_TOOLS_LIMIT = 40_000;
+
+/** Mode-critical tools the essential filter must never remove — plan mode's pre-flight
+ *  clarify channel (its prompts, stopWhen, and the clarify flow key on it). */
+const MODE_CRITICAL_TOOLS: Partial<Record<AgentMode, string[]>> = {
+  plan: ['askQuestions'],
+};
+
+/** True when `contextWindowTokens` is a known window small enough to warrant the essential
+ *  set. Exported for the toolset-budget e2e. */
+export function isSmallToolsetWindow(contextWindowTokens: number | undefined): boolean {
+  return typeof contextWindowTokens === 'number' && contextWindowTokens > 0 && contextWindowTokens < SMALL_WINDOW_TOOLS_LIMIT;
+}
+
+/** Keep only ESSENTIAL_TOOLS (∪ the mode's critical tools) from an already mode-filtered
+ *  set. Intersection, never addition: a tool the mode didn't offer stays unavailable. */
+function toEssential(set: ToolSet, mode: AgentMode): ToolSet {
+  const keep = new Set([...ESSENTIAL_TOOLS, ...(MODE_CRITICAL_TOOLS[mode] ?? [])]);
+  const out: ToolSet = {};
+  for (const [name, t] of Object.entries(set)) if (keep.has(name)) out[name] = t;
+  return out;
+}
+
+export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, router: Router, contextWindowTokens?: number): ToolSet {
+  const essential = isSmallToolsetWindow(contextWindowTokens);
   // Typed as ToolSet so the empty branch spreads as "no keys" rather than being inferred as
   // `{ getSymbolGraph: undefined }`, which does not satisfy ToolSet's index signature.
   const graphTools: ToolSet = graphToolsEnabled()
@@ -68,7 +112,7 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
   // accumulates tool-call deltas internally), so this no longer needs the "zero tools" workaround
   // it once did.
   if (opts.mode === 'ask') {
-    return {
+    const set: ToolSet = {
       readFile: createReadTool(),
       listDir: createListDirTool(),
       glob: createGlobTool(),
@@ -82,6 +126,7 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
       fetchUrl: createFetchUrlTool(),
       deepSearch: createDeepSearchTool(),
     };
+    return essential ? toEssential(set, opts.mode) : set;
   }
 
   const all: ToolSet = {
@@ -109,7 +154,7 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
     ...createMcpTools(mcp),
   };
 
-  if (opts.mode === 'agent') return all;
+  if (opts.mode === 'agent') return essential ? toEssential(all, opts.mode) : all;
 
   // plan mode: the model never even sees a file-mutating tool's schema, rather than showing it
   // and denying execution at call time (defense-in-depth mirrored in policies/permission.ts).
@@ -135,5 +180,5 @@ export function createToolSet(opts: AgentOpts, mcp: McpManager | undefined, rout
   // agent/ask mode already have `question` for mid-task clarification, a different UX (different
   // UI card, different resend/history semantics) — offering both here would be redundant.
   filtered.askQuestions = createAskQuestionsTool();
-  return filtered;
+  return essential ? toEssential(filtered, opts.mode) : filtered;
 }

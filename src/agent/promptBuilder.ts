@@ -10,6 +10,7 @@ import { loadSkills, matchSkill, invokedSkill, skillBodyPrompt, skillIndexPrompt
 import type { Skill } from '../context/skills';
 import { resolveDesignSystem, designSystemPrompt } from '../context/designSystem';
 import { findingsPrompt } from './sessionFindings';
+import { detectUserLanguage, languageTail } from './language';
 import type { TaskKind } from './routing';
 import type { AgentMode } from './agent';
 
@@ -378,7 +379,16 @@ function todayLine(): string {
 const SIMPLE_IDENTITY =
   'You are TierMux, an AI coding assistant working inside the user\'s editor on a real project.\n'
   + 'You act through tools: read and search the codebase, edit and create files, run commands, search the web.\n'
-  + 'The user\'s latest message is this turn\'s task — answer it or do it.';
+  + 'The user\'s latest message is this turn\'s task — answer it or do it.\n'
+  + 'The user-visible reply is the ANSWER, not the plan. Do not narrate your next steps in the '
+  + 'chat ("Next Steps:", "I will now…", "Let me first…", "First, I\'ll…", "Sure, I\'ll…"). If you '
+  + 'need to think, use the silent reasoning channel or a single tool call; the chat text is '
+  + 'reserved for the final answer or a brief acknowledgement.\n'
+  + 'A short follow-up that REFORMATS a prior reply ("in short", "in bangla", "translate", '
+  + '"shorter", "tighter", "summarize", "in english", "explain like I\'m five", "in one line", '
+  + '"ছোট কর", "in short bangla?", etc.) is asking you to reformat YOUR most recent reply — '
+  + 'do that directly without calling tools. The system prompt below carries the prior reply '
+  + 'under "## Prior turn" so you have it.';
 
 const SIMPLE_MODE_TAILS: Record<AgentMode, string> = {
   agent:
@@ -412,13 +422,34 @@ const VISUAL_DESCRIBE_GUARD =
  *  `pureVisualDescribe` (routing.ts) drops the auto-detected project profile and adds the
  *  attachment guard — a "what's in this image" turn gets zero repo facts to fuse into its
  *  answer. Rules and memory stay: they are user-authored instructions, not harness-generated
- *  repo guesses. */
-export async function buildSimpleSystemPrompt(mode: AgentMode, pureVisualDescribe = false): Promise<string> {
+ *  repo guesses.
+ *
+ *  `userText` (latest user message) drives the response-language tail. When the user wrote
+ *  in a non-English script (Bengali, Hindi, etc.) or romanized Bengali/Hindi, a short tail
+ *  tells the model to reply in the same language instead of mistranslating to English and
+ *  answering a different question. English input leaves the tail empty so the model's
+ *  default is unchanged. */
+export async function buildSimpleSystemPrompt(
+  mode: AgentMode,
+  pureVisualDescribe = false,
+  userText?: string,
+  priorAssistantText?: string,
+): Promise<string> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const [memory, rules] = await Promise.all([
     loadUserMemory().catch(() => ''),
     loadProjectRules().catch(() => ''),
   ]);
+  // Language detection is sync and cheap; doing it here means the loop's per-attempt
+  // system-prompt rebuild picks up the latest user text on retry too.
+  const lang = userText ? languageTail(detectUserLanguage(userText)) : '';
+  // Prior-turn carry-over. Without it, a short follow-up like "in short bangla?" has no
+  // referent and the model reads "short" + "bangla" as code-search keywords, reaching for
+  // `grep` instead of reformatting the prior reply. The carry-over is plain string concat
+  // (no LLM call); capped at 1500 chars so a long previous turn doesn't blow the prompt.
+  const priorTurnTail = priorAssistantText && priorAssistantText.trim()
+    ? `## Prior turn\nYour most recent reply was:\n\n> ${priorAssistantText.slice(0, 1500).replace(/\n/g, '\n> ')}\n\nIf the user's latest message is a short reformat / translate / shorten / clarify request, reformat THIS reply directly. Do not call tools for reformat follow-ups.`
+    : '';
   return [
     SIMPLE_IDENTITY,
     SIMPLE_MODE_TAILS[mode],
@@ -427,6 +458,8 @@ export async function buildSimpleSystemPrompt(mode: AgentMode, pureVisualDescrib
     memory,
     todayLine(),
     pureVisualDescribe ? VISUAL_DESCRIBE_GUARD : '',
+    priorTurnTail,
+    lang,
   ].filter(Boolean).join('\n\n');
 }
 

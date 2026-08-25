@@ -94,7 +94,10 @@ export function renderLegacyMarkdown(report: WorkReportData): string {
     lines.push(`**✅ Verified** — \`${report.verifyCmd}\` passed${rTxt}.`);
   } else if (report.verifyOutcome === 'failed') {
     const r = rounds || 1;
-    lines.push(`**❌ Verification failed** — \`${report.verifyCmd}\` still fails after ${r} fix round${r === 1 ? '' : 's'}. Your changes are saved, but the issue isn't fully resolved yet — re-run the command to see what's left, or ask me to keep fixing it.`);
+    // Agent-owns-the-recheck copy (2026-08-25): the loop already ran the fix rounds itself, so
+    // the user is never asked to re-run the command — the only follow-up offered is telling the
+    // agent to keep going.
+    lines.push(`**❌ Verification failed** — \`${report.verifyCmd}\` still fails after ${r} fix round${r === 1 ? '' : 's'}. Your changes are saved, but the issue isn't fully resolved yet — say "keep fixing" and I'll continue from the current failures.`);
   } else if (report.verifyOutcome === 'changes-only') {
     lines.push('**✅ Changes applied** — your changes are saved to disk.');
   } else if (report.verifyAvailable === false) {
@@ -104,7 +107,8 @@ export function renderLegacyMarkdown(report: WorkReportData): string {
     lines.push('**\u2705 Changes applied** \u2014 your changes are saved to disk.');
   } else {
     // The honest default: EVERY untested mutating turn says so. Lead with what IS true (the
-    // changes are saved), then why they're untested and one concrete next step.
+    // changes are saved), then why they're untested and one concrete next step — addressed to
+    // the AGENT, never a request for the user to check the work themselves.
     // A command DOES exist here (verifyAvailable !== false), so "no test command" would be a
     // lie for anything but a legacy transcript that predates the flag.
     const reason = report.stopReason
@@ -113,8 +117,10 @@ export function renderLegacyMarkdown(report: WorkReportData): string {
         ? 'the final check didn\'t run this turn'
         : 'this project has no test command I could run';
     const next = report.stopReason
-      ? 'Ask me to verify the changes, or give them a quick look yourself.'
-      : 'Give the changes a quick look — or tell me which command tests this project and I\'ll run it.';
+      ? 'Ask me to verify the changes and I\'ll run the check myself.'
+      : report.verifyAvailable
+        ? 'Ask me to verify and I\'ll run it again.'
+        : 'Tell me which command tests this project and I\'ll run it from now on.';
     lines.push(`**⚠️ Unverified** — your changes are saved but not tested yet (${reason}). ${next}`);
   }
   if (report.changedFiles.length) {

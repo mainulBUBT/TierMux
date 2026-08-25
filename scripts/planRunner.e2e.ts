@@ -135,12 +135,13 @@ async function main() {
 
   console.log('\n— verify failure: same-model retry, plan repair, no routing escalation —');
   {
-    // Simple core (2026-08-24): verify runs ONCE per round as observation. Every model round
-    // is scripted as a FIXED two-call shape — one response carrying todowrite+runCommand
+    // Simple core: with the turn loop's own verify-fix rounds disabled (verifyFixRounds: 0 —
+    // they are pinned separately in stepExecutor.e2e.ts Part E), every model round is
+    // scripted as a FIXED two-call shape — one response carrying todowrite+runCommand
     // together, then a text response — so any round structure (planRunner retry, stepEngine
     // acceptance rounds) consumes identical pairs and always ends verify-failed, until the
     // repair callback flips verification off for the repaired step.
-    (globalThis as any).__tiermuxTestConfig = { mixturePipeline: 'off', verifyCommand: 'false' };
+    (globalThis as any).__tiermuxTestConfig = { mixturePipeline: 'off', verifyCommand: 'false', verifyFixRounds: 0 };
     const toolsResp = () => ({ tool_calls: [
       toolCall('t1', 'todowrite', { todos: [{ content: 'Edit src/b.ts', status: 'completed', difficulty: 'hard' }] }),
       toolCall('c1', 'runCommand', { command: 'printf one' }),

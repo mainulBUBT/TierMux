@@ -215,18 +215,54 @@ async function main() {
     plugins: [boundaryPlugin(), ...(watch ? [watchLogPlugin('webview')] : [])],
   });
 
+  // Library entry (Node/CJS + ESM, vscode external) — emits the public
+  // `import { Router, runAgentStream, ... } from 'tiermux'` surface for
+  // headless Node consumers. Reuses the extension's external list because
+  // library consumers face the same vscode-mock requirement as the e2e suite.
+  // The `.d.ts` for this surface is emitted separately by `tsc -p
+  // tsconfig.lib.json` (run via `npm run typecheck:lib`) — esbuild's CJS/ESM
+  // output alone doesn't ship types, but the .d.ts in dist/ is what makes the
+  // `import` resolve under TypeScript and editor IntelliSense.
+  const libraryEntries = [
+    'src/index.ts',
+    'src/router/index.ts',
+    'src/agent/index.ts',
+    'src/providers/index.ts',
+    'src/shared/index.ts',
+  ];
+  const libraryCtx = await esbuild.context({
+    entryPoints: libraryEntries,
+    bundle: true,
+    format: 'cjs',
+    platform: 'node',
+    target: 'node18',
+    outdir: 'dist',
+    outExtension: { '.js': '.cjs' },
+    // Same externalization rationale as the extension build — vscode and
+    // @vscode/ripgrep must stay Node-resolvable at runtime; jsdom and pdf-parse
+    // ship native/dynamic-import code paths that don't survive bundling. The
+    // engine is otherwise pure (the `vscode` reads it does are isolated to a
+    // handful of config/fs/root lookups covered by scripts/vscodeMock.cjs).
+    external: ['vscode', '@vscode/ripgrep', 'jsdom', 'pdf-parse'],
+    sourcemap: !production,
+    minify: production,
+    logLevel: 'info',
+    plugins: watch ? [watchLogPlugin('library')] : [],
+  });
+
   if (watch) {
     await extensionCtx.watch();
     await webviewCtx.watch();
+    await libraryCtx.watch();
     console.log('[esbuild] watching…');
   } else {
-    // One-shot: both must succeed. An initial build failure must fail the whole
-    // build (non-zero exit) even if the other built fine, so a broken artifact
-    // can't ship. (In watch mode above, a failure does NOT exit — the watch
-    // process stays alive and the labeled status line surfaces the error count,
-    // so a transient error doesn't kill the dev loop.)
+    // One-shot: all three must succeed. An initial build failure must fail the
+    // whole build (non-zero exit) even if another built fine, so a broken
+    // artifact can't ship. (In watch mode above, a failure does NOT exit — the
+    // watch process stays alive and the labeled status line surfaces the error
+    // count, so a transient error doesn't kill the dev loop.)
     let failed = false;
-    for (const ctx of [extensionCtx, webviewCtx]) {
+    for (const ctx of [extensionCtx, webviewCtx, libraryCtx]) {
       const result = await buildOnce(ctx);
       if (result.errors.length > 0) failed = true;
     }

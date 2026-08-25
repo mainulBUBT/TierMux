@@ -48,11 +48,13 @@ export interface AgentResult {
    *  the model's prose, so a turn that ended on a bare tool call still surfaces what it changed. */
   changedFiles?: { path: string; status: 'created' | 'modified' | 'deleted' }[];
   /** Outcome of the end-of-turn command verify gate (loop.ts): 'passed' — the project's verify
-   *  command ran and exited 0; 'failed' — it exited non-zero even after the one fix retry;
-   *  'unverified' — the turn mutated files but no verify command exists. Undefined — no mutation
-   *  (nothing to verify). The step engine (core/stepEngine.ts) treats 'failed' as "the step is
-   *  NOT accepted": a model marking its todos completed while the verify command fails gets one
-   *  focused extra round instead of a handshake. */
+   *  command ran and exited 0 (possibly after fix rounds); 'failed' — it exited non-zero even
+   *  after the bounded fix rounds (`tiermux.agent.verifyFixRounds` — the agent owns the
+   *  recheck, the user is never asked to re-run it); 'unverified' — the turn mutated files but
+   *  no verify command exists. Undefined — no mutation (nothing to verify). The step engine
+   *  (core/stepEngine.ts) treats 'failed' as "the step is NOT accepted": a model marking its
+   *  todos completed while the verify command fails gets one focused extra round instead of a
+   *  handshake. */
   verifyOutcome?: 'passed' | 'failed' | 'unverified';
   /** Structured end-of-turn report (loop.ts builds it; the host persists it in the transcript
    *  as the canonical representation and posts it to the webview for the ResultCard). The

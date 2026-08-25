@@ -6,11 +6,13 @@
 // paths are pixel-identical by construction.
 //
 // Deliberately COMPACT: token/model/duration telemetry stays in the message footer where it
-// already lives — this card carries only what the footer CAN'T say: verification status,
-// what changed, and a one-click action when the work is not yet verified.
+// already lives — this card carries only what the footer CAN'T say: verification status and
+// what changed. No manual verify button: the agent owns the recheck (bounded fix rounds run
+// inside the turn; a failed card means the agent already tried), so the card never hands
+// verification work back to the user.
 //
 // Boundary: strict-checked, may only import from media/src/** + src/shared/** (type-only for
-// the latter). Host interaction is via callbacks (onDiffFile/onVerify) — no send() here.
+// the latter). Host interaction is via callbacks (onDiffFile) — no send() here.
 
 import { el } from '../dom';
 import { fmtDuration } from '../../format';
@@ -22,9 +24,6 @@ import type { WorkReportData } from '../../../../src/shared/workReport';
 export interface ResultCardOptions {
   /** Click on a changed file → host opens checkpoint↔current diff. Absent ⇒ rows are inert. */
   onDiffFile?: (path: string) => void;
-  /** Click on the verify action → host re-runs the project's check command and reports the
-   *  outcome as its own bubble. Offered whenever the turn ended without a verified pass. */
-  onVerify?: () => void;
 }
 
 // ========== Helpers ==========
@@ -49,13 +48,12 @@ const BADGE_CLS = { A: 'cp-created', M: 'cp-modified', D: 'cp-deleted' } as cons
 
 /** Build the card from the WHOLE report object. Returns NULL when there is nothing the user
  *  needs to be told — a verified pass is the expected outcome, not news (the agent always
- *  verifies when it can), so success renders SILENT. The card only speaks when it changes
- *  what the user should do next: untested work (Run checks) or a failed gate (Re-run).
+ *  verifies when it can), so success renders SILENT. The card only speaks when the outcome
+ *  differs: a failed gate (after the agent's own fix rounds) or untested work.
  *
- *  "Untested" is only actionable when this workspace HAS a check to run. When no stack in it
- *  offers one (verifyAvailable === false), there is no button that would do anything and no
- *  question worth asking — so the card stays silent too, rather than labelling every turn of
- *  every command-less project as untested. */
+ *  "Untested" is only worth a card when this workspace HAS a check to run. When no stack in
+ *  it offers one (verifyAvailable === false), there is nothing to say — the card stays
+ *  silent too, rather than labelling every turn of every command-less project as untested. */
 export function createResultCard(report: WorkReportData, opts?: ResultCardOptions): HTMLElement | null {
   if (report.verifyOutcome === 'verified' || report.verifyOutcome === 'changes-only') return null;
   if (report.verifyOutcome === 'unverified' && report.verifyAvailable === false) return null;
@@ -76,22 +74,8 @@ export function createResultCard(report: WorkReportData, opts?: ResultCardOption
       head.append(el('span', { class: 'rc-pill' }, `${report.fixRounds} fix round${report.fixRounds === 1 ? '' : 's'}`));
     }
     card.append(head);
-  }
-
-  // ── Verify action — the card's reason to exist: turn "untested/failed" into ONE click. ──
-  if (opts?.onVerify) {
-    const actions = el('div', { class: 'rc-actions' });
-    if (quiet) {
-      actions.append(el('span', { class: 'rc-hint' }, 'Not tested yet'));
-    }
-    actions.append(el('button', {
-      class: 'rc-verify-btn',
-      title: report.verifyOutcome === 'failed'
-        ? 'Run the verify command again to see the current failures'
-        : 'Look for a test/build command in this workspace and run it',
-      onClick: () => opts.onVerify!(),
-    }, report.verifyOutcome === 'failed' ? '↻ Re-run checks' : '▶ Run checks'));
-    card.append(actions);
+  } else {
+    card.append(el('div', { class: 'rc-hint' }, 'Not tested this turn'));
   }
 
   // ── Files changed: A/M/D badge + path; click → checkpoint diff when wired ──

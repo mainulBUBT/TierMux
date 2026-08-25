@@ -42,11 +42,15 @@ function main() {
   ok('unknown model → UNKNOWN_RANK, weak path, fallback window',
     unknown.modelRank === UNKNOWN_RANK && unknown.useWeakModelScaffolding && unknown.contextWindow === FALLBACK_CONTEXT_WINDOW);
 
-  // ---- prune target: 85% clamped [12k, 120k] ----
+  // ---- prune target: 85% clamped [12k, 120k] — but the floor never exceeds the window ----
   const small = resolveExecutionProfile(model({ contextWindow: 8_192 }));
+  const tiny = resolveExecutionProfile(model({ contextWindow: 4_096 }));
   const mid = resolveExecutionProfile(model({ contextWindow: 128_000 }));
   const huge = resolveExecutionProfile(model({ contextWindow: 1_000_000 }));
-  ok('small window clamps up to 12k floor', small.pruneTarget === 12_000);
+  ok('small window (8k): fraction wins over the 12k floor (old code targeted 12k on an 8k window — pruning fired only after overflow)',
+    small.pruneTarget === Math.floor(8_192 * PRUNE_TARGET_FRACTION));
+  ok('tiny window (4k): fraction wins over the floor (old code targeted 12k on a 4k window — 3× the window, pruning could never fire in time)',
+    tiny.pruneTarget === Math.floor(4_096 * PRUNE_TARGET_FRACTION));
   ok('mid window ≈ 85% (128k → 108800, within clamp)', mid.pruneTarget === Math.floor(128_000 * PRUNE_TARGET_FRACTION));
   ok('huge window clamps down to 120k ceiling', huge.pruneTarget === 120_000);
   ok('the old 40% formula is gone (mid would have been 51200)', mid.pruneTarget > 51_200);

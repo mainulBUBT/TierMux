@@ -170,14 +170,21 @@ body {
 .work-summary { margin: 2px 0 4px; }
 .work-sum-label {
   list-style: none; cursor: pointer;
-  font-size: 11px; opacity: .5;
-  display: flex; align-items: center; gap: 4px;
-  padding: 2px 0; user-select: none;
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 10px;
+  border-radius: var(--tm-radius-full, 999px);
+  background: var(--tm-surface-panel, rgba(127,127,127,.12));
+  border: 1px solid var(--tm-card-border, var(--vscode-panel-border));
+  color: var(--tm-fg, var(--vscode-foreground));
+  font-size: 10.5px; font-weight: 600;
+  user-select: none; white-space: nowrap;
+  transition: background var(--tm-transition-fast, .12s ease), border-color var(--tm-transition-fast, .12s ease);
 }
+.work-sum-label:hover { background: var(--tm-hover-toolbar, var(--vscode-toolbar-hoverBackground)); border-color: var(--tm-border-focus, var(--vscode-focusBorder)); }
 .work-sum-label::-webkit-details-marker { display: none; }
 .work-sum-label::before { content: '▸ '; font-size: 9px; transition: transform .15s; }
 details[open].work-summary > .work-sum-label::before { content: '▾ '; }
-details[open].work-summary > .work-sum-label { opacity: .7; }
+details[open].work-summary > .work-sum-label { border-color: var(--tm-border-focus, var(--vscode-focusBorder)); }
 .work-summary > .tm-tool-card, .work-summary > .tm-reasoning { margin: 1px 0; }
 /* Interim "thinking out loud" text that streamed between tool calls (weak free models emit it
    as content). Inside the collapsed timeline it's working notes, not the answer — mute it and
@@ -441,6 +448,7 @@ details[open].reasoning summary::before { content: '▾ '; }
   color: var(--vscode-errorForeground);
 }
 .error-notice svg { flex: 0 0 auto; }
+.error-notice-repeat { opacity: .7; font-size: 11px; margin-left: 4px; font-style: italic; }
 
 /* Watchdog — observability only. `.watchdog-notice` (warning: text-only, like .notice) and
  * `.watchdog-card` (actionable: buttons) share one element per request, swapped in place. */
@@ -1415,17 +1423,19 @@ details[open].tm-card-collapsible > summary::before { content: '▾ '; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  height: 22px;
-  padding: 0 6px;
+  flex: 0 0 auto;
+  gap: 4px;
+  height: 26px;
+  padding: 0 9px;
   border-radius: var(--tm-radius-full, 999px);
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.14));
-  color: var(--vscode-foreground);
-  font-size: 10px;
+  background: transparent;
+  border: 1px solid var(--tm-border, var(--vscode-panel-border));
+  color: var(--tm-fg, var(--vscode-foreground));
+  font-size: 11.5px;
   font-weight: 600;
 }
 .ctx-chip.hidden { display: none; }
-.ctx-chip .ctx-pct { color: var(--vscode-descriptionForeground, var(--vscode-foreground)); }
+.ctx-chip .ctx-pct { color: var(--tm-fg-muted, var(--vscode-foreground)); }
 .ctx-chip .ctx-ring { transform: rotate(-90deg); flex: 0 0 auto; }
 .ctx-chip .ctx-ring circle { fill: none; stroke-width: 3; }
 .ctx-chip .ctx-ring .ring-bg { stroke: var(--vscode-panel-border, rgba(127,127,127,.45)); }

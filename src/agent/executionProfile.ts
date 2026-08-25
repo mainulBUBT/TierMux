@@ -25,6 +25,11 @@ export const FALLBACK_CONTEXT_WINDOW = 32_768;
  *  keeps the blank→prune→evict cascade, just triggered far later than the old 0.40 — early
  *  blanking was destroying tool evidence the model still needed). */
 export const PRUNE_TARGET_FRACTION = 0.85;
+/** Floor/ceiling for the fraction-based target on large windows. On SMALL windows the floor
+ *  must NOT apply: max(fraction, 12k) on an 8k-window model yielded a target 1.5× the window,
+ *  so the prune cascade could never fire before the provider call overflowed (2026-08-25
+ *  live repro: free-tier small-window executors "lose context" mid-turn). The fraction always
+ *  wins when it is below the floor. */
 const PRUNE_TARGET_MIN = 12_000;
 const PRUNE_TARGET_MAX = 120_000;
 
@@ -58,7 +63,13 @@ export function resolveExecutionProfile(model: CatalogModel | undefined): Execut
     contextWindow,
     useWeakModelScaffolding: modelRank >= WEAK_RANK_MIN,
     useAnswerJudge: modelRank > STRONG_RANK_MAX,
-    pruneTarget: Math.min(Math.max(Math.floor(contextWindow * PRUNE_TARGET_FRACTION), PRUNE_TARGET_MIN), PRUNE_TARGET_MAX),
+    pruneTarget: (() => {
+      const fraction = Math.floor(contextWindow * PRUNE_TARGET_FRACTION);
+      // Small window (< ~14k): the fraction wins — a 12k floor above the window would defer
+      // pruning until after overflow. Otherwise clamp into [floor, ceiling] as before.
+      const floored = fraction < PRUNE_TARGET_MIN ? fraction : Math.max(fraction, PRUNE_TARGET_MIN);
+      return Math.min(floored, PRUNE_TARGET_MAX);
+    })(),
   };
 }
 

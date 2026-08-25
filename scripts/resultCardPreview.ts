@@ -29,7 +29,7 @@ const section = (label: string, ...nodes: HTMLElement[]) => {
   return box;
 };
 
-const opts = { onDiffFile: () => {}, onVerify: () => {} };
+const opts = { onDiffFile: () => {} };
 
 document.body.append(
   section('untested turn (quiet CTA)', createResultCard(report({

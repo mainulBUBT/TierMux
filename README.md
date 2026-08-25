@@ -144,10 +144,69 @@ Paid assistants rent you one vendor's stack; BYOK clients hand you a great UI an
 
 Then: Activity Bar → **TierMux** icon → start typing. Keyless providers need nothing at all; add keys in **⚙ Manage Models & Keys** whenever you want more headroom.
 
+## Use as a library (Node 18+)
+
+The same engine that powers the VS Code extension is consumable as an
+embeddable Node module — auto-routing, provider failover, plan execution,
+agent turns, structured work reports, all behind a stable public surface.
+
+```sh
+npm install tiermux
+```
+
+```ts
+import {
+  Router,
+  runAgentStream,
+  runPlanStream,
+  classifyTask,
+  createRouterProvider,
+  AllModelsFailedError,
+} from 'tiermux';
+
+// 1. Build a Router (same engine the extension uses).
+//    `secretStore` and `settingsStore` are the same interfaces the
+//    extension's host wires up; the `vscode` mock at scripts/vscodeMock.cjs
+//    is a reference for what shim a headless consumer must provide.
+const router = new Router({ /* your deps */ });
+
+// 2. Per-turn Auto routing: classify, then either pin or hand the model
+//    to the AI SDK as a TierMux-routed LanguageModelV4.
+const kind = classifyTask('Refactor the routing module');
+const model = createRouterProvider(router, { taskKind: kind });
+
+// 3. Run an agent turn.
+const result = await runAgentStream(router, {
+  messages: [{ role: 'user', content: 'Refactor the routing module' }],
+  mode: 'agent',
+  effort: 'medium',
+  onChunk: (t) => process.stdout.write(t),
+  onTool: (e) => console.log(`tool ${e.name} → ${e.state}`),
+  onError: (m) => console.error(m),
+  /* …more callbacks… */
+});
+```
+
+The library surface is intentionally minimal — it is the same
+`AgentOpts`/`AgentResult` contract the extension uses, with the same
+mechanical-execution engine behind it. The engine never judges answer
+quality; routing and failover are the Router's job, not the loop's
+(see `docs/SIMPLE_CORE_RESET_2026-08-24.md`).
+
+**Headless consumers** need a small `vscode` shim for the engine's
+config-read and filesystem calls. The repo ships
+[`scripts/vscodeMock.cjs`](scripts/vscodeMock.cjs) for the e2e suite;
+it's a reference for what symbols to stub. A full host-boundary refactor
+that removes every `vscode` import from the engine is scoped for a
+follow-up release.
+
+The sub-paths `tiermux/router`, `tiermux/agent`, `tiermux/providers`, and
+`tiermux/shared` are available if you only need one slice.
+
 ## Privacy
 
 Keys live in VS Code's encrypted secret storage. Requests go **VS Code → provider, directly** — there is no TierMux server. Votes, stats, and learned routing data never leave your machine.
 
 ---
 
-MIT — see [LICENSE](LICENSE). Contributing? Start with [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and [PUBLISHING.md](PUBLISHING.md). Architecture deep-dive: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+MIT — see [LICENSE](LICENSE) and third-party attributions in [NOTICE](NOTICE). Contributing? Start with [CONTRIBUTING.md](CONTRIBUTING.md), [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md), and [PUBLISHING.md](PUBLISHING.md). Architecture deep-dive: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Engine invariants: [docs/SIMPLE_CORE_RESET_2026-08-24.md](docs/SIMPLE_CORE_RESET_2026-08-24.md). Changes: [CHANGELOG.md](CHANGELOG.md).

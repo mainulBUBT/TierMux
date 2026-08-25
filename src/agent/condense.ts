@@ -5,6 +5,7 @@ import type { Router } from '../router/router';
 import { SUMMARY_SYSTEM, HANDOFF_SYSTEM } from './prompts';
 import { contentToString } from './content';
 import { capToolOutput } from './core/tools/capOutput';
+import { collapseRepeatedSteps } from './core/collapseRepeat';
 import { diagLog } from '../util/diag';
 
 /** Number of recent messages kept verbatim (so the active thread of work stays intact). 10, not
@@ -180,9 +181,20 @@ export async function condenseHistory(
   const tail = recapTailToolResults(history.slice(tailStart));
   if (prefix.length < 3) return null;
 
+  // Mechanically collapse runs of identical step records BEFORE the summarizer sees them. A
+  // degenerate model loop (2026-08-25) can leave dozens of byte-identical tool round-trips in
+  // the prefix, and that wall of repetition is exactly what blanks a weak utility summarizer —
+  // all three retry attempts returned empty and the user saw "Compaction produced no summary"
+  // with the context left to grow until fitting evicted the task itself. No-op on normal
+  // histories: collapse only touches 3+ identical consecutive records.
+  const summaryPrefix = collapseRepeatedSteps(prefix);
+  if (summaryPrefix.length < prefix.length) {
+    diagLog('condense.dedup', `collapsed repeated step records in the prefix (${prefix.length} → ${summaryPrefix.length} messages) before summarizing`);
+  }
+
   const summaryRequest = [
     { role: 'system' as const, content: SUMMARY_SYSTEM },
-    ...prefix,
+    ...summaryPrefix,
     { role: 'user' as const, content: 'Summarize the conversation above so it can continue with minimal context. Keep file names, decisions, and unresolved next steps.' },
   ];
 
@@ -217,7 +229,7 @@ export async function condenseHistory(
     // where the full one didn't, or fails the same way for an unrelated reason either way.
     const excludeKey2 = `${result.platform}::${result.model}`;
     diagLog('condense.retry', `empty summary again from ${excludeKey2} — retrying with a shorter prefix`);
-    const shortPrefix = prefix.slice(Math.ceil(prefix.length / 2));
+    const shortPrefix = summaryPrefix.slice(Math.ceil(summaryPrefix.length / 2));
     const shortRequest = [
       { role: 'system' as const, content: SUMMARY_SYSTEM },
       ...shortPrefix,
