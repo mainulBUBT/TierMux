@@ -14,6 +14,11 @@ export interface RunContext {
   approveEdit: (req: { path: string; title: string; kind: 'write' | 'delete' }) => Promise<boolean | undefined>;
   /** Live read of the (workspace-wide) Auto-approve toggle. */
   autoApprove: () => boolean;
+  /** Same abort signal the agent loop receives (Stop button / wall-clock ceiling). Forwarded
+   *  to CommandGate so an in-flight shell can be killed by tree — see commandGate.ts's
+   *  `live` map. Without this, Stop only cancelled the HTTP call and long-running commands
+   *  (npm test, composer install, php artisan test) outlived the run, pinning the workspace. */
+  abortSignal?: AbortSignal;
   /** Optional output directory for run-scoped artifacts (e.g. bench debug log).
    *  When set, the agent writes pre-research.jsonl to <outDir>/pre-research.jsonl
    *  so each run's instrumentation lands alongside its telemetry. */

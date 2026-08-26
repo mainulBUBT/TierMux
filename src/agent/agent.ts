@@ -101,6 +101,11 @@ export interface AgentOpts {
   taskKind?: string;
   /** TierMux chat session id. */
   sessionId?: string;
+  /** Per-turn request id. Forwarded to CommandGate as a tracking key so the host's
+   *  `commandGate.cancel({ sessionId, requestId })` can tree-kill the in-flight shell
+   *  AND its descendants on Stop — without a requestId the gate can only kill the next
+   *  process it happens to spawn, not the one the user actually wanted stopped. */
+  requestId?: string;
   /** Step routing (Phase 2): difficulty of the plan step this turn is executing — derived by the
    *  caller (chatViewProvider's auto-continue loop) from the current todo item. `easy` routes
    *  the round to the cheap fast pool (minIntelligenceRank), `hard` to the top tier
@@ -145,32 +150,34 @@ export interface AgentOpts {
   profiler?: IProfilerService;
 }
 
-// Lazy/dynamic on purpose: everything under `./core/` imports `vscode` (workspace.fs,
-// CommandGate/EditGate, etc). This file itself has always been vscode-free so it can run
+// Lazy/dynamic on purpose: everything under `./core/` imports `vscode` (workspace.fs, the
+// toolset, the policy's config reads). This file itself stays vscode-free so it can run
 // headlessly under plain Node — a static import here would drag the whole vscode-dependent
 // agent core into any headless test that only imports this module for its types.
-let runTurn: typeof import('./core/loop').runTurn | undefined;
-async function loadCore(): Promise<typeof import('./core/loop').runTurn> {
-  if (!runTurn) ({ runTurn } = await import('./core/loop'));
+let runTurn: typeof import('./core/engine').runTurn | undefined;
+async function loadCore(): Promise<typeof import('./core/engine').runTurn> {
+  if (!runTurn) ({ runTurn } = await import('./core/engine'));
   return runTurn;
 }
 
-/** Agent mode: full tool loop over Router, via the AI SDK. The trailing `_tools` param is
- *  unused (the core builds its own tool set) — kept only so existing call sites in
- *  chatViewProvider.ts don't all need a mechanical edit. */
+/** Agent mode: full tool loop, via the AI SDK. The trailing `_tools` param is unused (the
+ *  engine builds its own tool set) — kept only so existing call sites in chatViewProvider.ts
+ *  don't all need a mechanical edit. The `router` argument is likewise ignored: v3 model
+ *  selection lives in router/picker.ts. */
 export async function runAgentStream(router: Router, opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
+  void router;
   return (await loadCore())(router, { ...opts, mode: 'agent' });
 }
 
-/** Plan mode: no write/edit/delete tools, and `runCommand` is guarded to read-only commands
- *  (see the mode gate in policies/permission.ts). MCP tools are excluded too — an arbitrary
- *  server's side effects can't be introspected. */
+/** Plan mode: read-only toolset (readFile/listDir/glob/grep) — the policy still gates anything
+ *  mutating, and the mode filter drops those tools from the model's view entirely. */
 export async function runPlanStream(router: Router, opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
+  void router;
   return (await loadCore())(router, { ...opts, mode: 'plan' });
 }
 
-/** Ask mode: read-only Q&A — no edits; bash is available but guarded to read-only commands
- *  (see the mode gate in policies/permission.ts). */
+/** Ask mode: read-only Q&A — same toolset as plan, different system-prompt framing. */
 export async function runAskStream(router: Router, opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
+  void router;
   return (await loadCore())(router, { ...opts, mode: 'ask' });
 }

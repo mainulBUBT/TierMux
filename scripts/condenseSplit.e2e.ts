@@ -174,10 +174,11 @@ async function main(): Promise<void> {
     const loopCondensed = await condenseHistory(looped, capturing);
     ok('degenerate-loop session still compacts', loopCondensed !== null);
     const sent = seen[0] ?? [];
-    ok('summarizer received the collapsed run, not 12 copies (first + last + marker)',
-      sent.filter((m) => m.role === 'tool').length === 2 && sent.some((m) => String(m.content).includes('repeated 10 more time')));
-    ok('what the summarizer received is far smaller than the raw history',
-      JSON.stringify(sent).length < JSON.stringify(looped).length);
+    // v3: the pre-summarizer collapse of repeated step records was removed with
+    // core/collapseRepeat.ts — the summarizer now sees the raw prefix. The compaction
+    // itself still succeeds; the dedup optimization returns in v3.1 if weak summarizers
+    // blank on repetitive histories again.
+    ok('summarizer received the full prefix (v3: no pre-collapse)', sent.filter((m) => m.role === 'tool').length === 12);
     ok('the original question is still in what the summarizer sees',
       sent.some((m) => String(m.content).includes('+971')));
   }

@@ -15,7 +15,13 @@ let bad = 0;
 const ok = (n: string, c: boolean) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}`); if (!c) bad++; };
 
 async function main() {
-  const cwd = process.cwd();
+  // Neutral temp cwd: the repo root is itself a git tree, and restore()'s git-snapshot path
+  // would treat the untracked checkpoint file as "not in tree" and delete it — testing git
+  // semantics instead of checkpoint persistence.
+  const fs = await import('fs');
+  const os = await import('os');
+  const pathMod = await import('path');
+  const cwd = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'tiermux-cp-'));
   const a = new CheckpointManager(cwd);
   await a.begin('req1', 'test turn');
   const target = vscode.Uri.file(cwd + '/CHECKPOINT_TEST_FILE.txt');

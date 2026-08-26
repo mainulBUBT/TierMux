@@ -80,8 +80,17 @@ export class ThinkStripper {
   private insideThink = false;
 
   feed(delta: string): string {
+    return this.feedParts(delta).text;
+  }
+
+  /** Same state machine as feed(), but separates BOTH channels: text outside think blocks
+   *  (chat answer) and text INSIDE them (reasoning) — so a `<think>`-style model's thinking
+   *  can be surfaced as reasoning instead of being discarded. Split-tag safe exactly like
+   *  feed(): partial `<thi` / `</thi` tails at the buffer end are held back. */
+  feedParts(delta: string): { text: string; reasoning: string } {
     this.buf += delta;
-    let out = '';
+    let text = '';
+    let reasoning = '';
 
     while (this.buf.length > 0) {
       if (this.insideThink) {
@@ -96,10 +105,12 @@ export class ThinkStripper {
               break;
             }
           }
+          reasoning += this.buf.slice(0, safeCut);
           this.buf = this.buf.slice(safeCut);
           break;
         }
 
+        reasoning += this.buf.slice(0, closeMatch.index);
         this.buf = this.buf.slice(closeMatch.index + closeMatch[0].length);
         this.insideThink = false;
         continue;
@@ -115,17 +126,17 @@ export class ThinkStripper {
             safeUpTo = Math.min(safeUpTo, i);
           }
         }
-        out += this.buf.slice(0, safeUpTo);
+        text += this.buf.slice(0, safeUpTo);
         this.buf = this.buf.slice(safeUpTo);
         break;
       }
 
-      out += this.buf.slice(0, openMatch.index);
+      text += this.buf.slice(0, openMatch.index);
       this.buf = this.buf.slice(openMatch.index + openMatch[0].length);
       this.insideThink = true;
     }
 
-    return out;
+    return { text, reasoning };
   }
 
   /** Flush any remaining buffer at stream end. If we're still inside a think block,
@@ -139,6 +150,20 @@ export class ThinkStripper {
     const remaining = this.buf;
     this.buf = '';
     return remaining;
+  }
+
+  /** Flush separating both channels: an UNCLOSED think block (DeepSeek-R1-style, thinking to
+   *  end-of-stream) yields its buffered content as reasoning rather than discarding it. */
+  flushParts(): { text: string; reasoning: string } {
+    if (this.insideThink) {
+      const reasoning = this.buf;
+      this.buf = '';
+      this.insideThink = false;
+      return { text: '', reasoning };
+    }
+    const text = this.buf;
+    this.buf = '';
+    return { text, reasoning: '' };
   }
 }
 
@@ -159,7 +184,14 @@ export function stripThinkTags(text: string): string {
  * Zen send an array `reasoning_details` of `{ type: 'reasoning.text', text }`. Returns '' if the
  * chunk carries no reasoning.
  */
-function reasoningFromDelta(delta: Record<string, unknown>): string {
+/** Extract a reasoning/thinking delta from a streamed chunk's `delta` — shared by Router.route
+ *  and the v3 routerProvider (providers disagree: reasoning_content / reasoning /
+ *  reasoning_details[]). Returns '' when the chunk carries no reasoning. */
+export function reasoningFromDelta(delta: Record<string, unknown>): string {
+  return reasoningFromDeltaImpl(delta);
+}
+
+function reasoningFromDeltaImpl(delta: Record<string, unknown>): string {
   if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) return delta.reasoning_content;
   if (typeof delta.reasoning === 'string' && delta.reasoning) return delta.reasoning;
   const details = delta.reasoning_details;
@@ -257,12 +289,23 @@ interface RouteResult {
 }
 
 export class AllModelsFailedError extends Error {
-  constructor(readonly failures: Array<{ platform: Platform; model: string; reason: string; detail?: string }>) {
-    super(AllModelsFailedError.describe(failures));
+  /** Why enabled models never became candidates this turn — keeps the report honest when the
+   *  pool the user sees ("eto models on") is larger than the pool this turn could actually try.
+   *  Live repro (2026-08-25): "All 5 configured models are unavailable" while a dozen models
+   *  were toggled on — the untried rest were silent casualties of the tools/key/deprecated
+   *  pre-filters, and the message counted only the survivors. */
+  constructor(
+    readonly failures: Array<{ platform: Platform; model: string; reason: string; detail?: string }>,
+    readonly context?: { total: number; hiddenNoKey: number; hiddenNoTools: number; hiddenUnavailable: number },
+  ) {
+    super(AllModelsFailedError.describe(failures, context));
     this.name = 'AllModelsFailedError';
   }
 
-  private static describe(failures: Array<{ platform: Platform; model: string; reason: string; detail?: string }>): string {
+  private static describe(
+    failures: Array<{ platform: Platform; model: string; reason: string; detail?: string }>,
+    context?: { total: number; hiddenNoKey: number; hiddenNoTools: number; hiddenUnavailable: number },
+  ): string {
     if (failures.length === 0) {
       return 'No enabled models are configured. Open "Manage Models & Keys" to enable a model and add an API key.';
     }
@@ -278,6 +321,7 @@ export class AllModelsFailedError extends Error {
         case 'no_provider': return `${who} has no provider available. Pick another model, or set it to Auto.`;
         case 'not_found': return `${who} looks deprecated or removed by the provider${isCustom ? ' (or the model ID is wrong for this endpoint)' : ''}. Pick another model, or set it to Auto.${upstream}`;
         case 'rate_limited': return `${who} is rate-limited right now. Try again shortly, or set the model to Auto for automatic failover.`;
+        case 'recent_failure': return `${who} failed moments ago and is temporarily benched, so it was not retried this turn. Try again shortly.${upstream}`;
         case 'auth': return isCustom
           ? `${who} rejected the request (HTTP 401/403). Check the endpoint's API key, base URL, and model ID in "Manage Models & Keys".${upstream}`
           : `${who} rejected the API key. Update it in "Manage Models & Keys".${upstream}`;
@@ -301,12 +345,28 @@ export class AllModelsFailedError extends Error {
         case 'timeout': return `${n} timed out`;
         case 'paid_only': return `${n} paid-only/out of quota`;
         case 'not_found': return `${n} unavailable`;
+        // Skipped WITHOUT a request this turn — the model was still inside its circuit-breaker
+        // cooldown from a failure moments ago. Distinct from "failed": nothing was dialed.
+        case 'recent_failure': return `${n} benched (recently failed)`;
         default: return `${n} failed`;
       }
     };
     const parts = [...counts.entries()].map(([reason, n]) => label(reason, n));
-    return `All ${failures.length} configured models are unavailable right now (${parts.join(', ')}). `
+    let msg = `All ${failures.length} configured models are unavailable right now (${parts.join(', ')}). `
       + 'Try again shortly, or check keys/models in "Manage Models & Keys".';
+    // Surface the pool this turn could never see, so "All 5 configured" stops reading like
+    // "my other enabled models were ignored" — they were filtered before the loop ran.
+    if (context) {
+      const hidden = context.hiddenNoKey + context.hiddenNoTools + context.hiddenUnavailable;
+      if (hidden > 0) {
+        const bits: string[] = [];
+        if (context.hiddenNoKey > 0) bits.push(`${context.hiddenNoKey} without a usable API key for this turn`);
+        if (context.hiddenNoTools > 0) bits.push(`${context.hiddenNoTools} without tool support (Agent mode needs tools)`);
+        if (context.hiddenUnavailable > 0) bits.push(`${context.hiddenUnavailable} flagged unavailable by the provider`);
+        msg += ` ${hidden} more enabled model${hidden === 1 ? ' was' : 's were'} not tried (${bits.join(', ')}).`;
+      }
+    }
+    return msg;
   }
 }
 
@@ -479,7 +539,11 @@ export class Router {
       ? { perCandidate: Router.AGENT_COOLDOWN_WAIT_CAP_MS, total: Router.AGENT_COOLDOWN_TOTAL_MS }
       : { perCandidate: Router.CHAT_COOLDOWN_WAIT_CAP_MS, total: Router.CHAT_COOLDOWN_TOTAL_MS };
   }
-  private static readonly PING_TIMEOUT_MS = 1200;
+  /** Preflight ping cap. Was 1200ms — free aggregators routinely answer a cold ping in 1.5–2s,
+   *  so half-open probes kept "failing", re-benching alive models on an exponential cooldown
+   *  and starving Auto's pool (the bar-bar "All N unavailable" repro). 2.5s still bounds the
+   *  serial cost; the parallel warmup covers the rest. */
+  private static readonly PING_TIMEOUT_MS = 2500;
 
   constructor(
     private readonly secrets: SecretStore,
@@ -1420,7 +1484,7 @@ export class Router {
     });
   }
 
-  private async routeSerial(messages: ChatMessage[], opts: RouteOptions): Promise<RouteResult> {
+  private async routeSerial(messages: ChatMessage[], opts: RouteOptions, blindRetry = false): Promise<RouteResult> {
     const failures: Array<{ platform: Platform; model: string; reason: string; detail?: string }> = [];
     const sentTools = !!(opts.tools && opts.tools.length);
     const toolsTokens = sentTools ? estimateTokens(JSON.stringify(opts.tools)) : 0;
@@ -1449,6 +1513,22 @@ export class Router {
         cands = cands.filter((e) => configured.has(e.platform));
         if (cands.length < before) diagLog('router.candidates', `dropped ${before - cands.length} candidate(s) on providers with no key (not keyless, no key stored)`);
       }
+    }
+    // Hidden-pool accounting for the failure report: enabled models THIS turn could never try,
+    // bucketed by why. Computed against the post-filter candidate set above, so models dropped
+    // for lacking keys land here too. Only the error message reads this (see AllModelsFailedError).
+    let hiddenCtx: { total: number; hiddenNoKey: number; hiddenNoTools: number; hiddenUnavailable: number } | undefined;
+    if (!forced) {
+      const eligible = new Set(cands.map((e) => `${e.platform}::${e.modelId}`));
+      const hidden = { total: 0, hiddenNoKey: 0, hiddenNoTools: 0, hiddenUnavailable: 0 };
+      for (const e of this.settings.enabledByPriority()) {
+        if (eligible.has(`${e.platform}::${e.modelId}`)) continue;
+        hidden.total++;
+        if (this.secrets.isDeprecated(e.platform, e.modelId)) hidden.hiddenUnavailable++;
+        else if (opts.requireTools && (this.catalog.find(e.platform, e.modelId)?.supportsTools === false || this.secrets.isToolIncompatible(e.platform, e.modelId))) hidden.hiddenNoTools++;
+        else hidden.hiddenNoKey++;
+      }
+      if (hidden.total > 0) hiddenCtx = hidden;
     }
     // Set when Smart Auto scoring ran, so the eventual winning candidate can be checked against
     // the rationale reported below — the rationale reflects the ranking's top pick BEFORE the
@@ -1545,6 +1625,11 @@ export class Router {
     // Total rate-limit cooldown wait spent in THIS route() call (see cooldownWaitCapMs) — the
     // budget that keeps serial cooling candidates from stacking waits without bound.
     let cooldownWaited = 0;
+    // True once a REAL provider request is started (stream or non-stream) — preflight pings and
+    // cache skips don't count. The blind-death guard at the loop's tail keys off this: a turn
+    // that dies with zero real attempts means the health cache vetoed everything, which is
+    // exactly the state the one-pass bypass below exists to break.
+    let attemptedReal = false;
 
     candidates: for (const entry of cands) {
       // Once aborted (Stop button, or a sub-agent's own wall-clock ceiling), stop trying MORE
@@ -1614,19 +1699,22 @@ export class Router {
         // just failed. It must NOT veto a PINNED model: the user explicitly picked it to retry,
         // and one cached 'timeout' would otherwise instant-fail every pinned attempt for the
         // whole health window without sending a single request (the real request below is its
-        // own probe — its outcome refreshes health naturally).
-        if (cached === 'bad' && !forced && !provider.skipPreflight) {
+        // own probe — its outcome refreshes health naturally). The blind-retry pass ignores it
+        // too — see the guard at the loop's tail.
+        if (cached === 'bad' && !forced && !provider.skipPreflight && !blindRetry) {
 
           const reason = this.cachedHealthReason(entry.platform, entry.modelId) ?? 'preflight_failed';
-          failures.push({ platform: entry.platform, model: entry.modelId, reason });
+          // Reported as `recent_failure`, not the raw cached reason: nothing was dialed this
+          // turn, so "1 timed out" used to claim a request that never happened.
+          failures.push({ platform: entry.platform, model: entry.modelId, reason: 'recent_failure', detail: reason });
 
           if (!forced) opts.onFailover?.({ from: entry, reason });
           continue;
         }
-        if (cached === 'half-open' && !provider.skipPreflight) {
+        if (cached === 'half-open' && !provider.skipPreflight && !blindRetry) {
           this.markProbing(entry.platform, entry.modelId); // claim the trial before probing
         }
-        if ((cached === undefined || cached === 'half-open') && !provider.skipPreflight) {
+        if ((cached === undefined || cached === 'half-open') && !provider.skipPreflight && !blindRetry) {
           const probe = await this.preflightPing(provider, apiKey, entry.platform, entry.modelId);
           if (!probe.ok) {
             failures.push({ platform: entry.platform, model: entry.modelId, reason: probe.reason ?? 'preflight_failed' });
@@ -1701,6 +1789,7 @@ export class Router {
 
           // Attempt starting on this candidate — the hedge race watches this to exclude the
           // primary's CURRENT model, not just its already-failed ones.
+          attemptedReal = true;
           opts._onCandidateStart?.(entry.platform, entry.modelId);
           this.rateTracker.record(entry.platform, entry.modelId);
 
@@ -2127,8 +2216,20 @@ export class Router {
         }
       }
     }
+    // Blind-death guard (live repro, 2026-08-25 user report: "eto models on ache but Auto
+    // bar bar bolche All 5 configured models are unavailable"). Every candidate sat in the
+    // health cache from failures moments ago, so the loop above SKIPPED them all without
+    // dialing anyone and re-threw the stale verdict — instantly, on every retry, even after
+    // the providers had recovered. One bypass pass ignores the cache and dials for real;
+    // the outcomes then refresh health naturally. The circuit breaker's normal benefit is
+    // untouched (any real attempt anywhere suppresses this pass; skips still save requests
+    // whenever a live alternative exists).
+    if (!forced && !blindRetry && !attemptedReal && !opts.abortSignal?.aborted) {
+      diagLog('router.blind-retry', `all ${failures.length} candidate(s) skipped without a single real request (circuit-breaker cache) — one bypass pass dials for real`);
+      return this.routeSerial(messages, opts, true);
+    }
     diagLog('router.all-failed', `no candidate served · failures=${failures.map((f) => `${f.platform}::${f.model}(${f.reason})`).join(', ')}`);
-    throw new AllModelsFailedError(failures);
+    throw new AllModelsFailedError(failures, hiddenCtx);
   }
 }
 

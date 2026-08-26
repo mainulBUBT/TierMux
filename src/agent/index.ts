@@ -1,9 +1,6 @@
-// Public agent surface — the simple-core execution engine.
-//
-// Three entry points (one per mode), plus task classification that drives Auto
-// routing and the AI SDK adapter that turns the Router into a model the SDK
-// can stream. The engine is mechanical execution only — see
-// docs/SIMPLE_CORE_RESET_2026-08-24.md for the invariants.
+// Public agent surface — the v3 engine: TierMux policy/orchestration over the AI SDK
+// execution engine (see src/agent/core/engine.ts). Three entry points, one per mode,
+// plus task classification and the AI SDK adapter.
 
 export {
   runAgentStream,
@@ -19,8 +16,8 @@ export type {
   WatchdogActivity,
 } from './agent';
 
-export { createRouterProvider } from './core/routerProvider';
-export type { RouterProviderOptions, RationaleEntryInfo } from './core/routerProvider';
+export { createRouterProvider, setModelSources } from './core/routerProvider';
+export type { RouterProviderOptions, ModelSources } from './core/routerProvider';
 
 export {
   classifyTask,
@@ -30,7 +27,4 @@ export {
 } from './routing';
 export type { TaskKind, ClassifySignals } from './routing';
 
-export { resolveExecutionProfile, defaultMaxOutputTokens } from './executionProfile';
-export type { ExecutionProfile } from './executionProfile';
-
-export type { ClarifyingQuestion } from './clarify';
+export { buildV3ToolSet, READ_ONLY_TOOLS } from './core/tools/v3';

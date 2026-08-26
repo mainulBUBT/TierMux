@@ -10,6 +10,7 @@ import { QuotaStore } from './config/quotaStore';
 import { ModelStatsStore } from './config/modelStats';
 import { SlowModelStore } from './config/slowModel';
 import { Router, setSmartScoring } from './router/router';
+import { setModelSources } from './router/picker';
 import { MetricsStore } from './router/metricsStore';
 import { ScoringEngine } from './router/scoring';
 import { verifyGrounding, renderVerifyReport } from './backend/groundingVerify';
@@ -22,7 +23,7 @@ import { setGates } from './agent/core/tools/gates';
 import { setMcpManager } from './agent/core/tools/mcp/manager';
 import { setWorkspaceIndex } from './agent/core/tools/indexAccess';
 import { WorkspaceIndex } from './indexer/WorkspaceIndex';
-import { setExtensionPath } from './agent/promptBuilder';
+
 import { McpManager } from './mcp/mcpManager';
 import { ChatViewProvider } from './chatViewProvider';
 import { allPlatformInfo, getPlatformInfo } from './providers';
@@ -135,6 +136,11 @@ export function activate(context: vscode.ExtensionContext): void {
     const scoring = new ScoringEngine(catalog, metrics, modelStats);
     const router = new Router(secrets, settings, catalog, usage, modelStats, usageStore, slowModels, metrics, scoring, quotaStore);
 
+    // v3: the agent engine selects models through the thin picker (router/picker.ts), not the
+    // scoring Router. The Router instance above stays alive for utility one-shot calls
+    // (titles, commit messages, inline completions) until those migrate in v3.1.
+    setModelSources({ catalog, settings, secrets });
+
     let profiler: IProfilerService = createProfiler(
       vscode.workspace.getConfiguration('tiermux.profiler').get<boolean>('enabled', false),
       vscode.workspace.getConfiguration('tiermux.profiler').get<number>('ringSize', 200),
@@ -155,7 +161,6 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     context.subscriptions.push(editGate.register());
 
-    setExtensionPath(context.extensionUri.fsPath);
 
     setSmartScoring(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('smartScoring', true));
     let scoringTraceOn = vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('scoringTrace', false);

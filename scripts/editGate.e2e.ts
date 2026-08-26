@@ -19,7 +19,6 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { setWorkspaceRoot } from './bench/agentHarness';
 import { EditGate } from '../src/edits/applyEdit';
 
 let bad = 0;
@@ -27,9 +26,9 @@ const ok = (n: string, c: boolean) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n
 
 (async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tiermux-editgate-'));
-  setWorkspaceRoot(root);
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const vscode = require('vscode');
+  vscode.workspace.workspaceFolders = [{ uri: { fsPath: root, path: root }, name: path.basename(root), index: 0 }];
   const gate = new EditGate(() => false); // requireConfirm=false → approved-* paths need no UI
 
   try {

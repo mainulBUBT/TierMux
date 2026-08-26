@@ -1,7 +1,7 @@
 
 
 import * as vscode from 'vscode';
-import { spawn } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import type { RunContext } from '../agent/runContext';
 import { isReadOnlyCommand } from './commandClassify';
 import { resolveWorkspacePath } from '../agent/core/tools/resolvePath';
@@ -61,6 +61,13 @@ export class CommandGate {
   /** When set (and `ctx.sessionId` is present), commands run in that session's persistent
    *  terminal instead of a fresh one-shot spawn, so `cd`/env vars carry over between calls. */
   private shellManager?: PersistentShellManager;
+  /** Every child process the gate has spawned and not yet waited on. Keyed by sessionId+requestId
+   *  so a per-request stop can reach the in-flight shell AND its descendants — without this, the
+   *  Stop button only cancelled the HTTP request, and `npm test` / `php artisan test` / long
+   *  composer installs kept running in the background, holding the workspace hostage (live
+   *  repro: a `php --version` finished seconds after Stop; the next `hola` then echoed a result
+   *  computed against the *previous* project because that shell outlived the run). */
+  private live = new Map<string, ChildProcess>();
 
   constructor(
     private readonly policy: () => CommandApproval,
@@ -201,12 +208,37 @@ export class CommandGate {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (liveKey) this.live.delete(liveKey);
+        if (ctx?.abortSignal) ctx.abortSignal.removeEventListener('abort', onAbort);
         resolve(r);
       };
 
-      const child = spawn(cmd, { cwd: workdir, shell: true });
+      // detached:true puts the shell into its own process group so SIGTERM delivered to the
+      // process-group hits the shell AND every descendant (`npm test` → node, `composer install`
+      // → php, `php artisan test` → phpunit). A bare `child.kill()` without detached mode only
+      // kills the top-level shell, which the shell then ignores and lets the kids keep running.
+      // windowsHide keeps a quick-flick terminal window from flashing up on Windows during the
+      // kill. The setpgid-on-Linux branch is a no-op on macOS/Windows (detached still does the
+      // right thing), and the kill helper below picks the platform-correct signal.
+      const child = spawn(cmd, { cwd: workdir, shell: true, detached: process.platform !== 'win32', windowsHide: true });
+      const liveKey = ctx?.sessionId && ctx.requestId ? `${ctx.sessionId}::${ctx.requestId}` : undefined;
+      if (liveKey) this.live.set(liveKey, child);
+
+      // Honour the same Stop button the HTTP route already does: this gives the user's abort
+      // one path that reaches every tool, not just the provider call. Without it, a long-running
+      // `npm test` (the most common blocking command) survives Stop and keeps the workspace
+      // pinned to the old request.
+      const onAbort = (): void => {
+        try { this.killTree(child); } catch { /* best effort */ }
+        finish({ exitCode: null, stdout: truncate(stdout), stderr: truncate(stderr), error: 'Aborted.' });
+      };
+      if (ctx?.abortSignal) {
+        if (ctx.abortSignal.aborted) onAbort();
+        else ctx.abortSignal.addEventListener('abort', onAbort, { once: true });
+      }
+
       const timer = setTimeout(() => {
-        child.kill();
+        try { this.killTree(child); } catch { /* best effort */ }
         finish({ exitCode: null, stdout: truncate(stdout), stderr: truncate(stderr), error: `Command timed out after ${effectiveTimeout}ms.` });
       }, effectiveTimeout);
 
@@ -215,5 +247,42 @@ export class CommandGate {
       child.on('error', (err) => finish({ exitCode: null, stdout: truncate(stdout), stderr: truncate(stderr), error: err.message }));
       child.on('close', (code) => finish({ exitCode: code, stdout: truncate(stdout), stderr: truncate(stderr) }));
     });
+  }
+
+  /** Force-kill the shell and (POSIX) its entire process group. On Windows we fall back to
+   *  taskkill /T /F — the only reliable tree-kill there. SIGTERM first (graceful), SIGKILL
+   *  after a 250ms grace so a hung test still dies fast. */
+  private static readonly KILL_GRACE_MS = 250;
+  private killScheduled = new WeakSet<ChildProcess>();
+  private killTree(child: ChildProcess): void {
+    if (this.killScheduled.has(child)) return;
+    this.killScheduled.add(child);
+    if (process.platform === 'win32') {
+      // /T = tree, /F = force. Without /T, the shell dies but its children (phpunit, node, …)
+      // keep running and the workspace stays pinned to the abandoned run.
+      try { spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { shell: true }).on('error', () => {}); } catch { /* ignore */ }
+      return;
+    }
+    if (typeof child.pid === 'number' && child.pid > 0) {
+      try { process.kill(-child.pid, 'SIGTERM'); } catch { /* group may already be gone */ }
+    } else {
+      try { child.kill('SIGTERM'); } catch { /* ignore */ }
+    }
+    setTimeout(() => {
+      if (typeof child.pid === 'number' && child.pid > 0) {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { /* group may already be gone */ }
+      } else {
+        try { child.kill('SIGKILL'); } catch { /* ignore */ }
+      }
+    }, CommandGate.KILL_GRACE_MS);
+  }
+
+  /** Cancel every command the given session/request is currently running. Called by the host
+   *  on Stop/Abort, BEFORE the route-level AbortController fires so the in-flight shell dies
+   *  even when the agent loop is mid-`await getCommandGate().runApproved(...)`. Idempotent. */
+  cancel(ctx: { sessionId: string; requestId: string }): void {
+    const key = `${ctx.sessionId}::${ctx.requestId}`;
+    const child = this.live.get(key);
+    if (child) this.killTree(child);
   }
 }

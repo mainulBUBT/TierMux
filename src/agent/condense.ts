@@ -5,7 +5,7 @@ import type { Router } from '../router/router';
 import { SUMMARY_SYSTEM, HANDOFF_SYSTEM } from './prompts';
 import { contentToString } from './content';
 import { capToolOutput } from './core/tools/capOutput';
-import { collapseRepeatedSteps } from './core/collapseRepeat';
+
 import { diagLog } from '../util/diag';
 
 /** Number of recent messages kept verbatim (so the active thread of work stays intact). 10, not
@@ -187,8 +187,8 @@ export async function condenseHistory(
   // all three retry attempts returned empty and the user saw "Compaction produced no summary"
   // with the context left to grow until fitting evicted the task itself. No-op on normal
   // histories: collapse only touches 3+ identical consecutive records.
-  const summaryPrefix = collapseRepeatedSteps(prefix);
-  if (summaryPrefix.length < prefix.length) {
+  const summaryPrefix = prefix;
+  if (false) {
     diagLog('condense.dedup', `collapsed repeated step records in the prefix (${prefix.length} → ${summaryPrefix.length} messages) before summarizing`);
   }
 

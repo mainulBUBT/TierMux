@@ -44,20 +44,47 @@ const vscodeMock = {
     })(),
     findFiles: async () => [],
     asRelativePath: (u) => (u && u.fsPath) || String(u),
+    // Minimal WorkspaceEdit applier: replace = whole-file overwrite (that's the only shape
+    // applyEdit's applyDirect uses — a MAX_SAFE_INTEGER range replace).
+    applyEdit: async (edit) => {
+      const fs = require('fs');
+      const path = require('path');
+      for (const op of edit.ops ?? []) {
+        const file = op.uri.fsPath ?? op.uri.path;
+        if (op.kind === 'replace') {
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, op.text);
+        }
+        if (op.kind === 'createFile') {
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          if (!fs.existsSync(file)) fs.writeFileSync(file, '');
+        }
+        if (op.kind === 'deleteFile' || op.kind === 'delete') fs.rmSync(file, { force: true, recursive: true });
+      }
+      return true;
+    },
   },
   Uri: {
     joinPath: (base, ...parts) => {
       const path = require('path');
       const fsPath = path.join(base.fsPath, ...parts);
-      return { fsPath, path: fsPath };
+      return { fsPath, path: fsPath, toString: () => `file://${fsPath}` };
     },
-    file: (fsPath) => ({ fsPath, path: fsPath }),
-    parse: (s) => ({ fsPath: s, path: s }),
+    file: (fsPath) => ({ fsPath, path: fsPath, toString: () => `file://${fsPath}` }),
+    parse: (s) => {
+      const fsPath = String(s).replace(/^file:\/\//, '');
+      return { fsPath, path: fsPath, toString: () => `file://${fsPath}` };
+    },
   },
   EventEmitter,
   FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
+  CodeActionKind: { QuickFix: { value: 'quickfix' }, Refactor: { value: 'refactor' }, Source: { value: 'source' } },
+  Range: class { constructor(a, b, c, d) { this.start = { line: a, character: b }; this.end = { line: c, character: d }; } },
+  Position: class { constructor(line, character) { this.line = line; this.character = character; } },
+  WorkspaceEdit: class { constructor() { this.ops = []; } replace(uri, range, text) { this.ops.push({ kind: 'replace', uri, range, text }); } insert(uri, position, text) { this.ops.push({ kind: 'insert', uri, position, text }); } delete(uri, range) { this.ops.push({ kind: 'delete', uri, range }); } createFile(uri) { this.ops.push({ kind: 'createFile', uri }); } deleteFile(uri) { this.ops.push({ kind: 'deleteFile', uri }); } },
   window: {
     showWarningMessage: async () => undefined,
+    showErrorMessage: async () => undefined,
     showInformationMessage: async () => undefined,
   },
   commands: { executeCommand: async () => undefined },

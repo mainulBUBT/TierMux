@@ -36,9 +36,9 @@ export type {
   WatchdogActivity,
 } from './agent/agent';
 
-// ── AI SDK adapter — turn TierMux's Router into a model the AI SDK can stream ──
-export { createRouterProvider } from './agent/core/routerProvider';
-export type { RouterProviderOptions, RationaleEntryInfo } from './agent/core/routerProvider';
+// ── AI SDK adapter — turn the v3 picker into a model the AI SDK can stream ──────
+export { createRouterProvider, setModelSources } from './agent/core/routerProvider';
+export type { RouterProviderOptions, ModelSources } from './agent/core/routerProvider';
 
 // ── Task classification (router input) ────────────────────────────────────────
 export {

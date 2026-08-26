@@ -9,8 +9,9 @@ import type { Mode } from './shared/types';
 import { runAgentStream, runPlanStream, runAskStream, type AgentResult, type AgentOpts, type AgentMode, type ToolEvent } from './agent/agent';
 import { findTextInWorkspace } from './context/textSearch';
 import { classifyTask } from './agent/routing';
-import { runPlan } from './agent/core/planRunner';
+
 import { clearFindings } from './agent/sessionFindings';
+import { getCommandGate } from './agent/core/tools/gates';
 import { PRODUCT_NAME } from './shared/branding';
 import { SETTINGS_META, defaultForSetting } from './settingsMeta';
 import type { Router } from './router/router';
@@ -40,7 +41,7 @@ import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense, generateHandoff } from './agent/condense';
 import { resolveExecutionProfile } from './agent/executionProfile';
 import { resolveClarifying, type ClarifyingQuestion } from './agent/clarify';
-import { structurePlanSteps, formatStructuredSteps, extractPlanFromProse, repairPlanSteps } from './agent/planStructurer';
+import { structurePlanSteps, formatStructuredSteps, extractPlanFromProse } from './agent/planStructurer';
 import { deriveTitleFrom, extractSubjectTerms, looksLikeActionablePlan, looksLikeGroundedAnswer, offTopicCorrection, sanitizeTitle, planStepsToTodos } from './session/titles';
 
 import { loadSkills } from './context/skills';
@@ -2077,6 +2078,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.post({ type: 'busy', sessionId: s.id, busy: true });
 
+    // §14 turnStart: the assistant bubble appears at ENTER (0ms skeleton — "Thinking…" +
+    // elapsed timer), not after the first model call. ensureTarget is get-or-create, so the
+    // later onModel `assistantStart` just updates the platform/model footer label.
+    this.post({ type: 'assistantStart', sessionId: s.id, requestId: m.requestId, platform: '', model: '' });
+
     try {
       const before = this.deps.usage.get();
       await s.checkpoints.begin(m.requestId, prompt.slice(0, 60));
@@ -2595,34 +2601,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const cbk = this.agentCallbacks(s, requestId, 'agent');
       const planState = s.planRun;
       planState.status = 'running';
-      const result = await runPlan(
+      this.post({ type: 'planProgress', sessionId: s.id, requestId, state: planState });
+
+      // v3: the dedicated step engine is gone — an approved plan executes as ONE agent turn
+      // with the steps enumerated in the prompt. The model works the list with its tools;
+      // step-level pause/resume defers to v3.1.
+      const stepsText = planState.steps.map((st, i) => `${i + 1}. ${st.text}`).join('\n');
+      const planPrompt = `Execute this approved plan completely, step by step, using your tools. Verify each edit before moving on. When finished, reply with a short summary of what changed.\n\n${stepsText}`;
+      s.history.push({ role: 'user', content: planPrompt });
+      s.transcript.push({ role: 'user', text: planPrompt, requestId, ts: Date.now(), historyLen: s.history.length - 1 });
+      this.post({ type: 'userEcho', sessionId: s.id, requestId, text: planPrompt });
+      const result = await runAgentStream(
         this.deps.router,
         this.makeAgentOpts(s, requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model),
-        planState,
-        {
-          repairSteps: (failure, remaining) => repairPlanSteps(this.deps.router, failure, remaining),
-          isActive: () => this.isActiveRun(s, requestId),
-          onState: (st) => {
-            s.planRun = st;
-            this.persist(s.id);
-            this.post({ type: 'planProgress', sessionId: s.id, requestId, state: st });
-          },
-          onTodos: (todos) => {
-            s.lastTodos = todos;
-            this.post({ type: 'todos', sessionId: s.id, requestId, todos, followingPlan: true });
-          },
-          onHistory: (msgs) => { s.history.push(...msgs); this.persist(s.id); },
-        },
       );
 
       if (!this.isActiveRun(s, requestId)) return;
-      if (result.state.status !== 'paused') {
-        s.executingPlan = false;
-        // Final summary as a real transcript entry so the finished plan reads as one turn.
-        s.transcript.push({ role: 'assistant', text: result.summary, requestId, ts: Date.now(), historyLen: s.history.length - 1 });
-        s.history.push({ role: 'assistant', content: result.summary });
-        this.post({ type: 'assistantMessage', sessionId: s.id, requestId, text: result.summary, platform: turnPlatformLabel(s.model, result.lastResult, this.deps), model: turnModelLabel(s.model, result.lastResult?.model) });
-      }
+      for (const st of planState.steps) st.status = 'done';
+      planState.status = 'done';
+      s.executingPlan = false;
+      const summary = result.text || 'Plan execution finished.';
+      // Final summary as a real transcript entry so the finished plan reads as one turn.
+      s.transcript.push({ role: 'assistant', text: summary, requestId, ts: Date.now(), historyLen: s.history.length - 1 });
+      s.history.push({ role: 'assistant', content: summary });
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId, text: summary, platform: turnPlatformLabel(s.model, result, this.deps), model: turnModelLabel(s.model, result.model) });
     } catch (e) {
       if (!this.isActiveRun(s, requestId)) return;
       this.post({ type: 'error', sessionId: s.id, requestId, message: e instanceof Error ? e.message : String(e) });
@@ -2649,6 +2651,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * work. Tool-less runs (chat/trivial) have no workMessages, so fall back to the final text.
    */
   private persistAgentTurn(s: Session, result: AgentResult): void {
+    // Aborted runs must not bleed their working transcript into the next turn's history. The
+    // loop's `streamErrored && !text.trim()` branch only marks `failed: true` when no text
+    // streamed; with any text already on the wire the run resolves cleanly, and the prior
+    // workMessages (e.g. a tool call against an unrelated project) was the root cause of
+    // "the next hola answered against the previous project" — the model saw the abandoned
+    // transcript and used it as if it had been a real request. Stop leaves an honest
+    // final-reply bubble, NOT a transcript the next turn would inherit.
+    if (s.cancel?.token.isCancellationRequested) {
+      s.history.push({ role: 'assistant', content: result.text });
+      return;
+    }
     if (result.workMessages && result.workMessages.length) s.history.push(...result.workMessages);
     else s.history.push({ role: 'assistant', content: result.text });
   }
@@ -2732,6 +2745,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const executingRequestId = s.activeRequestId;
     s.cancel?.cancel();
     s.activeRequestId = undefined; // invalidates the run's liveness guard (isActiveRun)
+    // Tree-kill any in-flight shell the agent loop hasn't noticed was abandoned yet. Without
+    // this, `npm test` / `php artisan test` / `composer install` survive the Stop press, hold
+    // the workspace hostage, and feed stale output to the next turn (live repro: a `php --version`
+    // finished seconds after Stop; the next `hola` then answered against the *previous* project
+    // because the abandoned shell still owned the workspace root).
+    if (executingRequestId) {
+      try { getCommandGate().cancel({ sessionId: sessionId, requestId: executingRequestId }); } catch { /* gate not wired in tests */ }
+    }
     this.settlePendingApprovals(s, false); // unblock any command/edit awaiting a click
     this.settlePendingAskUser(s); // unblock any in-chat askUser card
     s.pendingClarify = undefined;
@@ -2749,7 +2770,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private makeAgentOpts(
     s: Session,
-    _requestId: string,
+    requestId: string,
     mode: AgentMode,
     effort: ReasoningEffort,
     callbacks: ReturnType<typeof this.agentCallbacks>,
@@ -2765,6 +2786,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       excludeModels,
       stepDifficulty,
       sessionId: s.id,
+      requestId,
       mentionCount: s.lastMentionCount,
       abortSignal: s.cancel ? tokenToAbortSignal(s.cancel.token) : undefined,
       profiler: this.deps.profiler,
@@ -2780,6 +2802,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * including Chat, whose web loop carries askUser to clarify time-sensitive queries.
    */
   private agentCallbacks(s: Session, requestId: string, _mode: Mode): Omit<AgentOpts, 'messages' | 'mode' | 'effort' | 'abortSignal' | 'pinnedModel' | 'taskKind'> {
+    // §14 event adapter — the whole streaming UX is a thin map of engine events onto the
+    // webview protocol. Seven events, nothing more (no phase engine, no custom retry — the
+    // AI SDK owns the loop, `maxRetries` covers transient failures):
+    //   turnStart      → assistantStart posted at ENTER in handleSend (0ms skeleton)
+    //   textDelta      → onChunk → `chunk` (progressive markdown render)
+    //   reasoningDelta → onReasoning → reasoning bursts as toolStatus cards (never chat text)
+    //   toolStart      → onTool(running) → toolStatus "Reading…/Editing…/Running…"
+    //   toolEnd        → onTool(done|error) → toolStatus replaced with the result
+    //   error          → onError → `error` (tool-errors ride to the model via the SDK)
+    //   done           → assistantMessage + busy:false in handleSend's finish path
     const live = (): boolean => this.isActiveRun(s, requestId);
 
     // Reasoning stream state — ONE block per thinking "burst", not one coalesced block per turn, so
@@ -2806,6 +2838,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
 
     return {
+      // Turn usage sink — the v3 engine reports provider-measured tokens here (the old
+      // loop set this itself; v3 expects the host to provide it). Without it the footer
+      // shows "0 in · 0 out" even on successful turns. Feeds the UsageTracker whose
+      // before/after diff handleSend reads.
+      usageSink: (info) => {
+        this.deps.usage.add({
+          prompt_tokens: info.inputTokens,
+          completion_tokens: info.outputTokens,
+          total_tokens: info.inputTokens + info.outputTokens,
+        });
+      },
       onModel: (platform, model, runtimeName) => {
         if (!live()) return;
         // Same platform-prefix stripping as sendMessage's `pinned` — s.model is the

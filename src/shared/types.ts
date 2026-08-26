@@ -52,6 +52,8 @@ export interface ChatToolCall {
   type: 'function';
   function: ChatToolCallFunction;
   thought_signature?: string;
+  /** Streaming only: OpenAI-wire deltas identify the call slot by index when id is unset. */
+  index?: number;
 }
 
 interface ChatToolFunctionDefinition {

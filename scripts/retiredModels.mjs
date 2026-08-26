@@ -14,4 +14,8 @@ export const RETIRED_MODEL_KEYS = new Set([
   'nvidia||qwen/qwen2.5-72b-instruct',
   'nvidia||google/gemma-4-31b',
   'nvidia||minimax/minimax-m2.7',
+  'nvidia||nvidia/nemoretriever-parse',
+  'nvidia||nvidia/nv-embedcode-7b-v1',
+  'nvidia||nvidia/nv-embedqa-e5-v5',
+  'nvidia||thinkingmachines/inkling',
 ]);

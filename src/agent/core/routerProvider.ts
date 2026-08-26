@@ -1,87 +1,100 @@
+// v3 routerProvider (plan step 8) — the AI SDK seam, rewritten from Router.route() to the
+// thin picker. Owns: candidate loop (model + fallbackChain), API-key lookup, streaming
+// translation between the V4 part protocol and the OpenAI wire the providers speak, and
+// TWO failover rules, both reported back to the picker's per-model cooldown via recordOutcome:
+//   (1) availability — a candidate that answers 429/5xx/401/network/timeout is retried on the
+//       next candidate in the chain;
+//   (2) quality — a candidate that returns nothing usable (no text, no tool call, no foldable
+//       reasoning) is also skipped in favor of the next candidate.
+// No scoring, no hedging, no session pin, no circuit-breaker beyond the minimal cooldown the
+// picker keeps — those lived in the deleted Router and stay deleted.
+//
+// Kept from the previous version (battle-tested translation): toRouterMessages,
+// toRouterTools, filePartToDataUrl, hasRawPdfPart, toV4Usage, and the stream-part emission
+// order (text-start/-delta/-end, tool-input-*, tool-call, finish).
 
+import type {
+  LanguageModelV4,
+  LanguageModelV4CallOptions,
+  LanguageModelV4GenerateResult,
+  LanguageModelV4StreamResult,
+  LanguageModelV4StreamPart,
+  LanguageModelV4FunctionTool,
+  LanguageModelV4FilePart,
+  LanguageModelV4Usage,
+} from '@ai-sdk/provider';
+import type { ChatMessage, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
+import { resolveProvider } from '../../providers';
+import { ProviderHttpError } from '../../providers/base';
+import { selectModel, setModelSources, getApiKeysFor, recordOutcome, type ModelSources } from '../../router/picker';
+import { ThinkStripper, stripThinkTags, reasoningFromDelta, type Router, type RouteOptions } from '../../router/router';
 
-// Pure protocol adapter — AI SDK prompt/tool shapes <-> TierMux's own ChatMessage/ChatToolDefinition
-// (OpenAI wire format, which Router.route() already speaks). No routing decisions, no scoring, no
-// failover logic here — that's all Router.route()'s job. The model being called is still whatever
-// the user picked (GPT/Claude/Qwen/...); this factory does not itself produce "a model."
-import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4GenerateResult, LanguageModelV4StreamResult, LanguageModelV4StreamPart, LanguageModelV4FunctionTool, LanguageModelV4FilePart, LanguageModelV4Usage } from '@ai-sdk/provider';
-import type { Router, RouteOptions } from '../../router/router';
-import type { ChatMessage, ChatToolDefinition, ReasoningEffort } from '../../shared/types';
-import { diagLog } from '../../util/diag';
-import { rescueInlineToolCalls, repairToolArguments, toolSchemaMap, stripRawChannelMarkers } from '../toolArgs';
-
-/** One scored candidate as reported to AgentOpts.onSelectionRationale — `model` is a
- *  "platform::modelId" key (matching onFailover's `from` shape), not a display name;
- *  chatViewProvider.ts's callback resolves it to a display name before it reaches the UI. */
-export interface RationaleEntryInfo {
-  model: string;
-  selected: boolean;
-  score: number;
-  capability: number;
-  runtime: number;
-  preference: number;
-  confidence: number;
-  reason: string;
-  skip?: string;
-}
+export { setModelSources };
+export type { ModelSources };
 
 export interface RouterProviderOptions {
   effort?: ReasoningEffort;
   taskKind?: string;
   pinnedModel?: string;
-  /** Chat session this turn belongs to. Forwarded to Router.route() so Auto keeps serving one
-   *  conversation from ONE model instead of re-rolling per turn — see Router.sessionPin. */
   sessionId?: string;
-  onFailover?: (from: string, reason: string) => void;
-  onKeyRotated?: (info: { platform: string; keyIndex: number; keyTotal: number }) => void;
-  onModelSelected?: (platform: string, model: string, runtimeName?: string) => void;
-  onSelectionRationale?: (info: { taskKind: string; picked?: string; entries: RationaleEntryInfo[] }) => void;
-  /** Quality-based escalation (loop.ts): skip these `platform::modelId` keys — forwarded
-   *  straight to Router.route()'s `exclude`, which already implements this filter. */
   excludeModels?: string[];
-  /** Quality-based escalation: only consider models at least this smart — forwarded to
-   *  Router.route()'s `maxIntelligenceRank` (lower rank number = smarter; already implemented,
-   *  just never set by any caller before loop.ts's escalation retry). */
-  maxIntelligenceRank?: number;
-  /** Step routing (Phase 2): only consider models at most this smart (the cheap pool for easy
-   *  plan steps) — forwarded to Router.route()'s `minIntelligenceRank`. */
-  minIntelligenceRank?: number;
-  /** Turn telemetry sink — forwarded to Router.route()'s onUsage so the turn accumulates
-   *  provider-reported token usage from every model call it makes. */
-  usageSink?: RouteOptions['onUsage'];
+  /** The caller offers tools — selection must skip catalog models marked supportsTools=false
+   *  (they cannot call anything and deflect instead). */
+  requireTools?: boolean;
+  onFailover?: (from: string, reason: string) => void;
+  onModelSelected?: (platform: string, model: string, runtimeName?: string) => void;
+  onUsage?: (info: { inputTokens: number; outputTokens: number; model: string }) => void;
 }
 
-const routeKey = (e: { platform: string; modelId: string }): string => `${e.platform}::${e.modelId}`;
-
-/** Convert Router's own onSelectionRationale shape (scoring.ts's RationaleEntry[], which
- *  uses runtimeMultiplier/userPreference and platform+modelId as separate fields) into the
- *  flatter shape AgentOpts.onSelectionRationale/chatViewProvider.ts already expect. */
-function toRationaleCallback(
-  cb: RouterProviderOptions['onSelectionRationale'],
-): RouteOptions['onSelectionRationale'] {
-  if (!cb) return undefined;
-  return (info) => cb({
-    taskKind: info.taskKind,
-    picked: info.picked ? routeKey(info.picked) : undefined,
-    entries: info.rationale.map((r) => ({
-      model: routeKey(r),
-      selected: r.selected,
-      score: r.score,
-      capability: r.capability,
-      runtime: r.runtimeMultiplier,
-      preference: r.userPreference,
-      confidence: r.confidence,
-      reason: r.reason,
-      skip: r.skip,
-    })),
-  });
+/** Retryable candidate failure: rate limit, auth failure, server error, or network-level
+ *  abort/timeout. 401 counts: with multiple stored keys it may be ONE dead key, so the key
+ *  loop inside each candidate gets a chance to rotate before the candidate is abandoned. */
+function isFailoverWorthy(e: unknown): boolean {
+  if (e instanceof ProviderHttpError) {
+    return e.status === 401 || e.status === 429 || (e.status !== undefined && e.status >= 500);
+  }
+  return e instanceof Error && /network|fetch failed|timed out|ECONN/i.test(e.message);
 }
 
-/** Extract a `data:<mediaType>;base64,<...>` URL from an AI SDK v4 file part's tagged
- *  `SharedV4FileData` union. The AI SDK core (convertToLanguageModelPrompt) always resolves a
- *  `data:` URL string (what toFilePart in loop.ts hands it) down to `{ type: 'data', data:
- *  <bare base64 string> }` with `mediaType` lifted to the part's top level — so this has to
- *  re-wrap the base64 back into a data URL for the router's ChatContent block shape. */
+function toV4Usage(promptTokens?: number, completionTokens?: number): LanguageModelV4Usage {
+  return {
+    inputTokens: { total: promptTokens, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+    outputTokens: { total: completionTokens, text: undefined, reasoning: undefined },
+  };
+}
+
+/** Splits a streamed content/reasoning pair into chat text + reasoning, with a
+ *  duplicate-reasoning guard: some gateways send the SAME thinking twice — once as a native
+ *  reasoning field (`reasoning_content`/`reasoning`/`reasoning_details`) AND again as
+ *  `<think>` markup inside `content`. The FIRST channel to produce output wins; the other is
+ *  suppressed for the rest of the stream, so reasoning never doubles. `<think>` content is
+ *  routed to the reasoning channel (not discarded, not shown as chat). Exported for direct
+ *  e2e (split tags, duplicates, unclosed blocks) without a live provider. */
+export function createStreamTextSplitter() {
+  const think = new ThinkStripper();
+  let source: 'native' | 'think' | null = null;
+  return {
+    feed(contentDelta: string | undefined, nativeReasoning: string): { text: string; reasoning: string } {
+      const out = { text: '', reasoning: '' };
+      if (nativeReasoning) {
+        if (source === null) source = 'native';
+        if (source === 'native') out.reasoning += nativeReasoning;
+      }
+      const parts = think.feedParts(contentDelta ?? '');
+      if (parts.reasoning) {
+        if (source === null) source = 'think';
+        if (source === 'think') out.reasoning += parts.reasoning;
+      }
+      out.text = parts.text;
+      return out;
+    },
+    flush(): { text: string; reasoning: string } {
+      const f = think.flushParts();
+      return { text: f.text, reasoning: source === 'think' ? f.reasoning : '' };
+    },
+  };
+}
+
 function filePartToDataUrl(part: LanguageModelV4FilePart): string | undefined {
   const mediaType = part.mediaType || 'application/octet-stream';
   const d = part.data as { type?: string; data?: unknown; url?: unknown } | undefined;
@@ -99,26 +112,6 @@ function filePartToDataUrl(part: LanguageModelV4FilePart): string | undefined {
   return undefined;
 }
 
-/** Strips a leading/trailing ```json ... ``` (or bare ```) fence some models wrap JSON output
- *  in despite being told not to — generateObject's own JSON.parse would otherwise fail outright. */
-function stripJsonFence(text: string): string {
-  const t = text.trim();
-  const m = /^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i.exec(t);
-  return m ? m[1].trim() : t;
-}
-
-/** Build a fully-typed `LanguageModelV4Usage`. The spec requires every sub-field to be PRESENT
- *  (each typed `number | undefined`, not optional), so a bare `{ total }` object fails the type —
- *  this helper is what lets doGenerate/doStream return their results without shape casts. The
- *  router's OpenAI-wire usage only ever carries the two totals; the rest stay undefined. */
-function toV4Usage(promptTokens?: number, completionTokens?: number): LanguageModelV4Usage {
-  return {
-    inputTokens: { total: promptTokens, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-    outputTokens: { total: completionTokens, text: undefined, reasoning: undefined },
-  };
-}
-
-/** Convert AI SDK prompt messages -> TierMux ChatMessage[] (OpenAI-wire format). */
 function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): ChatMessage[] {
   const msgs: ChatMessage[] = [];
   for (const msg of prompt) {
@@ -129,11 +122,7 @@ function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): ChatMes
         .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
         .map((p) => p.text)
         .join('');
-      // `type:'file'` parts carry the image/PDF attachments (see toFilePart/toUserContent in
-      // loop.ts) — these MUST survive into the router's ChatContent blocks, or a vision turn
-      // reaches the model with the attachment silently gone regardless of which model got picked.
       const fileParts = msg.content.filter((p): p is LanguageModelV4FilePart => p.type === 'file');
-      diagLog('attach.toRouterMessages', `partTypes=${msg.content.map((p) => p.type).join(',')} fileParts=${fileParts.length}`);
       if (fileParts.length === 0) {
         msgs.push({ role: 'user', content: text || '' });
       } else {
@@ -141,7 +130,6 @@ function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): ChatMes
         if (text) blocks.push({ type: 'text', text });
         for (const p of fileParts) {
           const url = filePartToDataUrl(p);
-          diagLog('attach.toRouterMessages', `file mediaType=${p.mediaType ?? '<none>'} dataType=${(p.data as { type?: string } | undefined)?.type ?? '<none>'} urlResolved=${!!url}`);
           if (!url) continue;
           const mime = p.mediaType || 'application/octet-stream';
           if (mime.startsWith('image/')) {
@@ -154,7 +142,7 @@ function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): ChatMes
       }
     } else if (msg.role === 'assistant') {
       const textParts = msg.content.filter((p): p is { type: 'text'; text: string } => p.type === 'text');
-      const toolParts = msg.content.filter((p): p is any => p.type === 'tool-call');
+      const toolParts = msg.content.filter((p): p is { type: 'tool-call'; toolCallId: string; toolName: string; input: unknown } => p.type === 'tool-call');
       msgs.push({
         role: 'assistant',
         content: textParts.map((p) => p.text).join('') || null,
@@ -173,22 +161,6 @@ function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): ChatMes
   return msgs;
 }
 
-/** True when any message carries a raw (unextracted) PDF `type:'file'` block — Router.route()'s
- *  candidates() uses this to hard-filter to providers that actually forward PDF bytes
- *  (BaseProvider.carriesRawPdf), instead of picking an image-only vision model whose provider
- *  silently drops the file. Was previously declared on RouteOptions but never set by any caller. */
-function hasRawPdfPart(messages: ChatMessage[]): boolean {
-  return messages.some((m) => {
-    if (m.role !== 'user' || !Array.isArray(m.content)) return false;
-    return m.content.some((b) => {
-      if (!b || typeof b !== 'object') return false;
-      const block = b as { type?: string; file?: { mime?: string } };
-      return block.type === 'file' && block.file?.mime === 'application/pdf';
-    });
-  });
-}
-
-/** Convert AI SDK tool definitions -> TierMux ChatToolDefinition[]. */
 function toRouterTools(tools?: LanguageModelV4CallOptions['tools']): ChatToolDefinition[] | undefined {
   if (!tools?.length) return undefined;
   return tools
@@ -196,77 +168,93 @@ function toRouterTools(tools?: LanguageModelV4CallOptions['tools']): ChatToolDef
     .map((t) => ({ type: 'function' as const, function: { name: t.name, description: t.description, parameters: t.inputSchema as Record<string, unknown> } }));
 }
 
-/**
- * Wraps Router as an AI-SDK-shaped LanguageModelV4. Router is the "model" from the SDK's
- * point of view — the SDK calls doGenerate/doStream, this translates to router.route() with
- * failover/key-rotation callbacks forwarded. See core/loop.ts for how this gets wired up.
- */
-export function createRouterProvider(router: Router, providerOpts: RouterProviderOptions = {}): LanguageModelV4 {
+interface Candidate {
+  platform: Platform;
+  modelId: string;
+  /** Every stored key for the platform ([''] when keyless) — tried in order within the
+   *  candidate before the candidate itself is abandoned. */
+  apiKeys: string[];
+}
+
+/** Resolve the candidate chain (first choice + fallbacks) into live provider instances.
+ *  Keyed platforms with no stored key are SKIPPED — an unauthenticated request is a
+ *  guaranteed 401, so selection falls through to a platform the user can actually use. */
+export async function resolveCandidates(opts: RouterProviderOptions): Promise<Candidate[]> {
+  const selection = await selectModel([], {
+    pinnedModel: opts.pinnedModel,
+    excludeModels: opts.excludeModels,
+    taskKind: opts.taskKind,
+    sessionId: opts.sessionId,
+    requireTools: opts.requireTools,
+  });
+  const out: Candidate[] = [];
+  for (const key of [selection.model, ...selection.fallbackChain]) {
+    const [platform, ...rest] = key.split('::');
+    const modelId = rest.join('::');
+    if (!modelId || modelId === 'auto') continue;
+    const provider = resolveProvider(platform as Platform, modelId);
+    if (!provider) continue;
+    const apiKeys = await getApiKeysFor(platform);
+    if (apiKeys.length === 0) continue;
+    out.push({ platform: platform as Platform, modelId, apiKeys });
+    if (out.length >= 4) break; // bounded chain — 4 candidates is plenty without scoring
+  }
+  return out;
+}
+
+/** Wraps the v3 picker (or, for utility callers that still hold a Router, the Router itself)
+ *  as an AI-SDK-shaped LanguageModelV4. The SDK calls doGenerate/doStream; this translates
+ *  with a bounded failover on 429/5xx.
+ *
+ *  Two forms:
+ *   - `createRouterProvider(providerOpts)` — v3 engine path: selection via router/picker.ts.
+ *   - `createRouterProvider(router, providerOpts)` — utility path (plan structuring, condense,
+ *     titles): the Router's own routing/failover serves the call. v3.1 migrates these callers. */
+export function createRouterProvider(
+  routerOrOpts?: Router | RouterProviderOptions,
+  maybeOpts: RouterProviderOptions = {},
+): LanguageModelV4 {
+  if (routerOrOpts && typeof (routerOrOpts as Router).route === 'function') {
+    return createRouterBackedProvider(routerOrOpts as Router, maybeOpts);
+  }
+  const providerOpts = (routerOrOpts as RouterProviderOptions | undefined) ?? maybeOpts;
+  return createPickerProvider(providerOpts);
+}
+
+/** The pre-v3 behavior, kept for utility callers that pass the scoring Router. */
+function createRouterBackedProvider(router: Router, providerOpts: RouterProviderOptions): LanguageModelV4 {
   return {
     specificationVersion: 'v4',
     provider: 'tiermux',
-    modelId: `auto-${providerOpts.effort ?? 'medium'}`,
+    modelId: providerOpts.pinnedModel ?? `auto-${providerOpts.effort ?? 'medium'}`,
     supportedUrls: {},
 
     async doGenerate(options: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> {
       const messages = toRouterMessages(options.prompt);
       const tools = toRouterTools(options.tools);
-
-      // generateObject/generateText's `output: 'object'|'enum'` sets responseFormat but the
-      // router has no native "JSON mode" passthrough across ~18 heterogeneous free providers —
-      // most weak/free models were never told to emit JSON at all otherwise. Append the schema
-      // as an explicit trailing instruction instead (models attend most to the last message);
-      // stripJsonFences below cleans up the common case where a model still wraps it in a
-      // ```json fence despite being told not to.
-      const wantsJson = options.responseFormat?.type === 'json';
-      const jsonSchema = wantsJson && options.responseFormat && 'schema' in options.responseFormat ? options.responseFormat.schema : undefined;
-      if (wantsJson) {
-        messages.push({
-          role: 'user',
-          content: 'Respond with ONLY valid JSON matching this schema — no markdown fences, no '
-            + `prose before or after it:\n${JSON.stringify(jsonSchema ?? {})}`,
-        });
-      }
-
       const routeOpts: RouteOptions = {
         model: providerOpts.pinnedModel ?? 'auto',
         temperature: options.temperature,
         max_tokens: options.maxOutputTokens,
         tools,
         requireTools: !!tools?.length,
-        // Plumbed to CompletionOptions for a future per-provider native response_format —
-        // no adapter reads this yet (see options.ts), the trailing instruction above is what
-        // actually does the work today. Harmless to pass down unused.
-        responseFormat: wantsJson ? { type: 'json', schema: jsonSchema } : undefined,
         reasoningEffort: providerOpts.effort,
         taskKind: providerOpts.taskKind as RouteOptions['taskKind'],
         sessionId: providerOpts.sessionId,
-        onFailover: providerOpts.onFailover ? (info) => providerOpts.onFailover!(`${info.from.platform}::${info.from.modelId}`, info.reason) : undefined,
-        onKeyRotated: providerOpts.onKeyRotated ? (info) => providerOpts.onKeyRotated!({ platform: info.platform, keyIndex: info.keyIndex, keyTotal: info.keyTotal }) : undefined,
-        onSelectionRationale: toRationaleCallback(providerOpts.onSelectionRationale),
-        exclude: providerOpts.excludeModels,
-        maxIntelligenceRank: providerOpts.maxIntelligenceRank,
-        minIntelligenceRank: providerOpts.minIntelligenceRank,
-        onUsage: providerOpts.usageSink,
+        onFailover: providerOpts.onFailover ? (info: { from: { platform: string; modelId: string }; reason: string }) => providerOpts.onFailover?.(`${info.from.platform}::${info.from.modelId}`, info.reason) : undefined,
         abortSignal: options.abortSignal,
-        hasRawPdfPart: hasRawPdfPart(messages),
       };
-      diagLog('ai-sdk.doGenerate', `pinnedModel="${providerOpts.pinnedModel ?? '<auto>'}" → routeOpts.model="${routeOpts.model}" msgs=${messages.length} tools=${tools?.length ?? 0} hasRawPdfPart=${routeOpts.hasRawPdfPart}`);
-
       const result = await router.route(messages, routeOpts);
       providerOpts.onModelSelected?.(result.platform, result.model, result.runtimeName);
-      diagLog('ai-sdk.doGenerate.served', `result=${result.platform}::${result.model} runtimeName="${result.runtimeName ?? ''}" usage=${JSON.stringify(result.response.usage)}`);
-
       const msg = result.response.choices?.[0]?.message;
       const content: LanguageModelV4GenerateResult['content'] = [];
       if (msg?.content) {
         const raw = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-        content.push({ type: 'text', text: wantsJson ? stripJsonFence(raw) : raw });
+        const clean = stripThinkTags(raw);
+        if (clean) content.push({ type: 'text', text: clean });
       }
-      if (msg?.tool_calls?.length) {
-        for (const tc of msg.tool_calls) {
-          content.push({ type: 'tool-call', toolCallId: tc.id, toolName: tc.function.name, input: tc.function.arguments ?? '{}', providerExecuted: false });
-        }
+      for (const tc of msg?.tool_calls ?? []) {
+        content.push({ type: 'tool-call', toolCallId: tc.id, toolName: tc.function.name, input: tc.function.arguments ?? '{}', providerExecuted: false });
       }
       const hasCalls = !!msg?.tool_calls?.length;
       const rawFR = result.response.choices?.[0]?.finish_reason;
@@ -281,109 +269,325 @@ export function createRouterProvider(router: Router, providerOpts: RouterProvide
     async doStream(options: LanguageModelV4CallOptions): Promise<LanguageModelV4StreamResult> {
       const messages = toRouterMessages(options.prompt);
       const tools = toRouterTools(options.tools);
-      const hasTools = !!tools?.length;
+      let controller!: ReadableStreamDefaultController<LanguageModelV4StreamPart>;
+      const stream = new ReadableStream<LanguageModelV4StreamPart>({ start(c) { controller = c; } });
+      controller.enqueue({ type: 'stream-start', warnings: [] });
 
-      let streamController!: ReadableStreamDefaultController<LanguageModelV4StreamPart>;
-      const stream = new ReadableStream<LanguageModelV4StreamPart>({ start(c) { streamController = c; } });
-
-      streamController.enqueue({ type: 'stream-start', warnings: [] });
+      const think = new ThinkStripper();
       const textId = 'text-0';
-      let chunkCount = 0;
       let textStarted = false;
+      let chunkCount = 0;
 
       const routeOpts: RouteOptions = {
         model: providerOpts.pinnedModel ?? 'auto',
         temperature: options.temperature,
         max_tokens: options.maxOutputTokens,
         tools,
-        requireTools: hasTools,
+        requireTools: !!tools?.length,
         reasoningEffort: providerOpts.effort,
         taskKind: providerOpts.taskKind as RouteOptions['taskKind'],
         sessionId: providerOpts.sessionId,
-        // Router.route() now streams even when tools are offered (tool-call deltas are
-        // accumulated by index internally); live text deltas still arrive here as they land.
         onChunk: (delta: string) => {
           chunkCount++;
-          if (!textStarted) { textStarted = true; streamController.enqueue({ type: 'text-start', id: textId }); }
-          streamController.enqueue({ type: 'text-delta', id: textId, delta });
+          const clean = think.feed(delta);
+          if (clean) {
+            if (!textStarted) { textStarted = true; controller.enqueue({ type: 'text-start', id: textId }); }
+            controller.enqueue({ type: 'text-delta', id: textId, delta: clean });
+          }
         },
-        onFailover: providerOpts.onFailover ? (info) => providerOpts.onFailover!(`${info.from.platform}::${info.from.modelId}`, info.reason) : undefined,
-        onKeyRotated: providerOpts.onKeyRotated ? (info) => providerOpts.onKeyRotated!({ platform: info.platform, keyIndex: info.keyIndex, keyTotal: info.keyTotal }) : undefined,
-        onSelectionRationale: toRationaleCallback(providerOpts.onSelectionRationale),
-        exclude: providerOpts.excludeModels,
-        maxIntelligenceRank: providerOpts.maxIntelligenceRank,
-        minIntelligenceRank: providerOpts.minIntelligenceRank,
-        onUsage: providerOpts.usageSink,
+        onFailover: providerOpts.onFailover ? (info: { from: { platform: string; modelId: string }; reason: string }) => providerOpts.onFailover?.(`${info.from.platform}::${info.from.modelId}`, info.reason) : undefined,
         abortSignal: options.abortSignal,
-        hasRawPdfPart: hasRawPdfPart(messages),
       };
-      diagLog('ai-sdk.doStream', `pinnedModel="${providerOpts.pinnedModel ?? '<auto>'}" → routeOpts.model="${routeOpts.model}" msgs=${messages.length} tools=${tools?.length ?? 0} hasRawPdfPart=${routeOpts.hasRawPdfPart}`);
 
       router.route(messages, routeOpts).then((result) => {
         providerOpts.onModelSelected?.(result.platform, result.model, result.runtimeName);
-        diagLog('ai-sdk.doStream.served', `result=${result.platform}::${result.model} runtimeName="${result.runtimeName ?? ''}" usage=${JSON.stringify(result.response.usage)} chunks=${chunkCount}`);
         const msg = result.response.choices?.[0]?.message;
         const rawFR = result.response.choices?.[0]?.finish_reason;
         const hasToolCalls = !!msg?.tool_calls?.length;
 
-        // Rescue inline tool calls emitted as text by weak models (e.g. Cloudflare's llama-3.3
-        // emits `{"type":"function","name":"explore","parameters":{...}}` as content because it
-        // doesn't speak the tools API). Without this, the tool-call JSON would show as chat text.
-        let rescuedToolCalls: { id: string; name: string; arguments: string }[] = [];
-        if (!hasToolCalls && tools?.length) {
-          const fullText = typeof msg?.content === 'string' ? msg.content
-            : (msg?.content ? JSON.stringify(msg.content) : '');
-          const toolNames = new Set(tools.map((t) => t.function.name));
-          const rescue = rescueInlineToolCalls(fullText, toolNames);
-          if (rescue.detected) {
-            rescuedToolCalls = rescue.calls.map((c, i) => ({
-              id: `call_rescued_${i + 1}`, name: c.name, arguments: repairToolArguments(c.arguments, toolSchemaMap(tools).get(c.name)),
-            }));
-            // Learn-by-failure: this model emitted its tool call as plain text (it doesn't speak the
-            // tools API natively). Record a strike so repeated offenders get benched from tool routing.
-            router.noteToolSoftFailure(result.platform, result.model);
-          }
-        }
-        const effectiveToolCalls = hasToolCalls
-          ? msg!.tool_calls!.map((tc) => ({ id: tc.id, name: tc.function.name, arguments: tc.function.arguments ?? '{}' }))
-          : rescuedToolCalls;
-        const hasEffectiveToolCalls = effectiveToolCalls.length > 0;
-
-        if (chunkCount === 0 && msg?.content && !hasEffectiveToolCalls) {
-          if (!textStarted) { textStarted = true; streamController.enqueue({ type: 'text-start', id: textId }); }
+        if (chunkCount === 0 && msg?.content && !hasToolCalls) {
+          if (!textStarted) { textStarted = true; controller.enqueue({ type: 'text-start', id: textId }); }
           const fullText = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-          // Raw channel-template markers (GLM-style <|channel|>final<|message|>…) must never
-          // render as the user-visible answer when no call was rescuable.
-          streamController.enqueue({ type: 'text-delta', id: textId, delta: stripRawChannelMarkers(fullText) });
+          controller.enqueue({ type: 'text-delta', id: textId, delta: stripThinkTags(fullText) });
         }
-        if (textStarted) streamController.enqueue({ type: 'text-end', id: textId });
+        const tail = think.flush();
+        if (tail) {
+          if (!textStarted) { textStarted = true; controller.enqueue({ type: 'text-start', id: textId }); }
+          controller.enqueue({ type: 'text-delta', id: textId, delta: tail });
+        }
+        if (textStarted) controller.enqueue({ type: 'text-end', id: textId });
 
-        if (hasEffectiveToolCalls) {
-          for (const tc of effectiveToolCalls) {
-            streamController.enqueue({ type: 'tool-input-start', id: tc.id, toolName: tc.name });
-            streamController.enqueue({ type: 'tool-input-delta', id: tc.id, delta: tc.arguments });
-            streamController.enqueue({ type: 'tool-input-end', id: tc.id });
-            streamController.enqueue({ type: 'tool-call', toolCallId: tc.id, toolName: tc.name, input: tc.arguments });
+        if (hasToolCalls) {
+          for (const tc of msg!.tool_calls!) {
+            controller.enqueue({ type: 'tool-input-start', id: tc.id, toolName: tc.function.name });
+            controller.enqueue({ type: 'tool-input-delta', id: tc.id, delta: tc.function.arguments ?? '{}' });
+            controller.enqueue({ type: 'tool-input-end', id: tc.id });
+            controller.enqueue({ type: 'tool-call', toolCallId: tc.id, toolName: tc.function.name, input: tc.function.arguments ?? '{}' });
           }
         }
 
-        streamController.enqueue({
+        controller.enqueue({
           type: 'finish',
-          finishReason: { unified: hasEffectiveToolCalls ? 'tool-calls' : (rawFR === 'length' ? 'length' : 'stop'), raw: hasEffectiveToolCalls ? 'tool_calls' : (rawFR ?? 'stop') },
+          finishReason: { unified: hasToolCalls ? 'tool-calls' : (rawFR === 'length' ? 'length' : 'stop'), raw: hasToolCalls ? 'tool_calls' : (rawFR ?? 'stop') },
           usage: toV4Usage(result.response.usage?.prompt_tokens, result.response.usage?.completion_tokens),
         });
-        streamController.close();
+        controller.close();
       }).catch((err: unknown) => {
-        // Surface a router.route() rejection (e.g. AllModelsFailedError from a pinned model
-        // hitting 403/quota) by ERRORING the stream rather than enqueuing an `{type:'error'}`
-        // stream part. The official AI SDK providers do the same: they let doStream's stream
-        // throw, which the SDK turns into a thrown error on `fullStream` — caught by runTurn's
-        // catch (→ onError + failed=true), so the failure shows in chat immediately. Enqueuing an
-        // error part instead relied on a stream-part shape the SDK is inconsistent about
-        // (TS type says `error`, runtime schema says `errorText`), which silently dropped the
-        // error and ended the turn empty — only reappearing from persisted transcript on reopen.
-        streamController.error(err);
+        controller.error(err);
       });
+
+      return { stream };
+    },
+  };
+}
+
+/** Degenerate stream end: reasoning present, but NO text and NO tool calls. The model
+ *  thought (often meta-deliberation like "the query is weird, let me read X") and exited
+ *  without acting or answering. ONE mechanical continuation is warranted before any
+ *  fold — promoting deliberation to the reply directly shows the user the model's
+ *  internal monologue. Exported for direct e2e. */
+export function needsFinalNudge(textStarted: boolean, toolCallCount: number, reasoning: string): boolean {
+  return !textStarted && toolCallCount === 0 && reasoning.trim().length > 0;
+}
+
+/** Empty-final fold decision: when a stream produced NO text and NO tool calls but DID
+ *  carry reasoning, that reasoning IS the reply (gpt-oss/Groq shape — everything in
+ *  delta.reasoning, final channel empty). Streaming twin of openai-compat normalizeChoices'
+ *  reasoning_content→content fold. LAST RESORT — runs only after a final-answer nudge also
+ *  came back empty, so deliberation is never promoted while a real answer is still gettable.
+ *  Exported for direct e2e. */
+export function foldEmptyFinal(textStarted: boolean, toolCallCount: number, reasoning: string): string {
+  if (!textStarted && toolCallCount === 0 && reasoning.trim()) return reasoning.trim();
+  return '';
+}
+
+function createPickerProvider(providerOpts: RouterProviderOptions): LanguageModelV4 {
+  return {
+    specificationVersion: 'v4',
+    provider: 'tiermux',
+    modelId: providerOpts.pinnedModel ?? `auto-${providerOpts.effort ?? 'medium'}`,
+    supportedUrls: {},
+
+    async doGenerate(options: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> {
+      const messages = toRouterMessages(options.prompt);
+      const tools = toRouterTools(options.tools);
+      const candidates = await resolveCandidates(providerOpts);
+      if (candidates.length === 0) throw new Error('TierMux: no model candidate resolved');
+
+      let lastError: unknown;
+      for (let i = 0; i < candidates.length; i++) {
+        const c = candidates[i];
+        const provider = resolveProvider(c.platform, c.modelId);
+        if (!provider) continue;
+        // Try every stored key within the candidate (rotation on dead/quota'd keys) before
+        // abandoning it for the next candidate.
+        for (const apiKey of c.apiKeys) {
+          try {
+          const data = await provider.chatCompletion(apiKey, messages, c.modelId, {
+            temperature: options.temperature,
+            max_tokens: options.maxOutputTokens,
+            tools,
+            reasoningEffort: providerOpts.effort,
+            abortSignal: options.abortSignal,
+          });
+          providerOpts.onModelSelected?.(c.platform, c.modelId, provider.runtimeName);
+          if (data.usage) {
+            providerOpts.onUsage?.({ inputTokens: data.usage.prompt_tokens, outputTokens: data.usage.completion_tokens, model: `${c.platform}::${c.modelId}` });
+          }
+          const msg = data.choices?.[0]?.message;
+          const content: LanguageModelV4GenerateResult['content'] = [];
+          if (msg?.content) {
+            const raw = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+            const clean = stripThinkTags(raw);
+            if (clean) content.push({ type: 'text', text: clean });
+          }
+          for (const tc of msg?.tool_calls ?? []) {
+            content.push({ type: 'tool-call', toolCallId: tc.id, toolName: tc.function.name, input: tc.function.arguments ?? '{}', providerExecuted: false });
+          }
+          const hasCalls = !!msg?.tool_calls?.length;
+          const rawFR = data.choices?.[0]?.finish_reason;
+          // Quality failover: a generate that produced neither text nor a tool call is useless —
+          // advance to the next candidate instead of returning an empty result.
+          if (content.length === 0 && !hasCalls) {
+            recordOutcome(c.platform, c.modelId, false);
+            continue;
+          }
+          recordOutcome(c.platform, c.modelId, true);
+          return {
+            content,
+            finishReason: { unified: hasCalls ? 'tool-calls' : (rawFR === 'length' ? 'length' : 'stop'), raw: hasCalls ? 'tool_calls' : (rawFR ?? 'stop') },
+            usage: toV4Usage(data.usage?.prompt_tokens, data.usage?.completion_tokens),
+            warnings: [],
+          };
+          } catch (e) {
+            lastError = e;
+            recordOutcome(c.platform, c.modelId, false);
+            if (isFailoverWorthy(e)) {
+              providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
+              continue; // next key; when keys run out, the candidate loop advances
+            }
+            throw e;
+          }
+        }
+      }
+      throw lastError instanceof Error ? lastError : new Error('TierMux: all candidates failed');
+    },
+
+    async doStream(options: LanguageModelV4CallOptions): Promise<LanguageModelV4StreamResult> {
+      const messages = toRouterMessages(options.prompt);
+      const tools = toRouterTools(options.tools);
+      const candidates = await resolveCandidates(providerOpts);
+      if (candidates.length === 0) throw new Error('TierMux: no model candidate resolved');
+
+      let controller!: ReadableStreamDefaultController<LanguageModelV4StreamPart>;
+      const stream = new ReadableStream<LanguageModelV4StreamPart>({ start(c) { controller = c; } });
+      controller.enqueue({ type: 'stream-start', warnings: [] });
+
+      void (async () => {
+        let lastError: unknown;
+        for (let i = 0; i < candidates.length; i++) {
+          const c = candidates[i];
+          const provider = resolveProvider(c.platform, c.modelId);
+          if (!provider) continue;
+          // Every stored key gets a turn within the candidate before it is abandoned — a
+          // dead or quota'd key must not cost the whole platform.
+          for (const apiKey of c.apiKeys) {
+          try {
+            const textId = 'text-0';
+            let textStarted = false;
+            const reasoningId = 'reasoning-0';
+            let reasoningStarted = false;
+            // Everything the reasoning channel carried — feeds the nudge decision and the
+            // last-resort fold below.
+            let reasoningAccum = '';
+            // Accumulated tool calls, merged by index across chunks (OpenAI wire behavior).
+            const acc = new Map<number, { id: string; name: string; args: string }>();
+            let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
+            let finish: string | null = null;
+            // ONE mechanical continuation: a stream that ends with reasoning but no text
+            // and no tool calls gets a "final answer now" nudge before anything is folded.
+            let nudged = false;
+
+            while (true) {
+              // Fresh splitter per attempt — attempt 1 was fully flushed before the nudge.
+              const splitter = createStreamTextSplitter();
+              const attemptMessages = nudged
+                ? [...messages, { role: 'user' as const, content: 'You produced reasoning but no final answer and called no tool. Reply now with your final answer to the user — concise, no meta-commentary, no tool calls.' }]
+                : messages;
+
+              for await (const chunk of provider.streamChatCompletion(apiKey, attemptMessages, c.modelId, {
+                temperature: options.temperature,
+                max_tokens: options.maxOutputTokens,
+                tools,
+                reasoningEffort: providerOpts.effort,
+                abortSignal: options.abortSignal,
+              })) {
+                if (chunk.usage) usage = chunk.usage;
+                const choice = chunk.choices?.[0];
+                if (!choice) continue;
+                if (choice.finish_reason) finish = choice.finish_reason;
+                const delta = choice.delta ?? {};
+                // Reasoning models (DeepSeek R1 & friends) stream thinking either as native
+                // reasoning fields or as `<think>` markup inside content. The splitter routes
+                // both to the reasoning channel, keeps them OUT of the chat text, is safe for
+                // tags split across chunks, and never doubles reasoning when a gateway sends
+                // the same thinking through both channels at once.
+                const split = splitter.feed(delta.content, reasoningFromDelta(delta as unknown as Record<string, unknown>));
+                if (split.reasoning) {
+                  reasoningAccum += split.reasoning;
+                  if (!reasoningStarted) { reasoningStarted = true; controller.enqueue({ type: 'reasoning-start', id: reasoningId }); }
+                  controller.enqueue({ type: 'reasoning-delta', id: reasoningId, delta: split.reasoning });
+                }
+                if (split.text) {
+                  if (!textStarted) { textStarted = true; controller.enqueue({ type: 'text-start', id: textId }); }
+                  controller.enqueue({ type: 'text-delta', id: textId, delta: split.text });
+                }
+                for (const tc of delta.tool_calls ?? []) {
+                  const idx = tc.index ?? 0;
+                  const slot = acc.get(idx) ?? { id: tc.id ?? `call-${idx}`, name: '', args: '' };
+                  if (tc.id) slot.id = tc.id;
+                  if (tc.function?.name) slot.name += tc.function.name;
+                  if (tc.function?.arguments) slot.args += tc.function.arguments;
+                  acc.set(idx, slot);
+                }
+              }
+
+              const flushed = splitter.flush();
+              if (flushed.reasoning) {
+                reasoningAccum += flushed.reasoning;
+                if (!reasoningStarted) { reasoningStarted = true; controller.enqueue({ type: 'reasoning-start', id: reasoningId }); }
+                controller.enqueue({ type: 'reasoning-delta', id: reasoningId, delta: flushed.reasoning });
+              }
+              if (flushed.text) {
+                if (!textStarted) { textStarted = true; controller.enqueue({ type: 'text-start', id: textId }); }
+                controller.enqueue({ type: 'text-delta', id: textId, delta: flushed.text });
+              }
+
+              // Degenerate end → ONE "final answer now" nudge, then give up on nudging.
+              if (needsFinalNudge(textStarted, acc.size, reasoningAccum) && !nudged) {
+                nudged = true;
+                continue;
+              }
+              break;
+            }
+
+            // Empty-final fold — see foldEmptyFinal. LAST RESORT for a candidate that already
+            // streamed reasoning: promote whatever the reasoning channel carried rather than
+            // switch mid-stream (that would corrupt the output with a half-shown model).
+            const folded = foldEmptyFinal(textStarted, acc.size, reasoningAccum);
+            if (folded) {
+              textStarted = true;
+              controller.enqueue({ type: 'text-start', id: textId });
+              controller.enqueue({ type: 'text-delta', id: textId, delta: folded });
+            }
+            const hasOutput = textStarted || acc.size > 0;
+            if (!hasOutput) {
+              // Truly silent candidate (no text, no tools, and no foldable reasoning): treat as
+              // a quality failure and fail over to the next candidate instead of ending the turn
+              // empty. Only safe when nothing was already streamed to the user — if this candidate
+              // showed reasoning, the nudge/fold above keeps the turn alive instead of switching.
+              if (!reasoningStarted && acc.size === 0) {
+                recordOutcome(c.platform, c.modelId, false);
+                continue; // → Model B / C / D
+              }
+            }
+
+            providerOpts.onModelSelected?.(c.platform, c.modelId, provider.runtimeName);
+            recordOutcome(c.platform, c.modelId, true);
+            if (usage) {
+              providerOpts.onUsage?.({ inputTokens: usage.prompt_tokens ?? 0, outputTokens: usage.completion_tokens ?? 0, model: `${c.platform}::${c.modelId}` });
+            }
+            if (reasoningStarted) controller.enqueue({ type: 'reasoning-end', id: reasoningId });
+            if (textStarted) controller.enqueue({ type: 'text-end', id: textId });
+            const hasCalls = acc.size > 0;
+            for (const [idx, tc] of [...acc.entries()].sort((a, b) => a[0] - b[0])) {
+              controller.enqueue({ type: 'tool-input-start', id: tc.id, toolName: tc.name });
+              controller.enqueue({ type: 'tool-input-delta', id: tc.id, delta: tc.args });
+              controller.enqueue({ type: 'tool-input-end', id: tc.id });
+              controller.enqueue({ type: 'tool-call', toolCallId: tc.id, toolName: tc.name, input: tc.args });
+              void idx;
+            }
+            controller.enqueue({
+              type: 'finish',
+              finishReason: { unified: hasCalls ? 'tool-calls' : (finish === 'length' ? 'length' : 'stop'), raw: hasCalls ? 'tool_calls' : (finish ?? 'stop') },
+              usage: toV4Usage(usage?.prompt_tokens, usage?.completion_tokens),
+            });
+            controller.close();
+            return;
+          } catch (e) {
+            lastError = e;
+            recordOutcome(c.platform, c.modelId, false);
+            if (isFailoverWorthy(e)) {
+              providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
+              continue; // next key; when keys run out, the candidate loop advances
+            }
+            controller.error(e);
+            return;
+          }
+          }
+        }
+        controller.error(lastError instanceof Error ? lastError : new Error('TierMux: all candidates failed'));
+      })();
 
       return { stream };
     },

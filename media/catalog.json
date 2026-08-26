@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Synced from remote /models JSON — 405 models from 29 providers.",
+  "note": "Synced from remote /models JSON — 322 models from 29 providers.",
   "models": [
     {
       "platform": "agnes",
@@ -350,6 +350,86 @@
       "origOutputPricePer1M": 10
     },
     {
+      "platform": "google",
+      "modelId": "gemini-2.5-flash",
+      "displayName": "Gemini 2.5 Flash",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 1000000,
+      "rpmLimit": 15,
+      "rpdLimit": 1500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.3,
+      "origOutputPricePer1M": 2.5
+    },
+    {
+      "platform": "google",
+      "modelId": "gemini-3.1-flash-lite",
+      "displayName": "Gemini 3.1 Flash-Lite",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 1000000,
+      "rpmLimit": 30,
+      "rpdLimit": 1500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.25,
+      "origOutputPricePer1M": 1.5
+    },
+    {
+      "platform": "google",
+      "modelId": "gemma-4-31b-it",
+      "displayName": "Gemma 4 31B",
+      "intelligenceRank": 3,
+      "speedRank": 4,
+      "contextWindow": 262000,
+      "rpmLimit": 15,
+      "rpdLimit": 1500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.1,
+      "origOutputPricePer1M": 0.34
+    },
+    {
+      "platform": "google",
+      "modelId": "gemma-4-26b-a4b-it",
+      "displayName": "Gemma 4 26B",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 256000,
+      "rpmLimit": 15,
+      "rpdLimit": 1500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.1,
+      "origOutputPricePer1M": 0.3
+    },
+    {
       "platform": "groq",
       "modelId": "openai/gpt-oss-120b",
       "displayName": "GPT-OSS 120B (Groq)",
@@ -453,7 +533,7 @@
       "monthlyTokenBudget": "free",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "coding",
         "free"
@@ -561,8 +641,8 @@
       "rpdLimit": 4800,
       "monthlyTokenBudget": "free",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -585,7 +665,7 @@
       "monthlyTokenBudget": "free",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "router",
@@ -982,7 +1062,7 @@
       "monthlyTokenBudget": "~free",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "coding",
         "free"
@@ -1004,8 +1084,8 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "~free",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "router",
@@ -1143,7 +1223,7 @@
       "monthlyTokenBudget": "anonymous",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "origInputPricePer1M": 0.15,
       "origOutputPricePer1M": 0.6,
       "tags": [
@@ -1447,7 +1527,7 @@
       "rpdLimit": 86400,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
         "reasoner",
@@ -1467,8 +1547,8 @@
       "rpdLimit": 100000,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -1487,7 +1567,7 @@
       "rpdLimit": 50000,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -1528,7 +1608,7 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -1688,7 +1768,7 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -1748,7 +1828,7 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -1868,7 +1948,7 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -1887,8 +1967,8 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -1907,8 +1987,8 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -2007,8 +2087,8 @@
       "rpdLimit": 100,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -2028,7 +2108,7 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -2048,7 +2128,7 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -2067,7 +2147,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
         "reasoner",
@@ -2525,7 +2605,7 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -2604,8 +2684,8 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -2704,8 +2784,8 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -2744,8 +2824,8 @@
       "rpdLimit": 100,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -2785,7 +2865,7 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -2832,25 +2912,6 @@
       ],
       "origInputPricePer1M": 0.65,
       "origOutputPricePer1M": 3.25
-    },
-    {
-      "platform": "groq",
-      "modelId": "canopylabs/orpheus-arabic-saudi",
-      "displayName": "Canopy Labs Orpheus Arabic Saudi",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 4000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 40
     },
     {
       "platform": "groq",
@@ -2915,25 +2976,6 @@
     },
     {
       "platform": "groq",
-      "modelId": "canopylabs/orpheus-v1-english",
-      "displayName": "Canopy Labs Orpheus V1 English",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 4000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 22
-    },
-    {
-      "platform": "groq",
       "modelId": "groq/compound-mini",
       "displayName": "Compound Mini",
       "intelligenceRank": 4,
@@ -2974,7 +3016,7 @@
       "displayName": "Thinking Machines: Inkling Small (free)",
       "intelligenceRank": 4,
       "speedRank": 2,
-      "contextWindow": 262144,
+      "contextWindow": 1048576,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -2994,7 +3036,7 @@
       "displayName": "Thinking Machines: Inkling (free)",
       "intelligenceRank": 3,
       "speedRank": 3,
-      "contextWindow": 262144,
+      "contextWindow": 1048576,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -3019,8 +3061,8 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -3148,132 +3190,6 @@
     },
     {
       "platform": "openadapter",
-      "modelId": "0G-DeepSeek-v4-Pro",
-      "displayName": "0G DeepSeek V4 Pro",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": 256000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "0G-GLM-5",
-      "displayName": "0G GLM 5",
-      "intelligenceRank": 1,
-      "speedRank": 3,
-      "contextWindow": 205000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "0G-GLM-5.1",
-      "displayName": "0G GLM 5.1",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 128000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "0G-GLM-5.2",
-      "displayName": "0G GLM 5.2",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "0g-minimax-m3",
-      "displayName": "0G Minimax M3",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "0G-Qwen3.6",
-      "displayName": "0G Qwen3.6",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "0G-Qwen3.7-max",
-      "displayName": "0G Qwen3.7 Max",
-      "intelligenceRank": 1,
-      "speedRank": 4,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
       "modelId": "0G-Qwen-VL",
       "displayName": "0G Qwen VL",
       "intelligenceRank": 3,
@@ -3289,26 +3205,6 @@
         "general",
         "free"
       ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "DeepSeek-R1",
-      "displayName": "DeepSeek R1",
-      "intelligenceRank": 1,
-      "speedRank": 3,
-      "contextWindow": 128000,
-      "rpmLimit": 15,
-      "rpdLimit": 30,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.55,
-      "origOutputPricePer1M": 2.19
     },
     {
       "platform": "openadapter",
@@ -3350,26 +3246,6 @@
     },
     {
       "platform": "openadapter",
-      "modelId": "DeepSeek-V4-Pro",
-      "displayName": "DeepSeek V4 Pro",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": 256000,
-      "rpmLimit": 15,
-      "rpdLimit": 30,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.63,
-      "origOutputPricePer1M": 1.88
-    },
-    {
-      "platform": "openadapter",
       "modelId": "Devstral",
       "displayName": "Devstral",
       "intelligenceRank": 3,
@@ -3385,344 +3261,6 @@
         "general",
         "free"
       ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/dots-3-note-preview",
-      "displayName": "Dots Studio: Dots3-Note Preview (free)",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 512000,
-      "rpmLimit": 20,
-      "rpdLimit": 200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/gemma-4-26b-a4b-it",
-      "displayName": "Google: Gemma 4 26B A4B  (free)",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 15,
-      "rpdLimit": 1500,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/gemma-4-31b-it",
-      "displayName": "Gemma 4 31B IT",
-      "intelligenceRank": 3,
-      "speedRank": 4,
-      "contextWindow": 262144,
-      "rpmLimit": 20,
-      "rpdLimit": 200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/glm-5-2",
-      "displayName": "Z.ai: GLM 5.2",
-      "intelligenceRank": 1,
-      "speedRank": 3,
-      "contextWindow": 256000,
-      "rpmLimit": 10,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/inkling",
-      "displayName": "Thinking Machines: Inkling (free)",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/inkling-small",
-      "displayName": "Thinking Machines: Inkling Small (free)",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/laguna-s-2-1",
-      "displayName": "Poolside Laguna S 2.1",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 20,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/laguna-xs-2-1",
-      "displayName": "Poolside: Laguna XS 2.1 (free)",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 20,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/lfm-2-5-2-6b",
-      "displayName": "LiquidAI: LFM2.5-2.6B (free)",
-      "intelligenceRank": 5,
-      "speedRank": 2,
-      "contextWindow": 65536,
-      "rpmLimit": 10,
-      "rpdLimit": 1000,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/nemotron-3-5-content-safety",
-      "displayName": "NVIDIA: Nemotron 3.5 Content Safety (free)",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 128000,
-      "rpmLimit": 20,
-      "rpdLimit": 200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/nemotron-3-5-lightning",
-      "displayName": "NVIDIA: Nemotron 3.5 Lightning (free)",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 1000000,
-      "rpmLimit": 10,
-      "rpdLimit": 1000,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/nemotron-3-5-lightning-nvidia",
-      "displayName": "Nemotron 3 5 Lightning NVIDIA",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 1000000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/nemotron-3-nano-omni-30b-a3b-reasoning",
-      "displayName": "NVIDIA: Nemotron 3 Nano Omni (free)",
-      "intelligenceRank": 2,
-      "speedRank": 2,
-      "contextWindow": 256000,
-      "rpmLimit": 20,
-      "rpdLimit": 200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/nemotron-3-super-120b-a12b",
-      "displayName": "Nemotron 3 Super 120B",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": 262144,
-      "rpmLimit": 20,
-      "rpdLimit": 200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/nemotron-3-ultra-550b-a55b",
-      "displayName": "NVIDIA: Nemotron 3 Ultra (free)",
-      "intelligenceRank": 1,
-      "speedRank": 5,
-      "contextWindow": 1000000,
-      "rpmLimit": 3,
-      "rpdLimit": 4800,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/north-mini-code",
-      "displayName": "North Mini Code",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": 256000,
-      "rpmLimit": 20,
-      "rpdLimit": 200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "coding",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/ox-alpha",
-      "displayName": "Ox Alpha",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 1048576,
-      "rpmLimit": 20,
-      "rpdLimit": 100,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
     },
     {
       "platform": "openadapter",
@@ -3874,80 +3412,6 @@
     },
     {
       "platform": "openadapter",
-      "modelId": "GLM-5",
-      "displayName": "GLM 5",
-      "intelligenceRank": 1,
-      "speedRank": 3,
-      "contextWindow": 205000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "glm-5.1",
-      "displayName": "GLM 5.1",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 128000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "GLM-5.1-TEE",
-      "displayName": "GLM 5.1 TEE",
-      "intelligenceRank": 1,
-      "speedRank": 3,
-      "contextWindow": 200000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "GLM-5.2",
-      "displayName": "Z.ai: GLM 5.2",
-      "intelligenceRank": 1,
-      "speedRank": 3,
-      "contextWindow": 205000,
-      "rpmLimit": 10,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
       "modelId": "GPT-120-OSS",
       "displayName": "GPT 120 OSS",
       "intelligenceRank": 3,
@@ -3976,24 +3440,6 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "GPT-5.6-Luna",
-      "displayName": "GPT 5.6 Luna",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
         "reasoner",
@@ -4059,26 +3505,6 @@
     },
     {
       "platform": "openadapter",
-      "modelId": "Hy3",
-      "displayName": "Hy3 Free",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 256000,
-      "rpmLimit": 60,
-      "rpdLimit": 100,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.13,
-      "origOutputPricePer1M": 0.53
-    },
-    {
-      "platform": "openadapter",
       "modelId": "Kimi-K2",
       "displayName": "Kimi K2",
       "intelligenceRank": 3,
@@ -4097,44 +3523,6 @@
     },
     {
       "platform": "openadapter",
-      "modelId": "Kimi-K2.5",
-      "displayName": "Kimi K2.5",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "Kimi-K2.6",
-      "displayName": "Kimi K2.6",
-      "intelligenceRank": 1,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 300,
-      "rpdLimit": 432000,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.95,
-      "origOutputPricePer1M": 4
-    },
-    {
-      "platform": "openadapter",
       "modelId": "Kimi-K2-Think",
       "displayName": "Kimi K2 Think",
       "intelligenceRank": 3,
@@ -4148,24 +3536,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "kokoro",
-      "displayName": "Kokoro",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
         "free"
       ]
     },
@@ -4204,26 +3574,6 @@
         "general",
         "free"
       ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "Llama-3.3-70B",
-      "displayName": "Llama 3.3 70B",
-      "intelligenceRank": 3,
-      "speedRank": 4,
-      "contextWindow": 128000,
-      "rpmLimit": 20,
-      "rpdLimit": 20,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.6,
-      "origOutputPricePer1M": 1.2
     },
     {
       "platform": "openadapter",
@@ -4281,47 +3631,11 @@
     },
     {
       "platform": "openadapter",
-      "modelId": "MiniMax-2.5",
-      "displayName": "MiniMax 2.5",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
       "modelId": "MiniMax-M2.1",
       "displayName": "MiniMax M2.1",
       "intelligenceRank": 2,
       "speedRank": 3,
       "contextWindow": 196000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "MiniMax-M2.5",
-      "displayName": "MiniMax M2.5",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 200000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -4350,46 +3664,6 @@
         "reasoner",
         "free"
       ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "MiniMax-M2.7",
-      "displayName": "MiniMax M2.7",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 205000,
-      "rpmLimit": 40,
-      "rpdLimit": 57600,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.3,
-      "origOutputPricePer1M": 1.2
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "MiniMax-M3",
-      "displayName": "Minimax M3",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 2,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.45,
-      "origOutputPricePer1M": 1.8
     },
     {
       "platform": "openadapter",
@@ -4478,25 +3752,7 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "parakeet",
-      "displayName": "Parakeet",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -4577,24 +3833,6 @@
     },
     {
       "platform": "openadapter",
-      "modelId": "Qwen3.5",
-      "displayName": "Qwen3.5",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
       "modelId": "Qwen3.5-122B",
       "displayName": "Qwen3.5 122B",
       "intelligenceRank": 2,
@@ -4631,42 +3869,6 @@
     },
     {
       "platform": "openadapter",
-      "modelId": "qwen3.6-plus",
-      "displayName": "Qwen3.6 Plus",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 205000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "qwen3.7-plus",
-      "displayName": "Qwen3.7 Plus",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
       "modelId": "Qwen3.8-27B",
       "displayName": "Qwen 3.8 27B",
       "intelligenceRank": 3,
@@ -4684,24 +3886,6 @@
       ],
       "origInputPricePer1M": 0.33,
       "origOutputPricePer1M": 2.4
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "Qwen3.8-Max",
-      "displayName": "Qwen3.8 Max",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
     },
     {
       "platform": "openadapter",
@@ -4728,24 +3912,6 @@
       "intelligenceRank": 2,
       "speedRank": 4,
       "contextWindow": 256000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "QwenVL",
-      "displayName": "QwenVL",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 128000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -4787,7 +3953,7 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -4814,26 +3980,6 @@
       ],
       "origInputPricePer1M": 0.25,
       "origOutputPricePer1M": 1.5
-    },
-    {
-      "platform": "llm7",
-      "modelId": "gemma4:31b",
-      "displayName": "Gemma 4 31B",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": 262144,
-      "rpmLimit": 15,
-      "rpdLimit": 1500,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.1,
-      "origOutputPricePer1M": 0.34
     },
     {
       "platform": "llm7",
@@ -4897,7 +4043,7 @@
       "displayName": "Thinking Machines: Inkling Small (free)",
       "intelligenceRank": 4,
       "speedRank": 2,
-      "contextWindow": 262144,
+      "contextWindow": 1048576,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -4917,7 +4063,7 @@
       "displayName": "Thinking Machines: Inkling (free)",
       "intelligenceRank": 3,
       "speedRank": 3,
-      "contextWindow": 262144,
+      "contextWindow": 1048576,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -4942,8 +4088,8 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "free"
@@ -4982,8 +4128,8 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
         "router",
@@ -4994,105 +4140,7 @@
     },
     {
       "platform": "google",
-      "modelId": "models/gemini-2.5-flash",
-      "displayName": "Gemini 2.5 Flash",
-      "intelligenceRank": 3,
-      "speedRank": 2,
-      "contextWindow": 1000000,
-      "rpmLimit": 15,
-      "rpdLimit": 1500,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.3,
-      "origOutputPricePer1M": 2.5,
-      "outputTokenLimit": 65536
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-2.5-pro",
-      "displayName": "Gemini 2.5 Pro",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "outputTokenLimit": 65536
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemma-4-26b-a4b-it",
-      "displayName": "Google: Gemma 4 26B A4B  (free)",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 15,
-      "rpdLimit": 1500,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemma-4-31b-it",
-      "displayName": "Gemma 4 31B",
-      "intelligenceRank": 3,
-      "speedRank": 4,
-      "contextWindow": 262144,
-      "rpmLimit": 15,
-      "rpdLimit": 1500,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.1,
-      "origOutputPricePer1M": 0.34
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-flash-latest",
-      "displayName": "Gemini Flash Latest",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-flash-lite-latest",
+      "modelId": "gemini-flash-lite-latest",
       "displayName": "Gemini Flash Lite Latest",
       "intelligenceRank": 4,
       "speedRank": 2,
@@ -5110,283 +4158,7 @@
     },
     {
       "platform": "google",
-      "modelId": "models/gemini-pro-latest",
-      "displayName": "Gemini Pro Latest",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-2.5-flash-lite",
-      "displayName": "Gemini 2.5 Flash Lite",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "outputTokenLimit": 65536
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-2.5-flash-image",
-      "displayName": "Gemini 2.5 Flash Image",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "outputTokenLimit": 65536
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3-flash-preview",
-      "displayName": "Gemini 3 Flash Preview",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3.1-pro-preview",
-      "displayName": "Gemini 3.1 Pro Preview",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3.1-pro-preview-customtools",
-      "displayName": "Gemini 3.1 Pro Preview Customtools",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3.1-flash-lite-preview",
-      "displayName": "Gemini 3.1 Flash-Lite",
-      "intelligenceRank": 3,
-      "speedRank": 2,
-      "contextWindow": 1000000,
-      "rpmLimit": 30,
-      "rpdLimit": 1500,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.25,
-      "origOutputPricePer1M": 1.5
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3.1-flash-lite",
-      "displayName": "Gemini 3.1 Flash-Lite",
-      "intelligenceRank": 3,
-      "speedRank": 2,
-      "contextWindow": 1000000,
-      "rpmLimit": 30,
-      "rpdLimit": 1500,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.25,
-      "origOutputPricePer1M": 1.5
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3-pro-image-preview",
-      "displayName": "Gemini 3 Pro Image Preview",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3-pro-image",
-      "displayName": "Gemini 3 Pro Image",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/nano-banana-pro-preview",
-      "displayName": "Nano Banana Pro Preview",
-      "intelligenceRank": 2,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3.1-flash-image-preview",
-      "displayName": "Gemini 3.1 Flash Image Preview",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3.1-flash-image",
-      "displayName": "Gemini 3.1 Flash Image",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3.1-flash-lite-image",
-      "displayName": "Gemini 3.1 Flash Lite Image",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3.5-flash",
-      "displayName": "Gemini 3.5 Flash",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3.5-flash-lite",
+      "modelId": "gemini-3.5-flash-lite",
       "displayName": "Gemini 3.5 Flash Lite",
       "intelligenceRank": 4,
       "speedRank": 2,
@@ -5399,374 +4171,6 @@
       "supportsReasoning": true,
       "tags": [
         "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-omni-flash-preview",
-      "displayName": "Gemini Omni Flash Preview",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3.6-flash",
-      "displayName": "Gemini 3.6 Flash",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3.7-flash",
-      "displayName": "Gemini 3.7 Flash",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/lyria-3-clip-preview",
-      "displayName": "Google: Lyria 3 Clip Preview",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 1048576,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "google",
-      "modelId": "models/lyria-3-pro-preview",
-      "displayName": "Google: Lyria 3 Pro Preview",
-      "intelligenceRank": 1,
-      "speedRank": 4,
-      "contextWindow": 1048576,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-robotics-er-1.6-preview",
-      "displayName": "Gemini Robotics Er 1.6 Preview",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-robotics-er-2-preview",
-      "displayName": "Gemini Robotics Er 2 Preview",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-2.5-computer-use-preview-10-2025",
-      "displayName": "Gemini 2.5 Computer Use Preview 10 2025",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "outputTokenLimit": 65536
-    },
-    {
-      "platform": "google",
-      "modelId": "models/antigravity-preview-05-2026",
-      "displayName": "Antigravity Preview 05 2026",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/deep-research-max-preview-04-2026",
-      "displayName": "Deep Research Max Preview 04 2026",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/deep-research-preview-04-2026",
-      "displayName": "Deep Research Preview 04 2026",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/deep-research-pro-preview-12-2025",
-      "displayName": "Deep Research Pro Preview 12 2025",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/aqa",
-      "displayName": "Aqa",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-2.5-flash-native-audio-latest",
-      "displayName": "Gemini 2.5 Flash Native Audio Latest",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "outputTokenLimit": 65536
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-2.5-flash-native-audio-preview-09-2025",
-      "displayName": "Gemini 2.5 Flash Native Audio Preview 09 2025",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "outputTokenLimit": 65536
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-2.5-flash-native-audio-preview-12-2025",
-      "displayName": "Gemini 2.5 Flash Native Audio Preview 12 2025",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "outputTokenLimit": 65536
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3.1-flash-live-preview",
-      "displayName": "Gemini 3.1 Flash Live Preview",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-robotics-er-2-streaming-preview",
-      "displayName": "Gemini Robotics Er 2 Streaming Preview",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/gemini-3.5-live-translate-preview",
-      "displayName": "Gemini 3.5 Live Translate Preview",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "google",
-      "modelId": "models/lyria-realtime-exp",
-      "displayName": "Lyria Realtime Exp",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
         "free"
       ]
     },
@@ -6846,24 +5250,6 @@
     },
     {
       "platform": "nvidia",
-      "modelId": "nvidia/nemoretriever-parse",
-      "displayName": "Nemoretriever Parse",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "nvidia",
       "modelId": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
       "displayName": "Nemotron 3 Nano Omni 30B Reasoning",
       "intelligenceRank": 3,
@@ -7064,42 +5450,6 @@
       "monthlyTokenBudget": "",
       "supportsTools": false,
       "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "nvidia",
-      "modelId": "nvidia/nv-embedcode-7b-v1",
-      "displayName": "Nv Embedcode 7B V1",
-      "intelligenceRank": 5,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "coding",
-        "free"
-      ]
-    },
-    {
-      "platform": "nvidia",
-      "modelId": "nvidia/nv-embedqa-e5-v5",
-      "displayName": "Nv Embedqa E5 V5",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -7315,26 +5665,6 @@
       ],
       "origInputPricePer1M": 0.26,
       "origOutputPricePer1M": 1.5
-    },
-    {
-      "platform": "nvidia",
-      "modelId": "thinkingmachines/inkling",
-      "displayName": "Thinking Machines: Inkling (free)",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
     },
     {
       "platform": "nvidia",
@@ -7798,6 +6128,46 @@
       "origOutputPricePer1M": 3.25
     },
     {
+      "platform": "google",
+      "modelId": "gemini-3.5-flash",
+      "displayName": "Gemini 3.5 Flash",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 1500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.5,
+      "origOutputPricePer1M": 3
+    },
+    {
+      "platform": "google",
+      "modelId": "gemini-3.6-flash",
+      "displayName": "Gemini 3.6 Flash",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 1500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.75,
+      "origOutputPricePer1M": 3.75
+    },
+    {
       "platform": "openadapter",
       "modelId": "0GM-1.0-35B-A3B",
       "displayName": "0GM 1.0 35B A3B",
@@ -7854,6 +6224,86 @@
       ],
       "origInputPricePer1M": 0.65,
       "origOutputPricePer1M": 3.25
+    },
+    {
+      "platform": "openrouter",
+      "modelId": "minimax/minimax-m3:free",
+      "displayName": "MiniMax: MiniMax M3 (free)",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 2,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "openrouter",
+      "modelId": "minimax/minimax-m2.7:free",
+      "displayName": "MiniMax: MiniMax M2.7 (free)",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 196608,
+      "rpmLimit": 40,
+      "rpdLimit": 57600,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "kilo",
+      "modelId": "minimax/minimax-m3:free",
+      "displayName": "MiniMax: MiniMax M3 (free)",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 2,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "kilo",
+      "modelId": "minimax/minimax-m2.7:free",
+      "displayName": "MiniMax: MiniMax M2.7 (free)",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 196608,
+      "rpmLimit": 40,
+      "rpdLimit": 57600,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
     },
     {
       "platform": "tokenrouter",
