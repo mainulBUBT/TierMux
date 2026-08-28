@@ -91,18 +91,43 @@ export function resolvePolicy(
   });
 }
 
-/** Live config snapshot from vscode settings + the legacy per-session auto-approve flag. */
-export function policyFromSettings(autoApproveSession = false, sessionMode: 'plan' | 'agent' | 'ask' = 'agent'): PolicyConfig {
+/** Live config snapshot from vscode settings + the legacy per-session auto-approve flag.
+ *  `sessionId` keys the module-level grant store: the ALWAYS-ALLOW/ALWAYS-DENY sets returned
+ *  are the STORED set REFERENCES, not copies — resolvePolicy's `config.alwaysAllow.add(...)`
+ *  (the 'allow-always' path) mutates the store directly, so a grant survives across turns.
+ *  Callers that omit sessionId share the 'workspace' key. */
+const sessionGrants = new Map<string, { allow: Set<string>; deny: Set<string> }>();
+function grantsFor(sessionId?: string): { allow: Set<string>; deny: Set<string> } {
+  const key = sessionId ?? 'workspace';
+  let grants = sessionGrants.get(key);
+  if (!grants) {
+    grants = { allow: new Set(), deny: new Set() };
+    sessionGrants.set(key, grants);
+  }
+  return grants;
+}
+
+/** Test/teardown hook — drops a session's accumulated always-allow/deny grants. */
+export function clearSessionGrants(sessionId?: string): void {
+  sessionGrants.delete(sessionId ?? 'workspace');
+}
+
+export function policyFromSettings(
+  autoApproveSession = false,
+  sessionMode: 'plan' | 'agent' | 'ask' = 'agent',
+  sessionId?: string,
+): PolicyConfig {
   const cfg = vscode.workspace.getConfiguration('tiermux.agent');
   const approval = cfg.get<string>('commandApproval', 'always'); // 'always' | 'allowlist' | 'never'
   const mode: PermissionMode = autoApproveSession || approval === 'never'
     ? 'full-auto'
     : approval === 'allowlist' ? 'auto' : 'ask';
+  const grants = grantsFor(sessionId);
   return {
     mode,
     sessionMode,
-    alwaysAllow: new Set(),
-    alwaysDeny: new Set(),
+    alwaysAllow: grants.allow,
+    alwaysDeny: grants.deny,
     autoModeAllowlist: new Set(cfg.get<string[]>('commandAllowlist', []).flatMap((s) => s.split(/\s+/))),
   };
 }

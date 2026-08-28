@@ -1,4 +1,6 @@
-// v3 Foundation Gate (plan §13) — the 14 scenarios that must ALL pass. Scenarios 1-10 are the
+// v3 Foundation Gate (plan §13) — the scenarios that must ALL pass. 1-10 technical,
+// 11-14 user-facing critical, 15-24 agent-parity (todoWrite, rules/env context, diagnostics
+// feedback, permission persistence, incremental reasoning, nudge draft-retract, stream-error surfacing, failover classification). Scenarios 1-10 are the
 // §8 technical cases (SDK-level, via the POC's runAgent + scripted LanguageModelV4 mock);
 // 11-14 are the user-facing critical cases and drive the REAL engine (src/agent/agent.ts →
 // core/engine.ts) through the __setEngineModelForTests seam.
@@ -40,8 +42,11 @@ import { createEditFileTool } from '../src/agent/core/tools/v3/editFile';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
 import { runAgentStream as engineRun, runPlanStream as engineRunPlan, runAskStream as engineRunAsk } from '../src/agent/agent';
 import { __setEngineModelForTests } from '../src/agent/core/engine';
-import { resolvePolicy, defaultPolicy as prodDefaultPolicy } from '../src/permissions/policy';
+import { resolvePolicy, defaultPolicy as prodDefaultPolicy, policyFromSettings, clearSessionGrants } from '../src/permissions/policy';
 import { createStreamTextSplitter } from '../src/agent/core/routerProvider';
+import { composeSystemPrompt } from '../src/context/system';
+import { gatherPromptContext, invalidatePromptContext } from '../src/context/promptContext';
+import * as vscode from 'vscode';
 import type { AgentOpts, AgentResult } from '../src/agent/agent';
 import type { ChatMessage } from '../src/shared/types';
 
@@ -514,6 +519,297 @@ async function main() {
     ok('14. edit applied from recovered context', ws.read('foo.txt') === 'goodbye world', `content=${ws.read('foo.txt')}`);
   }
 
+  // ── Scenario 15: todoWrite tool end-to-end ──────────────────────────────────
+  {
+    const ws = makeWorkspace();
+    const seenTodos: Array<Array<{ content: string; status: string }>> = [];
+    const m = createMockModel([
+      { toolCalls: [{ toolName: 'todoWrite', input: { todos: [
+        { content: 'Fix the loop', status: 'in_progress' },
+        { content: 'Add a test', status: 'pending' },
+        { content: 'Update docs', status: 'pending' },
+      ] } }] },
+      { text: 'all done' },
+    ], 's15');
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
+      messages: [{ role: 'user', content: 'do the three things' }],
+      mode: 'agent',
+      onTodos: (todos) => { seenTodos.push(todos as never); },
+    })));
+    ok('15. onTodos fired once with parsed items', seenTodos.length === 1 && seenTodos[0].length === 3 && seenTodos[0][0].content === 'Fix the loop' && seenTodos[0][0].status === 'in_progress',
+      `seen=${JSON.stringify(seenTodos)}`);
+    const prompt2 = JSON.stringify(m.calls[1]?.messages ?? []);
+    ok('15. confirmation reached step-2 messages', prompt2.includes('Task list updated') && prompt2.includes('Fix the loop'));
+    ok('15. turn completed', out.finishReason === 'stop', `finish=${out.finishReason}`);
+
+    const { buildV3ToolSet } = await import('../src/agent/core/tools/v3');
+    ok('15. todoWrite offered in all 3 modes', ['agent', 'plan', 'ask'].every((mode) => 'todoWrite' in buildV3ToolSet(mode as never)));
+  }
+
+  // ── Scenario 16: project rules reach the system prompt ──────────────────────
+  {
+    const ws = makeWorkspace();
+    fs.writeFileSync(path.join(ws.root, 'AGENTS.md'), 'ALWAYS use tabs. Never touch src/legacy/.', 'utf8');
+    const prevFolders = vscode.workspace.workspaceFolders;
+    (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = [
+      { uri: vscode.Uri.file(ws.root), name: path.basename(ws.root), index: 0 },
+    ];
+    invalidatePromptContext();
+    try {
+      const m = createMockModel([{ text: 'noted the rules' }], 's16');
+      await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
+        messages: [{ role: 'user', content: 'hello' }],
+        mode: 'agent',
+      })));
+      const system = JSON.stringify(m.calls[0].messages);
+      ok('16. AGENTS.md body reached the model', system.includes('ALWAYS use tabs'), system.slice(0, 200));
+      ok('16. rules wrapped in <project_rules>', system.includes('<project_rules>'));
+
+      // ── Scenario 17: environment context + prompt length pin ────────────────
+      let ctx = await gatherPromptContext();
+      const prompt = composeSystemPrompt('agent', ctx);
+      ok('17. <environment_context> present with date + workspace', prompt.includes('<environment_context>') && prompt.includes(new Date().toISOString().slice(0, 10)) && prompt.includes(path.basename(ws.root)),
+        prompt.slice(0, 400));
+      // Length pin through the REAL pipeline: a 9K rules file → loadProjectRules caps 8K →
+      // gatherPromptContext slices to MAX_RULES_INJECT → composed prompt stays bounded.
+      fs.writeFileSync(path.join(ws.root, 'AGENTS.md'), 'x'.repeat(9_000), 'utf8');
+      invalidatePromptContext();
+      ctx = await gatherPromptContext();
+      const fatPrompt = composeSystemPrompt('agent', ctx);
+      ok('17. prompt length pinned < 8_000 with max-size rules', fatPrompt.length < 8_000 && fatPrompt.includes('[project rules truncated]'), `len=${fatPrompt.length}`);
+    } finally {
+      (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = prevFolders;
+      invalidatePromptContext();
+    }
+  }
+
+  // ── Scenario 18: editFile result carries the post-edit diagnostics note ─────
+  {
+    const ws = makeWorkspace();
+    const diag = { severity: 0, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }, message: 'new type error', code: 'T1' };
+    let calls = 0;
+    (globalThis as { __tiermuxTestDiagnostics?: unknown }).__tiermuxTestDiagnostics = () => {
+      calls++;
+      return calls >= 2 ? [diag] : []; // before-snapshot clean, after-write has a NEW error
+    };
+    const m = createMockModel([
+      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'goodbye' } }] },
+      { text: 'fixed the error' },
+    ], 's18');
+    try {
+      const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
+        messages: [{ role: 'user', content: 'fix foo.txt' }],
+        mode: 'agent',
+        onPermissionAsk: async () => 'once',
+      })));
+      const step2 = JSON.stringify(m.calls[1]?.messages ?? []);
+      ok('18. diagnostics note rode in the edit result', step2.includes('New diagnostics after this edit') && step2.includes('new type error'), step2.slice(0, 300));
+      ok('18. edit itself still applied (success preserved)', ws.read('foo.txt') === 'goodbye world');
+      ok('18. turn completed', out.finishReason === 'stop');
+    } finally {
+      delete (globalThis as { __tiermuxTestDiagnostics?: unknown }).__tiermuxTestDiagnostics;
+    }
+  }
+
+  // ── Scenario 19: getDiagnostics tool ─────────────────────────────────────────
+  {
+    const ws = makeWorkspace();
+    const diag = { severity: 0, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }, message: 'boom', code: 'E1' };
+    (globalThis as { __tiermuxTestDiagnostics?: unknown }).__tiermuxTestDiagnostics = [
+      [vscode.Uri.file(path.join(ws.root, 'foo.txt')), [diag]],
+    ];
+    const m = createMockModel([
+      { toolCalls: [{ toolName: 'getDiagnostics', input: { path: 'foo.txt' } }] },
+      { text: 'there is an error' },
+    ], 's19');
+    try {
+      const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
+        messages: [{ role: 'user', content: 'any errors?' }],
+        mode: 'agent',
+      })));
+      const step2 = JSON.stringify(m.calls[1]?.messages ?? []);
+      ok('19. diagnostics returned in the formatted shape', step2.includes('ERROR') && step2.includes('boom'), step2.slice(0, 300));
+      ok('19. turn completed', out.finishReason === 'stop', `finish=${out.finishReason}`);
+    } finally {
+      delete (globalThis as { __tiermuxTestDiagnostics?: unknown }).__tiermuxTestDiagnostics;
+    }
+  }
+
+  // ── Scenario 20: always-allow persists across turns (session grants) ────────
+  {
+    clearSessionGrants('s20');
+    // Unit half: the grant written via 'allow-always' survives a FRESH policyFromSettings.
+    const cfg1 = policyFromSettings(false, 'agent', 's20');
+    const d1 = await resolvePolicy({ toolName: 'editFile' }, cfg1, async () => 'allow-always');
+    const cfg2 = policyFromSettings(false, 'agent', 's20');
+    let asked = 0;
+    const d2 = await resolvePolicy({ toolName: 'editFile' }, cfg2, async () => { asked++; return 'reject'; });
+    ok('20. first ask resolves via approval channel', d1.type === 'approved');
+    ok('20. grant persists in a fresh policy (no re-ask)', d2.type === 'approved' && asked === 0, `asked=${asked}`);
+    clearSessionGrants('s20');
+
+    // Engine half: two turns sharing a sessionId — turn 2's edit is auto-approved.
+    const ws = makeWorkspace();
+    const m1 = createMockModel([
+      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'goodbye' } }] },
+      { text: 'done once' },
+    ], 's20a');
+    let askCount = 0;
+    const ask = async () => { askCount++; return 'always' as const; };
+    await runWithWorkspaceRoot(ws.root, () => engineTurn(m1, engineOpts({
+      messages: [{ role: 'user', content: 'change hello to goodbye' }],
+      mode: 'agent', sessionId: 's20-engine',
+      onPermissionAsk: ask,
+    })));
+    const m2 = createMockModel([
+      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'goodbye', replace: 'farewell' } }] },
+      { text: 'done twice' },
+    ], 's20b');
+    await runWithWorkspaceRoot(ws.root, () => engineTurn(m2, engineOpts({
+      messages: [{ role: 'user', content: 'change goodbye to farewell' }],
+      mode: 'agent', sessionId: 's20-engine',
+      onPermissionAsk: ask,
+    })));
+    ok('20. engine: turn 2 edit auto-approved (asked only in turn 1)', askCount === 1 && ws.read('foo.txt') === 'farewell world', `askCount=${askCount} content=${ws.read('foo.txt')}`);
+    clearSessionGrants('s20-engine');
+  }
+
+  // ── Scenario 21: reasoning streams INCREMENTALLY (not end-dumped) ───────────
+  {
+    // (a) Splitter-level: a long think block fed in 8 chunks must emit reasoning on
+    // MULTIPLE feeds before flush — locks the incremental pass-through so nobody
+    // "optimizes" the ThinkStripper back into end-of-stream buffering.
+    const splitter = createStreamTextSplitter();
+    const thinkBody = 'alpha beta gamma delta epsilon zeta eta theta iota kappa';
+    const pieces: string[] = [];
+    const chunkSize = Math.ceil(('<think>' + thinkBody + '</think>ok').length / 8);
+    const whole = '<think>' + thinkBody + '</think>ok';
+    for (let i = 0; i < whole.length; i += chunkSize) pieces.push(whole.slice(i, i + chunkSize));
+    let emittingFeeds = 0;
+    let reasoning = '';
+    for (const p of pieces) {
+      const out = splitter.feed(p, '');
+      if (out.reasoning) emittingFeeds++;
+      reasoning += out.reasoning;
+    }
+    const f = splitter.flush();
+    if (f.reasoning) emittingFeeds++;
+    ok('21. splitter emits reasoning incrementally (>=2 feeds before flush)', emittingFeeds >= 2, `emittingFeeds=${emittingFeeds}`);
+    ok('21. splitter full think content captured', reasoning.includes(thinkBody), `reasoning=${JSON.stringify(reasoning)}`);
+
+    // (b) Engine-level: multi-delta reasoning fires onReasoning per delta.
+    const ws = makeWorkspace();
+    const reasoningCalls: string[] = [];
+    const m = createMockModel([
+      { reasoningDeltas: ['part one ', 'part two ', 'part three'], text: 'answer' },
+    ], 's21');
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
+      messages: [{ role: 'user', content: 'think then answer' }],
+      mode: 'agent',
+      onReasoning: (t) => { reasoningCalls.push(t); },
+    })));
+    ok('21. engine: onReasoning fired per delta (>1)', reasoningCalls.length > 1, `calls=${reasoningCalls.length}`);
+    ok('21. engine: reasoning concatenation matches', (out.reasoning ?? '') === 'part one part two part three', `reasoning=${JSON.stringify(out.reasoning)}`);
+  }
+
+  // ── Scenario 22: act-gap nudge retracts the pass-1 narration draft ──────────
+  // Live repro (nemotron-3-ultra-free, 12:57 AM): pass 1 streamed narration ("The user is
+  // asking me to… Let me grep…"), the act-gap nudge fired, and pass 2's text streamed into
+  // the SAME draft — the reply bubble showed the narration TWICE. The engine must retract
+  // the draft before the continuation pass so pass-1 narration becomes Chain-of-Thought and
+  // pass 2 is the sole reply.
+  {
+    const ws = makeWorkspace();
+    const retracts: number[] = [];
+    const chunks: string[] = [];
+    const m = createMockModel([
+      { text: 'The user is asking me to search for hello. Let me grep for hello' },
+      { text: 'The user is asking me to search for hello. Let me grep again' },
+    ], 's22');
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
+      messages: [{ role: 'user', content: 'Hello' }],
+      mode: 'agent',
+      onChunk: (t) => chunks.push(t),
+      onRetractDraft: () => retracts.push(1),
+    })));
+    ok('22. nudge fired (two model calls)', m.calls.length === 2, `calls=${m.calls.length}`);
+    ok('22. pass-1 narration retracted before pass 2', retracts.length === 1, `retracts=${retracts.length}`);
+    ok('22. result.text is the continuation pass only', out.text === 'The user is asking me to search for hello. Let me grep again', `text=${JSON.stringify(out.text)}`);
+    ok('22. both passes still streamed (host re-routes pass 1 to CoT)', chunks.length === 2, `chunks=${JSON.stringify(chunks)}`);
+  }
+
+  // ── Scenario 23: provider stream error → honest failed result, not a phantom turn ──
+  // Live repro (1:18 AM, "@routes/web.php optimize this"): the provider chain died in ~1s,
+  // but consumeStream() RESOLVES on stream errors (it never rejects), so the engine returned
+  // finish 'unknown' / 0 in / 0 out as if the turn succeeded and the webview guessed "check
+  // your model keys". The engine must surface the real error via failed+errorMessage.
+  {
+    const ws = makeWorkspace();
+    const m = createMockModel([
+      { error: new Error('TierMux: all candidates failed: 401 Unauthorized') },
+    ], 's23');
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
+      messages: [{ role: 'user', content: 'optimize this' }],
+      mode: 'agent',
+    })));
+    ok('23. stream error → failed:true (not a silent empty success)', out.failed === true, `failed=${out.failed} finish=${out.finishReason}`);
+    ok('23. errorMessage carries the real provider reason', !!out.errorMessage && out.errorMessage.includes('401 Unauthorized'), String(out.errorMessage));
+    ok('23. no phantom text', out.text === '', `text=${JSON.stringify(out.text)}`);
+  }
+
+  // ── Scenario 24: quota/credit failures ARE failover-worthy ─────────────────
+  // Live repro: "auto rotate not works" — free gateways answer out-of-credit with 402
+  // (pollinations) and paid-only-model-with-$0-credit with 403 (new-api/TokenRouter), and
+  // isFailoverWorthy only rotated on 401/429/5xx/network — so those errors threw straight
+  // through the candidate loop and killed the turn with zero rotation.
+  {
+    const { isFailoverWorthy } = await import('../src/agent/core/routerProvider');
+    const { ProviderHttpError } = await import('../src/providers/base');
+    const http = (status: number) => new ProviderHttpError(`API error ${status}`, status);
+    for (const status of [400, 401, 402, 403, 429, 500, 503]) {
+      ok(`24. HTTP ${status} rotates to the next model`, isFailoverWorthy(http(status)));
+    }
+    ok('24. 200-class success never rotates', !isFailoverWorthy(new Error('some parse glitch')));
+    ok('24. network errors rotate', isFailoverWorthy(new Error('fetch failed')));
+  }
+
+  // ── Scenario 25: checkpoint baseline is the TRUE pre-write content (undo restores) ──
+  // Live repro (2026-08-28, "undo not restoreing files"): the only baseline capture for v3
+  // write tools lived in chatViewProvider's onTool — which v3 fires from the engine's
+  // onStepEnd, i.e. AFTER the tool had already written. Every "before" snapshot therefore
+  // held the POST-edit content, so checkpoint restore rewrote files with the very content it
+  // was supposed to undo: "Restored N files" with zero visible change. The tools now capture
+  // the baseline themselves (onBeforeWrite) BEFORE mutating.
+  {
+    const ws = makeWorkspace(); // foo.txt = 'hello world', bar.txt = 'second file'
+    const { CheckpointManager } = await import('../src/edits/checkpoints');
+    const cps = new CheckpointManager(ws.root); // non-git tmp dir → snaps path (the broken one)
+    await cps.begin('r1', 'undo restores'); // the host does this in handleSend before the turn
+    const m = createMockModel([
+      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'goodbye' } }] },
+      { toolCalls: [{ toolName: 'writeFile', input: { path: 'new.txt', content: 'brand new' } }] },
+      { text: 'edited foo, created new' },
+    ], 's25');
+    await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
+      messages: [{ role: 'user', content: 'edit foo.txt and create new.txt' }],
+      mode: 'agent',
+      onBeforeWrite: (uri, before) => cps.record(uri, before),
+      onPermissionAsk: async () => 'once',
+    })));
+    ok('25. edits landed on disk', ws.read('foo.txt') === 'goodbye world' && ws.read('new.txt') === 'brand new',
+      `foo=${ws.read('foo.txt')} new=${ws.read('new.txt')}`);
+    await cps.commit();
+    ok('25. checkpoint kept (baselines recorded)', cps.list().length === 1, `list=${JSON.stringify(cps.list())}`);
+    const changed = await cps.changedFiles(cps.list()[0].id);
+    ok('25. changedFiles sees both files (true pre-state differs from disk)',
+      changed.length === 2 && changed.every((f) => f.status === 'modified' || f.status === 'created'),
+      JSON.stringify(changed));
+    const n = await cps.restore(cps.list()[0].id);
+    ok('25. restore reverts the edit AND un-creates the new file',
+      n === 2 && ws.read('foo.txt') === 'hello world' && !fs.existsSync(path.join(ws.root, 'new.txt')),
+      `n=${n} foo=${JSON.stringify(ws.read('foo.txt'))} newExists=${fs.existsSync(path.join(ws.root, 'new.txt'))}`);
+  }
+
   // ── Failover chain depth (hardening — the live "1s, 0 tokens" regression) ────
   // A PINNED model must never be a single point of failure: the chain pads with the rest
   // of the usable enabled models, so a 429/dead pinned model fails over instead of dying.
@@ -554,6 +850,57 @@ async function main() {
       JSON.stringify(toolSel));
     setModelSources(undefined as never);
 
+    // Tail ordering: rank-sorted (best first), NOT raw settings order — a paper-strong model
+    // sitting first in settings order used to serve every task after the table ids went dead.
+    setModelSources({
+      catalog: { find: (_p: string, m: string) => ({ supportsTools: true, intelligenceRank: m === 'a-model' ? 1 : m === 'b-model' ? 2 : 3 }) } as never,
+      settings: {
+        getFallback: () => [
+          { platform: 'p1', modelId: 'c-model', enabled: true, priority: 0 },
+          { platform: 'p1', modelId: 'b-model', enabled: true, priority: 1 },
+          { platform: 'p1', modelId: 'a-model', enabled: true, priority: 2 },
+        ],
+      } as never,
+      secrets: { getKeys: async () => ['k'], isToolIncompatible: () => false } as never,
+    });
+    const sel3 = await selectModel([], {});
+    ok('F. tail ordered by intelligence rank, not settings order',
+      sel3.model === 'p1::a-model'
+      && sel3.fallbackChain[0] === 'p1::b-model' && sel3.fallbackChain[1] === 'p1::c-model',
+      JSON.stringify(sel3));
+
+    // "Why this model?" rationale must ride on the selection (the footer's (?) button renders
+    // a popover from it — v3 selection used to produce nothing, so the button was dead).
+    const rat = sel3.rationale;
+    ok('F. selection carries a rationale report',
+      !!rat && rat.picked === 'p1::a-model' && rat.entries.length >= 3,
+      JSON.stringify(rat));
+    ok('F. rationale marks the served model and numeric fields are popover-safe',
+      !!rat && rat.entries[0].selected === true && Number.isFinite(rat.entries[0].score)
+      && typeof rat.entries[0].reason === 'string' && rat.entries[0].reason.length > 0,
+      JSON.stringify(rat?.entries[0]));
+    const skipRow = rat?.entries.find((e) => e.skip);
+    ok('F. skipped candidates carry a reason (or none exist)', skipRow === undefined || (typeof skipRow.skip === 'string' && skipRow.skip.length > 0),
+      JSON.stringify(skipRow));
+    setModelSources(undefined as never);
+
+    // A model picked BY THE TASK TABLE keeps its table label — the enabled-tail loop used to
+    // re-pick the same key with the generic 'enabled model' label and overwrite the popover's
+    // why (live repro: table-picked opencode/hy3-free showed "enabled model — serves this turn").
+    setModelSources({
+      catalog: { find: (_p: string, m: string) => (m === 'gemini-2.5-flash' ? { supportsTools: true, intelligenceRank: 1 } : undefined) } as never,
+      settings: {
+        getFallback: () => [{ platform: 'google', modelId: 'gemini-2.5-flash', enabled: true, priority: 0 }],
+      } as never,
+      secrets: { getKeys: async () => ['k'], isToolIncompatible: () => false } as never,
+    });
+    const selT = await selectModel([], { taskKind: 'vision' }); // vision table = [google::gemini-2.5-flash]
+    ok('F. task-table pick keeps its table label in the rationale',
+      selT.model === 'google::gemini-2.5-flash' && !!selT.rationale
+      && selT.rationale.entries[0].reason.startsWith('task table (vision)'),
+      JSON.stringify(selT.rationale?.entries[0]));
+    setModelSources(undefined as never);
+
     // Web tools (restored) are offered in every mode.
     const { buildV3ToolSet } = await import('../src/agent/core/tools/v3');
     const agentTools = buildV3ToolSet('agent');
@@ -562,7 +909,7 @@ async function main() {
     ok('F. web tools offered in ask mode too', 'webSearch' in askTools && 'fetchUrl' in askTools);
   }
 
-  console.log(failures === 0 ? '\nALL 14 FOUNDATION SCENARIOS PASS — gate open for steps 9-10' : `\n${failures} FAILURE(S) — FOUNDATION GATE BLOCKED, adapt the plan before deleting`);
+  console.log(failures === 0 ? '\nALL 25 FOUNDATION SCENARIOS PASS — gate open for steps 9-10' : `\n${failures} FAILURE(S) — FOUNDATION GATE BLOCKED, adapt the plan before deleting`);
   process.exit(failures === 0 ? 0 : 1);
 }
 

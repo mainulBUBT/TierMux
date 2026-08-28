@@ -19,15 +19,40 @@ import { classifyTask, type TaskKind } from '../agent/routing';
 
 /** platform::modelId → candidate chain per task kind. Ordered: best first. */
 export const TASK_ROUTING: Record<TaskKind, string[]> = {
-  coding: ['opencode::qwen3-coder', 'groq::llama-3.3-70b-versatile', 'cerebras::llama-3.3-70b', 'groq::qwen-2.5-coder-32b'],
-  debug: ['groq::deepseek-r1-distill-llama-70b', 'opencode::deepseek-v3.1-free', 'cerebras::qwen-3-32b'],
-  vision: ['google::gemini-2.5-flash', 'openrouter::qwen2.5-vl-72b-instruct', 'groq::llama-3.2-90b-vision-preview'],
-  longContext: ['google::gemini-2.5-flash', 'groq::llama-3.3-70b-versatile', 'opencode::glm-4.6-flash-free'],
-  plan: ['groq::llama-3.3-70b-versatile', 'opencode::glm-4.6-flash-free', 'cerebras::llama-3.3-70b'],
-  trivial: ['groq::llama-3.1-8b-instant', 'opencode::qwen2.5-coder-7b', 'cerebras::llama-3.1-8b'],
-  chat: ['groq::llama-3.3-70b-versatile', 'opencode::glm-4.6-flash-free', 'cerebras::llama-3.3-70b'],
-  agent: ['opencode::qwen3-coder', 'groq::llama-3.3-70b-versatile', 'cerebras::llama-3.3-70b'],
+  // NOTE: every id here MUST exist in media/catalog.json — 11 of the previous 13 were dead
+  // (groq renamed to namespaced ids, opencode renamed its free tier, cerebras swapped
+  // models), so the table silently contributed NOTHING and every Auto turn fell straight
+  // into the user's settings-order tail. When gateways rename again, these go dead the same
+  // silent way — which is why the tail below is rank-sorted, not table-dependent.
+  coding: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::muse-spark-1.2-contributor-free', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
+  debug: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free'],
+  vision: ['google::gemini-2.5-flash'],
+  longContext: ['google::gemini-2.5-flash', 'groq::openai/gpt-oss-120b', 'opencode::muse-spark-1.2-contributor-free'],
+  plan: ['groq::openai/gpt-oss-120b', 'opencode::muse-spark-1.2-contributor-free', 'opencode::hy3-free'],
+  trivial: ['cerebras::gemma-4-31b', 'groq::openai/gpt-oss-20b', 'opencode::mimo-v2.5-free'],
+  chat: ['groq::openai/gpt-oss-120b', 'opencode::muse-spark-1.2-contributor-free', 'opencode::hy3-free'],
+  agent: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::muse-spark-1.2-contributor-free', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
 };
+
+/** One row of the "Why this model?" report — numeric fields mirror the old scoring Router's
+ *  shape so the webview popover renders unchanged (it calls .toFixed on score/capability/
+ *  runtime/confidence). Runtime 1.0 / confidence 0 = v3 keeps no learned health multiplier. */
+export interface SelectionRationale {
+  taskKind: TaskKind;
+  picked?: string;
+  entries: Array<{
+    model: string;
+    selected: boolean;
+    score: number;
+    capability: number;
+    runtime: number;
+    preference: number;
+    confidence: number;
+    reason: string;
+    /** Skip reason when absent from the chain (mirrors the old Router's string skip). */
+    skip?: string;
+  }>;
+}
 
 export interface ModelSelection {
   /** First choice as `platform::modelId`. */
@@ -35,6 +60,8 @@ export interface ModelSelection {
   /** Rest of the chain, tried in order on 429/5xx/network failure. */
   fallbackChain: string[];
   taskKind: TaskKind;
+  /** Present when sources are wired — drives the footer's "Why this model?" popup. */
+  rationale?: SelectionRationale;
 }
 
 export interface ModelSources {
@@ -126,20 +153,31 @@ export async function selectModel(
     return ok;
   };
 
-  const pick = async (key: string): Promise<string | undefined> => {
-    if (exclude.has(key)) return undefined;
+  // "Why this model?" data — every candidate considered is recorded with WHY it made the
+  // chain or was skipped. The old scoring Router produced these; v3's table+tail selection
+  // never did, so the footer's (?)/⇄ button had nothing to show (live repro 2026-08-28:
+  // clicking it rendered no popup). Numbers: capability derives from the catalog's
+  // intelligence rank; Runtime is neutral 1.0 with confidence 0 — v3 keeps no learned
+  // health multiplier, and the popover's tooltips present those values as exactly that.
+  const skipReasons = new Map<string, string>();
+  const pickLabels = new Map<string, string>();
+  const skip = (key: string, reason: string) => { if (!skipReasons.has(key)) skipReasons.set(key, reason); };
+  const pick = async (key: string, label: string): Promise<string | undefined> => {
+    if (exclude.has(key)) { skip(key, 'excluded for this retry'); return undefined; }
     const platform = key.endsWith('::auto') ? key.slice(0, -6) : key.split('::')[0];
     const modelId = key.endsWith('::auto') ? '' : key.split('::').slice(1).join('::');
-    if (!(await platformUsable(platform))) return undefined;
+    if (!(await platformUsable(platform))) { skip(key, 'no API key stored for this platform'); return undefined; }
     // Per-model cooldown: skip a model still inside its failure cooldown (429/5xx/timeout) so
     // the chain prefers healthy models. The pinned model is exempt — explicit user choice,
     // only the Stop button cancels it.
-    if (modelId && isInCooldown(platform, modelId) && key !== opts.pinnedModel) return undefined;
+    if (modelId && isInCooldown(platform, modelId) && key !== opts.pinnedModel) { skip(key, 'in failure cooldown (recent errors)'); return undefined; }
     if (key.endsWith('::auto')) {
       const hit = [...enabled].find((k) => k.startsWith(`${platform}::`) && !exclude.has(k));
+      if (!hit) skip(key, 'platform enabled but no enabled model');
+      else pickLabels.set(hit, label);
       return hit;
     }
-    if (enabled.size > 0 && !enabled.has(key) && opts.pinnedModel !== key) return undefined;
+    if (enabled.size > 0 && !enabled.has(key) && opts.pinnedModel !== key) { skip(key, 'not enabled in Manage Models & Keys'); return undefined; }
     // Tool-capability filter — the OLD Router's requireTools rule (router.ts:779/867): an
     // agent turn offers tools, so a model the catalog marks supportsTools=false can never
     // call them and deflects instead ("I don't have access to…"). Without this, Auto picks
@@ -147,31 +185,81 @@ export async function selectModel(
     if (opts.requireTools && sources) {
       const modelId = key.split('::').slice(1).join('::');
       const meta = sources.catalog.find(platform, modelId);
-      if (meta?.supportsTools === false) return undefined;
-      if (sources.secrets.isToolIncompatible?.(platform as never, modelId)) return undefined;
+      if (meta?.supportsTools === false) { skip(key, 'catalog says this model cannot call tools'); return undefined; }
+      if (sources.secrets.isToolIncompatible?.(platform as never, modelId)) { skip(key, 'tool-incompatible platform'); return undefined; }
     }
+    pickLabels.set(key, label);
     return key;
   };
 
   const chain: string[] = [];
   if (opts.pinnedModel) {
-    const pinned = await pick(opts.pinnedModel);
+    const pinned = await pick(opts.pinnedModel, 'pinned by you');
     if (pinned) chain.push(pinned);
   }
   for (const key of TASK_ROUTING[taskKind] ?? TASK_ROUTING.chat) {
-    const picked = await pick(key);
+    const picked = await pick(key, `task table (${taskKind})`);
     if (picked && !chain.includes(picked)) chain.push(picked);
   }
-  // ALWAYS pad the chain with the rest of the usable enabled models (dedup, settings
-  // priority order). The old "only when empty" rule left a pinned model with a
-  // SINGLE candidate — nothing to fail over to when it 429'd or died, which is exactly
-  // "failover doesn't work" in production (observed live: pinned groq model, 1s fast-fail,
-  // 0 tokens). With the tail, every chain is: pinned → table picks → rest of enabled.
+  // ALWAYS pad the chain with the rest of the usable enabled models (dedup), ordered by the
+  // catalog's measured intelligence rank — best first — with unranked models keeping their
+  // settings order after the ranked ones. The old "settings order" tail is how a
+  // paper-strong-but-live-weak model served EVERY task (live repro 2026-08-28, 1:29 AM:
+  // opencode/nemotron-3-ultra-free narrated a plan instead of acting on "@routes/web.php
+  // optimize this" — it sat first in settings order after the task table's dead ids were
+  // all skipped). Pinned models stay exempt (explicit user choice above).
+  const ranked: Array<{ key: string; rank: number }> = [];
   for (const key of enabled) {
-    const picked = await pick(key);
-    if (picked && !chain.includes(picked)) chain.push(picked);
+    // Already chained (pin/table pick)? Skip BEFORE re-picking: pick() would overwrite the
+    // entry's original label ('pinned by you' / 'task table (chat)') with 'enabled model' and
+    // the "Why this model?" popover would lie about WHY it served (live repro 2026-08-28:
+    // table-picked opencode/hy3-free reported "enabled model — serves this turn").
+    if (chain.includes(key)) continue;
+    const picked = await pick(key, 'enabled model');
+    if (!picked || chain.includes(picked)) continue;
+    const platform = key.split('::')[0];
+    const modelId = key.split('::').slice(1).join('::');
+    const meta = sources.catalog.find(platform, modelId);
+    ranked.push({ key: picked, rank: meta?.intelligenceRank ?? Number.POSITIVE_INFINITY });
+  }
+  ranked.sort((a, b) => a.rank - b.rank); // stable — equal/unknown ranks keep settings order
+  for (const r of ranked) {
+    if (Number.isFinite(r.rank)) pickLabels.set(r.key, `enabled tail · intelligence rank ${r.rank}`);
+    chain.push(r.key);
   }
   if (chain.length === 0) return keylessFallback();
 
-  return { model: chain[0], fallbackChain: chain.slice(1), taskKind };
+  // Assemble the "Why this model?" report: chain in order (chain[0] = selected), then every
+  // skipped candidate with its reason. Chain positions after 0 are failover order.
+  const rankOf = (key: string): number | undefined => {
+    const platform = key.split('::')[0];
+    const modelId = key.split('::').slice(1).join('::');
+    const meta = sources?.catalog.find(platform, modelId);
+    return meta && typeof meta.intelligenceRank === 'number' ? meta.intelligenceRank : undefined;
+  };
+  const rationale: SelectionRationale = {
+    taskKind,
+    picked: chain[0],
+    entries: [
+      ...chain.map((key, i) => {
+        const rank = rankOf(key);
+        const capability = rank !== undefined ? +((6 - rank) / 5).toFixed(2) : 0.5;
+        const label = pickLabels.get(key) ?? 'enabled model';
+        return {
+          model: key,
+          selected: i === 0,
+          score: capability, capability, runtime: 1, preference: 1, confidence: 0,
+          reason: i === 0 ? `${label} — serves this turn` : `${label} — failover #${i}`,
+        };
+      }),
+      ...[...skipReasons.entries()]
+        .filter(([key]) => !chain.includes(key))
+        .map(([key, reason]) => ({
+          model: key, selected: false, score: 0, capability: 0, runtime: 1, preference: 1, confidence: 0,
+          reason, skip: reason,
+        })),
+    ],
+  };
+
+  return { model: chain[0], fallbackChain: chain.slice(1), taskKind, rationale };
 }

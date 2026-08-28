@@ -78,19 +78,7 @@ const CURRENT_KEY = 'tiermux.currentSession';
 const AUTO_APPROVE_KEY = 'tiermux.autoApprove';
 const MAX_SESSIONS = 50;
 /** Tool calls that count as "Modifications" for a session's tab activity badge (see `Session.liveActivity`). */
-const WRITE_TOOL_NAMES = new Set(['writeFile', 'createFile', 'editFile', 'deleteFile', 'runCommand']);
-/** Of those, the ones that touch a single identifiable file path (excludes runCommand). */
-const FILE_WRITE_TOOL_NAMES = new Set(['writeFile', 'createFile', 'editFile', 'deleteFile']);
-
-/** Pull a file path out of a write/edit/create/delete tool call's args, tolerant of the
- *  several key names OC's tools have used (see media/src/ui/tool/ToolCard.ts's own copy of
- *  this same tolerance for rendering tool-card titles). */
-function extractToolFilePath(args: unknown): string | undefined {
-  if (!args || typeof args !== 'object') return undefined;
-  const a = args as Record<string, unknown>;
-  const v = a.path ?? a.file ?? a.filePath ?? a.filename ?? a.relativePath;
-  return typeof v === 'string' && v ? v : undefined;
-}
+const WRITE_TOOL_NAMES = new Set(['writeFile', 'createFile' /* legacy names */, 'editFile', 'deleteFile', 'runCommand']);
 
 /** Build an AI Elements Plan payload from the agent's flat `TodoItem[]` list. The plan is a
  *  single section (the agent's todos are flat; sections exist for richer future sources) and
@@ -2058,6 +2046,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.cancel?.cancel();
     s.cancel?.dispose();
     s.cancel = new vscode.CancellationTokenSource();
+    diagLog('send.token', `requestId=${m.requestId} cancelledAtCreate=${s.cancel.token.isCancellationRequested}`);
     s.activeRequestId = m.requestId;
 
     this.settlePendingAskUser(s);
@@ -2209,6 +2198,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (result.failed) {
         if (s.history[s.history.length - 1]?.role === 'user') s.history.pop();
         const errorText = result.errorMessage || 'I wasn\'t able to produce a response. Try again, or switch to a different model.';
+        cbk.settleReasoning();
         this.pushAssistantTurn(s, m.requestId, { ...result, text: errorText }, sentAt);
         this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: errorText, platform: turnPlatformLabel(s.model, result, this.deps), model: turnModelLabel(s.model, result.model) });
         return;
@@ -2255,7 +2245,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const resumable = !hasQuestions && !result.failed && (result.paused
         || finalRemainingTodos.length > 0);
 
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: pinned, paused: resumable, noFooter: hasQuestions });
+      cbk.settleReasoning();
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, finishReason: result.finishReason, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: pinned, paused: resumable, noFooter: hasQuestions });
       diagLog('send.postAssistant', `requestId=${m.requestId} · textLen=${(displayText ?? '').length} textHead="${(displayText ?? '').slice(0, 120).replace(/\n/g, '⏎')}" reasoningLen=${(result.reasoning ?? '').length} paused=${resumable}`);
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
       if (hasQuestions) {
@@ -2621,6 +2612,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       planState.status = 'done';
       s.executingPlan = false;
       const summary = result.text || 'Plan execution finished.';
+      cbk.settleReasoning();
       // Final summary as a real transcript entry so the finished plan reads as one turn.
       s.transcript.push({ role: 'assistant', text: summary, requestId, ts: Date.now(), historyLen: s.history.length - 1 });
       s.history.push({ role: 'assistant', content: summary });
@@ -2801,7 +2793,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * The agent's `askUser` tool always surfaces as an in-chat card. Every mode can ask —
    * including Chat, whose web loop carries askUser to clarify time-sensitive queries.
    */
-  private agentCallbacks(s: Session, requestId: string, _mode: Mode): Omit<AgentOpts, 'messages' | 'mode' | 'effort' | 'abortSignal' | 'pinnedModel' | 'taskKind'> {
+  private agentCallbacks(s: Session, requestId: string, _mode: Mode): Omit<AgentOpts, 'messages' | 'mode' | 'effort' | 'abortSignal' | 'pinnedModel' | 'taskKind'> & { settleReasoning(): void } {
     // §14 event adapter — the whole streaming UX is a thin map of engine events onto the
     // webview protocol. Seven events, nothing more (no phase engine, no custom retry — the
     // AI SDK owns the loop, `maxRetries` covers transient failures):
@@ -2828,16 +2820,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const durationMs = Date.now() - reasoningStart;
       this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: reasoningId(), name: 'reasoning', args: undefined, state: 'done', detail: reasoningText, durationMs });
       reasoningStart = 0;
+      // Advance the segment HERE, not only in endReasoningSegment: whichever flush path runs
+      // first (onChunk's flush or onTool's segment end) must hand the NEXT burst a fresh id +
+      // empty buffer. Live repro: onChunk flushed the burst when reply text arrived, leaving
+      // reasoningText non-empty under the OLD segment id — the next step's reasoning appended
+      // to the same toolCallId, and upsertTool re-opened the settled block and re-appended the
+      // whole combined reasoning at the END of the flow (the "reasoning suddenly appears" bug).
+      reasoningSeg++;
+      reasoningText = '';
     };
-    // A tool call interrupted reasoning: settle the current burst, then advance to a fresh segment
-    // (new id + empty buffer) so reasoning that resumes AFTER the tool renders as its own block.
+    // A tool call interrupted reasoning: settle the current burst (flush now also advances the
+    // segment) so reasoning that resumes AFTER the tool renders as its own block.
     const endReasoningSegment = () => {
-      const had = !!(reasoningStart && reasoningText.trim());
       flushReasoningDone();
-      if (had) { reasoningSeg++; reasoningText = ''; }
     };
 
     return {
+      // Not an AgentOpts field — a host-side settle hook the finish paths call right before the
+      // final assistantMessage: a turn that ENDED on reasoning (no trailing text) must post the
+      // 'done' toolStatus or the block stays "Thinking…" forever (and the settle-time whole-CoT
+      // insert in the webview never fires because a stale running block exists).
+      settleReasoning: flushReasoningDone,
       // Turn usage sink — the v3 engine reports provider-measured tokens here (the old
       // loop set this itself; v3 expects the host to provide it). Without it the footer
       // shows "0 in · 0 out" even on successful turns. Feeds the UsageTracker whose
@@ -2849,8 +2852,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           total_tokens: info.inputTokens + info.outputTokens,
         });
       },
-      onModel: (platform, model, runtimeName) => {
-        if (!live()) return;
+      // Checkpoint baseline: the write tools call this AFTER reading the pre-write content and
+      // BEFORE mutating — the accurate capture point (the old onTool hook below ran from the
+      // engine's onStepEnd, i.e. after the write landed, so "before" snapshots stored the
+      // post-edit content and undo restored files to their already-edited state).
+      onBeforeWrite: (uri, before) => s.checkpoints.record(uri, before),
+      onModel: (platform, model, runtimeName) => {        if (!live()) return;
         // Same platform-prefix stripping as sendMessage's `pinned` — s.model is the
         // picker's composite `platform::modelId` selector value when a model is pinned.
         const pinned = (s.model && s.model !== 'auto')
@@ -2869,18 +2876,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const i = steps.findIndex((st) => st.toolCallId === e.toolCallId);
         const mappedState = e.state === 'queued' ? 'running' : e.state as 'running' | 'done' | 'error';
         const entry: TranscriptStep = { toolCallId: e.toolCallId, name: e.name, args: e.args, state: mappedState, detail: e.detail };
-        if (i < 0 && FILE_WRITE_TOOL_NAMES.has(e.name)) {
-
-          const rel = extractToolFilePath(e.args);
-          const root = vscode.workspace.workspaceFolders?.[0]?.uri;
-          if (rel && root) {
-            const uri = vscode.Uri.joinPath(root, rel);
-            void vscode.workspace.fs.readFile(uri).then(
-              (buf) => s.checkpoints.record(uri, new TextDecoder().decode(buf)),
-              () => s.checkpoints.record(uri, null), // doesn't exist yet — this is a create
-            );
-          }
-        }
+        // NOTE: checkpoint baselines are captured by the tools themselves (onBeforeWrite →
+        // CheckpointManager.record) BEFORE the write lands. The capture used to happen here,
+        // but v3 fires every tool event from the engine's onStepEnd — after the tool already
+        // wrote — so the "before" snapshot held post-edit content and undo restored files to
+        // their already-edited state ("Restored N files" with zero visible change).
         if (i >= 0) steps[i] = entry; else steps.push(entry);
         s.liveSteps.set(requestId, steps);
 
@@ -3095,10 +3095,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (result.failed) {
         if (s.history[s.history.length - 1]?.role === 'user') s.history.pop();
         const errorText = result.errorMessage || 'I wasn\'t able to produce a response. Try again, or switch to a different model.';
+        cbk4.settleReasoning();
         this.pushAssistantTurn(s, m.requestId, { ...result, text: errorText }, sentAt);
         this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: errorText, platform: turnPlatformLabel(s.model, result, this.deps), model: turnModelLabel(s.model, result.model) });
         return;
       }
+      cbk4.settleReasoning();
       const after = this.deps.usage.get();
       const usage = {
         promptTokens: after.promptTokens - before.promptTokens,
@@ -3112,7 +3114,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: result.model, paused: result.paused });
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, finishReason: result.finishReason, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: result.model, paused: result.paused });
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return;
@@ -3231,7 +3233,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         };
         this.persistAgentTurn(s, result);
         this.pushAssistantTurn(s, m.requestId, result, sentAt, usage);
-        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: clar.text, reasoning: result.reasoning, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: result.model, paused: result.paused });
+        cbk5.settleReasoning();
+        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: clar.text, reasoning: result.reasoning, finishReason: result.finishReason, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: result.model, paused: result.paused });
         committed = true;
       } else {
         // The resumed run returned nothing usable (e.g. all of result.text was consumed by a

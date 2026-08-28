@@ -20,7 +20,9 @@ import { buildV3ToolSet } from './tools/v3';
 import { makeRepairViaModelSelfCorrection } from './repair';
 import { compactIfNeeded } from './compact';
 import { resolvePolicy, policyFromSettings } from '../../permissions/policy';
+import { recordOutcome } from '../../router/picker';
 import { composeSystemPrompt } from '../../context/system';
+import { gatherPromptContext } from '../../context/promptContext';
 import { diagLog } from '../../util/diag';
 
 /** Compaction budget: ~32K tokens. The adaptive per-window scaling died with executionProfile;
@@ -153,11 +155,16 @@ export function __setEngineModelForTests(m: LanguageModel | undefined): void {
  *  router/picker.ts (injected via setModelSources at activation). Kept in the signature so
  *  every existing call site compiles unchanged. */
 export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentResult> {
+  // Turn-start facts — proves (or kills) the "stale cancellation token" theory for the silent
+  // 0-in/0-out turns: if signalAborted=true here, no model request can ever run this turn.
+  diagLog('engine.start', `mode=${opts.mode} msgs=${opts.messages?.length ?? 0} signalAborted=${opts.abortSignal?.aborted ?? 'none'} requestId=${opts.requestId ?? '-'}`);
   const modelMessages = toModelMessages(opts.messages);
   const tools: ToolSet = buildV3ToolSet(opts.mode, {
     abortSignal: opts.abortSignal,
     sessionId: opts.sessionId,
     requestId: opts.requestId,
+    onTodos: opts.onTodos,
+    onBeforeWrite: opts.onBeforeWrite,
   }) as ToolSet;
 
   const model: LanguageModel = modelOverride ?? createRouterProvider({
@@ -168,6 +175,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     excludeModels: opts.excludeModels,
     requireTools: true, // the engine always offers tools — non-tool models would deflect
     onFailover: opts.onFailover,
+    onSelectionRationale: opts.onSelectionRationale,
     onModelSelected: (platform, mdl, runtimeName) => {
       served = { platform, model: mdl, runtimeName };
       opts.onModel(platform, mdl, runtimeName);
@@ -178,9 +186,17 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   });
 
   const { repair } = makeRepairViaModelSelfCorrection({ model, signal: opts.abortSignal });
-  const policy = policyFromSettings(false, opts.mode);
+  const policy = policyFromSettings(false, opts.mode, opts.sessionId);
   const toolEvents: ToolEvent[] = [];
   let reasoningText = '';
+  // The SDK's consumeStream() RESOLVES on stream errors — it never rejects (ai v7
+  // consumeStream: "a promise that resolves when the stream is fully consumed", errors go to
+  // the onError callback). So the try/catch below does NOT see provider failures; capture the
+  // last one here and turn it into an honest failed result after the pass (see post-pass guard).
+  let streamError: string | undefined;
+  // True while the current step has streamed reply text but no tool call yet — text that a
+  // tool call then follows is tool-planning narration, not the answer (see onChunk below).
+  let narrationSinceToolCall = false;
 
   let outcome: { finishReason: string; text: string; responseMessages: ModelMessage[] } = {
     finishReason: 'unknown', text: '', responseMessages: [],
@@ -189,16 +205,29 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // footer shows the real model (failover can switch it mid-turn; the LAST server wins).
   let served: { platform?: string; model?: string; runtimeName?: string } = {};
 
-  const result = streamText({
+  // System prompt + context gathered ONCE per turn: both passes share the identical prefix
+  // (provider prompt-cache friendly) and the async reads never happen per-pass.
+  const system = composeSystemPrompt(opts.mode, await gatherPromptContext());
+  const runPass = (messages: ModelMessage[]) => streamText({
     model,
-    system: composeSystemPrompt(opts.mode),
-    messages: modelMessages,
+    system,
+    messages,
     tools,
 
     toolApproval: ({ toolCall }) =>
       resolvePolicy({ toolName: toolCall.toolName, input: toolCall.input }, policy, async (req) => {
         if (!opts.onPermissionAsk) return 'deny';
-        const verdict = await opts.onPermissionAsk({ title: `Allow ${req.tool}?`, toolName: req.tool });
+        // Pass the mutating INPUT through: the host's isDangerous(command) gate can only fire
+        // when it sees the command (live hole — every runCommand ask was auto-approved by the
+        // Auto-approve pill because `info.command` was always undefined), and the approval
+        // card renders the actual command/paths instead of a bare "Allow X?".
+        const input = (req.input ?? {}) as { command?: string; path?: string };
+        const verdict = await opts.onPermissionAsk({
+          title: `Allow ${req.tool}?`,
+          toolName: req.tool,
+          ...(input.command ? { command: input.command } : {}),
+          ...(input.path ? { pattern: input.path } : {}),
+        });
         return verdict === 'once' ? 'allow' : verdict === 'always' ? 'allow-always' : 'deny';
       }),
 
@@ -209,10 +238,19 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     maxRetries: 1,
 
     onChunk: ({ chunk }) => {
-      if (chunk.type === 'text-delta') opts.onChunk(chunk.text);
-      else if (chunk.type === 'reasoning-delta') {
+      if (chunk.type === 'text-delta') {
+        narrationSinceToolCall = true;
+        opts.onChunk(chunk.text);
+      } else if (chunk.type === 'reasoning-delta') {
         reasoningText += chunk.text;
         opts.onReasoning(chunk.text);
+      } else if (chunk.type === 'tool-call' && narrationSinceToolCall) {
+        // Fix 3 — wire the previously-dead onRetractDraft: text streamed in the SAME step just
+        // before a tool call is speculative planning ("Let me read the file first…"), not the
+        // reply. Retract the live draft so the webview re-routes it into the Chain-of-Thought
+        // block instead of leaving it standing as a fake answer that vanishes at settle.
+        narrationSinceToolCall = false;
+        opts.onRetractDraft?.();
       }
     },
 
@@ -241,27 +279,72 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     },
 
     onError: ({ error }) => {
+      // NOTE: streamText's onError does NOT fire for model-stream failures in ai v7 (probe:
+      // stream-start → controller.error → neither onError nor onEnd, consumeStream resolves).
+      // The real capture is the onError option on consumeStream() below. Kept for internal
+      // errors that DO route here.
       diagLog('engine.error', String(error));
     },
 
     onEnd: ({ steps, finishReason }) => {
+      // V4 finishReason is an OBJECT ({unified, raw}) — String() produced "[object Object]",
+      // which silently disabled every finish-based recovery: act-gap/report-gap (`=== 'stop'`)
+      // never fired and the webview could never detect 'length'. Use the unified string.
+      const fr = typeof finishReason === 'string'
+        ? finishReason
+        : ((finishReason as { unified?: string } | undefined)?.unified ?? 'unknown');
+      // Last NON-empty step text, not steps.at(-1): a reasoning model can emit text + a
+      // tool call in step 1, then return a silent empty step 2 after the tool result —
+      // steps.at(-1) erased the only human-visible content and the webview replaced the
+      // whole reply with the "didn't produce a final answer" placeholder (live repro:
+      // gpt-oss-120b, 270 out tokens, plan narration discarded at settle).
+      // Merge semantics: the continuation pass APPENDS its messages and keeps the
+      // earlier pass's text if the retry also ends silent.
+      const passText = [...steps].reverse().find((s) => s.text?.trim())?.text ?? '';
       outcome = {
-        finishReason: String(finishReason),
-        text: steps.at(-1)?.text ?? '',
-        responseMessages: steps.flatMap((s) => s.response.messages),
+        finishReason: fr,
+        text: passText || outcome.text,
+        responseMessages: [...outcome.responseMessages, ...steps.flatMap((s) => s.response.messages)],
       };
     },
   });
 
   try {
-    await result.consumeStream();
+    await runPass(modelMessages).consumeStream({
+      // ai v7: consumeStream resolves even when the provider stream errors — the ONLY place
+      // the failure is reported is this option (the top-level onError above never fires for
+      // it, and the try/catch here never sees a rejection).
+      onError: (error: unknown) => {
+        streamError = error instanceof Error ? error.message : String(error);
+        diagLog('engine.streamError', streamError.slice(0, 160));
+      },
+    });
   } catch (e) {
     const aborted = opts.abortSignal?.aborted || (e as Error)?.name === 'AbortError';
     const message = e instanceof Error ? e.message : String(e);
+    diagLog('engine.catch', `aborted=${aborted} name=${(e as Error)?.name ?? '?'} msg="${message.slice(0, 140)}"`);
+    // Abort with NOTHING streamed (a stale token that was dead at send time, or a Stop within
+    // the first second): the old path returned a non-failed empty result, which rendered as a
+    // mystery placeholder with a 0-token footer. Return paused instead — the webview shows its
+    // Continue affordance and the turn is resumable instead of lost.
+    if (aborted && !outcome.text.trim() && toolEvents.length === 0) {
+      diagLog('engine.abortEmpty', 'abort before any output — returning paused:true so the turn stays resumable');
+      return {
+        text: '',
+        finishReason: 'unknown',
+        paused: true,
+        platform: served.platform,
+        model: served.model,
+        runtimeName: served.runtimeName,
+        workMessages: [],
+        changedFiles: [],
+      };
+    }
     if (!aborted) opts.onError(message);
     return {
       text: outcome.text,
       reasoning: reasoningText || undefined,
+      finishReason: outcome.finishReason,
       platform: served.platform,
       model: served.model,
       runtimeName: served.runtimeName,
@@ -272,10 +355,118 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     };
   }
 
+  // Stream-error guard: a provider failure the consumeStream resolved (never rejected — see
+  // streamError above) used to fall through as a "successful" empty turn — finish 'unknown',
+  // 0 in/0 out, and a webview placeholder that guessed "check your model keys" while the real
+  // reason (401/403/429/credit, or routerProvider's "TierMux: all candidates failed: …") was
+  // swallowed. Live repro (1:18 AM, "@routes/web.php optimize this"): dead in 1s, 0 tokens,
+  // zero indication of WHY. Only when the turn produced NOTHING — any streamed text, reasoning,
+  // or tool result means a later step failed and the partial output is still worth showing.
+  // Abort is excluded: a dead-at-start token returns paused (resumable) instead.
+  if (
+    streamError
+    && !opts.abortSignal?.aborted
+    && !outcome.text.trim() && !reasoningText.trim() && toolEvents.length === 0
+  ) {
+    diagLog('engine.streamFailed', `no output + stream error — surfacing: "${streamError.slice(0, 140)}"`);
+    return {
+      text: '',
+      finishReason: outcome.finishReason,
+      failed: true,
+      errorMessage: streamError,
+      platform: served.platform,
+      model: served.model,
+      runtimeName: served.runtimeName,
+      workMessages: [],
+      changedFiles: [],
+    };
+  }
+
+  // Agent-mode CONTINUATION NUDGE — covers every "talked instead of acting" failure class
+  // observed live (all gpt-oss-120b):
+  //   (a) proposal printout: the refactored file as a code fence, zero tools (1.4k out);
+  //   (b) plan narration then quit: "The user wants… Let's inspect the file… Use readFile…"
+  //       streamed as text but the tool call never came (216 out) — and the unfinished step
+  //       never finalized, so outcome.text came back EMPTY and the webview showed the
+  //       "stopped without a final answer" placeholder.
+  // One continuation tells the model to actually DO the task with its tools. Skipped for
+  // questions (ending '?', how/what/why/…) so agent-mode Q&A keeps its prose answer.
+  const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
+  const lastUserText = typeof lastUser?.content === 'string' ? lastUser.content : '';
+  const looksLikeQuestion = !!lastUserText
+    && (/\?\s*$/m.test(lastUserText) || /^(how|what|why|when|who|which|explain|tell me|describe|review)\b/i.test(lastUserText.trim()));
+  const replyEmpty = outcome.text.trim().length === 0;
+  const replyIsNarration = !replyEmpty
+    && /^\s*(the user|i'll|i will|we'll|we will|let's|let me|we need|we can|i need|first,|i should|we should|okay,? so)\b/i.test(outcome.text);
+  diagLog('engine.turnEnd', `finish=${outcome.finishReason} textLen=${outcome.text.length} steps=${outcome.responseMessages.length} tools=${toolEvents.length} reasoningLen=${reasoningText.length} empty=${replyEmpty} narration=${replyIsNarration}`);
+  const didWork = toolEvents.length > 0;
+  // Two ways a turn ends without CLOSING — both observed live on gpt-oss-120b:
+  //   act-gap    — tools NEVER ran: proposal printout / plan narration / empty reply.
+  //   report-gap — tools DID run, results came back, and the model still ended silently
+  //     (live: "Worked for 3s · 2 tool uses · 1 thought" → empty bubble, 292 out · 3s.
+  //     The SDK always runs a next step after tool calls — stepCountIs only caps it — so
+  //     this is the model returning an empty synthesis step, not the loop ending early).
+  // A coding agent must always close the loop: act → observe → REPORT. One continuation
+  // each; skipped for questions so agent-mode Q&A keeps its prose answer.
+  const actGap = !didWork && (replyEmpty || replyIsNarration || outcome.text.includes('```'));
+  const reportGap = didWork && replyEmpty;
+  if (
+    opts.mode === 'agent'
+    && !opts.abortSignal?.aborted
+    && outcome.finishReason === 'stop'
+    && !looksLikeQuestion
+    && (actGap || reportGap)
+  ) {
+    diagLog('engine.applyNudge', `${reportGap ? 'report-gap (tools ran, empty synthesis)' : 'act-gap (no tools ran)'} (textLen=${outcome.text.length}, narration=${replyIsNarration}) — continuation pass`);
+    // Pass 1 streamed text into the live draft (act-gap narration: "The user wants… Let me
+    // grep…"). That text is exactly what triggered the nudge, so it must not keep standing as
+    // the answer while pass 2 streams into the same draft — live repro (nemotron-3-ultra-free,
+    // 12:57 AM): both passes' narration stacked in one reply bubble. Retract it to the
+    // Chain-of-Thought block first; pass 2's text becomes the sole reply draft.
+    if (outcome.text.trim()) opts.onRetractDraft?.();
+    try {
+      await runPass([
+        ...modelMessages,
+        ...outcome.responseMessages,
+        {
+          role: 'user',
+          content: reportGap
+            ? 'You ran tools but ended the turn without a final answer. CLOSE the task now: tell the user what you found or changed (with file paths) and the result. If the task is not actually finished, keep working with your tools instead of stopping. Never end a turn silently.'
+            : 'You stopped after describing what you would do — no tool ran and no file changed. Continue NOW: perform the task yourself with your tools (readFile to inspect, editFile/writeFile to change, then re-read the changed region to verify). Only reply in prose, without tools, if the task genuinely requires no file change.',
+        },
+      ]).consumeStream();
+    } catch {
+      // Keep the pass-1 output rather than failing the turn.
+    }
+    // Routing-level health demotion, cross-turn only: the act-gap signal (narration/empty,
+    // ALREADY computed for the nudge — no new detector) repeated through the continuation
+    // pass means this model talks instead of acting. recordOutcome(false) feeds the picker's
+    // existing cooldown (30s → 2m backoff), so the NEXT Auto turn routes elsewhere first;
+    // pinned models are exempt in pick() by design. In-loop behavior is untouched — the
+    // answer above still ships (the reset's accepted trade-off), this only steers future
+    // selection. Live repro ×3 (2026-08-28, 12:57–1:29 AM): nemotron-3-ultra-free narrated
+    // instead of acting on every coding task and Auto re-picked it each time.
+    if (actGap && !reportGap && toolEvents.length === 0 && served.platform && served.model) {
+      recordOutcome(served.platform, served.model, false);
+      diagLog('engine.actGapDemote', `no tool work after continuation — cooldown for ${served.platform}::${served.model}`);
+    }
+  }
+
+  // LAST-RESORT reasoning fold: if every pass came back with an empty content channel, the
+  // model's own accumulated thinking is the best reply we have — promote it rather than
+  // showing a placeholder. Live repro (gemini-2.5-flash, 11:49 PM): 2 files edited correctly,
+  // the whole narration landed in the thinking channel, reply text stayed empty. The
+  // reasoning also stays in the CoT block; a little duplication beats an empty bubble.
+  if (!outcome.text.trim() && reasoningText.trim()) {
+    diagLog('engine.reasoningFold', `empty reply after all passes — promoting ${reasoningText.length} chars of reasoning as the reply`);
+    outcome.text = reasoningText.trim();
+  }
+
   const workMessages = toChatMessages(outcome.responseMessages);
   return {
     text: outcome.text,
     reasoning: reasoningText || undefined,
+    finishReason: outcome.finishReason,
     platform: served.platform,
     model: served.model,
     runtimeName: served.runtimeName,

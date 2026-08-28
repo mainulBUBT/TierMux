@@ -78,6 +78,7 @@ const vscodeMock = {
   },
   EventEmitter,
   FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
+  DiagnosticSeverity: { Error: 0, Warning: 1, Information: 2, Hint: 3 },
   CodeActionKind: { QuickFix: { value: 'quickfix' }, Refactor: { value: 'refactor' }, Source: { value: 'source' } },
   Range: class { constructor(a, b, c, d) { this.start = { line: a, character: b }; this.end = { line: c, character: d }; } },
   Position: class { constructor(line, character) { this.line = line; this.character = character; } },
@@ -86,8 +87,34 @@ const vscodeMock = {
     showWarningMessage: async () => undefined,
     showErrorMessage: async () => undefined,
     showInformationMessage: async () => undefined,
+    visibleTextEditors: [],
   },
   commands: { executeCommand: async () => undefined },
+  // Diagnostics: tests seed globalThis.__tiermuxTestDiagnostics either as an array of
+  // [uri, Diagnostic[]] tuples (whole-workspace reads) or as a fn(uri) => Diagnostic[]
+  // for call-count-dependent fakes ("errors appeared after the edit"). Mirrors the REAL
+  // API shapes: getDiagnostics(uri) → Diagnostic[], getDiagnostics() → [uri, diags][].
+  // A function seed's workspace-wide call is grouped under a synthetic uri so
+  // formatDiagnosticEntries still produces relPath:line:col lines. No-op change event —
+  // the waitFor*Settled helpers resolve via their timeout, which is enough for e2e.
+  languages: {
+    DiagnosticSeverity: { Error: 0, Warning: 1, Information: 2, Hint: 3 },
+    getDiagnostics: (uri) => {
+      const seeded = globalThis.__tiermuxTestDiagnostics;
+      if (typeof seeded === 'function') {
+        const diags = seeded(uri);
+        if (uri) return diags;
+        return diags.length ? [[{ fsPath: '/__workspace__', path: '/__workspace__', toString: () => 'file:///__workspace__' }, diags]] : [];
+      }
+      if (!seeded) return [];
+      if (uri) {
+        const hit = seeded.find(([u]) => u && u.fsPath === uri.fsPath);
+        return hit ? hit[1] : [];
+      }
+      return seeded;
+    },
+    onDidChangeDiagnostics: () => ({ dispose() {} }),
+  },
 };
 
 Module._load = function (request, ...rest) {

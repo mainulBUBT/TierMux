@@ -13,14 +13,37 @@ import * as vscode from 'vscode';
 import { tool } from 'ai';
 import { z } from 'zod';
 import { resolveWorkspacePath } from '../resolvePath';
+import type { ToolsetBindings } from './index';
 import { applyHunk } from './editMatch';
+import {
+  NEW_DIAGNOSTICS_MARKER,
+  newErrorsSince,
+  waitForDiagnosticsSettled,
+  workspaceErrorSignatures,
+} from '../workspace/formatDiagnostics';
+
+/** Post-edit verify note: errors the language servers report AFTER this edit that weren't there
+ *  before it (pre-existing problems are excluded via the before/after diff). Kilo-style in-tool
+ *  feedback — the note rides in the tool RESULT; the model decides what to do with it. The whole
+ *  check is failure-isolated: a host without a diagnostics API must never turn a successful edit
+ *  into an error. */
+export async function diagnosticsNote(uri: vscode.Uri, before: Set<string>): Promise<string> {
+  try {
+    await waitForDiagnosticsSettled(uri, 1200);
+    const fresh = newErrorsSince(before, vscode.languages.getDiagnostics());
+    if (fresh.length) return `\n\n${NEW_DIAGNOSTICS_MARKER}\n${fresh.slice(0, 10).join('\n')}`;
+  } catch {
+    // diagnostics unavailable (headless/e2e mock) — plain success result
+  }
+  return '';
+}
 
 const hunkSchema = z.object({
   search: z.string().describe('Exact existing text to find.'),
   replace: z.string().describe('Text to replace it with.'),
 });
 
-export function createEditFileTool() {
+export function createEditFileTool(bindings: ToolsetBindings = {}) {
   return tool({
     description:
       'Replace exact blocks of text in a file. `search` must match the file content EXACTLY, '
@@ -51,6 +74,12 @@ export function createEditFileTool() {
         } catch {
           return { error: `File not found: ${path}` };
         }
+        // Checkpoint baseline BEFORE mutating (timing is the whole point — see ToolsetBindings).
+        try { bindings.onBeforeWrite?.(uri, text); } catch { /* checkpointing must never block an edit */ }
+
+        // Baseline snapshot BEFORE mutating, so the note can name only NEWLY introduced errors.
+        let before = new Set<string>();
+        try { before = workspaceErrorSignatures(vscode.languages.getDiagnostics()); } catch { /* unavailable */ }
 
         for (const hunk of hunks) {
           const next = applyHunk(text, hunk.search, hunk.replace);
@@ -59,7 +88,7 @@ export function createEditFileTool() {
         }
 
         await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(text));
-        return `Edited ${path}.`;
+        return `Edited ${path}.${await diagnosticsNote(uri, before)}`;
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) };
       }

@@ -21,6 +21,9 @@ export interface MockResponse {
   text?: string;
   /** Reasoning emitted BEFORE any text/tool calls (reasoning-start/delta/end parts). */
   reasoning?: string;
+  /** Reasoning emitted as MULTIPLE deltas (reasoning-start, N× reasoning-delta, reasoning-end) —
+   *  lets a scenario assert INCREMENTAL delivery (onReasoning called >1 time). */
+  reasoningDeltas?: string[];
   /** Native tool calls. `input` is an object (serialized) or a raw string passed through
    *  verbatim — a deliberately malformed string exercises the repair path. */
   toolCalls?: Array<{ toolCallId?: string; toolName: string; input: unknown }>;
@@ -131,6 +134,15 @@ export function createMockModel(script: MockResponse[], label = 'mock'): Scripte
         const rid = 'reasoning-0';
         controller.enqueue({ type: 'reasoning-start', id: rid });
         controller.enqueue({ type: 'reasoning-delta', id: rid, delta: step.reasoning });
+        controller.enqueue({ type: 'reasoning-end', id: rid });
+      }
+
+      // Multi-delta reasoning — same shape, N deltas, so scenarios can assert INCREMENTAL
+      // reasoning delivery (onReasoning fired once per delta, not once per turn).
+      if (step.reasoningDeltas?.length) {
+        const rid = 'reasoning-deltas';
+        controller.enqueue({ type: 'reasoning-start', id: rid });
+        for (const delta of step.reasoningDeltas) controller.enqueue({ type: 'reasoning-delta', id: rid, delta });
         controller.enqueue({ type: 'reasoning-end', id: rid });
       }
 

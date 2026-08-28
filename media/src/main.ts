@@ -239,9 +239,27 @@ const STATE_LABEL = {
   // checklist), 'planProgress' (plan runner), and the Execute click's preparing state.
   const todoSheet = createTodoSheet({
     onResume: () => send({ type: 'resumePlan' }),
-    onDismiss: () => todoSheet.update(null),
+    onDismiss: () => { agentTodoState = null; todoSheet.update(null); },
   });
   $('#plan-progress-bar').replaceWith(todoSheet.root);
+  // The agent checklist's LAST state — the 'todos' messages all arrive mid-run (busy), so
+  // the terminal state can only be applied when busy flips false. Without this the bar kept
+  // its last mid-run state forever: "3/3" tasks all ticked but still pinned above the
+  // composer with no dismiss (live repro: "when a todo task done it still showing bottom").
+  let agentTodoState: { title: string; steps: Array<{ text: string; status: 'done' | 'active' | 'pending' | 'failed' }> } | null = null;
+  function renderAgentTodoBar() {
+    if (!agentTodoState) return;
+    const { title, steps } = agentTodoState;
+    const allDone = steps.length > 0 && steps.every((s) => s.status === 'done' || s.status === 'failed');
+    const finished = !busy;
+    todoSheet.update({
+      title,
+      steps,
+      running: busy,
+      finished,
+      note: finished && allDone ? `${title} completed (${steps.filter((s) => s.status === 'done').length}/${steps.length})` : undefined,
+    });
+  }
   const footerEl = $('#footer');
   // Footer summary → Settings ▸ Usage. Opens settings (if closed) and switches
   // tab without reloading/recreating the webview, then scrolls the
@@ -1089,8 +1107,12 @@ const STATE_LABEL = {
     'writing', 'doodling', 'scribbling', 'sketching',
   ];
   // Labels that mean "idle thinking" — when one of these is set, we engage the rolling
-  // verb instead of showing the literal word. Tool verbs and "Responding…" opt out.
-  const IDLE_LABELS = new Set(['Thinking…', 'Working…', 'Working.', 'Reasoning…']);
+  // verb instead of showing the literal word. Tool verbs opt out. "Responding…" is in the
+  // set deliberately: a slow model can sit 10-30s before its next token (TTFT, or the
+  // post-nudge continuation pass), and a static "Responding…" with no caret reads as
+  // frozen/dead — the rolling "Writing/Typing/Drafting…" verb + blinking caret is what
+  // makes the wait read as "the agent is writing" (live repro: nemotron-3-ultra-free).
+  const IDLE_LABELS = new Set(['Thinking…', 'Working…', 'Working.', 'Reasoning…', 'Responding…']);
   // Random gap between verb rotations, 2–5s, so the rolling word doesn't feel metronomic.
   function nextRotateDelay() { return 2000 + Math.floor(Math.random() * 3001); }
   // Pick a whimsical verb different from the previous one (avoids the same word twice
@@ -1143,11 +1165,15 @@ const STATE_LABEL = {
         // Engage the rolling whimsical verb for the thinking phase; startStatusTimer
         // rotates it every 2–5s until a tool verb or "Responding…" takes over. The verb
         // is typed out char-by-char with a blinking caret so it reads like live writing.
-        t.rotating = true;
-        t.rotateWord = pickThinkingVerb(t.rotateWord);
-        t.nextRotateAt = Date.now() + nextRotateDelay();
+        // Only ENGAGE once: 'Responding…' arrives on every streamed chunk, and re-picking
+        // a random verb per token would flicker the label instead of writing it.
+        if (!t.rotating) {
+          t.rotating = true;
+          t.rotateWord = pickThinkingVerb(t.rotateWord);
+          t.nextRotateAt = Date.now() + nextRotateDelay();
+          typeVerb(t, t.rotateWord);
+        }
         if (t.statusCaret) t.statusCaret.classList.remove('hidden');
-        typeVerb(t, t.rotateWord);
       } else {
         t.rotating = false;
         if (t._typeTimer) { clearInterval(t._typeTimer); t._typeTimer = null; }
@@ -3653,11 +3679,11 @@ const STATE_LABEL = {
         next.classList.add('collapsed'); // the composer's todo bar + sheet carries the live view
         if (t.planEl) t.planEl.replaceWith(next); else t.flow.insertBefore(next, t.flow.firstChild);
         t.planEl = next;
-        todoSheet.update({
+        agentTodoState = {
           title: msg.followingPlan ? 'Plan' : 'Tasks',
           steps: (msg.todos || []).map((td) => ({ text: td.content, status: td.status === 'completed' ? 'done' : td.status === 'in_progress' ? 'active' : 'pending' })),
-          running: busy,
-        });
+        };
+        renderAgentTodoBar();
         scrollDown();
         break;
       }
@@ -4013,6 +4039,11 @@ const STATE_LABEL = {
           }
           t.currentText = null;
         }
+        // The draft just became Chain-of-Thought, so the turn is generating again (nudge
+        // continuation pass). Put the label back on the rolling writing verb + caret —
+        // otherwise it stays on the stale "Responding…" from the retracted text and the
+        // wait for the next pass's first token looks frozen.
+        setStatusLabel(msg.requestId, 'Thinking…', { force: true });
         break;
       }
       case 'assistantMessage': {
@@ -4047,12 +4078,24 @@ const STATE_LABEL = {
           // a visible, specific placeholder so the user isn't left with a footer + no reply.
           // The host's own canonical message overrides this whenever it does have text.
           const rawText = (msg.text || '').trim();
+          // finishReason makes the placeholder ACCURATE instead of always blaming "token
+          // budget": 'length' is real output-budget exhaustion; any other reason (live turns)
+          // means the model stopped without answering. Absent = pre-plumbing persisted turns,
+          // where the old reasoning-based guess is the best we can do (replay compat).
+          const finish = (msg as { finishReason?: string }).finishReason;
+          const emptyReplyText = finish === 'length'
+            ? '_The model used its full output budget on reasoning and ran out before writing a reply. Try rephrasing the request, or switch to a model that balances reasoning with output._'
+            : finish === 'unknown'
+              ? '_No model request completed this turn. Check your model keys and selection in **Manage Models & Keys**, then try again._'
+              : finish
+                ? '_The model stopped without writing a final answer. Try sending again — Auto fails over to the next model, or rephrase the request._'
+                : (msg.reasoning && msg.reasoning.length > 0)
+                  ? '_The model thought through this but didn\'t produce a final answer — it used its token budget on reasoning and exited before writing a reply. Try rephrasing the request, or switch to a model that balances reasoning with output._'
+                  : '_The model didn\'t produce a visible reply for this turn._';
           const placeholderText = !rawText
             ? (msg.paused
                 ? '_The model didn\'t produce a final reply before the turn paused. Click **Continue** to resume._'
-                : (msg.reasoning && msg.reasoning.length > 0)
-                  ? '_The model thought through this but didn\'t produce a final answer — it used its token budget on reasoning and exited before writing a reply. Try rephrasing the request, or switch to a model that balances reasoning with output._'
-                  : '_The model didn\'t produce a visible reply for this turn._')
+                : emptyReplyText)
             : rawText;
           seg.appendChild(renderMarkdown(stripClarifyBlock(placeholderText, true)));
           t.flow.appendChild(seg);
@@ -4274,6 +4317,9 @@ const STATE_LABEL = {
           updateSendEnabled();
           // Turn lifecycle finally: the serving indicator always returns to the user's pick.
           if (!busy) resetServingModel();
+          // Run over → give the agent checklist its terminal state (completed note + dismiss ×)
+          // instead of leaving the last mid-run frame pinned above the composer.
+          if (!busy) renderAgentTodoBar();
         }
         // Backstop: any run that ended without a terminal message (e.g. plan mode's early
         // return) still flips busy off — clear any lingering live status in THIS message's
@@ -4533,6 +4579,7 @@ const STATE_LABEL = {
    *  terminal summary when done/failed. The step checklist itself renders through the
    *  normal todos path; this bar carries only run status. */
   function renderPlanProgress(state) {
+    agentTodoState = null; // the plan runner owns the bar now — don't let a later busy:false resurrect stale agent todos
     if (!state || state.status === 'aborted') { todoSheet.update(null); return; }
     const status = state.status || 'done';
     const steps = (state.steps || []).map((st, i) => ({

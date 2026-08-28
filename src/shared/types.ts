@@ -33,6 +33,7 @@ export type Platform =
   | 'orcarouter'
   | 'requesty'
   | 'router9'
+  | 'xkiro'
   | 'custom';
 
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';

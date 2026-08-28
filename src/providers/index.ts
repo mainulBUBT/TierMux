@@ -43,6 +43,7 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'orcarouter', name: "OrcaRouter", baseUrl: "https://api.orcarouter.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://www.orcarouter.ai/" }, // auto-synced
   { platform: 'requesty', name: "Requesty", baseUrl: "https://router.requesty.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://app.requesty.ai/sign-up" }, // auto-synced
   { platform: 'router9', name: "Router9", baseUrl: "https://api.router9.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://www.router9.com/login" }, // auto-synced
+  { platform: 'xkiro', name: "xKiro", baseUrl: "https://api.xkiro.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://xkiro.com/dashboard/api/keys" }, // auto-synced
 ];
 
 const providers = new Map<Platform, BaseProvider>();

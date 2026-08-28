@@ -21,6 +21,12 @@ export interface ToolEvent {
 export interface AgentResult {
   text: string;
   reasoning?: string;
+  /** SDK finish reason for the turn ('stop' | 'length' | 'tool-calls' | 'unknown') — lets the
+   *  webview render an ACCURATE empty-reply placeholder: 'length' = real output-budget
+   *  exhaustion; 'stop' = the model chose to stop without answering (live repro: gpt-oss-120b
+   *  returned a silent empty step 2 after its tool call — 270 out tokens, NOT budget exhaustion,
+   *  yet the old placeholder blamed "token budget"). Undefined = turns persisted pre-plumbing. */
+  finishReason?: string;
   platform?: string;
   model?: string;
   runtimeName?: string;
@@ -131,6 +137,11 @@ export interface AgentOpts {
   onKeyRotated?: (info: { platform: string; keyIndex: number; keyTotal: number }) => void;
   onStep: (phase: string, label: string) => void;
   onTodos: (todos: TodoItem[]) => void;
+  /** Checkpoint baseline — fired by the v3 write tools AFTER reading a file's pre-write
+   *  content but BEFORE mutating it (null = about to be created). The host wires this to
+   *  CheckpointManager.record(); type-only vscode reference (erased at runtime — this file
+   *  stays vscode-free). */
+  onBeforeWrite?: (uri: import('vscode').Uri, before: string | null) => void;
   onAskUser: (question: string, options?: string[]) => Promise<string>;
   /** A tool call is paused pending approval — resolved via the `toolApproval` policy
    *  (see core/policies/permission.ts), not by this file. */

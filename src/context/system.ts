@@ -4,6 +4,8 @@
 // this only composes the ROLE/RULES prose around them.
 
 import type { Mode } from '../shared/types';
+import type { PromptContext } from './promptContext';
+import { formatEnvBlock } from './promptContext';
 
 const BASE = [
   'You are TierMux, a coding agent working inside the user\'s editor.',
@@ -11,10 +13,17 @@ const BASE = [
   'Cite code as path:line using the line numbers readFile shows.',
   'For edits: the search string must match the file EXACTLY (whitespace included) and appear exactly once — include surrounding context when it is ambiguous.',
   'When a tool returns an error, read it and correct your next call — do not repeat the same failing arguments.',
+  'For multi-step tasks (3+ steps), call todoWrite with the full list up front; mark items in_progress/completed as you work; finish or explicitly park every item before ending the turn.',
 ].join('\n');
 
 const MODE_TAIL: Record<Mode, string> = {
-  agent: 'You may read, write, edit, and delete files, run commands, and search the workspace. Prefer the smallest change that completes the task; verify your edit by re-reading the changed region.',
+  agent: [
+    'You are in AGENT mode: an autonomous coding agent. The user expects the work DONE, not described.',
+    'To change a file you MUST call editFile / writeFile / runCommand — printing code in chat does NOT modify anything.',
+    'Read the target file first, apply the smallest correct edit, then verify by re-reading the changed region.',
+    'Work through the ENTIRE task before ending: if a change touches other files (imports, call sites, routes, configs), update ALL of them in the same turn — a half-applied refactor that leaves the old call site behind is a broken codebase, not done work.',
+    'Never end the turn with unapplied code blocks. Answer in prose (no tools) only when the user asked a question or explicitly requested a proposal.',
+  ].join('\n'),
   plan: [
     'Analyze the codebase.',
     'Produce a structured Markdown implementation plan.',
@@ -36,7 +45,15 @@ const MODE_TAIL: Record<Mode, string> = {
   ask: 'You are in ASK mode: read-only Q&A. Answer from the workspace with tool-backed evidence; say what you checked. No edits.',
 };
 
-/** The turn's system prompt. Kept deliberately short — the tool schemas carry the detail. */
-export function composeSystemPrompt(mode: Mode): string {
-  return `${BASE}\n\n${MODE_TAIL[mode]}`;
+/** The turn's system prompt. Kept deliberately short — the tool schemas carry the detail.
+ *  `ctx` (rules / user memory / environment facts) is optional so this stays sync, pure, and
+ *  vscode-free; when absent the prompt is exactly the pre-context BASE+MODE text. */
+export function composeSystemPrompt(mode: Mode, ctx?: PromptContext): string {
+  if (!ctx) return `${BASE}\n\n${MODE_TAIL[mode]}`;
+  const blocks: string[] = [];
+  if (ctx.rules.trim()) blocks.push(`<project_rules>\n${ctx.rules.trim()}\n</project_rules>`);
+  if (ctx.memory.trim()) blocks.push(`<user_memory>\n${ctx.memory.trim()}\n</user_memory>`);
+  if (ctx.env) blocks.push(`<environment_context>\n${formatEnvBlock(ctx.env)}\n</environment_context>`);
+  const tail = blocks.length ? `\n\n${blocks.join('\n\n')}` : '';
+  return `${BASE}\n\n${MODE_TAIL[mode]}${tail}`;
 }

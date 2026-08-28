@@ -332,7 +332,7 @@ export type OutMessage =
   // `noFooter`: true when a clarifyingQuestions card immediately follows this message for the
   // SAME requestId — the model/usage footer is deferred to the eventual final answer bubble
   // (a new requestId, once the user answers) instead of showing on the question-asking turn.
-  | { type: 'assistantMessage'; sessionId: string; requestId: string; text: string; reasoning?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean; noFooter?: boolean }
+  | { type: 'assistantMessage'; sessionId: string; requestId: string; text: string; reasoning?: string; finishReason?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean; noFooter?: boolean }
   // Structured end-of-turn report — posted right after the assistantMessage it belongs to.
   // The webview mounts a ResultCard on the live turn target AND stores it for replay parity
   // (same component renders both paths). `text` in the paired assistantMessage deliberately

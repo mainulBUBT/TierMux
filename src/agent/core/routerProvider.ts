@@ -28,6 +28,7 @@ import { resolveProvider } from '../../providers';
 import { ProviderHttpError } from '../../providers/base';
 import { selectModel, setModelSources, getApiKeysFor, recordOutcome, type ModelSources } from '../../router/picker';
 import { ThinkStripper, stripThinkTags, reasoningFromDelta, type Router, type RouteOptions } from '../../router/router';
+import { diagLog } from '../../util/diag';
 
 export { setModelSources };
 export type { ModelSources };
@@ -44,14 +45,23 @@ export interface RouterProviderOptions {
   onFailover?: (from: string, reason: string) => void;
   onModelSelected?: (platform: string, model: string, runtimeName?: string) => void;
   onUsage?: (info: { inputTokens: number; outputTokens: number; model: string }) => void;
+  /** "Why this model?" report from selection — forwarded to the host so the footer's
+   *  (?)/⇄ button has data (v3 selection never produced one; the old scoring Router did). */
+  onSelectionRationale?: (info: import('../../router/picker').SelectionRationale) => void;
 }
 
-/** Retryable candidate failure: rate limit, auth failure, server error, or network-level
- *  abort/timeout. 401 counts: with multiple stored keys it may be ONE dead key, so the key
- *  loop inside each candidate gets a chance to rotate before the candidate is abandoned. */
-function isFailoverWorthy(e: unknown): boolean {
+/** Retryable candidate failure: rate limit, auth failure, quota/credit exhaustion, server
+ *  error, or network-level abort/timeout. 401 counts: with multiple stored keys it may be ONE
+ *  dead key, so the key loop inside each candidate gets a chance to rotate before the
+ *  candidate is abandoned. 402/403 count too — free gateways answer "out of credit" with 402
+ *  (pollinations) and "$0 credit on a paid-only model" with 403 (new-api/TokenRouter), and
+ *  those used to throw straight through the candidate loop: no rotation, instant dead turn
+ *  (live repro: 1:18 AM turn, "auto rotate not works"). 400 counts: "context length
+ *  exceeded" / model-specific schema rejections are per-model — the next model can succeed. */
+export function isFailoverWorthy(e: unknown): boolean {
   if (e instanceof ProviderHttpError) {
-    return e.status === 401 || e.status === 429 || (e.status !== undefined && e.status >= 500);
+    return e.status === 400 || e.status === 401 || e.status === 402 || e.status === 403
+      || e.status === 429 || (e.status !== undefined && e.status >= 500);
   }
   return e instanceof Error && /network|fetch failed|timed out|ECONN/i.test(e.message);
 }
@@ -112,6 +122,22 @@ function filePartToDataUrl(part: LanguageModelV4FilePart): string | undefined {
   return undefined;
 }
 
+/** Flatten the SDK's tool-result output union to the plain text the OpenAI wire expects.
+ *  The old `JSON.stringify(part.output)` shipped models the ENVELOPE —
+ *  `{"type":"text","value":"<?php\n…"}` with every newline JSON-escaped, error results
+ *  double-encoded — because LanguageModelV4ToolResultOutput is always an object, never a
+ *  string. Models read that soup as their observation and returned empty synthesis steps
+ *  (live repro: gpt-oss-120b, nemotron-3-ultra-free — tools ran, final answer empty). */
+function toolResultToText(output: unknown): string {
+  if (output && typeof output === 'object') {
+    const o = output as { type?: string; value?: unknown; reason?: string };
+    if (o.type === 'execution-denied') return o.reason ? `Tool execution denied by the user: ${o.reason}` : 'Tool execution denied by the user.';
+    if (typeof o.value === 'string') return o.value; // 'text' | 'error-text'
+    if (o.value !== undefined) return JSON.stringify(o.value); // 'json' | 'error-json'
+  }
+  return typeof output === 'string' ? output : JSON.stringify(output ?? '');
+}
+
 function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): ChatMessage[] {
   const msgs: ChatMessage[] = [];
   for (const msg of prompt) {
@@ -153,7 +179,7 @@ function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): ChatMes
     } else if (msg.role === 'tool') {
       for (const part of msg.content) {
         if (part.type === 'tool-result') {
-          msgs.push({ role: 'tool', content: typeof part.output === 'string' ? part.output : JSON.stringify(part.output), tool_call_id: part.toolCallId });
+          msgs.push({ role: 'tool', content: toolResultToText(part.output), tool_call_id: part.toolCallId });
         }
       }
     }
@@ -187,6 +213,7 @@ export async function resolveCandidates(opts: RouterProviderOptions): Promise<Ca
     sessionId: opts.sessionId,
     requireTools: opts.requireTools,
   });
+  if (selection.rationale) opts.onSelectionRationale?.(selection.rationale);
   const out: Candidate[] = [];
   for (const key of [selection.model, ...selection.fallbackChain]) {
     const [platform, ...rest] = key.split('::');
@@ -438,6 +465,12 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
       const tools = toRouterTools(options.tools);
       const candidates = await resolveCandidates(providerOpts);
       if (candidates.length === 0) throw new Error('TierMux: no model candidate resolved');
+      // Wire visibility: on a tool step the LAST message is the observation the model must
+      // read — if it ever renders as JSON-envelope soup again, this line shows it instantly.
+      const lastMsg = messages[messages.length - 1];
+      if (lastMsg?.role === 'tool') {
+        diagLog('rp.toolResult', `msgs=${messages.length} head="${String(lastMsg.content).slice(0, 140).replace(/\n/g, '⏎')}"`);
+      }
 
       let controller!: ReadableStreamDefaultController<LanguageModelV4StreamPart>;
       const stream = new ReadableStream<LanguageModelV4StreamPart>({ start(c) { controller = c; } });
