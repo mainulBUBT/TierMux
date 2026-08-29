@@ -21,6 +21,7 @@ export function createWebSearchTool() {
   return tool({
     description:
       'Search the web for up-to-date information (news, docs, general knowledge). Returns a list of result titles, URLs, and snippets. Use fetchUrl to read the full content of a promising result. '
+      + 'You MUST call this instead of answering from memory whenever the answer depends on current or recent facts — news, weather, sports results, prices, scores, software releases, who holds an office — even if you believe you know the answer; your training data is out of date and a wrong recollection looks authoritative. '
       + "CAUTION: many indexed pages are SEO preview/evergreen articles written BEFORE an event, phrased in present/future tense (\"kicks off today\", \"is scheduled for\") even though that date has since passed relative to today. Before answering, compare each result's date against today's actual date (given in your system prompt) and state events as past/completed when they are — do not repeat a snippet's tense verbatim without checking it first.",
     inputSchema: z.object({
       query: z.string().min(1).describe('The search query.'),

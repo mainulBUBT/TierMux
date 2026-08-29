@@ -77,14 +77,29 @@ export function buildDiagnosticsContext(): string | null {
   if (!ed) return null;
   if (ed.document.uri.scheme !== 'file') return null;
   const uri = ed.document.uri;
-  const diags = vscode.languages.getDiagnostics(uri);
+  // Errors + warnings only: `'all'` lets INFO squiggles through (e.g. Intelephense's
+  // "resolved via __call" hints), and live repro 2026-08-28 — a meaningless
+  // "ljdsjcs Idksjls" message made the model latch onto those INFO hints as the only
+  // concrete signal and run a full hasRole/Spatie investigation nobody asked for.
+  const diags = vscode.languages.getDiagnostics(uri).filter(
+    (d) => d.severity === vscode.DiagnosticSeverity.Error || d.severity === vscode.DiagnosticSeverity.Warning,
+  );
   if (!diags.length) return null;
   const rel = vscode.workspace.asRelativePath(uri);
   const formatted = formatDiagnosticEntries([[uri, diags]], 'all').slice(0, MAX_DIAGNOSTICS);
   if (!formatted.length) return null;
   const omitted = diags.length - formatted.length;
   const tail = omitted > 0 ? `\n…(${omitted} more)` : '';
-  return [`<active_diagnostics file="${rel}">`, ...formatted, '</active_diagnostics>', tail.trimStart()].join('\n').trimEnd();
+  // Same guard as <active_editor>: without a provenance line the block reads as the
+  // subject of the turn whenever the user's actual message is vague or unparseable.
+  return [
+    `<active_diagnostics file="${rel}">`,
+    'Automatic editor diagnostics. The user did NOT send this and did not ask about it — background'
+      + ' signal only; act on it only when the user\'s request clearly relates to these entries.',
+    ...formatted,
+    '</active_diagnostics>',
+    tail.trimStart(),
+  ].join('\n').trimEnd();
 }
 
 /** Trim a selection to a sane prompt size: first N lines, then a char ceiling with a marker. */

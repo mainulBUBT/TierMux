@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Synced from remote /models JSON — 340 models from 30 providers.",
+  "note": "Synced from remote /models JSON — 337 models from 30 providers.",
   "models": [
     {
       "platform": "agnes",
@@ -5113,26 +5113,6 @@
     },
     {
       "platform": "nvidia",
-      "modelId": "stepfun-ai/step-3.7-flash",
-      "displayName": "Step 3.7 Flash Free",
-      "intelligenceRank": 2,
-      "speedRank": 2,
-      "contextWindow": 128000,
-      "rpmLimit": 15,
-      "rpdLimit": 800,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.26,
-      "origOutputPricePer1M": 1.5
-    },
-    {
-      "platform": "nvidia",
       "modelId": "writer/palmyra-creative-122b",
       "displayName": "Palmyra Creative 122B",
       "intelligenceRank": 2,
@@ -5783,46 +5763,6 @@
         "reasoner",
         "free"
       ]
-    },
-    {
-      "platform": "orcarouter",
-      "modelId": "fish-audio/s2.1-pro-free",
-      "displayName": "S2.1 Pro Free",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "orcarouter",
-      "modelId": "s2.1-pro-free",
-      "displayName": "S2.1 Pro Free",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
     },
     {
       "platform": "openadapter",

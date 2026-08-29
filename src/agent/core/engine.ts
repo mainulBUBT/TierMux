@@ -165,6 +165,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     requestId: opts.requestId,
     onTodos: opts.onTodos,
     onBeforeWrite: opts.onBeforeWrite,
+    onAskUser: opts.onAskUser,
   }) as ToolSet;
 
   const model: LanguageModel = modelOverride ?? createRouterProvider({

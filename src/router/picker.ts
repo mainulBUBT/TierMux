@@ -85,8 +85,23 @@ export async function getApiKeysFor(platform: string): Promise<string[]> {
   const provider = allPlatformInfo().find((p) => p.platform === platform);
   if (provider?.keyless) return [''];
   if (!sources) return [];
-  const keys = await sources.secrets.getKeys(platform as import('../shared/types').Platform);
-  return keys.length ? keys : [];
+  // Empty strings must not count as "usable": a stale '' entry in the pool passed the
+  // platformUsable check, then died at provider key parsing instead of failing over
+  // (live repro 2026-08-28: turns killed by `Cloudflare key must be "account_id:api_token"`
+  // at 18:22/18:44 with cloudflare unticked and no key set in the UI).
+  const keys = (await sources.secrets.getKeys(platform as import('../shared/types').Platform)).filter((k) => k.trim());
+  if (platform === 'cloudflare') {
+    // Cloudflare stores accountId and token SEPARATELY; the wire format is
+    // `accountId:token` (CloudflareProvider.parseKey throws on a bare token). The legacy
+    // router path assembles this in SecretStore.resolveKey, but the v3 chat path hands the
+    // raw pool straight to the provider — so an enabled cloudflare model passed
+    // platformUsable and then killed the whole turn in parseKey. Mirror resolveKey here and
+    // treat "no accountId stored" as "platform unavailable" so selection skips it.
+    const accountId = await sources.secrets.getCloudflareAccountId();
+    if (!accountId) return [];
+    return keys.map((k) => (k.startsWith(accountId + ':') ? k : `${accountId}:${k}`));
+  }
+  return keys;
 }
 
 /** Expand 'auto' into the full enabled-model list when no sources are wired (headless). */

@@ -12,6 +12,8 @@ export { createListDirTool, createGlobTool, createGrepTool } from './search';
 export { createRunCommandTool } from './runCommand';
 export { createTodoWriteTool } from './todoWrite';
 export { createGetDiagnosticsTool } from './getDiagnostics';
+export { createAskUserTool } from './askUser';
+export { createDelegateTaskTool } from './delegateTask';
 
 import type { Mode } from '../../../../shared/types';
 import type { TodoItem } from '../../../../shared/types';
@@ -22,6 +24,8 @@ import { createListDirTool, createGlobTool, createGrepTool } from './search';
 import { createRunCommandTool } from './runCommand';
 import { createTodoWriteTool } from './todoWrite';
 import { createGetDiagnosticsTool } from './getDiagnostics';
+import { createAskUserTool } from './askUser';
+import { createDelegateTaskTool } from './delegateTask';
 import { createWebSearchTool } from '../network/webSearch';
 import { createFetchUrlTool } from '../network/fetchUrl';
 
@@ -29,7 +33,7 @@ import { createFetchUrlTool } from '../network/fetchUrl';
  *  `showTodo` is a legacy name kept for the set's historical shape; the live tool is `todoWrite`. */
 export const READ_ONLY_TOOLS = new Set([
   'readFile', 'listDir', 'glob', 'grep', 'getDiagnostics', 'getSymbolGraph',
-  'getDependencyTree', 'webSearch', 'fetchUrl', 'showTodo', 'todoWrite', 'askUser', 'recallNotes', 'checkPlan',
+  'getDependencyTree', 'webSearch', 'delegateTask', 'fetchUrl', 'showTodo', 'todoWrite', 'askUser', 'recallNotes', 'checkPlan',
 ]);
 
 export interface ToolsetBindings {
@@ -37,6 +41,10 @@ export interface ToolsetBindings {
   sessionId?: string;
   requestId?: string;
   onTodos?: (todos: TodoItem[]) => void;
+  /** Mid-turn clarifying-question channel — the toolset binds it as the `askUser` tool.
+   *  The host implementation renders an in-chat card and resolves with the user's answer
+   *  ('' when dismissed). Unset (e2e/sub-agent contexts) → the tool degrades to `{ error }`. */
+  onAskUser?: (question: string, options?: string[]) => Promise<string>;
   /** Checkpoint baseline — fires INSIDE a write tool, after the pre-write content is read but
    *  BEFORE the mutation. `before` is null when the file doesn't exist yet (a create). Host
    *  wires this to CheckpointManager.record(). This timing is load-bearing: the previous
@@ -75,6 +83,8 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}) {
       fetchUrl,
       todoWrite,
       getDiagnostics,
+      askUser: createAskUserTool(bindings.onAskUser),
+      delegateTask: createDelegateTaskTool(bindings),
       runCommand: createRunCommandTool(bindings),
     };
   }
@@ -91,6 +101,8 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}) {
     fetchUrl,
     todoWrite,
     getDiagnostics,
+    askUser: createAskUserTool(bindings.onAskUser),
+    delegateTask: createDelegateTaskTool(bindings),
     editFile: createEditFileTool(bindings),
     writeFile: createWriteFileTool(bindings),
     deleteFile: createDeleteFileTool(bindings),
