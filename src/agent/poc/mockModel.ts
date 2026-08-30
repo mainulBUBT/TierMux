@@ -31,6 +31,9 @@ export interface MockResponse {
   error?: Error;
   /** Emit `text` (if any), then stall until the abort signal fires. */
   hang?: boolean;
+  /** Override the text-only finish reason (default 'stop'). 'length' scripts an output-budget
+   *  cut mid-generation — drives the engine's length-continuation guard (engine.ts). */
+  finish?: 'stop' | 'length';
 }
 
 function toV4Usage(inTok = 10, outTok = 5): LanguageModelV4Usage {
@@ -95,9 +98,10 @@ export function createMockModel(script: MockResponse[], label = 'mock'): Scripte
         content.push({ type: 'tool-call', toolCallId: tc.toolCallId ?? `call-${cursor}`, toolName: tc.toolName, input: wireInput(tc.input), providerExecuted: false });
       }
       const hasCalls = (step.toolCalls ?? []).length > 0;
+      const unified = hasCalls ? 'tool-calls' : (step.finish ?? 'stop');
       return {
         content,
-        finishReason: { unified: hasCalls ? 'tool-calls' : 'stop', raw: hasCalls ? 'tool_calls' : 'stop' },
+        finishReason: { unified, raw: hasCalls ? 'tool_calls' : unified },
         usage: toV4Usage(),
         warnings: [],
       };
@@ -110,7 +114,7 @@ export function createMockModel(script: MockResponse[], label = 'mock'): Scripte
       let controller!: ReadableStreamDefaultController<LanguageModelV4StreamPart>;
       const stream = new ReadableStream<LanguageModelV4StreamPart>({ start(c) { controller = c; } });
 
-      const finish = (unified: 'stop' | 'tool-calls' | 'error' = 'stop') => {
+      const finish = (unified: 'stop' | 'tool-calls' | 'error' | 'length' = 'stop') => {
         controller.enqueue({
           type: 'finish',
           finishReason: { unified, raw: unified },
@@ -168,7 +172,7 @@ export function createMockModel(script: MockResponse[], label = 'mock'): Scripte
       }
 
       if (step.text) for (const p of textParts(textId, step.text)) controller.enqueue(p);
-      finish('stop');
+      finish(step.finish === 'length' ? 'length' : 'stop');
       return { stream };
     },
   };

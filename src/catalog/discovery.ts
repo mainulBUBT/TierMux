@@ -41,6 +41,12 @@ const clampRank = (n: number): number => Math.max(1, Math.min(5, Math.round(n)))
  * live runtime scorer (reliability/health) breaks ties and self-corrects.
  */
 const BENCH_INTEL: Array<[RegExp, number]> = [
+  // R1 distills/students (r1-distill-*, r1-NNb, r1-0528-qwen3-*) are 8–70B students of the
+  // 671B teacher — mid-tier, slow, and think-loop prone: on Cloudflare, r1-distill-qwen-32b
+  // burned its whole 16k output budget narrating a plan and truncated mid-sentence
+  // (finish_reason=length, 2m24s, answer never started). Must be listed BEFORE `deepseek-r1\b`
+  // below, which otherwise matches them via the `-` word boundary and hands them frontier rank.
+  [/r1.{0,6}distill|deepseek-r1-\d+b|r1-\d{4}-qwen/i, 3.5],
   // ---- Frontier / strong reasoning (1–1.5) ----
   [/nemotron.{0,4}ultra/i, 1],
   [/deepseek-r1\b/i, 1],

@@ -1,10 +1,8 @@
-// v3 engine (plan step 4) — the production runTurn that replaces core/loop.ts's 1,358 LOC.
-// TierMux is the policy/orchestration layer; the AI SDK is the execution engine:
-//   - streamText owns parsing/validation, tool execution, the multi-step loop, abort, and
-//     execute-error wrapping (Path B).
-//   - This file owns: message conversion, the mode-filtered toolset, the permission policy
-//     (toolApproval), malformed-call self-correction (repairToolCall, Path A), compaction
-//     (prepareStep), the 50-step cap (stopWhen), and AgentResult assembly.
+// v3 engine — TierMux is the policy layer; the AI SDK (streamText) is the execution engine.
+// This file owns: message conversion, the mode-filtered toolset, permission policy
+// (toolApproval), malformed-call self-correction (repairToolCall), compaction (prepareStep),
+// the 50-step cap (stopWhen), and AgentResult assembly. Mechanical recovery only — never
+// answer-quality judgment (docs/SIMPLE_CORE_RESET_2026-08-24.md).
 
 import {
   streamText,
@@ -29,19 +27,12 @@ import { diagLog } from '../../util/diag';
 /** Profile used until the serving model is known (see currentProfile() in runTurn). */
 const FALLBACK_PROFILE = resolveExecutionProfile(undefined);
 
-/** Coordination tools — dropped from the offer on small-window models.
- *
- *  The agent toolset serializes to ~3,570 tokens of JSON Schema on EVERY request (measured
- *  2026-08-30, 14 tools). On an 8k-window model that is 51% of the whole compaction budget
- *  before a single message is sent. These two cost ~740 of it and are the only ones that can
- *  be withdrawn without removing a capability: the model can still read, search, edit, run
- *  commands and browse — it just doesn't keep a todo list or spawn a sub-agent.
- *
- *  Deliberately NOT the web tools, even though webSearch is the single largest schema (533):
- *  they were "restored from the v2 toolset after live deflections" (see tools/v3/index.ts) —
- *  withdrawing a capability makes the model refuse the task instead of doing it smaller. */
+// Coordination tools — dropped on small-window models: the toolset serializes to ~3,570
+// schema tokens on EVERY request (measured 2026-08-30, 14 tools) and these two cost ~740
+// while being withdrawable. Deliberately NOT the web tools — withdrawing a capability makes
+// the model refuse the task instead of doing it smaller (see tools/v3/index.ts).
 const COORDINATION_TOOLS = ['todoWrite', 'delegateTask'];
-/** At/below this window the schema tax stops being affordable (3.5k of 16k = 22%; of 8k = 44%). */
+/** At/below this window the schema tax stops being affordable. */
 const SMALL_WINDOW_MAX = 16_384;
 
 // ── Wire-format conversion (OpenAI ChatMessage ↔ AI SDK ModelMessage) ──────────
@@ -170,8 +161,7 @@ export function __setEngineModelForTests(m: LanguageModel | undefined): void {
  *  router/picker.ts (injected via setModelSources at activation). Kept in the signature so
  *  every existing call site compiles unchanged. */
 export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentResult> {
-  // Turn-start facts — proves (or kills) the "stale cancellation token" theory for the silent
-  // 0-in/0-out turns: if signalAborted=true here, no model request can ever run this turn.
+  // Turn-start facts: if signalAborted=true here, no model request can ever run this turn.
   diagLog('engine.start', `mode=${opts.mode} msgs=${opts.messages?.length ?? 0} signalAborted=${opts.abortSignal?.aborted ?? 'none'} requestId=${opts.requestId ?? '-'}`);
   const modelMessages = toModelMessages(opts.messages);
   const tools: ToolSet = buildV3ToolSet(opts.mode, {
@@ -205,13 +195,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   const policy = policyFromSettings(false, opts.mode, opts.sessionId);
   const toolEvents: ToolEvent[] = [];
   let reasoningText = '';
-  // The SDK's consumeStream() RESOLVES on stream errors — it never rejects (ai v7
-  // consumeStream: "a promise that resolves when the stream is fully consumed", errors go to
-  // the onError callback). So the try/catch below does NOT see provider failures; capture the
-  // last one here and turn it into an honest failed result after the pass (see post-pass guard).
+  // ai v7 consumeStream() RESOLVES on stream errors (they go to its onError option) — the
+  // try/catch below never sees provider failures; captured here for the post-pass guard.
   let streamError: string | undefined;
-  // True while the current step has streamed reply text but no tool call yet — text that a
-  // tool call then follows is tool-planning narration, not the answer (see onChunk below).
+  // True while the current step has streamed reply text but no tool call yet (see onChunk).
   let narrationSinceToolCall = false;
 
   let outcome: { finishReason: string; text: string; responseMessages: ModelMessage[] } = {
@@ -221,20 +208,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // footer shows the real model (failover can switch it mid-turn; the LAST server wins).
   let served: { platform?: string; model?: string; runtimeName?: string } = {};
 
-  /** The serving model's ExecutionProfile, resolved per step — drives BOTH the compaction
-   *  budget and the size of the tool offer.
-   *
-   *  This was a flat 32_768 — a v3-rewrite regression whose own comment admitted "the
-   *  adaptive per-window scaling died with executionProfile". The constant is wrong in both
-   *  directions: on an 8k-window free model the transcript can never reach 32k, so compaction
-   *  never fires and the provider call overflows instead; on a 200k model it fires at ~16% of
-   *  the window and throws away evidence that comfortably fit. executionProfile.pruneTarget
-   *  already solves this (0.85 of the window, with the small-window floor exemption) and was
-   *  still exported — the engine had simply stopped calling it.
-   *
-   *  The stream path fires onModelSelected at the END of a candidate's stream, so step 0 has
-   *  no `served` yet; an explicit pin gives the answer up front, and otherwise the fallback
-   *  stands in until the first step completes. */
+  /** Serving model's ExecutionProfile, resolved per step — drives both the compaction budget
+   *  and the tool-offer size. onModelSelected fires at step END, so step 0 falls back
+   *  (pinned model → explicit lookup; else FALLBACK_PROFILE). */
   const currentProfile = () => {
     let meta = served.platform && served.model
       ? findCatalogModel(served.platform, served.model)
@@ -258,10 +234,8 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     toolApproval: ({ toolCall }) =>
       resolvePolicy({ toolName: toolCall.toolName, input: toolCall.input }, policy, async (req) => {
         if (!opts.onPermissionAsk) return 'deny';
-        // Pass the mutating INPUT through: the host's isDangerous(command) gate can only fire
-        // when it sees the command (live hole — every runCommand ask was auto-approved by the
-        // Auto-approve pill because `info.command` was always undefined), and the approval
-        // card renders the actual command/paths instead of a bare "Allow X?".
+        // Mutating INPUT passed through so the host's isDangerous(command) gate can fire and
+        // the approval card renders the real command/paths, not a bare "Allow X?".
         const input = (req.input ?? {}) as { command?: string; path?: string };
         const verdict = await opts.onPermissionAsk({
           title: `Allow ${req.tool}?`,
@@ -295,10 +269,8 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
         reasoningText += chunk.text;
         opts.onReasoning(chunk.text);
       } else if (chunk.type === 'tool-call' && narrationSinceToolCall) {
-        // Fix 3 — wire the previously-dead onRetractDraft: text streamed in the SAME step just
-        // before a tool call is speculative planning ("Let me read the file first…"), not the
-        // reply. Retract the live draft so the webview re-routes it into the Chain-of-Thought
-        // block instead of leaving it standing as a fake answer that vanishes at settle.
+        // Text streamed in the same step just before a tool call is planning narration, not
+        // the reply — retract the live draft so the webview re-routes it to Chain-of-Thought.
         narrationSinceToolCall = false;
         opts.onRetractDraft?.();
       }
@@ -337,19 +309,15 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     },
 
     onEnd: ({ steps, finishReason }) => {
-      // V4 finishReason is an OBJECT ({unified, raw}) — String() produced "[object Object]",
-      // which silently disabled every finish-based recovery: act-gap/report-gap (`=== 'stop'`)
-      // never fired and the webview could never detect 'length'. Use the unified string.
+      // V4 finishReason is an OBJECT ({unified, raw}) — String() gave "[object Object]" and
+      // silently disabled every finish-based recovery. Use the unified string.
       const fr = typeof finishReason === 'string'
         ? finishReason
         : ((finishReason as { unified?: string } | undefined)?.unified ?? 'unknown');
-      // Last NON-empty step text, not steps.at(-1): a reasoning model can emit text + a
-      // tool call in step 1, then return a silent empty step 2 after the tool result —
-      // steps.at(-1) erased the only human-visible content and the webview replaced the
-      // whole reply with the "didn't produce a final answer" placeholder (live repro:
-      // gpt-oss-120b, 270 out tokens, plan narration discarded at settle).
-      // Merge semantics: the continuation pass APPENDS its messages and keeps the
-      // earlier pass's text if the retry also ends silent.
+      // Last NON-empty step text, not steps.at(-1): a reasoning model can emit text + a tool
+      // call in step 1 then a silent step 2, erasing the only visible content (repro:
+      // gpt-oss-120b, 270 out tokens discarded at settle). Continuation passes APPEND their
+      // messages and keep the earlier text if the retry ends silent.
       const passText = [...steps].reverse().find((s) => s.text?.trim())?.text ?? '';
       outcome = {
         finishReason: fr,
@@ -373,10 +341,8 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     const aborted = opts.abortSignal?.aborted || (e as Error)?.name === 'AbortError';
     const message = e instanceof Error ? e.message : String(e);
     diagLog('engine.catch', `aborted=${aborted} name=${(e as Error)?.name ?? '?'} msg="${message.slice(0, 140)}"`);
-    // Abort with NOTHING streamed (a stale token that was dead at send time, or a Stop within
-    // the first second): the old path returned a non-failed empty result, which rendered as a
-    // mystery placeholder with a 0-token footer. Return paused instead — the webview shows its
-    // Continue affordance and the turn is resumable instead of lost.
+    // Abort with NOTHING streamed (stale token, or Stop within the first second): return
+    // paused:true so the turn stays resumable instead of a 0-token mystery placeholder.
     if (aborted && !outcome.text.trim() && toolEvents.length === 0) {
       diagLog('engine.abortEmpty', 'abort before any output — returning paused:true so the turn stays resumable');
       return {
@@ -405,14 +371,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     };
   }
 
-  // Stream-error guard: a provider failure the consumeStream resolved (never rejected — see
-  // streamError above) used to fall through as a "successful" empty turn — finish 'unknown',
-  // 0 in/0 out, and a webview placeholder that guessed "check your model keys" while the real
-  // reason (401/403/429/credit, or routerProvider's "TierMux: all candidates failed: …") was
-  // swallowed. Live repro (1:18 AM, "@routes/web.php optimize this"): dead in 1s, 0 tokens,
-  // zero indication of WHY. Only when the turn produced NOTHING — any streamed text, reasoning,
-  // or tool result means a later step failed and the partial output is still worth showing.
-  // Abort is excluded: a dead-at-start token returns paused (resumable) instead.
+  // Stream-error guard: a provider failure consumeStream resolved used to fall through as a
+  // "successful" empty turn (0 in/0 out) with the real reason (401/403/429/credit, or "all
+  // candidates failed") swallowed — repro 1:18 AM, dead in 1s. Surface it, but only when the
+  // turn produced NOTHING; partial output from a later-step failure still ships. A
+  // dead-at-start abort returns paused instead.
   if (
     streamError
     && !opts.abortSignal?.aborted
@@ -432,15 +395,16 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     };
   }
 
-  // Agent-mode CONTINUATION NUDGE — covers every "talked instead of acting" failure class
-  // observed live (all gpt-oss-120b):
-  //   (a) proposal printout: the refactored file as a code fence, zero tools (1.4k out);
-  //   (b) plan narration then quit: "The user wants… Let's inspect the file… Use readFile…"
-  //       streamed as text but the tool call never came (216 out) — and the unfinished step
-  //       never finalized, so outcome.text came back EMPTY and the webview showed the
-  //       "stopped without a final answer" placeholder.
-  // One continuation tells the model to actually DO the task with its tools. Skipped for
-  // questions (ending '?', how/what/why/…) so agent-mode Q&A keeps its prose answer.
+  // Agent-mode CONTINUATION NUDGE — one continuation when the turn ends without CLOSING
+  // (finish 'stop' only), skipped for questions so agent-mode Q&A keeps its prose answer:
+  //   act-gap    — no tool ran; reply is empty / narration / a proposal fence.
+  //   report-gap — tools ran but the synthesis step ended empty or on narration (the SDK
+  //     always runs a next step after tool calls, so this is an empty synthesis, not an
+  //     early loop end). Narration-after-tools ANNOUNCES the next call instead of making
+  //     it — same unclosed loop. Repro ×2 (Kilo/stepfun step-3.7-flash:free, 2026-08-30
+  //     3:47/3:54 PM): ended on "Let me continue reading…" after 8 and 6 tool uses.
+  // This EXTENDS the existing guard's condition — one guard, not a second (SIMPLE_CORE_RESET
+  // rule: live repro → ONE targeted guard).
   const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
   const lastUserText = typeof lastUser?.content === 'string' ? lastUser.content : '';
   const looksLikeQuestion = !!lastUserText
@@ -450,29 +414,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     && /^\s*(the user|i'll|i will|we'll|we will|let's|let me|we need|we can|i need|first,|i should|we should|okay,? so)\b/i.test(outcome.text);
   diagLog('engine.turnEnd', `finish=${outcome.finishReason} textLen=${outcome.text.length} steps=${outcome.responseMessages.length} tools=${toolEvents.length} reasoningLen=${reasoningText.length} empty=${replyEmpty} narration=${replyIsNarration}`);
   const didWork = toolEvents.length > 0;
-  // Two ways a turn ends without CLOSING — both observed live on gpt-oss-120b:
-  //   act-gap    — tools NEVER ran: proposal printout / plan narration / empty reply.
-  //   report-gap — tools DID run, results came back, and the model still ended silently
-  //     (live: "Worked for 3s · 2 tool uses · 1 thought" → empty bubble, 292 out · 3s.
-  //     The SDK always runs a next step after tool calls — stepCountIs only caps it — so
-  //     this is the model returning an empty synthesis step, not the loop ending early).
-  // A coding agent must always close the loop: act → observe → REPORT. One continuation
-  // each; skipped for questions so agent-mode Q&A keeps its prose answer.
   const actGap = !didWork && (replyEmpty || replyIsNarration || outcome.text.includes('```'));
-  // `replyEmpty || replyIsNarration`, not `replyEmpty` alone. A turn that ran tools and then
-  // ANNOUNCED its next tool call instead of making it is the same unclosed loop as ending
-  // silently — the model is mid-task, not answering — but it fell through both gaps: actGap
-  // requires that no tool ran, reportGap required an empty reply. Two live repros, same shape,
-  // same model (Kilo/stepfun/step-3.7-flash:free, 2026-08-30): 3:47 PM ended on "Let me
-  // continue reading from where it was cut off" after 8 tool uses, and 3:54 PM on "Let me
-  // continue reading the PlaceNewOrder trait to understand the full flow." after 6 — 173 out
-  // tokens, no answer, task untouched. The second is after the readFile paging fix, so it is
-  // not the tool withholding an offset: the model simply stops at the narration.
-  //
-  // This EXTENDS the existing guard's condition; it does not add a second one. The reset doc's
-  // standing rule is that narration ships unjudged unless "users report a recurring failure
-  // shape, gather a live repro first, then add ONE targeted guard citing it" — those are the
-  // repros. The continuation is the same single mechanical pass the empty case already gets.
   const reportGap = didWork && (replyEmpty || replyIsNarration);
   if (
     opts.mode === 'agent'
@@ -482,11 +424,8 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     && (actGap || reportGap)
   ) {
     diagLog('engine.applyNudge', `${reportGap ? 'report-gap (tools ran, empty synthesis)' : 'act-gap (no tools ran)'} (textLen=${outcome.text.length}, narration=${replyIsNarration}) — continuation pass`);
-    // Pass 1 streamed text into the live draft (act-gap narration: "The user wants… Let me
-    // grep…"). That text is exactly what triggered the nudge, so it must not keep standing as
-    // the answer while pass 2 streams into the same draft — live repro (nemotron-3-ultra-free,
-    // 12:57 AM): both passes' narration stacked in one reply bubble. Retract it to the
-    // Chain-of-Thought block first; pass 2's text becomes the sole reply draft.
+    // Pass-1 narration triggered the nudge — retract it (repro: nemotron-3-ultra-free 12:57
+    // AM, both passes' narration stacked in one bubble); pass 2's text is the sole draft.
     if (outcome.text.trim()) opts.onRetractDraft?.();
     try {
       await runPass([
@@ -502,25 +441,47 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     } catch {
       // Keep the pass-1 output rather than failing the turn.
     }
-    // Routing-level health demotion, cross-turn only: the act-gap signal (narration/empty,
-    // ALREADY computed for the nudge — no new detector) repeated through the continuation
-    // pass means this model talks instead of acting. recordOutcome(false) feeds the picker's
-    // existing cooldown (30s → 2m backoff), so the NEXT Auto turn routes elsewhere first;
-    // pinned models are exempt in pick() by design. In-loop behavior is untouched — the
-    // answer above still ships (the reset's accepted trade-off), this only steers future
-    // selection. Live repro ×3 (2026-08-28, 12:57–1:29 AM): nemotron-3-ultra-free narrated
-    // instead of acting on every coding task and Auto re-picked it each time.
+    // Cross-turn health demotion only: act-gap repeated through the continuation means this
+    // model talks instead of acting — recordOutcome(false) feeds the picker's cooldown so the
+    // NEXT Auto turn routes elsewhere (pinned exempt; in-loop answer still ships).
+    // Repro ×3 (2026-08-28 12:57–1:29 AM): nemotron-3-ultra-free narrated on every task.
     if (actGap && !reportGap && toolEvents.length === 0 && served.platform && served.model) {
       recordOutcome(served.platform, served.model, false);
       diagLog('engine.actGapDemote', `no tool work after continuation — cooldown for ${served.platform}::${served.model}`);
     }
   }
 
-  // LAST-RESORT reasoning fold: if every pass came back with an empty content channel, the
-  // model's own accumulated thinking is the best reply we have — promote it rather than
-  // showing a placeholder. Live repro (gemini-2.5-flash, 11:49 PM): 2 files edited correctly,
-  // the whole narration landed in the thinking channel, reply text stayed empty. The
-  // reasoning also stays in the CoT block; a little duplication beats an empty bubble.
+  // LENGTH-CUT CONTINUATION — the reply hit the output budget mid-generation
+  // (`finish_reason: length`, mapped by routerProvider): a wire-level trigger, never quality
+  // judgment. The partial answer STANDS (no retract) and this pass appends to the same draft.
+  // Repro (2026-08-30 ×2 in one session, Cloudflare @cf/deepseek-ai/deepseek-r1-distill-
+  // qwen-32b): reply cut mid-sentence, finish 'length', 2m24s — the distill burned its output
+  // budget on think-narration; AI SDK v7 (unlike v4's `continueSteps`) never continues a
+  // 'length' step. ONE continuation, placed after the act/report-gap nudge (fires only on
+  // 'stop') so the two can never both run — invariant 3.
+  if (outcome.finishReason === 'length' && !opts.abortSignal?.aborted) {
+    diagLog('engine.lengthContinue', `finish=length (textLen=${outcome.text.length}) — one continuation pass`);
+    // Stitch both halves into the shipped reply: onEnd keeps the earlier text only when the
+    // newer pass ends silent, but here pass 1's text is half the real answer.
+    const partial = outcome.text;
+    try {
+      await runPass([
+        ...modelMessages,
+        ...outcome.responseMessages,
+        {
+          role: 'user',
+          content: 'Your previous reply was cut off mid-sentence by the output token limit. Continue from exactly where it stopped. Do not repeat any earlier text, do not restart the answer, and do not mention the cutoff.',
+        },
+      ]).consumeStream();
+      if (outcome.text.trim() && outcome.text !== partial) outcome.text = partial + outcome.text;
+    } catch {
+      // Keep the partial answer rather than failing the turn.
+    }
+  }
+
+  // LAST-RESORT reasoning fold: every pass's content channel empty ⇒ promote the accumulated
+  // thinking as the reply (repro: gemini-2.5-flash 11:49 PM — 2 files edited correctly, all
+  // narration in the thinking channel). A little duplication beats an empty bubble.
   if (!outcome.text.trim() && reasoningText.trim()) {
     diagLog('engine.reasoningFold', `empty reply after all passes — promoting ${reasoningText.length} chars of reasoning as the reply`);
     outcome.text = reasoningText.trim();
