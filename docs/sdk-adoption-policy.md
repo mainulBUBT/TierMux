@@ -22,19 +22,38 @@ major breaking releases roughly twice a year), and TierMux only stays cheap to u
 the SDK is held at a thin interface (`doGenerate`/`doStream` + `streamText` options). Every
 adopted API is future breakage surface; adopt only when it pays for that.
 
-## Adopted (the current set — near-complete, no additions pending)
+## Adopted (verified against `src/` on 2026-08-30)
 
 | API | Where |
 |---|---|
-| `streamText` | agent loop, streaming (`core/loop.ts`) |
-| `generateText` | one-shot utility calls (title, condense, clarify) |
-| `tool` + `jsonSchema` + `ToolSet` | all tool definitions (`core/tools/`) |
-| `Output` | structured output |
-| `pruneMessages` | history pruning (`core/loop.ts`) |
-| `repairToolCall` option | tool-call self-healing hook (`core/loop.ts`) |
-| `wrapLanguageModel` | telemetry middleware (`core/middleware/telemetry.ts`) |
+| `streamText` | agent loop, streaming (`core/engine.ts`) |
+| `generateText` | one-shot utility calls (`agent/planStructurer.ts`, `core/tools/workspaceRoot.ts`) |
+| `tool` + `ToolSet` | all tool definitions (`core/tools/`) |
+| `jsonSchema` | MCP tool bridging (`core/tools/mcp/mcp.ts`) |
+| `pruneMessages` | transcript compaction (`core/compact.ts`) |
+| `prepareStep` (`messages`) | compaction hook (`core/engine.ts`) |
+| `repairToolCall` option | tool-call self-healing hook (`core/engine.ts`) |
+| `toolApproval` | permission gate (`core/engine.ts`) |
 | `isStepCount`, `NoSuchToolError`, `InvalidToolInputError` | loop control, error handling |
 | `LanguageModelV4` spec types | the router-as-model adapter (`core/routerProvider.ts`) |
+
+### Listed as adopted before 2026-08-30, and NOT actually present
+
+The v3 rewrite retired `core/loop.ts` for `core/engine.ts` and this table was not re-checked,
+so it kept asserting three APIs the code no longer imported. That is worse than a stale doc:
+rule 3 below is evaluated AGAINST this table, so a hand-written replacement for a
+"already-adopted" API reads as compliant when it is really a regression. `pruneMessages` was
+the live case — `core/compact.ts` had grown a hand-rolled pass that stubbed every tool result
+in the older half of the transcript, while the SDK function it was supposed to be using
+appeared in zero files. It is restored above.
+
+| API | Doc claimed | Reality on 2026-08-30 | Status |
+|---|---|---|---|
+| `pruneMessages` | `core/loop.ts` | 0 files — hand-rolled stubbing in `core/compact.ts` | **restored** |
+| `wrapLanguageModel` | `core/middleware/telemetry.ts` | 0 files; that directory does not exist | still absent — a candidate, not adopted |
+| `Output` | structured output | never imported from `ai` | still absent — a candidate, not adopted |
+
+**When this table changes, re-verify it.** `grep -rn "from 'ai'" src/` is the whole check.
 
 ## Candidate list (checked 2026-08-24 against `ai@7.0.58` / `@ai-sdk/provider@4.0.3`)
 

@@ -1,18 +1,54 @@
-// POC ONLY — v3 minimal context compaction (plan §5). Replaces anchors/collapseRepeat/watchdog.
+// v3 context compaction — the SDK's pruneMessages behind a TierMux budget decision.
 //
-// Deliberately minimal: when the estimated tokens cross 80% of the budget, tool-result
-// messages in the OLDER half of the transcript are replaced with a one-line stub.
-// User/assistant messages stay verbatim. The prepareStep `messages` override is sticky
-// (carries forward to later steps — verified at ai/dist/index.d.ts:1722-1726), so one
-// compaction persists for the rest of the turn.
+// The budget (WHEN to compact) stays TierMux's: it comes from the served model's
+// ExecutionProfile, resolved by the caller. The transcript surgery (WHAT to drop) is the
+// SDK's `pruneMessages` — adopting it deleted a hand-rolled pass that stubbed EVERY tool
+// result in the older half of the transcript with "(result omitted — compacted)", which is
+// both blunter and more expensive than dropping the parts outright.
+//
+// Two tiers, because evidence and overflow pull in opposite directions. The
+// SIMPLE_CORE_RESET note that early blanking "was destroying tool evidence the model still
+// needed" is the reason tier 1 only drops the re-derivable searches; the flat 32K budget it
+// replaced is the reason a tier 2 exists at all (a small-window model has to shed file reads
+// too or the provider call overflows regardless).
 
-import type { ModelMessage } from 'ai';
+import { pruneMessages, type ModelMessage } from 'ai';
 
 /** ~4 chars/token — same heuristic the old budget.ts used; only decides WHEN to compact. */
 export function estimateTokens(messages: ModelMessage[]): number {
   return Math.ceil(JSON.stringify(messages).length / 4);
 }
 
+/** Searches: large, noisy, and cheap for the model to re-run if it truly needs them again.
+ *  These go first and are the only thing tier 1 touches. */
+const REDERIVABLE_TOOLS = ['grep', 'glob', 'listDir', 'webSearch', 'deepSearch'];
+
+/** Tier 1 — drop stale reasoning plus re-derivable search output, keeping file reads and
+ *  edits (the evidence a later step actually reasons over) intact. */
+function pruneGentle(messages: ModelMessage[]): ModelMessage[] {
+  return pruneMessages({
+    messages,
+    reasoning: 'before-last-message',
+    toolCalls: [{ type: 'before-last-6-messages', tools: REDERIVABLE_TOOLS }],
+    emptyMessages: 'remove',
+  });
+}
+
+/** Tier 2 — every tool result outside the last few messages goes, file reads included. Only
+ *  reached when tier 1 left the transcript still over budget, where the alternative is not
+ *  "keep the evidence" but "overflow the provider and lose the whole turn". */
+function pruneAggressive(messages: ModelMessage[]): ModelMessage[] {
+  return pruneMessages({
+    messages,
+    reasoning: 'all',
+    toolCalls: [{ type: 'before-last-4-messages' }],
+    emptyMessages: 'remove',
+  });
+}
+
+/** Returns a `prepareStep` override — `{}` leaves the step untouched. The `messages` override
+ *  is sticky (carries forward to later steps — verified at ai/dist/index.d.ts:1722-1726), so
+ *  one compaction persists for the rest of the turn. */
 export function compactIfNeeded(
   messages: ModelMessage[],
   budgetTokens: number,
@@ -20,18 +56,8 @@ export function compactIfNeeded(
   if (budgetTokens <= 0) return {};
   if (estimateTokens(messages) < budgetTokens * 0.8) return {};
 
-  const half = messages.length / 2;
-  const compacted: ModelMessage[] = messages.map((m, i) => {
-    if (m.role !== 'tool' || i >= half) return m;
-    return {
-      role: 'tool' as const,
-      content: (m.content as Array<{ toolCallId: string; toolName: string }>).map((part) => ({
-        type: 'tool-result' as const,
-        toolCallId: part.toolCallId,
-        toolName: part.toolName,
-        output: { type: 'text' as const, value: '(result omitted — compacted)' },
-      })),
-    };
-  });
-  return { messages: compacted };
+  const gentle = pruneGentle(messages);
+  if (estimateTokens(gentle) < budgetTokens * 0.8) return { messages: gentle };
+
+  return { messages: pruneAggressive(gentle) };
 }

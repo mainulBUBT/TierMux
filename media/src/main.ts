@@ -105,7 +105,7 @@ const STATE_LABEL = {
       <div class="input-wrap">
         <div id="ac-pop" class="ac-pop hidden"></div>
         <textarea id="input" placeholder="What would you like to know?" title="Enter to send · Shift+Enter for newline · @ for files · / for commands · /fix /tests /commit"></textarea>
-        <div class="input-hints hidden" id="input-hints"><span><span class="hint-key">/</span> commands</span><span><span class="hint-key">@</span> files</span><span><span class="hint-key">Shift+Enter</span> newline</span></div>
+        <div class="input-hints hidden" id="input-hints"><span class="hint-defaults" id="hint-defaults"><span><span class="hint-key">/</span> commands</span><span><span class="hint-key">@</span> files</span><span><span class="hint-key">Shift+Enter</span> newline</span></span><span class="hint-lint hidden" id="hint-lint"></span></div>
         <div class="toolbar">
           <div class="tgroup">
             <div id="agent-picker-slot"></div>
@@ -1276,13 +1276,73 @@ const STATE_LABEL = {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submitChat(); }
   });
   input.addEventListener('input', () => { autoGrow(); updateAutocomplete(); updateSendEnabled(); updateInputHints(); });
-  // Empty-input hint row: visible only while the composer has nothing typed.
+  // ---------- hint row + prompt lint ----------
+  // The one micro-line under the textarea has two states:
+  //   empty draft → the default key hints (/ commands · @ files · Shift+Enter)
+  //   typed draft → a lint nudge, but only while the draft names nothing the agent can locate
+  //
+  // Everything below is pure string work on what the composer already holds (draft text,
+  // @ mentions, / commands, attachment chips) — no model call and no host round-trip, so it
+  // is free to run on every keystroke.
+  //
+  // Why a nudge and not a rewrite: weak/free models fail on missing context, not on wording.
+  // A rewriter would see exactly the text we see here, so it cannot supply the file the draft
+  // is missing — it invents requirements instead. Only the user can name the target.
+  // The wording stays about THIS message ("name a file"), never "the agent has no context":
+  // the host separately auto-enriches the turn with the active editor.
   const inputHints = $('#input-hints');
+  const hintDefaults = $('#hint-defaults');
+  const hintLint = $('#hint-lint');
+
+  /** True when the draft points at something the agent can actually go find. */
+  function namesATarget(text) {
+    return /@\S/.test(text)                                          // @mention
+      || /`[^`]+`/.test(text)                                        // `identifier` / `path`
+      || /[\w-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|css|html|md|py|go|rs|java|kt|rb|php|cs|c|cc|cpp|h|hpp|sh|yml|yaml|toml|sql)\b/i.test(text)
+      || /[\w-]+\/[\w-]+/.test(text)                                 // src/router/picker
+      || /\b\w+\(\)/.test(text)                                      // foo()
+      || /\b[a-z][a-z0-9]*[A-Z]\w*\b/.test(text)                     // camelCase
+      || /\b[A-Z][a-z0-9]+[A-Z]\w*\b/.test(text);                    // PascalCase
+  }
+
+  const ERROR_TALK = /\b(?:errors?|crash(?:e[sd])?|exceptions?|stack ?trace|traceback|fail(?:s|ed|ing|ure)?|broken|not working|does(?:n'?t| not) work)\b/i;
+
+  /**
+   * One hint for the draft, or null to stay quiet. Deliberately conservative: a lint that
+   * fires on everything gets tuned out, and it must always clear as the user adds detail —
+   * a line that never goes away reads as a scold rather than a tip.
+   */
+  function lintDraft(text) {
+    if (text.startsWith('/')) return null;            // slash commands carry their own scope
+    if (pendingAttachments.length > 0) return null;   // a chip already supplies the context
+    if (namesATarget(text)) return null;
+    const words = text.split(/\s+/).length;
+    if (words > 40) return null;                      // an essay has given its detail; stop nagging
+    if (ERROR_TALK.test(text) && !text.includes('```'))
+      return { key: '@', label: 'paste the error output, or attach a screenshot' };
+    if (words <= 8)
+      return { key: '@', label: 'name a file so the agent starts in the right place' };
+    return null;
+  }
+
   function updateInputHints() {
-    inputHints.classList.toggle('hidden', input.value.trim().length > 0);
+    const draft = input.value.trim();
+    const lint = draft ? lintDraft(draft) : null;
+    if (lint) {
+      hintLint.textContent = '';
+      const key = document.createElement('span');
+      key.className = 'hint-key';
+      key.textContent = lint.key;
+      hintLint.append(key, ' ' + lint.label);
+    }
+    hintDefaults.classList.toggle('hidden', draft.length > 0);
+    hintLint.classList.toggle('hidden', !lint);
+    inputHints.classList.toggle('lint', !!lint);
+    inputHints.classList.toggle('hidden', draft.length > 0 && !lint);
   }
   /** Programmatic composer writes bypass the 'input' event — call this after setting value. */
   function syncComposer() { autoGrow(); updateSendEnabled(); updateInputHints(); }
+  updateInputHints(); // a fresh composer is empty — show the default key hints straight away
   input.addEventListener('click', updateAutocomplete);
   input.addEventListener('blur', () => setTimeout(closeAc, 120));
   function autoGrow() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 220) + 'px'; }
@@ -1569,6 +1629,7 @@ const STATE_LABEL = {
       chipsEl.appendChild(card);
     });
     updateSendEnabled();
+    updateInputHints(); // an attachment silences the lint — re-evaluate on every chip change
   }
 
   // escapeHtml lives in ./dom (stateless, strict-checked).

@@ -1428,11 +1428,19 @@ details[open].tm-card-collapsible > summary::before { content: '▾ '; }
 .ctx-chip.warn .ctx-pct { color: var(--vscode-editorWarning-foreground, #c9930a); }
 
 /* Hints row: one quiet micro-line under the textarea, not a board of key caps. */
-.input-hints { gap: 14px; padding: 0 6px; font-size: 10px; opacity: .5; }
+.input-hints { display: flex; align-items: center; gap: 14px; padding: 0 6px; font-size: 10px; opacity: .5; }
 .input-hints .hint-key {
   font-family: inherit; font-weight: 600;
   background: transparent; border-radius: 0; padding: 0;
 }
+/* The default key hints are a transparent group so the row's flex gap still spaces the three
+   of them, while JS can swap the whole set out for a lint nudge in one class toggle. */
+.hint-defaults { display: contents; }
+/* Prompt lint: shown instead of the key hints while the typed draft names no target. It is
+   advice about the draft, not an error, so it keeps the same register — just lifted enough
+   to actually get read at 10px. */
+.input-hints.lint { opacity: .75; }
+.input-hints.hidden, .hint-defaults.hidden, .hint-lint.hidden { display: none; }
 
 /* Toolbar icon buttons read as quiet circles (ChatGPT-composer style): no borders at rest,
    a soft round hover, one consistent hit area — so the pickers (mode/model/reasoning) carry

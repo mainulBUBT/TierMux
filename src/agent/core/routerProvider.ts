@@ -66,6 +66,73 @@ export function isFailoverWorthy(e: unknown): boolean {
   return e instanceof Error && /network|fetch failed|timed out|ECONN/i.test(e.message);
 }
 
+/** Per-candidate ceiling on TIME TO RESPONSE HEADERS while failing over.
+ *
+ *  BaseProvider.fetchWithTimeout clears its timer in a `finally` the moment `fetch` resolves
+ *  — i.e. as soon as the response headers land — so this bounds only how long a candidate may
+ *  take to ANSWER, never how long its generation may run. A long stream is untouched.
+ *
+ *  It exists because the registry's declared timeouts are written for a single-shot call, not
+ *  for a failover chain: eight platforms declare 600_000 (ten minutes) and the median is the
+ *  same. One unresponsive provider could therefore hold a turn hostage for ten minutes before
+ *  the chain even reached the next candidate, and widening the chain (above) would have
+ *  multiplied that. 25s is far past any healthy free-tier first byte.
+ *
+ *  NOT applied when the provider declares <= 0 (custom/local endpoints): a local model on the
+ *  user's own hardware may legally take minutes to cold-load, and there is no failover pool
+ *  that could serve it faster — see BaseProvider.fetchWithTimeout's own note. */
+const FAILOVER_CONNECT_TIMEOUT_MS = 25_000;
+
+/** Stop STARTING new candidates once the chain has burned this long. Never interrupts a
+ *  candidate already streaming — it only declines to open another one. Bounds the pathological
+ *  case (every candidate unresponsive) at roughly this plus one connect timeout, instead of
+ *  candidates × timeout. */
+const CHAIN_DEADLINE_MS = 120_000;
+
+/** The connect cap for one candidate, or undefined to leave the provider's own timeout alone
+ *  (custom/local endpoints, which declare no timeout on purpose). */
+function connectTimeoutFor(platform: Platform): number | undefined {
+  return platform === 'custom' ? undefined : FAILOVER_CONNECT_TIMEOUT_MS;
+}
+
+/** 401/402/403 are ACCOUNT-level, not model-level: a dead key, an unpaid bill, or a plan that
+ *  excludes paid models applies to every model on that platform at once. Retrying the
+ *  platform's OTHER models after one of these is guaranteed waste — it burns the bounded
+ *  chain on failures that cannot succeed, and the turn dies with candidates never tried.
+ *  Live repro: ollama 402 "requires a subscription" (2026-08-30 1:30 PM, again 2:31 PM) and
+ *  cerebras 402 "Payment required… visit your billing tab" (3:23 PM), each of which ended the
+ *  turn. 429 and 5xx are deliberately NOT here: those are per-model/transient, and the next
+ *  model of the same platform genuinely can serve.
+ *
+ *  Checked only AFTER a candidate's key rotation is exhausted — with several stored keys a
+ *  401 may be one dead key rather than a dead account. */
+/** The turn-killing error, written so the USER can tell that failover ran.
+ *
+ *  Previously this rethrew `lastError` verbatim, so a chain that tried four candidates and
+ *  lost surfaced as a bare "Cerebras API error 402: Payment required" — indistinguishable
+ *  from no failover happening at all, which is exactly what it was reported as
+ *  ("if cerebras 402 then next handle will do? but failed", 2026-08-30 3:23 PM). Naming every
+ *  candidate and its outcome answers that question in the message itself. A single-candidate
+ *  chain keeps the provider's own wording: there was no failover to report. */
+function chainExhaustedError(
+  candidates: Candidate[],
+  attempts: string[],
+  lastError: unknown,
+): Error {
+  if (candidates.length <= 1) {
+    return lastError instanceof Error
+      ? lastError
+      : new Error('TierMux: the only model candidate failed');
+  }
+  const detail = attempts.length ? ` — ${attempts.join('; ')}` : '';
+  return new Error(`TierMux: all ${candidates.length} model candidates failed${detail}`);
+}
+
+function isAccountLevel(e: unknown): boolean {
+  return e instanceof ProviderHttpError
+    && (e.status === 401 || e.status === 402 || e.status === 403);
+}
+
 function toV4Usage(promptTokens?: number, completionTokens?: number): LanguageModelV4Usage {
   return {
     inputTokens: { total: promptTokens, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
@@ -226,13 +293,29 @@ export async function resolveCandidates(opts: RouterProviderOptions): Promise<Ca
   // most MAX_PER_PLATFORM of the bound to a single platform on the first pass, then top the
   // chain back up from the overflow so a user who genuinely enabled only one provider still
   // gets a full chain.
-  const MAX_CANDIDATES = 4;
-  const MAX_PER_PLATFORM = 2;
-  const primary: Candidate[] = [];
-  const overflow: Candidate[] = [];
-  const perPlatform = new Map<string, number>();
-  // Memoized so one secret lookup per platform covers every model of that platform in the
-  // chain (the scan below walks past the bound to find alternatives).
+  // Round 0 now covers EVERY usable platform rather than stopping at a small bound. With 30
+  // usable platforms a bound of 6 tried 20% of them and let the turn die there, while two
+  // dozen keyed providers sat untouched ("6 ta diye korle amar jw 22+ providers tader models
+  // ki pore thakbe?"). Breadth is only safe because of FAILOVER_CONNECT_TIMEOUT_MS below —
+  // without it, widening the chain would widen the worst-case hang with it.
+  //
+  // Round-robin across platforms, not the picker's flat order. Walking that order and
+  // stopping at the bound fills the chain from whichever platform happens to rank highest and
+  // never LOOKS at the rest: live repro 2026-08-30 3:32 PM, where the chain came back
+  // opencode → ollama → ollama → cerebras and died, while google, kilo, mistral and kenari sat
+  // enabled, keyed, and untried ("egula charaw to google, kilo, mistral, kenari chilo").
+  // Taking each platform's best model first, then each platform's second, spends the bound on
+  // BREADTH — which is the only thing that helps when whole platforms are down, and on a
+  // free-tier stack whole platforms are down constantly.
+  const MAX_CANDIDATES = 12;
+  /** Cap on how deep one platform's bucket goes — only reachable when few platforms are
+   *  usable, which is exactly when repeating a platform is the best option left. */
+  const MAX_PER_PLATFORM = MAX_CANDIDATES;
+  /** Chain entries examined before giving up the scan. The picker's tail is every enabled
+   *  model, which can run to hundreds; the buckets need only enough to fill the rounds. */
+  const MAX_SCAN = 80;
+
+  // Memoized so one secret lookup per platform covers every model of that platform.
   const keyCache = new Map<string, string[]>();
   const keysFor = async (platform: string): Promise<string[]> => {
     let keys = keyCache.get(platform);
@@ -240,33 +323,45 @@ export async function resolveCandidates(opts: RouterProviderOptions): Promise<Ca
     return keys;
   };
 
+  const buckets = new Map<string, Candidate[]>();
+  const platformOrder: string[] = [];
+  let scanned = 0;
   for (const key of [selection.model, ...selection.fallbackChain]) {
-    if (primary.length >= MAX_CANDIDATES) break;
+    if (scanned++ >= MAX_SCAN) break;
     const [platform, ...rest] = key.split('::');
     const modelId = rest.join('::');
     if (!modelId || modelId === 'auto') continue;
-    const provider = resolveProvider(platform as Platform, modelId);
-    if (!provider) continue;
+    if (!resolveProvider(platform as Platform, modelId)) continue;
     const apiKeys = await keysFor(platform);
     if (apiKeys.length === 0) continue;
-    const candidate: Candidate = { platform: platform as Platform, modelId, apiKeys };
-    const used = perPlatform.get(platform) ?? 0;
-    if (used >= MAX_PER_PLATFORM) {
-      // Held back, not dropped: it still serves if no other platform can fill the slot.
-      if (overflow.length < MAX_CANDIDATES) overflow.push(candidate);
-      continue;
+    let bucket = buckets.get(platform);
+    if (!bucket) { bucket = []; buckets.set(platform, bucket); platformOrder.push(platform); }
+    if (bucket.length < MAX_PER_PLATFORM) {
+      bucket.push({ platform: platform as Platform, modelId, apiKeys });
     }
-    perPlatform.set(platform, used + 1);
-    primary.push(candidate);
   }
 
-  // Only one platform available? The diversity cap would leave a 2-long chain where a
-  // 4-long one was possible — refill from the held-back models in their original order.
-  for (const c of overflow) {
-    if (primary.length >= MAX_CANDIDATES) break;
-    primary.push(c);
+  // Interleave: round 0 is every platform's first choice (in the picker's platform order),
+  // round 1 every platform's second, and so on until the bound.
+  const chain: Candidate[] = [];
+  for (let round = 0; chain.length < MAX_CANDIDATES; round++) {
+    let addedThisRound = false;
+    for (const platform of platformOrder) {
+      const bucket = buckets.get(platform)!;
+      if (round >= bucket.length) continue;
+      chain.push(bucket[round]);
+      addedThisRound = true;
+      if (chain.length >= MAX_CANDIDATES) break;
+    }
+    if (!addedThisRound) break; // every bucket is spent
   }
-  return primary;
+
+  // The resolved chain is the first thing to check when a turn dies on a provider error —
+  // "was there anything to fail over TO?" is not answerable from the error alone.
+  diagLog('rp.chain', chain.length
+    ? `${platformOrder.length} platform(s): ${chain.map((c) => `${c.platform}::${c.modelId}`).join(' \u2192 ')}`
+    : '<empty \u2014 no usable candidate>');
+  return chain;
 }
 
 /** Wraps the v3 picker (or, for utility callers that still hold a Router, the Router itself)
@@ -442,10 +537,22 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
       if (candidates.length === 0) throw new Error('TierMux: no model candidate resolved');
 
       let lastError: unknown;
+      const deadPlatforms = new Set<string>();
+      const attempts: string[] = [];
+      const startedAt = Date.now();
       for (let i = 0; i < candidates.length; i++) {
         const c = candidates[i];
         const provider = resolveProvider(c.platform, c.modelId);
         if (!provider) continue;
+        if (Date.now() - startedAt > CHAIN_DEADLINE_MS) {
+          attempts.push(`${c.platform}::${c.modelId} not started (chain deadline reached)`);
+          break;
+        }
+        if (deadPlatforms.has(c.platform)) {
+          attempts.push(`${c.platform}::${c.modelId} skipped (platform auth/billing already failed)`);
+          continue;
+        }
+        let candidateError: unknown;
         // Try every stored key within the candidate (rotation on dead/quota'd keys) before
         // abandoning it for the next candidate.
         for (const apiKey of c.apiKeys) {
@@ -456,6 +563,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             tools,
             reasoningEffort: providerOpts.effort,
             abortSignal: options.abortSignal,
+            timeoutMs: connectTimeoutFor(c.platform),
           });
           providerOpts.onModelSelected?.(c.platform, c.modelId, provider.runtimeName);
           if (data.usage) {
@@ -488,6 +596,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
           };
           } catch (e) {
             lastError = e;
+            candidateError = e;
             recordOutcome(c.platform, c.modelId, false);
             if (isFailoverWorthy(e)) {
               providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
@@ -496,8 +605,12 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             throw e;
           }
         }
+        if (candidateError) {
+          attempts.push(`${c.platform}::${c.modelId} ${candidateError instanceof Error ? candidateError.message : String(candidateError)}`);
+          if (isAccountLevel(candidateError)) deadPlatforms.add(c.platform);
+        }
       }
-      throw lastError instanceof Error ? lastError : new Error('TierMux: all candidates failed');
+      throw chainExhaustedError(candidates, attempts, lastError);
     },
 
     async doStream(options: LanguageModelV4CallOptions): Promise<LanguageModelV4StreamResult> {
@@ -518,10 +631,25 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
 
       void (async () => {
         let lastError: unknown;
+        // Platforms that answered 401/402/403 — their remaining models are skipped, and the
+        // attempt log below reports WHY so an exhausted chain is legible instead of surfacing
+        // one provider's raw error as if no failover had run.
+        const deadPlatforms = new Set<string>();
+        const attempts: string[] = [];
+        const startedAt = Date.now();
         for (let i = 0; i < candidates.length; i++) {
           const c = candidates[i];
           const provider = resolveProvider(c.platform, c.modelId);
           if (!provider) continue;
+          if (Date.now() - startedAt > CHAIN_DEADLINE_MS) {
+            attempts.push(`${c.platform}::${c.modelId} not started (chain deadline reached)`);
+            break;
+          }
+          if (deadPlatforms.has(c.platform)) {
+            attempts.push(`${c.platform}::${c.modelId} skipped (platform auth/billing already failed)`);
+            continue;
+          }
+          let candidateError: unknown;
           // Every stored key gets a turn within the candidate before it is abandoned — a
           // dead or quota'd key must not cost the whole platform.
           for (const apiKey of c.apiKeys) {
@@ -554,6 +682,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                 tools,
                 reasoningEffort: providerOpts.effort,
                 abortSignal: options.abortSignal,
+                timeoutMs: connectTimeoutFor(c.platform),
               })) {
                 if (chunk.usage) usage = chunk.usage;
                 const choice = chunk.choices?.[0];
@@ -658,6 +787,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             return;
           } catch (e) {
             lastError = e;
+            candidateError = e;
             recordOutcome(c.platform, c.modelId, false);
             if (isFailoverWorthy(e)) {
               providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
@@ -667,8 +797,14 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             return;
           }
           }
+          // Every key for this candidate is spent. An account-level refusal condemns the whole
+          // platform, not just this model.
+          if (candidateError) {
+            attempts.push(`${c.platform}::${c.modelId} ${candidateError instanceof Error ? candidateError.message : String(candidateError)}`);
+            if (isAccountLevel(candidateError)) deadPlatforms.add(c.platform);
+          }
         }
-        controller.error(lastError instanceof Error ? lastError : new Error('TierMux: all candidates failed'));
+        controller.error(chainExhaustedError(candidates, attempts, lastError));
       })();
 
       return { stream };

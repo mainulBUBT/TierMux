@@ -20,14 +20,29 @@ import { buildV3ToolSet } from './tools/v3';
 import { makeRepairViaModelSelfCorrection } from './repair';
 import { compactIfNeeded } from './compact';
 import { resolvePolicy, policyFromSettings } from '../../permissions/policy';
-import { recordOutcome } from '../../router/picker';
+import { recordOutcome, findCatalogModel } from '../../router/picker';
+import { resolveExecutionProfile } from '../executionProfile';
 import { composeSystemPrompt } from '../../context/system';
 import { gatherPromptContext } from '../../context/promptContext';
 import { diagLog } from '../../util/diag';
 
-/** Compaction budget: ~32K tokens. The adaptive per-window scaling died with executionProfile;
- *  a sane mid-range constant keeps long turns from evicting the task on small free models. */
-const COMPACT_BUDGET_TOKENS = 32_768;
+/** Profile used until the serving model is known (see currentProfile() in runTurn). */
+const FALLBACK_PROFILE = resolveExecutionProfile(undefined);
+
+/** Coordination tools — dropped from the offer on small-window models.
+ *
+ *  The agent toolset serializes to ~3,570 tokens of JSON Schema on EVERY request (measured
+ *  2026-08-30, 14 tools). On an 8k-window model that is 51% of the whole compaction budget
+ *  before a single message is sent. These two cost ~740 of it and are the only ones that can
+ *  be withdrawn without removing a capability: the model can still read, search, edit, run
+ *  commands and browse — it just doesn't keep a todo list or spawn a sub-agent.
+ *
+ *  Deliberately NOT the web tools, even though webSearch is the single largest schema (533):
+ *  they were "restored from the v2 toolset after live deflections" (see tools/v3/index.ts) —
+ *  withdrawing a capability makes the model refuse the task instead of doing it smaller. */
+const COORDINATION_TOOLS = ['todoWrite', 'delegateTask'];
+/** At/below this window the schema tax stops being affordable (3.5k of 16k = 22%; of 8k = 44%). */
+const SMALL_WINDOW_MAX = 16_384;
 
 // ── Wire-format conversion (OpenAI ChatMessage ↔ AI SDK ModelMessage) ──────────
 
@@ -206,6 +221,31 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // footer shows the real model (failover can switch it mid-turn; the LAST server wins).
   let served: { platform?: string; model?: string; runtimeName?: string } = {};
 
+  /** The serving model's ExecutionProfile, resolved per step — drives BOTH the compaction
+   *  budget and the size of the tool offer.
+   *
+   *  This was a flat 32_768 — a v3-rewrite regression whose own comment admitted "the
+   *  adaptive per-window scaling died with executionProfile". The constant is wrong in both
+   *  directions: on an 8k-window free model the transcript can never reach 32k, so compaction
+   *  never fires and the provider call overflows instead; on a 200k model it fires at ~16% of
+   *  the window and throws away evidence that comfortably fit. executionProfile.pruneTarget
+   *  already solves this (0.85 of the window, with the small-window floor exemption) and was
+   *  still exported — the engine had simply stopped calling it.
+   *
+   *  The stream path fires onModelSelected at the END of a candidate's stream, so step 0 has
+   *  no `served` yet; an explicit pin gives the answer up front, and otherwise the fallback
+   *  stands in until the first step completes. */
+  const currentProfile = () => {
+    let meta = served.platform && served.model
+      ? findCatalogModel(served.platform, served.model)
+      : undefined;
+    if (!meta && opts.pinnedModel?.includes('::')) {
+      const [platform, ...rest] = opts.pinnedModel.split('::');
+      meta = findCatalogModel(platform, rest.join('::'));
+    }
+    return meta ? resolveExecutionProfile(meta) : FALLBACK_PROFILE;
+  };
+
   // System prompt + context gathered ONCE per turn: both passes share the identical prefix
   // (provider prompt-cache friendly) and the async reads never happen per-pass.
   const system = composeSystemPrompt(opts.mode, await gatherPromptContext());
@@ -233,7 +273,16 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       }),
 
     repairToolCall: repair,
-    prepareStep: ({ messages }) => compactIfNeeded(messages, COMPACT_BUDGET_TOKENS),
+    prepareStep: ({ messages }) => {
+      const profile = currentProfile();
+      const offer = profile.contextWindow <= SMALL_WINDOW_MAX
+        ? Object.keys(tools).filter((t) => !COORDINATION_TOOLS.includes(t))
+        : undefined;
+      return {
+        ...compactIfNeeded(messages, profile.pruneTarget),
+        ...(offer ? { activeTools: offer } : {}),
+      };
+    },
     stopWhen: [stepCountIs(50)],
     abortSignal: opts.abortSignal,
     maxRetries: 1,
@@ -410,7 +459,21 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // A coding agent must always close the loop: act → observe → REPORT. One continuation
   // each; skipped for questions so agent-mode Q&A keeps its prose answer.
   const actGap = !didWork && (replyEmpty || replyIsNarration || outcome.text.includes('```'));
-  const reportGap = didWork && replyEmpty;
+  // `replyEmpty || replyIsNarration`, not `replyEmpty` alone. A turn that ran tools and then
+  // ANNOUNCED its next tool call instead of making it is the same unclosed loop as ending
+  // silently — the model is mid-task, not answering — but it fell through both gaps: actGap
+  // requires that no tool ran, reportGap required an empty reply. Two live repros, same shape,
+  // same model (Kilo/stepfun/step-3.7-flash:free, 2026-08-30): 3:47 PM ended on "Let me
+  // continue reading from where it was cut off" after 8 tool uses, and 3:54 PM on "Let me
+  // continue reading the PlaceNewOrder trait to understand the full flow." after 6 — 173 out
+  // tokens, no answer, task untouched. The second is after the readFile paging fix, so it is
+  // not the tool withholding an offset: the model simply stops at the narration.
+  //
+  // This EXTENDS the existing guard's condition; it does not add a second one. The reset doc's
+  // standing rule is that narration ships unjudged unless "users report a recurring failure
+  // shape, gather a live repro first, then add ONE targeted guard citing it" — those are the
+  // repros. The continuation is the same single mechanical pass the empty case already gets.
+  const reportGap = didWork && (replyEmpty || replyIsNarration);
   if (
     opts.mode === 'agent'
     && !opts.abortSignal?.aborted

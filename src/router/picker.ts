@@ -14,7 +14,7 @@ import type { Catalog } from '../catalog/catalog';
 import type { SettingsStore } from '../config/settingsStore';
 import type { SecretStore } from '../config/secrets';
 import { allPlatformInfo } from '../providers';
-import type { ChatMessage } from '../shared/types';
+import type { ChatMessage, CatalogModel } from '../shared/types';
 import { classifyTask, type TaskKind } from '../agent/routing';
 
 /** platform::modelId → candidate chain per task kind. Ordered: best first. */
@@ -102,6 +102,14 @@ export async function getApiKeysFor(platform: string): Promise<string[]> {
     return keys.map((k) => (k.startsWith(accountId + ':') ? k : `${accountId}:${k}`));
   }
   return keys;
+}
+
+/** Catalog lookup through the wired sources — lets callers resolve a served model's metadata
+ *  (context window, ranks) without holding their own Catalog reference. `undefined` when no
+ *  sources are wired (headless) or the id is not in the catalog, which every caller must treat
+ *  as "unknown model" rather than an error. */
+export function findCatalogModel(platform: string, modelId: string): CatalogModel | undefined {
+  return sources?.catalog.find(platform, modelId);
 }
 
 /** Expand 'auto' into the full enabled-model list when no sources are wired (headless). */
