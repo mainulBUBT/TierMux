@@ -32,6 +32,19 @@
   font-weight: 500;
 }
 
+/* "Thinking" / "Thought for 42s". This rule used to live only in composer.css, where
+   `.tm-reasoning-label` named the model picker's effort row — a different component that
+   happened to share the class. That collision also gave THIS block composer's
+   `.tm-reasoning { display: flex }`, which laid the header and the streaming body out
+   side by side (live repro: an open "Thinking" block rendering its text to the RIGHT of the
+   label, with the body's top hairline reading as a stray rule). The picker's classes are now
+   `.tm-effort*`; the label styling lives here, with its real owner. */
+.tm-reasoning-label {
+  font-size: var(--tm-text-sm);
+  font-weight: 600;
+  color: var(--tm-fg-muted);
+}
+
 /* Pulsing dot — visible only while streaming (Vercel pattern). */
 .tm-reasoning-pulse {
   width: 8px;
@@ -70,25 +83,108 @@
 .tm-reasoning-body {
   padding: var(--tm-gap-md);
   background: var(--tm-surface-alt);
-  border-top: 1px solid var(--tm-card-border);
+  /* Hairline under the "Thinking" header. Drawn as an inset shadow rather than a border so it
+     can be inset from the rounded corners — a full-bleed border-top overshot the block's
+     border-radius and read as a broken/clipped rule. */
+  border-top: none;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--tm-card-border) 70%, transparent);
+  border-bottom-left-radius: var(--tm-radius-sm);
+  border-bottom-right-radius: var(--tm-radius-sm);
 }
 
+/* Thinking text is WORKING NOTES, not the answer. It used to render at --tm-fg with plain
+   markdown defaults, so a thought block and the final reply were typographically identical.
+   Mute it, tighten it, and put a rail down its left edge so the eye separates "how it got
+   there" from "what it said". */
 .tm-reasoning-text {
-  font-size: var(--tm-text-sm);
-  line-height: 1.6;
-  color: var(--tm-fg);
+  font-size: var(--tm-text-xs);
+  line-height: 1.55;
+  color: var(--tm-fg-muted);
+  padding-left: var(--tm-gap-md);
+  border-left: 2px solid color-mix(in srgb, var(--tm-fg-muted) 28%, transparent);
   /* Content is markdown-rendered HTML (<p>/<br>), so it already carries its own line breaks.
      pre-wrap ALSO rendered the literal newlines sitting between those tags, double-spacing the
      block — use normal so only the markdown structure controls spacing. */
   white-space: normal;
   word-break: break-word;
 }
-/* Tighten paragraph spacing inside a reasoning block — marked emits <p> with default margins that
-   read as large gaps in this compact card. */
+
+/* ── Markdown inside a thought ──
+   Only p/strong/em were ever styled here, so every other element a model emits while thinking
+   (---, #, lists, code, quotes, tables) fell through to the browser's user-agent defaults:
+   a 3D inset <hr>, 2em headings, 40px list indents. That is the "design breaks sometimes" —
+   it only showed up when the thinking text happened to contain that markdown. Everything the
+   renderer can emit is normalized to this card's compact scale below. */
 .tm-reasoning-text p { margin: 0 0 var(--tm-gap-sm); }
 .tm-reasoning-text p:last-child { margin-bottom: 0; }
-.tm-reasoning-text strong { font-weight: 600; }
-.tm-reasoning-text em { font-style: italic; color: var(--tm-fg-muted); }
+.tm-reasoning-text > :first-child { margin-top: 0; }
+.tm-reasoning-text > :last-child { margin-bottom: 0; }
+.tm-reasoning-text strong { font-weight: 600; color: var(--tm-fg); }
+.tm-reasoning-text em { font-style: italic; }
+
+/* The <hr> a model writes as a thought separator — a hairline, not the UA's inset groove. */
+.tm-reasoning-text hr {
+  border: none;
+  height: 1px;
+  margin: var(--tm-gap-md) 0;
+  background: color-mix(in srgb, var(--tm-fg-muted) 25%, transparent);
+}
+
+/* Headings collapse to bold label text — a thought card has no room for a document hierarchy. */
+.tm-reasoning-text h1,
+.tm-reasoning-text h2,
+.tm-reasoning-text h3,
+.tm-reasoning-text h4,
+.tm-reasoning-text h5,
+.tm-reasoning-text h6 {
+  margin: var(--tm-gap-md) 0 var(--tm-gap-xs);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--tm-fg);
+}
+
+.tm-reasoning-text ul,
+.tm-reasoning-text ol { margin: var(--tm-gap-sm) 0; padding-left: 18px; }
+.tm-reasoning-text li { margin: 1px 0; }
+.tm-reasoning-text li > ul,
+.tm-reasoning-text li > ol { margin: 1px 0; }
+
+.tm-reasoning-text blockquote {
+  margin: var(--tm-gap-sm) 0;
+  padding: 0 var(--tm-gap-md);
+  border-left: 2px solid color-mix(in srgb, var(--tm-fg-muted) 30%, transparent);
+  opacity: .9;
+}
+
+.tm-reasoning-text :not(pre) > code {
+  font-family: var(--tm-font-code);
+  font-size: 10.5px;
+  padding: 1px 4px;
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-surface-code);
+  word-break: break-word;
+}
+.tm-reasoning-text pre {
+  margin: var(--tm-gap-sm) 0;
+  padding: var(--tm-gap-sm) var(--tm-gap-md);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-surface-code);
+  overflow-x: auto;
+}
+.tm-reasoning-text pre code {
+  font-family: var(--tm-font-code);
+  font-size: 10.5px;
+  background: none;
+  padding: 0;
+  white-space: pre;
+}
+
+.tm-reasoning-text a { color: var(--tm-fg-link); }
+.tm-reasoning-text img { max-width: 100%; height: auto; border-radius: var(--tm-radius-sm); }
+.tm-reasoning-text table { border-collapse: collapse; margin: var(--tm-gap-sm) 0; font-size: 10.5px; }
+.tm-reasoning-text th,
+.tm-reasoning-text td { border: 1px solid var(--tm-card-border); padding: 2px 6px; }
 
 @keyframes tm-reasoning-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }

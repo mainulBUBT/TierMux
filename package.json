@@ -749,6 +749,7 @@
     "test:e2e:quota-persist": "esbuild scripts/quotaPersist.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/quotaPersist.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/quotaPersist.e2e.cjs",
     "test:e2e:edit-match": "esbuild scripts/editMatch.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/editMatch.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/editMatch.e2e.cjs",
     "test:e2e:resolve-path": "esbuild scripts/resolvePath.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/resolvePath.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/resolvePath.e2e.cjs",
+    "test:e2e:routing-gates": "esbuild scripts/routingGates.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/routingGates.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/routingGates.e2e.cjs",
     "test:e2e:edit-gate": "esbuild scripts/editGate.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/editGate.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/editGate.e2e.cjs",
     "package": "vsce package",
     "package:all": "npm run build && node scripts/packageAllTargets.mjs",

@@ -135,20 +135,20 @@
 
 /* Reasoning effort — segmented control inside the popover (a per-model property,
    so it lives with the model choice, not in the toolbar). */
-.tm-reasoning {
+.tm-effort {
   flex: 0 0 auto; display: flex; align-items: center; gap: var(--tm-gap-md);
   padding: 2px var(--tm-gap-sm) var(--tm-gap-sm);
   flex-wrap: wrap;
 }
-.tm-reasoning-label { font-size: var(--tm-text-sm); color: var(--tm-fg-muted); font-weight: 600; }
-.tm-reasoning-seg {
+.tm-effort-label { font-size: var(--tm-text-sm); color: var(--tm-fg-muted); font-weight: 600; }
+.tm-effort-seg {
   display: inline-flex; flex: 1 1 auto; min-width: 0;
   background: var(--tm-surface-panel);
   border: 1px solid var(--tm-card-border);
   border-radius: var(--tm-radius-full);
   padding: 2px; gap: 2px;
 }
-.tm-reasoning-seg.tm-disabled { opacity: 0.45; }
+.tm-effort-seg.tm-disabled { opacity: 0.45; }
 .tm-seg-btn {
   flex: 1 1 0; min-width: 0;
   padding: 2px 0; border: none; border-radius: var(--tm-radius-full);
@@ -160,11 +160,11 @@
 .tm-seg-btn:hover:not(:disabled) { color: var(--tm-fg); }
 .tm-seg-btn.active { background: var(--tm-accent); color: var(--tm-accent-fg); }
 .tm-seg-btn:disabled { cursor: not-allowed; }
-.tm-reasoning-note {
+.tm-effort-note {
   flex: 1 1 100%; font-size: var(--tm-text-xs); color: var(--tm-fg-muted);
   padding: 0 var(--tm-gap-xs) var(--tm-gap-xs);
 }
-.tm-reasoning-note.hidden { display: none; }
+.tm-effort-note.hidden { display: none; }
 
 .tm-model-list { flex: 1 1 auto; overflow-y: auto; min-height: 0; scrollbar-width: thin; }
 .tm-model-group {

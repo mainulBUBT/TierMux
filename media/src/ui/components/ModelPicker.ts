@@ -89,8 +89,8 @@ export function createModelPicker(init: ModelPickerInit): ModelPickerHandle {
   );
 
   const searchEl = el('input', { class: 'tm-model-search', type: 'text', placeholder: 'Search models…', autocomplete: 'off' }) as HTMLInputElement;
-  const noteEl = el('div', { class: 'tm-reasoning-note hidden' }, 'This model has no reasoning mode');
-  const segEl = el('div', { class: 'tm-reasoning-seg', role: 'radiogroup', 'aria-label': 'Reasoning effort' });
+  const noteEl = el('div', { class: 'tm-effort-note hidden' }, 'This model has no reasoning mode');
+  const segEl = el('div', { class: 'tm-effort-seg', role: 'radiogroup', 'aria-label': 'Reasoning effort' });
   const segBtns = new Map<string, HTMLButtonElement>();
   EFFORTS.forEach((e) => {
     const b = el('button', { class: 'tm-seg-btn', type: 'button', title: e.title, dataset: { effort: e.value } }, e.label) as HTMLButtonElement;
@@ -126,7 +126,7 @@ export function createModelPicker(init: ModelPickerInit): ModelPickerHandle {
       b.disabled = reasoningDisabled;
     });
     segEl.classList.toggle('tm-disabled', reasoningDisabled);
-    segEl.parentElement?.classList.toggle('tm-reasoning-off', reasoningDisabled);
+    segEl.parentElement?.classList.toggle('tm-effort-off', reasoningDisabled);
     noteEl.classList.toggle('hidden', !reasoningDisabled);
   }
 
@@ -224,8 +224,8 @@ export function createModelPicker(init: ModelPickerInit): ModelPickerHandle {
       'div',
       { class: 'tm-model-pop' },
       searchEl,
-      el('div', { class: 'tm-reasoning' },
-        el('span', { class: 'tm-reasoning-label' }, 'Reasoning'),
+      el('div', { class: 'tm-effort' },
+        el('span', { class: 'tm-effort-label' }, 'Reasoning'),
         segEl,
         noteEl,
       ),

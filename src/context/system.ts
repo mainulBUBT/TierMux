@@ -27,24 +27,23 @@ const MODE_TAIL: Record<Mode, string> = {
     'Never end the turn with unapplied code blocks. Answer in prose (no tools) only when the user asked a question or explicitly requested a proposal.',
     DELEGATE_LINE,
   ].join('\n'),
+  // The step template used to be unconditional, so a plan-mode QUESTION ("verify whether stock
+  // is checked on order edit") came back forced into "## Plan: / ### Step 1: / - What / - Files /
+  // - Verify" — a shape that fits work to be done, not a finding to be reported. Gate it on what
+  // the user actually asked for. The duplicate "### Step 2" block is gone (it only spent tokens
+  // restating the same shape), so this stays within the prompt-diet cap.
   plan: [
-    'Analyze the codebase.',
-    'Produce a structured Markdown implementation plan.',
-    'Do not modify files.',
-    'Do not execute implementation commands.',
-    'Wait for user approval.',
+    'Analyze the codebase with tools. Do not modify files. Do not run implementation commands.',
     '',
-    'Output format:',
+    'If the user asked for a CHANGE (build / add / refactor / fix), output a plan and wait for approval:',
     '## Plan: <title>',
     '### Step 1: <title>',
     '  - What: <action>',
     '  - Files: <paths>',
     '  - Verify: <check>',
-    '### Step 2: <title>',
-    '  - What: <action>',
-    '  - Files: <paths>',
-    '  - Verify: <check>',
+    '(repeat per step)',
     '',
+    'If the user asked a QUESTION (does X happen, verify Y, why Z), just ANSWER it with path:line evidence and say what you checked. No plan header, no step template.',
     DELEGATE_LINE,
   ].join('\n'),
   ask: 'You are in ASK mode: read-only Q&A. Answer from the workspace with tool-backed evidence; say what you checked. No edits.',

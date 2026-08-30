@@ -826,6 +826,12 @@ async function main() {
           { platform: 'kilo', modelId: 'kimi-k2', enabled: true, priority: 1 },
           { platform: 'opencode', modelId: 'glm-4.6-flash-free', enabled: true, priority: 2 },
         ],
+        getDisabledProviders: () => [],
+        // Mirrors the real SettingsStore: per-model `enabled` AND the provider-level switch.
+        enabledByPriority(): Array<{ platform: string; modelId: string; enabled: boolean; priority: number }> {
+          const off = new Set(this.getDisabledProviders());
+          return this.getFallback().filter((e) => e.enabled && !off.has(e.platform)).sort((a, b) => a.priority - b.priority);
+        },
       } as never,
       secrets: { getKeys: async (p: string) => store.get(p) ?? [], isToolIncompatible: () => false } as never,
     });
@@ -860,6 +866,12 @@ async function main() {
           { platform: 'p1', modelId: 'b-model', enabled: true, priority: 1 },
           { platform: 'p1', modelId: 'a-model', enabled: true, priority: 2 },
         ],
+        getDisabledProviders: () => [],
+        // Mirrors the real SettingsStore: per-model `enabled` AND the provider-level switch.
+        enabledByPriority(): Array<{ platform: string; modelId: string; enabled: boolean; priority: number }> {
+          const off = new Set(this.getDisabledProviders());
+          return this.getFallback().filter((e) => e.enabled && !off.has(e.platform)).sort((a, b) => a.priority - b.priority);
+        },
       } as never,
       secrets: { getKeys: async () => ['k'], isToolIncompatible: () => false } as never,
     });
@@ -891,6 +903,12 @@ async function main() {
       catalog: { find: (_p: string, m: string) => (m === 'gemini-2.5-flash' ? { supportsTools: true, intelligenceRank: 1 } : undefined) } as never,
       settings: {
         getFallback: () => [{ platform: 'google', modelId: 'gemini-2.5-flash', enabled: true, priority: 0 }],
+        getDisabledProviders: () => [],
+        // Mirrors the real SettingsStore: per-model `enabled` AND the provider-level switch.
+        enabledByPriority(): Array<{ platform: string; modelId: string; enabled: boolean; priority: number }> {
+          const off = new Set(this.getDisabledProviders());
+          return this.getFallback().filter((e) => e.enabled && !off.has(e.platform)).sort((a, b) => a.priority - b.priority);
+        },
       } as never,
       secrets: { getKeys: async () => ['k'], isToolIncompatible: () => false } as never,
     });

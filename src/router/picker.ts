@@ -150,9 +150,17 @@ export async function selectModel(
     .map((m) => m.content as string)
     .join('\n');
   const taskKind = (opts.taskKind as TaskKind | undefined) ?? classifyTask(text);
+  // enabledByPriority(), NOT getFallback(): the provider-level switch in Manage Models & Keys
+  // stores its state in a SEPARATE disabled-providers list and never clears the per-model
+  // `enabled` flags, so a raw getFallback() filter still reports every model of a switched-off
+  // provider as selectable. The deleted Router read enabledByPriority() and honoured the
+  // switch; v3's picker read getFallback() and did not, which made the switch cosmetic for
+  // Auto/Smart routing — a provider toggled off (with a key still stored, so platformUsable
+  // passes) kept serving turns.
   const enabled = new Set(
-    sources.settings.getFallback().filter((e) => e.enabled).map((e) => `${e.platform}::${e.modelId}`),
+    sources.settings.enabledByPriority().map((e) => `${e.platform}::${e.modelId}`),
   );
+  const disabledProviders = new Set<string>(sources.settings.getDisabledProviders());
   const exclude = new Set(opts.excludeModels ?? []);
 
   // "Enabled AND usable": a keyed platform with no stored key is as unavailable as a
@@ -177,10 +185,23 @@ export async function selectModel(
   const skipReasons = new Map<string, string>();
   const pickLabels = new Map<string, string>();
   const skip = (key: string, reason: string) => { if (!skipReasons.has(key)) skipReasons.set(key, reason); };
+  // Models the provider switch removed never reach pick(), so without this they vanish from
+  // the report entirely — and "it silently stopped using my models" is the same confusion,
+  // inverted, as the bug the switch fix closed. Seed them so the popover SAYS why.
+  for (const e of sources.settings.getFallback()) {
+    if (e.enabled && disabledProviders.has(e.platform)) {
+      skip(`${e.platform}::${e.modelId}`, 'provider switched off in Manage Models & Keys');
+    }
+  }
   const pick = async (key: string, label: string): Promise<string | undefined> => {
     if (exclude.has(key)) { skip(key, 'excluded for this retry'); return undefined; }
     const platform = key.endsWith('::auto') ? key.slice(0, -6) : key.split('::')[0];
     const modelId = key.endsWith('::auto') ? '' : key.split('::').slice(1).join('::');
+    // Provider switched off in Manage Models & Keys — checked before the key lookup so the
+    // rationale says "provider off" rather than blaming a key that is actually stored. The
+    // pinned model is exempt for the same reason it is exempt from the enabled filter below:
+    // explicit user choice for this one turn.
+    if (disabledProviders.has(platform) && key !== opts.pinnedModel) { skip(key, 'provider switched off in Manage Models & Keys'); return undefined; }
     if (!(await platformUsable(platform))) { skip(key, 'no API key stored for this platform'); return undefined; }
     // Per-model cooldown: skip a model still inside its failure cooldown (429/5xx/timeout) so
     // the chain prefers healthy models. The pinned model is exempt — explicit user choice,

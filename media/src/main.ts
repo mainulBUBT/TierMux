@@ -755,84 +755,6 @@ const STATE_LABEL = {
     bindHoverTip(b);
     return b;
   }
-  // Smart Auto "Why this model?" — a (?) on the footer that toggles a small popover
-  // explaining the scoring (winner + why-not for each candidate). Only added when the
-  // turn was smart-routed (rationale present).
-  let openRationalePop: HTMLElement | null = null;
-  function closeRationalePop() {
-    if (openRationalePop) { openRationalePop.remove(); openRationalePop = null; }
-    document.removeEventListener('keydown', onRationaleKey, true);
-    document.removeEventListener('mousedown', onRationaleOutside, true);
-  }
-  function onRationaleKey(e) { if (e.key === 'Escape') closeRationalePop(); }
-  function onRationaleOutside(e) {
-    if (openRationalePop && !openRationalePop.contains(e.target) && !e.target.closest?.('.why-ic')) closeRationalePop();
-  }
-  function showRationalePopover(anchor, data) {
-    if (openRationalePop) { closeRationalePop(); return; } // toggle off
-    const pop = document.createElement('div');
-    pop.className = 'rationale-pop';
-    const head = document.createElement('div');
-    head.className = 'rationale-pop-head';
-    head.textContent = data.picked ? `Why ${data.picked}?` : 'Why this model?';
-    pop.appendChild(head);
-    for (const e of (data.entries || [])) {
-      const row = document.createElement('div');
-      row.className = 'rationale-row' + (e.selected ? ' selected' : '');
-      const line = document.createElement('div');
-      const name = document.createElement('span');
-      name.className = 'rationale-model';
-      name.textContent = `${e.selected ? '✓' : '·'} ${e.model}`;
-      line.appendChild(name);
-      const meta = document.createElement('div');
-      meta.className = 'rationale-meta';
-      const metric = (label, val, tip) => {
-        const s = document.createElement('span');
-        s.className = 'rationale-metric';
-        s.title = tip; // hover explains what the number means
-        bindHoverTip(s);
-        const b = document.createElement('b'); b.textContent = label + ' ';
-        s.appendChild(b); s.appendChild(document.createTextNode(val));
-        return s;
-      };
-      const metrics = [
-        metric('Score', e.score.toFixed(2), 'Final ranking = Capability × Runtime × your preference. The highest-scoring model is chosen.'),
-        metric('Capability', e.capability.toFixed(2), 'How well this model fits the task by catalog — intelligence, speed, tool/vision support, context window. Static: it does not change with latency or health.'),
-        metric('Runtime', '×' + e.runtime.toFixed(2), 'Live health multiplier learned from real requests — success rate, latency vs the model’s own baseline, rate-limit/key availability, and provider health. ~1.0 = healthy, lower = currently degraded.'),
-        metric('Confidence', Math.round(e.confidence * 100) + '%', 'How much real data backs the Runtime score. Low % = little history yet, so Runtime leans toward a neutral default instead of over-reacting.'),
-      ];
-      metrics.forEach((m, i) => { if (i) meta.appendChild(document.createTextNode(' · ')); meta.appendChild(m); });
-      line.appendChild(meta);
-      const why = document.createElement('div');
-      why.className = 'rationale-why';
-      why.textContent = e.reason;
-      row.appendChild(line); row.appendChild(why);
-      pop.appendChild(row);
-    }
-    document.body.appendChild(pop);
-    openRationalePop = pop;
-    // Position: prefer above the (?) icon, flip below if there's no room; clamp to viewport.
-    const r = anchor.getBoundingClientRect();
-    const pw = pop.offsetWidth, ph = pop.offsetHeight;
-    let left = Math.max(6, Math.min(r.left + r.width / 2 - pw / 2, window.innerWidth - pw - 6));
-    let top = r.top - ph - 6;
-    if (top < 6) top = r.bottom + 6;
-    pop.style.left = left + 'px';
-    pop.style.top = top + 'px';
-    requestAnimationFrame(() => pop.classList.add('show'));
-    document.addEventListener('keydown', onRationaleKey, true);
-    document.addEventListener('mousedown', onRationaleOutside, true);
-  }
-  function attachWhyBtn(acts, data) {
-    const existing = acts.querySelector('.why-ic');
-    if (existing) existing.remove(); // refresh if rationale updated
-    const b = iconBtn(ICON.routing, 'Why this model?', (ev) => {
-      ev.stopPropagation();
-      showRationalePopover(ev.currentTarget, data);
-    });
-    b.classList.add('why-ic');
-    acts.appendChild(b);
-  }
   function copyBtn(el) {
     const b = iconBtn(ICON.copy, 'Copy message', () => {
       send({ type: 'copyText', text: el._copyText || '' });
@@ -943,7 +865,6 @@ const STATE_LABEL = {
     const acts = document.createElement('span'); acts.className = 'foot-acts';
     acts.appendChild(copyBtn(el));
     acts.appendChild(feedbackBtns(requestId));
-    if (rationale && rationale.entries && rationale.entries.length) attachWhyBtn(acts, rationale);
     foot.appendChild(left); foot.appendChild(acts);
     foot._acts = acts;
     return foot;
@@ -3727,12 +3648,11 @@ const STATE_LABEL = {
       }
       case 'selectionRationale': {
         const t = ensureTarget(msg.requestId);
-        // Stash the latest scoring rationale on the turn. Agent turns route many times;
-        // keep the most recent selection. It surfaces as a (?) on the message footer,
-        // which is built later at assistantDone. If the footer already exists (rationale
-        // arrived late), refresh its (?) in place.
+        // Stash the latest scoring rationale on the turn (agent turns route many times; keep
+        // the most recent). Nothing renders it any more — the "Why this model?" (?) popover was
+        // removed because the footer already names the model that actually served the turn, so
+        // the rationale is redundant once the answer is on screen. Kept as turn state only.
         t.rationale = { picked: msg.picked, entries: msg.entries };
-        if (t.footActs) attachWhyBtn(t.footActs, t.rationale);
         break;
       }
       case 'keyRotated': {

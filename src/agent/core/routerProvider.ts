@@ -214,19 +214,59 @@ export async function resolveCandidates(opts: RouterProviderOptions): Promise<Ca
     requireTools: opts.requireTools,
   });
   if (selection.rationale) opts.onSelectionRationale?.(selection.rationale);
-  const out: Candidate[] = [];
+
+  // Bounded chain — 4 candidates is plenty without scoring — but bounded chains need
+  // PLATFORM DIVERSITY or the bound defeats the failover it exists to feed. The picker's
+  // tail is sorted by the catalog's intelligenceRank, which is a coarse 1..5 clamp: ollama
+  // alone ships FIVE rank-1 models, more than the whole bound, so a rank-sorted tail can
+  // hand back four candidates that are all the same provider. Every provider-wide failure
+  // then burns the entire chain in one shot — live repro 2026-08-30 1:30 PM and again at
+  // 2:31 PM: Auto died on `Ollama API error 402: this model requires a subscription`, four
+  // ollama candidates 402'ing in ~4s with groq/cerebras/opencode never reached. Allow at
+  // most MAX_PER_PLATFORM of the bound to a single platform on the first pass, then top the
+  // chain back up from the overflow so a user who genuinely enabled only one provider still
+  // gets a full chain.
+  const MAX_CANDIDATES = 4;
+  const MAX_PER_PLATFORM = 2;
+  const primary: Candidate[] = [];
+  const overflow: Candidate[] = [];
+  const perPlatform = new Map<string, number>();
+  // Memoized so one secret lookup per platform covers every model of that platform in the
+  // chain (the scan below walks past the bound to find alternatives).
+  const keyCache = new Map<string, string[]>();
+  const keysFor = async (platform: string): Promise<string[]> => {
+    let keys = keyCache.get(platform);
+    if (!keys) { keys = await getApiKeysFor(platform); keyCache.set(platform, keys); }
+    return keys;
+  };
+
   for (const key of [selection.model, ...selection.fallbackChain]) {
+    if (primary.length >= MAX_CANDIDATES) break;
     const [platform, ...rest] = key.split('::');
     const modelId = rest.join('::');
     if (!modelId || modelId === 'auto') continue;
     const provider = resolveProvider(platform as Platform, modelId);
     if (!provider) continue;
-    const apiKeys = await getApiKeysFor(platform);
+    const apiKeys = await keysFor(platform);
     if (apiKeys.length === 0) continue;
-    out.push({ platform: platform as Platform, modelId, apiKeys });
-    if (out.length >= 4) break; // bounded chain — 4 candidates is plenty without scoring
+    const candidate: Candidate = { platform: platform as Platform, modelId, apiKeys };
+    const used = perPlatform.get(platform) ?? 0;
+    if (used >= MAX_PER_PLATFORM) {
+      // Held back, not dropped: it still serves if no other platform can fill the slot.
+      if (overflow.length < MAX_CANDIDATES) overflow.push(candidate);
+      continue;
+    }
+    perPlatform.set(platform, used + 1);
+    primary.push(candidate);
   }
-  return out;
+
+  // Only one platform available? The diversity cap would leave a 2-long chain where a
+  // 4-long one was possible — refill from the held-back models in their original order.
+  for (const c of overflow) {
+    if (primary.length >= MAX_CANDIDATES) break;
+    primary.push(c);
+  }
+  return primary;
 }
 
 /** Wraps the v3 picker (or, for utility callers that still hold a Router, the Router itself)
@@ -586,7 +626,16 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             }
 
             providerOpts.onModelSelected?.(c.platform, c.modelId, provider.runtimeName);
-            recordOutcome(c.platform, c.modelId, true);
+            // A FOLDED turn is not a success. `folded` above means this candidate produced NO
+            // content channel and NO tool call — only reasoning, which the fold promoted so the
+            // user sees something instead of an empty bubble. Reporting that as `true` marked the
+            // candidate healthy, so Auto re-picked it every turn (live repro ×3, 2026-08-28
+            // 12:57-1:29 AM: nemotron-3-ultra-free on OpenRouter narrated into the reasoning
+            // channel, got folded, and stayed the Auto pick). The answer still ships — switching
+            // mid-stream would corrupt it — but the picker's cooldown now steers the NEXT turn
+            // elsewhere. Mechanical signal (empty content channel), not answer-quality judgment:
+            // the same category as engine.ts's actGapDemote.
+            recordOutcome(c.platform, c.modelId, !folded);
             if (usage) {
               providerOpts.onUsage?.({ inputTokens: usage.prompt_tokens ?? 0, outputTokens: usage.completion_tokens ?? 0, model: `${c.platform}::${c.modelId}` });
             }
