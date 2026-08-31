@@ -34,6 +34,9 @@ export type Platform =
   | 'requesty'
   | 'router9'
   | 'xkiro'
+  | 'airforce'
+  | 'modelscope'
+  | 'unorouter'
   | 'custom';
 
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';

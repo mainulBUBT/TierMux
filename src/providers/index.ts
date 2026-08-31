@@ -44,6 +44,9 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'requesty', name: "Requesty", baseUrl: "https://router.requesty.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://app.requesty.ai/sign-up" }, // auto-synced
   { platform: 'router9', name: "Router9", baseUrl: "https://api.router9.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://www.router9.com/login" }, // auto-synced
   { platform: 'xkiro', name: "xKiro", baseUrl: "https://api.xkiro.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://xkiro.com/dashboard/api/keys" }, // auto-synced
+  { platform: 'airforce', name: "Api.Airforce", baseUrl: "https://api.airforce/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://api.airforce/" }, // auto-synced
+  { platform: 'modelscope', name: "ModelScope", baseUrl: "https://api-inference.modelscope.cn/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://modelscope.cn/my/myaccesstoken" }, // auto-synced
+  { platform: 'unorouter', name: "UnoRouter", baseUrl: "https://api.unorouter.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://unorouter.com/en/token" }, // auto-synced
 ];
 
 const providers = new Map<Platform, BaseProvider>();

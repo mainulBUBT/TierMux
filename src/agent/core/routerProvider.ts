@@ -89,6 +89,45 @@ const FAILOVER_CONNECT_TIMEOUT_MS = 25_000;
  *  candidates × timeout. */
 const CHAIN_DEADLINE_MS = 120_000;
 
+/** Wire-level truncation aliases from OpenAI-compatible providers.
+ *
+ *  engine.ts fires its ONE length-cut continuation on the SDK's unified `finishReason:
+ *  'length'`, and the mappings below used to reach it only on the exact lowercase string
+ *  `'length'`. Every other way a provider spells "I ran out of output budget" fell through to
+ *  `'stop'`, so a TRUNCATED reply shipped as if the turn had completed — no continuation, plan
+ *  left unfinished, and the user typing "continue" by hand (2026-08-31 repro, one task across
+ *  Opencode / Kilo / OrcaRouter free tiers).
+ *
+ *  `google.ts` already normalizes its own MAX_TOKENS (toGeminiFinishReason); the generic
+ *  openai-compat path every aggregator platform uses does not — `base.ts` passes
+ *  `finish_reason` through verbatim.
+ *
+ *  This is a wire signal, never answer quality (SIMPLE_CORE_RESET): it reports what the
+ *  provider said about ITS output budget, and changes no behavior beyond which of the two
+ *  existing finish reasons is reported. */
+const TRUNCATION_FINISH_REASONS = new Set([
+  'length',              // OpenAI, Mistral, llama.cpp, most compat servers
+  'max_tokens',          // Anthropic-style, and aggregators that proxy it verbatim
+  'max_output_tokens',
+  'model_length',
+  'token_limit',
+  'length_limit',
+  'output_limit',
+]);
+
+/** True when the provider says the reply was cut at its output budget, whatever it calls it.
+ *  Anything unrecognized is traced, because that is precisely the case that maps to 'stop' and
+ *  silently skips the continuation — the set above can only grow from spellings we've seen. */
+function isTruncationFinish(raw: string | null | undefined): boolean {
+  if (!raw) return false;
+  const norm = raw.trim().toLowerCase();
+  if (TRUNCATION_FINISH_REASONS.has(norm)) return true;
+  if (norm !== 'stop' && norm !== 'tool_calls' && norm !== 'function_call' && norm !== 'content_filter') {
+    diagLog('routerProvider.finishReason', `unrecognized finish_reason "${raw}" — treated as 'stop'`);
+  }
+  return false;
+}
+
 /** The connect cap for one candidate, or undefined to leave the provider's own timeout alone
  *  (custom/local endpoints, which declare no timeout on purpose). */
 function connectTimeoutFor(platform: Platform): number | undefined {
@@ -422,7 +461,7 @@ function createRouterBackedProvider(router: Router, providerOpts: RouterProvider
       const rawFR = result.response.choices?.[0]?.finish_reason;
       return {
         content,
-        finishReason: { unified: hasCalls ? 'tool-calls' : (rawFR === 'length' ? 'length' : 'stop'), raw: hasCalls ? 'tool_calls' : (rawFR ?? 'stop') },
+        finishReason: { unified: hasCalls ? 'tool-calls' : (isTruncationFinish(rawFR) ? 'length' : 'stop'), raw: hasCalls ? 'tool_calls' : (rawFR ?? 'stop') },
         usage: toV4Usage(result.response.usage?.prompt_tokens, result.response.usage?.completion_tokens),
         warnings: [],
       };
@@ -490,7 +529,7 @@ function createRouterBackedProvider(router: Router, providerOpts: RouterProvider
 
         controller.enqueue({
           type: 'finish',
-          finishReason: { unified: hasToolCalls ? 'tool-calls' : (rawFR === 'length' ? 'length' : 'stop'), raw: hasToolCalls ? 'tool_calls' : (rawFR ?? 'stop') },
+          finishReason: { unified: hasToolCalls ? 'tool-calls' : (isTruncationFinish(rawFR) ? 'length' : 'stop'), raw: hasToolCalls ? 'tool_calls' : (rawFR ?? 'stop') },
           usage: toV4Usage(result.response.usage?.prompt_tokens, result.response.usage?.completion_tokens),
         });
         controller.close();
@@ -590,7 +629,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
           recordOutcome(c.platform, c.modelId, true);
           return {
             content,
-            finishReason: { unified: hasCalls ? 'tool-calls' : (rawFR === 'length' ? 'length' : 'stop'), raw: hasCalls ? 'tool_calls' : (rawFR ?? 'stop') },
+            finishReason: { unified: hasCalls ? 'tool-calls' : (isTruncationFinish(rawFR) ? 'length' : 'stop'), raw: hasCalls ? 'tool_calls' : (rawFR ?? 'stop') },
             usage: toV4Usage(data.usage?.prompt_tokens, data.usage?.completion_tokens),
             warnings: [],
           };
@@ -780,7 +819,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             }
             controller.enqueue({
               type: 'finish',
-              finishReason: { unified: hasCalls ? 'tool-calls' : (finish === 'length' ? 'length' : 'stop'), raw: hasCalls ? 'tool_calls' : (finish ?? 'stop') },
+              finishReason: { unified: hasCalls ? 'tool-calls' : (isTruncationFinish(finish) ? 'length' : 'stop'), raw: hasCalls ? 'tool_calls' : (finish ?? 'stop') },
               usage: toV4Usage(usage?.prompt_tokens, usage?.completion_tokens),
             });
             controller.close();

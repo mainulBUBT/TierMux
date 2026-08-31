@@ -35,6 +35,22 @@ const COORDINATION_TOOLS = ['todoWrite', 'delegateTask'];
 /** At/below this window the schema tax stops being affordable. */
 const SMALL_WINDOW_MAX = 16_384;
 
+// A reply that ANNOUNCES the next action instead of taking it ("Let me read the file…") is one
+// of the two shapes the agent-mode continuation nudge keys on (see runTurn). The stem list is
+// ^-anchored, and weak models routinely put a discourse marker in front of it — so the optional
+// lead below is part of the SAME guard, not a second one.
+//
+// Repro ×2 (2026-08-31, one Blade-modernization task routed across providers, each ending with a
+// 7-item plan at 0 done and the user typing "continue" by hand):
+//   Opencode/nemotron-3-ultra-free  — "Now I'll start editing the index.blade.php file first."
+//   Kilo/nemotron-3-ultra-550b-a55b — "Now let me rewrite the entire map-related JavaScript…"
+// Both MISSED the stem regex on the leading "Now", so no continuation ran at all.
+//
+// The stem must still match after the lead, which is what keeps this from swallowing real
+// answers: "Now the map uses AdvancedMarkerElement" leads with a marker but has no stem.
+const NARRATION_RE =
+  /^\s*(?:(?:ok|okay|alright|all right|now|next|then|so|great|perfect|good|sure|first|finally)\b[\s,.:!\u2014-]*){0,2}(?:the user|i'll|i will|we'll|we will|let's|let me|we need|we can|i need|first,|i should|we should|okay,? so)\b/i;
+
 // ── Wire-format conversion (OpenAI ChatMessage ↔ AI SDK ModelMessage) ──────────
 
 function blocksToUserContent(content: ChatContentBlock[] | string): string | Array<{ type: 'text'; text: string } | { type: 'file'; data: string; mediaType: string }> {
@@ -415,8 +431,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   const looksLikeQuestion = !!lastUserText
     && (/\?\s*$/m.test(lastUserText) || /^(how|what|why|when|who|which|explain|tell me|describe|review)\b/i.test(lastUserText.trim()));
   const replyEmpty = outcome.text.trim().length === 0;
-  const replyIsNarration = !replyEmpty
-    && /^\s*(the user|i'll|i will|we'll|we will|let's|let me|we need|we can|i need|first,|i should|we should|okay,? so)\b/i.test(outcome.text);
+  const replyIsNarration = !replyEmpty && NARRATION_RE.test(outcome.text);
   diagLog('engine.turnEnd', `finish=${outcome.finishReason} textLen=${outcome.text.length} steps=${outcome.responseMessages.length} tools=${toolEvents.length} reasoningLen=${reasoningText.length} empty=${replyEmpty} narration=${replyIsNarration}`);
   const didWork = toolEvents.length > 0;
   // Invariant 3 (SIMPLE_CORE_RESET): a turn gets AT MOST ONE continuation pass, whichever

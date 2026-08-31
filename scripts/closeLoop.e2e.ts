@@ -80,6 +80,41 @@ async function main() {
     ok('and ships the continuation', r.text.includes('hello'), r.text);
   }
 
+  console.log('\n— narration behind a discourse marker (2026-08-31 repro) —');
+  {
+    // Opencode/nemotron-3-ultra-free ended the turn here with its 7-item plan at 0 done. The
+    // leading "Now" is the whole reason the ^-anchored stem regex missed it and NO continuation
+    // ran — the user was left typing "continue" by hand.
+    const m = createMockModel([
+      readCall,
+      { text: "Now I'll start editing the index.blade.php file first. Let me create the modernized version." },
+      { text: 'Edited index.blade.php: the drawing toolbar now uses AdvancedMarkerElement.' },
+    ], 'narration-behind-marker');
+    const r = await turn(m);
+    ok('a "Now I\'ll…" narration is nudged', m.calls.length === 3, `${m.calls.length} model calls`);
+    ok('the continuation is what ships', r.text.includes('AdvancedMarkerElement'), r.text.slice(0, 70));
+  }
+  {
+    // Kilo/nemotron-3-ultra-550b, same task, same shape, different stem.
+    const m = createMockModel([
+      readCall,
+      { text: 'Now let me rewrite the entire map-related JavaScript section in index.blade.php.' },
+      { text: 'Rewrote the map section in index.blade.php.' },
+    ], 'narration-behind-marker-2');
+    ok('a "Now let me…" narration is nudged', (await turn(m), m.calls.length === 3), `${m.calls.length}`);
+  }
+  {
+    // The guard must not widen into "anything starting with a marker": the stem still has to
+    // match, so a real answer that merely opens with "Now" is left alone.
+    const m = createMockModel([
+      readCall,
+      { text: 'Now the map uses AdvancedMarkerElement in both files (index.blade.php:401).' },
+    ], 'marker-then-real-answer');
+    const r = await turn(m);
+    ok('a real answer opening with a marker is NOT nudged', m.calls.length === 2, `${m.calls.length}`);
+    ok('it ships verbatim', r.text.includes('index.blade.php:401'), r.text.slice(0, 70));
+  }
+
   console.log('\n— and a real answer is never second-guessed —');
   {
     const m = createMockModel([
