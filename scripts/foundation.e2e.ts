@@ -820,9 +820,12 @@ async function main() {
       `n=${n} foo=${JSON.stringify(ws.read('foo.txt'))} newExists=${fs.existsSync(path.join(ws.root, 'new.txt'))}`);
   }
 
-  // ── Failover chain depth (hardening — the live "1s, 0 tokens" regression) ────
-  // A PINNED model must never be a single point of failure: the chain pads with the rest
-  // of the usable enabled models, so a 429/dead pinned model fails over instead of dying.
+  // ── Pinned model runs ALONE (2026-08-31, user direction) ────────────────────
+  // A SET model is an exact request: the selection is the pin and NOTHING else. The old
+  // chain padded the pin with the task table and every usable enabled model, so a failing
+  // pin was silently answered by a different provider's model while the footer still
+  // credited the pin (live repro: openrouter GLM pinned, kilo Nemotron served). A dead pin
+  // now fails the turn with the real error instead.
   {
     const { setModelSources, selectModel } = await import('../src/router/picker');
     const store = new Map<string, string[]>();
@@ -848,10 +851,39 @@ async function main() {
     store.set('groq', ['gsk-live']);
 
     const sel = await selectModel([], { pinnedModel: 'groq::openai/gpt-oss-120b' });
-    ok('F. pinned model leads the chain', sel.model === 'groq::openai/gpt-oss-120b', JSON.stringify(sel));
-    ok('F. chain has failover depth beyond the pinned model',
-      sel.fallbackChain.length >= 2 && sel.fallbackChain.includes('kilo::kimi-k2'),
+    ok('F. pinned model is the selection', sel.model === 'groq::openai/gpt-oss-120b', JSON.stringify(sel));
+    ok('F. pinned selection has NO failover depth', sel.fallbackChain.length === 0,
       `fallbackChain=${JSON.stringify(sel.fallbackChain)}`);
+    ok('F. pinned rationale names only the pin',
+      sel.rationale?.entries.length === 1 && sel.rationale.entries[0].selected === true,
+      JSON.stringify(sel.rationale));
+
+    // An unroutable pin (no key for its platform) must NOT silently reroute either —
+    // empty selection plus the skip reason, which resolveCandidates surfaces as the
+    // turn's error message.
+    const dead = await selectModel([], { pinnedModel: 'ollama::glm-5.2' });
+    ok('F. unroutable pin yields no candidate', dead.model === '' && dead.fallbackChain.length === 0,
+      JSON.stringify(dead));
+    ok('F. unroutable pin reports its skip reason',
+      !!dead.rationale?.entries[0]?.skip && !dead.rationale.picked, JSON.stringify(dead.rationale));
+
+    // 'auto' is the webview selector's DEFAULT value (media/src/main.ts `let currentModel =
+    // 'auto'`) and flows here as pinnedModel on every default Auto send — it means "no pin".
+    // The pin-runs-alone branches above must not treat it as an unroutable pin: without the
+    // guard this returned an empty selection and resolveCandidates killed every Auto turn
+    // with "Pinned model auto could not run: no API key stored for this platform" (repro'd
+    // 2026-09-01, caught in the pre-release scan).
+    const autoSel = await selectModel([], { pinnedModel: 'auto' });
+    ok('F. pinnedModel "auto" is not a pin — normal routing still happens',
+      autoSel.model.length > 0 && autoSel.fallbackChain.length >= 2, JSON.stringify(autoSel));
+    const { resolveCandidates } = await import('../src/agent/core/routerProvider');
+    try {
+      const autoChain = await resolveCandidates({ pinnedModel: 'auto' } as never);
+      ok('F. resolveCandidates serves Auto (no pin error)', autoChain.length > 0,
+        JSON.stringify(autoChain.map((c) => `${c.platform}::${c.modelId}`)));
+    } catch (e) {
+      ok('F. resolveCandidates serves Auto (no pin error)', false, (e as Error).message);
+    }
 
     // No pin at all → table first, then the enabled tail.
     const sel2 = await selectModel([], {});

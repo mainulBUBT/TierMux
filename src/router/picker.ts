@@ -280,9 +280,55 @@ export async function selectModel(
   };
 
   const chain: string[] = [];
-  if (opts.pinnedModel) {
+  // 'auto' is the webview selector's DEFAULT value (`let currentModel = 'auto'`,
+  // media/src/main.ts) and arrives as pinnedModel on every default Auto send — it means
+  // "no pin", never "a model named auto". Without this guard the pin-runs-alone branches
+  // below treated it as an unroutable pin and killed every Auto turn (repro'd 2026-09-01:
+  // "Pinned model auto could not run: no API key stored for this platform").
+  if (opts.pinnedModel && opts.pinnedModel !== 'auto') {
     const pinned = await pick(opts.pinnedModel, 'pinned by you');
-    if (pinned) chain.push(pinned);
+    if (pinned) {
+      // PIN = EXACT (2026-08-31, user direction): a set model runs ALONE — no task table, no
+      // enabled tail. The old chain padded the pin with every usable model, so a failing pin
+      // was silently answered by a DIFFERENT provider's model while the footer still credited
+      // the pin (live repro: openrouter::z-ai/glm-5.2:free pinned, turn served by
+      // kilo::nvidia/nemotron-3-ultra — footer read "Kilo Gateway/z-ai/glm-5.2:free"). A dead
+      // pin must fail the turn with the real provider error instead of rerouting.
+      return {
+        model: pinned,
+        fallbackChain: [],
+        taskKind,
+        rationale: {
+          taskKind,
+          picked: pinned,
+          entries: [{
+            model: pinned, selected: true,
+            score: 1, capability: 1, runtime: 1, preference: 1, confidence: 0,
+            reason: 'pinned by you — serves this turn (no failover: a set model runs alone)',
+          }],
+        },
+      };
+    }
+    // The pin could not be honored at all (no key / excluded as unavailable). Rerouting would
+    // repeat the exact "asked for A, got B" confusion, so hand back an empty selection with
+    // the skip reason — resolveCandidates turns it into a visible turn error. The one
+    // exception is a deliberate excludeModels retry, where moving past the pin IS the point.
+    if (!exclude.has(opts.pinnedModel)) {
+      const reason = skipReasons.get(opts.pinnedModel) ?? 'unavailable';
+      return {
+        model: '',
+        fallbackChain: [],
+        taskKind,
+        rationale: {
+          taskKind,
+          entries: [{
+            model: opts.pinnedModel, selected: false,
+            score: 0, capability: 0, runtime: 1, preference: 1, confidence: 0,
+            reason, skip: reason,
+          }],
+        },
+      };
+    }
   }
   for (const key of TASK_ROUTING[taskKind] ?? TASK_ROUTING.chat) {
     const picked = await pick(key, `task table (${taskKind})`);

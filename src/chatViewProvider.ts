@@ -424,7 +424,10 @@ function displayNameForEntry(entry: { platform: string; modelId: string }, deps:
     const endpoint = deps.settings.getCustomEndpoint(epId);
     return endpoint?.name ?? 'Custom';
   }
-  return entry.platform;
+  // Display name ("OpenRouter", "Kilo Gateway"), not the raw platform id — the "Why this
+  // model?" popover and failover notices are user-facing, and "kilo/nvidia/…" read like a
+  // different provider than the one the picker names (2026-08-31).
+  return getPlatformInfo(entry.platform as import('./shared/types').Platform)?.name ?? entry.platform;
 }
 
 /**
@@ -450,15 +453,17 @@ function turnPlatformLabel(pinnedModel: string | undefined, reported: { runtimeN
 }
 
 /**
- * Bare modelId for a turn's footer. When the user pinned a specific model (not Auto), strip the
- * `platform::` prefix so the footer's `${platform}/${model}` never double-prefixes (e.g.
- * "poolside/poolside::poolside/laguna-xs-2.1"). Falls back to whatever the run reported when
- * Auto picked the model itself.
+ * Bare modelId for a turn's footer. The model that ACTUALLY served wins — pairing the pin's
+ * modelId with the served platform's label once produced "Kilo Gateway/z-ai/glm-5.2:free" for
+ * an OpenRouter pin (2026-08-31). The pin (stripped of its `platform::` prefix, so the
+ * footer's `${platform}/${model}` never double-prefixes) is only the fallback for turns that
+ * produced no run metadata (empty or errored turn), keeping the footer from going blank.
  */
 function turnModelLabel(pinnedModel: string | undefined, reportedModel: string | undefined): string | undefined {
+  if (reportedModel) return reportedModel;
   return (pinnedModel && pinnedModel !== 'auto')
     ? pinnedModel.includes('::') ? pinnedModel.split('::').slice(1).join('::') : pinnedModel
-    : reportedModel;
+    : undefined;
 }
 
 /**
@@ -2254,7 +2259,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
-      const pinned = turnModelLabel(s.model, result.model);
+      const modelLabel = turnModelLabel(s.model, result.model);
       const hasQuestions = !!(agentClar.questions && agentClar.questions.length);
 
       // One-click Continue affordance: a turn that ended with unfinished plan items — or a
@@ -2265,7 +2270,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         || finalRemainingTodos.length > 0);
 
       cbk.settleReasoning();
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, finishReason: result.finishReason, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: pinned, paused: resumable, noFooter: hasQuestions });
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, finishReason: result.finishReason, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: modelLabel, paused: resumable, noFooter: hasQuestions });
       diagLog('send.postAssistant', `requestId=${m.requestId} · textLen=${(displayText ?? '').length} textHead="${(displayText ?? '').slice(0, 120).replace(/\n/g, '⏎')}" reasoningLen=${(result.reasoning ?? '').length} paused=${resumable}`);
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
       if (hasQuestions) {
@@ -2885,15 +2890,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // post-edit content and undo restored files to their already-edited state).
       onBeforeWrite: (uri, before) => s.checkpoints.record(uri, before),
       onModel: (platform, model, runtimeName) => {        if (!live()) return;
-        // Same platform-prefix stripping as sendMessage's `pinned` — s.model is the
-        // picker's composite `platform::modelId` selector value when a model is pinned.
-        const pinned = (s.model && s.model !== 'auto')
-          ? s.model.includes('::') ? s.model.split('::').slice(1).join('::') : s.model
-          : model;
+        // The engine reports the model that ACTUALLY serves (reportServed). Overriding it with
+        // the pin's modelId here is what paired "Kilo Gateway" with an OpenRouter model id in
+        // the footer when the turn failed over (2026-08-31 repro) — show what really ran.
         s.livePlatform = platform;
-        s.liveModel = pinned;
+        s.liveModel = model;
         s.liveRuntimeName = runtimeName;
-        this.post({ type: 'assistantStart', sessionId: s.id, requestId, platform: (runtimeName ?? platform) || turnPlatformLabel(s.model, undefined, this.deps), model: pinned });
+        this.post({ type: 'assistantStart', sessionId: s.id, requestId, platform: turnPlatformLabel(s.model, { runtimeName, platform }, this.deps), model });
       },
       onTool: (e: ToolEvent) => {
         if (!live()) return;

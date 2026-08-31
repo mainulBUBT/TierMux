@@ -45,14 +45,14 @@ All notable changes to TierMux are documented here. The format is loosely
   own glyph map: the history dropdown swaps `running` for a real spinner, and a static `⟳`
   in a plain list reads as a stuck reload button.
 
-### Changed — the tips ticker is permanent
+### Changed — the tips ticker lives on the welcome screen
 
-- The Tips & Announcements headline ticker (new in this release) no longer dies when the
-  welcome screen goes away (user request 2026-08-31: "keep it forever slide show always").
-  It has two homes and re-homes itself between them: on the welcome screen it sits in its
-  original spot above RECENT, and once a chat starts it moves to a strip pinned above the
-  composer — never rendered in both at once. Read tips keep cycling; only a genuinely empty
-  feed hides it; clicking it opens the full Tips page.
+- The Tips & Announcements headline ticker (new in this release) cycles one headline at a
+  time above RECENT on the welcome screen — permanently, so it does not die when a chat
+  starts (user request 2026-08-31: "keep it forever slide show always"). It deliberately
+  has NO placement above the composer: tips pinned over the input box during chats read as
+  system messages, not announcements (user direction, same day). Read tips keep cycling;
+  only a genuinely empty feed hides it; clicking it opens the full Tips page.
 
 ### Fixed — asserted negatives without an adequate search
 
@@ -78,6 +78,30 @@ All notable changes to TierMux are documented here. The format is loosely
   candidate succeeds, and relabels the ones walked past as `tried first, failed over` — so
   the popover shows the whole walk instead of hiding it. Candidates *after* the winner keep
   their `failover #n` label, since they were never dialed.
+
+### Changed — a set model runs ALONE (no silent failover)
+
+- Pinning a model is an exact request: the selection is the pin and NOTHING else. The old
+  chain padded the pin with the task table and every usable enabled model, so a failing pin
+  was silently answered by a different provider's model while the footer still credited the
+  pin (live repro 2026-08-31: `openrouter/z-ai/glm-5.2:free` pinned, turn served by
+  `kilo/nvidia/nemotron-3-ultra`). A dead pin now fails the turn with the real reason
+  (no key, provider off, cooldown) instead of rerouting (`src/router/picker.ts` +
+  `resolveCandidates`); the "Switch model & retry" affordance remains the escape hatch.
+  Auto is unaffected — the selector's default `auto` value means "no pin", and the
+  pin-runs-alone branches must never treat it as one (this guard was the one blocker found
+  by the pre-release scan; without it every default Auto turn died with "Pinned model auto
+  could not run". Regression-tested in `test:e2e:foundation`).
+
+### Fixed — the footer paired the pin with whichever provider served
+
+- `Kilo Gateway/z-ai/glm-5.2:free` — an OpenRouter pin's modelId shown under a failover
+  provider's name — was the visible symptom of the footer trusting the pin over the run.
+  The platform/model that ACTUALLY served (reported per-step by the engine) now wins
+  everywhere: the streaming footer, the settled message footer, and failover notices.
+  Platforms are shown through their display names ("OpenRouter", "Kilo Gateway"), not raw
+  ids. The pin remains only as the fallback label for turns that produced no run metadata,
+  so an errored turn still names the model it was aiming at.
   Locked by `npm run test:e2e:rationale-served` (13 scenarios).
 - The Score tooltip claimed "the highest-scoring model is chosen", which contradicted the ✓
   on screen: the picker orders by pin → task table → catalog rank, so a task-table pick at

@@ -96,7 +96,6 @@ const STATE_LABEL = {
       <div class="settings" id="settings"></div>
       <div class="announcements-page" id="announcements-page"></div>
     <div class="composer" id="composer">
-      <div class="empty-tips-slot" id="tips-strip-slot"></div>
       <div class="index-status hidden" id="index-status"></div>
       <div class="new-models-bar hidden" id="new-models-bar"></div>
       <div class="new-models-bar hidden" id="new-providers-bar"></div>
@@ -712,10 +711,10 @@ const STATE_LABEL = {
     refreshTipsStrip(); // re-home the ticker into the welcome slot, above RECENT
   }
 
-  /** Tips ticker — one announcement headline at a time, cycling every few seconds, in a
-   *  strip pinned above the composer. Permanent by request (2026-08-31): it shows on the
-   *  welcome screen AND during chats, read tips keep cycling, and only a genuinely empty
-   *  feed hides it. Clicking anywhere on it opens the full Tips page. */
+  /** Tips ticker — one announcement headline at a time, cycling every few seconds, shown
+   *  ONLY on the welcome screen (above RECENT). No composer placement (2026-08-31): tips
+   *  must not appear above the input box during chats. Read tips keep cycling, and only a
+   *  genuinely empty feed hides it. Clicking anywhere on it opens the full Tips page. */
   let tipsTickerTimer = null;
   let tipsTickerIndex = 0;
   function stopTipsTicker() {
@@ -723,10 +722,7 @@ const STATE_LABEL = {
   }
 
   function refreshTipsStrip() {
-    const emptySlot = document.getElementById('empty-tips-slot');
-    const composerSlot = document.getElementById('tips-strip-slot');
-    const slot = emptySlot || composerSlot; // welcome placement (above RECENT) wins
-    if (emptySlot && composerSlot) composerSlot.innerHTML = ''; // never show the strip twice
+    const slot = document.getElementById('empty-tips-slot');
     stopTipsTicker();
     if (!slot) return;
     const list = announcementsCache;

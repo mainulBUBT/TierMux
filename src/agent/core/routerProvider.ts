@@ -410,6 +410,19 @@ export async function resolveCandidates(
   diagLog('rp.chain', chain.length
     ? `${platformOrder.length} platform(s): ${chain.map((c) => `${c.platform}::${c.modelId}`).join(' \u2192 ')}`
     : '<empty \u2014 no usable candidate>');
+  // A pin that resolved to NO runnable candidate must fail the turn with its reason, not fall
+  // back to other models — a set model runs alone (2026-08-31, user direction). Without this,
+  // the generic "no model candidate resolved" fired and the pin's WHY stayed in the popover
+  // only. The excludeModels escape hatch mirrors selectModel's: a deliberate retry may move
+  // past the pin.
+  // 'auto' (the webview default, meaning "no pin") must fall through to the generic
+  // empty-chain error, not read as a pin that "could not run".
+  if (chain.length === 0 && opts.pinnedModel && opts.pinnedModel !== 'auto'
+    && !opts.excludeModels?.includes(opts.pinnedModel)) {
+    const skipEntry = selection.rationale?.entries.find((e) => e.model === opts.pinnedModel);
+    const why = skipEntry?.skip ?? 'no usable provider/key for it right now';
+    throw new Error(`Pinned model ${opts.pinnedModel} could not run: ${why}.`);
+  }
   return chain;
 }
 

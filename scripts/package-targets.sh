@@ -1,6 +1,10 @@
 set -euo pipefail
-cd /Users/mainul/Lerd/TierMux
+# Repo root relative to this script — works from any clone (the old hardcoded
+# absolute path only existed on the machine this script was written on).
+cd "$(dirname "$0")/.."
 RGV=1.18.0
+# Version comes from package.json so the VSIX filenames never lag a bump.
+VER=$(node -p "require('./package.json').version")
 OUT=release; mkdir -p "$OUT"
 TMP=$(mktemp -d)
 TARGETS="darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64 win32-arm64"
@@ -26,8 +30,8 @@ for t in $TARGETS; do
   # Only this target's binary may be present, or every VSIX ships all six.
   rm -rf node_modules/@vscode/ripgrep-*
   cp -R "$TMP/$t" "node_modules/@vscode/ripgrep-$t"
-  npx vsce package --target "$t" --no-dependencies=false -o "$OUT/tiermux-3.0.0-$t.vsix" >/dev/null 2>&1 \
-    || npx vsce package --target "$t" -o "$OUT/tiermux-3.0.0-$t.vsix" 2>&1 | tail -3
+  npx vsce package --target "$t" --no-dependencies=false -o "$OUT/tiermux-$VER-$t.vsix" >/dev/null 2>&1 \
+    || npx vsce package --target "$t" -o "$OUT/tiermux-$VER-$t.vsix" 2>&1 | tail -3
 done
 
 # Restore this machine's own binary so local dev still works.
