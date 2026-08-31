@@ -198,6 +198,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // ai v7 consumeStream() RESOLVES on stream errors (they go to its onError option) — the
   // try/catch below never sees provider failures; captured here for the post-pass guard.
   let streamError: string | undefined;
+  /** consumeStream() RESOLVES on stream errors, so a continuation pass that dies on the wire
+   *  (401/429/credit, "all candidates failed") is invisible unless this option catches it.
+   *  The pass-1 output already stands, so this only has to make the failure diagnosable. */
+  const passError = (tag: string) => (error: unknown) =>
+    diagLog(`engine.${tag}StreamError`, (error instanceof Error ? error.message : String(error)).slice(0, 160));
   // True while the current step has streamed reply text but no tool call yet (see onChunk).
   let narrationSinceToolCall = false;
 
@@ -414,6 +419,12 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     && /^\s*(the user|i'll|i will|we'll|we will|let's|let me|we need|we can|i need|first,|i should|we should|okay,? so)\b/i.test(outcome.text);
   diagLog('engine.turnEnd', `finish=${outcome.finishReason} textLen=${outcome.text.length} steps=${outcome.responseMessages.length} tools=${toolEvents.length} reasoningLen=${reasoningText.length} empty=${replyEmpty} narration=${replyIsNarration}`);
   const didWork = toolEvents.length > 0;
+  // Invariant 3 (SIMPLE_CORE_RESET): a turn gets AT MOST ONE continuation pass, whichever
+  // trigger fires first. The nudge and the length-cut guard below both run off outcome, and
+  // onEnd OVERWRITES outcome.finishReason with the continuation's own — so a nudge pass that
+  // is itself cut at the output budget would otherwise fall straight into the length guard
+  // (probe: 4 model calls in one turn). This flag is the gate; no ladder.
+  let continued = false;
   const actGap = !didWork && (replyEmpty || replyIsNarration || outcome.text.includes('```'));
   const reportGap = didWork && (replyEmpty || replyIsNarration);
   if (
@@ -437,10 +448,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
             ? 'You ran tools but ended the turn without a final answer. CLOSE the task now: tell the user what you found or changed (with file paths) and the result. If the task is not actually finished, keep working with your tools instead of stopping. Never end a turn silently.'
             : 'You stopped after describing what you would do — no tool ran and no file changed. Continue NOW: perform the task yourself with your tools (readFile to inspect, editFile/writeFile to change, then re-read the changed region to verify). Only reply in prose, without tools, if the task genuinely requires no file change.',
         },
-      ]).consumeStream();
+      ]).consumeStream({ onError: passError('nudge') });
     } catch {
       // Keep the pass-1 output rather than failing the turn.
     }
+    continued = true;
     // Cross-turn health demotion only: act-gap repeated through the continuation means this
     // model talks instead of acting — recordOutcome(false) feeds the picker's cooldown so the
     // NEXT Auto turn routes elsewhere (pinned exempt; in-loop answer still ships).
@@ -458,8 +470,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // qwen-32b): reply cut mid-sentence, finish 'length', 2m24s — the distill burned its output
   // budget on think-narration; AI SDK v7 (unlike v4's `continueSteps`) never continues a
   // 'length' step. ONE continuation, placed after the act/report-gap nudge (fires only on
-  // 'stop') so the two can never both run — invariant 3.
-  if (outcome.finishReason === 'length' && !opts.abortSignal?.aborted) {
+  // 'stop'). `!continued` keeps it to ONE continuation per turn either way — invariant 3: a
+  // nudge pass that is itself length-cut ships truncated with finish 'length', which is what
+  // the webview's Continue affordance is for.
+  if (outcome.finishReason === 'length' && !opts.abortSignal?.aborted && !continued) {
     diagLog('engine.lengthContinue', `finish=length (textLen=${outcome.text.length}) — one continuation pass`);
     // Stitch both halves into the shipped reply: onEnd keeps the earlier text only when the
     // newer pass ends silent, but here pass 1's text is half the real answer.
@@ -472,11 +486,15 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           role: 'user',
           content: 'Your previous reply was cut off mid-sentence by the output token limit. Continue from exactly where it stopped. Do not repeat any earlier text, do not restart the answer, and do not mention the cutoff.',
         },
-      ]).consumeStream();
-      if (outcome.text.trim() && outcome.text !== partial) outcome.text = partial + outcome.text;
+      ]).consumeStream({ onError: passError('lengthContinue') });
+      // Mechanical de-dup only: a model that ignored "do not restart" and re-emitted the whole
+      // answer already CONTAINS the partial, so concatenating would ship it twice.
+      const cont = outcome.text;
+      if (cont.trim() && cont !== partial && !cont.startsWith(partial)) outcome.text = partial + cont;
     } catch {
       // Keep the partial answer rather than failing the turn.
     }
+    continued = true;
   }
 
   // LAST-RESORT reasoning fold: every pass's content channel empty ⇒ promote the accumulated

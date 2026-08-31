@@ -8,7 +8,10 @@
  * never continues a 'length' step on its own, and engine.ts's act/report-gap nudge fires only
  * on 'stop', so the cut answer used to ship truncated with nothing behind it.
  *
- * Locks the one-continuation invariant too: a second 'length' in a row must NOT grow a ladder.
+ * Locks the one-continuation invariant too (invariant 3): a second 'length' in a row must NOT
+ * grow a ladder, and a nudge pass that is ITSELF length-cut must not chain into this guard —
+ * onEnd overwrites outcome.finishReason with the continuation's own reason, so the two guards
+ * do not exclude each other on their own.
  *
  * Run: npm run test:e2e:length-continue
  */
@@ -25,6 +28,7 @@ let bad = 0;
 const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? `   (${d})` : ''}`); if (!c) bad++; };
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-len-'));
+fs.writeFileSync(path.join(root, 'a.txt'), 'hello');
 
 function opts(over: Partial<AgentOpts>): AgentOpts {
   return {
@@ -68,6 +72,35 @@ async function main() {
     ok('still exactly ONE continuation (2 calls)', m.calls.length === 2, `${m.calls.length} model calls`);
     ok('both halves still stitch', r.text.includes('half one,') && r.text.includes('half two,'), r.text);
     ok('the cut is reported honestly', r.finishReason === 'length', r.finishReason);
+  }
+
+  console.log('\n— the nudge and the length guard must not chain (invariant 3) —');
+  {
+    // Agent mode: tools ran, the synthesis step ended on narration (report-gap) → nudge pass,
+    // and THAT pass is itself cut at the output budget. onEnd overwrites outcome.finishReason,
+    // so without the `continued` gate the length guard fires too — 4 model calls, two
+    // continuations in one turn.
+    const m = createMockModel([
+      { toolCalls: [{ toolName: 'readFile', input: { path: 'a.txt' } }] },
+      { text: 'Let me continue reading the PlaceNewOrder trait.' },
+      { text: 'Orders are placed via', finish: 'length' },
+      { text: ' a pass that must never run.' },
+    ], 'nudge-then-length');
+    const r = await turn(m, { messages: [{ role: 'user', content: 'trace how an order is placed' }], mode: 'agent' }, runAgentStream);
+    ok('at most ONE continuation across both guards', m.calls.length === 3, `${m.calls.length} model calls`);
+    ok('the length-cut nudge output still ships', r.text.includes('Orders are placed via'), r.text);
+    ok('and the cut is reported honestly', r.finishReason === 'length', r.finishReason);
+  }
+
+  console.log('\n— a restarted continuation is not shipped twice —');
+  {
+    const m = createMockModel([
+      { text: 'The unused pages are admin.php and', finish: 'length' },
+      // Ignored the "do not restart" instruction: re-emits the whole answer from the top.
+      { text: 'The unused pages are admin.php and settings/legacy.php.' },
+    ], 'length-restart');
+    const r = await turn(m);
+    ok('the partial is not duplicated', r.text === 'The unused pages are admin.php and settings/legacy.php.', r.text);
   }
 
   console.log('\n— a complete answer is never continued —');

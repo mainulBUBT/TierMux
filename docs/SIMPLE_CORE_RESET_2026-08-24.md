@@ -54,8 +54,14 @@ detector, stop and re-read this file.
    `[...messages, ...workMessages]` fitted via `fitMessages()` — user request, prior assistant
    output, tool calls, tool results. Proven by `simpleTurn.e2e.ts` Test D (a secret that exists
    ONLY in the failed model's tool result must appear in the replacement's request).
-3. **Exactly ONE continuation.** Initial execution → provider failure → one continuation →
-   stop. No ladder, no behavioral retries, no answer-quality retries.
+3. **Exactly ONE continuation.** Initial execution → one continuation → stop. No ladder, no
+   behavioral retries, no answer-quality retries. Three wire-level triggers can ask for that
+   pass — provider failure, the agent-mode act/report gap, and a `finish_reason: length` cut —
+   but a turn gets AT MOST ONE, whichever fires first (`continued` in `engine.ts`; note that
+   `onEnd` overwrites `outcome.finishReason` with the CONTINUATION's reason, so the triggers
+   do not exclude each other on their own). A continuation that is itself length-cut ships
+   truncated with finish `length`, which is what the UI's Continue affordance is for.
+   `lengthContinue.e2e.ts` locks the no-chaining case.
 4. **An abort is not a failure.** `isAbortError` + aborted signal ⇒ clean stop; it must never
    trigger the mechanical continuation (Test B).
 5. **`askQuestions` is a legitimate terminal state.** The questions ARE the response; the turn
@@ -118,16 +124,18 @@ not in the live prompt.
 ## How to verify (run these after any loop change)
 
 ```bash
-npm run typecheck
-npm run test:e2e:simple-turn   # THE contract: tool→answer · abort · askQuestions · failover continuity
-npm run test:e2e:core          # approval gating, event ordering, approval-once
-npm run test:e2e:plan-runner   # plan execution: retry + repair under the simple core
-npm run test:e2e:step-executor # stepEngine decisions + acceptance
-npm run test:e2e:prompt-contract  # slim prompt per mode; tower absent
-npm run test:e2e:prompt-diet      # live prompt pinned < 2.5K chars
-# infra: condense-split, fit-messages, scoring, circuit, rotation, cooldown-recovery,
-#        prune-threshold, edit-match, tool-history, compact-result, output-limit, …
+npx tsc --noEmit -p .
+npm run test:e2e:foundation       # THE contract: tool→answer · abort · askQuestions · failover continuity
+npm run test:e2e:close-loop       # act-gap / report-gap nudge — and the cases that must NOT be nudged
+npm run test:e2e:length-continue  # finish 'length' → ONE continuation; no chaining with the nudge
+npm run test:e2e:tool-offer       # mode-filtered toolset + the small-window coordination drop
+npm run test:e2e:compact-budget   # per-window prune target (executionProfile), not a flat constant
+# infra: condense-split, fit-messages, routing-gates, rate-limit-zero, quota-persist,
+#        edit-match, edit-gate, resolve-path, read-paging, checkpoint-persist, …
 ```
+(The pre-2026-08-30 list here named `simple-turn`, `core`, `plan-runner`, `step-executor`,
+`prompt-contract`, `prompt-diet` and `toolset-budget` — none of those scripts exist in
+`package.json` any more. `npm run` is the authority; this list is a pointer, not a registry.)
 
 All 63 suites green as of `a49eb5b`.
 
