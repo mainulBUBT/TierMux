@@ -1,0 +1,36 @@
+name: Sync README catalog stats
+
+# The provider/model counts and provider lists in README.md come from the same remote
+# catalog the extension routes on, so they go stale on their own — no commit here causes
+# it. This regenerates the `<!-- catalog:start -->` block and commits only when it moved.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'   # Mondays 06:00 UTC
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: node scripts/sync-readme.mjs
+
+      - name: Commit if the catalog moved
+        run: |
+          if git diff --quiet README.md; then
+            echo "README already current — nothing to commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: sync README provider/model counts from the live catalog"
+          git push

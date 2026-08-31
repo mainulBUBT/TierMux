@@ -47,6 +47,7 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'airforce', name: "Api.Airforce", baseUrl: "https://api.airforce/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://api.airforce/" }, // auto-synced
   { platform: 'modelscope', name: "ModelScope", baseUrl: "https://api-inference.modelscope.cn/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://modelscope.cn/my/myaccesstoken" }, // auto-synced
   { platform: 'unorouter', name: "UnoRouter", baseUrl: "https://api.unorouter.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://unorouter.com/en/token" }, // auto-synced
+  { platform: 'tokenrouter', name: "Token Router", baseUrl: "https://api.tokenrouter.com/v1", skipPreflight: true, timeoutMs: 600000 }, // auto-synced
 ];
 
 const providers = new Map<Platform, BaseProvider>();

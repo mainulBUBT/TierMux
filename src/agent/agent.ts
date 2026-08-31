@@ -6,7 +6,7 @@
 // vscode-free and independently testable, and so a future AI SDK version bump only touches
 // ./core/*, not this file or chatViewProvider.ts.
 import type { Router } from '../router/router';
-import type { ChatMessage, TodoItem, ReasoningEffort } from '../shared/types';
+import type { ChatMessage, TodoItem, ReasoningEffort, ProposedPlan } from '../shared/types';
 import type { IProfilerService } from '../profiler/profilerService';
 import type { ClarifyingQuestion } from './clarify';
 
@@ -41,6 +41,12 @@ export interface AgentResult {
   /** Set when the model called the plan-mode `askQuestions` tool this turn — the caller uses
    *  this directly instead of parsing `text` for the legacy ???QUESTIONS??? sentinel. */
   askQuestions?: ClarifyingQuestion[];
+  /** Set when the model called plan mode's `exitPlanMode` tool — the explicit
+   *  planning→execution boundary. The plan arrives as VALIDATED STRUCTURE, so the host renders
+   *  its plan card straight from this instead of inferring "was that reply a plan?" from the
+   *  text. The turn also ENDS on this call (engine.ts stopWhen). Undefined = no plan proposed
+   *  this turn, which in plan mode means the reply is an answer/research, not a proposal. */
+  plan?: ProposedPlan;
   /** Set when the turn ended via the genuine-error catch path (not abort) — `onError` already
    *  surfaced a message to the UI. Callers must NOT also render this as a normal completed
    *  turn (empty text + a real footer reads as a phantom "successful" blank reply). */

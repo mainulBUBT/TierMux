@@ -7,11 +7,12 @@
 import {
   streamText,
   stepCountIs,
+  hasToolCall,
   type ModelMessage,
   type ToolSet,
   type LanguageModel,
 } from 'ai';
-import type { ChatMessage, ChatContentBlock } from '../../shared/types';
+import type { ChatMessage, ChatContentBlock, ProposedPlan } from '../../shared/types';
 import type { AgentOpts, AgentResult, ToolEvent } from '../agent';
 import { createRouterProvider } from './routerProvider';
 import { buildV3ToolSet } from './tools/v3';
@@ -180,6 +181,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // Turn-start facts: if signalAborted=true here, no model request can ever run this turn.
   diagLog('engine.start', `mode=${opts.mode} msgs=${opts.messages?.length ?? 0} signalAborted=${opts.abortSignal?.aborted ?? 'none'} requestId=${opts.requestId ?? '-'}`);
   const modelMessages = toModelMessages(opts.messages);
+  // Plan mode's exitPlanMode tool hands its VALIDATED structure here; the turn stops on that
+  // call (stopWhen below) and the host renders the plan card straight from this object — no
+  // prose classification, no extra model round-trip. Last call wins if a model calls it twice.
+  let proposedPlan: ProposedPlan | undefined;
   const tools: ToolSet = buildV3ToolSet(opts.mode, {
     abortSignal: opts.abortSignal,
     sessionId: opts.sessionId,
@@ -187,6 +192,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     onTodos: opts.onTodos,
     onBeforeWrite: opts.onBeforeWrite,
     onAskUser: opts.onAskUser,
+    onPlanProposed: (plan) => { proposedPlan = plan; },
   }) as ToolSet;
 
   const model: LanguageModel = modelOverride ?? createRouterProvider({
@@ -221,6 +227,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     diagLog(`engine.${tag}StreamError`, (error instanceof Error ? error.message : String(error)).slice(0, 160));
   // True while the current step has streamed reply text but no tool call yet (see onChunk).
   let narrationSinceToolCall = false;
+  // Armed for the plan-gap continuation pass only (see the nudge below): its FIRST step is
+  // forced to call exitPlanMode via toolChoice, turning "please present the plan" from a prompt
+  // hope into a wire-level guarantee. Step 0 only — forcing every step would make a prose
+  // answer impossible, and a model that wants one more read afterwards is fine.
+  let forcePlanToolOnNextStep = false;
 
   let outcome: { finishReason: string; text: string; responseMessages: ModelMessage[] } = {
     finishReason: 'unknown', text: '', responseMessages: [],
@@ -246,107 +257,120 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // System prompt + context gathered ONCE per turn: both passes share the identical prefix
   // (provider prompt-cache friendly) and the async reads never happen per-pass.
   const system = composeSystemPrompt(opts.mode, await gatherPromptContext());
-  const runPass = (messages: ModelMessage[]) => streamText({
-    model,
-    system,
-    messages,
-    tools,
+  const runPass = (messages: ModelMessage[]) => {
+    // Per-PASS state, reset here rather than declared per-pass so onChunk can close over it.
+    // It used to leak: pass 1 ending on text left this true, so the continuation pass's first
+    // tool-call chunk fired a SECOND onRetractDraft for a draft the nudge had already
+    // retracted. Surfaced by scripts/exitPlanMode.e2e.ts's plan-gap case (retracted=2).
+    narrationSinceToolCall = false;
+    return streamText({
+      model,
+      system,
+      messages,
+      tools,
 
-    toolApproval: ({ toolCall }) =>
-      resolvePolicy({ toolName: toolCall.toolName, input: toolCall.input }, policy, async (req) => {
-        if (!opts.onPermissionAsk) return 'deny';
-        // Mutating INPUT passed through so the host's isDangerous(command) gate can fire and
-        // the approval card renders the real command/paths, not a bare "Allow X?".
-        const input = (req.input ?? {}) as { command?: string; path?: string };
-        const verdict = await opts.onPermissionAsk({
-          title: `Allow ${req.tool}?`,
-          toolName: req.tool,
-          ...(input.command ? { command: input.command } : {}),
-          ...(input.path ? { pattern: input.path } : {}),
-        });
-        return verdict === 'once' ? 'allow' : verdict === 'always' ? 'allow-always' : 'deny';
-      }),
+      toolApproval: ({ toolCall }) =>
+        resolvePolicy({ toolName: toolCall.toolName, input: toolCall.input }, policy, async (req) => {
+          if (!opts.onPermissionAsk) return 'deny';
+          // Mutating INPUT passed through so the host's isDangerous(command) gate can fire and
+          // the approval card renders the real command/paths, not a bare "Allow X?".
+          const input = (req.input ?? {}) as { command?: string; path?: string };
+          const verdict = await opts.onPermissionAsk({
+            title: `Allow ${req.tool}?`,
+            toolName: req.tool,
+            ...(input.command ? { command: input.command } : {}),
+            ...(input.path ? { pattern: input.path } : {}),
+          });
+          return verdict === 'once' ? 'allow' : verdict === 'always' ? 'allow-always' : 'deny';
+        }),
 
-    repairToolCall: repair,
-    prepareStep: ({ messages }) => {
-      const profile = currentProfile();
-      const offer = profile.contextWindow <= SMALL_WINDOW_MAX
-        ? Object.keys(tools).filter((t) => !COORDINATION_TOOLS.includes(t))
-        : undefined;
-      return {
-        ...compactIfNeeded(messages, profile.pruneTarget),
-        ...(offer ? { activeTools: offer } : {}),
-      };
-    },
-    stopWhen: [stepCountIs(50)],
-    abortSignal: opts.abortSignal,
-    maxRetries: 1,
-
-    onChunk: ({ chunk }) => {
-      if (chunk.type === 'text-delta') {
-        narrationSinceToolCall = true;
-        opts.onChunk(chunk.text);
-      } else if (chunk.type === 'reasoning-delta') {
-        reasoningText += chunk.text;
-        opts.onReasoning(chunk.text);
-      } else if (chunk.type === 'tool-call' && narrationSinceToolCall) {
-        // Text streamed in the same step just before a tool call is planning narration, not
-        // the reply — retract the live draft so the webview re-routes it to Chain-of-Thought.
-        narrationSinceToolCall = false;
-        opts.onRetractDraft?.();
-      }
-    },
-
-    onStepEnd: (step) => {
-      for (const tc of step.toolCalls ?? []) {
-        const ev: ToolEvent = { toolCallId: tc.toolCallId, name: tc.toolName, args: tc.input, state: 'running' };
-        toolEvents.push(ev);
-        opts.onTool(ev);
-      }
-      const failed = new Set(
-        (step.content as Array<{ type?: string; toolName?: string }>)
-          .filter((p) => p.type === 'tool-error' && p.toolName)
-          .map((p) => p.toolName as string),
-      );
-      for (const tr of step.toolResults ?? []) {
-        const isFailed = failed.has(tr.toolName);
-        const ev: ToolEvent = {
-          toolCallId: tr.toolCallId,
-          name: tr.toolName,
-          args: tr.input,
-          state: isFailed ? 'error' : 'done',
+      repairToolCall: repair,
+      prepareStep: ({ messages, stepNumber }) => {
+        const profile = currentProfile();
+        const offer = profile.contextWindow <= SMALL_WINDOW_MAX
+          ? Object.keys(tools).filter((t) => !COORDINATION_TOOLS.includes(t))
+          : undefined;
+        const forcePlan = forcePlanToolOnNextStep && stepNumber === 0;
+        return {
+          ...compactIfNeeded(messages, profile.pruneTarget),
+          ...(offer ? { activeTools: offer } : {}),
+          ...(forcePlan ? { toolChoice: { type: 'tool' as const, toolName: 'exitPlanMode' } } : {}),
         };
-        toolEvents.push(ev);
-        opts.onTool(ev);
-      }
-    },
+      },
+      // exitPlanMode IS the end of a plan-mode turn (Claude Code's ExitPlanMode has the same
+      // semantics): the plan is now the user's move, so a further step could only narrate the
+      // plan a second time into the chat bubble underneath the card. Harmless in agent/ask mode,
+      // where the tool isn't offered at all.
+      stopWhen: [stepCountIs(50), hasToolCall('exitPlanMode')],
+      abortSignal: opts.abortSignal,
+      maxRetries: 1,
 
-    onError: ({ error }) => {
-      // NOTE: streamText's onError does NOT fire for model-stream failures in ai v7 (probe:
-      // stream-start → controller.error → neither onError nor onEnd, consumeStream resolves).
-      // The real capture is the onError option on consumeStream() below. Kept for internal
-      // errors that DO route here.
-      diagLog('engine.error', String(error));
-    },
+      onChunk: ({ chunk }) => {
+        if (chunk.type === 'text-delta') {
+          narrationSinceToolCall = true;
+          opts.onChunk(chunk.text);
+        } else if (chunk.type === 'reasoning-delta') {
+          reasoningText += chunk.text;
+          opts.onReasoning(chunk.text);
+        } else if (chunk.type === 'tool-call' && narrationSinceToolCall) {
+          // Text streamed in the same step just before a tool call is planning narration, not
+          // the reply — retract the live draft so the webview re-routes it to Chain-of-Thought.
+          narrationSinceToolCall = false;
+          opts.onRetractDraft?.();
+        }
+      },
 
-    onEnd: ({ steps, finishReason }) => {
-      // V4 finishReason is an OBJECT ({unified, raw}) — String() gave "[object Object]" and
-      // silently disabled every finish-based recovery. Use the unified string.
-      const fr = typeof finishReason === 'string'
-        ? finishReason
-        : ((finishReason as { unified?: string } | undefined)?.unified ?? 'unknown');
-      // Last NON-empty step text, not steps.at(-1): a reasoning model can emit text + a tool
-      // call in step 1 then a silent step 2, erasing the only visible content (repro:
-      // gpt-oss-120b, 270 out tokens discarded at settle). Continuation passes APPEND their
-      // messages and keep the earlier text if the retry ends silent.
-      const passText = [...steps].reverse().find((s) => s.text?.trim())?.text ?? '';
-      outcome = {
-        finishReason: fr,
-        text: passText || outcome.text,
-        responseMessages: [...outcome.responseMessages, ...steps.flatMap((s) => s.response.messages)],
-      };
-    },
-  });
+      onStepEnd: (step) => {
+        for (const tc of step.toolCalls ?? []) {
+          const ev: ToolEvent = { toolCallId: tc.toolCallId, name: tc.toolName, args: tc.input, state: 'running' };
+          toolEvents.push(ev);
+          opts.onTool(ev);
+        }
+        const failed = new Set(
+          (step.content as Array<{ type?: string; toolName?: string }>)
+            .filter((p) => p.type === 'tool-error' && p.toolName)
+            .map((p) => p.toolName as string),
+        );
+        for (const tr of step.toolResults ?? []) {
+          const isFailed = failed.has(tr.toolName);
+          const ev: ToolEvent = {
+            toolCallId: tr.toolCallId,
+            name: tr.toolName,
+            args: tr.input,
+            state: isFailed ? 'error' : 'done',
+          };
+          toolEvents.push(ev);
+          opts.onTool(ev);
+        }
+      },
+
+      onError: ({ error }) => {
+        // NOTE: streamText's onError does NOT fire for model-stream failures in ai v7 (probe:
+        // stream-start → controller.error → neither onError nor onEnd, consumeStream resolves).
+        // The real capture is the onError option on consumeStream() below. Kept for internal
+        // errors that DO route here.
+        diagLog('engine.error', String(error));
+      },
+
+      onEnd: ({ steps, finishReason }) => {
+        // V4 finishReason is an OBJECT ({unified, raw}) — String() gave "[object Object]" and
+        // silently disabled every finish-based recovery. Use the unified string.
+        const fr = typeof finishReason === 'string'
+          ? finishReason
+          : ((finishReason as { unified?: string } | undefined)?.unified ?? 'unknown');
+        // Last NON-empty step text, not steps.at(-1): a reasoning model can emit text + a tool
+        // call in step 1 then a silent step 2, erasing the only visible content (repro:
+        // gpt-oss-120b, 270 out tokens discarded at settle). Continuation passes APPEND their
+        // messages and keep the earlier text if the retry ends silent.
+        const passText = [...steps].reverse().find((s) => s.text?.trim())?.text ?? '';
+        outcome = {
+          finishReason: fr,
+          text: passText || outcome.text,
+          responseMessages: [...outcome.responseMessages, ...steps.flatMap((s) => s.response.messages)],
+        };
+      },
+    });
+  };
 
   try {
     await runPass(modelMessages).consumeStream({
@@ -416,8 +440,8 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     };
   }
 
-  // Agent-mode CONTINUATION NUDGE — one continuation when the turn ends without CLOSING
-  // (finish 'stop' only), skipped for questions so agent-mode Q&A keeps its prose answer:
+  // CONTINUATION NUDGE — one continuation when the turn ends without CLOSING
+  // (finish 'stop' only), skipped for questions so Q&A keeps its prose answer:
   //   act-gap    — no tool ran; reply is empty / narration / a proposal fence.
   //   report-gap — tools ran but the synthesis step ended empty or on narration (the SDK
   //     always runs a next step after tool calls, so this is an empty synthesis, not an
@@ -442,37 +466,57 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let continued = false;
   const actGap = !didWork && (replyEmpty || replyIsNarration || outcome.text.includes('```'));
   const reportGap = didWork && (replyEmpty || replyIsNarration);
+  // plan-gap — the SAME unclosed loop, in plan mode: the model investigated and then ended on
+  // narration instead of calling exitPlanMode, so the user gets "Now let me check if there's
+  // any existing theme support…" and no plan card. The wire-level fact is identical to
+  // act/report-gap (finish 'stop', reply empty or narration); what differs is only WHAT
+  // closing the turn means — a plan call, not an edit. Not answer-quality judgment: a turn
+  // that DID call exitPlanMode is closed by definition and never lands here.
+  // Live repro (2026-08-31, 3:06 PM, Ollama/nemotron-3-ultra, "add a dark mode toggle to
+  // setting"): 69.5k in / 236 out / 1m2s, ended on "Now let me check if there's any existing
+  // theme or dark mode support in the application." — no plan, no card.
+  const planGap = opts.mode === 'plan' && !proposedPlan && (replyEmpty || replyIsNarration);
   if (
-    opts.mode === 'agent'
+    (opts.mode === 'agent' || planGap)
     && !opts.abortSignal?.aborted
     && outcome.finishReason === 'stop'
     && !looksLikeQuestion
-    && (actGap || reportGap)
+    && (actGap || reportGap || planGap)
   ) {
-    diagLog('engine.applyNudge', `${reportGap ? 'report-gap (tools ran, empty synthesis)' : 'act-gap (no tools ran)'} (textLen=${outcome.text.length}, narration=${replyIsNarration}) — continuation pass`);
+    diagLog('engine.applyNudge', `${planGap ? 'plan-gap (no exitPlanMode call)' : reportGap ? 'report-gap (tools ran, empty synthesis)' : 'act-gap (no tools ran)'} (textLen=${outcome.text.length}, narration=${replyIsNarration}) — continuation pass`);
     // Pass-1 narration triggered the nudge — retract it (repro: nemotron-3-ultra-free 12:57
     // AM, both passes' narration stacked in one bubble); pass 2's text is the sole draft.
     if (outcome.text.trim()) opts.onRetractDraft?.();
+    // Wire-level guarantee, not a second prompt: the continuation's first step is FORCED to
+    // call exitPlanMode. Pass 1 already gave the model its free chance to answer in prose, and
+    // looksLikeQuestion has already excluded genuine Q&A — so "narrate a third time" is the
+    // only outcome this removes. Providers that ignore toolChoice fall back to the prose nudge
+    // below, which is why both exist.
+    forcePlanToolOnNextStep = planGap;
     try {
       await runPass([
         ...modelMessages,
         ...outcome.responseMessages,
         {
           role: 'user',
-          content: reportGap
-            ? 'You ran tools but ended the turn without a final answer. CLOSE the task now: tell the user what you found or changed (with file paths) and the result. If the task is not actually finished, keep working with your tools instead of stopping. Never end a turn silently.'
-            : 'You stopped after describing what you would do — no tool ran and no file changed. Continue NOW: perform the task yourself with your tools (readFile to inspect, editFile/writeFile to change, then re-read the changed region to verify). Only reply in prose, without tools, if the task genuinely requires no file change.',
+          content: planGap
+            ? 'You stopped mid-investigation without presenting a plan. You cannot edit files in this mode — the ONLY way to finish is to call the exitPlanMode tool. Call it NOW with the concrete steps for the change the user asked for, using the files you have already read; name the real paths you saw. Do not end the turn describing what you are about to look at next.'
+            : reportGap
+              ? 'You ran tools but ended the turn without a final answer. CLOSE the task now: tell the user what you found or changed (with file paths) and the result. If the task is not actually finished, keep working with your tools instead of stopping. Never end a turn silently.'
+              : 'You stopped after describing what you would do — no tool ran and no file changed. Continue NOW: perform the task yourself with your tools (readFile to inspect, editFile/writeFile to change, then re-read the changed region to verify). Only reply in prose, without tools, if the task genuinely requires no file change.',
         },
       ]).consumeStream({ onError: passError('nudge') });
     } catch {
       // Keep the pass-1 output rather than failing the turn.
+    } finally {
+      forcePlanToolOnNextStep = false;
     }
     continued = true;
     // Cross-turn health demotion only: act-gap repeated through the continuation means this
     // model talks instead of acting — recordOutcome(false) feeds the picker's cooldown so the
     // NEXT Auto turn routes elsewhere (pinned exempt; in-loop answer still ships).
     // Repro ×3 (2026-08-28 12:57–1:29 AM): nemotron-3-ultra-free narrated on every task.
-    if (actGap && !reportGap && toolEvents.length === 0 && served.platform && served.model) {
+    if (!planGap && actGap && !reportGap && toolEvents.length === 0 && served.platform && served.model) {
       recordOutcome(served.platform, served.model, false);
       diagLog('engine.actGapDemote', `no tool work after continuation — cooldown for ${served.platform}::${served.model}`);
     }
@@ -530,5 +574,6 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     runtimeName: served.runtimeName,
     workMessages,
     changedFiles: changedFilesFrom(workMessages),
+    ...(proposedPlan ? { plan: proposedPlan } : {}),
   };
 }

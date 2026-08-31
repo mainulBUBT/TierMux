@@ -3,7 +3,120 @@
 All notable changes to TierMux are documented here. The format is loosely
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
-## [Unreleased]
+## [3.0.0] — 2026-08-31
+
+### Added — plan mode's boundary is a tool call
+
+- **`exitPlanMode`** (`src/agent/core/tools/v3/exitPlanMode.ts`) — the model now DECLARES
+  its plan by calling a tool with a validated `{what, files[], verify}` structure. The
+  engine captures it on `AgentResult.plan` and ends the turn
+  (`stopWhen: [stepCountIs(50), hasToolCall('exitPlanMode')]`); `chatViewProvider` renders
+  the `planProposed` card straight from that structure.
+- Removed the prose-classification path it replaces: `extractPlanFromProse` (an LLM
+  "was that a plan?" classifier), the plan-mode half of the `looksLikeGroundedAnswer`
+  corrective re-run, and the third model call that normalized prose into steps — up to
+  four model calls per plan turn collapse to zero. See
+  `docs/PLAN_MODE_TOOL_BOUNDARY_2026-08-31.md`; the classifier must not come back.
+- **`npm run test:e2e:exit-plan-mode`** — 50 scenarios covering the tool boundary, plan
+  serialization, and the saved-plan document format.
+
+### Changed — Tips UI uses standard theme colours
+
+- The tips cards, the composer strip, the RECENT rows and the unread indicator were painted
+  with `charts-yellow` and `editor-inactiveSelectionBackground`. The first is a *chart series*
+  colour and the second a *text-selection* colour — neither is a surface token, so cards came
+  out navy under Dark+ and the strip came out mustard regardless of theme (report 2026-08-31).
+  Surfaces now use the standard widget palette: `editorWidget-background`,
+  `badge-background/foreground` for pills and the toolbar dot, `list-hoverBackground` on
+  hover. The accent survives where it carries meaning rather than decorating a panel — the
+  strip's border, its TIP label, and the unread card's left rail. They inherit whatever the
+  user's theme defines instead of fighting it. `charts-*` stays where it is genuinely semantic
+  (queued/approval/finished status dots, file-type chips).
+- The RECENT list dropped `input-background`, which made the rows read as one large text
+  field, and with it the `body.vscode-light` override that only existed to patch that.
+- Fixed descender clipping in the ticker: the 16px track cut the tails off `p`/`g`/`y` on a
+  16px line box; the track is 18px now.
+
+### Added — a session dot on the welcome screen's RECENT rows
+
+- RECENT listed sessions as bare title + timestamp lines, so several entries read as one
+  wrapped list. Each row now leads with a status dot, matching the history dropdown, with
+  the same status colours (queued / needs-approval / running / finished). RECENT uses its
+  own glyph map: the history dropdown swaps `running` for a real spinner, and a static `⟳`
+  in a plain list reads as a stuck reload button.
+
+### Changed — the tips ticker is permanent
+
+- The Tips & Announcements headline ticker (new in this release) no longer dies when the
+  welcome screen goes away (user request 2026-08-31: "keep it forever slide show always").
+  It has two homes and re-homes itself between them: on the welcome screen it sits in its
+  original spot above RECENT, and once a chat starts it moves to a strip pinned above the
+  composer — never rendered in both at once. Read tips keep cycling; only a genuinely empty
+  feed hides it; clicking it opens the full Tips page.
+
+### Fixed — asserted negatives without an adequate search
+
+- Live repro 2026-08-31 ("wallet now commented right?"): four consecutive Ask turns answered
+  "no commented wallet configurations were found" — the model had grepped decorated literals
+  (`# wallet`, `// wallet`) that cannot match real code like `// $wallet_status = ...`,
+  treated the open `.env` as the search scope, and finally claimed "I revisited the workspace"
+  while restating an answer the user had pasted from a rival tool. The v3 prompt composer
+  ships one search-honesty guard in the BASE prompt (all modes): negatives require a bare-term
+  case-insensitive workspace-wide grep with the pattern stated; never claim tool runs that did
+  not happen this turn; verify user-pasted findings in the files before agreeing.
+  (`.tiermux/agent/research.md` is not in the live v3 prompt — see
+  `docs/SIMPLE_CORE_RESET_2026-08-24.md` — so this is the one place the rule can live.)
+
+### Fixed — "Why this model?" credited the wrong model
+
+- The popover named the model TierMux *intended* to use, not the one that answered. The
+  report is built by `selectModel()` before the first byte is sent, so `picked` is
+  `chain[0]`; when that candidate failed over, nothing re-pointed it at the winner. Live
+  repro 2026-08-31: the footer read `ChatAnywhere/gpt-4.1` while the popover insisted
+  `✓ opencode/muse-spark-1.2-contributor-free — serves this turn`.
+  `rationaleForServed()` (`src/router/picker.ts`) now re-points the report the moment a
+  candidate succeeds, and relabels the ones walked past as `tried first, failed over` — so
+  the popover shows the whole walk instead of hiding it. Candidates *after* the winner keep
+  their `failover #n` label, since they were never dialed.
+  Locked by `npm run test:e2e:rationale-served` (13 scenarios).
+- The Score tooltip claimed "the highest-scoring model is chosen", which contradicted the ✓
+  on screen: the picker orders by pin → task table → catalog rank, so a task-table pick at
+  rank 2 shows 0.80 while the rank-1 tail it beat shows 1.00. The tooltip now states the
+  real rule and points at the per-row reason line.
+
+### Fixed — declaration emit skipped after a partial `dist` clean
+
+- `tsconfig.lib.json` is `incremental`, so a stale `.cache/lib.tsbuildinfo` convinced `tsc`
+  the `.d.ts` files were already emitted and it wrote nothing — then `vsce` refused every
+  target with "include patterns in the files property do not match any files". Production
+  type emit no longer trusts that cache (`build:types` runs `--incremental false`), and
+  `scripts/package-targets.sh` now checks the expected artifacts up front so a missing
+  bundle fails with a readable message instead of six identical opaque vsce errors.
+
+### Added — self-updating README
+
+- **`scripts/sync-readme.mjs`** + **`npm run sync:readme` / `check:readme`** regenerate the
+  provider/model counts and provider lists in `README.md` from the live catalog. The
+  hand-written numbers had already drifted (README said 585 models; the catalog served
+  600). Display names are parsed from `src/providers/index.ts` so there is one source of
+  truth for them. Folded into `sync:all`, plus a weekly
+  `.github/workflows/readme-stats.yml`.
+
+### Changed — documentation
+
+- `README.md` rewritten against the shipped code and cut from 584 to ~190 lines; the depth
+  moved to `docs/PROVIDERS.md` (keys, rotation, custom OpenAI-compatible endpoints,
+  settings), `docs/ROUTING.md` (selection, failover, "Why this model?", algorithms), and
+  `docs/FEATURES.md` (modes, tools, comparison).
+- Corrected claims that no longer matched the code: the removed `terseReplies` setting, an
+  "embeddings index" that is a symbol/dependency index, git-worktree sub-agent workers that
+  no longer exist, step-verified plan execution, and Wilson/EWMA scoring presented as the
+  agent-turn router (it now serves utility calls only).
+- Marketplace badges rebuilt — shields.io retired every `visual-studio-marketplace/*`
+  endpoint, so those badges rendered "retired badge"; download counts added for both
+  marketplaces and a live provider count from the catalog.
+
+## [Unreleased] — earlier v3 work
 
 ### Changed — v3 engine: policy layer over the AI SDK
 

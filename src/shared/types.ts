@@ -46,6 +46,29 @@ export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
  *  open-ended request; see ASK_MODE_TAIL in promptBuilder.ts). */
 export type Mode = 'plan' | 'agent' | 'ask';
 
+/** A plan proposed by the model via the `exitPlanMode` tool (plan mode's explicit
+ *  planning→execution boundary — Claude Code's ExitPlanMode, opencode's plan agent and
+ *  Copilot's "Start Implementation" all draw the same line).
+ *
+ *  This is the whole point of the tool: the plan arrives as VALIDATED STRUCTURE straight off
+ *  the tool call, so nothing downstream has to guess whether a prose reply "was a plan"
+ *  (regex + an LLM classifier + a second LLM pass to re-structure it — all three gone). */
+export interface ProposedPlanStep {
+  /** The action, imperative mood, one line. */
+  what: string;
+  /** Workspace-relative paths this step touches — authoritative, not regex-guessed from prose. */
+  files?: string[];
+  /** How to confirm the step landed (a command, or a check to re-read). */
+  verify?: string;
+}
+
+export interface ProposedPlan {
+  title: string;
+  /** One or two sentences of context, rendered above the steps on the plan card. */
+  description?: string;
+  steps: ProposedPlanStep[];
+}
+
 interface ChatToolCallFunction {
   name: string;
   arguments: string;

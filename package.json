@@ -2,7 +2,7 @@
   "name": "tiermux",
   "displayName": "TierMux",
   "description": "Free agentic AI coding assistant for VS Code. Multiplexes many free-tier LLM providers into one self-healing surface — auto-routes, auto-fails-over, learns your codebase. Zero setup with keyless providers; bring your own keys anytime.",
-  "version": "2.1.7",
+  "version": "3.0.0",
   "publisher": "mainul-islam",
   "license": "MIT",
   "repository": {
@@ -727,7 +727,7 @@
     }
   },
   "scripts": {
-    "build": "npm run sync:all && node esbuild.js --production",
+    "build": "npm run sync:all && node esbuild.js --production && npm run build:types",
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
     "typecheck:lib": "tsc -p tsconfig.lib.json",
@@ -736,6 +736,7 @@
     "test:e2e:foundation": "esbuild scripts/foundation.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/foundation.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/foundation.e2e.cjs",
     "test:e2e:delegate-task": "esbuild scripts/delegateTask.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/delegateTask.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/delegateTask.e2e.cjs",
     "test:e2e:ask-user": "esbuild scripts/askUser.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/askUser.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/askUser.e2e.cjs",
+    "test:e2e:exit-plan-mode": "esbuild scripts/exitPlanMode.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/exitPlanMode.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/exitPlanMode.e2e.cjs",
     "test:e2e:think-split": "esbuild scripts/thinkSplit.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/thinkSplit.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/thinkSplit.e2e.cjs",
     "test:e2e:verify-detect": "esbuild scripts/verifyDetect.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/verifyDetect.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/verifyDetect.e2e.cjs",
     "test:e2e:project-profile": "esbuild scripts/projectProfile.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/projectProfile.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/projectProfile.e2e.cjs",
@@ -757,15 +758,21 @@
     "test:e2e:routing-gates": "esbuild scripts/routingGates.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/routingGates.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/routingGates.e2e.cjs",
     "test:e2e:edit-gate": "esbuild scripts/editGate.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/editGate.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/editGate.e2e.cjs",
     "package": "vsce package",
-    "package:all": "npm run build && node scripts/packageAllTargets.mjs",
+    "package:all": "bash scripts/package-targets.sh",
     "publish:all": "npm run build && node scripts/packageAllTargets.mjs --publish",
     "sync:catalog": "node scripts/sync-catalog.mjs && node scripts/validate-catalog.mjs",
     "validate:catalog": "node scripts/validate-catalog.mjs",
     "validate:catalog:offline": "node scripts/validate-catalog.mjs --offline",
     "sync:providers": "node scripts/sync-providers.mjs --apply",
-    "sync:all": "npm run sync:catalog && npm run sync:providers",
-    "publish": "npm run build && vsce publish && ovsx publish -p \"$OVSX_PAT\"",
-    "prepare": "husky"
+    "sync:all": "npm run sync:catalog && npm run sync:providers && npm run sync:readme",
+    "publish": "node scripts/publish-targets.mjs",
+    "prepare": "husky",
+    "sync:readme": "node scripts/sync-readme.mjs",
+    "check:readme": "node scripts/sync-readme.mjs --check",
+    "build:types": "tsc -p tsconfig.lib.json --incremental false",
+    "publish:dry": "node scripts/publish-targets.mjs --dry-run",
+    "test:e2e:rationale-served": "esbuild scripts/rationaleServed.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rationaleServed.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/rationaleServed.e2e.cjs",
+    "test:e2e:rationale-wiring": "esbuild scripts/rationaleWiring.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rationaleWiring.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/rationaleWiring.e2e.cjs"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

@@ -26,7 +26,7 @@ import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem, McpServerConfig } from './messages';
 import type { AnnouncementItem, Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, PlanDataPayload, SelectionRationale, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
 import { renderLegacyMarkdown } from './shared/workReport';
-import { fetchAnnouncements as fetchWorkerAnnouncements, markAnnouncementsSeen, unseenAnnouncementCount } from './catalog/announcements';
+import { fetchAnnouncements as fetchWorkerAnnouncements, markAnnouncementsSeen, unseenAnnouncementIds } from './catalog/announcements';
 import { normalizeMcpServerConfig } from './mcp/mcpClient';
 import { getNonce } from './util/nonce';
 import { diagLog } from './util/diag';
@@ -41,7 +41,7 @@ import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense, generateHandoff } from './agent/condense';
 import { resolveExecutionProfile } from './agent/executionProfile';
 import { resolveClarifying, type ClarifyingQuestion } from './agent/clarify';
-import { structurePlanSteps, formatStructuredSteps, extractPlanFromProse } from './agent/planStructurer';
+import { structurePlanSteps, formatStructuredSteps, formatPlanForCard, isCleanNumberedList, renderPlanMarkdown } from './agent/planStructurer';
 import { deriveTitleFrom, extractSubjectTerms, looksLikeActionablePlan, looksLikeGroundedAnswer, offTopicCorrection, sanitizeTitle, planStepsToTodos } from './session/titles';
 
 import { loadSkills } from './context/skills';
@@ -275,7 +275,7 @@ interface Session {
   voteCtx: Map<string, { taskKind: string; platform: string; model: string; last: Vote }>;
   pendingPlanUser?: ChatContent;
   /** URI of the plan MD file saved at proposal time — updated if the user edits steps before approving. */
-  pendingPlanFile?: { uri: vscode.Uri; title: string };
+  pendingPlanFile?: { uri: vscode.Uri; title: string; request?: string };
   pendingClarify?: { requestId: string; userContent: ChatContent; prompt: string; questions: ClarifyingQuestion[]; mode: 'plan' | 'agent' };
   /** In-flight `askUser` tool calls, keyed by OpenAI tool_call_id, awaiting a webview answer. */
   pendingAskUser: Map<string, (answer: string) => void>;
@@ -330,7 +330,14 @@ interface Session {
 
 interface StoredSession {
   id: string;
-  title: string;
+  /** Undefined until the one-shot title pick commits (see maybeGenerateTitle). Persisting the
+   *  UNPICKED state matters: baking a derived stand-in in here used to make hydrateSession
+   *  infer "a title was already generated", so a session persisted mid-generation never got
+   *  its real title after a reload. */
+  title?: string;
+  /** Persisted explicitly rather than inferred from `title` — the inference could not tell a
+   *  real generated title apart from a derived stand-in. */
+  titleGenerated?: boolean;
   ts: number;
   transcript: TranscriptMessage[];
   model?: string;
@@ -561,9 +568,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       history: recovered?.length ? [...(s.history ?? []), ...recovered] : (s.history ?? []),
       transcript,
       title: s.title,
-      // The 'Starting Conversation' stand-in is NOT a generated title — a session that only
-      // ever saw small talk still gets its one-shot real title on its first real message.
-      titleGenerated: !!(s.title && s.title.trim() !== 'Starting Conversation') || !!s.userRenamedTitle,
+      // Explicit flag first; the `title`-based inference is the back-compat path for sessions
+      // stored before it was persisted. 'Starting Conversation' was the old small-talk stand-in
+      // and is still not treated as a generated title.
+      titleGenerated: s.titleGenerated
+        ?? (!!(s.title && s.title.trim() !== 'Starting Conversation') || !!s.userRenamedTitle),
       pendingApprovals: new Map(),
       pendingPermissions: new Map(),
       alwaysAllowTools: new Set(s.alwaysAllowTools ?? []),
@@ -599,18 +608,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return this.deps.workspaceState.get<StoredSession[]>(SESSIONS_KEY, []);
   }
 
-  private deriveTitle(s: Session): string {
-    const firstUser = s.transcript.find((t) => t.role === 'user');
-    const base = (firstUser?.text ?? '').trim().replace(/\s+/g, ' ');
-    return base ? base.slice(0, 60) : 'New chat';
-  }
+  /** What the UI shows while a session is still untitled. Deliberately NOT derived from the
+   *  first message: a derived stand-in looks like a real title, so replacing it later reads as
+   *  the app changing its mind (see maybeGenerateTitle). The old `deriveTitle(session)` helper
+   *  that produced that stand-in is gone with it. */
+  private static readonly UNTITLED_SESSION = 'New chat';
 
   /** Push the current session's title into the webview header; the chrome shows just the brand. */
   private updateViewTitle(): void {
     if (this.view) this.view.title = PRODUCT_NAME;
 
     const s = this.sessions.get(this.viewedSessionId);
-    if (s) this.post({ type: 'sessionTitle', sessionId: s.id, title: s.title?.trim() || this.deriveTitle(s) || PRODUCT_NAME });
+    if (s) this.post({ type: 'sessionTitle', sessionId: s.id, title: s.title?.trim() || ChatViewProvider.UNTITLED_SESSION });
   }
 
   /** Save one session's conversation into the session list (most-recent first). */
@@ -620,7 +629,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const others = this.loadSessions().filter((x) => x.id !== sessionId);
     if (s.transcript.length) {
       others.unshift({
-        id: s.id, title: s.title ?? this.deriveTitle(s), ts: Date.now(), transcript: s.transcript,
+        id: s.id, title: s.title, titleGenerated: s.titleGenerated, ts: Date.now(), transcript: s.transcript,
         model: s.model, reasoningEffort: s.reasoningEffort, history: s.history, inProgressTurn: s.inProgressTurn,
         userRenamedTitle: s.userRenamedTitle,
         lastTodos: s.lastTodos, alwaysAllowTools: s.alwaysAllowTools.size ? [...s.alwaysAllowTools] : undefined,
@@ -664,7 +673,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
       .map((s) => ({
         id: s.id,
-        title: s.title?.trim() || this.deriveTitle(s) || 'New session',
+        title: s.title?.trim() || ChatViewProvider.UNTITLED_SESSION,
         status: this.statusOf.get(s.id) ?? 'idle',
         activity: s.liveActivity,
         createdAt: s.createdAt,
@@ -732,7 +741,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   postAnnouncements(items: AnnouncementItem[], lastUpdated?: string): void {
     this.lastAnnouncements = items;
     this.lastAnnouncementsUpdated = lastUpdated;
-    this.post({ type: 'announcements', items, lastUpdated, unseen: unseenAnnouncementCount(this.deps.globalState, items) });
+    const unseenIds = unseenAnnouncementIds(this.deps.globalState, items);
+    this.post({ type: 'announcements', items, lastUpdated, unseen: unseenIds.length, unseenIds });
   }
 
   private post(msg: OutMessage): void {
@@ -988,7 +998,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private handleRenameSession(title: string): void {
     const t = title.trim();
     const s = this.current();
-    if (!t || t === (s.title ?? this.deriveTitle(s))) return;
+    if (!t || t === s.title) return;
     s.title = t;
     s.userRenamedTitle = true; // user-chosen name sticks — auto-titling never overrides it
     this.persist(s.id); // saves + pushes the new title to chrome and webview header
@@ -1110,10 +1120,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
-      case 'markAnnouncementsSeen':
-        await markAnnouncementsSeen(this.deps.globalState, this.lastAnnouncements);
+      case 'markAnnouncementsSeen': {
+        // `ids` = the one tip card the user just expanded; no ids = "Mark all read".
+        const ids = Array.isArray(m.ids) ? new Set(m.ids) : null;
+        const target = ids ? this.lastAnnouncements.filter((a) => ids.has(a.id)) : this.lastAnnouncements;
+        await markAnnouncementsSeen(this.deps.globalState, target);
         this.postAnnouncements(this.lastAnnouncements, this.lastAnnouncementsUpdated);
         break;
+      }
       case 'retryEngine':
         this.deps.retryEngine?.();
         break;
@@ -2133,12 +2147,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // through to whatever the model produces. `extraHistoryPushed` tracks the correction
       // message so the plan-mode "not committed yet" pop() below removes both, not just one.
       let extraHistoryPushed = 0;
-      // Ask mode needs this at least as much as plan mode: "explain X" is the most common way to
-      // use it, and a free model answering a codebase question from memory with ZERO tool calls
-      // was measured doing exactly that in the 2026-08-09 benchmark (query E1 — 0 tool calls, a
-      // plausible but generic answer the judge scored 0/0). Gating the correction to plan mode
-      // left the mode where it happens most with no check at all.
-      if (sdkMode === 'plan' || sdkMode === 'ask') {
+      // Ask mode ONLY. "Explain X" is the most common way to use it, and a free model answering
+      // a codebase question from memory with ZERO tool calls was measured doing exactly that in
+      // the 2026-08-09 benchmark (query E1 — 0 tool calls, a plausible but generic answer the
+      // judge scored 0/0). Plan mode used to run this too, which meant a plan-mode turn could cost
+      // a whole extra model call before the plan card even appeared. It no longer needs one: a
+      // plan-mode reply that engages with nothing the user named also fails to call
+      // `exitPlanMode`, so it lands in the normal-answer branch where the user can see and
+      // correct it — instead of the host silently re-running the turn on a regex's say-so.
+      if (sdkMode === 'ask') {
         const subjectTerms = extractSubjectTerms(prompt);
         if (!looksLikeGroundedAnswer(result.text, subjectTerms)) {
           s.history.push({ role: 'user', content: offTopicCorrection(subjectTerms) });
@@ -2163,26 +2180,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           return;
         }
 
-        // Decide whether the reply is a runnable plan. The regex gate (looksLikeActionablePlan)
-        // is the fast path, but it needs a clean numbered/bulleted list — weak free models often
-        // reply in flowing prose instead, which failed the gate and left no plan card ("plan mode
-        // not plan"). Fall back to extractPlanFromProse: an LLM pass that classifies whether the
-        // prose is genuinely an actionable plan and lifts its steps. The isPlan discriminator
-        // keeps a real Q&A/explanation reply as prose (no false plan card).
-        let planStepsText: string | null = looksLikeActionablePlan(clar.text) ? clar.text : null;
-        if (!planStepsText && clar.text.trim()) {
-          const extracted = await extractPlanFromProse(this.deps.router, clar.text);
-          if (!this.isActiveRun(s, m.requestId)) return;
-          if (extracted.isPlan && extracted.steps.length) planStepsText = formatStructuredSteps(extracted.steps);
-        }
+        // Is the reply a runnable plan? The model ANSWERS that itself now, by calling the
+        // `exitPlanMode` tool — `result.plan` is its validated {title, description, steps[]}.
+        // That is the whole design change (2026-08-31): the boundary between planning and
+        // execution is an explicit tool call, the way Claude Code (ExitPlanMode), opencode
+        // (plan→build) and Copilot ("Start Implementation") all draw it — not something the
+        // host reverse-engineers from prose afterwards.
+        //
+        // The regex gate below stays ONLY as a fallback for models too weak to call the tool
+        // (TierMux routes a lot of free tiers). What is gone is the LLM classifier that used
+        // to sit under it — an extra model round-trip on every turn the regex missed, just to
+        // re-litigate a question the model had already answered by how it replied.
+        const planStepsText: string | null = result.plan
+          ? formatPlanForCard(result.plan)
+          : looksLikeActionablePlan(clar.text) ? clar.text : null;
         if (planStepsText) {
           s.history.length -= 1 + extraHistoryPushed; // not committed yet — re-added on approval
           s.pendingPlanUser = userContent;
           this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: planStepsText });
-          this.preparePlanFile(s, prompt);
-          // Only fire-and-forget re-refine when we used the raw regex-parsed text; the extracted
-          // path is already a clean numbered list.
-          if (planStepsText === clar.text) this.upgradePlanSteps(s, m.requestId, clar.text);
+          this.preparePlanFile(s, result.plan?.title || prompt, prompt);
+          // Fire-and-forget re-refine ONLY on the fallback path: a tool-declared plan is already
+          // one clean step per line, so re-asking a model to restructure it is pure waste.
+          if (!result.plan) this.upgradePlanSteps(s, m.requestId, clar.text);
           return;
         }
 
@@ -2394,7 +2413,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Compute (but do NOT write) the file this plan will be saved to if approved. Stores the
    *  URI on the session so handleApprovePlan's writePlanFile call has a stable destination —
    *  nothing touches disk until the user actually approves and runs the plan. */
-  private preparePlanFile(s: Session, title: string): void {
+  private preparePlanFile(s: Session, title: string, request?: string): void {
     const cfg = vscode.workspace.getConfiguration('tiermux.plan');
     if (!cfg.get<boolean>('saveToFile', true)) return;
     const ws = vscode.workspace.workspaceFolders?.[0];
@@ -2406,7 +2425,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}`;
     const dir = vscode.Uri.joinPath(ws.uri, ...folder.split('/'));
     const fileUri = vscode.Uri.joinPath(dir, `${stamp}-${clean}.md`);
-    s.pendingPlanFile = { uri: fileUri, title: title || 'Untitled' };
+    s.pendingPlanFile = { uri: fileUri, title: title || 'Untitled', request };
   }
 
   /** Fire-and-forget: refine a just-posted plan card's raw-prose steps into a clean, deduplicated
@@ -2428,14 +2447,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Write (or overwrite) the plan MD file for the session with the current steps. */
-  private async writePlanFile(s: Session, steps: string): Promise<void> {
+  private async writePlanFile(s: Session, steps: string, status: 'approved' | 'executing' = 'approved'): Promise<void> {
     if (!s.pendingPlanFile) return;
-    const { uri, title } = s.pendingPlanFile;
-    const checklist = steps.split('\n').map((line) => {
-      const mm = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.*)$/);
-      return mm ? `- [ ] ${mm[1]}` : line;
-    }).join('\n');
-    const body = `# Plan: ${title}\n\n_Generated by ${PRODUCT_NAME} · ${new Date().toLocaleString()}_\n\n${checklist}\n`;
+    const { uri, title, request } = s.pendingPlanFile;
+    const body = renderPlanMarkdown(steps, {
+      title,
+      request,
+      status,
+      model: s.liveModel ? `${s.livePlatform ?? '?'}/${s.liveModel}` : undefined,
+      sessionId: s.id,
+    });
     try {
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(uri, '..'));
       await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(body));
@@ -2516,7 +2537,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // 1. Persist the plan exactly like Save does (file + history), so an executed plan is also
     //    saved to disk and remembered in conversation history.
-    if (m.steps) await this.writePlanFile(s, m.steps);
+    if (m.steps) await this.writePlanFile(s, m.steps, 'executing');
     s.pendingPlanFile = undefined;
     this.removeCards(s, (c) => c.type === 'planProposed');
     const original = s.pendingPlanUser;
@@ -2534,8 +2555,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     //    retries, read-only plan repair, resumable state). Degrades to the legacy single-send
     //    path when no ≥2-step structure can be extracted (weak free models).
     const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const structuredSteps = await structurePlanSteps(this.deps.router, m.steps)
-      ?? planStepsToTodos(m.steps).map((t) => t.content);
+    // A plan that came from the `exitPlanMode` tool (or that the user hand-edited on the card,
+    // which re-serializes to the same shape) is ALREADY one clean step per numbered line — the
+    // regex parser reads it exactly right, so the structurer model call is skipped. It still
+    // runs for a ragged prose plan, which is what it was written for.
+    const regexSteps = planStepsToTodos(m.steps).map((t) => t.content);
+    const structuredSteps = isCleanNumberedList(m.steps)
+      ? regexSteps
+      : (await structurePlanSteps(this.deps.router, m.steps) ?? regexSteps);
     if (structuredSteps.length >= 2) {
       const originalTask = (original ? contentToString(original) : 'the approved plan').replace(/\n\{\s*"type":\s*"(image_url|file)"/g, '').trim().slice(0, 200);
       s.executingPlan = true;
@@ -3185,14 +3212,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const cbk5 = this.agentCallbacks(s, m.requestId, 'plan');
       let result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});
       if (!this.isActiveRun(s, m.requestId)) return;
-      // Same deterministic relevance check as the initial propose path (handleSend) — a
-      // resumed run can drift into a generic answer just as easily as the first one.
-      const subjectTerms = extractSubjectTerms(ctx.prompt);
-      if (!looksLikeGroundedAnswer(result.text, subjectTerms)) {
-        s.history.push({ role: 'user', content: offTopicCorrection(subjectTerms) });
-        result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});
-        if (!this.isActiveRun(s, m.requestId)) return;
-      }
+      // No groundedness re-run here either (removed with the send path's): plan mode's signal
+      // that the model actually engaged is whether it called `exitPlanMode`, not whether a
+      // regex found the user's nouns in the prose.
       const clar = resolveClarifying(result.text, result.askQuestions);
       if (clar.questions && clar.questions.length) {
         // The model re-asked despite being told not to (the "do not ask any further
@@ -3204,19 +3226,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.pendingClarify = { requestId: m.requestId, userContent: ctx.userContent, prompt: ctx.prompt, questions: clar.questions, mode: 'plan' };
         this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: clar.questions });
       } else {
-        // Same prose→plan fallback as the initial propose path: weak models that replied to the
-        // clarifying answers in prose (not a clean list) still get a plan card when the LLM
-        // structurer confirms the prose is an actionable plan.
-        let planStepsText: string | null = looksLikeActionablePlan(clar.text) ? clar.text : null;
-        if (!planStepsText && clar.text.trim()) {
-          const extracted = await extractPlanFromProse(this.deps.router, clar.text);
-          if (!this.isActiveRun(s, m.requestId)) return;
-          if (extracted.isPlan && extracted.steps.length) planStepsText = formatStructuredSteps(extracted.steps);
-        }
+        // Same boundary as the initial propose path: the `exitPlanMode` tool call is the plan,
+        // with the regex gate kept only as the weak-model fallback.
+        const planStepsText: string | null = result.plan
+          ? formatPlanForCard(result.plan)
+          : looksLikeActionablePlan(clar.text) ? clar.text : null;
         if (planStepsText) {
           this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: planStepsText });
-          this.preparePlanFile(s, ctx.prompt);
-          if (planStepsText === clar.text) this.upgradePlanSteps(s, m.requestId, clar.text);
+          this.preparePlanFile(s, result.plan?.title || ctx.prompt, ctx.prompt);
+          if (!result.plan) this.upgradePlanSteps(s, m.requestId, clar.text);
           // Not committed: a planProposed card isn't committed to history until approval, same as
           // the original looksLikeActionablePlan branch.
         } else if (clar.text.trim()) {
@@ -3381,37 +3399,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Best-effort: ask a free LLM for a short title from the user's first message. */
+  /**
+   * Pick this session's title ONCE.
+   *
+   * `s.title` is written exactly one time, by {@link commitTitle}, and never rewritten. Until
+   * then the session is untitled and the UI renders the neutral `UNTITLED_SESSION` label —
+   * NOT a lookalike title.
+   *
+   * That last part is the whole fix (2026-08-31): this used to assign a regex-derived
+   * placeholder first and then overwrite it with the LLM title a second later, so the tab
+   * visibly changed from one plausible title to a different plausible title. Going from
+   * "New chat" to the real title reads as filling in; going from "Add Dark Mode Toggle" to
+   * "Dark Mode Settings Toggle" reads as the app changing its mind.
+   */
   private async maybeGenerateTitle(s: Session): Promise<void> {
     if (s.titleGenerated || s.userRenamedTitle) return;
-    // Once a REAL title exists it sticks for the session's lifetime — the only replaceable
-    // state is the untitled placeholders (empty, or the trivial-first-message stand-in).
-    // This is what keeps "title changes every message" from ever happening: generation is
-    // a one-shot upgrade path, never an ongoing rewrite.
-    const existing = (s.title ?? '').trim();
-    if (existing && existing !== 'Starting Conversation') { s.titleGenerated = true; return; }
     const users = s.transcript.filter((t) => t.role === 'user');
     if (!users.length) return;
 
+    // Small talk alone earns no title — stay untitled (and titleGenerated stays false) so the
+    // one-shot pick still happens when a real message finally arrives.
     const firstReal = users.find((u) => classifyTask(u.text ?? '') !== 'trivial');
-    if (!firstReal) {
-      if (s.title !== 'Starting Conversation') { s.title = 'Starting Conversation'; this.persist(s.id); this.updateViewTitle(); this.postSessionList(); }
-      return; // leave titleGenerated false → re-evaluate when a real message arrives
-    }
+    if (!firstReal) return;
 
-    // Show a cheap placeholder immediately (so the tab is never blank/odd), then upgrade
-    // it to a real LLM-generated title below. Matches the "meaningful short title" behavior
-    // of Cursor / Claude Code instead of leaving the raw message text in the tab.
-    const placeholder = deriveTitleFrom(firstReal.text ?? '');
-    if (placeholder && s.title !== placeholder) {
-      s.title = placeholder;
-      this.persist(s.id);
-      this.updateViewTitle();
-      this.postSessionList();
-    }
-
-    // OC's own native title (e.g. "New session - <timestamp>") is ignored entirely — always
-    // generate our own meaningful LLM title so the tab never shows OC's raw placeholder.
     await this.generateTitleViaLlm(s, firstReal.text ?? '');
+  }
+
+  /** The ONLY writer of a generated `s.title`. Idempotent by construction: `titleGenerated` is
+   *  already true when this runs, so nothing can call it twice for one session. */
+  private commitTitle(s: Session, title: string): void {
+    s.title = title;
+    this.persist(s.id);
+    this.updateViewTitle();
+    this.postSessionList();
   }
 
   /** Ask a free LLM for a short, meaningful title from the user's message and write it
@@ -3461,10 +3481,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       } catch { /* try the next model */ }
     }
 
-    s.title = title || deriveTitleFrom(messageText);
-    this.persist(s.id);
-    this.updateViewTitle();
-    this.postSessionList();
+    // Always commits: every model can fail, and an untitled session forever is worse than the
+    // derived fallback. Either way this is the FIRST and ONLY title the user ever sees.
+    this.commitTitle(s, title || deriveTitleFrom(messageText));
   }
 
    private getHtml(webview: vscode.Webview): string {

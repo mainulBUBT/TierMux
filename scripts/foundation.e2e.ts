@@ -16,8 +16,9 @@
 //   8. Permissions — toolApproval asks the user
 //   9. Permissions — read auto-approved, mutating prompts
 //  10. Permissions — Priority 1 wins (alwaysDeny cannot be bypassed, even in full-auto)
-//  11. Plan mode flow (§12) — read/search free, shell ASKS, edit hard-deny; markdown plan;
-//      approve → agent mode re-gates every tool (approve ≠ blanket approval)
+//  11. Plan mode flow (§12) — read/search free, shell ASKS, edit hard-deny; the plan is an
+//      exitPlanMode tool call that ends the turn; approve → agent mode re-gates every tool
+//      (approve ≠ blanket approval)
 //  12. Context correctness — system prompt + user text + prior tool results reach the model
 //      verbatim; nothing fabricated
 //  13. Streaming + reasoning + think-tag — event order, reasoning channel, no <think> leak
@@ -373,7 +374,12 @@ async function main() {
     const ws = makeWorkspace();
     const planModel = createMockModel([
       { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-      { text: '## Plan: Rename greeting\n### Step 1: Replace the word\n  - What: editFile search="hello" replace="goodbye"\n  - Files: foo.txt\n  - Verify: readFile again\n' },
+      // The plan arrives as an exitPlanMode TOOL CALL, not markdown the host has to recognize
+      // (2026-08-31 redesign — see scripts/exitPlanMode.e2e.ts for the boundary's own suite).
+      { toolCalls: [{ toolName: 'exitPlanMode', input: {
+        title: 'Rename greeting',
+        steps: [{ what: 'Replace "hello" with "goodbye"', files: ['foo.txt'], verify: 'read foo.txt again' }],
+      } }] },
     ], 's11-plan');
 
     const planTr = tracker();
@@ -383,11 +389,15 @@ async function main() {
       ...planTr.wire({}),
     })));
 
-    ok('11. plan toolset offers read+shell, NOT editors',
-      planModel.calls[0].tools.includes('runCommand') && planModel.calls[0].tools.includes('readFile') && !planModel.calls[0].tools.includes('editFile'),
+    ok('11. plan toolset offers read+shell+exitPlanMode, NOT editors',
+      planModel.calls[0].tools.includes('runCommand') && planModel.calls[0].tools.includes('readFile')
+      && planModel.calls[0].tools.includes('exitPlanMode') && !planModel.calls[0].tools.includes('editFile'),
       `tools=${JSON.stringify(planModel.calls[0].tools)}`);
     ok('11. read executed during planning', planTr.toolEvents.some((e: { name?: string; state?: string }) => e.name === 'readFile' && e.state === 'done'));
-    ok('11. output follows the ## Plan markdown convention', planResult.text.startsWith('## Plan:'), `text=${planResult.text.slice(0, 40)}`);
+    ok('11. the plan reaches the host as validated structure, not prose to classify',
+      planResult.plan?.title === 'Rename greeting' && planResult.plan?.steps[0]?.files?.[0] === 'foo.txt',
+      `plan=${JSON.stringify(planResult.plan)}`);
+    ok('11. exitPlanMode ends the planning turn', planModel.calls.length === 2, `calls=${planModel.calls.length}`);
 
     // §12 policy profile, asserted directly: read free, shell ASKS, edit hard-denied even
     // with alwaysAllow set (approve ≠ blanket approval).

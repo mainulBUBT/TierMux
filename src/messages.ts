@@ -242,8 +242,10 @@ export type InMessage =
   | { type: 'fetchCustomEndpointModels'; id: string }
   /** Webview asks the host to (re)fetch tips/announcements from the worker and push them back. */
   | { type: 'getAnnouncements' }
-  /** The Tips page was opened — mark the current announcements seen (clears the dot). */
-  | { type: 'markAnnouncementsSeen' }
+  /** Mark announcements seen (clears the unseen dot). `ids` marks just those items — sent
+   *  when a tip card is actually expanded, so the dot survives merely opening the page.
+   *  Omitting `ids` marks everything ("Mark all read"). */
+  | { type: 'markAnnouncementsSeen'; ids?: number[] }
   /** Resume a paused plan run (see planProgress) from its persisted step state. */
   | { type: 'resumePlan' }
   /** Onboarding "Retry" button — re-attempt the OC engine startup. */
@@ -404,8 +406,9 @@ export type OutMessage =
   | { type: 'newProvidersAvailable'; message: string }
   /** Operator-published tips/announcements, fetched from the announcements worker
    *  (see ChatViewProvider.fetchAnnouncements). Pushed on startup and on icon click.
-   *  Items are newest-first; `unseen` drives the dot on the toolbar icon. */
-  | { type: 'announcements'; items: AnnouncementItem[]; lastUpdated?: string; unseen: number }
+   *  Items are newest-first; `unseen` drives the dot on the toolbar icon and `unseenIds`
+   *  badges the individual cards that haven't been read yet. */
+  | { type: 'announcements'; items: AnnouncementItem[]; lastUpdated?: string; unseen: number; unseenIds: number[] }
   /** Open the Tips page (from the "new announcement" toast's View button). */
   | { type: 'openAnnouncements' }
   /** Live state of a first-class plan execution (see core/planRunner.ts). Posted after every

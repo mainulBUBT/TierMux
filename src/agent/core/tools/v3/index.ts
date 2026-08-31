@@ -14,9 +14,11 @@ export { createTodoWriteTool } from './todoWrite';
 export { createGetDiagnosticsTool } from './getDiagnostics';
 export { createAskUserTool } from './askUser';
 export { createDelegateTaskTool } from './delegateTask';
+export { createExitPlanModeTool } from './exitPlanMode';
 
+import type { ToolSet } from 'ai';
 import type { Mode } from '../../../../shared/types';
-import type { TodoItem } from '../../../../shared/types';
+import type { TodoItem, ProposedPlan } from '../../../../shared/types';
 import { createReadFileTool } from './readFile';
 import { createEditFileTool } from './editFile';
 import { createWriteFileTool, createDeleteFileTool } from './filesystemOps';
@@ -26,6 +28,7 @@ import { createTodoWriteTool } from './todoWrite';
 import { createGetDiagnosticsTool } from './getDiagnostics';
 import { createAskUserTool } from './askUser';
 import { createDelegateTaskTool } from './delegateTask';
+import { createExitPlanModeTool } from './exitPlanMode';
 import { createWebSearchTool } from '../network/webSearch';
 import { createFetchUrlTool } from '../network/fetchUrl';
 
@@ -34,6 +37,10 @@ import { createFetchUrlTool } from '../network/fetchUrl';
 export const READ_ONLY_TOOLS = new Set([
   'readFile', 'listDir', 'glob', 'grep', 'getDiagnostics', 'getSymbolGraph',
   'getDependencyTree', 'webSearch', 'delegateTask', 'fetchUrl', 'showTodo', 'todoWrite', 'askUser', 'recallNotes', 'checkPlan',
+  // exitPlanMode writes nothing — it hands a structured plan to the host and ends the turn.
+  // Approval of the PLAN happens on the card afterwards, so gating the tool itself would just
+  // put an "Allow exitPlanMode?" prompt in front of the real approval UI.
+  'exitPlanMode',
 ]);
 
 export interface ToolsetBindings {
@@ -54,13 +61,23 @@ export interface ToolsetBindings {
    *  "Restored N files" with zero visible change (live repro 2026-08-28: "undo not
    *  restoreing files"). */
   onBeforeWrite?: (uri: import('vscode').Uri, before: string | null) => void;
+  /** Plan-mode boundary — fires when the model calls `exitPlanMode` with its finished plan.
+   *  The engine captures it into AgentResult.plan and stops the turn; the host renders the
+   *  plan card from this STRUCTURE instead of re-deriving it from the reply text. */
+  onPlanProposed?: (plan: ProposedPlan) => void;
 }
 
 /** Build the mode-filtered v3 ToolSet.
  *  `plan` (§12): read/search offered freely; `runCommand` IS offered but the policy gates
- *  every call through an ask; mutating file tools are absent AND policy-denied.
+ *  every call through an ask; mutating file tools are absent AND policy-denied. `exitPlanMode`
+ *  is plan mode's ONLY exit — the model calls it to hand the finished plan to the user, which
+ *  also ends the turn (engine.ts stopWhen).
  *  `ask`: strictly read-only. `agent`: the full set. */
-export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}) {
+// Return type pinned to ToolSet on purpose. The three branches no longer share a key
+// hierarchy (exitPlanMode exists ONLY in plan mode), so the inferred union stopped satisfying
+// ToolSet's index signature at the engine's cast site — nothing downstream uses the per-tool
+// inference anyway; the engine passes this straight to streamText.
+export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): ToolSet {
   const readFile = createReadFileTool();
   const listDir = createListDirTool();
   const glob = createGlobTool();
@@ -86,6 +103,7 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}) {
       askUser: createAskUserTool(bindings.onAskUser),
       delegateTask: createDelegateTaskTool(bindings),
       runCommand: createRunCommandTool(bindings),
+      exitPlanMode: createExitPlanModeTool(bindings.onPlanProposed),
     };
   }
   if (mode === 'ask') {

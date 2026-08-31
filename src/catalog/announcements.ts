@@ -63,16 +63,23 @@ export function unnotifiedAnnouncements(mem: vscode.Memento, items: Announcement
   return fresh;
 }
 
-/** How many items the user hasn't seen yet (Tips page not opened since they arrived). A
- *  missing seen key counts as all-seen, mirroring the first-run seed above. */
-export function unseenAnnouncementCount(mem: vscode.Memento, items: AnnouncementItem[]): number {
+/** Ids the user hasn't read yet (their tip card was never expanded). A missing seen key
+ *  counts as all-seen, mirroring the first-run seed above. */
+export function unseenAnnouncementIds(mem: vscode.Memento, items: AnnouncementItem[]): number[] {
   const stored = mem.get<number[]>(SEEN_ANNOUNCEMENTS_KEY);
-  if (stored === undefined) return 0;
+  if (stored === undefined) return [];
   const seen = new Set(stored);
-  return items.filter((i) => !seen.has(i.id)).length;
+  return items.filter((i) => !seen.has(i.id)).map((i) => i.id);
 }
 
-/** Mark every given item as seen (called when the Tips page is opened — clears the dot). */
+/** How many items the user hasn't read yet — drives the dot on the toolbar icon. */
+export function unseenAnnouncementCount(mem: vscode.Memento, items: AnnouncementItem[]): number {
+  return unseenAnnouncementIds(mem, items).length;
+}
+
+/** Mark every given item as seen. Callers pass either the single tip whose card was just
+ *  expanded or the whole feed ("Mark all read") — opening the page alone marks nothing, so
+ *  the dot keeps pointing at a tip until it has actually been read. */
 export async function markAnnouncementsSeen(mem: vscode.Memento, items: AnnouncementItem[]): Promise<void> {
   const stored = mem.get<number[]>(SEEN_ANNOUNCEMENTS_KEY) ?? [];
   const seen = new Set(stored);

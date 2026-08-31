@@ -129,6 +129,7 @@ npm run test:e2e:foundation       # THE contract: tool→answer · abort · askQ
 npm run test:e2e:close-loop       # act-gap / report-gap nudge — and the cases that must NOT be nudged
 npm run test:e2e:length-continue  # finish 'length' → ONE continuation; no chaining with the nudge
 npm run test:e2e:tool-offer       # mode-filtered toolset + the small-window coordination drop
+npm run test:e2e:exit-plan-mode   # plan mode's tool boundary (docs/PLAN_MODE_TOOL_BOUNDARY_2026-08-31.md)
 npm run test:e2e:compact-budget   # per-window prune target (executionProfile), not a flat constant
 # infra: condense-split, fit-messages, routing-gates, rate-limit-zero, quota-persist,
 #        edit-match, edit-gate, resolve-path, read-paging, checkpoint-persist, …

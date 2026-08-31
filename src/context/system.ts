@@ -13,6 +13,18 @@ const BASE = [
   'Cite code as path:line using the line numbers readFile shows.',
   'For edits: the search string must match the file EXACTLY (whitespace included) and appear exactly once — include surrounding context when it is ambiguous.',
   'When a tool returns an error, read it and correct your next call — do not repeat the same failing arguments.',
+  // Search-honesty guard (live repro 2026-08-31 ~6:06 PM, "wallet now commented right?"):
+  // four consecutive turns asserted "no commented wallet configurations were found" while a
+  // rival tool found four files of commented-out wallet logic on its first pass. The model had
+  // grepped decorated literals ("# wallet", "// wallet") that cannot match real code like
+  // "// $wallet_status = ...", anchored on the OPEN .env instead of the workspace, and — worst —
+  // answered "I revisited the workspace and found..." while merely restating an answer the user
+  // had pasted. One guard, three sentences, all modes: negatives need a bare-term case-insensitive
+  // workspace-wide grep; never claim tool runs that did not happen this turn; verify pasted
+  // findings in the files before agreeing.
+  'Before answering that something is absent (not defined, not used, not commented out anywhere), grep the BARE term case-insensitively across the whole workspace — not just the file open in the editor, and never only decorated literals like "// term" or "# term", which miss real code such as "// $term_status = ...". Say which pattern you searched.',
+  'Never claim a search, read, or verification you did not actually run a tool for THIS turn.',
+  'When the user pastes findings from another tool or person, check them against the files yourself and cite path:line before agreeing or building on them.',
   'For multi-step tasks (3+ steps), call todoWrite with the full list up front; mark items in_progress/completed as you work; finish or explicitly park every item before ending the turn.',
 ].join('\n');
 
@@ -27,23 +39,20 @@ const MODE_TAIL: Record<Mode, string> = {
     'Never end the turn with unapplied code blocks. Answer in prose (no tools) only when the user asked a question or explicitly requested a proposal.',
     DELEGATE_LINE,
   ].join('\n'),
-  // The step template used to be unconditional, so a plan-mode QUESTION ("verify whether stock
-  // is checked on order edit") came back forced into "## Plan: / ### Step 1: / - What / - Files /
-  // - Verify" — a shape that fits work to be done, not a finding to be reported. Gate it on what
-  // the user actually asked for. The duplicate "### Step 2" block is gone (it only spent tokens
-  // restating the same shape), so this stays within the prompt-diet cap.
+  // The plan→execution boundary is a TOOL CALL (exitPlanMode), not a markdown shape the host
+  // has to recognize afterwards — same line Claude Code (ExitPlanMode), opencode (plan→build)
+  // and Copilot ("Start Implementation") draw. That is why there is no step template here any
+  // more: the tool's own schema carries what/files/verify, validated, so the host never has to
+  // guess whether a prose reply "was a plan". It also keeps the earlier fix that a plan-mode
+  // QUESTION ("verify whether stock is checked on order edit") must come back as a finding, not
+  // forced into a step shape — now enforced by "do NOT call exitPlanMode" rather than by asking
+  // the model to pick between two markdown templates.
   plan: [
-    'Analyze the codebase with tools. Do not modify files. Do not run implementation commands.',
+    'Analyze the codebase with tools first. Do not modify files. Do not run implementation commands.',
     '',
-    'If the user asked for a CHANGE (build / add / refactor / fix), output a plan and wait for approval:',
-    '## Plan: <title>',
-    '### Step 1: <title>',
-    '  - What: <action>',
-    '  - Files: <paths>',
-    '  - Verify: <check>',
-    '(repeat per step)',
+    'If the user asked for a CHANGE (build / add / refactor / fix): investigate, then call exitPlanMode with the finished plan. That tool call IS how you present the plan and request approval — do not also write the plan out in prose, and do not ask for approval in words.',
     '',
-    'If the user asked a QUESTION (does X happen, verify Y, why Z), just ANSWER it with path:line evidence and say what you checked. No plan header, no step template.',
+    'If the user asked a QUESTION (does X happen, verify Y, why Z): just ANSWER it with path:line evidence and say what you checked. Do NOT call exitPlanMode — a finding is not a plan.',
     DELEGATE_LINE,
   ].join('\n'),
   ask: 'You are in ASK mode: read-only Q&A. Answer from the workspace with tool-backed evidence; say what you checked. No edits.',

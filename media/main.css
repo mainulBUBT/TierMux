@@ -626,39 +626,106 @@ details[open].reasoning summary::before { content: '▾ '; }
   background: transparent; color: var(--vscode-foreground); border: none; opacity: .6;
 }
 .changed-bar .cb-close:hover, .new-models-bar .cb-close:hover { opacity: 1; }
-/* Announcements "i" button unread dot + full tips page (blog-style feed). */
+/* Announcements "i" button unread badge + full tips page (blog-style feed). */
 .icon-btn .an-dot {
-  position: absolute; top: 1px; right: 1px; width: 6px; height: 6px; border-radius: 50%;
-  background: var(--vscode-charts-yellow, #cca700); border: 1px solid var(--vscode-sideBar-background, #fff);
+  position: absolute; top: 0; right: 0; min-width: 7px; height: 7px; border-radius: 7px;
+  background: var(--vscode-badge-background); border: 1px solid var(--vscode-sideBar-background, #fff);
+  box-sizing: content-box;
+}
+/* More than one unread tip: the dot grows into a counted pill. */
+.icon-btn .an-dot.an-dot-count {
+  top: -3px; right: -3px; height: 13px; min-width: 13px; padding: 0 3px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 700; line-height: 1;
+  color: var(--vscode-badge-foreground);
 }
 .icon-btn .an-dot.hidden { display: none; }
 .icon-btn { position: relative; }
+/* Unread tips tint the whole button in the prompt input — readable at a glance where a
+   7px corner dot is easy to miss. */
+.icon-btn.has-unseen { color: var(--vscode-textLink-foreground); }
+.icon-btn.has-unseen:hover { color: var(--vscode-textLink-foreground); }
+.icon-btn.has-unseen svg { opacity: 1; }
+
 .announcements-page { padding: var(--gap); overflow-y: auto; flex: 1; display: none; }
 .announcements-page.active { display: block; }
+.announcements-page .an-bar { align-items: flex-start; }
+.announcements-page .an-head { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.announcements-page .an-head-ic { display: flex; opacity: .75; }
+.announcements-page .an-head-ic svg { width: 15px; height: 15px; }
+.announcements-page .an-head-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.announcements-page .an-head-title { font-size: 13px; font-weight: 700; letter-spacing: -.01em; }
+.announcements-page .an-head-sub { font-size: 11px; opacity: .5; }
+.announcements-page .an-bar-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .announcements-page .an-empty { color: var(--vscode-descriptionForeground); font-size: 12px; padding: 24px 4px; }
-.announcements-page .an-feed { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.announcements-page .an-feed { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+/* Standard editor-widget surface. `editor-inactiveSelectionBackground` used to sit here and
+   rendered NAVY under Dark+ — a selection colour is not a panel colour, and it fought every
+   theme it was not authored against (report 2026-08-31). */
 .announcements-page .an-card {
-  padding: 0; border-radius: 8px;
-  border: 1px solid var(--vscode-panel-border);
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.08));
+  padding: 0; border-radius: 6px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
   overflow: hidden;
+  transition: border-color .12s ease, background .12s ease;
+}
+.announcements-page .an-card:hover { border-color: var(--vscode-focusBorder, var(--vscode-panel-border)); }
+/* Unread tip: the same accent rail the composer strip is outlined in, so "unread" reads the
+   same in both places. Surface stays standard. */
+.announcements-page .an-card.unread {
+  border-left: 2px solid var(--vscode-charts-yellow, #cca700);
+  background: var(--vscode-list-hoverBackground, transparent);
 }
 .announcements-page .an-card-title {
   list-style: none; cursor: pointer; user-select: none;
-  font-size: 12px; font-weight: 600; color: var(--vscode-foreground);
-  padding: 9px 12px; display: flex; align-items: center; gap: 6px;
+  font-size: 12.5px; font-weight: 600; color: var(--vscode-foreground);
+  padding: 11px 12px; display: flex; align-items: center; gap: 8px; line-height: 1.4;
 }
+.announcements-page .an-card-title-text { flex: 1 1 auto; min-width: 0; }
 .announcements-page .an-card-title::-webkit-details-marker { display: none; }
 .announcements-page .an-card-title::before {
-  content: ''; flex: 0 0 auto; width: 0; height: 0;
+  content: ''; flex: 0 0 auto; width: 0; height: 0; margin-top: 1px;
   border-left: 4px solid var(--vscode-descriptionForeground);
   border-top: 4px solid transparent; border-bottom: 4px solid transparent;
   transition: transform .12s ease;
 }
 .announcements-page .an-card[open] .an-card-title::before { transform: rotate(90deg); }
 .announcements-page .an-card-title:hover { background: var(--vscode-list-hoverBackground); }
-.announcements-page .an-card-details { font-size: 12px; line-height: 1.5; color: var(--vscode-descriptionForeground); padding: 0 12px 10px 22px; }
-.announcements-page .an-updated { font-size: 10px; opacity: .55; margin-top: 12px; }
+.announcements-page .an-new-pill {
+  flex: 0 0 auto; font-size: 9px; font-weight: 700; letter-spacing: .06em;
+  padding: 2px 6px; border-radius: 10px;
+  background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
+}
+.announcements-page .an-card-details {
+  font-size: 12.5px; line-height: 1.65; color: var(--vscode-foreground); opacity: .85;
+  padding: 2px 14px 12px 24px;
+}
+/* Markdown in a tip: operator-authored **bold** / _italic_ / lists / links / `code`. */
+.announcements-page .an-card-details > div > *:first-child { margin-top: 0; }
+.announcements-page .an-card-details > div > *:last-child { margin-bottom: 0; }
+.announcements-page .an-card-details p { margin: 0 0 8px; }
+.announcements-page .an-card-details strong { font-weight: 700; opacity: 1; color: var(--vscode-foreground); }
+.announcements-page .an-card-details em { font-style: italic; }
+.announcements-page .an-card-details h1,
+.announcements-page .an-card-details h2,
+.announcements-page .an-card-details h3,
+.announcements-page .an-card-details h4 { font-size: 12.5px; font-weight: 700; margin: 12px 0 6px; opacity: 1; }
+.announcements-page .an-card-details ul,
+.announcements-page .an-card-details ol { margin: 0 0 8px; padding-left: 20px; }
+.announcements-page .an-card-details li { margin: 2px 0; }
+.announcements-page .an-card-details a { color: var(--vscode-textLink-foreground); }
+.announcements-page .an-card-details code {
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px;
+  padding: 1px 5px; border-radius: 4px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.16));
+}
+.announcements-page .an-card-details pre { margin: 0 0 8px; border-radius: 6px; overflow-x: auto; }
+.announcements-page .an-card-details blockquote {
+  margin: 0 0 8px; padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--vscode-panel-border); opacity: .85;
+}
+.announcements-page .an-card-details hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 10px 0; }
+.announcements-page .an-card-details img { max-width: 100%; border-radius: 6px; }
+.announcements-page .an-updated { font-size: 10px; opacity: .55; margin-top: 14px; }
 .changed-bar .cb-files { display: flex; flex-wrap: wrap; gap: 4px; max-height: 84px; overflow-y: auto; }
 .changed-bar .cb-file {
   display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
@@ -1047,34 +1114,96 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .badge-red { background: color-mix(in srgb, #f44336 20%, transparent); color: #f44336; }
 
 /* Empty / welcome state */
-.empty { display: flex; flex-direction: column; align-items: stretch; gap: 24px; width: 100%; padding: 48px 14px 20px; box-sizing: border-box; }
+.empty { display: flex; flex-direction: column; align-items: stretch; gap: 16px; width: 100%; padding: 36px 14px 20px; box-sizing: border-box; }
 
-.empty-hero { display: flex; flex-direction: column; align-items: center; gap: 20px; text-align: center; }
-.empty-logo-img { width: 96px; height: 96px; object-fit: contain; border-radius: 18px; }
+.empty-hero { display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; }
+.empty-logo-img { width: 72px; height: 72px; object-fit: contain; border-radius: 16px; }
 .empty-logo { display: flex; color: var(--tm-fg-muted, currentColor); }
 .empty-logo svg { width: 64px; height: 64px; }
-.empty-heading { font-weight: 700; font-size: 20px; letter-spacing: -.02em; line-height: 1.25; padding: 0 8px; }
+.empty-heading { font-weight: 700; font-size: 17px; letter-spacing: -.02em; line-height: 1.3; padding: 0 8px; }
 
-.empty-recents { display: flex; flex-direction: column; gap: 8px; }
-.empty-recents-header { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 4px; }
-.empty-recents-label { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; opacity: .45; }
-.empty-view-all { background: none; border: none; cursor: pointer; font-size: 12px; color: var(--vscode-textLink-foreground); padding: 0; opacity: .8; font-family: inherit; }
+.empty-recents { display: flex; flex-direction: column; gap: 4px; }
+.empty-recents-header { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 2px; }
+.empty-recents-label { display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; opacity: .45; }
+.empty-view-all { background: none; border: none; cursor: pointer; font-size: 11px; color: var(--vscode-textLink-foreground); padding: 0; opacity: .8; font-family: inherit; }
 .empty-view-all:hover { opacity: 1; text-decoration: underline; }
 
-.empty-recent-card {
-  display: flex; flex-direction: column; gap: 10px;
-  padding: 14px 16px 12px; border-radius: 10px; cursor: pointer;
-  background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-panel-border, transparent);
+/* Compact one-line session rows — title left, relative timestamp right. */
+.empty-recent-list {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 6px; overflow: hidden;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+}
+.empty-recent-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 7px 10px; cursor: pointer; font-family: inherit; font-size: 12px;
+  background: none; border: none; border-top: 1px solid var(--vscode-panel-border, transparent);
+  color: var(--vscode-foreground);
+  transition: background .1s ease;
+}
+.empty-recent-row:first-child { border-top: none; }
+/* A leading dot per row so each entry reads as its own session rather than as one more line
+   in a wrapped list (user request 2026-08-31). Same glyph + status colours the history
+   dropdown already uses, so the two lists stay legible against each other. */
+.empty-row-dot { flex: 0 0 auto; font-size: 9px; line-height: 1; opacity: .55; width: 10px; text-align: center; }
+.empty-recent-row.status-queued .empty-row-dot { color: var(--vscode-charts-yellow, #e2c08d); opacity: .9; }
+.empty-recent-row.status-needsApproval .empty-row-dot { color: var(--vscode-charts-orange, #d18616); opacity: 1; font-weight: 700; }
+.empty-recent-row.status-running .empty-row-dot { color: var(--vscode-textLink-foreground); opacity: .9; }
+.empty-recent-row.status-finished .empty-row-dot { color: var(--vscode-charts-green, #89d185); opacity: .9; }
+.empty-recent-row:hover { background: var(--vscode-list-hoverBackground); }
+.empty-row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.empty-row-date { flex: 0 0 auto; font-size: 10.5px; opacity: .42; font-variant-numeric: tabular-nums; }
+
+/* No light-theme override needed any more: editorWidget-background resolves per theme. */
+
+/* Tips ticker — rotating announcement headlines on the welcome screen, between the hero
+   and RECENT. Always accent-coloured so it reads as the one thing worth a look; the "N new"
+   pill appears on top of that while something is unread. */
+.empty-tips-slot:empty { display: none; }
+/* Pinned above the composer now (permanent by request 2026-08-31) — breathing room from the
+   input, slightly tighter than the welcome-screen spacing it had before. */
+#composer > .empty-tips-slot { margin: 0 0 6px; }
+/* Surface stays on the standard widget token so it sits with the rest of the panel, but the
+   BORDER and TIP badge keep the original accent — that outline is what makes the strip read
+   as "worth a look" instead of one more grey bar (user request 2026-08-31). */
+.empty-tips {
+  display: flex; align-items: center; gap: 9px; width: 100%; box-sizing: border-box;
+  padding: 7px 10px; border-radius: 6px; cursor: pointer; font-family: inherit;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 1px solid color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 38%, transparent);
+  color: var(--vscode-foreground); text-align: left;
   transition: background .12s ease, border-color .12s ease;
 }
-.empty-recent-card:hover { background: var(--vscode-list-hoverBackground); border-color: var(--vscode-focusBorder, var(--vscode-panel-border, transparent)); }
-.empty-card-title { font-size: 13px; font-weight: 500; line-height: 1.45; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.empty-card-meta { display: flex; align-items: center; justify-content: space-between; }
-.empty-card-date { font-size: 11px; opacity: .4; }
-.empty-card-cost { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 20px; background: var(--vscode-badge-background, rgba(128,128,128,.18)); color: var(--vscode-badge-foreground, inherit); opacity: .7; }
-
-body.vscode-light .empty-recent-card { background: var(--vscode-editorWidget-background, #f0f0f0); }
+.empty-tips:hover {
+  background: var(--vscode-list-hoverBackground);
+  border-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 60%, transparent);
+}
+.empty-tips-badge {
+  display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto;
+  font-size: 9px; font-weight: 700; letter-spacing: .06em;
+  color: var(--vscode-charts-yellow, #cca700);
+}
+.empty-tips-badge svg { width: 12px; height: 12px; }
+.empty-tips-track { flex: 1 1 auto; min-width: 0; overflow: hidden; height: 18px; }
+.empty-tips-slide {
+  display: block; font-size: 12px; line-height: 18px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.empty-tips-slide.in { animation: tip-slide-in .38s ease both; }
+@keyframes tip-slide-in {
+  from { opacity: 0; transform: translateY(70%); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.empty-tips-new {
+  flex: 0 0 auto; font-size: 9px; font-weight: 700; letter-spacing: .04em;
+  padding: 2px 6px; border-radius: 10px;
+  background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
+}
+.empty-tips-new.hidden { display: none; }
+.empty-tips-go { flex: 0 0 auto; opacity: .5; font-size: 14px; line-height: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .empty-tips-slide.in { animation: none; }
+}
 
 /* Settings panel */
 .settings { padding: var(--gap); overflow-y: auto; flex: 1; display: none; }

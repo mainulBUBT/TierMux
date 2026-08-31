@@ -49,8 +49,10 @@ function wireInput(input: unknown): string {
 }
 
 export interface ScriptedModel extends LanguageModelV4 {
-  /** Every call's full prompt (for assertions about what the model SAW) + tool names. */
-  readonly calls: Array<{ messages: unknown[]; tools: string[] }>;
+  /** Every call's full prompt (for assertions about what the model SAW), the tool names it was
+   *  offered, and the toolChoice it was sent — the last one lets a scenario assert that the
+   *  engine FORCED a specific tool for that call (plan-gap continuation, engine.ts). */
+  readonly calls: Array<{ messages: unknown[]; tools: string[]; toolChoice?: unknown }>;
 }
 
 export function createMockModel(script: MockResponse[], label = 'mock'): ScriptedModel {
@@ -89,7 +91,7 @@ export function createMockModel(script: MockResponse[], label = 'mock'): Scripte
     calls,
 
     async doGenerate(options: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> {
-      calls.push({ messages: options.prompt, tools: (options.tools ?? []).map((t) => t.name) });
+      calls.push({ messages: options.prompt, tools: (options.tools ?? []).map((t) => t.name), toolChoice: options.toolChoice });
       const step = next();
       if (step.error) throw step.error;
       const content: LanguageModelV4GenerateResult['content'] = [];
@@ -108,7 +110,7 @@ export function createMockModel(script: MockResponse[], label = 'mock'): Scripte
     },
 
     async doStream(options: LanguageModelV4CallOptions): Promise<{ stream: ReadableStream<LanguageModelV4StreamPart> }> {
-      calls.push({ messages: options.prompt, tools: (options.tools ?? []).map((t) => t.name) });
+      calls.push({ messages: options.prompt, tools: (options.tools ?? []).map((t) => t.name), toolChoice: options.toolChoice });
       const step = next();
 
       let controller!: ReadableStreamDefaultController<LanguageModelV4StreamPart>;

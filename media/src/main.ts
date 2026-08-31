@@ -96,6 +96,7 @@ const STATE_LABEL = {
       <div class="settings" id="settings"></div>
       <div class="announcements-page" id="announcements-page"></div>
     <div class="composer" id="composer">
+      <div class="empty-tips-slot" id="tips-strip-slot"></div>
       <div class="index-status hidden" id="index-status"></div>
       <div class="new-models-bar hidden" id="new-models-bar"></div>
       <div class="new-models-bar hidden" id="new-providers-bar"></div>
@@ -437,6 +438,9 @@ const STATE_LABEL = {
 
   // ---------- session history dropdown ----------
   const STATUS_DOT = { idle: '●', queued: '⏳', running: '⟳', needsApproval: '!', finished: '✓' };
+  /** RECENT-row glyphs. Same statuses as STATUS_DOT, but every state is a static marker:
+   *  this list has no spinner, and `⟳` sitting still looks like a stuck reload control. */
+  const RECENT_DOT = { idle: '\u25cf', queued: '\u25cf', running: '\u25cf', needsApproval: '!', finished: '\u2713' };
   const STATUS_TITLE = {
     idle: 'Idle', queued: 'Queued', running: 'Running',
     needsApproval: 'Needs your approval', finished: 'Finished',
@@ -651,31 +655,38 @@ const STATE_LABEL = {
   }, { passive: false });
 
   // ---------- empty / welcome state ----------
-  function clearEmpty() { const e = activeThreadEl.querySelector('.empty'); if (e) e.remove(); }
+  function clearEmpty() {
+    // The ticker is permanent (user request 2026-08-31: "keep it forever slide show
+    // always") — losing the welcome screen just re-homes it into the composer strip.
+    const e = activeThreadEl.querySelector('.empty');
+    if (e) { e.remove(); refreshTipsStrip(); }
+  }
   function renderEmpty() {
     if (activeThreadEl.querySelector('.msg')) return;
     clearEmpty();
     const el = document.createElement('div');
     el.className = 'empty';
 
-    const recents = sessionList.filter(s => s.id !== viewedSessionId).slice(0, 5);
+    // Compact rows, not cards: a session is a title + a timestamp, so it fits on one line
+    // and eight of them fit where five cards used to.
+    const recents = sessionList.filter(s => s.id !== viewedSessionId).slice(0, 8);
     const recentHtml = recents.length ? `
       <div class="empty-recents">
         <div class="empty-recents-header">
           <div class="empty-recents-label">
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1H2V3zm0 3h12v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6zm3 2a.5.5 0 0 0 0 1h6a.5.5 0 0 0 0-1H5zm0 2a.5.5 0 0 0 0 1h4a.5.5 0 0 0 0-1H5z"/></svg>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1H2V3zm0 3h12v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6zm3 2a.5.5 0 0 0 0 1h6a.5.5 0 0 0 0-1H5zm0 2a.5.5 0 0 0 0 1h4a.5.5 0 0 0 0-1H5z"/></svg>
             RECENT
           </div>
           <button class="empty-view-all" id="empty-view-all-btn">View All ›</button>
         </div>
-        ${recents.map(s => `
-          <div class="empty-recent-card" data-id="${s.id}">
-            <div class="empty-card-title">${s.title || 'Untitled'}</div>
-            <div class="empty-card-meta">
-              <span class="empty-card-date">${fmtTs(s.updatedAt || s.ts)}</span>
-              <span class="empty-card-cost">$0.00</span>
-            </div>
-          </div>`).join('')}
+        <div class="empty-recent-list">
+          ${recents.map(s => `
+            <button class="empty-recent-row status-${escapeHtml(s.status || 'idle')}" data-id="${s.id}" title="${escapeHtml(s.title || 'Untitled')}">
+              <span class="empty-row-dot" title="${escapeHtml(STATUS_TITLE[s.status || 'idle'] || '')}">${escapeHtml(RECENT_DOT[s.status || 'idle'] || '\u25cf')}</span>
+              <span class="empty-row-title">${escapeHtml(s.title || 'Untitled')}</span>
+              <span class="empty-row-date">${escapeHtml(fmtTs(s.updatedAt || s.ts))}</span>
+            </button>`).join('')}
+        </div>
       </div>` : '';
 
     const logoHtml = window.__LOGO_URI__
@@ -687,16 +698,73 @@ const STATE_LABEL = {
         ${logoHtml}
         <div class="empty-heading">Stack free. Route smart. Ship faster.</div>
       </div>
+      <div class="empty-tips-slot" id="empty-tips-slot"></div>
       ${recentHtml}`;
 
-    el.querySelectorAll('.empty-recent-card').forEach(card => {
-      card.addEventListener('click', () => {
-        send({ type: 'switchSession', sessionId: card.dataset.id });
+    el.querySelectorAll('.empty-recent-row').forEach(row => {
+      row.addEventListener('click', () => {
+        send({ type: 'switchSession', sessionId: row.dataset.id });
       });
     });
     const viewAllBtn = el.querySelector('#empty-view-all-btn');
     if (viewAllBtn) viewAllBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleHistory(true); });
     activeThreadEl.appendChild(el);
+    refreshTipsStrip(); // re-home the ticker into the welcome slot, above RECENT
+  }
+
+  /** Tips ticker — one announcement headline at a time, cycling every few seconds, in a
+   *  strip pinned above the composer. Permanent by request (2026-08-31): it shows on the
+   *  welcome screen AND during chats, read tips keep cycling, and only a genuinely empty
+   *  feed hides it. Clicking anywhere on it opens the full Tips page. */
+  let tipsTickerTimer = null;
+  let tipsTickerIndex = 0;
+  function stopTipsTicker() {
+    if (tipsTickerTimer) { clearInterval(tipsTickerTimer); tipsTickerTimer = null; }
+  }
+
+  function refreshTipsStrip() {
+    const emptySlot = document.getElementById('empty-tips-slot');
+    const composerSlot = document.getElementById('tips-strip-slot');
+    const slot = emptySlot || composerSlot; // welcome placement (above RECENT) wins
+    if (emptySlot && composerSlot) composerSlot.innerHTML = ''; // never show the strip twice
+    stopTipsTicker();
+    if (!slot) return;
+    const list = announcementsCache;
+    // Only a genuinely empty feed hides it — read tips keep cycling here.
+    if (!list.length) { slot.innerHTML = ''; return; }
+
+    slot.innerHTML = `
+      <button class="empty-tips" id="empty-tips-btn" type="button" aria-label="Open Tips &amp; Announcements">
+        <span class="empty-tips-badge">${ICON.spark}<span class="empty-tips-badge-text">TIP</span></span>
+        <span class="empty-tips-track"><span class="empty-tips-slide" id="empty-tips-slide"></span></span>
+        <span class="empty-tips-new hidden" id="empty-tips-new"></span>
+        <span class="empty-tips-go">›</span>
+      </button>`;
+    const btn = slot.querySelector('#empty-tips-btn');
+    btn.addEventListener('click', () => toggleAnnouncements(true));
+
+    const slide = slot.querySelector('#empty-tips-slide');
+    const badge = slot.querySelector('#empty-tips-new');
+    if (announcementsUnseen > 0) {
+      badge.textContent = announcementsUnseen === 1 ? 'New' : `${announcementsUnseen} new`;
+      badge.classList.remove('hidden');
+    } else {
+      badge.classList.add('hidden');
+    }
+
+    if (tipsTickerIndex >= list.length) tipsTickerIndex = 0;
+    const show = (i) => {
+      tipsTickerIndex = i % list.length;
+      const it = list[tipsTickerIndex];
+      slide.classList.remove('in');
+      // Re-trigger the slide-in animation: read offsetWidth to force a reflow.
+      void slide.offsetWidth;
+      slide.textContent = it.title || 'Untitled';
+      slide.classList.add('in');
+    };
+    show(tipsTickerIndex);
+    // Don't burn cycles (or skip ahead) while the panel is in a hidden tab.
+    if (list.length > 1) tipsTickerTimer = setInterval(() => { if (!document.hidden) show(tipsTickerIndex + 1); }, 5000);
   }
 
   function fmtTs(ts) {
@@ -796,7 +864,12 @@ const STATE_LABEL = {
         return s;
       };
       const metrics = [
-        metric('Score', e.score.toFixed(2), 'Final ranking = Capability × Runtime × your preference. The highest-scoring model is chosen.'),
+        // NOT "highest score wins" — the picker orders by pin → task table → catalog rank, so
+        // the chosen model routinely scores BELOW a candidate it outranks (a task-table pick at
+        // rank 2 shows 0.80 while the rank-1 tail shows 1.00). The old copy said the top score is
+        // chosen, which read as a bug against the ✓ actually shown. The reason line under each
+        // row is the real explanation; these numbers only describe the model, not the decision.
+        metric('Score', e.score.toFixed(2), 'Catalog strength for this turn. It does NOT decide the winner — order is: the model you pinned, then this task kind\u2019s preferred model, then the strongest remaining one. The line below each model says which rule applied.'),
         metric('Capability', e.capability.toFixed(2), 'How well this model fits the task by catalog — intelligence, speed, tool/vision support, context window. Static: it does not change with latency or health.'),
         metric('Runtime', '×' + e.runtime.toFixed(2), 'Live health multiplier learned from real requests — success rate, latency vs the model’s own baseline, rate-limit/key availability, and provider health. ~1.0 = healthy, lower = currently degraded.'),
         metric('Confidence', Math.round(e.confidence * 100) + '%', 'How much real data backs the Runtime score. Low % = little history yet, so Runtime leans toward a neutral default instead of over-reacting.'),
@@ -3607,13 +3680,22 @@ const STATE_LABEL = {
       case 'newProvidersAvailable':
         renderNewProvidersBar(msg.message);
         break;
-        case 'announcements':
+        case 'announcements': {
           announcementsCache = Array.isArray(msg.items) ? msg.items : [];
           announcementsLastUpdated = msg.lastUpdated;
-          announcementsUnseen = msg.unseen || 0;
+          announcementsUnseenIds = new Set(Array.isArray(msg.unseenIds) ? msg.unseenIds : []);
+          announcementsUnseen = typeof msg.unseen === 'number' ? msg.unseen : announcementsUnseenIds.size;
           updateAnnouncementsDot();
-          if (announcementsOpen) renderAnnouncements();
+          // Reading a tip round-trips through the host, which re-posts the whole feed. Only
+          // re-render when the FEED changed — otherwise expanding one card would rebuild the
+          // page and collapse every other card the user had opened.
+          const key = announcementsFeedKey();
+          if (announcementsOpen && key !== announcementsRenderedKey) renderAnnouncements();
+          announcementsRenderedKey = key;
+          // The composer's headline ticker reads the same cache — refresh it in place.
+          refreshTipsStrip();
           break;
+        }
         case 'planProgress':
           renderPlanProgress(msg.state);
           break;
@@ -4692,15 +4774,58 @@ const STATE_LABEL = {
    *  and is cached here; opening the page with no cache asks the host to fetch on demand. */
   let announcementsCache = [];
   let announcementsLastUpdated;
-  /** Unseen count from the host (drives the dot); zeroed locally when the page is opened. */
+  /** Unseen count from the host — drives the badge on the toolbar icon. */
   let announcementsUnseen = 0;
+  /** Which specific tips are unread, so each card can carry its own NEW badge. Opening the
+   *  page does NOT clear these: a tip counts as read once its card is expanded (or the user
+   *  hits "Mark all read"), so the badge keeps pointing at what's actually new. */
+  let announcementsUnseenIds = new Set();
   let announcementsOpen = false;
+  /** Identity of the feed the page was last built from — see the 'announcements' handler. */
+  let announcementsRenderedKey = '';
   const announcementsEl = () => $('#announcements-page');
 
+  /** Content fingerprint of the feed: ids + titles + the worker's last-updated stamp. Read
+   *  state deliberately isn't part of it — marking a tip read must not rebuild the page. */
+  function announcementsFeedKey() {
+    return announcementsCache.map((a) => `${a.id}:${a.title}`).join('|') + '#' + (announcementsLastUpdated || '');
+  }
+
   function updateAnnouncementsDot() {
+    const n = announcementsUnseen;
+    // The whole "i" button in the prompt input takes the unseen accent colour, not just the
+    // 7px dot — a tinted icon is visible at a glance where a corner dot isn't.
+    const btn = $('#btn-announcements');
+    if (btn) {
+      btn.classList.toggle('has-unseen', n > 0);
+      btn.setAttribute('aria-label', n > 0
+        ? `Tips & announcements — ${n} unread`
+        : 'Tips & announcements');
+    }
     const dot = $('#an-dot');
     if (!dot) return;
-    dot.classList.toggle('hidden', announcementsOpen || announcementsUnseen <= 0);
+    dot.classList.toggle('hidden', n <= 0);
+    dot.classList.toggle('an-dot-count', n > 1);
+    dot.textContent = n > 1 ? (n > 9 ? '9+' : String(n)) : '';
+  }
+
+  /** Mark one tip read (card expanded) — optimistic locally, persisted host-side. */
+  function markTipRead(id) {
+    if (!announcementsUnseenIds.has(id)) return;
+    announcementsUnseenIds.delete(id);
+    announcementsUnseen = Math.max(0, announcementsUnseen - 1);
+    updateAnnouncementsDot();
+    refreshTipsStrip();
+    send({ type: 'markAnnouncementsSeen', ids: [id] });
+  }
+
+  function markAllTipsRead() {
+    announcementsUnseenIds = new Set();
+    announcementsUnseen = 0;
+    updateAnnouncementsDot();
+    send({ type: 'markAnnouncementsSeen' });
+    renderAnnouncements();
+    refreshTipsStrip();
   }
 
   function toggleAnnouncements(force) {
@@ -4713,11 +4838,8 @@ const STATE_LABEL = {
     if (settingsOpen) { settingsOpen = false; settingsEl.classList.remove('active'); }
     if (announcementsOpen) {
       renderAnnouncements();
-      // Opening the page counts as seeing them — clears the dot host-side too.
-      send({ type: 'markAnnouncementsSeen' });
       // Refresh from the worker every time the page opens.
       send({ type: 'getAnnouncements' });
-      announcementsUnseen = 0;
     }
     updateAnnouncementsDot();
   }
@@ -4725,17 +4847,31 @@ const STATE_LABEL = {
   function renderAnnouncements() {
     const page = announcementsEl();
     if (!page) return;
+    announcementsRenderedKey = announcementsFeedKey();
     page.innerHTML = '';
 
     const bar = document.createElement('div');
-    bar.className = 'settings-bar';
+    bar.className = 'settings-bar an-bar';
     const head = document.createElement('span');
-    head.innerHTML = `<b>${ICON.info}</b> &nbsp; Tips &amp; Announcements`;
+    head.className = 'an-head';
+    head.innerHTML = `<b class="an-head-ic">${ICON.info}</b><span class="an-head-text">`
+      + `<span class="an-head-title">Tips &amp; Announcements</span>`
+      + `<span class="an-head-sub">What's new in TierMux</span></span>`;
+    const actions = document.createElement('span');
+    actions.className = 'an-bar-actions';
+    if (announcementsUnseen > 0) {
+      const readAll = document.createElement('button');
+      readAll.className = 'secondary an-readall';
+      readAll.textContent = 'Mark all read';
+      readAll.addEventListener('click', () => markAllTipsRead());
+      actions.appendChild(readAll);
+    }
     const back = document.createElement('button');
     back.className = 'secondary';
     back.textContent = '← Back to chat';
     back.addEventListener('click', () => toggleAnnouncements(false));
-    bar.appendChild(head); bar.appendChild(back);
+    actions.appendChild(back);
+    bar.appendChild(head); bar.appendChild(actions);
     page.appendChild(bar);
 
     const list = announcementsCache;
@@ -4749,19 +4885,43 @@ const STATE_LABEL = {
 
     const feed = document.createElement('div');
     feed.className = 'an-feed';
-    list.forEach((it) => {
+    list.forEach((it, i) => {
+      const unread = announcementsUnseenIds.has(it.id);
       const card = document.createElement('details');
-      card.className = 'an-card';
+      card.className = 'an-card' + (unread ? ' unread' : '');
+      // Newest tip starts open so the page reads like an article, not a wall of rows.
+      if (i === 0) card.open = true;
       const sum = document.createElement('summary');
       sum.className = 'an-card-title';
-      sum.textContent = it.title || 'Untitled';
+      const t = document.createElement('span');
+      t.className = 'an-card-title-text';
+      t.textContent = it.title || 'Untitled';
+      sum.appendChild(t);
+      if (unread) {
+        const pill = document.createElement('span');
+        pill.className = 'an-new-pill';
+        pill.textContent = 'NEW';
+        sum.appendChild(pill);
+      }
       card.appendChild(sum);
       if (it.details) {
         const d = document.createElement('div');
-        d.className = 'an-card-details';
-        d.textContent = it.details;
+        d.className = 'an-card-details md';
+        // Tips are authored as markdown by the operator — **bold**, _italic_, lists, links,
+        // `code` and headings all render through the same sink as chat messages (which
+        // escapes raw HTML), so a tip can read like a blog post without being an XSS hole.
+        d.appendChild(renderMarkdown(it.details));
         card.appendChild(d);
       }
+      // Expanding a card is what counts as reading it — that's what clears the dot.
+      card.addEventListener('toggle', () => {
+        if (!card.open) return;
+        card.classList.remove('unread');
+        const pill = sum.querySelector('.an-new-pill');
+        if (pill) pill.remove();
+        markTipRead(it.id);
+      });
+      if (card.open) markTipRead(it.id);
       feed.appendChild(card);
     });
     page.appendChild(feed);

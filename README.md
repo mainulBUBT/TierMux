@@ -1,212 +1,191 @@
 <p align="center">
-  <img src="media/banner.png" alt="TierMux — Agentic AI Routing" width="560">
+  <img src="media/banner.png" alt="TierMux" width="520">
 </p>
 
 <h3 align="center">Stack free. Route smart. Ship faster.</h3>
 
 <p align="center">
-  A free, open-source AI coding assistant for VS Code that pools <b>30+ free-tier LLM
-  providers</b> into one self-healing surface — auto-routing, auto-failing-over, learning
-  your codebase. No subscription. No per-token bill.
+  A free, open-source AI coding agent for VS Code that pools <b>30+ free-tier LLM
+  providers</b> into one self-healing surface.<br>
+  Works with zero setup. No subscription. No per-token bill.
+</p>
+
+<p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=mainul-islam.tiermux"><img alt="VS Marketplace" src="https://vsmarketplacebadges.dev/version-short/mainul-islam.tiermux.svg?style=flat-square&color=2e7d32&label=VS%20Marketplace"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=mainul-islam.tiermux"><img alt="VS Marketplace downloads" src="https://vsmarketplacebadges.dev/downloads-short/mainul-islam.tiermux.svg?style=flat-square&color=2e7d32&label=downloads"></a>
+  <a href="https://open-vsx.org/extension/mainul-islam/tiermux"><img alt="Open VSX" src="https://img.shields.io/open-vsx/v/mainul-islam/tiermux?style=flat-square&color=2e7d32&label=Open%20VSX"></a>
+  <a href="https://open-vsx.org/extension/mainul-islam/tiermux"><img alt="Open VSX downloads" src="https://img.shields.io/open-vsx/dt/mainul-islam/tiermux?style=flat-square&color=2e7d32&label=downloads"></a>
+  <a href="docs/PROVIDERS.md"><img alt="providers" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftiermux.mainulislam3057.workers.dev%2F&query=%24.providers.length&style=flat-square&color=2e7d32&label=providers"></a>
+  <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
 </p>
 
 ---
 
-## Why one free provider is never enough
-
-Free LLM tiers are powerful in 2026 — but every single one of them rate-limits, caps out, or goes down eventually. Tools built around **one** provider inherit exactly that reliability. TierMux pools them all:
-
-```
- Without TierMux                          With TierMux
-
- ┌──────────────┐    429 💥                your message
- │ ONE provider │ ───────────► dead            │
- └──────────────┘   you wait                  ▼
-                                          ┌────────┐   ──▶ Groq       ✓
-                                          │ ROUTER │─────▶ Cerebras   ✓  (Groq cooling)
-                                          └────────┘   ──▶ Google      ✓
-                                                       ──▶ OpenRouter  ✓
-```
-
-One flaky endpoint = flaky assistant. Ten pooled endpoints ≈ an assistant that just doesn't go down — at $0/month.
-
-## How a request flows
-
-```
- message ─▶ CLASSIFY ─▶ RANK ─▶ SEND ─▶ FAIL-OVER ─▶ LEARN
-             │           │       │         │           │
-        question? edit?  score   straight  next key,   your 👍👎 +
-        agent run? image candidates  to the  then next   live latency /
-                                 provider  provider    success stats
-```
-
-**The routing, briefly:** capable models are filtered for the task (tools? vision? context size?), then scored as `capability × live-reliability × your-votes`. Reliability is a Wilson-bounded success rate plus latency health — so a model that went 3-for-3 doesn't outrank one that went 194-for-200, and a suddenly slow model gets demoted fast. Best score wins; any failure (429, timeout, dead key) walks down the list silently. Toggle off for plain fixed-priority order.
-
-**Token optimization, briefly:** every prompt is **fitted to the target model's context window** before sending (per-model trimming, not one-size); long sessions **auto-compact** older turns into summaries; ambient editor context is sliced to a char budget; sub-agents return only their report, so the main conversation stays small.
-
-## Under the hood
-
-Named techniques powering the flows above — all implemented natively by TierMux, no external routing service involved:
-
-| Technique | Role |
-|---|---|
-| Wilson lower-bound success scoring | ranks reliability without letting small lucky streaks win |
-| Dual-window EWMA tracking + drift detection | demotes suddenly slow/failing models fast, restores them gradually |
-| Baseline-relative slow marking | "slow" is judged against each model's own history, not one fixed timeout |
-| Margin-gated exploration | occasionally tries runners-up so fresh models can prove themselves |
-| RTK-style head+tail compaction | huge tool outputs enter history as head+tail only; file reads/edits stay verbatim |
-| Caveman-style terse replies | opt-in brevity prompt (`tiermux.agent.terseReplies`) cutting padded output tokens |
-| Task-pattern sub-agents (`delegate`) | research/git-worktree workers — only their reports reach the main context |
-| Cassette record/replay + scripted mock fixtures | test real agent loops with zero API tokens |
-
-## More providers + more keys = fewer walls
-
-This is the single biggest quality dial in TierMux:
-
-```
- 1 key .............. works, but you'll meet its rate limit
- 3–5 providers ...... solid — one cools, another serves
- 8+ providers ....... rain-or-shine
- + extra keys ....... TierMux rotates keys WITHIN a provider and cools
-   per provider       each key independently before touching the platform
-```
-
-Every enabled provider adds its own independent quota. Every added key per provider adds headroom on that provider. Adding keys takes seconds (**⚙ Manage Models & Keys**) and there is no downside — unused keys just rest.
-
-## Modes
-
-| Mode | What happens |
-|---|---|
-| **Ask** | Q&A only — streams answers, touches nothing. |
-| **Plan** | Reads code read-only, proposes step-by-step plan, waits for approval. |
-| **Agent** | Full loop — diffs (you approve), terminal (you approve), checkpoints, revert. |
-| **Auto** | Picks mode *and* model per message. Default. |
-
-## What's inside
-
-- **Self-healing routing** — per-key + per-platform cooldowns, tool-incompatible/deprecated quarantine, cached preflight health checks, honest errors naming exactly which providers failed and why.
-- **Plan runner** — approved plans execute step-by-step, each step verified; failing steps get bounded retries and read-only repair; progress survives reloads.
-- **Sub-agents (`delegate`)** — research agents, or code workers in disposable git worktrees that commit and merge back.
-- **Safety rails** — diff/command approval gates, `.env`/key-material read guards, stall watchdog (~45s warn, ~90s actionable).
-- **Codebase-aware** — learns your formatting style, ambient open-editor context, optional embeddings index, project memory in `.tiermux/`.
-- **Editor-wide** — inline chat (`Cmd/Ctrl+I`), selection explain/fix/refactor/tests/docs, commit-message generation, inline autocomplete, searchable history, MCP servers, custom slash skills.
-- **Explainable** — *"Why this model?"* rationale per turn (scores, confidence, who else was considered).
-
-## Providers — 145+ models, 30 platforms
-
-| Category | Providers |
-|---|---|
-| **Keyless — zero setup** | Kilo Gateway · OVH AI Endpoints · Pollinations · OpenCode Zen |
-| **Free API key** | Groq · Cerebras · Google AI Studio · Mistral · NVIDIA NIM · OpenRouter (`:free`) · Cloudflare Workers AI · Cohere · SambaNova · SiliconFlow · Zhipu · HuggingFace · LLM7 · Agnes · … |
-| **Gateway tiers** | Kenari · Nara Router · Aion Labs · ChatAnywhere · OpenAdapter · OrcaRouter · Requesty · Router9 · LLM Gateway · ZenMux · Poolside · Ollama Cloud |
-| **Your own endpoints** | Any OpenAI-compatible URL — vLLM, LiteLLM, LM Studio, local Ollama, llama.cpp, Azure OpenAI… |
-
-The model catalog auto-updates from remote, so new free models appear without updating the extension.
-
-## Existing assistants vs TierMux
-
-Feature-by-feature, based on each product's current documentation (see footnotes):
-
-| Feature | **TierMux** | GitHub Copilot | Cursor | Cline | Continue |
-|---|:-:|:-:|:-:|:-:|:-:|
-| Usable every day at $0 | ✓ | ✗ <sup>1</sup> | ✗ <sup>2</sup> | ✗ <sup>3</sup> | ✗ <sup>3</sup> |
-| Works instantly with zero keys/accounts | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Pools many providers' free tiers together | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Auto-failover when a provider rate-limits or dies | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Multiple keys per provider, rotated & cooled automatically | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Bring your own API key / any OpenAI-compatible endpoint | ✓ | ✗ <sup>4</sup> | ✗ <sup>5</sup> | ✓ | ✓ |
-| Agent mode (edits + terminal behind approvals) | ✓ | ~ <sup>1</sup> | ~ <sup>2</sup> | ✓ | ✓ |
-| Plan-then-execute workflow | ✓ | ~ | ✓ | ✓ | ✓ |
-| MCP servers | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Open source | ✓ MIT | ✗ | ✗ | ✓ Apache-2.0 | ✓ Apache-2.0 <sup>6</sup> |
-| Requests go direct VS Code → provider (no vendor backend) | ✓ | ✗ | ✗ | ✓ | ✓ |
-
-<sub>
-1. Copilot Free caps at ~2,000 completions/month with limited agents and automatic model selection only; full agents/models need Pro ($10/mo) through Max ($100/mo).
-2. Cursor is a proprietary VS Code fork; real usage sits behind its paid tiers.
-3. The software is free, but every request bills your own API tokens — the cost moves, it doesn't disappear.
-4. Copilot's model list is curated per subscription tier; external provider keys aren't supported.
-5. Cursor's custom-API-key option has been restricted for current plans.
-6. Continue's repo is read-only — no longer actively maintained as of 2026.
-</sub>
-
-Paid assistants rent you one vendor's stack; BYOK clients hand you a great UI and the reliability problem. TierMux attacks exactly that reliability problem, for the free tier.
+Every free LLM tier rate-limits, caps out, or goes down. An assistant built on **one**
+provider inherits exactly that. TierMux pools them — one 429 and your turn quietly
+continues on the next provider, mid-sentence, without asking you anything.
 
 ## Install
 
-**VS Code** (Microsoft Marketplace)
-1. Extensions view (`Ctrl+Shift+X`) → search **TierMux** → **Install**
-2. or on [marketplace.visualstudio.com](https://marketplace.visualstudio.com/search?term=TierMux) → open the TierMux page → **Install**, which launches your editor
+1. Extensions (`Ctrl+Shift+X`) → search **TierMux** → **Install**
+   *(VSCodium / Cursor / Antigravity: grab the `.vsix` from [open-vsx.org](https://open-vsx.org/extension/mainul-islam/tiermux))*
+2. Activity Bar → **TierMux** → type.
 
-**VS Code forks — VSCodium · Cursor · Google Antigravity** ([open-vsx.org](https://open-vsx.org))
-1. Search **TierMux** on open-vsx.org → download the `.vsix`
-2. In the editor: Command Palette → `Extensions: Install from VSIX…`
+That's it. Four providers ship keyless, so your first message works with **no key, no
+account, no config**. Add keys later for more headroom → [Providers & keys](docs/PROVIDERS.md).
 
-Then: Activity Bar → **TierMux** icon → start typing. Keyless providers need nothing at all; add keys in **⚙ Manage Models & Keys** whenever you want more headroom.
+## What it does
 
-## Use as a library (Node 18+)
+- **Auto-routing** — classifies each message and picks a model for it, from a
+  self-updating catalog of hundreds of models (see [Providers](#providers)).
+- **Auto-failover** — 429, 5xx, dead key, timeout, or an empty answer all walk to the next
+  candidate silently, round-robin across providers.
+- **Key rotation** — many keys per provider, each cooled independently before the platform
+  is written off.
+- **Three modes** — Ask (read-only), Plan (proposes, you approve), Agent (edits + terminal
+  behind approvals). The model picker is separate and defaults to **Auto** — pin a specific
+  model any time.
+- **Codebase-aware** — symbol/dependency index, ambient editor context, project rules and
+  skills in `.tiermux/`, MCP servers.
+- **Explainable** — a **Why this model?** popover on every reply: what was picked, what
+  lost, and why.
+- **Bring your own** — any OpenAI-compatible endpoint: vLLM, LiteLLM, LM Studio, Ollama,
+  llama.cpp, Azure OpenAI.
+- **Safe by default** — diff and command approvals, `.env` read guards, checkpoints with
+  real undo.
 
-The same engine that powers the VS Code extension is consumable as an
-embeddable Node module — auto-routing, provider failover, plan execution,
-agent turns, structured work reports, all behind a stable public surface.
+## How it works
+
+```
+  your message
+       │
+       ▼
+ ┌────────────┐   what kind of turn is this?
+ │  CLASSIFY  │   trivial · chat · coding · debug · plan · agent · longContext · vision
+ └─────┬──────┘   regex first (English + Banglish), cheap LLM only when unsure
+       │
+       ▼
+ ┌────────────┐   1. the model you pinned      — if you pinned one
+ │   CHAIN    │   2. the task table's pick     — curated best for that kind
+ │            │   3. everything else enabled   — strongest model first
+ └─────┬──────┘   one model per provider first, so the chain spans PROVIDERS
+       │
+       ▼
+ ┌─────────────────── candidate 1 · Groq ─────────────────────┐
+ │                                                            │
+ │   key 1 ──429──▶ key 2 ──✓──▶ streaming ────────▶ ANSWERED │
+ │            └─ cools that ONE key, not the provider         │
+ │                                                            │
+ └──────────────────────────┬─────────────────────────────────┘
+                            │ request failed, or every key is cooled
+                            ▼
+ ┌─────────────── candidate 2 · Cerebras (next provider) ─────┐
+ └──────────────────────────┬─────────────────────────────────┘
+                            ▼
+        Google ─▶ OpenRouter ─▶ Kilo ─▶ …   up to 12 candidates
+```
+
+**What counts as a failure** — every row moves to the next candidate:
+
+| the provider did this | TierMux does this |
+|---|---|
+| `429` rate limit | cools that key → next key → next provider |
+| `401 / 402 / 403` dead key, no credit | rotates to your next key first — it may be one bad key, not a dead provider |
+| `5xx`, timeout, connection dropped | next provider |
+| `400` context too long, schema rejected | next provider — a different model may accept it |
+| `200 OK` but **empty** — no text, no tool call | next provider. A blank reply is a failure, not an answer |
+| answered | done — that model's failure streak resets to zero |
+
+A model that fails goes into a **30 s → 2 min** exponential cooldown, so the next turn
+skips it instead of walking into the same wall. One success clears it.
+
+Failover walks **providers**, not models — otherwise one provider with twenty enabled
+models would burn the whole chain in four seconds while every other provider sat untried.
+Full detail in [Routing](docs/ROUTING.md).
+
+## Providers
+
+<!-- catalog:start -->
+**600 models** across **33 providers**, and the catalog updates itself —
+new free models and whole new providers appear without an extension update.
+
+| | |
+|---|---|
+| **Keyless — zero setup** | Kilo Gateway · OpenCode Zen · OVH AI Endpoints · Pollinations |
+| **With a free API key** | Agnes AI · Aion Labs · Api.Airforce · Cerebras · ChatAnywhere · Cloudflare Workers AI · Cohere · Google AI Studio · Groq · Kenari · LLM7 · Mistral · ModelScope · Nara Router · NVIDIA NIM · Ollama Cloud · OpenAdapter · OpenRouter · OrcaRouter · Poolside · Requesty · Router9 · SambaNova · Token Router · UnoRouter · xKiro · Zhipu AI |
+| **Your own** | any OpenAI-compatible URL — vLLM, LiteLLM, LM Studio, Ollama, llama.cpp, Azure OpenAI |
+<!-- catalog:end -->
+
+More providers + more keys = fewer walls. Adding a key takes seconds and unused keys just
+rest → [Providers & keys](docs/PROVIDERS.md).
+
+## How it compares
+
+| | **TierMux** | Copilot | Cursor | Cline | Kilo Code |
+|---|:-:|:-:|:-:|:-:|:-:|
+| Usable every day at $0 | ✓ | ✗ <sup>1</sup> | ✗ <sup>2</sup> | ✗ <sup>3</sup> | ✗ <sup>3</sup> |
+| Works with zero keys or accounts | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Pools many providers' free tiers | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Auto-failover when a provider dies | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Many keys per provider, auto-rotated | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Any OpenAI-compatible endpoint | ✓ | ~ <sup>4</sup> | ~ <sup>5</sup> | ✓ | ✓ |
+| Agent mode behind approvals | ✓ | ~ | ~ | ✓ | ✓ |
+| Plan-then-execute | ✓ | ~ | ✓ | ✓ | ✓ |
+| MCP servers | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Open source | ✓ MIT | ✗ | ✗ | ✓ <sup>6</sup> | ✓ <sup>6</sup> |
+| Direct to provider, no vendor backend | ✓ | ✗ | ✗ | ✓ | ✓ |
+
+<sub>
+1. Copilot Free caps at 2,000 completions + 50 chat requests/month; Copilot moved to usage-based billing on 1 June 2026.
+2. Cursor is a proprietary VS Code fork; real usage sits behind its paid tiers.
+3. The software is free, but every request bills your own API tokens at provider rates — the cost moves, it doesn't disappear.
+4. Copilot added BYOK in June 2026 — your own provider, including any OpenAI-compatible endpoint, for chat and agent sessions. It does not cover code completions.
+5. Cursor accepts a custom OpenAI base URL on every plan, but Agent/Composer reject custom keys — BYOK is chat-only in practice.
+6. Cline is Apache-2.0; Kilo Code is MIT (acquired by Anaconda, July 2026).
+</sub>
+
+Paid assistants rent you one vendor's stack. BYOK clients hand you a great UI and the
+reliability problem. TierMux attacks the reliability problem itself, on the free tier.
+
+## Docs
+
+| | |
+|---|---|
+| [Providers & keys](docs/PROVIDERS.md) | keys, key rotation, custom OpenAI-compatible endpoints, settings |
+| [Routing](docs/ROUTING.md) | how a model is chosen, failover, "Why this model?", the algorithms |
+| [Features & modes](docs/FEATURES.md) | every mode and every tool |
+
+## Use as a library
+
+The same engine, embeddable in Node 18+ — routing, failover, agent turns.
 
 ```sh
 npm install tiermux
 ```
 
 ```ts
-import {
-  Router,
-  runAgentStream,
-  runPlanStream,
-  classifyTask,
-  createRouterProvider,
-  AllModelsFailedError,
-} from 'tiermux';
+import { runAgentStream, createRouterProvider, classifyTask, setModelSources } from 'tiermux';
 
-// 1. Build a Router (same engine the extension uses).
-//    `secretStore` and `settingsStore` are the same interfaces the
-//    extension's host wires up; the `vscode` mock at scripts/vscodeMock.cjs
-//    is a reference for what shim a headless consumer must provide.
-const router = new Router({ /* your deps */ });
+setModelSources({ catalog, settings, secrets });
+const model = createRouterProvider({ taskKind: classifyTask('Refactor the router') });
 
-// 2. Per-turn Auto routing: classify, then either pin or hand the model
-//    to the AI SDK as a TierMux-routed LanguageModelV4.
-const kind = classifyTask('Refactor the routing module');
-const model = createRouterProvider(router, { taskKind: kind });
-
-// 3. Run an agent turn.
-const result = await runAgentStream(router, {
-  messages: [{ role: 'user', content: 'Refactor the routing module' }],
+await runAgentStream(router, {
+  messages: [{ role: 'user', content: 'Refactor the router' }],
   mode: 'agent',
-  effort: 'medium',
   onChunk: (t) => process.stdout.write(t),
-  onTool: (e) => console.log(`tool ${e.name} → ${e.state}`),
-  onError: (m) => console.error(m),
-  /* …more callbacks… */
 });
 ```
 
-The library surface is intentionally minimal — it is the same
-`AgentOpts`/`AgentResult` contract the extension uses, with the same
-mechanical-execution engine behind it. The engine never judges answer
-quality; routing and failover are the Router's job, not the loop's
-(see `docs/SIMPLE_CORE_RESET_2026-08-24.md`).
-
-**Headless consumers** need a small `vscode` shim for the engine's
-config-read and filesystem calls. The repo ships
-[`scripts/vscodeMock.cjs`](scripts/vscodeMock.cjs) for the e2e suite;
-it's a reference for what symbols to stub. A full host-boundary refactor
-that removes every `vscode` import from the engine is scoped for a
-follow-up release.
-
-The sub-paths `tiermux/router`, `tiermux/agent`, `tiermux/providers`, and
-`tiermux/shared` are available if you only need one slice.
+Sub-paths `tiermux/router`, `tiermux/agent`, `tiermux/providers`, `tiermux/shared`.
+Headless consumers need a small `vscode` shim — [`scripts/vscodeMock.cjs`](scripts/vscodeMock.cjs)
+is the reference.
 
 ## Privacy
 
-Keys live in VS Code's encrypted secret storage. Requests go **VS Code → provider, directly** — there is no TierMux server. Votes, stats, and learned routing data never leave your machine.
+Keys live in VS Code's encrypted secret storage. Requests go **VS Code → provider,
+directly** — there is no TierMux server in the request path. Stats and learned routing data
+never leave your machine.
 
 ---
 
-MIT — see [LICENSE](LICENSE) and third-party attributions in [NOTICE](NOTICE). Contributing? Start with [CONTRIBUTING.md](CONTRIBUTING.md), [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md), and [PUBLISHING.md](PUBLISHING.md). Architecture deep-dive: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Engine invariants: [docs/SIMPLE_CORE_RESET_2026-08-24.md](docs/SIMPLE_CORE_RESET_2026-08-24.md). Changes: [CHANGELOG.md](CHANGELOG.md).
+MIT — [LICENSE](LICENSE) · [NOTICE](NOTICE) · [Contributing](CONTRIBUTING.md)

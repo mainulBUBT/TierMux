@@ -54,6 +54,49 @@ export interface SelectionRationale {
   }>;
 }
 
+/**
+ * Re-point a rationale at the model that ACTUALLY served the turn.
+ *
+ * selectModel() builds the report before a single byte is sent, so `picked` is chain[0] —
+ * the candidate we intended to use. When that candidate 429s (or returns an empty body) the
+ * turn is served by a failover further down the chain, and the un-updated report then names
+ * the wrong model: the footer said "ChatAnywhere/gpt-4.1" while the popover insisted
+ * "opencode/muse-spark-1.2-contributor-free — serves this turn" (live repro 2026-08-31,
+ * 5:57 PM). Every candidate the chain passed over on the way is relabelled as tried-and-
+ * failed, so the popover explains the walk instead of hiding it.
+ *
+ * Returns the input unchanged when the served model is already the one marked selected, or
+ * when it isn't in the report at all (nothing to correct against).
+ */
+export function rationaleForServed(
+  rationale: SelectionRationale,
+  platform: string,
+  modelId: string,
+): SelectionRationale {
+  const served = `${platform}::${modelId}`;
+  if (rationale.picked === served) return rationale;
+  const at = rationale.entries.findIndex((e) => e.model === served);
+  if (at === -1) return rationale;
+  return {
+    ...rationale,
+    picked: served,
+    entries: rationale.entries.map((e, i) => {
+      if (e.model === served) {
+        // Keep the label that explains HOW it got into the chain, drop the "failover #n"
+        // tail — it is not a failover any more, it is the answer.
+        const how = e.reason.replace(/\s*—\s*failover #\d+$/, '').replace(/\s*—\s*serves this turn$/, '');
+        return { ...e, selected: true, reason: `${how} — served this turn` };
+      }
+      // Only candidates BEFORE the winner were actually attempted; later ones were never dialed.
+      if (i < at && !e.skip) {
+        const how = e.reason.replace(/\s*—\s*(serves this turn|failover #\d+)$/, '');
+        return { ...e, selected: false, reason: `${how} — tried first, failed over` };
+      }
+      return { ...e, selected: false };
+    }),
+  };
+}
+
 export interface ModelSelection {
   /** First choice as `platform::modelId`. */
   model: string;

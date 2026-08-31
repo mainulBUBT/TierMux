@@ -26,7 +26,7 @@ import type {
 import type { ChatMessage, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
 import { resolveProvider } from '../../providers';
 import { ProviderHttpError } from '../../providers/base';
-import { selectModel, setModelSources, getApiKeysFor, recordOutcome, type ModelSources } from '../../router/picker';
+import { selectModel, setModelSources, getApiKeysFor, recordOutcome, rationaleForServed, type ModelSources, type SelectionRationale } from '../../router/picker';
 import { ThinkStripper, stripThinkTags, reasoningFromDelta, type Router, type RouteOptions } from '../../router/router';
 import { diagLog } from '../../util/diag';
 
@@ -311,7 +311,13 @@ interface Candidate {
 /** Resolve the candidate chain (first choice + fallbacks) into live provider instances.
  *  Keyed platforms with no stored key are SKIPPED — an unauthenticated request is a
  *  guaranteed 401, so selection falls through to a platform the user can actually use. */
-export async function resolveCandidates(opts: RouterProviderOptions): Promise<Candidate[]> {
+export async function resolveCandidates(
+  opts: RouterProviderOptions,
+  /** Out-param: receives the selection report so the caller can re-point it at whichever
+   *  candidate actually served (see `rationaleForServed`). Optional — the e2e gates call
+   *  this for the chain alone and have no popover to feed. */
+  out?: { rationale?: SelectionRationale },
+): Promise<Candidate[]> {
   const selection = await selectModel([], {
     pinnedModel: opts.pinnedModel,
     excludeModels: opts.excludeModels,
@@ -319,7 +325,11 @@ export async function resolveCandidates(opts: RouterProviderOptions): Promise<Ca
     sessionId: opts.sessionId,
     requireTools: opts.requireTools,
   });
+  // Emitted up front so the popover still has data when every candidate fails. It names
+  // chain[0] — only correct when chain[0] actually serves, which is why the caller re-emits
+  // through `rationaleForServed` as soon as a candidate succeeds.
   if (selection.rationale) opts.onSelectionRationale?.(selection.rationale);
+  if (out) out.rationale = selection.rationale;
 
   // Bounded chain — 4 candidates is plenty without scoring — but bounded chains need
   // PLATFORM DIVERSITY or the bound defeats the failover it exists to feed. The picker's
@@ -572,7 +582,14 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
     async doGenerate(options: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> {
       const messages = toRouterMessages(options.prompt);
       const tools = toRouterTools(options.tools);
-      const candidates = await resolveCandidates(providerOpts);
+      const sel: { rationale?: SelectionRationale } = {};
+      const candidates = await resolveCandidates(providerOpts, sel);
+      /** Report the model that really served — and fix the rationale to name it, so the
+       *  "Why this model?" popover can't credit a candidate that failed over. */
+      const reportServed = (platform: string, modelId: string, runtimeName?: string): void => {
+        providerOpts.onModelSelected?.(platform, modelId, runtimeName);
+        if (sel.rationale) providerOpts.onSelectionRationale?.(rationaleForServed(sel.rationale, platform, modelId));
+      };
       if (candidates.length === 0) throw new Error('TierMux: no model candidate resolved');
 
       let lastError: unknown;
@@ -604,7 +621,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             abortSignal: options.abortSignal,
             timeoutMs: connectTimeoutFor(c.platform),
           });
-          providerOpts.onModelSelected?.(c.platform, c.modelId, provider.runtimeName);
+          reportServed(c.platform, c.modelId, provider.runtimeName);
           if (data.usage) {
             providerOpts.onUsage?.({ inputTokens: data.usage.prompt_tokens, outputTokens: data.usage.completion_tokens, model: `${c.platform}::${c.modelId}` });
           }
@@ -655,7 +672,14 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
     async doStream(options: LanguageModelV4CallOptions): Promise<LanguageModelV4StreamResult> {
       const messages = toRouterMessages(options.prompt);
       const tools = toRouterTools(options.tools);
-      const candidates = await resolveCandidates(providerOpts);
+      const sel: { rationale?: SelectionRationale } = {};
+      const candidates = await resolveCandidates(providerOpts, sel);
+      /** Report the model that really served — and fix the rationale to name it, so the
+       *  "Why this model?" popover can't credit a candidate that failed over. */
+      const reportServed = (platform: string, modelId: string, runtimeName?: string): void => {
+        providerOpts.onModelSelected?.(platform, modelId, runtimeName);
+        if (sel.rationale) providerOpts.onSelectionRationale?.(rationaleForServed(sel.rationale, platform, modelId));
+      };
       if (candidates.length === 0) throw new Error('TierMux: no model candidate resolved');
       // Wire visibility: on a tool step the LAST message is the observation the model must
       // read — if it ever renders as JSON-envelope soup again, this line shows it instantly.
@@ -793,7 +817,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
               }
             }
 
-            providerOpts.onModelSelected?.(c.platform, c.modelId, provider.runtimeName);
+            reportServed(c.platform, c.modelId, provider.runtimeName);
             // A FOLDED turn is not a success. `folded` above means this candidate produced NO
             // content channel and NO tool call — only reasoning, which the fold promoted so the
             // user sees something instead of an empty bubble. Reporting that as `true` marked the
