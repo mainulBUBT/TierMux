@@ -1428,12 +1428,10 @@ const STATE_LABEL = {
     const timelineNodes = children.slice(0, lastWorkIdx + 1).filter((el) => el !== answerNode && el !== planEl);
     // Nothing left to collapse once the answer and plan are excluded — leave the flow as-is.
     if (!timelineNodes.length) return;
-    const toolCount = timelineNodes.filter((el) => el.classList.contains('tm-tool-card')).length;
-    const thinkCount = timelineNodes.filter((el) => el.classList.contains('tm-reasoning')).length;
+    // Duration only — the user asked for no tool/thought counts in the summary line
+    // (2026-09-01): "Worked for 12s", not "Worked for 12s · 3 tool uses · 2 thoughts".
     const parts = [];
     if (elapsedSeconds != null) parts.push(`Worked for ${fmtDuration(elapsedSeconds)}`);
-    if (toolCount) parts.push(`${toolCount} tool use${toolCount !== 1 ? 's' : ''}`);
-    if (thinkCount) parts.push(`${thinkCount} thought${thinkCount !== 1 ? 's' : ''}`);
     // Token totals come from the turn's WorkReportData.telemetry when present — the single
     // accounting source; the summary never recomputes them.
     if (extraStats && extraStats.length) parts.push(...extraStats);

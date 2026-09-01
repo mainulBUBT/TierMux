@@ -143,7 +143,10 @@ body {
   top: 0;
   z-index: 2;
   background: var(--vscode-sideBar-background, var(--vscode-editor-background));
-  padding-bottom: 4px;
+  /* The ONLY clearance below the PINNED command — scrolling answers slide under the
+     sticky box, so the visible gap is this padding, not the turn gap (live repro: pinned
+     bubble with "Worked for Ns" glued to it, 2026-09-01). */
+  padding-bottom: 8px;
 }
 /* Keep a long question from dominating the viewport when it's pinned: collapse it to a
    few lines and let the user expand it with the See more / See less toggle (added in JS). */
@@ -182,7 +185,7 @@ body {
   gap: 10px;
   align-items: flex-start;
 }
-.msg.assistant .bubble { background: transparent; border: none; padding: 2px 0; }
+.msg.assistant .bubble { background: transparent; border: none; padding: 0 0 2px; }
 .msg-text { flex: 1 1 auto; min-width: 0; }
 .msg-meta { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; opacity: .55; }
 .msg.user:hover .msg-meta { opacity: .9; }
@@ -205,20 +208,29 @@ body {
 .flow > .flow-text { margin: 2px 0; }
 .flow > .tm-tool-card, .flow > .tm-reasoning { margin: 1px 0; }
 
-/* Collapsed work summary — wraps tool cards + reasoning blocks after run completes */
-.work-summary { margin: 2px 0 4px; }
+/* Collapsed work summary — wraps tool cards + reasoning blocks after run completes.
+   Bottom margin gives the answer line below it normal paragraph spacing (user direction:
+   "after ▸ Worked for 12s keep normal space between line"). */
+/* Flex gap inside the <details> is the before/after breathing room around each thought and
+   tool row — the .flow gap stops applying once rows move inside the summary, which is why
+   they used to stack 2px apart (user direction: "before thought and after should add gap,
+   also in tools, same gap"). Also makes the whole summary row the click target. */
+.work-summary { margin: 0 0 10px; display: flex; flex-direction: column; gap: var(--tm-gap-md, 8px); }
 .work-sum-label {
   list-style: none; cursor: pointer;
   display: inline-flex; align-items: center;
   color: var(--tm-fg-muted, var(--vscode-descriptionForeground));
-  font-size: 11px; font-weight: 500;
+  font-size: var(--tm-text-sm, 12px); font-weight: 600;
   user-select: none; white-space: nowrap;
   transition: color var(--tm-transition-fast, .12s ease);
 }
 .work-sum-label:hover { color: var(--tm-fg, var(--vscode-foreground)); text-decoration: underline; }
 .work-sum-label::-webkit-details-marker { display: none; }
+/* The native marker above is hidden, so the disclosure affordance is this glyph — same
+   ▸/▾ swap .tool-more, details.reasoning, and .tm-card-collapsible use. */
+.work-sum-label::before { content: '▸'; font-size: var(--tm-text-sm, 12px); margin-right: var(--tm-gap-sm, 4px); }
+details[open].work-summary > .work-sum-label::before { content: '▾'; }
 details[open].work-summary > .work-sum-label { color: var(--tm-fg, var(--vscode-foreground)); }
-.work-summary > .tm-tool-card, .work-summary > .tm-reasoning { margin: 1px 0; }
 /* Interim "thinking out loud" text that streamed between tool calls (weak free models emit it
    as content). Inside the collapsed timeline it's working notes, not the answer — mute it and
    indent so it reads as a step, distinct from the clean answer below the summary. */
