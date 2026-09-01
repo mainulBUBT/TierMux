@@ -47,7 +47,6 @@ const PLAN: ProposedPlan = {
   outcome: 'plan',
   title: 'Add dark mode',
   interpretation: 'the settings panel should offer a light/dark choice the webview honours',
-  approach: 'store it as an ordinary setting so the webview reads it like every other one',
   description: 'Wire a theme toggle through the settings panel.',
   steps: [
     { what: 'Add a themeMode setting', files: ['src/settingsMeta.ts'], evidence: 'src/settingsMeta.ts:40 has no theme entry', verify: 'npm run typecheck' },
@@ -153,23 +152,29 @@ async function main(): Promise<void> {
     typeof noReading === 'object' && noReading !== null && 'error' in noReading
     && /interpretation/i.test((noReading as { error: string }).error), JSON.stringify(noReading));
 
-  // Open questions ride INSIDE the plan: a model confident enough to draft steps no longer has
-  // to choose between asking and planning. Both ship; the card blocks execution.
+  // Questions belong BEFORE the plan (2026-09-01): they go out one at a time on askUser's
+  // question card, and the plan card carries nothing but the settled premise + steps. The tool
+  // itself documented a `questions` field until that day, so a model shaped on TierMux's own
+  // schema still sends it — the schema is passthrough (not strip) precisely so the doubt stays
+  // visible here and is REJECTED with a route to askUser, instead of being silently swallowed
+  // into an approvable plan. Same for the retired `approach` field.
+  const beforeQ = seen.length;
   const withQ = await exec({ outcome: 'plan', title: 'Hide off-category items',
     interpretation: 'items under an off category should be hidden in edit mode',
-    questions: [{ question: 'Fix the shared scope or only the vendor view?', background: 'Item.php:120 checks the parent only', options: [' Shared scope ', 'Vendor view only', '  '] }],
+    questions: [{ question: 'Fix the shared scope or only the vendor view?', background: 'Item.php:120 checks the parent only', options: ['Shared scope', 'Vendor view only'] }],
     steps: [{ what: 'Add a sub-category status check', files: ['app/Models/Item.php'], evidence: 'app/Models/Item.php:120' }] }, {});
-  const posted = seen[seen.length - 1];
-  ok('open questions are carried on the plan, not dropped',
-    posted.questions?.length === 1 && posted.questions[0].question.startsWith('Fix the shared scope'),
-    JSON.stringify(posted.questions));
-  ok('question options are trimmed and blanks dropped',
-    JSON.stringify(posted.questions?.[0].options) === '["Shared scope","Vendor view only"]',
-    JSON.stringify(posted.questions?.[0].options));
-  ok('the model is told the user answers the questions, not it',
-    typeof withQ === 'string' && /open question/i.test(withQ) && /do not answer the questions yourself/i.test(withQ),
+  ok('a plan stuffed with questions is rejected, not silently swallowed',
+    typeof withQ === 'object' && withQ !== null && 'error' in withQ
+    && /askUser/i.test((withQ as { error: string }).error) && seen.length === beforeQ,
     JSON.stringify(withQ));
-  ok('interpretation and approach reach the host',
+  const withApproach = await exec({ outcome: 'plan', title: 'x', interpretation: 'r',
+    approach: 'fix it in the shared scope',
+    steps: [{ what: 'Add the check', files: ['a.ts'], evidence: 'a.ts:1' }] }, {});
+  ok('the retired `approach` field is rejected the same way',
+    typeof withApproach === 'object' && withApproach !== null && 'error' in withApproach
+    && /approach/i.test((withApproach as { error: string }).error) && seen.length === beforeQ,
+    JSON.stringify(withApproach));
+  ok('interpretation reaches the host',
     seen[0].interpretation === 'the panel should offer a light/dark choice', JSON.stringify(seen[0].interpretation));
 
   // Hesitation now has a name, and it routes to askUser instead of to a guessed plan.
@@ -455,38 +460,25 @@ async function main(): Promise<void> {
     renderPlanMarkdown(card, { title: 'Add dark mode', status: 'approved', now: new Date(0) })
       .includes('  - Evidence: src/settingsMeta.ts:40 has no theme entry'));
 
-  // The header block: reading/approach/questions ride on the card text, ABOVE the steps, and
-  // must not be mistaken for steps by the bullet parser.
+  // The header block: the reading rides on the card text, ABOVE the steps, and must not be
+  // mistaken for steps by the bullet parser. Questions and approach are NOT on the card
+  // (2026-09-01) — questions are asked before the plan via askUser, so nothing else may leak in.
   ok('the reading is on the card, above the first step',
     card.includes('Reading: the settings panel should offer a light/dark choice the webview honours')
     && card.indexOf('Reading:') < card.indexOf('1. '), card.slice(0, 120));
-  ok('the approach is on the card', card.includes('Approach: store it as an ordinary setting'), card.slice(0, 200));
+  ok('no Approach line and no Q:/A: lines on the card',
+    !/^Approach:/m.test(card) && !/^(?:Q|A): /m.test(card), card.slice(0, 200));
   ok('header lines are not parsed as steps', parsePlanSteps(card).length === 3, JSON.stringify(parsePlanSteps(card)));
 
-  const qCard = formatPlanForCard({
-    outcome: 'plan', title: 'x', interpretation: 'hide off-category items in edit mode',
-    questions: [{ question: 'Shared scope or vendor view only?', background: 'Item.php:120 checks the parent only', options: ['Shared scope', 'Vendor view only'] }],
-    steps: [{ what: 'Add the check', files: ['app/Models/Item.php'], evidence: 'app/Models/Item.php:120' }],
-  });
-  ok('an open question is encoded on one Q: line, not as a bullet',
-    qCard.includes('Q: Shared scope or vendor view only? | Item.php:120 checks the parent only | Shared scope; Vendor view only')
-    && parsePlanSteps(qCard).length === 1, JSON.stringify(qCard));
-
-  const qMd = renderPlanMarkdown(qCard, { title: 'x', status: 'approved', now: new Date(0) });
-  ok('an unanswered plan is saved as status: needs-answers, not approved',
-    /^status: needs-answers$/m.test(qMd) && /^questions: 1$/m.test(qMd) && /^answered: false$/m.test(qMd), qMd.slice(0, 300));
-  ok('the saved document renders Reading / Open questions sections',
-    qMd.includes('## Reading') && qMd.includes('## Open questions — UNANSWERED')
-    && qMd.includes('- [ ] Shared scope or vendor view only?')
-    && qMd.includes('  - Option: Vendor view only'), qMd);
-  // The answer is written back into the HEADER block, right after its question — the webview
-  // does the same, so a saved plan carries the pick beside the question it answers.
-  const answeredCard = qCard.split('\n')
-    .flatMap((l) => (l.startsWith('Q: ') ? [l, 'A: Vendor view only'] : [l])).join('\n');
-  const answeredMd = renderPlanMarkdown(answeredCard, { title: 'x', status: 'approved', now: new Date(0) });
-  ok('answering flips the checkbox and restores the real status',
-    /^status: approved$/m.test(answeredMd) && answeredMd.includes('- [x] Shared scope or vendor view only?')
-    && answeredMd.includes('**Answer:** Vendor view only'), answeredMd.slice(0, 400));
+  // A card persisted before 2026-09-01 can still replay with retired header lines; the markdown
+  // renderer must skip them rather than grow them back into the description paragraph.
+  const legacyMd = renderPlanMarkdown(
+    'Reading: hide off-category items in edit mode\nApproach: fix it in the shared scope\nQ: Shared scope or vendor view only?\nA: Vendor view only\n\n1. Add the check (`app/Models/Item.php`)',
+    { title: 'x', status: 'approved', now: new Date(0) });
+  ok('retired header lines are skipped, not re-rendered',
+    legacyMd.includes('## Reading') && !legacyMd.includes('## Approach') && !legacyMd.includes('Open questions')
+    && !legacyMd.includes('Approach: fix it') && !legacyMd.includes('Shared scope or vendor view only?'),
+    legacyMd.slice(0, 400));
 
   // A 'no-change' outcome formats to its finding, never to an empty step list.
   const ncCard = formatPlanForCard({ outcome: 'no-change', title: 'Already filtered',

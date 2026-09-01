@@ -20,18 +20,15 @@ new Function('module', 'exports', 'require', fmtBundle.outputFiles[0].text)(
 );
 const { formatPlanForCard } = mod.exports;
 
+// No with-questions fixture any more (2026-09-01): questions are asked BEFORE the plan via
+// askUser's question card, so every plan card is settled by construction. The two fixtures are
+// both clean cards — a two-file evidence-heavy one and a small one.
 const FIXTURES = {
-  withQuestions: formatPlanForCard({
+  vendor: formatPlanForCard({
     outcome: 'plan',
     title: 'Hide inactive products in order edit mode',
     interpretation: 'in edit mode, products whose category or status is off should be HIDDEN from the grid',
-    approach: 'filter in the controller query so inactive items never reach the blade template',
     description: 'Adds the status and category checks the edit-mode grid is missing.',
-    questions: [{
-      question: 'Fix the shared scope, or only the vendor order view?',
-      background: 'app/Models/Item.php:120 checks the parent category only, so the fix is shared by default',
-      options: ['Shared scope', 'Vendor view only'],
-    }],
     steps: [
       { what: 'Add a sub-category status check to Item::scopeActive', files: ['app/Models/Item.php'],
         evidence: 'app/Models/Item.php:120 validates the parent status but never the sub-category',
@@ -45,7 +42,6 @@ const FIXTURES = {
     outcome: 'plan',
     title: 'Add a dark mode toggle',
     interpretation: 'the settings panel should offer a light/dark choice the webview honours',
-    approach: 'store it as an ordinary setting so the webview reads it like every other one',
     description: 'Wires a theme setting through the settings panel and the webview.',
     steps: [
       { what: 'Add a themeMode setting', files: ['src/settingsMeta.ts'],

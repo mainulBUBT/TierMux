@@ -190,3 +190,41 @@ npm run test:e2e:exit-plan-mode   # the boundary: wiring · policy · tool · en
 npm run test:e2e:foundation       # scenario 11 drives the real engine through it
 npm run test:e2e:plan-structurer  # the prose fallback still works
 ```
+
+## Questions moved BEFORE the plan (2026-09-01, one day later)
+
+For exactly one day the tool carried open questions INSIDE the plan (plus an `approach` field):
+the card rendered them as answerable chips, Execute/Save stayed gated until every one was
+answered, and a saved plan file could carry `status: needs-answers`. Both fields are now GONE,
+and this section records why so the shape is not re-derived in good faith.
+
+**The reversal:** a plan card with a questions section asks the user to approve and answer in
+the same breath — the card says "here is the plan" while its own gate says "its premises are
+still guesses". The discussion that answers a question belongs in the conversation, AHEAD of
+the plan, not inside the artifact being approved. So questions now go out BEFORE the plan,
+one at a time, on the SAME question card every other mode already asks on (`askUser` →
+`askUserPrompt` → the shared clarify card UI — the 2026-07-20 `renderQuestionCard` commit).
+The model that would have stuffed doubt into `exitPlanMode.questions` is told to call `askUser`
+first and re-submit a finished plan; `interpretation` (the stated premise) stays.
+
+**Enforcement, not hope:** the schema is `z.object({...}).passthrough()`, deliberately not the
+default strip. A model shaped on TierMux's own pre-2026-09-01 schema still sends
+`questions`/`approach`; strip would delete them before `execute` could see it — the doubt
+silently swallowed into an approvable plan, which is the exact failure the field was added to
+fix. Passthrough keeps the keys visible so `execute` returns a recoverable `{ error }` that
+routes them to `askUser`, the same place the `needs-decision` outcome goes. Every rejection
+stays recoverable because the turn stops on the accepted RESULT (`planAccepted`), not the call.
+
+**What else fell out:**
+
+- The card's answer-gating (`refreshGate`, the `.gated` Execute/Save buttons) is deleted — a
+  plan that reaches the card is settled by construction, so the actions are always live.
+- `renderPlanMarkdown` no longer writes `status: needs-answers` / `questions:` / `answered:`
+  frontmatter or `## Approach` / `## Open questions` sections.
+- Retired `Approach:` / `Q:` / `A:` header lines are still SKIPPED by the re-parsers
+  (`PLAN_HEADER_LINE` in Plan.ts, `CARD_RETIRED_HEADER_RE` in planStructurer.ts): cards
+  persisted by older sessions replay with them, and they must neither render as steps nor
+  leak into a re-saved description paragraph.
+
+The same suites verify it; the exit-plan-mode run covers the passthrough rejection, the
+question-free card text, and the legacy-line skipping.

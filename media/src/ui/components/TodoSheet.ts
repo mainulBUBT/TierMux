@@ -7,6 +7,10 @@
 // clicking outside) collapses it back. Fed from BOTH the live agent todo list ('todos') and
 // the plan runner's progress state (planProgress) — see main.ts wiring.
 //
+// A run that FINISHES cleanly does not leave the bar above the composer: after a short linger
+// (long enough to read "Plan completed (5/5 steps)") the bar removes itself. A FAILED run keeps
+// the bar pinned with its dismiss × — a failure needs a decision, not a timeout.
+//
 // Boundary: strict-checked, may only import from media/src/**. Host interaction is via
 // callbacks (onResume — the paused plan-run affordance); no send() directly.
 
@@ -53,7 +57,8 @@ export interface TodoSheetState {
   note?: string;
   /** Paused plan run → the bar shows a Resume button. */
   paused?: boolean;
-  /** Terminal states get a dismiss ×; a live run keeps the bar pinned. */
+  /** Terminal states get a dismiss × and — when nothing failed — self-clear after a short
+   *  linger (AUTO_CLEAR_MS). A live run keeps the bar pinned. */
   finished?: boolean;
 }
 
@@ -72,6 +77,12 @@ const MARKER: Record<TodoSheetStepStatus, string> = {
   failed: '✗',
 };
 
+/** A finished run keeps the bar only long enough to read its completion note, then clears
+ *  itself — a done checklist pinned above the composer forever (until the × is found and
+ *  clicked) is leftover scaffolding, not status. Failed runs are exempt: a failure needs a
+ *  decision, so that bar stays until the user dismisses it. */
+const AUTO_CLEAR_MS = 6000;
+
 export function createTodoSheet(opts: TodoSheetOptions = {}): {
   root: HTMLElement;
   update: (state: TodoSheetState | null) => void;
@@ -80,6 +91,29 @@ export function createTodoSheet(opts: TodoSheetOptions = {}): {
 } {
   let current: TodoSheetState | null = null;
   let openState = false;
+  let autoClearTimer: ReturnType<typeof setTimeout> | undefined;
+  let clearAfterClose = false;
+
+  const clearBar = (): void => {
+    current = null;
+    clearAfterClose = false;
+    render();
+  };
+
+  const armAutoClear = (state: TodoSheetState): void => {
+    if (autoClearTimer) clearTimeout(autoClearTimer);
+    autoClearTimer = undefined;
+    clearAfterClose = false;
+    const cleanFinish = state.finished && !state.paused && !state.running && !state.preparing
+      && !state.steps.some((s) => s.status === 'failed');
+    if (!cleanFinish) return;
+    autoClearTimer = setTimeout(() => {
+      autoClearTimer = undefined;
+      // Never yank the list out from under an open sheet — finish the read, then clear on close.
+      if (openState) { clearAfterClose = true; return; }
+      clearBar();
+    }, AUTO_CLEAR_MS);
+  };
 
   // The wrapper is the positioning context — the sheet anchors to its top edge.
   const root = el('div', { class: 'tm-todobar-wrap' });
@@ -165,6 +199,7 @@ export function createTodoSheet(opts: TodoSheetOptions = {}): {
     sheet.classList.add('hidden');
     bar.setAttribute('aria-expanded', 'false');
     document.removeEventListener('mousedown', closeOnOutside);
+    if (clearAfterClose) { clearBar(); return; }
     render();
   }
 
@@ -176,6 +211,11 @@ export function createTodoSheet(opts: TodoSheetOptions = {}): {
     root,
     open: openSheet,
     close: closeSheet,
-    update(state) { current = state; render(); },
+    update(state) {
+      current = state;
+      if (state) armAutoClear(state);
+      else if (autoClearTimer) { clearTimeout(autoClearTimer); autoClearTimer = undefined; clearAfterClose = false; }
+      render();
+    },
   };
 }

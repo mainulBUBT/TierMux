@@ -15,9 +15,9 @@ import { createPlan, planDataFromStepText } from '../media/src/ui/components';
 // The card text is produced by the REAL formatPlanForCard, but on the Node side of the build
 // (scripts/buildPlanPreview.mjs) and injected here: importing planStructurer directly would drag
 // the router — and its fs/path imports — into a browser bundle.
-declare const __PLAN_FIXTURES__: { withQuestions: string; clean: string };
+declare const __PLAN_FIXTURES__: { vendor: string; clean: string };
 
-const { withQuestions, clean } = __PLAN_FIXTURES__;
+const { vendor, clean } = __PLAN_FIXTURES__;
 
 const section = (label: string, node: HTMLElement): HTMLElement => {
   const box = document.createElement('div');
@@ -38,7 +38,7 @@ const build = (title: string, text: string, mode: 'edit' | 'live') => {
 };
 
 document.body.append(
-  section('edit mode — open questions block execution', build('Hide inactive products in order edit mode', withQuestions, 'edit')),
-  section('edit mode — nothing open, actions enabled', build('Add a dark mode toggle', clean, 'edit')),
+  section('edit mode — evidence-heavy multi-file plan', build('Hide inactive products in order edit mode', vendor, 'edit')),
+  section('edit mode — settled plan, actions live', build('Add a dark mode toggle', clean, 'edit')),
   section('live mode — read-only tracker', build('Add a dark mode toggle', clean, 'live')),
 );

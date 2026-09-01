@@ -67,18 +67,6 @@ export interface ProposedPlanStep {
   verify?: string;
 }
 
-/** One thing the model had to GUESS to write the plan. Carried INSIDE the plan rather than
- *  raised through askUser, so a model confident enough to draft steps no longer has to choose
- *  between asking and planning — it does both, and the plan stays un-executable until answered.
- *  Shape borrowed from the `## Confirmation Items` section of the plan.md reimplementations. */
-export interface PlanQuestion {
-  question: string;
-  /** Why it matters / what raised it, with path:line. */
-  background?: string;
-  /** 2-5 concrete alternatives, when the choice is between known options. */
-  options?: string[];
-}
-
 export interface ProposedPlan {
   title: string;
   /** What the investigation concluded. 'no-change' renders as a finding, not as a step list —
@@ -91,12 +79,10 @@ export interface ProposedPlan {
   finding?: string;
   /** The reading of the request these steps implement, in one sentence. Rendered at the TOP of
    *  the card: a plan can be right in every step and still implement the wrong request, and
-   *  that is invisible unless the premise is stated (2026-09-01 vendor-order repro). */
+   *  that is invisible unless the premise is stated (2026-09-01 vendor-order repro).
+   *  Deliberately NO questions/approach fields (2026-09-01): questions are asked BEFORE the
+   *  plan via askUser, and the plan card carries nothing but the settled premise + steps. */
   interpretation?: string;
-  /** Why this way — the design choice and its blast radius beyond the changed lines. */
-  approach?: string;
-  /** Open questions. Non-empty ⇒ the plan is NOT executable until the user answers. */
-  questions?: PlanQuestion[];
   steps: ProposedPlanStep[];
 }
 

@@ -104,27 +104,21 @@ export function formatStructuredSteps(steps: string[]): string {
  */
 /** Card-text encoding for the plan's header block. Line-prefixed rather than markdown-sectioned
  *  on purpose: the card text is hand-editable and is parsed back by BOTH this file and the
- *  webview, and `Reading:` / `Approach:` / `Q:` cannot collide with the step-bullet regex
- *  (`^\s*(?:[-*]|\d+[.)])\s+`) the way a `- [ ] question` line would. */
+ *  webview, and `Reading:` cannot collide with the step-bullet regex
+ *  (`^\s*(?:[-*]|\d+[.)])\s+`) the way a `- [ ]` line would.
+ *  The header block is the READING alone since 2026-09-01 — `Approach:` / `Q:` / `A:` lines are
+ *  retired (questions are asked before the plan via askUser, not carried on it), but they still
+ *  occur in cards persisted by older sessions, so the re-parsers keep skipping them. */
 export const CARD_READING_RE = /^Reading:\s*(.+)$/;
-export const CARD_APPROACH_RE = /^Approach:\s*(.+)$/;
-/** `Q: question | background | option; option` — background and options optional. */
-export const CARD_QUESTION_RE = /^Q:\s*(.+)$/;
-/** `A: answer` — the user's pick, written back when they answer on the card. */
-export const CARD_ANSWER_RE = /^A:\s*(.+)$/;
+/** Retired header lines (approach / on-card questions and answers), still skipped when
+ *  re-parsing a card saved before 2026-09-01 so they do not leak into a re-saved description. */
+export const CARD_RETIRED_HEADER_RE = /^(?:Approach|Q|A):\s*/;
 
 export function formatPlanForCard(plan: ProposedPlan): string {
   const lines: string[] = [];
   // Header block FIRST: the reading is the one thing a reader must see before the steps, since
   // a plan can be right in every step and still implement the wrong request.
   if (plan.interpretation?.trim()) lines.push(`Reading: ${plan.interpretation.trim()}`);
-  if (plan.approach?.trim()) lines.push(`Approach: ${plan.approach.trim()}`);
-  for (const q of plan.questions ?? []) {
-    if (!q.question?.trim()) continue;
-    const parts = [q.question.trim(), q.background?.trim() || '', (q.options ?? []).join('; ')];
-    while (parts.length && !parts[parts.length - 1]) parts.pop();
-    lines.push(`Q: ${parts.join(' | ')}`);
-  }
   if (lines.length) lines.push('');
   if (plan.description?.trim()) lines.push(plan.description.trim(), '');
   // 'no-change' has no steps by construction — it is a finding, and the host renders it as a
@@ -252,16 +246,12 @@ export function renderPlanMarkdown(steps: string, meta: PlanFileMeta): string {
   const lines = steps.split('\n');
   const firstStep = lines.findIndex((l) => /^\s*(?:[-*]|\d+[.)])\s+\S/.test(l));
   // The header block is recovered from the CARD TEXT like everything else — the user may have
-  // edited the reading or answered a question before saving, and a stored copy of ProposedPlan
-  // could silently disagree with what they approved.
+  // edited the reading before saving, and a stored copy of ProposedPlan could silently disagree
+  // with what they approved.
   const head = (firstStep === -1 ? lines : lines.slice(0, firstStep)).map((l) => l.trim());
   const reading = head.map((l) => l.match(CARD_READING_RE)?.[1]).find(Boolean)?.trim();
-  const approach = head.map((l) => l.match(CARD_APPROACH_RE)?.[1]).find(Boolean)?.trim();
-  const questions = head.map((l) => l.match(CARD_QUESTION_RE)?.[1]).filter((x): x is string => !!x);
-  const answers = head.map((l) => l.match(CARD_ANSWER_RE)?.[1]).filter((x): x is string => !!x);
-  const unanswered = Math.max(0, questions.length - answers.length);
   const description = (firstStep === -1 ? [] : lines.slice(0, firstStep))
-    .filter((l) => ![CARD_READING_RE, CARD_APPROACH_RE, CARD_QUESTION_RE, CARD_ANSWER_RE].some((re) => re.test(l.trim())))
+    .filter((l) => !CARD_READING_RE.test(l.trim()) && !CARD_RETIRED_HEADER_RE.test(l.trim()))
     .map((l) => l.trim()).filter(Boolean).join(' ').trim();
 
   const parsed: ParsedStep[] = [];
@@ -275,14 +265,10 @@ export function renderPlanMarkdown(steps: string, meta: PlanFileMeta): string {
     '---',
     `title: ${yamlString(meta.title)}`,
     `created: ${isoLocal(meta.now ?? new Date())}`,
-    `status: ${unanswered ? 'needs-answers' : meta.status}`,
+    `status: ${meta.status}`,
     ...(meta.model ? [`model: ${yamlString(meta.model)}`] : []),
     ...(meta.sessionId ? [`session: ${yamlString(meta.sessionId)}`] : []),
     `steps: ${parsed.length}`,
-    // Machine-visible, not just on screen: a plan saved with questions still open is not
-    // execute-ready, and `grep -l 'status: needs-answers'` has to be able to say so.
-    ...(questions.length ? [`questions: ${questions.length}`] : []),
-    ...(unanswered ? ['answered: false'] : []),
     ...(touched.length ? ['files:', ...touched.map((f) => `  - ${yamlString(f)}`)] : []),
     '---',
   ];
@@ -292,18 +278,6 @@ export function renderPlanMarkdown(steps: string, meta: PlanFileMeta): string {
     body.push(`> **Request** — ${meta.request.trim().replace(/\s+/g, ' ')}`, '');
   }
   if (reading) body.push('## Reading', '', reading, '');
-  if (approach) body.push('## Approach', '', approach, '');
-  if (questions.length) {
-    body.push(`## Open questions${unanswered ? ' — UNANSWERED' : ''}`, '');
-    questions.forEach((q, i) => {
-      const [text, background, options] = q.split('|').map((x) => x.trim());
-      body.push(`- [${answers[i] ? 'x' : ' '}] ${text}`);
-      if (background) body.push(`  - Background: ${background}`);
-      if (options) body.push(...options.split(';').map((o) => `  - Option: ${o.trim()}`).filter((l) => l !== '  - Option:'));
-      if (answers[i]) body.push(`  - **Answer:** ${answers[i]}`);
-    });
-    body.push('');
-  }
   if (description) body.push(description, '');
   body.push('## Steps', '');
   if (!parsed.length) {

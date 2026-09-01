@@ -61,16 +61,19 @@ const MODE_TAIL: Record<Mode, string> = {
     // accessible", guessed the wrong branch, and shipped a plan that implemented the OPPOSITE of
     // the request. Every step carried real evidence; the inversion lived in an unstated premise.
     //
-    // So the prompt now does three things the old two-outcome version could not: it makes the
-    // premise explicit (interpretation), it gives doubt a place to live INSIDE the plan
-    // (questions), and it names the triggers rather than leaving "ambiguous" to be self-assessed
-    // — the trigger list is opencode's plan agent, whose rule is "don't make large assumptions
-    // about user intent".
+    // So the premise is now explicit (interpretation), doubt has a REQUIRED outlet, and the
+    // triggers are named rather than left to self-assessment — the trigger list is opencode's
+    // plan agent, whose rule is "don't make large assumptions about user intent". The outlet is
+    // askUser, BEFORE the plan (2026-09-01): for one day questions rode inside the plan card, but
+    // that asked the user to approve and answer in the same breath — and the discussion that
+    // answers a question belongs in the conversation, ahead of the plan, not inside the artifact
+    // the user is being asked to approve. Questions go out one at a time on the question card,
+    // the same surface every other mode asks on.
     'Before writing any step, write `interpretation`: ONE sentence saying what you believe the user is asking for, in their own terms. If you cannot write it without guessing, the guess is a question — not a premise.',
     '',
-    'Put anything you had to GUESS into `questions`. Ask when: the request could be read two ways; the same fix could go in a shared/global place or a local one; a tradeoff has no obvious winner; or a required behaviour, edge case or UX detail is simply not stated. Never make large assumptions about user intent.',
+    'Ask BEFORE you plan: if the request could be read two ways; the same fix could go in a shared/global place or a local one; a tradeoff has no obvious winner; or a required behaviour, edge case or UX detail is simply not stated — call askUser with that ONE question and concrete options, and wait for the answer. Never make large assumptions about user intent.',
     '',
-    'Submitting a plan WITH open questions is correct and expected — the user answers them on the card, and nothing executes until they do. Use askUser instead only when you cannot draft any steps at all before knowing the answer.',
+    'Call exitPlanMode only with a FINISHED plan: every premise settled by the conversation or by askUser. A plan carries no open questions — if it would, you are not ready to propose it.',
     '',
     'Every step you propose must CHANGE a file, and must name the path:line you read that proves it is needed. If your investigation concludes nothing needs changing, say so with exitPlanMode outcome "no-change" — never pad a plan with a step that only re-checks something.',
     DELEGATE_LINE,

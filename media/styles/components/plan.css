@@ -243,85 +243,16 @@
 .tm-plan-action.danger { color: var(--tm-status-error); }
 .tm-plan-action-icon { display: inline-flex; flex: 0 0 auto; }
 
-/* ── Plan header block: reading / approach / open questions ────────────────────
+/* ── Plan header block: the reading ───────────────────────────────────────────
    The reading is the premise the steps rest on. It leads the card because a plan
    can be correct in every step and still implement the wrong request — the only
-   place that is catchable is above the steps, not inside them. */
+   place that is catchable is above the steps, not inside them. Questions are NOT
+   part of the card (2026-09-01): they are asked before the plan via askUser's
+   question card, so there is no questions block here. */
 /* The reading carries no label — it is the plan's opening sentence, sized like the description
  * but in full-strength text so the premise reads first. */
 .tm-plan-reading {
   font-size: var(--tm-text-sm);
   line-height: 1.55;
 }
-.tm-plan-approach {
-  display: flex;
-  gap: var(--tm-gap-md);
-  align-items: baseline;
-  font-size: var(--tm-text-sm);
-  line-height: 1.5;
-}
-.tm-plan-meta-label {
-  flex: 0 0 auto;
-  font-size: var(--tm-text-xs);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--tm-fg-muted);
-}
 .tm-plan-reading .tm-plan-meta-text { color: var(--tm-fg); }
-.tm-plan-approach .tm-plan-meta-text { color: var(--tm-fg-muted); }
-
-/* Open questions — the plan's own doubt, carried instead of guessed away. */
-.tm-plan-questions {
-  display: flex;
-  flex-direction: column;
-  gap: var(--tm-gap-md);
-  padding: var(--tm-gap-md) var(--tm-gap-lg);
-  border: 1px solid var(--tm-warning);
-  border-radius: var(--tm-radius-md);
-  background: color-mix(in srgb, var(--tm-warning) 8%, transparent);
-}
-.tm-plan-questions-title {
-  font-size: var(--tm-text-xs);
-  font-weight: 600;
-  color: var(--tm-warning);
-}
-.tm-plan-question { display: flex; flex-direction: column; gap: var(--tm-gap-sm); }
-.tm-plan-question-text { font-size: var(--tm-text-sm); color: var(--tm-fg); }
-.tm-plan-question-bg { font-size: var(--tm-text-xs); color: var(--tm-fg-muted); }
-.tm-plan-question-options { display: flex; flex-wrap: wrap; gap: var(--tm-gap-sm); }
-.tm-plan-question-option {
-  padding: var(--tm-gap-xs) var(--tm-gap-md);
-  font: inherit;
-  font-size: var(--tm-text-xs);
-  color: var(--tm-fg);
-  background: var(--tm-card-surface);
-  border: 1px solid var(--tm-border);
-  border-radius: var(--tm-radius-full);
-  cursor: pointer;
-}
-.tm-plan-question-option:hover { border-color: var(--tm-accent); }
-.tm-plan-question-option.selected {
-  background: var(--tm-accent);
-  border-color: var(--tm-accent);
-  color: var(--tm-accent-fg);
-}
-.tm-plan-question-free {
-  width: 100%;
-  padding: var(--tm-gap-xs) var(--tm-gap-md);
-  font: inherit;
-  font-size: var(--tm-text-xs);
-  color: var(--tm-fg);
-  background: transparent;
-  border: 1px solid var(--tm-border);
-  border-radius: var(--tm-radius-sm);
-}
-.tm-plan-question-answer { display: none; }
-.tm-plan-question.answered .tm-plan-question-text { color: var(--tm-fg-muted); }
-
-/* A gated action stays visible but inert while a premise is still a guess. */
-.tm-plan-action:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  filter: none;
-}

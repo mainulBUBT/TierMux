@@ -32,26 +32,14 @@ export interface PlanSection {
   tasks: PlanTask[];
 }
 
-/** One open question carried on the plan. Non-empty `questions` ⇒ the plan is not executable
- *  until every one is answered — the plan and the doubt ship together instead of the model
- *  having to choose between asking and planning. */
-export interface PlanQuestion {
-  text: string;
-  background?: string;
-  options?: string[];
-  /** The user's pick, once made on the card. */
-  answer?: string;
-}
-
 export interface PlanData {
   id: string;
   title: string;
   description?: string;
-  /** The reading of the request these steps implement — rendered above everything else. */
+  /** The reading of the request these steps implement — rendered above everything else.
+   *  No approach/questions fields: questions are asked BEFORE the plan via askUser (2026-09-01),
+   *  never carried on the card, so the card holds nothing but the settled premise + steps. */
   reading?: string;
-  /** Why this approach, and what it affects beyond the changed lines. */
-  approach?: string;
-  questions?: PlanQuestion[];
   sections: PlanSection[];
   createdAt: number;
   completedTasks: number;
@@ -158,24 +146,9 @@ function collectSteps(host: HTMLElement): string {
   const steps = out.map((s, i) => `${i + 1}. ${s}`).join('\n');
   // The header block rides back out with the steps: this string IS what gets saved to the plan
   // file and re-parsed (planStructurer.renderPlanMarkdown), so dropping it here would silently
-  // lose the reading, the approach and the answers the user just gave.
-  const head: string[] = [];
-  const reading = host.querySelector('.tm-plan-reading .tm-plan-meta-text')?.textContent?.trim();
-  const approach = host.querySelector('.tm-plan-approach .tm-plan-meta-text')?.textContent?.trim();
-  if (reading) head.push(`Reading: ${reading}`);
-  if (approach) head.push(`Approach: ${approach}`);
-  host.querySelectorAll('.tm-plan-question').forEach(row => {
-    const text = row.querySelector('.tm-plan-question-text')?.textContent?.trim();
-    if (!text) return;
-    const bg = row.querySelector('.tm-plan-question-bg')?.textContent?.trim();
-    const opts = [...row.querySelectorAll('.tm-plan-question-option')].map(o => o.textContent?.trim()).filter(Boolean);
-    const parts = [text, bg || '', opts.join('; ')];
-    while (parts.length && !parts[parts.length - 1]) parts.pop();
-    head.push(`Q: ${parts.join(' | ')}`);
-    const answer = (row as HTMLElement).dataset.answer;
-    if (answer) head.push(`A: ${answer}`);
-  });
-  return head.length ? `${head.join('\n')}\n\n${steps}` : steps;
+  // lose the reading the user may have edited.
+  const reading = host.closest('.tm-plan')?.querySelector('.tm-plan-reading .tm-plan-meta-text')?.textContent?.trim();
+  return reading ? `Reading: ${reading}\n\n${steps}` : steps;
 }
 
 // ========== Parsing helpers (exported for main.ts) ==========
@@ -184,9 +157,11 @@ function collectSteps(host: HTMLElement): string {
 // the card renders the same steps the host detected. Kept inline (not imported) because the
 // webview bundle may only import from media/src/** and src/shared/**.
 // The plan's header block, mirroring src/agent/planStructurer.ts's CARD_*_RE. These lines carry
-// the reading, the approach and any open questions; they must never be mistaken for steps —
-// `Approach: the fix goes in app/Models/Item.php` would otherwise match the bare-imperative
-// branch below (edit verb + path) and render as a step the user could "reject".
+// the reading; they must never be mistaken for steps — a reading naming a path would otherwise
+// match the bare-imperative branch below (edit verb + path) and render as a "rejectable" step.
+// `Approach` / `Q` / `A` are retired (2026-09-01 — questions now go through askUser BEFORE the
+// plan), but cards persisted by older sessions still replay with those lines, so they stay
+// skipped here.
 const PLAN_HEADER_LINE = /^\s*(?:Reading|Approach|Q|A):\s*/;
 
 const PLAN_EDIT_VERB = /^(add|create|implement|build|writ|fix|refactor|rename|move|delete|remove|updat|chang|modif|edit|replac|wir|integrat|convert|migrat|install|configur|extract|split|merg|append|insert|expos|export|hook|connect|introduc|switch|drop|bump|upgrad|enabl|disabl|set ?up|scaffold|register|inject|guard|validat|sync|audit|document|correct|review|ensur|verify|test|apply|enforce|generat)\w*\b/i;
@@ -256,50 +231,31 @@ function extractPlanDescription(stepsText: string): string | undefined {
 }
 
 /** Build PlanData + a summary line from raw plan text (planProposed.steps). */
-/** Split the `Reading:` / `Approach:` / `Q:` / `A:` header block out of the card text. `A:` lines
- *  attach to the question directly above them, which is where the card writes them back. */
-export function parsePlanHeader(stepsText: string): { reading?: string; approach?: string; questions: PlanQuestion[] } {
+/** Split the `Reading:` header line out of the card text. Retired `Approach:` / `Q:` / `A:`
+ *  lines (pre-2026-09-01 cards) are skipped, not rendered — questions are asked before the
+ *  plan now, so there is nothing left to extract from them. */
+export function parsePlanHeader(stepsText: string): { reading?: string } {
   let reading: string | undefined;
-  let approach: string | undefined;
-  const questions: PlanQuestion[] = [];
   for (const raw of String(stepsText || '').split('\n')) {
-    const line = raw.trim();
     if (/^\s*(?:[-*]|\d+[.)])\s+/.test(raw)) break; // header block ends at the first step
-    const r = line.match(/^Reading:\s*(.+)$/);
-    if (r) { reading = r[1].trim(); continue; }
-    const a = line.match(/^Approach:\s*(.+)$/);
-    if (a) { approach = a[1].trim(); continue; }
-    const q = line.match(/^Q:\s*(.+)$/);
-    if (q) {
-      const [text, background, options] = q[1].split('|').map(x => x.trim());
-      if (text) questions.push({
-        text,
-        background: background || undefined,
-        options: options ? options.split(';').map(o => o.trim()).filter(Boolean) : undefined,
-      });
-      continue;
-    }
-    const ans = line.match(/^A:\s*(.+)$/);
-    if (ans && questions.length) questions[questions.length - 1].answer = ans[1].trim();
+    const r = raw.trim().match(/^Reading:\s*(.+)$/);
+    if (r) reading = r[1].trim();
   }
-  return { reading, approach, questions };
+  return { reading };
 }
 
 export function planDataFromStepText(title: string, stepsText: string): { data: PlanData; summary: string } {
   const tasks = tasksFromStepText(stepsText);
   const description = extractPlanDescription(stepsText);
-  const { reading, approach, questions } = parsePlanHeader(stepsText);
+  const { reading } = parsePlanHeader(stepsText);
   const fileCount = new Set(tasks.flatMap(t => detectStepFiles(t.title))).size;
-  const open = questions.filter(q => !q.answer).length;
   const summary = `${tasks.length} step${tasks.length === 1 ? '' : 's'}`
-    + (fileCount ? ` · ${fileCount} file${fileCount === 1 ? '' : 's'}` : '')
-    + (open ? ` · ${open} open question${open === 1 ? '' : 's'}` : '');
+    + (fileCount ? ` · ${fileCount} file${fileCount === 1 ? '' : 's'}` : '');
   return {
     summary,
     data: {
       id: `plan-propose-${Date.now()}`,
-      title, description, reading, approach, createdAt: Date.now(),
-      questions: questions.length ? questions : undefined,
+      title, description, reading, createdAt: Date.now(),
       sections: [{ id: 'steps', title: 'Key Steps', tasks }],
       totalTasks: tasks.length, completedTasks: 0,
     },
@@ -322,72 +278,10 @@ export function planDataFromTodos(title: string, todos: { status: 'completed' | 
   };
 }
 
-// ========== Open questions ==========
-
-/** Renders the plan's open questions as answerable chips. Answering is what UNLOCKS Execute/Save:
- *  the plan and the model's doubt arrive together, and the card refuses to run a plan whose
- *  premises are still guesses. Free-text answers are allowed — a question is often not a choice
- *  between the two options the model imagined. */
-function createQuestions(plan: HTMLElement, questions: PlanQuestion[], editable: boolean): HTMLElement {
-  const box = el('div', { class: 'tm-plan-questions' });
-  box.appendChild(el('div', { class: 'tm-plan-questions-title' },
-    `⚠ ${questions.length} open question${questions.length === 1 ? '' : 's'} — answer to enable Execute`));
-  questions.forEach((q, i) => {
-    const row = el('div', { class: 'tm-plan-question', dataset: { index: String(i) } });
-    row.appendChild(el('div', { class: 'tm-plan-question-text' }, q.text));
-    if (q.background) row.appendChild(el('div', { class: 'tm-plan-question-bg' }, q.background));
-    const answer = el('div', { class: 'tm-plan-question-answer' });
-    if (q.answer) answer.textContent = q.answer;
-    const pick = (value: string) => {
-      answer.textContent = value;
-      row.dataset.answer = value;
-      row.classList.add('answered');
-      refreshGate(plan);
-    };
-    if (editable) {
-      const chips = el('div', { class: 'tm-plan-question-options' });
-      (q.options ?? []).forEach(opt => {
-        const chip = el('button', { class: 'tm-plan-question-option', type: 'button' }, opt);
-        chip.addEventListener('click', () => {
-          chips.querySelectorAll('.tm-plan-question-option').forEach(c => c.classList.remove('selected'));
-          chip.classList.add('selected');
-          pick(opt);
-        });
-        if (q.answer === opt) chip.classList.add('selected');
-        chips.appendChild(chip);
-      });
-      const free = el('input', { class: 'tm-plan-question-free', type: 'text', placeholder: 'or type an answer…' }) as HTMLInputElement;
-      free.value = q.answer && !(q.options ?? []).includes(q.answer) ? q.answer : '';
-      free.addEventListener('input', () => {
-        if (!free.value.trim()) { delete row.dataset.answer; row.classList.remove('answered'); refreshGate(plan); return; }
-        chips.querySelectorAll('.tm-plan-question-option').forEach(c => c.classList.remove('selected'));
-        pick(free.value.trim());
-      });
-      row.append(chips, free);
-    }
-    if (q.answer) { row.dataset.answer = q.answer; row.classList.add('answered'); }
-    row.appendChild(answer);
-    box.appendChild(row);
-  });
-  return box;
-}
-
-/** Enable/disable the run buttons from the current answer state. Called on every pick. */
-function refreshGate(plan: HTMLElement): void {
-  const open = [...plan.querySelectorAll('.tm-plan-question')].filter(r => !(r as HTMLElement).dataset.answer).length;
-  plan.querySelectorAll('.tm-plan-action.gated').forEach(btn => {
-    (btn as HTMLButtonElement).disabled = open > 0;
-    (btn as HTMLButtonElement).title = open > 0
-      ? `Answer the ${open} open question${open === 1 ? '' : 's'} first`
-      : (btn as HTMLButtonElement).dataset.title || '';
-  });
-  const note = plan.querySelector('.tm-plan-questions-title');
-  if (note) note.textContent = open
-    ? `⚠ ${open} open question${open === 1 ? '' : 's'} — answer to enable Execute`
-    : '✓ All questions answered';
-}
-
 // ========== Action row (edit mode) ==========
+// No answer-gating any more (2026-09-01): questions are asked and answered BEFORE the plan
+// exists, via askUser's question card — a plan that reaches this card is already fully settled,
+// so Execute/Save are always live.
 
 function createActions(host: HTMLElement, opts: PlanOptions): HTMLElement {
   const actions = el('div', { class: 'tm-plan-actions' });
@@ -398,16 +292,12 @@ function createActions(host: HTMLElement, opts: PlanOptions): HTMLElement {
   // "Save", not "Build", because it no longer auto-runs — Execute is the run path now.
   const execIcon = el('span', { class: 'tm-plan-action-icon' });
   execIcon.innerHTML = ICON.zap;
-  const execute = el('button', { class: 'tm-plan-action primary gated', type: 'button', title: 'Save the plan and start executing it in Agent mode now' },
+  const execute = el('button', { class: 'tm-plan-action primary', type: 'button', title: 'Save the plan and start executing it in Agent mode now' },
     'Execute', execIcon);
-  execute.dataset.title = execute.title;
   const buildIcon = el('span', { class: 'tm-plan-action-icon' });
   buildIcon.innerHTML = ICON.save;
-  // Save is gated too: a plan file written with its premises still guessed is a plan that will
-  // be executed later, from Agent mode, with nobody left to catch the guess.
-  const build = el('button', { class: 'tm-plan-action gated', type: 'button', title: 'Save the plan to a file — execute it later from Agent mode' },
+  const build = el('button', { class: 'tm-plan-action', type: 'button', title: 'Save the plan to a file — execute it later from Agent mode' },
     'Save', buildIcon);
-  build.dataset.title = build.title;
   const discuss = el('button', { class: 'tm-plan-action', type: 'button', title: 'Keep talking — nothing saved or run yet' }, 'Discuss');
   const discard = el('button', { class: 'tm-plan-action danger', type: 'button' }, 'Discard');
   // Every step can now be individually rejected — guard against silently sending an empty plan
@@ -433,8 +323,6 @@ function createActions(host: HTMLElement, opts: PlanOptions): HTMLElement {
   discuss.addEventListener('click', () => { discuss.remove(); discard.remove(); opts.onDefer?.(collectSteps(host)); });
   discard.addEventListener('click', () => { actions.remove(); opts.onDiscard?.(); });
   actions.append(execute, build, discuss, discard);
-  // Reflect the initial answer state — a plan that arrives with open questions starts locked.
-  setTimeout(() => refreshGate(host), 0);
   return actions;
 }
 
@@ -484,13 +372,7 @@ export function createPlan(opts: PlanOptions): HTMLElement {
     always.appendChild(el('div', { class: 'tm-plan-reading' },
       el('span', { class: 'tm-plan-meta-text' }, data.reading)));
   }
-  if (data.approach) {
-    always.appendChild(el('div', { class: 'tm-plan-approach' },
-      el('span', { class: 'tm-plan-meta-label' }, 'Approach'),
-      el('span', { class: 'tm-plan-meta-text' }, data.approach)));
-  }
   if (description) always.appendChild(el('p', { class: 'tm-plan-description' }, description));
-  if (data.questions?.length && !settled) always.appendChild(createQuestions(plan, data.questions, editable));
   if (summary && !settled) always.appendChild(el('div', { class: 'tm-plan-summary' }, summary));
   plan.appendChild(always);
 

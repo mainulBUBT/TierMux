@@ -26,8 +26,11 @@ export function createExitPlanModeTool(onPlanProposed?: (plan: ProposedPlan) => 
       + 'Call this ONLY after you have investigated the codebase with the read tools and the user '
       + 'asked for a CHANGE (build / add / refactor / fix). Do NOT call it to answer a question, '
       + 'to report research findings, or to ask something — answer questions in prose and use '
-      + 'askUser for clarification. You cannot edit files in this mode; this tool IS the request '
-      + 'for permission to implement, so do not also ask for approval in prose.\n'
+      + 'askUser for clarification. The plan must be FINISHED: every premise settled by the '
+      + 'conversation or by askUser BEFORE you call this. If you had to guess anything, call '
+      + 'askUser first and wait for the answer — a plan carries no open questions. You cannot '
+      + 'edit files in this mode; this tool IS the request for permission to implement, so do '
+      + 'not also ask for approval in prose.\n'
       // A worked example in the description, not the AI SDK's `inputExamples` property: TierMux's
       // own LanguageModelV4 adapter (core/routerProvider.ts) maps tools to the router's wire
       // shape and would drop that field, and adopting addToolInputExamplesMiddleware would add
@@ -35,10 +38,8 @@ export function createExitPlanModeTool(onPlanProposed?: (plan: ProposedPlan) => 
       // models copy a concrete shape far more reliably than they infer one from a schema — the
       // 2026-08-31 nemotron repro narrated instead of calling this tool at all.
       + 'Example input: {"outcome":"plan","title":"Add a dark mode toggle","interpretation":"the '
-      + 'settings panel should offer a light/dark choice that the webview honours","approach":'
-      + '"store it as a normal setting so the webview reads it the same way it reads the others",'
-      + '"questions":[{"question":"Follow the VS Code theme automatically, or an independent setting?",'
-      + '"options":["Follow VS Code","Independent setting"]}],"description":"Adds a '
+      + 'settings panel should offer a light/dark choice that the webview honours",'
+      + '"description":"Adds a '
       + 'theme setting and reads it in the webview.","steps":[{"what":"Add a themeMode setting",'
       + '"files":["src/settingsMeta.ts"],"evidence":"src/settingsMeta.ts:40 has no theme entry",'
       + '"verify":"npm run typecheck"},{"what":"Read the setting when rendering the panel",'
@@ -69,25 +70,20 @@ export function createExitPlanModeTool(onPlanProposed?: (plan: ProposedPlan) => 
       // calls=4). Conditional requirements belong in execute(), where the error text can say
       // which outcome needs what.
       interpretation: z.string().optional().describe('Required for outcome "plan": the READING of the request this plan implements, in the user\'s own terms and one sentence — e.g. "in edit mode, products whose category or status is off should be HIDDEN from the grid". Not a summary of your steps.'),
-      approach: z.string().optional().describe('Why this way: the design choice and what it affects beyond the changed lines (e.g. "the fix goes in the shared scope, so it tightens item visibility app-wide").'),
-      // Open questions live INSIDE the plan (the `## Confirmation Items` shape from the Claude
-      // Code plan-mode reimplementation at yag.xyz, and opencode's "don't make large assumptions
-      // about user intent"). Before this, the model had to CHOOSE between asking and planning —
-      // and a model confident enough to draft steps always chose planning, burying its doubt in
-      // the reasoning trace. Carrying both means doubt no longer has to lose.
-      questions: z.array(z.object({
-        question: z.string().min(1).describe('One specific thing you could not determine from the code. Not a status update.'),
-        background: z.string().optional().describe('Why it matters / what you found that raised it, with path:line.'),
-        options: z.array(z.string()).max(5).optional().describe('2-5 concrete answers, when the choice is between known alternatives.'),
-      })).max(5).optional().describe('Anything you had to GUESS to write these steps. A plan with open questions is still worth submitting — the user answers them on the card — but it cannot be executed until they are answered. Leave empty only when nothing was guessed.'),
       steps: z.array(z.object({
         what: z.string().min(1).describe('The action, imperative mood, ONE line. A before→after text change is ONE step, never two. NOT a verification-only step ("confirm X is fine") — that is outcome "no-change", not a step.'),
         files: z.array(z.string()).min(1).describe('Workspace-relative paths this step CHANGES. Required — a step that changes no file is not a step.'),
         evidence: z.string().min(1).describe('The path:line you actually READ that proves this step is needed, e.g. "app/Models/Item.php:120 checks the parent status only". Not a restatement of `what`.'),
         verify: z.string().optional().describe('How to confirm this step landed — a command to run, or what to re-read.'),
       })).max(20).optional().describe('The concrete, ordered action steps. Required when outcome is "plan".'),
-    }),
-    execute: async ({ outcome, title, description, finding, interpretation, approach, questions, steps }): Promise<string | { error: string }> => {
+      // `.passthrough()` — not `.strict()` and not the default strip — so a model that still sends
+      // the RETIRED `questions`/`approach` fields (documented here until 2026-09-01) keeps them in
+      // the parsed input, and execute() below can REJECT them with a message that routes the doubt
+      // to askUser. Strict would fail validation on any stray key before execute could explain;
+      // strip would silently swallow the doubt, which is the exact failure `questions` was added
+      // to fix — removing the outlet must not remove the signal.
+    }).passthrough(),
+    execute: async ({ outcome, title, description, finding, interpretation, steps, ...rest }): Promise<string | { error: string }> => {
       try {
         // Every rejection below is RECOVERABLE: engine.ts stops the turn on an accepted RESULT
         // (planAccepted), not on the call, so an { error } goes back to the model as the next
@@ -98,6 +94,16 @@ export function createExitPlanModeTool(onPlanProposed?: (plan: ProposedPlan) => 
           // can read rather than silently swallowing the plan. Terminal, not recoverable: no
           // re-submission can conjure a host, so say so and let the step budget end the turn.
           return { error: 'Plan approval is not available in this environment. Do not call this tool again; answer in prose instead.' };
+        }
+        // Questions are asked BEFORE the plan, not carried inside it (2026-09-01). Until that
+        // day the tool itself documented a `questions` field, so models trained on TierMux's own
+        // shape still send it — passthrough above keeps it visible here instead of zod stripping
+        // it silently, and the rejection routes the doubt to askUser, the same place the
+        // `needs-decision` outcome sends it.
+        const retired = rest as { questions?: unknown; approach?: unknown };
+        const retiredQuestions = Array.isArray(retired.questions) ? retired.questions.length > 0 : !!retired.questions;
+        if (retiredQuestions || retired.approach) {
+          return { error: 'A plan carries no open questions and no `approach` field — those were retired. Resolve every guess FIRST with askUser (one question at a time, with options), then call exitPlanMode with the final plan.' };
         }
         // Hesitation has a NAME now. The 2026-09-01 repro's model re-read the user's wording,
         // could not decide between a local and a global fix, and shipped a plan built on the
@@ -120,31 +126,19 @@ export function createExitPlanModeTool(onPlanProposed?: (plan: ProposedPlan) => 
           .filter((s) => s.what);
         if (!clean.length) return { error: 'A plan needs at least one step with a non-empty "what". If nothing needs changing, call again with outcome "no-change" and a `finding`.' };
         if (!interpretation?.trim()) {
-          return { error: 'A plan needs an `interpretation`: one sentence stating the reading of the request these steps implement. If you cannot state it without guessing, put the guess in `questions` instead.' };
+          return { error: 'A plan needs an `interpretation`: one sentence stating the reading of the request these steps implement. If you cannot state it without guessing, call askUser and settle the guess first.' };
         }
         const bare = clean.filter((s) => !s.files?.length || !s.evidence);
         if (bare.length) {
           return { error: `Every step needs \`files\` (the paths it CHANGES) and \`evidence\` (the path:line you read that proves it is needed). Missing on: ${bare.map((s) => `"${s.what}"`).join(', ')}. A step you cannot ground in a file you read is not a step — if the answer is that nothing needs changing, use outcome "no-change".` };
         }
-        const openQuestions = (questions ?? [])
-          .map((q) => ({
-            question: (q.question || '').trim(),
-            background: q.background?.trim() || undefined,
-            options: q.options?.map((o) => o.trim()).filter(Boolean),
-          }))
-          .filter((q) => q.question);
         onPlanProposed({
           outcome: 'plan',
           title: title.trim() || 'Plan',
           description: description?.trim() || undefined,
           interpretation: interpretation.trim(),
-          approach: approach?.trim() || undefined,
-          questions: openQuestions.length ? openQuestions : undefined,
           steps: clean,
         });
-        if (openQuestions.length) {
-          return `Plan submitted with ${openQuestions.length} open question(s). Stop here — the user answers them on the card before anything is executed. Do not implement, do not restate the plan, and do not answer the questions yourself.`;
-        }
         // The engine stops the turn on this tool call, so this text is only ever seen by a model
         // that somehow kept going — keep it unambiguous that the plan is now the user's move.
         return 'Plan submitted to the user for approval. Stop here — do not implement anything and do not restate the plan.';
