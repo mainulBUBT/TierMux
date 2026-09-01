@@ -92,11 +92,21 @@ Two things fell out of that repro's test:
 TierMux routes free and local tiers, where "call this tool" is a suggestion, not a guarantee.
 Two mechanical levers, both cheap:
 
-1. **`toolChoice` on the continuation's first step.** `prepareStep` can pin
-   `{ type: 'tool', toolName: 'exitPlanMode' }` for one step. Pass 1 already gave the model its
-   free chance to answer in prose and `looksLikeQuestion` already excluded genuine Q&A, so the
-   only outcome this removes is "narrate a third time". Step 0 only — forcing every step would
-   make a prose answer impossible.
+1. **`toolChoice` on the continuation's first step.** `prepareStep` pins the closing tools for
+   one step — `toolChoice: 'required'` with `activeTools: ['exitPlanMode', 'askUser']`, so the
+   turn must close but the model still chooses HOW (2026-09-01: pinning `exitPlanMode` alone
+   compelled a guess out of a model that had hesitated).
+
+   Step 0 only — forcing every step would make a prose answer impossible. Pass 1 already gave
+   the model its free chance to answer in prose and `looksLikeQuestion` already excluded genuine
+   Q&A, so the only outcome this removes is "narrate a third time".
+
+   **This lever did not actually work until 2026-09-01.** `core/routerProvider.ts` never mapped
+   the SDK's `toolChoice` onto the router's `tool_choice`, so the field was dropped at the
+   adapter — for every provider, since the boundary was written. `RouteOptions.tool_choice` and
+   `openai-compat.ts` had carried it the whole time; nothing populated it. The "wire-level
+   guarantee" was prompt text. Fixed by `toRouterToolChoice`, pinned by the foundation suite —
+   and it is the reason the plan-gap repros kept recurring after each prompt fix.
 2. **A worked example in the tool description.** Weak models copy a concrete input shape far
    more reliably than they infer one from a schema. Inline rather than via the SDK's
    `inputExamples` + `addToolInputExamplesMiddleware`, for the reason recorded in

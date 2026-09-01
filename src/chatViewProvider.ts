@@ -2196,9 +2196,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // (TierMux routes a lot of free tiers). What is gone is the LLM classifier that used
         // to sit under it — an extra model round-trip on every turn the regex missed, just to
         // re-litigate a question the model had already answered by how it replied.
-        const planStepsText: string | null = result.plan
-          ? formatPlanForCard(result.plan)
-          : looksLikeActionablePlan(clar.text) ? clar.text : null;
+        // outcome 'no-change' is a FINDING, not a plan: the investigation concluded nothing
+        // needs changing. Rendering it as a plan card would ask the user to approve executing
+        // nothing — which is precisely the shape of the 2026-09-01 repro, where "confirm no
+        // view-side change is needed" shipped as an approvable step. It falls through to the
+        // normal answer bubble instead, using the model's own prose when it wrote any and the
+        // structured finding when it just called the tool and stopped.
+        const noChange = result.plan?.outcome === 'no-change' ? result.plan : undefined;
+        if (noChange && !clar.text.trim() && noChange.finding?.trim()) clar.text = noChange.finding.trim();
+        const planStepsText: string | null = noChange
+          ? null
+          : result.plan
+            ? formatPlanForCard(result.plan)
+            : looksLikeActionablePlan(clar.text) ? clar.text : null;
         if (planStepsText) {
           s.history.length -= 1 + extraHistoryPushed; // not committed yet — re-added on approval
           s.pendingPlanUser = userContent;

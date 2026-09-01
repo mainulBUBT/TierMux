@@ -23,7 +23,7 @@ import type {
   LanguageModelV4FilePart,
   LanguageModelV4Usage,
 } from '@ai-sdk/provider';
-import type { ChatMessage, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
+import type { ChatMessage, ChatToolChoice, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
 import { resolveProvider } from '../../providers';
 import { ProviderHttpError } from '../../providers/base';
 import { selectModel, setModelSources, getApiKeysFor, recordOutcome, rationaleForServed, type ModelSources, type SelectionRationale } from '../../router/picker';
@@ -300,6 +300,29 @@ function toRouterTools(tools?: LanguageModelV4CallOptions['tools']): ChatToolDef
     .map((t) => ({ type: 'function' as const, function: { name: t.name, description: t.description, parameters: t.inputSchema as Record<string, unknown> } }));
 }
 
+/** `toolChoice` → the router's `tool_choice`. This mapping did not exist until 2026-09-01, so
+ *  every `toolChoice` the engine set was silently DROPPED at this boundary: `RouteOptions`
+ *  carries `tool_choice` and openai-compat.ts puts it straight on the wire, but nothing ever
+ *  populated it from the SDK's call options.
+ *
+ *  What that cost: the plan-gap continuation's whole point is a wire-level guarantee that the
+ *  turn closes — "Providers that ignore toolChoice fall back to the prose nudge" (see
+ *  PLAN_MODE_TOOL_BOUNDARY_2026-08-31.md) assumed the field reached the provider at all. It did
+ *  not, for any provider, ever. Live repro 2026-09-01 5:27 PM (Kilo/stepfun/step-3.7-flash:free,
+ *  "hide products whose category or status is off in the vendor order edit grid"): 9 tool uses,
+ *  then "Let me search for the Item model and its scopes…" and no plan card — the forced step
+ *  was never actually forced. */
+export function toRouterToolChoice(choice?: LanguageModelV4CallOptions['toolChoice']): ChatToolChoice | undefined {
+  if (!choice) return undefined;
+  switch (choice.type) {
+    case 'auto': return 'auto';
+    case 'none': return 'none';
+    case 'required': return 'required';
+    case 'tool': return { type: 'function', function: { name: choice.toolName } };
+    default: return undefined;
+  }
+}
+
 interface Candidate {
   platform: Platform;
   modelId: string;
@@ -461,6 +484,7 @@ function createRouterBackedProvider(router: Router, providerOpts: RouterProvider
         temperature: options.temperature,
         max_tokens: options.maxOutputTokens,
         tools,
+        tool_choice: toRouterToolChoice(options.toolChoice),
         requireTools: !!tools?.length,
         reasoningEffort: providerOpts.effort,
         taskKind: providerOpts.taskKind as RouteOptions['taskKind'],
@@ -507,6 +531,7 @@ function createRouterBackedProvider(router: Router, providerOpts: RouterProvider
         temperature: options.temperature,
         max_tokens: options.maxOutputTokens,
         tools,
+        tool_choice: toRouterToolChoice(options.toolChoice),
         requireTools: !!tools?.length,
         reasoningEffort: providerOpts.effort,
         taskKind: providerOpts.taskKind as RouteOptions['taskKind'],

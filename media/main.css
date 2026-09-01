@@ -88,7 +88,33 @@ body {
 .chat-title:focus { opacity: 1; border-color: var(--vscode-focusBorder); background: var(--vscode-input-background); }
 
 /* Thread */
+/* Positioning context for the jump-to-latest button. The button cannot live INSIDE .thread —
+   an absolutely-positioned child of a scroll container scrolls with its content — and it cannot
+   anchor to .chat-layout either, which would put it behind the composer. Hence this wrapper:
+   it takes .thread's place in the column flex and gives the button a non-scrolling ancestor.
+   `min-height: 0` is what lets the thread actually scroll inside a flex column. */
+.thread-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .thread { flex: 1; overflow-y: auto; padding: var(--gap); display: flex; flex-direction: column; gap: 6px; }
+
+/* Jump-to-latest — AI Elements' ConversationScrollButton ("absolute bottom-4 left-1/2
+   -translate-x-1/2 rounded-full", ArrowDownIcon). Shown only while the reader has scrolled
+   away from the tail; see stickToBottom/detachedFromBottom in main.ts. */
+.scroll-bottom {
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%) translateY(4px);
+  z-index: 5; display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 50%; cursor: pointer;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-panel-border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .25);
+  opacity: 0; pointer-events: none;
+  transition: opacity .15s ease, transform .15s ease, background .15s ease;
+}
+.scroll-bottom.visible { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+.scroll-bottom:hover { background: var(--vscode-editorHoverWidget-background, var(--vscode-editorWidget-background)); }
+.scroll-bottom svg { display: block; }
+/* The thread hides for the settings / announcements pages — the button goes with it. */
+.thread.hidden ~ .scroll-bottom { display: none; }
 /* One persistent pane per open session, all mounted at once inside .thread — only the
    viewed session's pane is shown. This is what lets a background agent keep streaming tool
    cards / answer text into its own DOM while another tab is in view, instead of that state
@@ -142,7 +168,20 @@ body {
   border: 1px solid var(--vscode-panel-border);
   white-space: normal; overflow-wrap: anywhere; line-height: 1.55;
 }
-.msg.user .bubble { background: var(--vscode-input-background); display: flex; gap: 10px; align-items: flex-start; }
+/* AI Elements' user MessageContent carries a tinted surface and NO border
+ * ("rounded-lg bg-secondary px-4 py-3"); the separator under a pinned question is the
+ * box-shadow above, so the 1px outline was doing the same job twice. Padding follows their
+ * px-4/py-3 rhythm. Alignment and full width deliberately stay: this bubble is a sticky
+ * context header (see the note above), not a chat bubble, so ml-auto/max-w-[95%] would cost
+ * a feature to gain a resemblance. */
+.msg.user .bubble {
+  background: var(--vscode-input-background);
+  border-color: transparent;
+  padding: 12px 16px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
 .msg.assistant .bubble { background: transparent; border: none; padding: 2px 0; }
 .msg-text { flex: 1 1 auto; min-width: 0; }
 .msg-meta { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; opacity: .55; }
@@ -170,21 +209,15 @@ body {
 .work-summary { margin: 2px 0 4px; }
 .work-sum-label {
   list-style: none; cursor: pointer;
-  display: inline-flex; align-items: center; gap: 5px;
-  height: 22px; padding: 0 10px;
-  border-radius: var(--tm-radius-full, 999px);
-  background: var(--tm-surface-panel, rgba(127,127,127,.12));
-  border: 1px solid var(--tm-card-border, var(--vscode-panel-border));
-  color: var(--tm-fg, var(--vscode-foreground));
-  font-size: 10.5px; font-weight: 600;
+  display: inline-flex; align-items: center;
+  color: var(--tm-fg-muted, var(--vscode-descriptionForeground));
+  font-size: 11px; font-weight: 500;
   user-select: none; white-space: nowrap;
-  transition: background var(--tm-transition-fast, .12s ease), border-color var(--tm-transition-fast, .12s ease);
+  transition: color var(--tm-transition-fast, .12s ease);
 }
-.work-sum-label:hover { background: var(--tm-hover-toolbar, var(--vscode-toolbar-hoverBackground)); border-color: var(--tm-border-focus, var(--vscode-focusBorder)); }
+.work-sum-label:hover { color: var(--tm-fg, var(--vscode-foreground)); text-decoration: underline; }
 .work-sum-label::-webkit-details-marker { display: none; }
-.work-sum-label::before { content: '▸ '; font-size: 9px; transition: transform .15s; }
-details[open].work-summary > .work-sum-label::before { content: '▾ '; }
-details[open].work-summary > .work-sum-label { border-color: var(--tm-border-focus, var(--vscode-focusBorder)); }
+details[open].work-summary > .work-sum-label { color: var(--tm-fg, var(--vscode-foreground)); }
 .work-summary > .tm-tool-card, .work-summary > .tm-reasoning { margin: 1px 0; }
 /* Interim "thinking out loud" text that streamed between tool calls (weak free models emit it
    as content). Inside the collapsed timeline it's working notes, not the answer — mute it and
@@ -1034,18 +1067,29 @@ button.compact-divider { background: none; font: inherit; color: inherit; displa
 /* Leading SVG icon (TierMux's own stroke-icon style, not an emoji glyph) on a notice divider. */
 .compact-divider.with-icon { display: flex; align-items: center; justify-content: center; gap: 6px; }
 .compact-divider.with-icon svg { flex: 0 0 auto; }
+/* AI Elements' submit is `variant="default"` — the THEME's primary. This was a hardcoded iOS
+   blue (#0a84ff) with a matching hardcoded glow, so it ignored the editor's button colour and
+   read as a foreign control in every non-default theme. */
 .send-btn {
-  background: #0a84ff; color: #fff;
+  background: var(--vscode-button-background); color: var(--vscode-button-foreground);
   border: none; cursor: pointer; border-radius: 50%; width: 34px; height: 34px; flex: 0 0 auto;
   display: inline-flex; align-items: center; justify-content: center; font-size: 14px;
   box-shadow: 0 1px 6px rgba(10, 132, 255, .4);
   transition: background .12s ease, box-shadow .12s ease, transform .05s ease;
 }
-.send-btn:hover { background: #3a9dff; box-shadow: 0 2px 8px rgba(10, 132, 255, .5); }
+.send-btn:hover { background: var(--vscode-button-hoverBackground, var(--vscode-button-background)); filter: brightness(1.05); }
 .send-btn:active { transform: scale(.96); }
 .send-btn.stopping { background: var(--vscode-errorForeground, #c33); color: #fff; box-shadow: none; }
 .send-btn:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
-.send-btn:disabled:hover { background: #0a84ff; }
+.send-btn:disabled:hover { background: var(--vscode-button-background); filter: none; }
+/* The `submitted` state: sent, provider not streaming yet. */
+.send-spinner {
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--vscode-button-foreground) 35%, transparent);
+  border-top-color: var(--vscode-button-foreground);
+  animation: send-spin .7s linear infinite;
+}
+@keyframes send-spin { to { transform: rotate(360deg); } }
 button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; cursor: pointer; border-radius: 4px; padding: 4px 10px; }
 button.primary:hover { background: var(--vscode-button-hoverBackground); }
 button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: none; cursor: pointer; border-radius: 4px; padding: 4px 10px; }
@@ -1624,3 +1668,27 @@ details[open].tm-card-collapsible > summary::before { content: '▾ '; }
 .toolbar { gap: 5px; }
 .tgroup.right .icon-btn-sm,
 .toggle-pill.icon-only-sm { border-radius: 50%; }
+
+/* Sources — AI Elements' Sources: a collapsible "Used N sources" trigger under the answer,
+   with one chip per cited page. Built from the webSearch tool's own result text (see
+   parseSearchSources in main.ts); before this the links existed only inside the tool card,
+   so a web-backed answer cited nothing. */
+.tm-sources { margin-top: 6px; }
+.tm-sources-trigger {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font: inherit; font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+.tm-sources-trigger:hover { color: var(--vscode-foreground); text-decoration: underline; }
+.tm-sources-list { display: none; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.tm-sources.open .tm-sources-list { display: flex; }
+.tm-source {
+  display: inline-flex; align-items: baseline; gap: 5px; max-width: 100%;
+  padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127, 127, 127, .12));
+  color: var(--vscode-foreground); text-decoration: none; font-size: 11px;
+}
+.tm-source:hover { border-color: var(--vscode-focusBorder); }
+.tm-source-host { flex: 0 0 auto; color: var(--vscode-textLink-foreground); }
+.tm-source-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); }

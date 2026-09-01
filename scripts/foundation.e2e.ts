@@ -377,8 +377,10 @@ async function main() {
       // The plan arrives as an exitPlanMode TOOL CALL, not markdown the host has to recognize
       // (2026-08-31 redesign — see scripts/exitPlanMode.e2e.ts for the boundary's own suite).
       { toolCalls: [{ toolName: 'exitPlanMode', input: {
+        outcome: 'plan',
         title: 'Rename greeting',
-        steps: [{ what: 'Replace "hello" with "goodbye"', files: ['foo.txt'], verify: 'read foo.txt again' }],
+        interpretation: 'the greeting text in foo.txt should read "goodbye" instead of "hello"',
+        steps: [{ what: 'Replace "hello" with "goodbye"', files: ['foo.txt'], evidence: 'foo.txt:1 still reads "hello"', verify: 'read foo.txt again' }],
       } }] },
     ], 's11-plan');
 
@@ -965,8 +967,59 @@ async function main() {
     const { buildV3ToolSet } = await import('../src/agent/core/tools/v3');
     const agentTools = buildV3ToolSet('agent');
     ok('F. webSearch + fetchUrl offered in agent mode', 'webSearch' in agentTools && 'fetchUrl' in agentTools);
+    // A finished tool's OUTPUT must reach the host as ToolEvent.detail. It was dropped at
+    // engine.ts's onStepEnd until 2026-09-01, which left every non-edit tool card rendering an
+    // empty body behind its "View output" disclosure, and made crash recovery persist tool
+    // calls with blank results ({ role: 'tool', content: e.detail ?? '' }).
+    {
+      const ws = makeWorkspace();
+      const outModel = createMockModel([
+        { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
+        { text: 'done' },
+      ], 'tool-detail');
+      const seenTools: Array<{ name?: string; state?: string; detail?: string }> = [];
+      await runWithWorkspaceRoot(ws.root, () => engineTurn(outModel, engineOpts({
+        messages: [{ role: 'user', content: 'read foo.txt' }],
+        onTool: (e: { name?: string; state?: string; detail?: string }) => seenTools.push(e),
+      })));
+      const doneEvent = seenTools.find((e) => e.name === 'readFile' && e.state === 'done');
+      ok('F. a finished tool carries its output as detail',
+        !!doneEvent?.detail && doneEvent.detail.length > 0, JSON.stringify(doneEvent));
+      ok('F. the running event carries no detail yet',
+        seenTools.find((e) => e.name === 'readFile' && e.state === 'running')?.detail === undefined);
+    }
+
+    // toolChoice must actually REACH the provider. RouteOptions has carried `tool_choice` and
+    // openai-compat.ts has put it on the wire all along, but the LanguageModelV4 adapter never
+    // populated it from the SDK's call options — so every forced tool call the engine set up
+    // (the plan-gap continuation's whole guarantee) was dropped at that boundary, for every
+    // provider. Live repro 2026-09-01 5:27 PM: forced step, no plan, narration shipped.
+    const { toRouterToolChoice } = await import('../src/agent/core/routerProvider');
+    ok('F. toolChoice "required" reaches the router wire', toRouterToolChoice({ type: 'required' }) === 'required');
+    ok('F. a pinned tool maps to the function shape',
+      JSON.stringify(toRouterToolChoice({ type: 'tool', toolName: 'exitPlanMode' }))
+        === '{"type":"function","function":{"name":"exitPlanMode"}}',
+      JSON.stringify(toRouterToolChoice({ type: 'tool', toolName: 'exitPlanMode' })));
+    ok('F. auto/none pass through, unset stays unset',
+      toRouterToolChoice({ type: 'auto' }) === 'auto' && toRouterToolChoice({ type: 'none' }) === 'none'
+      && toRouterToolChoice(undefined) === undefined);
+
     const askTools = buildV3ToolSet('ask');
     ok('F. web tools offered in ask mode too', 'webSearch' in askTools && 'fetchUrl' in askTools);
+
+    // Ask mode = "everything except edits" (2026-09-01): a question about git history has to be
+    // answerable by RUNNING `git log`, not by telling the user to run it. runCommand is offered;
+    // the three file mutators are withheld by the toolset AND hard-denied by the policy.
+    ok('F. runCommand offered in ask mode', 'runCommand' in askTools);
+    ok('F. ask mode still has no editors',
+      !('editFile' in askTools) && !('writeFile' in askTools) && !('deleteFile' in askTools));
+    const askPolicy = { ...prodDefaultPolicy, sessionMode: 'ask' as const, mode: 'full-auto' as const, alwaysAllow: new Set(['editFile']), alwaysDeny: new Set<string>() };
+    const askEdit = await resolvePolicy({ toolName: 'editFile' }, askPolicy);
+    ok('F. edits hard-denied in ask mode even under full-auto + alwaysAllow',
+      (askEdit as { type: string }).type === 'denied', JSON.stringify(askEdit));
+    const askShell = await resolvePolicy({ toolName: 'runCommand' }, askPolicy);
+    ok('F. runCommand follows the normal chain in ask mode',
+      (askShell as { type: string }).type === 'approved', JSON.stringify(askShell));
   }
 
   console.log(failures === 0 ? '\nALL 25 FOUNDATION SCENARIOS PASS — gate open for steps 9-10' : `\n${failures} FAILURE(S) — FOUNDATION GATE BLOCKED, adapt the plan before deleting`);

@@ -29,6 +29,7 @@ import { SLOW_LATENCY_MS } from '../config/slowModel';
 import { RateTracker } from './rateTracker';
 import type { QuotaStore } from '../config/quotaStore';
 import { getMockPlayer, buildMockCompletion, getCassetteRecorder } from './mockFixture';
+import { rescueInlineToolCalls, findInlineToolOpener, repairToolArguments, toolSchemaMap } from '../agent/toolArgs';
 import { LatencyTracker } from './latencyTracker';
 import type { MetricsStore, MetricSample } from './metricsStore';
 import { ScoringEngine, type SelectionContext, type HealthState, type RationaleEntry, type CandidateRuntime } from './scoring';
@@ -1274,9 +1275,55 @@ export class Router {
     if (platform && modelId) this.secrets.noteToolSoftFailure(platform as Platform, modelId);
   }
 
+  /**
+   * Adopt a tool call the model wrote as TEXT into a real one — the single choke point where an
+   * inline dialect becomes an executable call.
+   *
+   * rescueInlineToolCalls has parsed nine-plus dialects since forever, but its ONLY call site was
+   * openai-compat's `failed_generation` handler: the HTTP-ERROR path. A provider that returns a
+   * clean 200 with the dialect sitting in `content` — the common case, and what xKiro's
+   * deepseek-v4-pro did on 2026-09-01 — reached no rescue at all, so the markup was shown to the
+   * user as the final answer, no tool ran, and the turn died there. Sitting in route() (not in a
+   * provider, and not in routerProvider.doStream where a stale comment claimed a rescue lived)
+   * puts it after streaming and non-streaming, real providers and the mock fixture, so every path
+   * that can produce a text tool call is covered once.
+   *
+   * Content is dropped alongside, exactly as the native tool-call path already drops it: any prose
+   * ahead of the dialect has streamed live already, and re-emitting it beside the call would show
+   * the model's narration twice.
+   */
+  private adoptInlineToolCalls(result: RouteResult, opts: RouteOptions): RouteResult {
+    const tools = opts.tools ?? [];
+    const choice = result.response.choices?.[0];
+    const msg = choice?.message;
+    if (!tools.length || !msg || msg.tool_calls?.length) return result;
+    const text = contentToString(msg.content ?? '');
+    if (!text) return result;
+
+    const rescue = rescueInlineToolCalls(text, new Set(tools.map((t) => t.function.name)));
+    if (!rescue.detected || !rescue.calls.length) return result;
+
+    const schemas = toolSchemaMap(tools);
+    const tool_calls = rescue.calls.map((c, i) => ({
+      id: `call_inline_${Date.now()}_${i + 1}`,
+      type: 'function' as const,
+      function: { name: c.name, arguments: repairToolArguments(c.arguments, schemas.get(c.name)) },
+    }));
+    diagLog('router.inline-rescue', `${result.platform}::${result.model} adopted ${tool_calls.length} text tool call(s): ${tool_calls.map((t) => t.function.name).join(', ')}`);
+    return {
+      ...result,
+      response: {
+        ...result.response,
+        choices: [{ ...choice!, message: { ...msg, content: null, tool_calls }, finish_reason: 'tool_calls' }],
+      },
+    };
+  }
+
   async route(messages: ChatMessage[], opts: RouteOptions = {}): Promise<RouteResult> {
-    if (process.env.TIERMUX_FAKE_MODEL === '1') return this.fakeRoute(messages, opts);
-    return this.routeHedged(messages, opts);
+    const result = process.env.TIERMUX_FAKE_MODEL === '1'
+      ? await this.fakeRoute(messages, opts)
+      : await this.routeHedged(messages, opts);
+    return this.adoptInlineToolCalls(result, opts);
   }
 
   /** Hedging config: 0 / `tiermux.hedging:false` disables; otherwise clamped below the TTFT
@@ -1815,6 +1862,7 @@ export class Router {
             // forwarding it live. At stream end we either rescue it as a real tool call, or flush it
             // as normal text if it turned out not to be a tool call after all.
             const toolsOffered = !!opts.tools?.length;
+            const toolNamesOffered = new Set((opts.tools ?? []).map((t) => t.function.name));
             let holdingToolText = false;
             // Which opener shape is being held: 'brace' = a `{` (JSON dialect), 'tag' = an XML
             // dialect (`<tool_call>` / `<function=`). The release heuristics differ (see below).
@@ -1872,13 +1920,16 @@ export class Router {
                       // streams live; from the opener onward is held for the stream-end rescue.
                       const braceMatch = /(?:^|\n)[ \t]*\{/.exec(clean);
                       const braceIdx = braceMatch ? braceMatch.index + braceMatch[0].lastIndexOf('{') : -1;
-                      // ｜+DSML｜+ matches DeepSeek's `<｜DSML｜tool_calls>`/`<｜DSML｜invoke ...>`
-                      // markup — the fullwidth pipe (｜, U+FF5C) is sometimes doubled by the model
-                      // (｜｜DSML｜｜), so `+` tolerates both. Without this opener, DSML text streamed
-                      // straight through live (see toolArgs.ts Shape 5, which rescues it only AFTER
-                      // the stream ends — too late to un-render what was already shown).
-                      const tagMatch = /<tool_call>|<function=|<｜+DSML｜+(?:tool_calls|invoke)/.exec(clean);
-                      const tagIdx = tagMatch ? tagMatch.index : -1;
+                      // The XML opener is resolved DYNAMICALLY (findInlineToolOpener) rather than
+                      // matched against a list of vendor markups. The old regex named exactly three
+                      // — `<tool_call>`, `<function=`, DeepSeek's `<｜DSML｜invoke>` — so the plain
+                      // `<invoke name="readFile">` dialect (toolArgs.ts shape 9) was never held: a
+                      // 2026-09-01 xKiro deepseek-v4-pro turn streamed its whole tool call into the
+                      // chat bubble as the visible answer and ended with nothing run. The dynamic
+                      // check holds on a wrapper word or on any tag that IS a registered tool name,
+                      // so the next unseen dialect is held too, and a tag that resolves to no tool
+                      // (ordinary HTML in an answer) still streams live.
+                      const tagIdx = findInlineToolOpener(clean, toolNamesOffered);
                       let idx = -1;
                       let kind: 'brace' | 'tag' | null = null;
                       if (braceIdx >= 0 && (tagIdx < 0 || braceIdx <= tagIdx)) { idx = braceIdx; kind = 'brace'; }
@@ -1949,6 +2000,13 @@ export class Router {
             // tool_calls arrived (in which case the held text was narration and is dropped).
             if (holdingToolText && toolCallsByIndex.size > 0) {
               heldText = ''; // real tool calls arrived — held text was narration, drop it
+            } else if (holdingToolText && heldText && !rescueInlineToolCalls(heldText, toolNamesOffered).detected) {
+              // Held on an opener that no dialect shape can parse — it was prose or markup after
+              // all. Flush it, or it would be silently swallowed: adoptInlineToolCalls leaves the
+              // response as text, and routerProvider.doStream re-emits content only when NOTHING
+              // streamed (chunkCount === 0), so any prose ahead of the false opener would have
+              // been the entire visible answer. Now the hold costs at worst a late render.
+              flushHeld();
             }
             // Fold reasoning into the answer when the model emitted no `content` (mirrors the
             // non-streaming fold in openai-compat.normalizeChoices). Without this, a pure-reasoning

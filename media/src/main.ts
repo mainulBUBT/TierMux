@@ -41,6 +41,10 @@ const STATE_LABEL = {
   // we switch to it. This is what keeps several agents running at once without their threads
   // bleeding together in this single webview.
   let viewedSessionId = null;
+  /** True once assistantStart has fired for the current turn — see the 'busy' handler. */
+  let streaming = false;
+  /** Waiting-for-the-provider spinner on the submit button (AI Elements' `submitted` state). */
+  const SEND_SPINNER = '<span class="send-spinner" aria-hidden="true"></span>';
   let sessionList = [];
   // Per-session render state used to live here as single module-level singletons. Now every
   // open session gets its own persistent DOM pane (mounted for as long as the tab exists, not
@@ -92,7 +96,10 @@ const STATE_LABEL = {
       <div class="chat-header">
         <input id="chat-title" class="chat-title" type="text" placeholder="New chat" autocomplete="off" spellcheck="false" />
       </div>
-      <div class="thread" id="thread"></div>
+      <div class="thread-wrap">
+        <div class="thread" id="thread"></div>
+        <button class="scroll-bottom" id="scroll-bottom" type="button" title="Jump to latest" aria-label="Jump to latest">${ICON.arrowDown}</button>
+      </div>
       <div class="settings" id="settings"></div>
       <div class="announcements-page" id="announcements-page"></div>
     <div class="composer" id="composer">
@@ -424,12 +431,95 @@ const STATE_LABEL = {
   let acQueryId = 0;       // latest mention query id (to ignore stale results)
   let acDebounce;
 
+  // ── Stick-to-bottom (AI Elements' Conversation) ──────────────────────────────
+  // scrollDown() used to slam `scrollTop = scrollHeight` on every update, so scrolling UP to
+  // re-read something during a long stream was impossible — the next token yanked you back.
+  // Their Conversation wraps StickToBottom: follow the tail only while the reader is already
+  // AT the tail, and otherwise offer a button back. `NEAR_BOTTOM_PX` is the slack that keeps
+  // "close enough" counting as at-bottom, so a stray pixel of overscroll does not detach.
+  const NEAR_BOTTOM_PX = 48;
+  const atBottom = () => thread.scrollHeight - thread.scrollTop - thread.clientHeight <= NEAR_BOTTOM_PX;
+  /** True while the reader has scrolled away; the tail stops following and the button shows. */
+  let detachedFromBottom = false;
+
+  // ── Sources (AI Elements' Sources / InlineCitation) ─────────────────────────
+  // webSearch's result text has a stable shape (formatWebSearchResults in
+  // src/agent/core/tools/network/tiermuxWeb/search.ts): `[1] Title` then an indented
+  // `URL: https://…`. The links were only ever visible by expanding the tool card, so an
+  // answer built from the web cited nothing. Parsed here and rendered as a collapsible
+  // "Used N sources" row under the turn.
+  function parseSearchSources(detail) {
+    const out = [];
+    const lines = String(detail || '').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].match(/^\s*\[(\d+)\]\s+(.*\S)\s*$/);
+      if (!t) continue;
+      const u = (lines[i + 1] || '').match(/^\s*URL:\s*(\S+)\s*$/);
+      if (u) out.push({ title: t[2], url: u[1] });
+    }
+    return out;
+  }
+
+  /** Append/merge the turn's source chips. Deduped by URL — the same page often comes back
+   *  from more than one search in a turn. */
+  function addSources(turnEl, sources) {
+    if (!turnEl || !sources.length) return;
+    let box = turnEl.querySelector('.tm-sources');
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'tm-sources';
+      box.innerHTML = '<button type="button" class="tm-sources-trigger"></button><div class="tm-sources-list"></div>';
+      box.querySelector('.tm-sources-trigger').addEventListener('click', () => box.classList.toggle('open'));
+      turnEl.appendChild(box);
+    }
+    const list = box.querySelector('.tm-sources-list');
+    const seen = new Set(Array.from(list.querySelectorAll('a')).map((a) => a.getAttribute('href')));
+    for (const src of sources) {
+      if (seen.has(src.url)) continue;
+      seen.add(src.url);
+      const a = document.createElement('a');
+      a.className = 'tm-source';
+      a.href = src.url;
+      a.title = src.url;
+      let host = src.url;
+      try { host = new URL(src.url).hostname.replace(/^www\./, ''); } catch { /* keep the raw url */ }
+      a.innerHTML = `<span class="tm-source-host"></span><span class="tm-source-title"></span>`;
+      a.querySelector('.tm-source-host').textContent = host;
+      a.querySelector('.tm-source-title').textContent = src.title;
+      list.appendChild(a);
+    }
+    const n = list.children.length;
+    box.querySelector('.tm-sources-trigger').textContent = `Used ${n} source${n === 1 ? '' : 's'}`;
+  }
+
+  function syncScrollButton() {
+    const btn = $('#scroll-bottom');
+    if (btn) btn.classList.toggle('visible', detachedFromBottom);
+  }
+
+  thread.addEventListener('scroll', () => {
+    const next = !atBottom();
+    if (next === detachedFromBottom) return;
+    detachedFromBottom = next;
+    syncScrollButton();
+  }, { passive: true });
+
+  /** Jump back to the tail and re-attach — the scroll-button action, and what a fresh user
+   *  turn does (sending a message is an explicit "I am following along again"). */
+  function stickToBottom(smooth?: boolean) {
+    detachedFromBottom = false;
+    syncScrollButton();
+    thread.scrollTo({ top: thread.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+  }
+
   function scrollDown() {
     // Guard against a background pane's update yanking the viewed pane's scroll position.
     // Only matters for work that outlives the synchronous message-handling tick that activated
     // a pane (rAF-throttled streaming text, mainly) — everything else runs while activePaneObj
     // still correctly points at the session the caller is rendering for.
     if (activePaneObj && viewedSessionId && activePaneObj.id !== viewedSessionId) return;
+    // The reader is in charge: while detached, new content lands below without moving the view.
+    if (detachedFromBottom) { syncScrollButton(); return; }
     thread.scrollTop = thread.scrollHeight;
   }
 
@@ -1414,6 +1504,7 @@ const STATE_LABEL = {
   }
 
   $('#btn-send').addEventListener('click', submitChat);
+  $('#scroll-bottom').addEventListener('click', () => stickToBottom(true));
   input.addEventListener('keydown', (e) => {
     if (!acPop.classList.contains('hidden')) {
       if (e.key === 'ArrowDown') { e.preventDefault(); moveAc(1); return; }
@@ -3800,7 +3891,15 @@ const STATE_LABEL = {
         // Serving indicator (viewed session only — the composer is singular): shows the model
         // actually serving this turn; a failover re-posts assistantStart with the new model,
         // flipping serving:A → serving:B. Reset happens on busy:false.
-        if (!msg.sessionId || msg.sessionId === viewedSessionId) enterServingModel(msg.model || '');
+        if (!msg.sessionId || msg.sessionId === viewedSessionId) {
+          enterServingModel(msg.model || '');
+          // The stream is real now — swap the waiting spinner for the stop square.
+          if (busy && !streaming) {
+            streaming = true;
+            const sb = $('#btn-send');
+            if (sb) sb.innerHTML = ICON.stop;
+          }
+        }
         break;
       }
       case 'agentStep': {
@@ -3839,6 +3938,11 @@ const STATE_LABEL = {
       case 'toolStatus': {
         const ctx = createHandlerContext();
         handleToolStatus(ctx, msg);
+        // A finished web search contributes its links to the turn's source list.
+        if (msg.name === 'webSearch' && msg.state === 'done' && msg.detail) {
+          const target = targets.get(msg.requestId);
+          addSources(target?.el, parseSearchSources(msg.detail));
+        }
         break;
       }
       case 'watchdogWarning': {
@@ -4448,9 +4552,14 @@ const STATE_LABEL = {
         // — a background session's busy flip must not touch it.
         if (!msg.sessionId || msg.sessionId === viewedSessionId) {
           busy = msg.busy;
+          // AI Elements' PromptInput submit cycles submitted → streaming → idle. `busy` alone
+          // conflated the first two, so the STOP square appeared the instant you pressed send,
+          // while the turn was still waiting on the provider — the control claimed a stream that
+          // had not started. The spinner covers that gap; assistantStart flips it to the square.
+          streaming = false;
           composer.classList.toggle('working', busy);
           const sb = $('#btn-send');
-          sb.innerHTML = busy ? ICON.stop : ICON.send;
+          sb.innerHTML = busy ? SEND_SPINNER : ICON.send;
           sb.title = busy ? 'Stop' : 'Send (Enter)';
           sb.classList.toggle('stopping', busy);
           updateSendEnabled();

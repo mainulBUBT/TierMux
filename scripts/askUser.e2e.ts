@@ -20,7 +20,7 @@ async function main(): Promise<void> {
   const ask = buildV3ToolSet('ask');
   ok('1a. askUser offered in agent mode', 'askUser' in agent);
   ok('1b. askUser offered in plan mode', 'askUser' in plan);
-  ok('1c. askUser absent in ask mode', !('askUser' in ask));
+  ok('1c. askUser offered in ask mode', 'askUser' in ask, 'ask mode is everything-but-edits, not read-only-tools-only');
   ok('1d. toolset passes the host callback through', typeof (agent.askUser as { execute?: unknown }).execute === 'function');
 
   // ── 2. Tool behavior ──────────────────────────────────────────────────────

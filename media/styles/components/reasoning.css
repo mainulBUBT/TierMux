@@ -1,13 +1,14 @@
 /* Reasoning component — mirrors Vercel AI Elements "Reasoning".
  * Collapsible; auto-opens while streaming, auto-collapses to "Thought for Ns" on done,
- * pulsing dot while live, chevron rotates on open. Muted content card. */
+ * chevron rotates on open. Muted content card. */
 
 .tm-reasoning {
   margin: 1px 0;
   border-radius: var(--tm-radius-sm);
   transition: background var(--tm-transition-fast);
 }
-.tm-reasoning:hover { background: var(--tm-hover); }
+/* AI Elements' ReasoningTrigger hovers by shifting TEXT colour (`hover:text-foreground`), not
+   by filling a background — a filled row competes with the tool chips stacked around it. */
 .tm-reasoning.open { background: var(--tm-surface-alt); }
 
 .tm-reasoning-header {
@@ -22,7 +23,10 @@
   transition: background var(--tm-transition-fast);
 }
 
-.tm-reasoning-header:hover { background: var(--tm-hover); }
+.tm-reasoning-header:hover { color: var(--tm-fg); }
+.tm-reasoning-header:hover .tm-reasoning-label,
+.tm-reasoning-header:hover .tm-reasoning-brain,
+.tm-reasoning-header:hover .tm-reasoning-chevron { color: var(--tm-fg); }
 
 .tm-reasoning-title {
   display: flex;
@@ -45,22 +49,15 @@
   color: var(--tm-fg-muted);
 }
 
-/* Pulsing dot — visible only while streaming (Vercel pattern). */
-.tm-reasoning-pulse {
-  width: 8px;
-  height: 8px;
+/* Brain icon — muted like the rest of the trigger. */
+.tm-reasoning-brain {
+  display: inline-flex;
   flex-shrink: 0;
-  border-radius: var(--tm-radius-full);
-  background: var(--tm-fg-muted);
-  opacity: 0.5;
-}
-.tm-reasoning-pulse.on {
-  background: var(--tm-status-running);
-  opacity: 1;
-  animation: tm-reasoning-pulse 1.4s ease-in-out infinite;
+  color: var(--tm-fg-muted);
+  transition: color var(--tm-transition-fast);
 }
 
-/* Chevron — rotates 90° when open. */
+/* Chevron — rotates 180° when open (AI Elements: `size-4 transition-transform`). */
 .tm-reasoning-chevron {
   font-size: var(--tm-text-sm);
   line-height: 1;
@@ -185,11 +182,6 @@
 .tm-reasoning-text table { border-collapse: collapse; margin: var(--tm-gap-sm) 0; font-size: 10.5px; }
 .tm-reasoning-text th,
 .tm-reasoning-text td { border: 1px solid var(--tm-card-border); padding: 2px 6px; }
-
-@keyframes tm-reasoning-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.4; transform: scale(0.8); }
-}
 
 .tm-reasoning-header:focus-visible {
   outline: 2px solid var(--tm-border-focus);

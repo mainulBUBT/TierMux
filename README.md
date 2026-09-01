@@ -42,9 +42,9 @@ account, no config**. Add keys later for more headroom → [Providers & keys](do
   candidate silently, round-robin across providers.
 - **Key rotation** — many keys per provider, each cooled independently before the platform
   is written off.
-- **Three modes** — Ask (read-only), Plan (proposes, you approve), Agent (edits + terminal
-  behind approvals). The model picker is separate and defaults to **Auto** — pin a specific
-  model any time.
+- **Three modes** — Ask (answers with the full toolset, shell included — it never edits files),
+  Plan (proposes, you approve), Agent (edits + terminal behind approvals). The model picker is
+  separate and defaults to **Auto** — pin a specific model any time.
 - **Codebase-aware** — symbol/dependency index, ambient editor context, project rules and
   skills in `.tiermux/`, MCP servers.
 - **Explainable** — a **Why this model?** popover on every reply: what was picked, what

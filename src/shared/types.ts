@@ -42,8 +42,9 @@ export type Platform =
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
 
 /** TierMux's chat modes: plan (read-only, proposes concrete steps), agent (full read/write/run),
- *  ask (read-only Q&A — answers a direct lookup, or explores trade-offs in prose for an
- *  open-ended request; see ASK_MODE_TAIL in promptBuilder.ts). */
+ *  ask (everything EXCEPT file edits — read/search/shell/sub-agents are all available so a
+ *  question about git history or test output is answerable by running it; see MODE_TAIL.ask in
+ *  context/system.ts). */
 export type Mode = 'plan' | 'agent' | 'ask';
 
 /** A plan proposed by the model via the `exitPlanMode` tool (plan mode's explicit
@@ -58,14 +59,44 @@ export interface ProposedPlanStep {
   what: string;
   /** Workspace-relative paths this step touches — authoritative, not regex-guessed from prose. */
   files?: string[];
+  /** The path:line the model actually READ that proves this step is needed. Surfaced on the card
+   *  so a step resting on an unverified claim is visible BEFORE approval — the 2026-09-01 repro
+   *  shipped "the query is double-constrained" as a step, which a read of the scope disproved. */
+  evidence?: string;
   /** How to confirm the step landed (a command, or a check to re-read). */
   verify?: string;
 }
 
+/** One thing the model had to GUESS to write the plan. Carried INSIDE the plan rather than
+ *  raised through askUser, so a model confident enough to draft steps no longer has to choose
+ *  between asking and planning — it does both, and the plan stays un-executable until answered.
+ *  Shape borrowed from the `## Confirmation Items` section of the plan.md reimplementations. */
+export interface PlanQuestion {
+  question: string;
+  /** Why it matters / what raised it, with path:line. */
+  background?: string;
+  /** 2-5 concrete alternatives, when the choice is between known options. */
+  options?: string[];
+}
+
 export interface ProposedPlan {
   title: string;
+  /** What the investigation concluded. 'no-change' renders as a finding, not as a step list —
+   *  so "nothing needs changing" stops being expressible only as a fake verification step.
+   *  Optional for back-compat: the prose fallback path (planStructurer) has no outcome. */
+  outcome?: 'plan' | 'no-change';
   /** One or two sentences of context, rendered above the steps on the plan card. */
   description?: string;
+  /** Set when outcome is 'no-change': what was checked and why nothing needs changing. */
+  finding?: string;
+  /** The reading of the request these steps implement, in one sentence. Rendered at the TOP of
+   *  the card: a plan can be right in every step and still implement the wrong request, and
+   *  that is invisible unless the premise is stated (2026-09-01 vendor-order repro). */
+  interpretation?: string;
+  /** Why this way — the design choice and its blast radius beyond the changed lines. */
+  approach?: string;
+  /** Open questions. Non-empty ⇒ the plan is NOT executable until the user answers. */
+  questions?: PlanQuestion[];
   steps: ProposedPlanStep[];
 }
 

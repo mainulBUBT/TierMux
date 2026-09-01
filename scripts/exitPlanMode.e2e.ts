@@ -44,12 +44,15 @@ const detectStepFiles = (text: string): string[] =>
   (text.match(/`([^`]+)`/g) || []).map((s) => s.slice(1, -1).trim()).filter((s) => s && !/\s/.test(s));
 
 const PLAN: ProposedPlan = {
+  outcome: 'plan',
   title: 'Add dark mode',
+  interpretation: 'the settings panel should offer a light/dark choice the webview honours',
+  approach: 'store it as an ordinary setting so the webview reads it like every other one',
   description: 'Wire a theme toggle through the settings panel.',
   steps: [
-    { what: 'Add a themeMode setting', files: ['src/settingsMeta.ts'], verify: 'npm run typecheck' },
-    { what: 'Read the toggle in the webview', files: ['media/src/main.ts', 'media/main.css'] },
-    { what: 'Document the setting' },
+    { what: 'Add a themeMode setting', files: ['src/settingsMeta.ts'], evidence: 'src/settingsMeta.ts:40 has no theme entry', verify: 'npm run typecheck' },
+    { what: 'Read the toggle in the webview', files: ['media/src/main.ts', 'media/main.css'], evidence: 'media/src/main.ts:210 hardcodes the light palette' },
+    { what: 'Document the setting', files: ['README.md'], evidence: 'README.md:60 lists every setting but this one' },
   ],
 };
 
@@ -92,8 +95,8 @@ async function main(): Promise<void> {
   const tool = createExitPlanModeTool((p) => { seen.push(p); });
   const exec = tool.execute as (i: unknown, o: unknown) => Promise<unknown>;
 
-  const okRes = await exec({ title: '  Add dark mode  ', description: ' ctx ', steps: [
-    { what: ' Add a setting ', files: [' src/settingsMeta.ts '], verify: ' npm run typecheck ' },
+  const okRes = await exec({ outcome: 'plan', title: '  Add dark mode  ', description: ' ctx ', interpretation: ' the panel should offer a light/dark choice ', steps: [
+    { what: ' Add a setting ', files: [' src/settingsMeta.ts '], evidence: ' src/settingsMeta.ts:40 has no theme entry ', verify: ' npm run typecheck ' },
     { what: '   ' },
   ] }, {});
   ok('valid call hands the plan to the host', seen.length === 1 && seen[0].title === 'Add dark mode', JSON.stringify(seen[0]));
@@ -101,15 +104,84 @@ async function main(): Promise<void> {
     seen[0]?.steps.length === 1 && seen[0].steps[0].what === 'Add a setting'
     && seen[0].steps[0].files?.[0] === 'src/settingsMeta.ts' && seen[0].steps[0].verify === 'npm run typecheck',
     JSON.stringify(seen[0]?.steps));
+  ok('evidence survives to the card', seen[0]?.steps[0].evidence === 'src/settingsMeta.ts:40 has no theme entry', JSON.stringify(seen[0]?.steps[0]));
   ok('model is told to stop, not to restate the plan',
     typeof okRes === 'string' && /approval/i.test(okRes) && /stop/i.test(okRes), JSON.stringify(okRes));
 
-  const empty = await exec({ title: 'x', steps: [{ what: '  ' }] }, {});
+  const empty = await exec({ outcome: 'plan', title: 'x', interpretation: 'r', steps: [{ what: '  ' }] }, {});
   ok('all-blank steps return { error }, no card posted',
     typeof empty === 'object' && empty !== null && 'error' in empty && seen.length === 1, JSON.stringify(empty));
 
+  // The 2026-09-01 repro's shape: a step that changes nothing and rests on nothing. It used to
+  // be a VALID plan (files/evidence were optional), which is how a two-step no-op plan shipped
+  // to the card as if it fixed the reported bug.
+  const ungrounded = await exec({ outcome: 'plan', title: 'x', interpretation: 'r', steps: [
+    { what: 'Confirm no view-side change is needed', files: ['resources/views/order-view.blade.php'] },
+  ] }, {});
+  ok('a step with no evidence is rejected',
+    typeof ungrounded === 'object' && ungrounded !== null && 'error' in ungrounded
+    && /evidence/i.test((ungrounded as { error: string }).error) && seen.length === 1,
+    JSON.stringify(ungrounded));
+  const fileless = await exec({ outcome: 'plan', title: 'x', interpretation: 'r', steps: [
+    { what: 'Re-read the controller and confirm it is fine', evidence: 'OrderController.php:250' },
+  ] }, {});
+  ok('a step that changes no file is rejected',
+    typeof fileless === 'object' && fileless !== null && 'error' in fileless && seen.length === 1,
+    JSON.stringify(fileless));
+
+  // "Nothing needs changing" is now its OWN outcome instead of a fake verification step.
+  const noChange = await exec({ outcome: 'no-change', title: 'Filtering is already correct',
+    finding: 'Item::scopeActive (app/Models/Item.php:100) already excludes status=0 items.' }, {});
+  ok('outcome "no-change" posts a finding, not steps',
+    seen.length === 2 && seen[1].outcome === 'no-change' && !!seen[1].finding && seen[1].steps.length === 0,
+    JSON.stringify(seen[1]));
+  ok('"no-change" tells the model there is nothing to implement',
+    typeof noChange === 'string' && /nothing to implement/i.test(noChange), JSON.stringify(noChange));
+  const noFinding = await exec({ outcome: 'no-change', title: 'x' }, {});
+  ok('"no-change" without a finding is rejected',
+    typeof noFinding === 'object' && noFinding !== null && 'error' in noFinding && seen.length === 2,
+    JSON.stringify(noFinding));
+
+  // The premise, stated. A plan can be right in every step and still implement the wrong
+  // request — the 2026-09-01 vendor-order repro inverted the requirement while every step
+  // carried genuine evidence. Nothing here judges whether the reading is CORRECT; it only
+  // refuses a plan that never states one.
+  const noReading = await exec({ outcome: 'plan', title: 'x', steps: [
+    { what: 'Change a thing', files: ['a.ts'], evidence: 'a.ts:1' },
+  ] }, {});
+  ok('a plan with no interpretation is rejected',
+    typeof noReading === 'object' && noReading !== null && 'error' in noReading
+    && /interpretation/i.test((noReading as { error: string }).error), JSON.stringify(noReading));
+
+  // Open questions ride INSIDE the plan: a model confident enough to draft steps no longer has
+  // to choose between asking and planning. Both ship; the card blocks execution.
+  const withQ = await exec({ outcome: 'plan', title: 'Hide off-category items',
+    interpretation: 'items under an off category should be hidden in edit mode',
+    questions: [{ question: 'Fix the shared scope or only the vendor view?', background: 'Item.php:120 checks the parent only', options: [' Shared scope ', 'Vendor view only', '  '] }],
+    steps: [{ what: 'Add a sub-category status check', files: ['app/Models/Item.php'], evidence: 'app/Models/Item.php:120' }] }, {});
+  const posted = seen[seen.length - 1];
+  ok('open questions are carried on the plan, not dropped',
+    posted.questions?.length === 1 && posted.questions[0].question.startsWith('Fix the shared scope'),
+    JSON.stringify(posted.questions));
+  ok('question options are trimmed and blanks dropped',
+    JSON.stringify(posted.questions?.[0].options) === '["Shared scope","Vendor view only"]',
+    JSON.stringify(posted.questions?.[0].options));
+  ok('the model is told the user answers the questions, not it',
+    typeof withQ === 'string' && /open question/i.test(withQ) && /do not answer the questions yourself/i.test(withQ),
+    JSON.stringify(withQ));
+  ok('interpretation and approach reach the host',
+    seen[0].interpretation === 'the panel should offer a light/dark choice', JSON.stringify(seen[0].interpretation));
+
+  // Hesitation now has a name, and it routes to askUser instead of to a guessed plan.
+  const beforeUnsure = seen.length;
+  const unsure = await exec({ outcome: 'needs-decision', title: 'Fix globally or locally?' }, {});
+  ok('outcome "needs-decision" is refused and points at askUser',
+    typeof unsure === 'object' && unsure !== null && 'error' in unsure
+    && /askUser/i.test((unsure as { error: string }).error) && seen.length === beforeUnsure,
+    JSON.stringify(unsure));
+
   const headless = await (createExitPlanModeTool().execute as (i: unknown, o: unknown) => Promise<unknown>)(
-    { title: 'x', steps: [{ what: 'do a thing' }] }, {});
+    { outcome: 'plan', title: 'x', interpretation: 'r', steps: [{ what: 'do a thing', files: ['a.ts'], evidence: 'a.ts:1' }] }, {});
   ok('no host callback degrades to { error }',
     typeof headless === 'object' && headless !== null && 'error' in headless, JSON.stringify(headless));
 
@@ -141,6 +213,34 @@ async function main(): Promise<void> {
       model.calls.length === 1, `calls=${model.calls.length}`);
     ok('exitPlanMode was actually offered to the model',
       model.calls[0].tools.includes('exitPlanMode'), JSON.stringify(model.calls[0].tools));
+  }
+
+  // ── 4b. A REJECTED plan does not end the turn ─────────────────────────────
+  // stopWhen used to be hasToolCall('exitPlanMode'), which fired on the CALL: a plan the tool
+  // refused (blank steps here) ended the turn anyway, so the model never saw the error and the
+  // user got a dead turn with no card. `planAccepted` (engine.ts) stops on the accepted RESULT,
+  // which keeps the AI SDK's own tool-error path open — the { error } goes back as the next
+  // step's input and the model re-submits. Prerequisite for the schema tightening: every new
+  // rejection reason is only safe because of this.
+  {
+    const model = createMockModel([
+      { toolCalls: [{ toolName: 'exitPlanMode', input: { outcome: 'plan', title: 'x', interpretation: 'r', steps: [{ what: '   ' }] } }] },
+      { toolCalls: [{ toolName: 'exitPlanMode', input: PLAN }] },
+    ], 'exit-plan-retry');
+    __setEngineModelForTests(model);
+    let retried;
+    try {
+      retried = await runPlanStream(undefined as never, engineOpts({
+        messages: [{ role: 'user', content: 'add dark mode' }],
+      }));
+    } finally {
+      __setEngineModelForTests(undefined);
+    }
+    ok('a rejected plan does NOT end the turn — the model gets the error and re-submits',
+      model.calls.length === 2, `calls=${model.calls.length}`);
+    ok('the re-submitted plan is the one that reaches the host',
+      retried.plan?.title === 'Add dark mode' && retried.plan?.steps.length === 3,
+      JSON.stringify(retried.plan));
 
     // A plan-mode turn that does NOT call the tool must leave result.plan undefined, so the
     // host renders a normal answer instead of a plan card. This is the "a finding is not a
@@ -163,6 +263,40 @@ async function main(): Promise<void> {
   // the model read its way through the codebase and then ended the turn on "Now let me check
   // if there's any existing theme or dark mode support…" — no exitPlanMode call, so no plan
   // card and 236 output tokens of narration shipped as the answer.
+  // ── 4c. The nudge accepts a QUESTION as a valid close ─────────────────────
+  // Live repro (2026-09-01, vendor order-view "category off / product status off"): the model
+  // could not tell whether the fix belonged in the shared Item::scopeActive() scope or only in
+  // the vendor controller. It narrated that hesitation rather than phrasing it as a question,
+  // so looksLikeQuestion did not spare it, and the old toolChoice pin would have compelled a
+  // plan — which is exactly what shipped: two steps that changed nothing. Asking must be a way
+  // to finish the nudged step, not something the wire forbids.
+  {
+    const model = createMockModel([
+      { toolCalls: [{ toolName: 'grep', input: { pattern: 'scopeActive', path: '.' } }] },
+      { text: 'Let me re-read the user\'s actual words carefully before presenting the plan.' },
+      { toolCalls: [{ toolName: 'askUser', input: {
+        question: 'Fix it globally in scopeActive(), or only in the vendor order view?',
+        options: ['Globally in scopeActive()', 'Only the vendor order view'],
+      } }] },
+      { text: 'Understood — scoping it to the vendor order view.' },
+    ], 'plan-gap-ask');
+    const asked: string[] = [];
+    __setEngineModelForTests(model);
+    try {
+      const out = await runPlanStream(undefined as never, engineOpts({
+        messages: [{ role: 'user', content: 'make the edit-mode grid filter like the admin one' }],
+        onAskUser: async (q) => { asked.push(q); return 'Only the vendor order view'; },
+      }));
+      ok('a hesitating model may close the nudged step by ASKING, not by inventing a plan',
+        asked.length === 1 && /globally|vendor order view/i.test(asked[0]), JSON.stringify(asked));
+      ok('asking does not fabricate a plan card', out.plan === undefined, JSON.stringify(out.plan));
+      ok('askUser does not end the turn — the answer comes back and the loop continues',
+        model.calls.length === 4, `calls=${model.calls.length}`);
+    } finally {
+      __setEngineModelForTests(undefined);
+    }
+  }
+
   {
     const model = createMockModel([
       { toolCalls: [{ toolName: 'grep', input: { pattern: 'dark', path: '.' } }] },
@@ -182,12 +316,18 @@ async function main(): Promise<void> {
         retracted.length === 1, `retracted=${retracted.length}`);
       ok('exactly ONE continuation (invariant 3: no ladder)',
         model.calls.length === 3, `calls=${model.calls.length}`);
-      // The continuation does not merely ASK for the plan — its first step is sent with
-      // toolChoice pinned to exitPlanMode, so a model that ignores prose instructions still
-      // has to produce one. Earlier steps must stay on 'auto' or investigation is impossible.
-      ok('the continuation FORCES exitPlanMode via toolChoice',
-        JSON.stringify(model.calls[2].toolChoice) === '{"type":"tool","toolName":"exitPlanMode"}',
+      // The continuation does not merely ASK the model to finish — its first step is sent with
+      // toolChoice 'required', so a model that ignores prose instructions still cannot narrate
+      // a third time. Earlier steps must stay on 'auto' or investigation is impossible.
+      ok('the continuation FORCES a closing tool call',
+        JSON.stringify(model.calls[2].toolChoice) === '{"type":"required"}',
         JSON.stringify(model.calls[2].toolChoice));
+      // …but it does NOT dictate WHICH close. Pinning exitPlanMode (the pre-2026-09-01 shape)
+      // compelled a guess out of a model that had hesitated, since looksLikeQuestion only
+      // catches hesitation phrased as a question. Both closers are offered; nothing else is.
+      ok('the forced step offers exitPlanMode AND askUser, and nothing else',
+        JSON.stringify([...model.calls[2].tools].sort()) === JSON.stringify(['askUser', 'exitPlanMode']),
+        JSON.stringify(model.calls[2].tools));
       ok('investigation steps are never forced',
         model.calls.slice(0, 2).every((c) => c.toolChoice === undefined || (c.toolChoice as { type?: string })?.type === 'auto'),
         JSON.stringify(model.calls.map((c) => c.toolChoice)));
@@ -196,17 +336,26 @@ async function main(): Promise<void> {
     }
   }
   {
-    // A real prose answer in plan mode is NOT narration — it must ship untouched. The script
-    // holds only one response, so a nudge here would abort with "script exhausted".
+    // CONTRACT CHANGE (2026-09-01): a prose "nothing to add" reply to a CHANGE request is a
+    // finding delivered the wrong way, and it is now nudged into declaring itself — exactly as
+    // agent mode nudges "I would edit X" into editing. The tool-boundary doctrine is that the
+    // model DECLARES the outcome and the host never classifies prose; before outcome
+    // 'no-change' existed there was no tool to declare this with, so the reply had to be let
+    // through. There is one now, and the nudge's forced step offers it.
     const model = createMockModel([
       { text: 'The settings panel already themes off VS Code tokens (media/main.css:1-40); nothing to add.' },
+      { toolCalls: [{ toolName: 'exitPlanMode', input: {
+        outcome: 'no-change', title: 'Already themed',
+        finding: 'media/main.css:1-40 already themes off VS Code tokens.',
+      } }] },
     ], 'plan-answer');
     __setEngineModelForTests(model);
     try {
       const out = await runPlanStream(undefined as never, engineOpts({
         messages: [{ role: 'user', content: 'add a dark mode toggle to setting' }],
       }));
-      ok('a real plan-mode answer is never nudged', model.calls.length === 1, `calls=${model.calls.length}`);
+      ok('a prose "nothing to change" answer is nudged into declaring outcome no-change',
+        model.calls.length === 2 && out.plan?.outcome === 'no-change', `calls=${model.calls.length} outcome=${out.plan?.outcome}`);
       ok('and is never forced into a tool call',
         model.calls[0].toolChoice === undefined || (model.calls[0].toolChoice as { type?: string })?.type === 'auto',
         JSON.stringify(model.calls[0].toolChoice));
@@ -215,6 +364,31 @@ async function main(): Promise<void> {
       __setEngineModelForTests(undefined);
     }
   }
+  // ── 4d. Unclosed WITHOUT the narration shape ──────────────────────────────
+  // Live repro 2026-09-01 4:33 PM (Kilo/stepfun/step-3.7-flash:free): "I found the key line.
+  // Let me look at OrderController.php:250 where the products are being loaded…" — no plan, no
+  // card, and NARRATION_RE does not match it (the stem regex is start-anchored; this opens with
+  // "I found"). planGap no longer asks what the prose looks like: no plan tool call on a
+  // non-question request IS the gap.
+  {
+    const model = createMockModel([
+      { toolCalls: [{ toolName: 'grep', input: { pattern: 'products', path: '.' } }] },
+      { text: 'I found the key line. Let me look at app/Http/Controllers/Vendor/OrderController.php:250 where the products are being loaded for the order view edit mode.' },
+      { toolCalls: [{ toolName: 'exitPlanMode', input: PLAN }] },
+    ], 'plan-gap-unnarrated');
+    __setEngineModelForTests(model);
+    try {
+      const out = await runPlanStream(undefined as never, engineOpts({
+        messages: [{ role: 'user', content: 'check the edit-mode product filtering and make a plan first.' }],
+      }));
+      ok('an unclosed turn is nudged even when the reply is not narration-shaped',
+        model.calls.length === 3, `calls=${model.calls.length}`);
+      ok('the nudged turn still lands a plan', out.plan?.title === 'Add dark mode', JSON.stringify(out.plan));
+    } finally {
+      __setEngineModelForTests(undefined);
+    }
+  }
+
   {
     // Narration in reply to a QUESTION stays unnudged — plan mode answers questions in prose,
     // and forcing a plan onto one is the exact failure the old regex+classifier kept making.
@@ -231,6 +405,26 @@ async function main(): Promise<void> {
       __setEngineModelForTests(undefined);
     }
   }
+  {
+    // Live case 2026-09-01 5:09 PM: "give me an example of plan mode" in plan mode. It is
+    // plainly an information request, but it leads with an imperative and ends with no "?", so
+    // the interrogative-only carve-out missed it — and since planGap stopped testing the reply's
+    // shape, missing it means forcing a fabricated plan onto a question.
+    const model = createMockModel([
+      { text: 'Plan mode answers by calling exitPlanMode with {interpretation, questions, steps}.' },
+    ], 'plan-meta-question');
+    __setEngineModelForTests(model);
+    try {
+      const out = await runPlanStream(undefined as never, engineOpts({
+        messages: [{ role: 'user', content: 'give me an example of plan mode' }],
+      }));
+      ok('an imperative INFORMATION request is not nudged into a plan',
+        model.calls.length === 1, `calls=${model.calls.length}`);
+      ok('and its prose answer ships', out.plan === undefined && out.text.includes('exitPlanMode'), out.text);
+    } finally {
+      __setEngineModelForTests(undefined);
+    }
+  }
 
   // ── 5. Card text round-trip (webview's own parsers) ────────────────────────
   const card = formatPlanForCard(PLAN);
@@ -239,10 +433,66 @@ async function main(): Promise<void> {
   ok('description lands ABOVE the first bullet (where Plan.ts looks for it)',
     card.indexOf('Wire a theme toggle') < card.indexOf('1. '), card.slice(0, 80));
   ok('declared files are backticked so the card\'s "N files" summary counts them',
-    JSON.stringify(new Set(parsed.flatMap(detectStepFiles)).size) === '3',
+    JSON.stringify(new Set(parsed.flatMap(detectStepFiles)).size) === '4',
     JSON.stringify(parsed.flatMap(detectStepFiles)));
   ok('verify text rides along on the step line', parsed[0].includes('npm run typecheck'), parsed[0]);
-  ok('a step with no files/verify stays a bare action', parsed[2] === 'Document the setting', parsed[2]);
+  // `files` is mandatory on the TOOL path now, so a file-less step can only arrive from the
+  // prose fallback (planStructurer) — the renderer must still handle it, hence a local fixture
+  // rather than a PLAN step that the schema would no longer accept.
+  const bareCard = parsePlanSteps(formatPlanForCard({ title: 'x', steps: [{ what: 'Document the setting' }] }));
+  ok('a step with no files/verify stays a bare action', bareCard[0] === 'Document the setting', bareCard[0]);
+
+  // Evidence has to reach the CARD, not just the tool call: the whole point is that the user
+  // can check a step's premise before approving it. The 2026-09-01 repro's step rested on a
+  // claim one file read disproved, and the card showed no way to notice.
+  ok('evidence is rendered on the card line', parsed[0].includes('evidence: src/settingsMeta.ts:40'), parsed[0]);
+  const back = parsePlanStepLine(parsed[0]);
+  ok('the card line parses back into what/files/evidence/verify',
+    back.what === 'Add a themeMode setting' && back.files[0] === 'src/settingsMeta.ts'
+    && back.evidence === 'src/settingsMeta.ts:40 has no theme entry' && back.verify === 'npm run typecheck',
+    JSON.stringify(back));
+  ok('a saved plan document carries the evidence line',
+    renderPlanMarkdown(card, { title: 'Add dark mode', status: 'approved', now: new Date(0) })
+      .includes('  - Evidence: src/settingsMeta.ts:40 has no theme entry'));
+
+  // The header block: reading/approach/questions ride on the card text, ABOVE the steps, and
+  // must not be mistaken for steps by the bullet parser.
+  ok('the reading is on the card, above the first step',
+    card.includes('Reading: the settings panel should offer a light/dark choice the webview honours')
+    && card.indexOf('Reading:') < card.indexOf('1. '), card.slice(0, 120));
+  ok('the approach is on the card', card.includes('Approach: store it as an ordinary setting'), card.slice(0, 200));
+  ok('header lines are not parsed as steps', parsePlanSteps(card).length === 3, JSON.stringify(parsePlanSteps(card)));
+
+  const qCard = formatPlanForCard({
+    outcome: 'plan', title: 'x', interpretation: 'hide off-category items in edit mode',
+    questions: [{ question: 'Shared scope or vendor view only?', background: 'Item.php:120 checks the parent only', options: ['Shared scope', 'Vendor view only'] }],
+    steps: [{ what: 'Add the check', files: ['app/Models/Item.php'], evidence: 'app/Models/Item.php:120' }],
+  });
+  ok('an open question is encoded on one Q: line, not as a bullet',
+    qCard.includes('Q: Shared scope or vendor view only? | Item.php:120 checks the parent only | Shared scope; Vendor view only')
+    && parsePlanSteps(qCard).length === 1, JSON.stringify(qCard));
+
+  const qMd = renderPlanMarkdown(qCard, { title: 'x', status: 'approved', now: new Date(0) });
+  ok('an unanswered plan is saved as status: needs-answers, not approved',
+    /^status: needs-answers$/m.test(qMd) && /^questions: 1$/m.test(qMd) && /^answered: false$/m.test(qMd), qMd.slice(0, 300));
+  ok('the saved document renders Reading / Open questions sections',
+    qMd.includes('## Reading') && qMd.includes('## Open questions — UNANSWERED')
+    && qMd.includes('- [ ] Shared scope or vendor view only?')
+    && qMd.includes('  - Option: Vendor view only'), qMd);
+  // The answer is written back into the HEADER block, right after its question — the webview
+  // does the same, so a saved plan carries the pick beside the question it answers.
+  const answeredCard = qCard.split('\n')
+    .flatMap((l) => (l.startsWith('Q: ') ? [l, 'A: Vendor view only'] : [l])).join('\n');
+  const answeredMd = renderPlanMarkdown(answeredCard, { title: 'x', status: 'approved', now: new Date(0) });
+  ok('answering flips the checkbox and restores the real status',
+    /^status: approved$/m.test(answeredMd) && answeredMd.includes('- [x] Shared scope or vendor view only?')
+    && answeredMd.includes('**Answer:** Vendor view only'), answeredMd.slice(0, 400));
+
+  // A 'no-change' outcome formats to its finding, never to an empty step list.
+  const ncCard = formatPlanForCard({ outcome: 'no-change', title: 'Already filtered',
+    steps: [], finding: 'Item::scopeActive (app/Models/Item.php:100) already excludes status=0 items.' });
+  ok('"no-change" formats to the finding, with no numbered steps',
+    ncCard.includes('app/Models/Item.php:100') && parsePlanSteps(ncCard).length === 0, JSON.stringify(ncCard));
 
   // ── 6. isCleanNumberedList (skips the structurer model call) ───────────────
   ok('tool-declared plan text is recognized as already clean', isCleanNumberedList(card));
@@ -274,8 +524,8 @@ async function main(): Promise<void> {
     ok('the plan description survives as prose', md.includes('Wire a theme toggle through the settings panel.'));
     ok('steps stay checkboxes so the file works as a live checklist',
       (md.match(/^- \[ \] /gm) ?? []).length === 3, md);
-    ok('files and verify are sub-bullets, not crammed into the checkbox line',
-      md.includes('- [ ] Add a themeMode setting\n  - Files: `src/settingsMeta.ts`\n  - Verify: npm run typecheck'), md);
+    ok('files, evidence and verify are sub-bullets, not crammed into the checkbox line',
+      md.includes('- [ ] Add a themeMode setting\n  - Files: `src/settingsMeta.ts`\n  - Evidence: src/settingsMeta.ts:40 has no theme entry\n  - Verify: npm run typecheck'), md);
     ok('a step with no files/verify gets no empty sub-bullets',
       md.includes('- [ ] Document the setting\n'), md);
     ok('quotes in a title cannot break the YAML',

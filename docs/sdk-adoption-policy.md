@@ -35,7 +35,7 @@ adopted API is future breakage surface; adopt only when it pays for that.
 | `repairToolCall` option | tool-call self-healing hook (`core/engine.ts`) |
 | `toolApproval` | permission gate (`core/engine.ts`) |
 | `isStepCount`, `hasToolCall`, `NoSuchToolError`, `InvalidToolInputError` | loop control, error handling |
-| `prepareStep` (`toolChoice`) | forcing `exitPlanMode` on the plan-gap continuation (`core/engine.ts`) |
+| `prepareStep` (`toolChoice`) | forcing a closing tool call on the plan-gap continuation (`core/engine.ts`) — note it only became REAL on 2026-09-01, when `core/routerProvider.ts` finally mapped it to the router's `tool_choice`; before that the adapter dropped it and the "wire-level guarantee" was prompt text |
 | `LanguageModelV4` spec types | the router-as-model adapter (`core/routerProvider.ts`) |
 
 ### Listed as adopted before 2026-08-30, and NOT actually present

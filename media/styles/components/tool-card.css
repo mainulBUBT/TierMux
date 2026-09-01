@@ -54,21 +54,36 @@
   max-width: 280px;
 }
 
-/* Status — a small dot only (the verbose "Completed/Error" label is hidden). */
+/* Status — AI Elements' Tool badge ("gap-1.5 rounded-full text-xs", secondary variant: a pill
+ * carrying icon + status text), not the bare 8px dot this used to be. A dot forces the reader to
+ * decode a colour; the pill says "completed" / "error" outright, which is the point of the
+ * pattern. The row height is unchanged, so the compact chip-row flow this file was built around
+ * survives — only the dot grows into a labelled chip. */
 .tm-tool-card-status {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: var(--tm-gap-xs);
+  gap: 6px;
   flex-shrink: 0;
+  padding: 1px var(--tm-gap-md);
+  border-radius: var(--tm-radius-full);
+  background: var(--tm-surface-panel);
+  color: var(--tm-fg-muted);
+  font-size: var(--tm-text-xs);
+  line-height: 1.5;
 }
 .tm-tool-card-state {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: var(--tm-radius-full);
   background: var(--tm-fg-muted);
   opacity: .5;
+  /* The ✓ / ✗ glyphs the markup puts inside would stretch the pill — the colour carries the
+   * state here and the adjacent label spells it out. */
+  font-size: 0;
+  flex-shrink: 0;
 }
-.tm-tool-card-state-label { display: none; }
+.tm-tool-card-state-label { white-space: nowrap; }
+.tm-tool-card.error .tm-tool-card-status { color: var(--tm-status-error); }
 
 /* Expand chevron — only shown when the card has a body to reveal; rotates on open. */
 .tm-tool-card-chevron {

@@ -30,7 +30,7 @@ async function main(): Promise<void> {
   const ask = buildV3ToolSet('ask');
   ok('1a. delegateTask offered in agent mode', 'delegateTask' in agent);
   ok('1b. delegateTask offered in plan mode', 'delegateTask' in plan);
-  ok('1c. absent in ask mode', !('delegateTask' in ask));
+  ok('1c. offered in ask mode', 'delegateTask' in ask);
   ok('1d. READ_ONLY', READ_ONLY_TOOLS.has('delegateTask'));
 
   // ── 2. Happy path: sub-agent investigates via real readFile, then synthesizes ──

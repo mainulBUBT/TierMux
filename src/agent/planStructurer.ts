@@ -102,13 +102,44 @@ export function formatStructuredSteps(steps: string[]): string {
  *    compute the card's "N steps · N files" summary. With the tool, those paths are the
  *    model's declared targets instead of a regex guess at pathish-looking prose.
  */
+/** Card-text encoding for the plan's header block. Line-prefixed rather than markdown-sectioned
+ *  on purpose: the card text is hand-editable and is parsed back by BOTH this file and the
+ *  webview, and `Reading:` / `Approach:` / `Q:` cannot collide with the step-bullet regex
+ *  (`^\s*(?:[-*]|\d+[.)])\s+`) the way a `- [ ] question` line would. */
+export const CARD_READING_RE = /^Reading:\s*(.+)$/;
+export const CARD_APPROACH_RE = /^Approach:\s*(.+)$/;
+/** `Q: question | background | option; option` — background and options optional. */
+export const CARD_QUESTION_RE = /^Q:\s*(.+)$/;
+/** `A: answer` — the user's pick, written back when they answer on the card. */
+export const CARD_ANSWER_RE = /^A:\s*(.+)$/;
+
 export function formatPlanForCard(plan: ProposedPlan): string {
   const lines: string[] = [];
+  // Header block FIRST: the reading is the one thing a reader must see before the steps, since
+  // a plan can be right in every step and still implement the wrong request.
+  if (plan.interpretation?.trim()) lines.push(`Reading: ${plan.interpretation.trim()}`);
+  if (plan.approach?.trim()) lines.push(`Approach: ${plan.approach.trim()}`);
+  for (const q of plan.questions ?? []) {
+    if (!q.question?.trim()) continue;
+    const parts = [q.question.trim(), q.background?.trim() || '', (q.options ?? []).join('; ')];
+    while (parts.length && !parts[parts.length - 1]) parts.pop();
+    lines.push(`Q: ${parts.join(' | ')}`);
+  }
+  if (lines.length) lines.push('');
   if (plan.description?.trim()) lines.push(plan.description.trim(), '');
+  // 'no-change' has no steps by construction — it is a finding, and the host renders it as a
+  // normal answer rather than an empty plan card (see chatViewProvider). Kept renderable here
+  // so a caller that formats one anyway gets the finding, not a blank string.
+  if (plan.outcome === 'no-change') return [...lines, (plan.finding ?? '').trim()].join('\n').trim();
   plan.steps.forEach((step, i) => {
     const files = step.files?.filter(Boolean).map((f) => `\`${f}\``).join(', ');
     const parts = [step.what.trim()];
     if (files) parts.push(`(${files})`);
+    // Evidence rides on the card line so the user can CHECK a step's premise before approving
+    // it — the 2026-09-01 repro approved a step whose premise a single file read disproved.
+    // The card text is the source of truth (steps are hand-editable), so it has to live here
+    // rather than in a parallel copy of ProposedPlan.
+    if (step.evidence?.trim()) parts.push(`— evidence: ${step.evidence.trim()}`);
     if (step.verify?.trim()) parts.push(`— verify: ${step.verify.trim()}`);
     lines.push(`${i + 1}. ${parts.join(' ')}`);
   });
@@ -143,10 +174,15 @@ export function isCleanNumberedList(text: string): boolean {
 interface ParsedStep {
   what: string;
   files: string[];
+  evidence?: string;
   verify?: string;
 }
 
 const STEP_VERIFY_RE = /\s+[—-]\s*verify:\s*(.+)$/i;
+// Stripped AFTER verify and BEFORE files, matching the line order the card writes:
+// `what (files) — evidence: E — verify: V`. Each clause anchors at $ once the ones to its
+// right are gone, so no clause has to know about the others' contents.
+const STEP_EVIDENCE_RE = /\s+[—-]\s*evidence:\s*(.+)$/i;
 const STEP_FILES_RE = /\s+\((`[^`]+`(?:\s*,\s*`[^`]+`)*)\)\s*$/;
 
 /** Split one plan-card line back into `{ what, files, verify }`. Everything is optional: a
@@ -156,13 +192,16 @@ export function parsePlanStepLine(line: string): ParsedStep {
   let verify: string | undefined;
   const v = rest.match(STEP_VERIFY_RE);
   if (v) { verify = v[1].trim(); rest = rest.slice(0, v.index).trimEnd(); }
+  let evidence: string | undefined;
+  const e = rest.match(STEP_EVIDENCE_RE);
+  if (e) { evidence = e[1].trim(); rest = rest.slice(0, e.index).trimEnd(); }
   let files: string[] = [];
   const f = rest.match(STEP_FILES_RE);
   if (f) {
     files = f[1].split(',').map((x) => x.trim().replace(/^`|`$/g, '')).filter(Boolean);
     rest = rest.slice(0, f.index).trimEnd();
   }
-  return { what: rest, files, verify };
+  return { what: rest, files, evidence, verify };
 }
 
 export interface PlanFileMeta {
@@ -212,7 +251,17 @@ function yamlString(v: string): string {
 export function renderPlanMarkdown(steps: string, meta: PlanFileMeta): string {
   const lines = steps.split('\n');
   const firstStep = lines.findIndex((l) => /^\s*(?:[-*]|\d+[.)])\s+\S/.test(l));
+  // The header block is recovered from the CARD TEXT like everything else — the user may have
+  // edited the reading or answered a question before saving, and a stored copy of ProposedPlan
+  // could silently disagree with what they approved.
+  const head = (firstStep === -1 ? lines : lines.slice(0, firstStep)).map((l) => l.trim());
+  const reading = head.map((l) => l.match(CARD_READING_RE)?.[1]).find(Boolean)?.trim();
+  const approach = head.map((l) => l.match(CARD_APPROACH_RE)?.[1]).find(Boolean)?.trim();
+  const questions = head.map((l) => l.match(CARD_QUESTION_RE)?.[1]).filter((x): x is string => !!x);
+  const answers = head.map((l) => l.match(CARD_ANSWER_RE)?.[1]).filter((x): x is string => !!x);
+  const unanswered = Math.max(0, questions.length - answers.length);
   const description = (firstStep === -1 ? [] : lines.slice(0, firstStep))
+    .filter((l) => ![CARD_READING_RE, CARD_APPROACH_RE, CARD_QUESTION_RE, CARD_ANSWER_RE].some((re) => re.test(l.trim())))
     .map((l) => l.trim()).filter(Boolean).join(' ').trim();
 
   const parsed: ParsedStep[] = [];
@@ -226,10 +275,14 @@ export function renderPlanMarkdown(steps: string, meta: PlanFileMeta): string {
     '---',
     `title: ${yamlString(meta.title)}`,
     `created: ${isoLocal(meta.now ?? new Date())}`,
-    `status: ${meta.status}`,
+    `status: ${unanswered ? 'needs-answers' : meta.status}`,
     ...(meta.model ? [`model: ${yamlString(meta.model)}`] : []),
     ...(meta.sessionId ? [`session: ${yamlString(meta.sessionId)}`] : []),
     `steps: ${parsed.length}`,
+    // Machine-visible, not just on screen: a plan saved with questions still open is not
+    // execute-ready, and `grep -l 'status: needs-answers'` has to be able to say so.
+    ...(questions.length ? [`questions: ${questions.length}`] : []),
+    ...(unanswered ? ['answered: false'] : []),
     ...(touched.length ? ['files:', ...touched.map((f) => `  - ${yamlString(f)}`)] : []),
     '---',
   ];
@@ -237,6 +290,19 @@ export function renderPlanMarkdown(steps: string, meta: PlanFileMeta): string {
   const body: string[] = ['', '', `# ${meta.title}`, ''];
   if (meta.request?.trim()) {
     body.push(`> **Request** — ${meta.request.trim().replace(/\s+/g, ' ')}`, '');
+  }
+  if (reading) body.push('## Reading', '', reading, '');
+  if (approach) body.push('## Approach', '', approach, '');
+  if (questions.length) {
+    body.push(`## Open questions${unanswered ? ' — UNANSWERED' : ''}`, '');
+    questions.forEach((q, i) => {
+      const [text, background, options] = q.split('|').map((x) => x.trim());
+      body.push(`- [${answers[i] ? 'x' : ' '}] ${text}`);
+      if (background) body.push(`  - Background: ${background}`);
+      if (options) body.push(...options.split(';').map((o) => `  - Option: ${o.trim()}`).filter((l) => l !== '  - Option:'));
+      if (answers[i]) body.push(`  - **Answer:** ${answers[i]}`);
+    });
+    body.push('');
   }
   if (description) body.push(description, '');
   body.push('## Steps', '');
@@ -246,6 +312,7 @@ export function renderPlanMarkdown(steps: string, meta: PlanFileMeta): string {
   for (const step of parsed) {
     body.push(`- [ ] ${step.what}`);
     if (step.files.length) body.push(`  - Files: ${step.files.map((f) => `\`${f}\``).join(', ')}`);
+    if (step.evidence) body.push(`  - Evidence: ${step.evidence}`);
     if (step.verify) body.push(`  - Verify: ${step.verify}`);
   }
   body.push('');

@@ -7,8 +7,8 @@
 import {
   streamText,
   stepCountIs,
-  hasToolCall,
   type ModelMessage,
+  type StopCondition,
   type ToolSet,
   type LanguageModel,
 } from 'ai';
@@ -51,6 +51,29 @@ const SMALL_WINDOW_MAX = 16_384;
 // answers: "Now the map uses AdvancedMarkerElement" leads with a marker but has no stem.
 const NARRATION_RE =
   /^\s*(?:(?:ok|okay|alright|all right|now|next|then|so|great|perfect|good|sure|first|finally)\b[\s,.:!\u2014-]*){0,2}(?:the user|i'll|i will|we'll|we will|let's|let me|we need|we can|i need|first,|i should|we should|okay,? so)\b/i;
+
+/** UI-facing copy of a tool's result. `tr.output` was dropped entirely until 2026-09-01, so
+ *  `ToolEvent.detail` was never populated — with two consequences neither side reported:
+ *  the webview's `.tm-tool-card-output` branch (main.ts) is keyed on `detail`, so every
+ *  non-edit tool card rendered an EMPTY body behind its "View output" disclosure; and
+ *  chatViewProvider's crash-recovery snapshot writes `{ role: 'tool', content: e.detail ?? '' }`,
+ *  so a mid-turn extension-host crash recovered the tool CALLS with blank RESULTS.
+ *
+ *  Capped independently of the model's own limit: the tools already cap what the MODEL sees
+ *  (runCommand's MAX_CHARS is 30k), but this copy crosses the webview bridge on every tool call
+ *  and then lives in the DOM for the rest of the session. 8k is a quarter of the model's view
+ *  and still more than the card's 500px body can show without scrolling. */
+const UI_DETAIL_CAP = 8_000;
+function toolDetail(output: unknown): string | undefined {
+  if (output == null) return undefined;
+  const text = typeof output === 'string'
+    ? output
+    : (() => { try { return JSON.stringify(output, null, 2); } catch { return String(output); } })();
+  if (!text.trim()) return undefined;
+  return text.length > UI_DETAIL_CAP
+    ? `${text.slice(0, UI_DETAIL_CAP)}\n\n[… truncated for display — ${text.length - UI_DETAIL_CAP} more characters]`
+    : text;
+}
 
 // ── Wire-format conversion (OpenAI ChatMessage ↔ AI SDK ModelMessage) ──────────
 
@@ -177,6 +200,21 @@ export function __setEngineModelForTests(m: LanguageModel | undefined): void {
 /** v3 turn entry. The `router` argument is IGNORED — model selection lives in
  *  router/picker.ts (injected via setModelSources at activation). Kept in the signature so
  *  every existing call site compiles unchanged. */
+/** Plan mode's stop condition. `hasToolCall('exitPlanMode')` stopped the turn on the CALL, so a
+ *  plan the tool REJECTED (empty steps, or — once the schema tightened — a missing outcome/
+ *  evidence) still ended the turn: the model got no chance to read the error and re-submit, and
+ *  the user got a dead turn with no card. Stopping on the accepted RESULT instead keeps the AI
+ *  SDK's own repair path open — a `{ error }` output leaves the loop running and the tool error
+ *  goes back to the model as the next step's input.
+ *
+ *  Not answer-quality judgment (SIMPLE_CORE_RESET invariant): this reads the TOOL's own
+ *  structural verdict on its input, never the plan's content. */
+const planAccepted: StopCondition<ToolSet> = ({ steps }) =>
+  (steps.at(-1)?.toolResults ?? []).some(
+    (r) => r.toolName === 'exitPlanMode'
+      && !(typeof r.output === 'object' && r.output !== null && 'error' in r.output),
+  );
+
 export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentResult> {
   // Turn-start facts: if signalAborted=true here, no model request can ever run this turn.
   diagLog('engine.start', `mode=${opts.mode} msgs=${opts.messages?.length ?? 0} signalAborted=${opts.abortSignal?.aborted ?? 'none'} requestId=${opts.requestId ?? '-'}`);
@@ -227,11 +265,24 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     diagLog(`engine.${tag}StreamError`, (error instanceof Error ? error.message : String(error)).slice(0, 160));
   // True while the current step has streamed reply text but no tool call yet (see onChunk).
   let narrationSinceToolCall = false;
-  // Armed for the plan-gap continuation pass only (see the nudge below): its FIRST step is
-  // forced to call exitPlanMode via toolChoice, turning "please present the plan" from a prompt
-  // hope into a wire-level guarantee. Step 0 only — forcing every step would make a prose
-  // answer impossible, and a model that wants one more read afterwards is fine.
+  // Armed for the plan-gap continuation pass only (see the nudge below): its FIRST step must
+  // CLOSE the turn with a tool call, turning "please finish" from a prompt hope into a
+  // wire-level guarantee. Step 0 only — forcing every step would make a prose answer
+  // impossible, and a model that wants one more read afterwards is fine.
+  //
+  // What it does NOT do any more is dictate WHICH close. It used to pin
+  // `toolChoice: {type:'tool', toolName:'exitPlanMode'}`, so a model that had investigated and
+  // then hesitated was forced to emit a plan — the only escape hatch was `looksLikeQuestion`,
+  // which reads the reply TEXT and therefore misses hesitation expressed as narration. That is
+  // exactly the 2026-09-01 repro: "Let me re-read the user's actual words carefully…" is not a
+  // question, so the guess would have been compelled. `toolChoice: 'required'` still forbids a
+  // third round of narration, while `activeTools` narrows the choice to the two legitimate ways
+  // to close a plan-mode turn — present the plan, or ask which plan was wanted.
   let forcePlanToolOnNextStep = false;
+  /** The only two tool calls that close a plan-mode turn. askUser does NOT stop the turn (its
+   *  answer comes back and the loop continues), which is the point: asking is a way forward,
+   *  not a way out. */
+  const PLAN_CLOSERS = ['exitPlanMode', 'askUser'];
 
   let outcome: { finishReason: string; text: string; responseMessages: ModelMessage[] } = {
     finishReason: 'unknown', text: '', responseMessages: [],
@@ -293,15 +344,18 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
         const forcePlan = forcePlanToolOnNextStep && stepNumber === 0;
         return {
           ...compactIfNeeded(messages, profile.pruneTarget),
-          ...(offer ? { activeTools: offer } : {}),
-          ...(forcePlan ? { toolChoice: { type: 'tool' as const, toolName: 'exitPlanMode' } } : {}),
+          // forcePlan's activeTools deliberately WINS over the small-window offer: on this one
+          // step the turn has to close, and every tool outside PLAN_CLOSERS is a way not to.
+          ...(forcePlan
+            ? { activeTools: PLAN_CLOSERS, toolChoice: 'required' as const }
+            : offer ? { activeTools: offer } : {}),
         };
       },
       // exitPlanMode IS the end of a plan-mode turn (Claude Code's ExitPlanMode has the same
       // semantics): the plan is now the user's move, so a further step could only narrate the
       // plan a second time into the chat bubble underneath the card. Harmless in agent/ask mode,
       // where the tool isn't offered at all.
-      stopWhen: [stepCountIs(50), hasToolCall('exitPlanMode')],
+      stopWhen: [stepCountIs(50), planAccepted],
       abortSignal: opts.abortSignal,
       maxRetries: 1,
 
@@ -338,6 +392,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
             name: tr.toolName,
             args: tr.input,
             state: isFailed ? 'error' : 'done',
+            detail: toolDetail(tr.output),
           };
           toolEvents.push(ev);
           opts.onTool(ev);
@@ -452,8 +507,19 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // rule: live repro → ONE targeted guard).
   const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
   const lastUserText = typeof lastUser?.content === 'string' ? lastUser.content : '';
+  // The carve-out that keeps plan mode able to ANSWER. It matters more since planGap stopped
+  // testing the reply's shape (see below): it is now the only thing standing between an
+  // information request and a forced plan. The interrogative list alone was too narrow — a
+  // plan-mode "give me an example of plan mode" (2026-09-01 5:09 PM) is plainly a question and
+  // matches neither the leading interrogative nor a trailing "?".
+  //
+  // The additions are deliberately phrases that cannot also be a build request: "give me a dark
+  // mode toggle" IS work, so "give me" alone is not enough — it has to be asking for an
+  // example, a comparison, or a walkthrough.
   const looksLikeQuestion = !!lastUserText
-    && (/\?\s*$/m.test(lastUserText) || /^(how|what|why|when|who|which|explain|tell me|describe|review)\b/i.test(lastUserText.trim()));
+    && (/\?\s*$/m.test(lastUserText)
+      || /^(how|what|why|when|who|which|explain|tell me|describe|review)\b/i.test(lastUserText.trim())
+      || /\b(an? example of|examples? of|the difference between|compare\b|walk me through|summar(?:y of|ise|ize))\b/i.test(lastUserText));
   const replyEmpty = outcome.text.trim().length === 0;
   const replyIsNarration = !replyEmpty && NARRATION_RE.test(outcome.text);
   diagLog('engine.turnEnd', `finish=${outcome.finishReason} textLen=${outcome.text.length} steps=${outcome.responseMessages.length} tools=${toolEvents.length} reasoningLen=${reasoningText.length} empty=${replyEmpty} narration=${replyIsNarration}`);
@@ -475,7 +541,24 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // Live repro (2026-08-31, 3:06 PM, Ollama/nemotron-3-ultra, "add a dark mode toggle to
   // setting"): 69.5k in / 236 out / 1m2s, ended on "Now let me check if there's any existing
   // theme or dark mode support in the application." — no plan, no card.
-  const planGap = opts.mode === 'plan' && !proposedPlan && (replyEmpty || replyIsNarration);
+  // planGap does NOT test the reply's shape. It used to require `replyEmpty || replyIsNarration`,
+  // which is an agent-mode proxy borrowed into a mode where the wire-level fact is simpler and
+  // stronger: in plan mode there are exactly THREE legitimate ways to close a turn — a plan
+  // (exitPlanMode outcome 'plan'), a finding (outcome 'no-change'), or a prose answer to a
+  // question — and the first two are tool calls. No tool call plus a non-question request means
+  // the turn is unclosed, whatever the prose looks like.
+  //
+  // Live repro 2026-09-01 4:33 PM (Kilo/stepfun/step-3.7-flash:free, vendor order-view): the
+  // reply was "I found the key line. Let me look at OrderController.php:250 where the products
+  // are being loaded…" — unmistakably unclosed, and NARRATION_RE misses it because the stem
+  // regex is anchored at the start and the text opens with "I found". Widening that regex would
+  // be a tower (the very next reply shape would miss again, and "Let me know if…" is a real
+  // ending the close-loop suite guards). Dropping the test is the smaller, truer change.
+  //
+  // Safe to drop only NOW: before outcome 'no-change' existed, a model whose honest conclusion
+  // was "nothing needs changing" had no tool close, so forcing one would have manufactured a
+  // plan. It has one now. Genuine Q&A is still carved out by looksLikeQuestion below.
+  const planGap = opts.mode === 'plan' && !proposedPlan;
   if (
     (opts.mode === 'agent' || planGap)
     && !opts.abortSignal?.aborted
@@ -488,10 +571,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     // AM, both passes' narration stacked in one bubble); pass 2's text is the sole draft.
     if (outcome.text.trim()) opts.onRetractDraft?.();
     // Wire-level guarantee, not a second prompt: the continuation's first step is FORCED to
-    // call exitPlanMode. Pass 1 already gave the model its free chance to answer in prose, and
-    // looksLikeQuestion has already excluded genuine Q&A — so "narrate a third time" is the
-    // only outcome this removes. Providers that ignore toolChoice fall back to the prose nudge
-    // below, which is why both exist.
+    // call one of PLAN_CLOSERS. Pass 1 already gave the model its free chance to answer in
+    // prose, and looksLikeQuestion has already excluded genuine Q&A — so "narrate a third time"
+    // is the only outcome this removes. It does not remove "I am not sure what you meant":
+    // askUser is one of the two allowed calls. Providers that ignore toolChoice fall back to
+    // the prose nudge below, which is why both exist.
     forcePlanToolOnNextStep = planGap;
     try {
       await runPass([
@@ -500,7 +584,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
         {
           role: 'user',
           content: planGap
-            ? 'You stopped mid-investigation without presenting a plan. You cannot edit files in this mode — the ONLY way to finish is to call the exitPlanMode tool. Call it NOW with the concrete steps for the change the user asked for, using the files you have already read; name the real paths you saw. Do not end the turn describing what you are about to look at next.'
+            ? 'You stopped mid-investigation without finishing. You cannot edit files in this mode, so you must close this turn with a tool call NOW: either exitPlanMode with the concrete steps for the change the user asked for — using the files you have already read, naming the real paths and the path:line that justifies each step — or, if you are genuinely unsure which of two readings the user meant, askUser with those readings as options. Do not end the turn describing what you are about to look at next, and do not invent steps to fill a plan you are not sure about.'
             : reportGap
               ? 'You ran tools but ended the turn without a final answer. CLOSE the task now: tell the user what you found or changed (with file paths) and the result. If the task is not actually finished, keep working with your tools instead of stopping. Never end a turn silently.'
               : 'You stopped after describing what you would do — no tool ran and no file changed. Continue NOW: perform the task yourself with your tools (readFile to inspect, editFile/writeFile to change, then re-read the changed region to verify). Only reply in prose, without tools, if the task genuinely requires no file change.',

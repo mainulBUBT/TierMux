@@ -13,6 +13,27 @@
 import { el } from '../dom';
 import { ICON } from '../../icons';
 
+/** A step's backticked paths become chips — AI Elements' `TaskItemFile`
+ *  ("inline-flex items-center gap-1 rounded-md border bg-secondary px-1.5 py-0.5 text-xs").
+ *  Plan steps arrive as `Add the check (`app/Models/Item.php`)`, so the paths were already
+ *  marked up in the text and were rendering as literal backticks. */
+function stepParts(text: string): (string | HTMLElement)[] {
+  const out: (string | HTMLElement)[] = [];
+  let last = 0;
+  for (const m of String(text || '').matchAll(/`([^`]+)`/g)) {
+    const inner = m[1].trim();
+    const at = m.index ?? 0;
+    if (at > last) out.push(text.slice(last, at));
+    // Only path-shaped spans become chips; an inline `variableName` stays plain text.
+    out.push(/[/.]/.test(inner) && !/\s/.test(inner)
+      ? el('span', { class: 'tm-todosheet-file' }, inner)
+      : inner);
+    last = at + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out.length ? out : [text];
+}
+
 export type TodoSheetStepStatus = 'done' | 'active' | 'pending' | 'failed';
 
 export interface TodoSheetStep {
@@ -122,7 +143,7 @@ export function createTodoSheet(opts: TodoSheetOptions = {}): {
     for (const s of steps) {
       sheetList.appendChild(el('div', { class: `tm-todosheet-step ${s.status}` },
         el('span', { class: `tm-todosheet-marker ${s.status}` }, MARKER[s.status]),
-        el('span', { class: 'tm-todosheet-text' }, s.text),
+        el('span', { class: 'tm-todosheet-text' }, ...stepParts(s.text)),
       ));
     }
   };

@@ -11,6 +11,7 @@
 import { renderMarkdown } from '../../markdown';
 import { fmtDuration } from '../../format';
 import { el } from '../dom';
+import { ICON } from '../../icons';
 import { createCollapse } from '../primitives/Collapse';
 import { unifiedDiff } from '../../format/unifiedDiff';
 
@@ -100,15 +101,17 @@ export function buildReasoningBlock(text: string, tc?: string, isStreaming?: boo
     dataset: { live: isStreaming ? '1' : '0', streaming: isStreaming ? 'true' : 'false', ...(tc ? { tc } : {}) },
   });
 
-  // Vercel AI Elements "Reasoning" trigger: "Thinking…" + pulsing dot while live,
+  // Vercel AI Elements "Reasoning" trigger: brain glyph + "Thinking…" while live,
   // "Thought for 42s / 3m 2s / 1hr 2m" once settled (durationMs from the host). Chevron rotates on open.
   const durationLabel = !isStreaming && durationMs && durationMs > 0
     ? `Thought for ${fmtDuration(Math.max(1, durationMs / 1000))}`
     : isStreaming ? 'Thinking' : 'Thought';
 
+  const brain = el('span', { class: 'tm-reasoning-brain', 'aria-hidden': 'true' });
+  brain.innerHTML = ICON.brain;
   const header = el('div', { class: 'tm-reasoning-header' },
     el('div', { class: 'tm-reasoning-title' },
-      el('span', { class: `tm-reasoning-pulse ${isStreaming ? 'on' : ''}` }),
+      brain,
       el('span', { class: 'tm-reasoning-label' }, durationLabel),
     ),
     el('span', { class: 'tm-reasoning-chevron' }, '▾'),
@@ -121,7 +124,11 @@ export function buildReasoningBlock(text: string, tc?: string, isStreaming?: boo
   content.appendChild(body);
   block.appendChild(content);
 
-  header.addEventListener('click', () => block.classList.toggle('open'));
+  header.addEventListener('click', () => {
+    const open = block.classList.toggle('open');
+    // Remember a deliberate open so the 1s auto-collapse above does not undo it.
+    if (open) block.dataset.userOpen = '1'; else delete block.dataset.userOpen;
+  });
 
   return block;
 }
@@ -137,22 +144,26 @@ export function updateReasoningBlock(block: HTMLElement, text: string, done?: bo
   const body = block.querySelector<HTMLElement>('.tm-reasoning-body');
   if (body) { body.innerHTML = ''; body.appendChild(renderMarkdown(text || '')); }
   const label = block.querySelector<HTMLElement>('.tm-reasoning-label');
-  const pulse = block.querySelector<HTMLElement>('.tm-reasoning-pulse');
   if (done) {
-    block.classList.remove('streaming', 'open');
+    block.classList.remove('streaming');
     block.dataset.live = '0';
     block.dataset.streaming = 'false';
-    pulse?.classList.remove('on');
     if (label) {
       label.textContent = durationMs && durationMs > 0
         ? `Thought for ${fmtDuration(Math.max(1, durationMs / 1000))}`
         : 'Thought';
     }
+    // Collapse a beat AFTER the stream ends, the way AI Elements' Reasoning does. Closing on
+    // the same tick reads as the text being yanked away mid-sentence; the pause lets the eye
+    // finish the last line and register the "Thought for Ns" label. Skipped if the reader
+    // opened it themselves in the meantime — `data-user-open` is set by the header click.
+    setTimeout(() => {
+      if (block.dataset.userOpen !== '1') block.classList.remove('open');
+    }, 1000);
   } else {
     block.classList.add('streaming', 'open');
     block.dataset.live = '1';
     block.dataset.streaming = 'true';
-    pulse?.classList.add('on');
     if (label) label.textContent = 'Thinking';
   }
 }

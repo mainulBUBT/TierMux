@@ -53,9 +53,39 @@ const MODE_TAIL: Record<Mode, string> = {
     'If the user asked for a CHANGE (build / add / refactor / fix): investigate, then call exitPlanMode with the finished plan. That tool call IS how you present the plan and request approval — do not also write the plan out in prose, and do not ask for approval in words.',
     '',
     'If the user asked a QUESTION (does X happen, verify Y, why Z): just ANSWER it with path:line evidence and say what you checked. Do NOT call exitPlanMode — a finding is not a plan.',
+    '',
+    // Two live repros, one week apart, same root cause: the model was UNSURE and had nowhere to
+    // put it. 2026-08-31 it narrated instead of planning; 2026-09-01 (vendor order-view,
+    // "category off / product status off") it wrote "I need to verify what the actual behavior
+    // should be — whether categories and status should be hidden or if they should remain
+    // accessible", guessed the wrong branch, and shipped a plan that implemented the OPPOSITE of
+    // the request. Every step carried real evidence; the inversion lived in an unstated premise.
+    //
+    // So the prompt now does three things the old two-outcome version could not: it makes the
+    // premise explicit (interpretation), it gives doubt a place to live INSIDE the plan
+    // (questions), and it names the triggers rather than leaving "ambiguous" to be self-assessed
+    // — the trigger list is opencode's plan agent, whose rule is "don't make large assumptions
+    // about user intent".
+    'Before writing any step, write `interpretation`: ONE sentence saying what you believe the user is asking for, in their own terms. If you cannot write it without guessing, the guess is a question — not a premise.',
+    '',
+    'Put anything you had to GUESS into `questions`. Ask when: the request could be read two ways; the same fix could go in a shared/global place or a local one; a tradeoff has no obvious winner; or a required behaviour, edge case or UX detail is simply not stated. Never make large assumptions about user intent.',
+    '',
+    'Submitting a plan WITH open questions is correct and expected — the user answers them on the card, and nothing executes until they do. Use askUser instead only when you cannot draft any steps at all before knowing the answer.',
+    '',
+    'Every step you propose must CHANGE a file, and must name the path:line you read that proves it is needed. If your investigation concludes nothing needs changing, say so with exitPlanMode outcome "no-change" — never pad a plan with a step that only re-checks something.',
     DELEGATE_LINE,
   ].join('\n'),
-  ask: 'You are in ASK mode: read-only Q&A. Answer from the workspace with tool-backed evidence; say what you checked. No edits.',
+  // "Read-only Q&A" was read by weak models as "you have no tools" — a question about git
+  // history came back as "run this command yourself" instead of a `git log` call (live repro
+  // 2026-09-01). The mode's actual boundary is narrower than that framing: everything is
+  // available EXCEPT writing to files, so the prompt now names the shell explicitly.
+  ask: [
+    'You are in ASK mode: you answer the question yourself instead of changing the codebase.',
+    'You have the full read/search/shell toolset: read files, grep, and call runCommand for anything the workspace itself will not tell you — git history (`git log`, `git show`, `git diff`), test or build output, installed versions. NEVER tell the user to run a command you could have run: run it and answer from its output.',
+    'The ONE thing you cannot do is modify files — no editFile/writeFile/deleteFile. If the answer requires a change, describe it and say to switch to agent mode.',
+    'Answer from tool-backed evidence and say what you checked.',
+    DELEGATE_LINE,
+  ].join('\n'),
 };
 
 /** The turn's system prompt. Kept deliberately short — the tool schemas carry the detail.

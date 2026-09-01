@@ -3,9 +3,13 @@
  * rendered as a bullet list, and a primary "Build" action (edit mode).
  * Markup emitted by media/src/ui/components/Plan.ts. */
 
+/* shadcn's Card, which AI Elements' Plan wraps, is `rounded-xl` with 24px padding. The radius
+ * carries over; the padding does not — this card lives in a VS Code sidebar, where 24px of
+ * horizontal chrome is a large fraction of the usable width. Padding steps up to --tm-gap-lg
+ * (12px) instead, which reads as the same generous rhythm at panel scale. */
 .tm-plan {
   border: 1px solid var(--tm-card-border);
-  border-radius: var(--tm-radius-lg);
+  border-radius: 12px;
   background: var(--tm-card-surface);
   margin: var(--tm-gap-md) 0;
   overflow: hidden;
@@ -14,16 +18,18 @@
 /* Header — icon + title + chevron (right). Click toggles `.collapsed`. */
 .tm-plan-header {
   display: flex;
-  align-items: center;
-  gap: var(--tm-gap-sm);
-  padding: var(--tm-gap-md);
+  align-items: flex-start;   /* AI Elements PlanHeader: `items-start` */
+  gap: var(--tm-gap-md);
+  padding: var(--tm-gap-lg);
   cursor: pointer;
   user-select: none;
 }
 .tm-plan-header:hover { background: var(--tm-hover); }
 
 .tm-plan-icon {
-  font-size: var(--tm-text-lg);
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-top: 1px;
   line-height: 1;
   color: var(--tm-fg-muted);
 }
@@ -38,19 +44,28 @@
   white-space: nowrap;
 }
 
+/* Ghost icon button (AI Elements: `size-8`, variant ghost). ChevronsUpDown is bidirectional —
+ * it means "toggles", not "is open" — so it deliberately does not rotate the way the tool card's
+ * single chevron does. */
 .tm-plan-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 auto;
-  font-size: var(--tm-text-sm);
+  width: 22px;
+  height: 22px;
+  margin: -2px -4px 0 0;
+  border-radius: var(--tm-radius-md);
   line-height: 1;
   color: var(--tm-fg-muted);
-  transition: transform var(--tm-transition-fast);
+  transition: background var(--tm-transition-fast);
 }
-.tm-plan:not(.collapsed) .tm-plan-chevron { transform: rotate(180deg); }
+.tm-plan-header:hover .tm-plan-chevron { background: var(--tm-hover); }
 
 /* Always visible, regardless of collapse state — title/description/status stay readable at a
  * glance; only .tm-plan-content (steps + actions) below it folds away. */
 .tm-plan-always {
-  padding: 0 var(--tm-gap-md);
+  padding: 0 var(--tm-gap-lg);
   display: flex;
   flex-direction: column;
   gap: var(--tm-gap-sm);
@@ -59,13 +74,13 @@
 
 /* Collapsible content. */
 .tm-plan-content {
-  padding: var(--tm-gap-sm) var(--tm-gap-md) var(--tm-gap-md);
+  padding: var(--tm-gap-md) var(--tm-gap-lg) var(--tm-gap-lg);
   display: flex;
   flex-direction: column;
   gap: var(--tm-gap-sm);
 }
 .tm-plan.collapsed .tm-plan-content { display: none; }
-.tm-plan.collapsed .tm-plan-always { padding-bottom: var(--tm-gap-md); }
+.tm-plan.collapsed .tm-plan-always { padding-bottom: var(--tm-gap-lg); }
 
 .tm-plan-description {
   margin: 0;
@@ -96,10 +111,12 @@
 }
 
 /* Bullet step list. */
+/* Their bullet list breathes — the demo's rows sit roughly a half-line apart, not the 2px this
+ * had. Still tighter than the web original, which is 16px-based type in a full-width page. */
 .tm-plan-step-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--tm-gap-sm);
 }
 
 .tm-plan-step {
@@ -225,3 +242,86 @@
 .tm-plan-action.primary:hover { filter: brightness(1.05); }
 .tm-plan-action.danger { color: var(--tm-status-error); }
 .tm-plan-action-icon { display: inline-flex; flex: 0 0 auto; }
+
+/* ── Plan header block: reading / approach / open questions ────────────────────
+   The reading is the premise the steps rest on. It leads the card because a plan
+   can be correct in every step and still implement the wrong request — the only
+   place that is catchable is above the steps, not inside them. */
+/* The reading carries no label — it is the plan's opening sentence, sized like the description
+ * but in full-strength text so the premise reads first. */
+.tm-plan-reading {
+  font-size: var(--tm-text-sm);
+  line-height: 1.55;
+}
+.tm-plan-approach {
+  display: flex;
+  gap: var(--tm-gap-md);
+  align-items: baseline;
+  font-size: var(--tm-text-sm);
+  line-height: 1.5;
+}
+.tm-plan-meta-label {
+  flex: 0 0 auto;
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--tm-fg-muted);
+}
+.tm-plan-reading .tm-plan-meta-text { color: var(--tm-fg); }
+.tm-plan-approach .tm-plan-meta-text { color: var(--tm-fg-muted); }
+
+/* Open questions — the plan's own doubt, carried instead of guessed away. */
+.tm-plan-questions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-gap-md);
+  padding: var(--tm-gap-md) var(--tm-gap-lg);
+  border: 1px solid var(--tm-warning);
+  border-radius: var(--tm-radius-md);
+  background: color-mix(in srgb, var(--tm-warning) 8%, transparent);
+}
+.tm-plan-questions-title {
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  color: var(--tm-warning);
+}
+.tm-plan-question { display: flex; flex-direction: column; gap: var(--tm-gap-sm); }
+.tm-plan-question-text { font-size: var(--tm-text-sm); color: var(--tm-fg); }
+.tm-plan-question-bg { font-size: var(--tm-text-xs); color: var(--tm-fg-muted); }
+.tm-plan-question-options { display: flex; flex-wrap: wrap; gap: var(--tm-gap-sm); }
+.tm-plan-question-option {
+  padding: var(--tm-gap-xs) var(--tm-gap-md);
+  font: inherit;
+  font-size: var(--tm-text-xs);
+  color: var(--tm-fg);
+  background: var(--tm-card-surface);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-full);
+  cursor: pointer;
+}
+.tm-plan-question-option:hover { border-color: var(--tm-accent); }
+.tm-plan-question-option.selected {
+  background: var(--tm-accent);
+  border-color: var(--tm-accent);
+  color: var(--tm-accent-fg);
+}
+.tm-plan-question-free {
+  width: 100%;
+  padding: var(--tm-gap-xs) var(--tm-gap-md);
+  font: inherit;
+  font-size: var(--tm-text-xs);
+  color: var(--tm-fg);
+  background: transparent;
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-sm);
+}
+.tm-plan-question-answer { display: none; }
+.tm-plan-question.answered .tm-plan-question-text { color: var(--tm-fg-muted); }
+
+/* A gated action stays visible but inert while a premise is still a guess. */
+.tm-plan-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: none;
+}

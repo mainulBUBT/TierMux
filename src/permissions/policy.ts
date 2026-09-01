@@ -17,6 +17,9 @@ import { READ_ONLY_TOOLS } from '../agent/core/tools/v3';
 
 export type PermissionMode = 'ask' | 'auto' | 'full-auto';
 
+/** The tools that write to disk — denied outright in plan and ask session modes. */
+const MUTATING_FILE_TOOLS = new Set(['editFile', 'writeFile', 'deleteFile', 'editMatch']);
+
 export interface PolicyConfig {
   mode: PermissionMode;
   /** 'plan' applies §12's profile: read/search auto-allow, shell ASKS, edit/delete/write
@@ -66,6 +69,15 @@ export function resolvePolicy(
       });
     }
     return Promise.resolve({ type: 'denied', reason: 'plan mode is read-only — edits are disabled until the plan is approved' });
+  }
+
+  // Ask mode: "everything except edits". The toolset already withholds the three file
+  // mutators; this is the second lock, so a full-auto session (or a pinned alwaysAllow from an
+  // earlier agent-mode turn) can never turn a Q&A turn into a writing turn. runCommand
+  // deliberately falls through to the normal chain below — asking about the repo means
+  // running `git log`/`npm test`, and those go through the same approval the user configured.
+  if (config.sessionMode === 'ask' && MUTATING_FILE_TOOLS.has(call.toolName)) {
+    return Promise.resolve({ type: 'denied', reason: 'ask mode answers questions — file edits are disabled; switch to agent mode to change files' });
   }
 
   if (config.alwaysAllow.has(call.toolName)) {

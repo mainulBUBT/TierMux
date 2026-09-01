@@ -211,15 +211,111 @@ const DIALECT_NAME_ALIASES: Record<string, string> = {
  *  insensitive (`read_file` → `readFile`), then the alias table above. Never returns a tool
  *  the caller didn't register — same rule as loop.ts's resolveToolName, so a mode-withheld
  *  tool (e.g. edits in plan mode) can't be smuggled in by a dialect alias. */
-export function resolveDialectToolName(name: string, toolNames: Set<string>): string | undefined {
+export function resolveDialectToolName(name: string, toolNames: Set<string>, allowAliases = true): string | undefined {
   if (!name) return undefined;
   if (toolNames.has(name)) return name;
   const key = name.toLowerCase().replace(/[_\-\s]/g, '');
   for (const real of toolNames) {
     if (real.toLowerCase().replace(/[_\-\s]/g, '') === key) return real;
   }
+  // `allowAliases: false` is for the shapes that infer the tool name from a BARE tag word
+  // (`<search>`, `<link>`) rather than from unambiguous call syntax (`name="…"` / `=NAME`).
+  // Those are real HTML elements, and aliasing them to grep/readFile would turn a page of
+  // markup quoted in a chat answer into tool calls.
+  if (!allowAliases) return undefined;
   const alias = DIALECT_NAME_ALIASES[key];
   return alias && toolNames.has(alias) ? alias : undefined;
+}
+
+/** Strip the wrapper a dialect puts AROUND its tag word, leaving the word: an XML namespace
+ *  prefix (`antml:invoke`) and DeepSeek's fullwidth ｜DSML｜ sleeve (which the model sometimes
+ *  doubles). Lets one matcher accept every sleeved variant of a dialect instead of one shape
+ *  per sleeve. */
+function stripDialectSleeve(token: string): string {
+  return token.replace(/｜+DSML｜+/g, '').replace(/^[A-Za-z0-9_\-]+:/, '');
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Any opening tag, tolerating an unterminated one so a chunk split mid-tag still detects.
+ *  Group 1 is the tag word (which may carry a `=NAME` suffix), group 2 its attributes. */
+const ANY_OPEN_TAG = /<(?![/!?])([^\s></]{1,120})((?:\s[^>]*)?)>/g;
+
+/** Tag words that exist only as a tool-call wrapper — never as prose or markup. */
+const INLINE_WRAPPER_TAG = /^(?:tool_call|tool_calls|tool_call_start|invoke)$/i;
+
+/**
+ * Index of the earliest point in `text` that opens an inline tool-call dialect, or -1.
+ *
+ * The STREAMING counterpart to rescueInlineToolCalls: router.ts holds text back from the live
+ * chat bubble from this index onward, so dialect markup is never rendered and then un-rendered.
+ * It answers the same open question the rescue does rather than listing vendors — a wrapper word,
+ * a `<function=…>` opener, or a tag that IS a registered tool name (`<readFile>`). A tag that
+ * resolves to no registered tool is prose or markup and is left to stream.
+ */
+export function findInlineToolOpener(text: string, toolNames: Set<string>): number {
+  // Unterminated form on purpose: the opener may be the last thing in this chunk.
+  const tag = /<(?![/!?])([^\s></]{1,120})/g;
+  let m: RegExpExecArray | null;
+  while ((m = tag.exec(text)) !== null) {
+    const token = stripDialectSleeve(m[1]);
+    const base = token.split('=')[0];
+    if (INLINE_WRAPPER_TAG.test(base)) return m.index;
+    if (base.toLowerCase() === 'function' && token.includes('=')) return m.index;
+    if (resolveDialectToolName(base, toolNames, false)) return m.index;
+  }
+  return -1;
+}
+
+/**
+ * Arguments out of a dialect call's BODY, without knowing which dialect wrote it. Tries, in
+ * order: `<arg_key>/<arg_value>` pairs; any child tag whose key is its `name="…"` attribute,
+ * its `=KEY` suffix, or its own tag word; then a JSON body. Values are NOT trimmed beyond the
+ * single newline+indent a dialect puts inside the tags — an editFile `search` body must match
+ * the file byte for byte — and a multi-line value skips JSON coercion, which would either fail
+ * on code or (worse) succeed and reshape it.
+ */
+function argsFromDialectBody(body: string): Record<string, unknown> {
+  const args: Record<string, unknown> = {};
+  let p: RegExpExecArray | null;
+
+  const pair = /<arg_key>\s*([\s\S]*?)\s*<\/arg_key>\s*<arg_value>\s*([\s\S]*?)\s*<\/arg_value>/g;
+  while ((p = pair.exec(body)) !== null) args[p[1]] = coerceInlineArgValue(p[2]);
+  if (Object.keys(args).length) return args;
+
+  const child = new RegExp(ANY_OPEN_TAG.source, 'g');
+  while ((p = child.exec(body)) !== null) {
+    const [, rawToken, attrs] = p;
+    const token = stripDialectSleeve(rawToken);
+    const eq = token.indexOf('=');
+    const key = /\bname\s*=\s*["']([^"']+)["']/.exec(attrs)?.[1] ?? (eq > 0 ? token.slice(eq + 1) : token);
+    if (!key) continue;
+    const openEnd = p.index + p[0].length;
+    // Close on the tag's own base word, so a sleeved/namespaced closer matches its opener.
+    const closeRe = new RegExp(`</\\s*${escapeRegExp(rawToken.split('=')[0])}\\s*>`, 'g');
+    closeRe.lastIndex = openEnd;
+    const close = closeRe.exec(body);
+    const raw = body.slice(openEnd, close ? close.index : body.length)
+      .replace(/^[ \t]*\r?\n/, '').replace(/\r?\n[ \t]*$/, '');
+    // DSML's `string="true"` means "this is literally a string" — skip coercion, as for code.
+    args[key] = /string\s*=\s*"true"/.test(attrs) || raw.includes('\n') ? raw : coerceInlineArgValue(raw);
+    child.lastIndex = close ? close.index + close[0].length : body.length;
+  }
+  if (Object.keys(args).length) return args;
+
+  const jsonStart = jsonBodyStart(body, 0);
+  if (jsonStart >= 0) {
+    const obj = balancedJsonFrom(body, jsonStart);
+    if (obj) {
+      try {
+        const parsed: unknown = JSON.parse(obj.text);
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+      } catch { /* fall through to the empty object — a parameterless call is still a call */ }
+    }
+  }
+  return args;
 }
 
 /** Common parameter-name aliases for the tools a dialect tends to imagine: `file`/`filename`
@@ -634,6 +730,48 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
       }
       calls.push({ name: resolved, arguments: normalizeDialectParams(resolved, JSON.stringify(args)) });
       invokeTag.lastIndex = close ? close.index + close[0].length : text.length;
+    }
+  }
+
+  if (calls.length === 0) {
+    // Shape 10 — the GENERIC fallback, and the reason this list should stop growing. Shapes
+    // 1/4/5/6/9 each pin one vendor's exact markup, so every provider that serves a tool-trained
+    // model without wiring the tools API cost a new shape — and, until someone hit it live, a
+    // dead turn with raw markup shown as the answer. This shape pins no vendor: it walks every
+    // opening tag and asks one question — does this tag NAME a tool the caller registered?
+    // Dialects put that name in exactly three places, so all three are read:
+    //   attribute   <invoke name="readFile">   <call name="readFile">   <tool name="readFile">
+    //   after '='   <function=readFile>
+    //   the tag     <readFile><path>src/app.ts</path></readFile>
+    // stripDialectSleeve removes an XML namespace and DeepSeek's ｜DSML｜ wrapper first, so a
+    // sleeved variant of any of the three parses without its own shape, and argsFromDialectBody
+    // reads the body by the same open question instead of a fixed parameter syntax.
+    // resolveDialectToolName against the REGISTERED tool set is the entire false-positive guard:
+    // `<div>`, `<h1>`, `<script>` in an answer resolve to nothing and are skipped. The bare-tag
+    // form passes allowAliases=false on top of that — `<search>` and `<link>` are real HTML
+    // elements, and aliasing them to grep/readFile would turn quoted markup into tool calls.
+    // Nothing but a model calling a tool writes `<invoke name="read">`, so the other two forms
+    // keep the alias table.
+    const anyTag = new RegExp(ANY_OPEN_TAG.source, 'g');
+    while ((m = anyTag.exec(text)) !== null) {
+      const [, rawToken, attrs] = m;
+      const token = stripDialectSleeve(rawToken);
+      const eq = token.indexOf('=');
+      const attrName = /\bname\s*=\s*["']([^"']+)["']/.exec(attrs)?.[1];
+      const resolved =
+        (attrName ? resolveDialectToolName(attrName, toolNames) : undefined)
+        ?? (eq > 0 ? resolveDialectToolName(token.slice(eq + 1), toolNames) : undefined)
+        ?? resolveDialectToolName(token, toolNames, false);
+      const openEnd = m.index + m[0].length;
+      anyTag.lastIndex = openEnd;
+      if (!resolved) continue;
+      const closeRe = new RegExp(`</\\s*${escapeRegExp(rawToken.split('=')[0])}\\s*>`, 'g');
+      closeRe.lastIndex = openEnd;
+      const close = closeRe.exec(text);
+      // Closing tag optional, to tolerate a response truncated mid-call.
+      const body = text.slice(openEnd, close ? close.index : text.length);
+      calls.push({ name: resolved, arguments: normalizeDialectParams(resolved, JSON.stringify(argsFromDialectBody(body))) });
+      if (close) anyTag.lastIndex = close.index + close[0].length;
     }
   }
 

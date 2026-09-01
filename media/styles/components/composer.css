@@ -334,3 +334,21 @@
   .tm-model-trigger .tm-model-label { max-width: 56px; }
   .toolbar-sep { display: none; }
 }
+
+
+/* File chips inside a checklist step — AI Elements' TaskItemFile
+   ("rounded-md border bg-secondary px-1.5 py-0.5 text-xs"). Backticked paths used to render
+   as literal backticks in the sheet. */
+.tm-todosheet-file {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-gap-xs);
+  padding: 0 5px;
+  border-radius: var(--tm-radius-sm);
+  border: 1px solid var(--tm-card-border);
+  background: var(--tm-surface-panel);
+  color: var(--tm-fg);
+  font-family: var(--tm-font-code);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
