@@ -13,6 +13,38 @@
  *
  * Loaded before the component stylesheets and main.css (see chatViewProvider.ts getHtml()).
  */
+/* ── Theme-following, with two extra tones ────────────────────────────────────────────
+ * TierMux follows the ACTIVE VS Code theme: every --tm-* alias below resolves through the
+ * --vscode-* variables VS Code injects, so a theme switch (or a light theme) repaints the
+ * whole webview for free — the same thing the Claude Code extension does.
+ *
+ * A fixed brand palette used to be pinned here (overriding the --vscode-* names on #app).
+ * It was removed 2026-09-03: besides not following the theme, it could never be complete.
+ * Popovers, tooltips, toasts, dialogs and the lightbox mount on <body>, OUTSIDE #app, so
+ * they kept rendering the real theme's colours next to a hard-coded panel — the agent
+ * picker popup against the composer was the visible tell. Scoping it to :root instead does
+ * not help: VS Code sets its own values closer to the content and wins the cascade.
+ *
+ * The palette's two extra tones have no --vscode-* equivalent (VS Code names ONE muted
+ * foreground and ONE panel border, the design uses fg/muted/dim and border/soft), so they
+ * are derived from the theme's own values rather than pinned — they stay correct in light
+ * themes and high-contrast ones too. */
+:root {
+  /* Mixed toward the BACKGROUND, not toward `transparent`. Mixing with transparent makes the
+     text and borders translucent, so everything anti-aliases against whatever sits behind it
+     and the whole UI reads washed out / lifeless. Mixing with the background produces a
+     genuinely dimmer SOLID tone — the tier the design wants — and still tracks the theme,
+     including light ones (where "dimmer" means lighter, which this gets right for free). */
+  --tm-fg-dim: color-mix(in srgb, var(--vscode-descriptionForeground) 82%, var(--vscode-editor-background));
+  --tm-border-soft: color-mix(in srgb, var(--vscode-panel-border) 65%, var(--vscode-editor-background));
+
+  /* Typeface stays pinned (fonts.css) — that was a separate, deliberate choice and is
+     theme-independent: a font doesn't stop working in a light theme the way a hard-coded
+     colour does. Drop these two lines to fall back to the editor's own font. */
+  --vscode-font-family: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --vscode-editor-font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+}
+
 :root {
   /* ── Status colors ── */
   --tm-status-running: var(--vscode-charts-blue, #3b82f6);

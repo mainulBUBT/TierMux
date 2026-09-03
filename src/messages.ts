@@ -1,5 +1,5 @@
 // Wire protocol between the extension host and the chat webview.
-import type { CatalogModel, FallbackEntry, KeyStatus, Mode, Platform, PlanRunState, ReasoningEffort, TodoItem } from './shared/types';
+import type { CatalogModel, CustomEndpointType, CustomModel, FallbackEntry, KeyStatus, Mode, Platform, PlanRunState, ReasoningEffort, TodoItem } from './shared/types';
 import type { WorkReportData } from './shared/workReport';
 import type { ClarifyingQuestion } from './agent/clarify';
 import type { McpServerConfig } from './mcp/mcpClient';
@@ -146,7 +146,9 @@ export interface ConfigPayload {
    *  upstream" rather than "broken". Distinct from `disabledProviders`, which is the user's
    *  own local on/off choice. */
   remoteDisabledProviders: Platform[];
-  /** User-defined custom OpenAI-compatible endpoints (summary — the webview reads fallback chain for enabled models). */
+  /** User-defined custom OpenAI-compatible endpoints (summary — the webview reads fallback chain
+   *  for enabled models; `models` carries per-model capability ticks, since a custom endpoint has
+   *  no catalog entry the router could otherwise learn Tools/Vision/Reasoning support from). */
   customEndpoints: Array<{
     id: string;
     name: string;
@@ -154,6 +156,8 @@ export interface ConfigPayload {
     keyless: boolean;
     configured: boolean;
     modelCount: number;
+    type?: CustomEndpointType;
+    models: CustomModel[];
   }>;
   /** Slash-command skill index (name + one-line description) loaded from
    *  .tiermux/skills/*.md — the webview's `/` autocomplete renders this list.
@@ -232,12 +236,16 @@ export type InMessage =
   | { type: 'askUserResponse'; requestId: string; callId: string; answer: string; cancelled?: boolean; sessionId?: string }
   | { type: 'clearUsage' }
   // Custom OpenAI-compatible endpoints
-  | { type: 'addCustomEndpoint'; name: string; baseUrl: string }
-  | { type: 'updateCustomEndpoint'; id: string; name?: string; baseUrl?: string; extraHeaders?: Record<string, string> }
+  | { type: 'addCustomEndpoint'; name: string; baseUrl: string; endpointType?: CustomEndpointType }
+  | { type: 'updateCustomEndpoint'; id: string; name?: string; baseUrl?: string; extraHeaders?: Record<string, string>; endpointType?: CustomEndpointType }
   | { type: 'removeCustomEndpoint'; id: string }
   | { type: 'setCustomEndpointKey'; id: string; key: string | null }
-  | { type: 'addCustomModel'; endpointId: string; modelId: string; displayName?: string }
+  | { type: 'addCustomModel'; endpointId: string; modelId: string; displayName?: string; supportsTools?: boolean; supportsVision?: boolean; supportsReasoning?: boolean; tags?: string[] }
   | { type: 'removeCustomModel'; endpointId: string; modelId: string }
+  /** Toggle one capability tick (Tools/Vision/Reasoning) on an already-added custom model —
+   *  a custom endpoint has no catalog entry to learn these from, so the router trusts
+   *  whatever is set here (see Router.customModelCaps). */
+  | { type: 'setCustomModelCaps'; endpointId: string; modelId: string; supportsTools?: boolean; supportsVision?: boolean; supportsReasoning?: boolean }
   /** Ask the host to GET <baseUrl>/models for an endpoint and stream back the model IDs (Kilo/Cline-style auto-discovery). */
   | { type: 'fetchCustomEndpointModels'; id: string }
   /** Webview asks the host to (re)fetch tips/announcements from the worker and push them back. */
@@ -259,6 +267,9 @@ export interface TranscriptStep {
   args?: unknown;
   state?: 'running' | 'done' | 'error';
   detail?: string;
+  /** Wall-clock time the call took to settle, in ms — see toolStatus's durationMs. Persisted
+   *  here so a reopened/reverted-to turn shows the same per-step duration a live run did. */
+  durationMs?: number;
 }
 
 export interface TranscriptMessage {

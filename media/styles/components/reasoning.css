@@ -3,7 +3,7 @@
  * chevron rotates on open. Muted content card. */
 
 .tm-reasoning {
-  margin: 1px 0;
+  /* No own margin — the .flow container owns the vertical rhythm (see main.css). */
   border-radius: var(--tm-radius-sm);
   transition: background var(--tm-transition-fast);
 }
@@ -45,17 +45,15 @@
    `.tm-effort*`; the label styling lives here, with its real owner. */
 .tm-reasoning-label {
   font-size: var(--tm-text-sm);
-  font-weight: 600;
+  font-weight: 500;
   color: var(--tm-fg-muted);
 }
 
-/* Brain icon — muted like the rest of the trigger. */
-.tm-reasoning-brain {
-  display: inline-flex;
-  flex-shrink: 0;
-  color: var(--tm-fg-muted);
-  transition: color var(--tm-transition-fast);
-}
+/* The live/settled status glyph (ring → mark) is shared with a grouped tool row — one glyph
+   vocabulary for "something is running" across the whole transcript. Its CSS (.tm-spin-glyph
+   / -ring / -mark) lives in tool-card.css, which loads before this file; buildReasoningBlock
+   builds it via the same buildSpinGlyph() helper buildToolGroupRow uses. Nothing reasoning-
+   specific to declare here. */
 
 /* Chevron — rotates 180° when open (AI Elements: `size-4 transition-transform`). */
 .tm-reasoning-chevron {
@@ -77,28 +75,28 @@
   overflow-y: auto;
 }
 
+/* No card background/border/hairline here (2026-09-03, docs/UI_POLISH_TOOL_REASONING item 4):
+   a filled box behind the streaming text read as a second UI panel competing with the tool
+   cards around it. The only structure left is the label above and the rail on the text below —
+   it should read as the model's undertone in the transcript, not a nested widget. */
+/* Tight under its own label — a full 8px ring of padding left the thought text floating well
+   below the "Thinking" line it belongs to, which is most of the gap this block contributed. */
 .tm-reasoning-body {
-  padding: var(--tm-gap-md);
-  background: var(--tm-surface-alt);
-  /* Hairline under the "Thinking" header. Drawn as an inset shadow rather than a border so it
-     can be inset from the rounded corners — a full-bleed border-top overshot the block's
-     border-radius and read as a broken/clipped rule. */
-  border-top: none;
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--tm-card-border) 70%, transparent);
-  border-bottom-left-radius: var(--tm-radius-sm);
-  border-bottom-right-radius: var(--tm-radius-sm);
+  padding: 0 var(--tm-gap-md) var(--tm-gap-sm);
 }
 
 /* Thinking text is WORKING NOTES, not the answer. It used to render at --tm-fg with plain
    markdown defaults, so a thought block and the final reply were typographically identical.
-   Mute it, tighten it, and put a rail down its left edge so the eye separates "how it got
-   there" from "what it said". */
+   Mute it, italicize it (Codex/OpenCode both render reasoning dim+italic, full stop — see the
+   research in docs/UI_POLISH_TOOL_REASONING_2026-09-02.md), and put a rail down its left edge
+   so the eye separates "how it got there" from "what it said". */
 .tm-reasoning-text {
-  font-size: var(--tm-text-xs);
-  line-height: 1.55;
+  font-size: var(--tm-text-sm);
+  font-style: italic;
+  line-height: 1.6;
   color: var(--tm-fg-muted);
-  padding-left: var(--tm-gap-md);
-  border-left: 2px solid color-mix(in srgb, var(--tm-fg-muted) 28%, transparent);
+  padding-left: 15px;
+  border-left: 1px solid var(--tm-card-border);
   /* Content is markdown-rendered HTML (<p>/<br>), so it already carries its own line breaks.
      pre-wrap ALSO rendered the literal newlines sitting between those tags, double-spacing the
      block — use normal so only the markdown structure controls spacing. */

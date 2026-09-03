@@ -262,9 +262,34 @@ export interface CustomModel {
   modelId: string;
   /** User-visible label. Falls back to modelId when empty. */
   displayName?: string;
+  /**
+   * Explicit capability overrides. A custom endpoint has no catalog entry, so the router
+   * can never learn these from a remote sheet — they were previously always guessed
+   * (tools assumed true, vision/reasoning assumed false, vision sometimes upgraded by
+   * a model-id heuristic). Undefined preserves that exact prior behavior; an explicit
+   * value here always wins over the heuristic. Set from the model's row in the endpoint's
+   * add/edit form (Settings → Providers → Custom Endpoints).
+   */
+  supportsTools?: boolean;
+  supportsVision?: boolean;
+  supportsReasoning?: boolean;
+  /**
+   * Routing tags, same vocabulary as CatalogModel.tags ('coding' / 'planner' / 'reasoner' /
+   * 'vision' / 'general'). A fetched custom model is just an id string — nothing in a /models
+   * response says what it is good at — so these are the user's own answer to that, ticked in
+   * the add-endpoint form. Read by the router exactly like a catalog model's tags: a STRONG
+   * quality signal ("best at it"), never a hard gate — see router/capabilityProfile.ts.
+   */
+  tags?: string[];
 }
 
-/** A user-defined OpenAI-compatible endpoint. */
+/** Which wire protocol a custom endpoint speaks. Undefined means 'openai-chat' — the
+ *  original (and only, pre-2026-09) shape every existing saved endpoint already uses, so
+ *  this stays optional rather than a required field with a migration. */
+export type CustomEndpointType = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
+
+/** A user-defined custom endpoint. Despite the name, not always OpenAI-compatible any more —
+ *  see `type`. */
 export interface CustomEndpoint {
   /** Stable ID (generated as 'c_' + 6 base36 chars). */
   id: string;
@@ -272,6 +297,8 @@ export interface CustomEndpoint {
   name: string;
   /** Base URL (validated http(s)://, trailing slash stripped). */
   baseUrl: string;
+  /** Wire protocol this endpoint speaks. Defaults to 'openai-chat' when unset (see the type doc). */
+  type?: CustomEndpointType;
   /** Optional default headers (e.g., Cloudflare AI Gateway custom header). */
   extraHeaders?: Record<string, string>;
   /** Models the user wants to expose under this endpoint. */

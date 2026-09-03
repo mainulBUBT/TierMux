@@ -9,15 +9,26 @@
  */
 
 import { renderMarkdown } from '../../markdown';
-import { fmtDuration } from '../../format';
+import { fmtDuration, fmtToolDuration } from '../../format';
 import { el } from '../dom';
-import { ICON } from '../../icons';
 import { createCollapse } from '../primitives/Collapse';
 import { unifiedDiff } from '../../format/unifiedDiff';
 
 // ========== Constants ==========
 
-export const STATE_ICON = { running: null, done: '✓', error: '✗' } as const;
+/** Shared live/settled status glyph: a spinning ring while something is actually running,
+ *  swapped for a static mark once it settles. One glyph vocabulary for "something is
+ *  running" across the whole transcript — reasoning (buildReasoningBlock) and a grouped
+ *  tool row (buildToolGroupRow) both use it, instead of each carrying its own separate
+ *  status-indicator identity (a brain icon, a colored dot, ...). CSS lives in tool-card.css
+ *  (.tm-spin-glyph / -ring / -mark), loaded before every other component stylesheet that
+ *  might use this. */
+function buildSpinGlyph(live: boolean, mark: string, variant?: 'success' | 'error'): HTMLElement {
+  return el('span', { class: `tm-spin-glyph${live ? ' live' : ''}${variant ? ` ${variant}` : ''}`, 'aria-hidden': 'true' },
+    el('i', { class: 'tm-spin-glyph-ring' }),
+    el('i', { class: 'tm-spin-glyph-mark' }, mark),
+  );
+}
 
 // ── Edit-diff preview thresholds (Chat-UX-parity plan; boundary-tested in scripts/toolDiff.e2e.ts).
 // A change under BOTH inline caps renders as a rich diff2html view directly in the card body;
@@ -31,41 +42,34 @@ export const INLINE_DIFF_MAX_BYTES = 50 * 1024;
 /** Changed lines above which no full diff is rendered at all — just a summary note. */
 export const DIFF_PREVIEW_MAX_CHANGED_LINES = 2000;
 
-const STATE_LABEL = { 
-  running: 'Running', 
-  done: 'Completed', 
-  error: 'Error',
-  pending: 'Pending'
-} as const;
-type StateIcon = typeof STATE_ICON;
-type StateLabel = typeof STATE_LABEL;
-
 // ========== Structure ==========
 
 /** The `.tm-tool-card-header` row: icon + title + hint + state indicator + actions.
  *  Enhanced with AI Elements patterns for better visual hierarchy and UX. */
-function createToolHeader(icon: string, title: string, hint: string, state: 'running' | 'done' | 'error' | 'pending', onRetry?: () => void, onCancel?: () => void): HTMLElement {
-  const stateIcon = STATE_ICON[state];
-  const stateLabel = STATE_LABEL[state];
-  
+function createToolHeader(icon: string, title: string, hint: string, state: 'running' | 'done' | 'error' | 'pending', onRetry?: () => void, onCancel?: () => void, durationMs?: number): HTMLElement {
+  // No "Running"/"Completed"/"Error" text badge — the design artifact conveys state purely
+  // through colour (the tool-type icon and the card's own left rail recolor per state, see
+  // tool-card.css's .tm-tool-card.running/.done/.error), the same "spend boldness in one
+  // place, let colour/shape carry the rest" principle the composer's send button follows.
+  // Only the duration stays as text, since a colour can't say "0.4s".
+  const durationLabel = durationMs != null && durationMs > 0 && (state === 'done' || state === 'error')
+    ? fmtToolDuration(durationMs) : '';
+
   return el('div', { class: 'tm-tool-card-header' },
     el('div', { class: 'tm-tool-card-info' },
       el('span', { class: 'tm-tool-card-icon' }, icon),
       el('span', { class: 'tm-tool-card-title' }, title),
       hint ? el('span', { class: 'tm-tool-card-hint' }, hint) : null
     ),
-    el('div', { class: 'tm-tool-card-status' },
-      el('div', { class: `tm-tool-card-state ${state}` }, stateIcon || ''),
-      el('span', { class: 'tm-tool-card-state-label' }, stateLabel)
-    ),
+    durationLabel ? el('span', { class: 'tm-tool-card-duration' }, `· ${durationLabel}`) : null,
     el('span', { class: 'tm-tool-card-chevron', 'aria-hidden': 'true' }, '▾'),
     el('div', { class: 'tm-tool-card-actions' },
-      state === 'error' && onRetry ? el('button', { 
+      state === 'error' && onRetry ? el('button', {
         class: 'tm-tool-card-btn',
         title: 'Retry',
         onClick: onRetry
       }, '↻') : null,
-      state === 'running' && onCancel ? el('button', { 
+      state === 'running' && onCancel ? el('button', {
         class: 'tm-tool-card-btn',
         title: 'Cancel',
         onClick: onCancel
@@ -107,11 +111,10 @@ export function buildReasoningBlock(text: string, tc?: string, isStreaming?: boo
     ? `Thought for ${fmtDuration(Math.max(1, durationMs / 1000))}`
     : isStreaming ? 'Thinking' : 'Thought';
 
-  const brain = el('span', { class: 'tm-reasoning-brain', 'aria-hidden': 'true' });
-  brain.innerHTML = ICON.brain;
+  const glyph = buildSpinGlyph(!!isStreaming, '•');
   const header = el('div', { class: 'tm-reasoning-header' },
     el('div', { class: 'tm-reasoning-title' },
-      brain,
+      glyph,
       el('span', { class: 'tm-reasoning-label' }, durationLabel),
     ),
     el('span', { class: 'tm-reasoning-chevron' }, '▾'),
@@ -143,29 +146,37 @@ export function buildReasoningBlock(text: string, tc?: string, isStreaming?: boo
 export function updateReasoningBlock(block: HTMLElement, text: string, done?: boolean, durationMs?: number): void {
   const body = block.querySelector<HTMLElement>('.tm-reasoning-body');
   if (body) { body.innerHTML = ''; body.appendChild(renderMarkdown(text || '')); }
+  if (done) { settleReasoningBlock(block, durationMs); return; }
   const label = block.querySelector<HTMLElement>('.tm-reasoning-label');
-  if (done) {
-    block.classList.remove('streaming');
-    block.dataset.live = '0';
-    block.dataset.streaming = 'false';
-    if (label) {
-      label.textContent = durationMs && durationMs > 0
-        ? `Thought for ${fmtDuration(Math.max(1, durationMs / 1000))}`
-        : 'Thought';
-    }
-    // Collapse a beat AFTER the stream ends, the way AI Elements' Reasoning does. Closing on
-    // the same tick reads as the text being yanked away mid-sentence; the pause lets the eye
-    // finish the last line and register the "Thought for Ns" label. Skipped if the reader
-    // opened it themselves in the meantime — `data-user-open` is set by the header click.
-    setTimeout(() => {
-      if (block.dataset.userOpen !== '1') block.classList.remove('open');
-    }, 1000);
-  } else {
-    block.classList.add('streaming', 'open');
-    block.dataset.live = '1';
-    block.dataset.streaming = 'true';
-    if (label) label.textContent = 'Thinking';
+  block.classList.add('streaming', 'open');
+  block.dataset.live = '1';
+  block.dataset.streaming = 'true';
+  block.querySelector<HTMLElement>('.tm-spin-glyph')?.classList.add('live');
+  if (label) label.textContent = 'Thinking';
+}
+
+/** Flip a reasoning block to its settled "Thought for Ns" state WITHOUT touching its body —
+ *  so a caller that only knows "the run is over" (see the webview's `busy` handler) can stop a
+ *  block spinning "Thinking…" without having to re-supply, and re-render, its text. */
+export function settleReasoningBlock(block: HTMLElement, durationMs?: number): void {
+  if (!block.classList.contains('streaming')) return;
+  block.classList.remove('streaming');
+  block.dataset.live = '0';
+  block.dataset.streaming = 'false';
+  block.querySelector<HTMLElement>('.tm-spin-glyph')?.classList.remove('live');
+  const label = block.querySelector<HTMLElement>('.tm-reasoning-label');
+  if (label) {
+    label.textContent = durationMs && durationMs > 0
+      ? `Thought for ${fmtDuration(Math.max(1, durationMs / 1000))}`
+      : 'Thought';
   }
+  // Collapse a beat AFTER the stream ends, the way AI Elements' Reasoning does. Closing on
+  // the same tick reads as the text being yanked away mid-sentence; the pause lets the eye
+  // finish the last line and register the "Thought for Ns" label. Skipped if the reader
+  // opened it themselves in the meantime — `data-user-open` is set by the header click.
+  setTimeout(() => {
+    if (block.dataset.userOpen !== '1') block.classList.remove('open');
+  }, 1000);
 }
 
 /**
@@ -174,6 +185,105 @@ export function updateReasoningBlock(block: HTMLElement, text: string, done?: bo
  * Requires currentMode to determine expansion behavior.
  * Enhanced with AI Elements Tool component patterns.
  */
+// ========== Grouped read rows (docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 1) ==========
+// A run of consecutive SAME-TOOL read calls (readFile, readFile, readFile — never a mix of
+// different tools under one verb, which would read as grammatically odd: "Read a.ts, 'foo'"
+// makes no sense if the second call was actually a grep) collapses into one line: bold verb +
+// comma-joined targets, instead of N separate cards. This is the single biggest declutter win
+// from the Codex/OpenCode research — a coding agent's most common action by far is reading a
+// handful of files before doing anything else.
+
+/** Tools eligible for grouping — genuinely side-effect-free inspection calls only. Anything
+ *  that writes, runs a command, or has meaningfully different per-call output (diagnostics,
+ *  the repo graph) stays its own card; grouping those would hide information, not noise. */
+export const GROUPABLE_TOOL_NAMES = new Set(['readFile', 'grep', 'glob', 'listDir', 'searchWorkspace']);
+
+const GROUP_VERB: Record<string, string> = {
+  readFile: 'Read',
+  grep: 'Searched',
+  searchWorkspace: 'Searched',
+  glob: 'Matched',
+  listDir: 'Explored',
+};
+
+/** The short label for one item inside a grouped row — a path for file-shaped tools, the
+ *  query/pattern for search-shaped ones. Mirrors the extraction toolLabel() does per tool,
+ *  just without the "Analyzed"/"Searched" verb prefix each call would otherwise carry alone. */
+function groupTargetFor(name: string, args: unknown): string {
+  const argsObj = args && typeof args === 'object' ? args as Record<string, unknown> : {};
+  if (name === 'grep' || name === 'searchWorkspace') {
+    const query = String((argsObj as { query?: string; pattern?: string; term?: string }).query
+      || (argsObj as { pattern?: string }).pattern || (argsObj as { term?: string }).term || '').trim();
+    return query || 'pattern';
+  }
+  const path = shortPath(String(firstArg(args) || ''));
+  return path || (name === 'listDir' ? 'files' : 'a file');
+}
+
+export interface ToolGroupItem {
+  toolCallId: string;
+  name: string;
+  args?: unknown;
+  state?: 'running' | 'done' | 'error';
+  durationMs?: number;
+}
+
+/** Build one collapsed row for a run of same-tool reads. Status is aggregated across the
+ *  group (spinning while ANY item is still running, a check once ALL settle, an error mark if
+ *  ANY did) — matching the "one glyph, two states" rule item 5 already applies to reasoning;
+ *  a group showing N independent spinners would be exactly the chrome this is meant to remove.
+ *  Duration is the sum of each item's own durationMs, shown once every item has one. */
+export function buildToolGroupRow(items: ToolGroupItem[]): HTMLElement {
+  const name = items[0]?.name ?? '';
+  const verb = GROUP_VERB[name] ?? 'Read';
+  const anyRunning = items.some((it) => it.state === 'running' || !it.state);
+  const anyError = items.some((it) => it.state === 'error');
+  const groupState: 'running' | 'done' | 'error' = anyRunning ? 'running' : anyError ? 'error' : 'done';
+  const allDurations = items.every((it) => it.durationMs != null);
+  const totalMs = allDurations ? items.reduce((sum, it) => sum + (it.durationMs || 0), 0) : undefined;
+
+  const row = el('div', { class: `tm-tool-group ${groupState}`, dataset: { group: '1' } });
+  row.appendChild(buildSpinGlyph(
+    groupState === 'running',
+    groupState === 'error' ? '✗' : '✓',
+    groupState === 'error' ? 'error' : groupState === 'done' ? 'success' : undefined,
+  ));
+
+  // Verb + targets share a flex-1 box so a long target list wraps UNDER the verb while the
+  // duration stays pinned to the first line. Previously everything was one wrapping row, so a
+  // long list pushed "· 0.1s" onto a line of its own, right-aligned under the targets (live
+  // repro: "Searched class .* extends Module|nwidart|ModuleServiceProvider").
+  const main = el('span', { class: 'tm-tool-group-main' });
+  main.appendChild(el('span', { class: 'tm-tool-group-verb' }, verb));
+
+  // One span per DISTINCT target: the agent re-reading the same path twice in a row is real,
+  // but "Read routes/api.php, routes/api.php" reads as a rendering fault, not as information.
+  // Every call id that resolved to the same target rides on that one span (space-separated,
+  // matched with the [data-tc~="id"] selector), so each call is still individually
+  // addressable when its own running → done update lands.
+  const byTarget = new Map<string, string[]>();
+  for (const it of items) {
+    const label = groupTargetFor(it.name, it.args);
+    const ids = byTarget.get(label);
+    if (ids) ids.push(it.toolCallId); else byTarget.set(label, [it.toolCallId]);
+  }
+  const targets = el('span', { class: 'tm-tool-group-targets' });
+  let i = 0;
+  for (const [label, ids] of byTarget) {
+    if (i++ > 0) targets.appendChild(el('span', { class: 'tm-tool-group-sep' }, ', '));
+    targets.appendChild(el('span', {
+      class: 'tm-tool-group-target', dataset: { tc: ids.join(' ') },
+    }, label));
+  }
+  main.appendChild(targets);
+  row.appendChild(main);
+
+  if (totalMs != null && totalMs > 0 && groupState !== 'running') {
+    row.appendChild(el('span', { class: 'tm-tool-group-duration' }, `· ${fmtToolDuration(totalMs)}`));
+  }
+  return row;
+}
+
 export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: () => void): HTMLElement {
   // Reasoning blocks are handled separately
   if (step.name === 'reasoning') {
@@ -190,7 +300,7 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
   });
   
   // AI Elements-style header with actions
-  card.appendChild(createToolHeader(icon, title, hint || '', state, onRetry, onCancel));
+  card.appendChild(createToolHeader(icon, title, hint || '', state, onRetry, onCancel, step.durationMs));
 
   const { el: more, pre } = createToolBody();
   card.appendChild(more);
@@ -217,11 +327,11 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
   if (mdSource != null) {
     pre.replaceWith(buildMarkdownDoc(mdSource));
     hasBody = true;
-  } else if (editArgsStatic && 'old_string' in editArgsStatic && 'new_string' in editArgsStatic) {
+  } else if (isEditStatic && editDiffArgs(step.args)) {
     // Real unified diff via diff2html (inline / collapsed / summary by threshold), replacing
     // the generic "View output" collapse entirely.
-    bodyAnchor = buildEditDiff(String(editArgsStatic.old_string), String(editArgsStatic.new_string),
-      typeof editArgsStatic.path === 'string' ? editArgsStatic.path : undefined);
+    const d = editDiffArgs(step.args)!;
+    bodyAnchor = buildEditDiff(d.before, d.after, d.path);
     more.replaceWith(bodyAnchor);
     hasBody = true;
   } else {
@@ -240,6 +350,17 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
   }
   // Only reveal the expand chevron when there's a body to show.
   if (hasBody) card.classList.add('has-body');
+  // Errors open themselves — matching AI Elements' output-error default (see
+  // docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 7). This only changes the DEFAULT open
+  // state, not whether it's a disclosure: the header's toggle handler below still closes it
+  // like any other card, so a retried-and-fixed call collapses away same as a success would.
+  //
+  // An EDIT opens itself for the same reason: it is the one step that changed the user's code,
+  // and a diff hidden behind a click is a change they never actually saw. A read's contents can
+  // stay collapsed — they didn't alter anything — but "what did it do to my file" should never
+  // need a click. buildEditDiff still collapses genuinely huge diffs behind its own summary, so
+  // this reveals a preview, not thousands of lines.
+  if (hasBody && (state === 'error' || isEditStatic)) card.classList.add('open');
 
   // Add progress bar for running tools
   if (state === 'running') {
@@ -531,6 +652,40 @@ function renderDiff2Html(diffText: string): HTMLElement | null {
  *  named constants: ≤ both inline caps → expanded rich diff; over an inline cap but under the
  *  preview ceiling → same rich diff collapsed behind a "View diff" disclosure; at/over the
  *  ceiling → summary note only. */
+/**
+ * The before/after pair out of an edit tool's arguments, in whichever shape they arrived.
+ *
+ * v3's `editFile` takes `search`/`replace` — or an `edits: [{search, replace}, …]` array for
+ * several hunks in one file — while older/MCP-style edit tools use `old_string`/`new_string`.
+ * The card only ever looked for the latter, so every real edit fell through to dumping the raw
+ * arguments as JSON instead of rendering a diff (live repro: an `editFile` card showing
+ * `{"path": …, "search": …, "replace": …}` under "View output").
+ *
+ * Multiple hunks are joined into one before/after pair so they read as a single diff of the
+ * file, which is what actually happened — they are applied atomically in one read/write.
+ * Returns null when the arguments carry no usable pair.
+ */
+export function editDiffArgs(args: unknown): { before: string; after: string; path?: string } | null {
+  if (!args || typeof args !== 'object') return null;
+  const a = args as Record<string, unknown>;
+  const path = typeof a.path === 'string' ? a.path : undefined;
+
+  if (Array.isArray(a.edits) && a.edits.length > 0) {
+    const hunks = a.edits.filter((h): h is Record<string, unknown> => !!h && typeof h === 'object');
+    if (hunks.length === 0) return null;
+    return {
+      before: hunks.map((h) => String(h.search ?? '')).join('\n'),
+      after: hunks.map((h) => String(h.replace ?? '')).join('\n'),
+      path,
+    };
+  }
+  if (typeof a.search === 'string') return { before: a.search, after: String(a.replace ?? ''), path };
+  if (a.old_string != null && a.new_string != null) {
+    return { before: String(a.old_string), after: String(a.new_string), path };
+  }
+  return null;
+}
+
 export function buildEditDiff(oldStr: string, newStr: string, path?: string): HTMLElement {
   const box = el('div', { class: 'tm-edit-diff' });
   const oldText = String(oldStr ?? '');
@@ -582,6 +737,9 @@ export interface ToolStep {
   detail?: string;
   state?: 'running' | 'done' | 'error';
   toolCallId?: string;
+  /** How long the call took to settle, in ms — rendered as `· {duration}` next to the status
+   *  label (docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 3). Absent while running. */
+  durationMs?: number;
 }
 
 export interface ToolLabel {

@@ -52,6 +52,16 @@ export function fmtDuration(totalSeconds: number): string {
   return m % 60 ? `${h}hr ${m % 60}m` : `${h}hr`;
 }
 
+// Per-tool-call duration: most calls (reads, greps) settle in well under a second, where
+// fmtDuration's whole-second rounding would show "0s" for nearly everything — the one signal
+// item 3 (docs/UI_POLISH_TOOL_REASONING_2026-09-02.md) is trying to add. One decimal below a
+// second, keeping a real (never-zero) floor so a genuinely instant call still reads as timed
+// rather than blank; a second or more falls back to fmtDuration's normal m/h scaling.
+export function fmtToolDuration(ms: number): string {
+  if (ms < 1000) return `${Math.max(0.1, Math.round(ms / 100) / 10).toFixed(1)}s`;
+  return fmtDuration(ms / 1000);
+}
+
 export function fmtSessionDate(ts?: number | string | Date | null): string {
   if (!ts) return '';
   const d = new Date(ts);

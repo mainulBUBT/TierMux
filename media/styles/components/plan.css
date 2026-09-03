@@ -9,7 +9,7 @@
  * (12px) instead, which reads as the same generous rhythm at panel scale. */
 .tm-plan {
   border: 1px solid var(--tm-card-border);
-  border-radius: 12px;
+  border-radius: var(--tm-radius-xl);
   background: var(--tm-card-surface);
   margin: var(--tm-gap-md) 0;
   overflow: hidden;

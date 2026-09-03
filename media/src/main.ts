@@ -7,14 +7,14 @@
 // @ts-nocheck
 /* TierMux — webview controller (vanilla TS, bundled by esbuild). */
 import { ICON } from './icons';
-import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate, fmtDuration } from './format';
+import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate, fmtDuration, fmtToolDuration } from './format';
 import { send } from './bridge';
 import type { RxMessage } from './bridge';
 import { $, escapeHtml, showToast } from './dom';
 import { renderMarkdown, appendStreamCursor } from './markdown';
 import { stripLegacyMarkdown } from '../../src/shared/workReport';
 import { renderPdfToPageImages, PDF_MAX_RENDER_PAGES } from './pdfPages';
-import { buildReasoningBlock, updateReasoningBlock, buildToolCard, buildEditDiff, toolLabel, activityFor, STATE_ICON } from './ui/tool/ToolCard';
+import { buildReasoningBlock, updateReasoningBlock, settleReasoningBlock, buildToolCard, buildEditDiff, editDiffArgs, toolLabel, activityFor, buildToolGroupRow, GROUPABLE_TOOL_NAMES } from './ui/tool/ToolCard';
 import { createPlan, planDataFromStepText, planDataFromTodos, createResultCard } from './ui/components';
 import { createAgentPicker } from './ui/components/AgentPicker';
 import { createModelPicker } from './ui/components/ModelPicker';
@@ -23,14 +23,6 @@ import { handleAssistantStart } from './handlers/assistantStart';
 import { handleAgentStep } from './handlers/agentStep';
 import { handleToolStatus } from './handlers/toolStatus';
 import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismissed } from './handlers/watchdog';
-
-// AI Elements state constants
-const STATE_LABEL = { 
-  running: 'Running', 
-  done: 'Completed', 
-  error: 'Error',
-  pending: 'Pending'
-} as const;
 
 (function () {
   let state = { catalog: [], fallback: [], platforms: [] };
@@ -108,10 +100,10 @@ const STATE_LABEL = {
       <div class="new-models-bar hidden" id="new-providers-bar"></div>
       <div class="new-models-bar hidden" id="plan-progress-bar"></div>
       <div class="changed-bar hidden" id="changed-bar"></div>
-      <div class="chips" id="chips"></div>
       <div class="input-wrap">
+        <div class="chips" id="chips"></div>
         <div id="ac-pop" class="ac-pop hidden"></div>
-        <textarea id="input" placeholder="What would you like to know?" title="Enter to send · Shift+Enter for newline · @ for files · / for commands · /fix /tests /commit"></textarea>
+        <textarea id="input" placeholder="Ask anything about this workspace…" title="Enter to send · Shift+Enter for newline · @ for files · / for commands · /fix /tests /commit"></textarea>
         <div class="input-hints hidden" id="input-hints"><span class="hint-defaults" id="hint-defaults"><span><span class="hint-key">/</span> commands</span><span><span class="hint-key">@</span> files</span><span><span class="hint-key">Shift+Enter</span> newline</span></span><span class="hint-lint hidden" id="hint-lint"></span></div>
         <div class="toolbar">
           <div class="tgroup">
@@ -303,6 +295,9 @@ const STATE_LABEL = {
   let currentMode = 'ask';
 
   // Per-mode composer placeholders (Claude-Code-style: the input hints at what the mode does).
+  // NOTE: the `ask` string is duplicated as the textarea's static `placeholder` in the app
+  // shell above, because that markup renders before any JS applies a mode — they must stay in
+  // sync or the placeholder visibly rewrites itself a beat after load.
   const MODE_PLACEHOLDERS = {
     ask: 'Ask anything about this workspace…',
     plan: 'Describe what to build — I\'ll research and propose a plan…',
@@ -762,11 +757,8 @@ const STATE_LABEL = {
     const recentHtml = recents.length ? `
       <div class="empty-recents">
         <div class="empty-recents-header">
-          <div class="empty-recents-label">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1H2V3zm0 3h12v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6zm3 2a.5.5 0 0 0 0 1h6a.5.5 0 0 0 0-1H5zm0 2a.5.5 0 0 0 0 1h4a.5.5 0 0 0 0-1H5z"/></svg>
-            RECENT
-          </div>
-          <button class="empty-view-all" id="empty-view-all-btn">View All ›</button>
+          <div class="empty-eyebrow">Recent</div>
+          <button class="empty-view-all" id="empty-view-all-btn">View all ›</button>
         </div>
         <div class="empty-recent-list">
           ${recents.map(s => `
@@ -779,17 +771,42 @@ const STATE_LABEL = {
       </div>` : '';
 
     const logoHtml = window.__LOGO_URI__
-      ? `<img class="empty-logo-img" src="${window.__LOGO_URI__}" alt="TierMux" onerror="this.style.display='none'" />`
+      // alt="" on purpose: the wordmark right next to it already names the product, so the
+      // mark is decorative — a real alt here renders/announces "TierMux" twice in a row.
+      ? `<img class="empty-logo-img" src="${window.__LOGO_URI__}" alt="" onerror="this.style.display='none'" />`
       : `<div class="empty-logo">${ICON.zap}</div>`;
+
+    // The one thing a welcome screen can say that nothing else on screen does: is this
+    // actually wired up and routing? Counted from the real config (enabled fallback entries
+    // on providers that aren't disabled), never a guess — and when the count is zero it stops
+    // being a status line and becomes the way out, because a fresh install with no key would
+    // otherwise just fail on first send with no hint why.
+    const disabled = new Set(state.disabledProviders || []);
+    const ready = (state.fallback || []).filter((e) => e.enabled && !disabled.has(e.platform)).length;
+    const knowsConfig = Array.isArray(state.platforms) && state.platforms.length > 0;
+    const statusHtml = !knowsConfig ? '' : ready > 0
+      ? `<button class="empty-status" id="empty-status-btn" title="Open provider settings">
+           <span class="empty-status-dot ok"></span>
+           <span class="empty-status-text"><b>${ready}</b> model${ready === 1 ? '' : 's'} ready · routing on Auto</span>
+           <span class="empty-status-chev">›</span>
+         </button>`
+      : `<button class="empty-status warn" id="empty-status-btn" title="Open provider settings">
+           <span class="empty-status-dot warn"></span>
+           <span class="empty-status-text">No models enabled yet — add a provider key to start</span>
+           <span class="empty-status-chev">›</span>
+         </button>`;
 
     el.innerHTML = `
       <div class="empty-hero">
-        ${logoHtml}
+        <div class="empty-brand">${logoHtml}<span class="empty-brand-name">${escapeHtml(window.__PRODUCT_NAME__ || 'TierMux')}</span></div>
         <div class="empty-heading">Stack free. Route smart. Ship faster.</div>
       </div>
       <div class="empty-tips-slot" id="empty-tips-slot"></div>
+      ${statusHtml}
       ${recentHtml}`;
 
+    const statusBtn = el.querySelector('#empty-status-btn');
+    if (statusBtn) statusBtn.addEventListener('click', () => { settingsTab = 'providers'; toggleSettings(); });
     el.querySelectorAll('.empty-recent-row').forEach(row => {
       row.addEventListener('click', () => {
         send({ type: 'switchSession', sessionId: row.dataset.id });
@@ -857,6 +874,10 @@ const STATE_LABEL = {
     if (!ts) return '';
     const d = new Date(ts), now = new Date();
     const diffMs = now - d, diffDays = Math.floor(diffMs / 86400000);
+    // Sessions started in one sitting all carry the same clock time, so a column of
+    // "02:58 PM" said nothing about which was last. Inside the hour, say how long ago.
+    if (diffMs < 60000) return 'just now';
+    if (diffMs < 3600000) return `${Math.floor(diffMs / 60000)}m ago`;
     if (diffDays === 0) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     if (diffDays === 1) return 'Yesterday';
     if (diffDays < 7) return d.toLocaleDateString([], { weekday: 'short' });
@@ -955,10 +976,13 @@ const STATE_LABEL = {
         // rank 2 shows 0.80 while the rank-1 tail shows 1.00). The old copy said the top score is
         // chosen, which read as a bug against the ✓ actually shown. The reason line under each
         // row is the real explanation; these numbers only describe the model, not the decision.
+        // Short labels — the popover already packs four metrics per candidate row; the
+        // full meaning is still one hover away via `tip`, so shortening the bold label
+        // costs nothing but width.
         metric('Score', e.score.toFixed(2), 'Catalog strength for this turn. It does NOT decide the winner — order is: the model you pinned, then this task kind\u2019s preferred model, then the strongest remaining one. The line below each model says which rule applied.'),
-        metric('Capability', e.capability.toFixed(2), 'How well this model fits the task by catalog — intelligence, speed, tool/vision support, context window. Static: it does not change with latency or health.'),
-        metric('Runtime', '×' + e.runtime.toFixed(2), 'Live health multiplier learned from real requests — success rate, latency vs the model’s own baseline, rate-limit/key availability, and provider health. ~1.0 = healthy, lower = currently degraded.'),
-        metric('Confidence', Math.round(e.confidence * 100) + '%', 'How much real data backs the Runtime score. Low % = little history yet, so Runtime leans toward a neutral default instead of over-reacting.'),
+        metric('Cap', e.capability.toFixed(2), 'Capability — how well this model fits the task by catalog: intelligence, speed, tool/vision support, context window. Static: it does not change with latency or health.'),
+        metric('Run', '×' + e.runtime.toFixed(2), 'Runtime — live health multiplier learned from real requests: success rate, latency vs the model’s own baseline, rate-limit/key availability, and provider health. ~1.0 = healthy, lower = currently degraded.'),
+        metric('Conf', Math.round(e.confidence * 100) + '%', 'Confidence — how much real data backs the Runtime score. Low % = little history yet, so Runtime leans toward a neutral default instead of over-reacting.'),
       ];
       metrics.forEach((m, i) => { if (i) meta.appendChild(document.createTextNode(' · ')); meta.appendChild(m); });
       line.appendChild(meta);
@@ -1089,6 +1113,12 @@ const STATE_LABEL = {
     toggle.addEventListener('click', () => {
       const clamped = textBody.classList.toggle('clamped');
       toggle.textContent = clamped ? 'See more' : 'See less';
+      // A pinned question only works while it is CLAMPED to a few lines. Expanded, it can be
+      // taller than the viewport — and a sticky box taller than its scrollport cannot stick,
+      // so it just parks over the answer (it is opaque and sits at z-index 2) and the turn
+      // looks broken. Expanding therefore un-pins it and it scrolls away like normal content.
+      const msg = textBody.closest('.msg.user');
+      if (msg) msg.classList.toggle('expanded', !clamped);
     });
     body.appendChild(toggle); // sits directly under the text, inside the left column
   }
@@ -1136,15 +1166,33 @@ const STATE_LABEL = {
 
     // Tool cards and text segments interleaved in recorded step order.
     // Each step is either a tool card or (for reasoning-named steps) a think-block.
+    // Every groupable call (readFile/grep/glob/listDir/searchWorkspace) renders as the flat
+    // glyph+verb+targets row — buildToolGroupRow / docs/UI_POLISH_TOOL_REASONING_2026-09-02.md
+    // item 1 — even a run of exactly one: the design artifact's plain "✓ Read x.tsx · 0.1s"
+    // line has no bordered-card variant for these tool types at all, so a lone read must not
+    // fall back to the boxed .tm-tool-card treatment just because it never got a sibling to
+    // group with. Only genuinely different tools (edit, terminal, ...) use the card.
+    let pendingGroup: { name: string; items: typeof steps } | null = null;
+    const flushGroup = () => {
+      if (!pendingGroup) return;
+      flow.appendChild(buildToolGroupRow(pendingGroup.items));
+      pendingGroup = null;
+    };
     steps.forEach((step) => {
       if (step.name === 'reasoning' && step.content) {
+        flushGroup();
         const reasoningBlock = buildReasoningBlock(step.content, step.toolCallId, false);
         reasoningBlock.classList.remove('streaming'); // Static render
         flow.appendChild(reasoningBlock);
+      } else if (GROUPABLE_TOOL_NAMES.has(step.name)) {
+        if (pendingGroup && pendingGroup.name === step.name) pendingGroup.items.push(step);
+        else { flushGroup(); pendingGroup = { name: step.name, items: [step] }; }
       } else {
+        flushGroup();
         flow.appendChild(buildToolCard(step));
       }
     });
+    flushGroup();
 
     // Main answer text at the end (matches live: text segment appended after tool cards).
     if (displayText) {
@@ -1209,7 +1257,17 @@ const STATE_LABEL = {
     el.appendChild(bubble);
     (currentTurn || activeThreadEl).appendChild(el);
     const modelStr = model ? `${platform || ''}/${model}` : '';
-    t = { el, body: bubble, tools: flow, flow, currentText: null, statusEl, statusLabel: statusEl.querySelector('.agent-label'), statusCaret: statusEl.querySelector('.agent-caret'), statusElapsed: statusEl.querySelector('.agent-elapsed'), toolRunning: false, activeTool: null, model: modelStr, requestId, workReport: null };
+    t = {
+      el, body: bubble, tools: flow, flow, currentText: null, statusEl,
+      statusLabel: statusEl.querySelector('.agent-label'), statusCaret: statusEl.querySelector('.agent-caret'), statusElapsed: statusEl.querySelector('.agent-elapsed'),
+      toolRunning: false, activeTool: null, model: modelStr, requestId, workReport: null,
+      // Grouped-read state (docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 1) — see upsertTool.
+      // toolMsgs is the one source of truth a group's DOM gets rebuilt from on every update, so
+      // the live rendering can never drift from what buildToolGroupRow (also used by the static
+      // replay path) would have produced for the same data.
+      toolMsgs: new Map(),
+      pendingReadGroup: null,
+    };
     targets.set(requestId, t);
     scrollDown();
     return t;
@@ -1405,7 +1463,14 @@ const STATE_LABEL = {
     const children = Array.from(flow.children);
     let lastWorkIdx = -1;
     for (let i = 0; i < children.length; i++) {
-      if (children[i].classList.contains('tm-tool-card') || children[i].classList.contains('tm-reasoning')) lastWorkIdx = i;
+      // `.tm-tool-group` belongs here too: every groupable call (readFile/grep/glob/listDir/
+      // searchWorkspace) now renders as a grouped row rather than a card, so a turn made only
+      // of reads had NO recognised work node at all — lastWorkIdx stayed -1, this bailed out,
+      // and the whole timeline sat outside the "Worked for Ns" disclosure instead of tucking
+      // into it.
+      if (children[i].classList.contains('tm-tool-card')
+        || children[i].classList.contains('tm-tool-group')
+        || children[i].classList.contains('tm-reasoning')) lastWorkIdx = i;
     }
     // No tools and no reasoning ran — this is a plain text answer, leave it exactly as is.
     if (lastWorkIdx === -1) return;
@@ -1596,6 +1661,13 @@ const STATE_LABEL = {
   // leaving and restores it for the one we're entering, so each tab keeps its own in-progress
   // message and settings — like separate chat tabs.
   const composerState = new Map(); // sessionId -> { draft, model, mode, reasoning, attachments }
+  /** Bucket for composer state typed BEFORE any session exists. At boot `viewedSessionId` is
+   *  null until the host's first switchSession lands, so anything typed in that window belonged
+   *  to no session and used to be dropped on the floor: it was never saved, and the switch then
+   *  called loadComposer() for a session with no stored draft, which blanked the box — the user
+   *  watched their half-typed message vanish a second after load. It is stashed here instead and
+   *  adopted by whichever session the host opens first (see the switchSession handler). */
+  const PENDING_SESSION = ' pending';
   function saveComposer(id) {
     if (!id) return;
     composerState.set(id, {
@@ -1619,8 +1691,9 @@ const STATE_LABEL = {
     autoGrow();
     updateSendEnabled();
   }
-  // Persist the draft as the user types, so a background switch never loses it.
-  input.addEventListener('input', () => { if (viewedSessionId) saveComposer(viewedSessionId); });
+  // Persist the draft as the user types, so a background switch never loses it. Before the
+  // first session exists it goes to the PENDING_SESSION bucket rather than nowhere.
+  input.addEventListener('input', () => { saveComposer(viewedSessionId || PENDING_SESSION); });
 
   $('#btn-attach').addEventListener('click', () => send({ type: 'attachFromWorkspace' }));
   $('#btn-announcements').addEventListener('click', () => toggleAnnouncements());
@@ -1894,9 +1967,21 @@ const STATE_LABEL = {
       const inputs = (fields || []).map((f) => {
         const lab = document.createElement('label'); lab.className = 'dlg-field';
         const sp = document.createElement('span'); sp.textContent = f.label || '';
-        const inp = document.createElement('input'); inp.type = f.secret ? 'password' : 'text';
-        if (f.placeholder) inp.placeholder = f.placeholder;
-        if (f.value != null) inp.value = f.value;
+        let inp;
+        if (f.type === 'select') {
+          inp = document.createElement('select');
+          (f.options || []).forEach((o) => {
+            const opt = document.createElement('option');
+            opt.value = o.value; opt.textContent = o.label;
+            if (o.value === f.value) opt.selected = true;
+            inp.appendChild(opt);
+          });
+        } else {
+          inp = document.createElement('input');
+          inp.type = f.secret ? 'password' : 'text';
+          if (f.placeholder) inp.placeholder = f.placeholder;
+          if (f.value != null) inp.value = f.value;
+        }
         lab.appendChild(sp); lab.appendChild(inp);
         box.appendChild(lab);
         return inp;
@@ -1910,7 +1995,7 @@ const STATE_LABEL = {
       const done = (val) => { overlay.remove(); document.removeEventListener('keydown', onKey); resolve(val); };
       const onKey = (e) => {
         if (e.key === 'Escape') { e.preventDefault(); done(isForm ? null : false); }
-        else if (e.key === 'Enter' && isForm) { e.preventDefault(); ok.click(); }
+        else if (e.key === 'Enter' && isForm && e.target.tagName !== 'SELECT') { e.preventDefault(); ok.click(); }
       };
       overlay.addEventListener('click', (e) => { if (e.target === overlay) done(isForm ? null : false); });
       cancel.addEventListener('click', () => done(isForm ? null : false));
@@ -2172,7 +2257,7 @@ const STATE_LABEL = {
   // Turn raw tool calls into a human-readable "what the agent is doing" line.
   function upsertTool(t, msg) {
     if (msg.name === 'reasoning') {
-      let block = t.tools.querySelector<HTMLElement>(`[data-tc="${msg.toolCallId}"]`);
+      let block = t.tools.querySelector<HTMLElement>(`[data-tc~="${msg.toolCallId}"]`);
       if (!block) {
         // Born live (streaming) so the block auto-opens and shows "Thinking…" while deltas arrive.
         block = buildReasoningBlock(msg.detail || '', msg.toolCallId, msg.state !== 'done');
@@ -2187,13 +2272,66 @@ const STATE_LABEL = {
       scrollDown();
       return;
     }
-    let card = t.tools.querySelector(`[data-tc="${msg.toolCallId}"]`);
+    // Grouped reads (docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 1): consecutive SAME-TOOL
+    // calls (readFile, readFile, readFile) collapse into one row instead of N cards. toolMsgs is
+    // refreshed on every message regardless of path below, so a group is always rebuilt from
+    // the same data buildToolGroupRow would render for a static replay — the live view can't
+    // drift from what reopening the session would show.
+    t.toolMsgs.set(msg.toolCallId, { name: msg.name, args: msg.args, state: msg.state, durationMs: msg.durationMs });
+    const existingEl = t.tools.querySelector(`[data-tc~="${msg.toolCallId}"]`);
+
+    if (existingEl && existingEl.classList.contains('tm-tool-group-target')) {
+      // An item inside an already-rendered group settled (or is still running) — rebuild the
+      // whole group from the cache rather than hand-patching one span and recomputing an
+      // aggregate status separately; one code path (buildToolGroupRow) is the only thing that
+      // decides what a group looks like, live or replayed.
+      const groupEl = existingEl.closest('.tm-tool-group');
+      const callIds = Array.from(groupEl.querySelectorAll('.tm-tool-group-target')).flatMap((el) => (el.dataset.tc || '').split(' ').filter(Boolean));
+      const items = callIds.map((id) => ({ toolCallId: id, ...t.toolMsgs.get(id) }));
+      const freshGroup = buildToolGroupRow(items);
+      groupEl.replaceWith(freshGroup);
+      if (t.pendingReadGroup && t.pendingReadGroup.el === groupEl) t.pendingReadGroup.el = freshGroup;
+      scrollDown();
+      return;
+    }
+
+    if (!existingEl && GROUPABLE_TOOL_NAMES.has(msg.name) && t.pendingReadGroup && t.pendingReadGroup.name === msg.name) {
+      // A second (or third, ...) consecutive same-tool call extends the run already open.
+      t.pendingReadGroup.callIds.push(msg.toolCallId);
+      const items = t.pendingReadGroup.callIds.map((id) => ({ toolCallId: id, ...t.toolMsgs.get(id) }));
+      const freshGroup = buildToolGroupRow(items);
+      t.pendingReadGroup.el.replaceWith(freshGroup);
+      t.pendingReadGroup.el = freshGroup;
+      scrollDown();
+      return;
+    }
+
+    if (!existingEl && GROUPABLE_TOOL_NAMES.has(msg.name)) {
+      // First call of a brand-new run renders immediately as a 1-item group row — the design
+      // artifact's plain "✓ Read x.tsx · 0.1s" glyph+verb+targets line has no separate "lone
+      // card" variant, so a read that never gets a sibling to group with must not fall back to
+      // the boxed .tm-tool-card treatment just because grouping hasn't "paid off" yet.
+      const items = [{ toolCallId: msg.toolCallId, ...t.toolMsgs.get(msg.toolCallId) }];
+      const groupRow = buildToolGroupRow(items);
+      t.tools.appendChild(groupRow);
+      t.pendingReadGroup = { name: msg.name, el: groupRow, callIds: [msg.toolCallId] };
+      scrollDown();
+      return;
+    }
+
+    // A genuinely new NON-groupable call breaks whatever run was open (an edit/write/command
+    // between two reads breaks the "consecutive" requirement). Groupable calls never reach
+    // here — new ones return above, updates to an existing one are handled by the
+    // `.tm-tool-group-target` branch above — so this can reset unconditionally.
+    if (!existingEl) t.pendingReadGroup = null;
+
+    let card = t.tools.querySelector(`[data-tc~="${msg.toolCallId}"]`);
     if (!card) {
       // Create AI Elements-style tool card structure
       card = document.createElement('div');
       card.className = 'tm-tool-card';
       card.dataset.tc = msg.toolCallId;
-      
+
       // AI Elements header structure
       const header = document.createElement('div');
       header.className = 'tm-tool-card-header';
@@ -2203,24 +2341,21 @@ const STATE_LABEL = {
           <span class="tm-tool-card-title"></span>
           <span class="tm-tool-card-hint"></span>
         </div>
-        <div class="tm-tool-card-status">
-          <div class="tm-tool-card-state"></div>
-          <span class="tm-tool-card-state-label"></span>
-        </div>
+        <span class="tm-tool-card-duration"></span>
         <span class="tm-tool-card-chevron" aria-hidden="true">▾</span>
         <div class="tm-tool-card-actions"></div>
       `;
-      
+
       // AI Elements body structure
       const body = document.createElement('div');
       body.className = 'tm-tool-card-body hidden';
       body.innerHTML = `<pre class="tm-tool-card-output"></pre>`;
-      
+
       card.appendChild(header);
       card.appendChild(body);
       t.tools.appendChild(card);
     }
-    
+
     const { icon, title, hint } = toolLabel(msg.name, msg.args, msg.detail, msg.state);
     
     // Update AI Elements header
@@ -2229,13 +2364,15 @@ const STATE_LABEL = {
     const hintEl = card.querySelector('.tm-tool-card-hint');
     if (hintEl) hintEl.textContent = hint || '';
     
-    // Update AI Elements state
-    const stateLabel = STATE_LABEL[msg.state] || msg.state;
-    card.querySelector('.tm-tool-card-state-label').textContent = stateLabel;
-    const stateEl = card.querySelector('.tm-tool-card-state');
-    stateEl.className = `tm-tool-card-state ${msg.state}`;
-    const icon2 = STATE_ICON[msg.state];
-    stateEl.textContent = icon2 || '';
+    // No text state badge — state is conveyed by colour alone (the icon and the card's own
+    // left rail recolor per state, driven by the `tm-tool-card ${state}` class set below).
+    // "· 0.4s" beside the icon (docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 3) —
+    // only once settled; durationMs is absent while running.
+    const durEl = card.querySelector('.tm-tool-card-duration');
+    if (durEl) {
+      durEl.textContent = msg.durationMs && (msg.state === 'done' || msg.state === 'error')
+        ? `· ${fmtToolDuration(msg.durationMs)}` : '';
+    }
     
     // State class on card for styling
     const isValidation = msg.name === 'runCommand' && /\b(tsc|eslint|prettier|lint|typecheck|check|jest|vitest|mocha|pytest|go\s+test|cargo\s+(check|test)|npm\s+test|yarn\s+test|pnpm\s+test)\b/.test(
@@ -2252,11 +2389,11 @@ const STATE_LABEL = {
     const editArgs = isEdit && msg.args && typeof msg.args === 'object' ? msg.args : null;
     
     let hasBody = false;
-    if (editArgs && editArgs.old_string != null && editArgs.new_string != null) {
+    const editDiff = isEdit ? editDiffArgs(editArgs) : null;
+    if (editDiff) {
       // Threshold-gated unified diff (same builder the static card uses — live == replay).
       pre.textContent = '';
-      body.replaceWith(buildEditDiff(String(editArgs.old_string), String(editArgs.new_string),
-        typeof editArgs.path === 'string' ? editArgs.path : undefined));
+      body.replaceWith(buildEditDiff(editDiff.before, editDiff.after, editDiff.path));
       hasBody = true;
     } else if (msg.detail) {
       pre.className = 'tm-tool-card-output';
@@ -2283,6 +2420,21 @@ const STATE_LABEL = {
       existingProgress.remove();
     }
     
+    // Errors open themselves once — matching AI Elements' output-error default (see
+    // docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 7) — but only the FIRST time a call
+    // lands in 'error', so a user who deliberately collapses it isn't fought back open on
+    // every subsequent upsert for the same toolCallId (e.g. a later unrelated re-render).
+    if (msg.state === 'error' && hasBody && !card.dataset.errorAutoOpened) {
+      card.dataset.errorAutoOpened = '1';
+      body.classList.add('open');
+    }
+    // An applied edit opens itself too (same one-time rule): it is the one step that changed
+    // the user's code, and a diff behind a click is a change they never actually saw. Mirrors
+    // buildToolCard's static path so a replayed session shows exactly what the live one did.
+    if (isEdit && hasBody && msg.state !== 'running' && !card.dataset.editAutoOpened) {
+      card.dataset.editAutoOpened = '1';
+      card.classList.add('open');
+    }
     // Toggle card class for expanded state
     if (body.classList.contains('open')) {
       card.classList.add('open');
@@ -2337,45 +2489,68 @@ const STATE_LABEL = {
   let mcpSearchTimer;
   // MCP Add/Edit form state: null = closed, '' = new server, or the name being edited.
   let mcpFormOpenFor = null;
+  /** Add-custom-endpoint inline form. One flow: fill the fields → "Save & fetch models" creates
+   *  the endpoint and asks it for /models → tick the ones you want (with role tags) → "Add
+   *  selected models". `phase` drives which half of the form is on screen; `endpointId` is
+   *  filled in once the host confirms the created endpoint (matched by name in the next config
+   *  push, since addCustomEndpoint has no reply of its own). */
+  let cfForm = null; // null = closed, else { name, url, type, key, phase, error, endpointId, models }
+  const CF_TAGS = [
+    { id: 'coding', label: 'Coder' },
+    { id: 'planner', label: 'Planner' },
+    { id: 'reasoner', label: 'Reasoner' },
+    { id: 'vision', label: 'Vision' },
+  ];
   function renderSettings() {
     settingsEl.innerHTML = '';
     const bar = document.createElement('div');
     bar.className = 'settings-bar';
     bar.innerHTML = '<b>Settings</b>';
     const back = document.createElement('button');
-    back.className = 'secondary';
-    back.textContent = '← Back to chat';
+    back.type = 'button';
+    back.className = 'ghost-btn';
+    back.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg><span>Back to chat</span>';
     back.addEventListener('click', toggleSettings);
     bar.appendChild(back);
     settingsEl.append(bar);
 
-    // Filter box for the current tab (providers/models or MCP servers).
+    // Filter box for the current tab (providers/models or MCP servers). It lives INSIDE the
+    // content column (appended below, after the layout is built), not above the whole panel:
+    // it only ever filters that column's list, so spanning the nav as well implied it searched
+    // the tabs too — and it now sizes to the list it actually filters.
     const search = document.createElement('input');
     search.type = 'text';
     search.className = 'settings-search';
     search.placeholder = settingsTab === 'mcp' ? 'Search MCP servers…' : 'Search providers & models…';
-    if (settingsTab === 'others' || settingsTab === 'usage') search.style.display = 'none';
     search.addEventListener('input', () => {
       const q = search.value.trim().toLowerCase();
-      settingsContentEl.querySelectorAll('.provider-card, .registry-row').forEach((el) => {
+      settingsContentEl.querySelectorAll('.provider-card, .mcp-server, .registry-card2').forEach((el) => {
         el.style.display = !q || el.textContent.toLowerCase().includes(q) ? '' : 'none';
       });
     });
-    settingsEl.append(search);
 
     const layout = document.createElement('div');
     layout.className = 'settings-layout';
     const nav = document.createElement('div');
     nav.className = 'settings-nav';
-    [['providers', 'Providers'], ['mcp', 'MCP'], ['usage', 'Usage'], ['others', 'Others']].forEach((pair) => {
+    // Icon + label per tab (the label alone made the nav read as a plain link list).
+    const svg = (paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+    [
+      ['providers', 'Providers', svg('<rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/>')],
+      ['mcp', 'MCP', svg('<circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9v3a3 3 0 0 1-3 3H9"/>')],
+      ['usage', 'Usage', svg('<line x1="6" y1="20" x2="6" y2="14"/><line x1="12" y1="20" x2="12" y2="8"/><line x1="18" y1="20" x2="18" y2="11"/>')],
+      ['others', 'Others', svg('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>')],
+    ].forEach(([tab, label, icon]) => {
       const b = document.createElement('button');
-      b.className = 'nav-item' + (settingsTab === pair[0] ? ' active' : '');
-      b.textContent = pair[1];
-      b.addEventListener('click', () => { settingsTab = pair[0]; renderSettings(); });
+      b.className = 'nav-item' + (settingsTab === tab ? ' active' : '');
+      b.innerHTML = `${icon}<span>${label}</span>`;
+      b.addEventListener('click', () => { settingsTab = tab; renderSettings(); });
       nav.appendChild(b);
     });
     settingsContentEl = document.createElement('div');
     settingsContentEl.className = 'settings-content';
+    // Only the list-shaped tabs have anything to filter; Usage/Others are single forms.
+    if (settingsTab === 'providers' || settingsTab === 'mcp') settingsContentEl.appendChild(search);
     layout.appendChild(nav);
     layout.appendChild(settingsContentEl);
     settingsEl.append(layout);
@@ -2467,83 +2642,99 @@ const STATE_LABEL = {
 
     const settings = state.settings || {};
     const settingsMeta = state.settingsMeta || [];
-    let lastSection = '';
+
+    // Group first, render second — a single linear pass that opens a new header whenever
+    // `key.split('.')[0]` changes breaks two ways: a dot-less key (requestTimeoutMs, hedging,
+    // hedgeDelayMs, rateLimitCooldownMs) IS its own section name, so each got its own ugly
+    // one-row "Hedging"/"HedgeDelayMs" header; and once those ran, the next dotted key (e.g.
+    // agent.toolCompaction) no longer matched `lastSection`, so a SECOND "Agent" header
+    // appeared further down, splitting Agent settings into two non-adjacent groups (live
+    // repro: settingsMeta order interleaves dot-less keys between two runs of `agent.*` keys).
+    // Grouping into a Map first guarantees each section header renders exactly once,
+    // regardless of how the source array orders its entries, and dot-less keys share one
+    // "Advanced" bucket instead of each minting their own section.
+    const groups = new Map();
     for (const meta of settingsMeta) {
-      const section = meta.key.split('.')[0];
-      if (section !== lastSection) {
-        lastSection = section;
-        const sg = el('div', 'setting-group');
-        sg.textContent = section.charAt(0).toUpperCase() + section.slice(1);
-        wrap.append(sg);
-      }
-      const value = settings[meta.key] !== undefined ? settings[meta.key] : defaultFor(meta);
-      const row = el('div', 'setting-row');
+      const section = meta.key.includes('.') ? meta.key.split('.')[0] : 'advanced';
+      if (!groups.has(section)) groups.set(section, []);
+      groups.get(section).push(meta);
+    }
 
-      const left = el('div', 'setting-left');
-      const lbl = el('div', 'setting-label');
-      lbl.textContent = meta.label;
-      const dsc = el('div', 'setting-desc');
-      dsc.textContent = meta.desc;
-      left.append(lbl, dsc);
-      row.append(left);
+    for (const [section, metas] of groups) {
+      const sg = el('div', 'setting-group');
+      sg.textContent = section.charAt(0).toUpperCase() + section.slice(1);
+      wrap.append(sg);
 
-      if (meta.type === 'boolean') {
-        const sw = renderToggle(value, (checked) => {
-          send({ type: 'setExtensionSetting', key: meta.key, value: checked });
-        });
-        row.append(sw);
-      } else if (meta.type === 'enum') {
-        const sel = document.createElement('select');
-        (meta.enum || []).forEach((opt) => {
-          const o = document.createElement('option');
-          o.value = opt; o.textContent = opt;
-          if (opt === value) o.selected = true;
-          sel.appendChild(o);
-        });
-        sel.addEventListener('change', () => {
-          send({ type: 'setExtensionSetting', key: meta.key, value: sel.value });
-        });
-        row.append(sel);
-      } else if (meta.type === 'number') {
-        const inp = document.createElement('input');
-        inp.type = 'number';
-        inp.value = String(value ?? 0);
-        if (meta.min !== undefined) inp.min = String(meta.min);
-        if (meta.max !== undefined) inp.max = String(meta.max);
-        if (meta.step !== undefined) inp.step = String(meta.step);
-        // Debounced save on blur + immediate preview on input
-        let saveTimer;
-        inp.addEventListener('input', () => {
-          clearTimeout(saveTimer);
-          saveTimer = setTimeout(() => {
+      for (const meta of metas) {
+        const value = settings[meta.key] !== undefined ? settings[meta.key] : defaultFor(meta);
+        const row = el('div', 'setting-row');
+
+        const left = el('div', 'setting-left');
+        const lbl = el('div', 'setting-label');
+        lbl.textContent = meta.label;
+        const dsc = el('div', 'setting-desc');
+        dsc.textContent = meta.desc;
+        left.append(lbl, dsc);
+        row.append(left);
+
+        if (meta.type === 'boolean') {
+          const sw = renderToggle(value, (checked) => {
+            send({ type: 'setExtensionSetting', key: meta.key, value: checked });
+          });
+          row.append(sw);
+        } else if (meta.type === 'enum') {
+          const sel = document.createElement('select');
+          (meta.enum || []).forEach((opt) => {
+            const o = document.createElement('option');
+            o.value = opt; o.textContent = opt;
+            if (opt === value) o.selected = true;
+            sel.appendChild(o);
+          });
+          sel.addEventListener('change', () => {
+            send({ type: 'setExtensionSetting', key: meta.key, value: sel.value });
+          });
+          row.append(sel);
+        } else if (meta.type === 'number') {
+          const inp = document.createElement('input');
+          inp.type = 'number';
+          inp.value = String(value ?? 0);
+          if (meta.min !== undefined) inp.min = String(meta.min);
+          if (meta.max !== undefined) inp.max = String(meta.max);
+          if (meta.step !== undefined) inp.step = String(meta.step);
+          // Debounced save on blur + immediate preview on input
+          let saveTimer;
+          inp.addEventListener('input', () => {
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(() => {
+              const v = inp.value === '' ? 0 : Number(inp.value);
+              send({ type: 'setExtensionSetting', key: meta.key, value: v });
+            }, 400);
+          });
+          inp.addEventListener('blur', () => {
+            clearTimeout(saveTimer);
             const v = inp.value === '' ? 0 : Number(inp.value);
             send({ type: 'setExtensionSetting', key: meta.key, value: v });
-          }, 400);
-        });
-        inp.addEventListener('blur', () => {
-          clearTimeout(saveTimer);
-          const v = inp.value === '' ? 0 : Number(inp.value);
-          send({ type: 'setExtensionSetting', key: meta.key, value: v });
-        });
-        row.append(inp);
-      } else { // string
-        const inp = document.createElement('input');
-        inp.type = 'text';
-        inp.value = String(value ?? '');
-        let saveTimer;
-        inp.addEventListener('input', () => {
-          clearTimeout(saveTimer);
-          saveTimer = setTimeout(() => {
+          });
+          row.append(inp);
+        } else { // string
+          const inp = document.createElement('input');
+          inp.type = 'text';
+          inp.value = String(value ?? '');
+          let saveTimer;
+          inp.addEventListener('input', () => {
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(() => {
+              send({ type: 'setExtensionSetting', key: meta.key, value: inp.value });
+            }, 400);
+          });
+          inp.addEventListener('blur', () => {
+            clearTimeout(saveTimer);
             send({ type: 'setExtensionSetting', key: meta.key, value: inp.value });
-          }, 400);
-        });
-        inp.addEventListener('blur', () => {
-          clearTimeout(saveTimer);
-          send({ type: 'setExtensionSetting', key: meta.key, value: inp.value });
-        });
-        row.append(inp);
+          });
+          row.append(inp);
+        }
+        wrap.append(row);
       }
-      wrap.append(row);
     }
     settingsContentEl.appendChild(wrap);
   }
@@ -2585,17 +2776,16 @@ const STATE_LABEL = {
     const usageWrap = document.createElement('div');
     usageWrap.className = 'usage-data-section';
     usageWrap.id = 'usage-data-section';
-    const usageTitle = document.createElement('div');
-    usageTitle.className = 'others-title';
-    usageTitle.textContent = 'Usage data';
+    // One quiet intro line, no bold "Usage data" heading above it — the nav tab already says
+    // Usage, so a second title just repeated it.
     const usageDesc = document.createElement('div');
-    usageDesc.className = 'others-desc';
-    usageDesc.textContent = 'Lifetime token totals (persisted across sessions) and an estimated dollar amount you saved by using free tiers. Cleared manually only.';
+    usageDesc.className = 'set-desc';
+    usageDesc.textContent = 'Lifetime usage, tracked locally — cleared only when you ask.';
     const usageStats = document.createElement('div');
     usageStats.className = 'usage-stats';
     usageStats.id = 'usage-stats-card';
     const usageClear = document.createElement('button');
-    usageClear.className = 'secondary';
+    usageClear.className = 'danger-btn';
     usageClear.id = 'usage-clear-btn';
     usageClear.textContent = 'Clear usage data';
     usageClear.title = 'Reset the lifetime token and $ saved counters. This cannot be undone.';
@@ -2606,12 +2796,212 @@ const STATE_LABEL = {
       usageClear.textContent = 'Clearing…';
       send({ type: 'clearUsage' });
     });
-    usageWrap.append(usageTitle, usageDesc, usageStats, usageClear);
+    usageWrap.append(usageDesc, usageStats, usageClear);
     settingsContentEl.appendChild(usageWrap);
     // Card was just built; populate it from the last known lifetime values
     // (the `config`/`usageTotals` messages update this same cache, so re-rendering
     // the tab while the user has it open still shows fresh numbers).
     renderUsageStatsCard();
+  }
+
+  /** The inline "add custom endpoint" form (see cfForm). Rebuilt from `cfForm` on every
+   *  render — field edits write straight back into that object, so a re-render (a config push
+   *  landing mid-typing, say) never loses what was typed. */
+  function buildCustomEndpointForm() {
+    const form = el('div', 'custom-form');
+
+    const field = (labelHtml, input) => {
+      const f = el('div', 'cf-field');
+      const lab = document.createElement('label');
+      lab.innerHTML = labelHtml;
+      f.append(lab, input);
+      return f;
+    };
+    const textInput = (value, placeholder, onInput, type) => {
+      const i = document.createElement('input');
+      i.type = type || 'text';
+      i.value = value || '';
+      i.placeholder = placeholder;
+      i.addEventListener('input', () => onInput(i.value));
+      return i;
+    };
+
+    form.appendChild(field('Name', textInput(cfForm.name, 'e.g. My local vLLM', (v) => { cfForm.name = v; })));
+    form.appendChild(field('Base URL', textInput(cfForm.url, 'https://api.example.com/v1', (v) => { cfForm.url = v; })));
+
+    // Protocol — three real wire protocols; the pick decides which provider class sends the
+    // request (resolveProvider in src/providers/index.ts), not just a label.
+    const typeField = el('div', 'cf-field');
+    const typeLabel = document.createElement('label');
+    typeLabel.textContent = 'Type';
+    const cards = el('div', 'cf-type-cards');
+    cards.setAttribute('role', 'radiogroup');
+    cards.setAttribute('aria-label', 'Endpoint type');
+    [
+      {
+        id: 'openai-chat', name: 'OpenAI-style', tag: 'Most common',
+        desc: 'Works with OpenAI itself, and almost every OpenAI-compatible gateway or local runtime — Ollama, LM Studio, vLLM, OpenRouter.',
+        icon: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+      },
+      {
+        id: 'openai-responses', name: 'OpenAI-style (newer)', tag: '',
+        desc: "For endpoints that only speak OpenAI's newer Responses format, not the classic chat format above.",
+        icon: '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>',
+      },
+      {
+        id: 'anthropic-messages', name: 'Anthropic-style', tag: '',
+        desc: 'For Claude-compatible endpoints — uses a different key header than the two options above.',
+        icon: '<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>',
+      },
+    ].forEach((t) => {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'cf-type-card' + (cfForm.type === t.id ? ' active' : '');
+      card.setAttribute('role', 'radio');
+      card.setAttribute('aria-checked', cfForm.type === t.id ? 'true' : 'false');
+      card.innerHTML = `
+        <span class="cti"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${t.icon}</svg></span>
+        <span class="ctb">
+          <span class="ctname">${escapeHtml(t.name)}${t.tag ? `<span class="cttag">${escapeHtml(t.tag)}</span>` : ''}</span>
+          <span class="ctdesc">${escapeHtml(t.desc)}</span>
+        </span>
+        <span class="ctr"></span>`;
+      card.addEventListener('click', () => { cfForm.type = t.id; renderSettings(); });
+      cards.appendChild(card);
+    });
+    typeField.append(typeLabel, cards);
+    form.appendChild(typeField);
+
+    form.appendChild(field(
+      'API Key <span class="cf-label-note">(optional — leave blank for keyless)</span>',
+      textInput(cfForm.key, 'Paste key here', (v) => { cfForm.key = v; }, 'password'),
+    ));
+
+    const fetching = cfForm.phase === 'fetching';
+    const fetchBtn = document.createElement('button');
+    fetchBtn.type = 'button';
+    fetchBtn.className = 'cf-fetch-btn' + (fetching ? ' loading' : '');
+    fetchBtn.disabled = fetching;
+    fetchBtn.innerHTML = `<i class="cf-fetch-ring"></i><span>${fetching ? 'Fetching…' : 'Save &amp; fetch models'}</span>`;
+    fetchBtn.addEventListener('click', () => {
+      const name = (cfForm.name || '').trim();
+      const url = (cfForm.url || '').trim();
+      if (!name) { cfForm.error = 'Give the endpoint a name.'; renderSettings(); return; }
+      if (!/^https?:\/\/.+/i.test(url)) { cfForm.error = 'Base URL must start with http:// or https://'; renderSettings(); return; }
+      cfForm.error = '';
+      cfForm.phase = 'fetching';
+      cfForm.pendingName = name;
+      // The host has no reply for addCustomEndpoint — the created endpoint is picked up from
+      // the next config push by matching this name (see the config handler).
+      send({ type: 'addCustomEndpoint', name, baseUrl: url, endpointType: cfForm.type });
+      renderSettings();
+    });
+    form.appendChild(fetchBtn);
+
+    if (cfForm.error) {
+      const err = el('div', 'cf-error');
+      err.textContent = cfForm.error;
+      form.appendChild(err);
+    }
+
+    if (cfForm.phase === 'models') {
+      form.appendChild(buildCustomEndpointModelList());
+    }
+    return form;
+  }
+
+  /** The "Models found" half of the add-endpoint form: every id the endpoint reported, each
+   *  with role tags. A fetched model is just an id string — nothing in a /models response says
+   *  what it is good at — so the tags are the user's answer to that, and routing reads them
+   *  the same way it reads a catalog model's own tags. */
+  function buildCustomEndpointModelList() {
+    const wrap = el('div', 'cf-models');
+    const selected = cfForm.models.filter((m) => m.selected).length;
+
+    const head = el('div', 'cf-models-head');
+    const title = el('span', 'cfmh-title');
+    title.textContent = 'Models found';
+    const count = el('span', 'cfmh-count');
+    count.textContent = `${selected} of ${cfForm.models.length} selected`;
+    head.append(title, count);
+    wrap.appendChild(head);
+
+    const note = el('div', 'cf-models-note');
+    note.textContent = "A custom endpoint doesn't tell us what each model is good at — tag any that apply so routing can use them.";
+    wrap.appendChild(note);
+
+    if (!cfForm.models.length) {
+      const empty = el('div', 'muted');
+      empty.textContent = 'The endpoint returned no models. You can still add model IDs by hand after saving.';
+      wrap.appendChild(empty);
+    }
+
+    const list = el('div', 'cf-models-list');
+    cfForm.models.forEach((m) => {
+      const row = el('div', 'cf-model-row');
+      const main = document.createElement('label');
+      main.className = 'cf-model-main';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = m.selected;
+      cb.addEventListener('change', () => { m.selected = cb.checked; renderSettings(); });
+      const name = document.createElement('span');
+      name.textContent = m.id;
+      main.append(cb, name);
+      row.appendChild(main);
+
+      const tags = el('div', 'cf-model-tags');
+      CF_TAGS.forEach((t) => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'cf-tag' + (m.tags.includes(t.id) ? ' on' : '');
+        chip.textContent = t.label;
+        chip.addEventListener('click', () => {
+          const i = m.tags.indexOf(t.id);
+          if (i >= 0) m.tags.splice(i, 1); else m.tags.push(t.id);
+          chip.classList.toggle('on');
+        });
+        tags.appendChild(chip);
+      });
+      row.appendChild(tags);
+      list.appendChild(row);
+    });
+    wrap.appendChild(list);
+
+    const actions = el('div', 'cf-actions-row');
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'cf-save-btn';
+    saveBtn.textContent = 'Add selected models';
+    saveBtn.disabled = selected === 0;
+    saveBtn.addEventListener('click', () => {
+      cfForm.models.filter((m) => m.selected).forEach((m) => {
+        send({
+          type: 'addCustomModel',
+          endpointId: cfForm.endpointId,
+          modelId: m.id,
+          tags: m.tags.slice(),
+          // The two tags that map onto a real capability boolean also set it, so routing's
+          // hard gates (vision turns, reasoning effort) agree with what the user ticked.
+          supportsVision: m.tags.includes('vision') || undefined,
+          supportsReasoning: m.tags.includes('reasoner') || undefined,
+        });
+      });
+      cfForm = null;
+      renderSettings();
+    });
+    const toggleAll = document.createElement('button');
+    toggleAll.type = 'button';
+    toggleAll.className = 'cf-ghost-btn';
+    const allOn = selected === cfForm.models.length && cfForm.models.length > 0;
+    toggleAll.textContent = allOn ? 'Deselect all' : 'Select all';
+    toggleAll.addEventListener('click', () => {
+      cfForm.models.forEach((m) => { m.selected = !allOn; });
+      renderSettings();
+    });
+    actions.append(saveBtn, toggleAll);
+    wrap.appendChild(actions);
+    return wrap;
   }
 
   function renderProviders() {
@@ -2692,8 +3082,10 @@ const STATE_LABEL = {
         : p.status === 'rate_limited' ? 'rate_limited' : 'healthy';
       const isOpen = expandedProviders.has(p.platform);
       const keyCount = p.keyCount || 0;
-      const keyStatusText = p.keyless ? 'keyless'
-        : keyCount > 1 ? `${keyCount} keys · rotating`
+      // A rotation-pool count reads as a real badge, not just plain text — a glance should
+      // tell you "this provider has more than one key" without opening it.
+      const keyStatusHtml = p.keyless ? 'keyless'
+        : keyCount > 1 ? `<span class="prov-badge" title="${keyCount} keys in the rotation pool">${keyCount}</span> keys`
         : keyCount === 1 ? 'key set'
         : 'no key';
       const keyBtnText = p.keyless ? 'Keyless'
@@ -2709,7 +3101,7 @@ const STATE_LABEL = {
       head.innerHTML = `
         <span class="status-dot status-${dotClass}"></span>
         <span class="provider-name">${escapeHtml(p.name)}</span>
-        <span class="muted prov-status">${keyStatusText}</span>
+        <span class="muted prov-status">${keyStatusHtml}</span>
         <button class="icon-btn prov-key-btn" data-platform="${p.platform}" title="${keyBtnTitle}">${keyBtnText}</button>
         <span class="chev">${isOpen ? '▾' : '▸'}</span>`;
 
@@ -2753,32 +3145,45 @@ const STATE_LABEL = {
         });
       }
 
-      // Endpoint
-      const epInput = document.createElement('input');
-      epInput.type = 'text';
-      epInput.className = 'endpoint';
-      epInput.placeholder = p.defaultBaseUrl || '';
-      epInput.value = p.endpoint || '';
-      body.appendChild(epInput);
-      const epRow = document.createElement('div');
-      epRow.className = 'row-actions';
-      epRow.style.marginTop = '4px';
-      const saveEp = document.createElement('button');
-      saveEp.className = 'secondary';
-      saveEp.textContent = 'Save URL';
-      saveEp.addEventListener('click', () => {
-        const url = epInput.value.trim();
-        if (url && !/^https?:\/\/.+/i.test(url)) { card.classList.add('invalid'); return; }
-        card.classList.remove('invalid');
-        send({ type: 'setEndpoint', platform: p.platform, url });
-      });
-      const resetEp = document.createElement('button');
-      resetEp.className = 'icon-btn';
-      resetEp.textContent = 'Reset';
-      resetEp.addEventListener('click', () => { epInput.value = ''; send({ type: 'resetEndpoint', platform: p.platform }); });
-      epRow.appendChild(saveEp);
-      epRow.appendChild(resetEp);
-      body.appendChild(epRow);
+      // Base-URL override — NOT shown by default. A built-in provider's URL is resolved
+      // remotely (upsertCompatFromCatalog refreshes it from the catalog's /providers payload,
+      // cached for offline), and Cloudflare builds its own from the Account ID below, so
+      // typing one is never part of normal setup — it was pure chrome on every row.
+      // It still renders when an override IS stored, because router.ts keeps applying it
+      // (baseUrlOverride) — hiding it outright would leave a saved URL silently in force with
+      // no way to see or clear it.
+      if (p.endpoint) {
+        const epLabel = el('div', 'muted');
+        epLabel.textContent = 'Base URL override (custom — remote default is not in use)';
+        epLabel.style.marginBottom = '4px';
+        body.appendChild(epLabel);
+        const epInput = document.createElement('input');
+        epInput.type = 'text';
+        epInput.className = 'endpoint';
+        epInput.placeholder = p.defaultBaseUrl || '';
+        epInput.value = p.endpoint;
+        body.appendChild(epInput);
+        const epRow = document.createElement('div');
+        epRow.className = 'row-actions';
+        epRow.style.marginTop = '4px';
+        const saveEp = document.createElement('button');
+        saveEp.className = 'secondary';
+        saveEp.textContent = 'Save URL';
+        saveEp.addEventListener('click', () => {
+          const url = epInput.value.trim();
+          if (url && !/^https?:\/\/.+/i.test(url)) { card.classList.add('invalid'); return; }
+          card.classList.remove('invalid');
+          send({ type: 'setEndpoint', platform: p.platform, url });
+        });
+        const resetEp = document.createElement('button');
+        resetEp.className = 'icon-btn';
+        resetEp.textContent = 'Use default';
+        resetEp.title = 'Drop the override and go back to the remotely-resolved URL';
+        resetEp.addEventListener('click', () => { epInput.value = ''; send({ type: 'resetEndpoint', platform: p.platform }); });
+        epRow.appendChild(saveEp);
+        epRow.appendChild(resetEp);
+        body.appendChild(epRow);
+      }
 
       // Cloudflare: Account ID (separate from API token)
       if (p.platform === 'cloudflare') {
@@ -2970,33 +3375,37 @@ const STATE_LABEL = {
     // ============ CUSTOM ENDPOINTS SECTION ============
     const customEndpoints = (state.customEndpoints || []);
     if (customEndpoints.length > 0 || true) { // Always show the section
+      const headRow = el('div', 'cf-head-row');
+      headRow.style.marginTop = '24px';
       const sectionTitle = document.createElement('div');
       sectionTitle.className = 'section-title';
-      sectionTitle.style.marginTop = '24px';
-      sectionTitle.style.marginBottom = '8px';
-      sectionTitle.textContent = 'Custom endpoints (OpenAI-compatible)';
-      settingsContentEl.appendChild(sectionTitle);
+      sectionTitle.style.margin = '0';
+      sectionTitle.textContent = 'Custom Endpoints';
+      headRow.appendChild(sectionTitle);
+      if (cfForm) {
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'cf-cancel';
+        cancel.innerHTML = '✕ Cancel';
+        cancel.addEventListener('click', () => { cfForm = null; renderSettings(); });
+        headRow.appendChild(cancel);
+      }
+      settingsContentEl.appendChild(headRow);
 
-      const addBtn = document.createElement('button');
-      addBtn.className = 'secondary';
-      addBtn.textContent = '+ Add custom endpoint';
-      addBtn.style.marginBottom = '16px';
-      addBtn.addEventListener('click', async () => {
-        const res = await inlineDialog({
-          title: 'Add custom endpoint',
-          fields: [
-            { label: 'Name', placeholder: 'e.g., vLLM, My LiteLLM' },
-            { label: 'Base URL', placeholder: 'http://localhost:8000/v1' },
-          ],
-          okLabel: 'Add',
+      if (!cfForm) {
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'custom-add-row';
+        addBtn.style.marginTop = '8px';
+        addBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add custom endpoint';
+        addBtn.addEventListener('click', () => {
+          cfForm = { name: '', url: '', type: 'openai-chat', key: '', phase: 'form', error: '', endpointId: null, models: [] };
+          renderSettings();
         });
-        if (!res) return;
-        const name = (res[0] || '').trim();
-        const url = (res[1] || '').trim();
-        if (!name || !url) return;
-        send({ type: 'addCustomEndpoint', name, baseUrl: url });
-      });
-      settingsContentEl.appendChild(addBtn);
+        settingsContentEl.appendChild(addBtn);
+      } else {
+        settingsContentEl.appendChild(buildCustomEndpointForm());
+      }
 
       customEndpoints.forEach((ep) => {
         const card = document.createElement('div');
@@ -3004,11 +3413,13 @@ const STATE_LABEL = {
 
         const isOpen = expandedProviders.has('custom_' + ep.id);
         const keyStatusText = ep.configured ? 'key set' : 'no key';
+        const protocolLabel = ep.type === 'anthropic-messages' ? 'Anthropic Messages' : ep.type === 'openai-responses' ? 'OpenAI Responses' : 'OpenAI Chat';
         const head = document.createElement('div');
         head.className = 'provider-head';
         head.innerHTML = `
           <span class="status-dot status-${ep.configured ? 'healthy' : 'missing'}"></span>
           <span class="provider-name">${escapeHtml(ep.name)}</span>
+          <span class="ep-protocol-tag">${protocolLabel}</span>
           <span class="muted prov-models-title">${ep.modelCount} model${ep.modelCount === 1 ? '' : 's'}</span>
           <span class="chev">${isOpen ? '▾' : '▸'}</span>
         `;
@@ -3074,6 +3485,39 @@ const STATE_LABEL = {
         epRow.appendChild(resetEp);
         body.appendChild(epRow);
 
+        // Protocol select + Save — most endpoints are Chat Completions and never touch this,
+        // but a wire-protocol mismatch here is a silent-failure trap (every request 404s or
+        // 401s in a way that reads exactly like a bad key), so it stays editable after creation
+        // rather than locked in at add-time.
+        const protoRow = document.createElement('div');
+        protoRow.className = 'row-actions';
+        protoRow.style.marginTop = '8px';
+        protoRow.style.alignItems = 'center';
+        const protoLabel = document.createElement('span');
+        protoLabel.className = 'muted';
+        protoLabel.textContent = 'Protocol: ';
+        const protoSelect = document.createElement('select');
+        [
+          { value: 'openai-chat', label: 'OpenAI — Chat Completions' },
+          { value: 'openai-responses', label: 'OpenAI — Responses API' },
+          { value: 'anthropic-messages', label: 'Anthropic — Messages API' },
+        ].forEach((o) => {
+          const opt = document.createElement('option');
+          opt.value = o.value; opt.textContent = o.label;
+          if ((ep.type || 'openai-chat') === o.value) opt.selected = true;
+          protoSelect.appendChild(opt);
+        });
+        const saveProto = document.createElement('button');
+        saveProto.className = 'secondary';
+        saveProto.textContent = 'Save';
+        saveProto.addEventListener('click', () => {
+          send({ type: 'updateCustomEndpoint', id: ep.id, endpointType: protoSelect.value });
+        });
+        protoRow.appendChild(protoLabel);
+        protoRow.appendChild(protoSelect);
+        protoRow.appendChild(saveProto);
+        body.appendChild(protoRow);
+
         // Key status + Set/Update/Clear button
         const keyRow = document.createElement('div');
         keyRow.style.marginTop = '8px';
@@ -3128,6 +3572,7 @@ const STATE_LABEL = {
         epModels.forEach((e) => {
           const idx = entries.findIndex((x) => x.platform === e.platform && x.modelId === e.modelId);
           const upstreamId = e.modelId.split('::').slice(1).join('::');
+          const modelMeta = (ep.models || []).find((cm) => cm.modelId === upstreamId) || {};
           const row = document.createElement('div');
           row.className = 'pm-row';
           const cb = document.createElement('input');
@@ -3137,6 +3582,33 @@ const STATE_LABEL = {
           const info = document.createElement('div');
           info.className = 'pm-info';
           info.innerHTML = `<div class="pm-name">${escapeHtml(upstreamId)}</div>`;
+
+          // Capability ticks — a custom endpoint has no catalog entry to learn Tools/Vision/
+          // Reasoning support from (see Router.customModelCaps), so the router trusts exactly
+          // what's ticked here. Tools defaults ON (most OpenAI/Anthropic-compatible endpoints
+          // support tool calling); Vision/Reasoning default OFF until the user confirms them.
+          const caps = document.createElement('div');
+          caps.className = 'custom-model-caps';
+          [
+            { key: 'supportsTools', label: 'T', title: 'Tools', on: modelMeta.supportsTools !== false },
+            { key: 'supportsVision', label: 'V', title: 'Vision', on: !!modelMeta.supportsVision },
+            { key: 'supportsReasoning', label: 'R', title: 'Reasoning', on: !!modelMeta.supportsReasoning },
+          ].forEach((def) => {
+            const tick = document.createElement('button');
+            tick.type = 'button';
+            tick.className = 'cap-tick' + (def.on ? ' on' : '');
+            tick.textContent = def.label;
+            tick.title = `${def.title} — ${def.on ? 'supported' : 'not supported'} (click to toggle)`;
+            tick.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              const next = !tick.classList.contains('on');
+              tick.classList.toggle('on', next);
+              tick.title = `${def.title} — ${next ? 'supported' : 'not supported'} (click to toggle)`;
+              send({ type: 'setCustomModelCaps', endpointId: ep.id, modelId: upstreamId, [def.key]: next });
+            });
+            caps.appendChild(tick);
+          });
+
           const delBtn = document.createElement('button');
           delBtn.className = 'icon-btn';
           delBtn.textContent = '✕';
@@ -3149,6 +3621,7 @@ const STATE_LABEL = {
           });
           row.appendChild(cb);
           row.appendChild(info);
+          row.appendChild(caps);
           row.appendChild(delBtn);
           body.appendChild(row);
         });
@@ -3314,53 +3787,57 @@ const STATE_LABEL = {
     servers.forEach((s) => {
       const raw = (state.mcpServers || {})[s.name];
       if (mcpFormOpenFor === s.name) { renderMcpForm(s.name); return; }
-      const card = document.createElement('div');
-      card.className = 'provider-card';
+      // Avatar tile + corner badge: shape says local vs remote, badge colour says
+      // healthy/error — two facts that used to share one dot doing double duty.
       const enabled = !raw || raw.enabled !== false;
-      const dot = !enabled ? 'missing' : s.status === 'connected' ? 'healthy' : s.status === 'error' ? 'invalid' : 'missing';
+      const isRemote = !!raw && raw.type === 'remote';
+      const badgeCls = !enabled ? '' : s.status === 'connected' ? 'healthy' : s.status === 'error' ? 'invalid' : '';
+
+      const card = document.createElement('div');
+      card.className = 'mcp-server';
+
       const head = document.createElement('div');
-      head.className = 'provider-head';
-      const typeLabel = raw ? (raw.type === 'remote' ? 'remote' : 'local') : '';
-      head.innerHTML = `<span class="status-dot status-${dot}"></span><span class="provider-name">${escapeHtml(s.name)}</span><span class="muted prov-status">${typeLabel}${typeLabel ? ' · ' : ''}${!enabled ? 'disabled' : s.status === 'connected' ? s.toolCount + ' tools' : escapeHtml(s.status)}</span>`;
-      const enableCb = document.createElement('input');
-      enableCb.type = 'checkbox';
-      enableCb.title = 'Enabled';
-      enableCb.checked = enabled;
-      enableCb.style.marginLeft = 'auto';
-      enableCb.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        send({ type: 'setMcpServerEnabled', name: s.name, enabled: enableCb.checked });
+      head.className = 'mcp-server-head';
+      const tile = el('span', 'mcp-tile');
+      tile.innerHTML = (isRemote ? ICON.cloud : ICON.server) + `<i class="mcp-tile-badge ${badgeCls}"></i>`;
+      const info = el('div', 'mcp-server-info');
+      info.innerHTML = `<div class="mcp-server-name">${escapeHtml(s.name)}</div><div class="mcp-server-meta">${isRemote ? 'Remote' : 'Local'} · ${!enabled ? 'disabled' : s.status === 'connected' ? s.toolCount + ' tools' : escapeHtml(s.status)}</div>`;
+      const actions = el('div', 'mcp-server-actions');
+      const enableSw = renderToggle(enabled, (checked) => {
+        send({ type: 'setMcpServerEnabled', name: s.name, enabled: checked });
       });
-      head.appendChild(enableCb);
+      enableSw.style.marginLeft = '0';
+      enableSw.addEventListener('click', (ev) => ev.stopPropagation());
       const editSrvBtn = document.createElement('button');
       editSrvBtn.className = 'icon-btn';
       editSrvBtn.textContent = '✎';
       editSrvBtn.title = 'Edit server';
       editSrvBtn.addEventListener('click', (ev) => { ev.stopPropagation(); mcpFormOpenFor = s.name; renderSettings(); });
-      head.appendChild(editSrvBtn);
       const rm = document.createElement('button');
       rm.className = 'icon-btn';
       rm.textContent = '✕';
       rm.title = 'Remove server';
       rm.addEventListener('click', (ev) => { ev.stopPropagation(); send({ type: 'removeMcpServer', name: s.name }); });
-      head.appendChild(rm);
-      const chev = document.createElement('span');
-      chev.className = 'chev';
-      chev.style.marginLeft = '0'; // the buttons already claim the gap
+      const chev = el('span', 'chev');
       chev.textContent = '▸';
-      head.appendChild(chev);
-      const body = document.createElement('div');
-      body.className = 'provider-body hidden';
-      head.addEventListener('click', () => { const closed = body.classList.toggle('hidden'); chev.textContent = closed ? '▸' : '▾'; });
-      if (s.error) { const er = document.createElement('div'); er.className = 'error'; er.textContent = s.error; body.appendChild(er); }
-      (s.tools || []).forEach((t) => {
-        const r = document.createElement('div');
-        r.className = 'pm-row';
-        r.innerHTML = `<span class="ac-icon">◈</span><div class="pm-info"><div class="pm-name">${escapeHtml(t)}</div></div>`;
-        body.appendChild(r);
+      actions.append(enableSw, editSrvBtn, rm, chev);
+      head.append(tile, info, actions);
+      head.addEventListener('click', () => {
+        const open = card.classList.toggle('open');
+        chev.textContent = open ? '▾' : '▸';
       });
       card.appendChild(head);
-      card.appendChild(body);
+
+      if (s.error) { const er = el('div', 'mcp-error'); er.textContent = s.error; card.appendChild(er); }
+      if ((s.tools || []).length) {
+        const tools = el('div', 'mcp-tools');
+        (s.tools || []).forEach((t) => {
+          const chip = el('span', 'mcp-tool-chip');
+          chip.textContent = t;
+          tools.appendChild(chip);
+        });
+        card.appendChild(tools);
+      }
       settingsContentEl.appendChild(card);
     });
 
@@ -3624,27 +4101,36 @@ const STATE_LABEL = {
     settingsContentEl.appendChild(card);
   }
 
+  // Marketplace grid — a distinct shape (cards in a grid) from the configured-server list
+  // above (bordered rows), so "servers you have" and "servers you could add" tell apart at
+  // a glance instead of reading as one long undifferentiated list.
   function renderMcpItems(items) {
     if (!mcpResultsEl) return;
     mcpResultsEl.innerHTML = '';
     if (!items.length) { mcpResultsEl.innerHTML = '<div class="muted">No servers found.</div>'; return; }
     const configured = new Set((state.mcp || []).map((s) => s.name));
+    const grid = el('div', 'registry-grid');
     items.forEach((item) => {
-      const row = document.createElement('div');
-      row.className = 'registry-row';
-      const info = document.createElement('div');
-      info.className = 'pm-info';
-      info.innerHTML = `<div class="pm-name">${escapeHtml(item.name)}</div><div class="meta">${escapeHtml(item.description || '')}</div>`;
-      const add = document.createElement('button');
+      const card = el('div', 'registry-card2');
+      const head = el('div', 'registry-card2-head');
+      const tile = el('span', 'mcp-tile');
+      tile.innerHTML = ICON.server;
+      const name = el('span', 'rc-name');
+      name.textContent = item.name;
+      head.append(tile, name);
+      const desc = el('div', 'rc-desc');
+      desc.textContent = item.description || '';
       const already = configured.has(item.id);
-      add.className = 'secondary';
-      add.textContent = already ? 'Added' : 'Add';
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'rc-add' + (already ? ' added' : '');
+      add.textContent = already ? 'Added' : '+ Add';
       add.disabled = already;
       add.addEventListener('click', () => send({ type: 'addMcpServer', item }));
-      row.appendChild(info);
-      row.appendChild(add);
-      mcpResultsEl.appendChild(row);
+      card.append(head, desc, add);
+      grid.appendChild(card);
     });
+    mcpResultsEl.appendChild(grid);
   }
 
   // ---------- handler context (Phase D2: introduce typed boundaries) ----------
@@ -3795,11 +4281,40 @@ const STATE_LABEL = {
         rebuildModelPicker();
         updateFooter(msg.usageTotals);
         renderUsageStatsCard(msg.usageTotals && msg.usageTotals.lifetime, msg.usageTotals && msg.usageTotals.retrieval);
+        // addCustomEndpoint has no reply of its own — the endpoint it created shows up here, in
+        // the next config push. Match it by the name the form submitted, then finish the flow:
+        // store the key (if any) and ask the endpoint for its model list.
+        if (cfForm && cfForm.phase === 'fetching' && !cfForm.endpointId && cfForm.pendingName) {
+          const created = (state.customEndpoints || []).find((ep) => ep.name === cfForm.pendingName);
+          if (created) {
+            cfForm.endpointId = created.id;
+            if ((cfForm.key || '').trim()) send({ type: 'setCustomEndpointKey', id: created.id, key: cfForm.key.trim() });
+            send({ type: 'fetchCustomEndpointModels', id: created.id });
+          } else {
+            // The host rejected it (duplicate name / bad URL — it shows its own warning).
+            cfForm.phase = 'form';
+            cfForm.error = 'Could not create the endpoint — check the name is unique and the URL is valid.';
+          }
+        }
         if (settingsOpen) renderSettings();
+        // The welcome screen's "N models ready" line is read straight off this config, so it
+        // has to be repainted when the config lands (it renders before this arrives at boot).
+        {
+          const ep = panes.get(viewedSessionId);
+          if (ep && ep.el.querySelector('.empty')) { activatePane(viewedSessionId); renderEmpty(); deactivatePane(); }
+          else if (!panes.size && thread.querySelector('.empty')) renderEmpty();
+        }
         break;
       case 'customEndpointModels':
         // Host finished discovering an endpoint's models — cache and re-render the card.
         fetchedEndpointModels.set(msg.id, { models: msg.models || [], error: msg.error });
+        // The add-endpoint form is waiting on exactly this reply: fill in its checklist (all
+        // ticked by default — the user came here to add them) or surface why it came back empty.
+        if (cfForm && cfForm.endpointId === msg.id && cfForm.phase === 'fetching') {
+          cfForm.phase = 'models';
+          cfForm.error = msg.error || '';
+          cfForm.models = (msg.models || []).map((id) => ({ id, selected: true, tags: [] }));
+        }
         if (settingsOpen) renderSettings();
         break;
       case 'userEcho':
@@ -3820,6 +4335,13 @@ const STATE_LABEL = {
         // exactly as rendered (see stopRun in chatViewProvider.ts).
         const rebuildInPlace = msg.sessionId === viewedSessionId;
         saveComposer(viewedSessionId); // stash the leaving session's draft/settings
+        // First session of the run adopts anything typed before it existed (PENDING_SESSION),
+        // so loadComposer below restores that text instead of blanking the box. Only when the
+        // session has no draft of its own — a real stored draft always wins.
+        if (!viewedSessionId && composerState.has(PENDING_SESSION) && !composerState.has(msg.sessionId)) {
+          composerState.set(msg.sessionId, composerState.get(PENDING_SESSION));
+        }
+        composerState.delete(PENDING_SESSION);
         viewedSessionId = msg.sessionId;
         if (settingsOpen) toggleSettings();
         showPane(viewedSessionId);
@@ -3860,6 +4382,13 @@ const STATE_LABEL = {
         renderSessionTabs();
         const vp = panes.get(viewedSessionId);
         if (vp && vp.el.querySelector('.empty')) { activatePane(viewedSessionId); renderEmpty(); deactivatePane(); }
+        // The BOOT welcome screen goes straight onto `thread` — before any pane exists and
+        // before viewedSessionId is set — so the pane-keyed refresh above cannot see it. Without
+        // this branch, RECENT stays missing until the first pane is created, which tears the
+        // whole welcome screen down and rebuilds it with the list: the screen visibly changes
+        // under the reader a beat after load (and the tips ticker jumps with it, since
+        // refreshTipsStrip re-homes it between the welcome slot and the composer strip).
+        else if (!panes.size && thread.querySelector('.empty')) renderEmpty();
         break;
       }
       case 'setInput':
@@ -4571,6 +5100,16 @@ const STATE_LABEL = {
         // return) still flips busy off — clear any lingering live status in THIS message's
         // own session's pane ('busy' is pane-scoped, so `statusTimers` here is that pane's map).
         if (!msg.busy) for (const id of statusTimers.keys()) stopStatusTimer(id, true);
+        // Belt-and-braces: the run is over, so nothing may still be "Thinking…". The host
+        // settles each burst itself (settleReasoning, which also carries the real duration),
+        // but that depends on every finish path remembering to call it — a cancel, an early
+        // return or a burst that flushed to nothing would otherwise leave a block spinning
+        // forever. Settling here can only ever ADD a terminal state, never undo a real one.
+        if (!msg.busy) {
+          const pane = msg.sessionId ? panes.get(msg.sessionId) : activePaneObj;
+          const root = pane ? pane.el : activeThreadEl;
+          root.querySelectorAll('.tm-reasoning.streaming').forEach((block) => settleReasoningBlock(block));
+        }
         break;
       }
       case 'clear': {
@@ -4970,8 +5509,9 @@ const STATE_LABEL = {
       actions.appendChild(readAll);
     }
     const back = document.createElement('button');
-    back.className = 'secondary';
-    back.textContent = '← Back to chat';
+    back.type = 'button';
+    back.className = 'ghost-btn';
+    back.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg><span>Back to chat</span>';
     back.addEventListener('click', () => toggleAnnouncements(false));
     actions.appendChild(back);
     bar.appendChild(head); bar.appendChild(actions);
@@ -5167,25 +5707,41 @@ const STATE_LABEL = {
     const lt = lastLifetime;
     el.innerHTML = '';
 
-    // Headline totals as three tiles instead of a plain list — the numbers
-    // people actually scan for (tokens, requests, $ saved) get visual weight.
-    const tiles = document.createElement('div');
-    tiles.className = 'usage-tiles';
-    const tile = (icon, value, label) => {
-      const t = document.createElement('div'); t.className = 'usage-tile';
-      const i = document.createElement('div'); i.className = 'usage-tile-icon'; i.textContent = icon;
-      const v = document.createElement('div'); v.className = 'usage-tile-value'; v.textContent = value;
-      const l = document.createElement('div'); l.className = 'usage-tile-label'; l.textContent = label;
-      t.append(i, v, l);
-      tiles.appendChild(t);
-    };
-    tile('◆', fmtTokens(lt.totalTokens || 0), 'Total tokens');
-    if (lt.totalReasoningTokens) {
-      tile('◈', fmtTokens(lt.totalReasoningTokens || 0), 'Reasoning tokens');
+    // A real chart, not a decorative one: the only relationship this data actually supports
+    // is composition (reasoning tokens are a SUBSET of total tokens) — lifetime/retrieval are
+    // cumulative counters, not a time series, so a trend line would have to fabricate history
+    // that doesn't exist. A donut of that real part-to-whole split, plus bars for the
+    // retrieval percentages below, covers "a real chart" honestly instead of inventing data.
+    const total = lt.totalTokens || 0;
+    const reasoning = Math.min(lt.totalReasoningTokens || 0, total);
+    const other = Math.max(0, total - reasoning);
+    const reasoningPct = total > 0 ? reasoning / total : 0;
+    const CIRC = 2 * Math.PI * 27; // matches the r=27 circle below
+    const dash = reasoningPct * CIRC;
+
+    const top = document.createElement('div');
+    top.className = 'usage-top';
+    const donut = document.createElement('div');
+    donut.className = 'usage-donut';
+    donut.innerHTML = `<svg viewBox="0 0 64 64">
+        <circle class="track" cx="32" cy="32" r="27"></circle>
+        <circle class="fill" cx="32" cy="32" r="27" stroke-dasharray="${dash.toFixed(1)} ${(CIRC - dash).toFixed(1)}"></circle>
+      </svg>
+      <div class="usage-donut-center"><span class="v">${fmtTokens(total)}</span><span class="l">tokens</span></div>`;
+    top.appendChild(donut);
+
+    const legend = document.createElement('div');
+    legend.className = 'usage-legend';
+    if (reasoning > 0) {
+      legend.innerHTML += `<div class="usage-legend-row"><span class="sw reasoning"></span>Reasoning<span class="n">${fmtTokens(reasoning)}</span></div>`;
     }
-    tile('↻', String(lt.totalRequests || 0), 'Total requests');
-    tile('$', fmtUsd(lt.estimatedSavingsUsd || 0), 'Est. saved');
-    el.appendChild(tiles);
+    legend.innerHTML += `<div class="usage-legend-row"><span class="sw other"></span>${reasoning > 0 ? 'Other' : 'Total'}<span class="n">${fmtTokens(other)}</span></div>`;
+    legend.innerHTML += `<div class="usage-tiles-mini">
+        <div class="usage-tile-mini"><span class="v">${lt.totalRequests || 0}</span><span class="l">Requests</span></div>
+        <div class="usage-tile-mini"><span class="v">${fmtUsd(lt.estimatedSavingsUsd || 0)}</span><span class="l">Est. saved</span></div>
+      </div>`;
+    top.appendChild(legend);
+    el.appendChild(top);
 
     if (lt.firstRecordedAt) {
       const since = document.createElement('div'); since.className = 'usage-since';
@@ -5193,32 +5749,52 @@ const STATE_LABEL = {
       el.appendChild(since);
     }
 
-    const row = (label, value, badge) => {
-      const r = document.createElement('div'); r.className = 'usage-stat-row';
-      const l = document.createElement('span'); l.className = 'usage-stat-label'; l.textContent = label;
-      const v = document.createElement('span'); v.className = 'usage-stat-value'; v.textContent = value;
-      r.append(l, v);
-      if (badge) {
+    // Retrieval quality — horizontal bars read at a glance; the old plain number rows made
+    // three near-identical percentages (cache hit, symbol index, bundle cache) hard to
+    // compare without reading every digit.
+    const bar = (label, pct, opts) => {
+      opts = opts || {};
+      const row = document.createElement('div');
+      row.className = 'usage-bar-row' + (opts.sub ? ' sub' : '');
+      const head = document.createElement('div');
+      head.className = 'usage-bar-head';
+      const lbl = document.createElement('span'); lbl.className = 'lbl'; lbl.textContent = label;
+      head.appendChild(lbl);
+      if (opts.badge) {
         const b = document.createElement('span');
-        b.className = 'usage-stat-badge ' + badge.cls;
-        b.textContent = badge.text;
-        r.appendChild(b);
+        b.className = 'usage-badge ' + opts.badge.cls;
+        b.textContent = opts.badge.text;
+        head.appendChild(b);
       }
-      el.appendChild(r);
+      const val = document.createElement('span'); val.className = 'val'; val.textContent = pct + '%';
+      head.appendChild(val);
+      row.appendChild(head);
+      const track = document.createElement('div'); track.className = 'usage-bar-track';
+      const fill = document.createElement('div');
+      fill.className = 'usage-bar-fill ' + (opts.fillCls || 'neutral');
+      fill.style.width = Math.min(100, Math.max(0, pct)) + '%';
+      track.appendChild(fill);
+      row.appendChild(track);
+      el.appendChild(row);
     };
 
     // Retrieval quality section — only shown after ≥3 agent requests
     if (lastRetrieval && lastRetrieval.totalRequests >= 3) {
-      const sep = document.createElement('div'); sep.className = 'usage-stat-sep'; el.appendChild(sep);
       const hdr = document.createElement('div'); hdr.className = 'usage-stat-hdr'; hdr.textContent = 'Retrieval quality'; el.appendChild(hdr);
-      const hitRate = (lastRetrieval.symbolHitRate || 0) + (lastRetrieval.cacheHitRate || 0);
-      const kpi = hitRate >= 80 ? { cls: 'badge-green', text: 'GOOD' } : hitRate >= 60 ? { cls: 'badge-yellow', text: 'OK' } : { cls: 'badge-red', text: 'POOR' };
-      row('Cache hit rate', hitRate + '%', kpi);
-      row('  Symbol index', (lastRetrieval.symbolHitRate || 0) + '%');
-      row('  Bundle cache', (lastRetrieval.cacheHitRate || 0) + '%');
-      const grepKpi = (lastRetrieval.grepRate || 0) <= 20 ? { cls: 'badge-green', text: '✓' } : { cls: 'badge-red', text: '✗ high' };
-      row('Grep fallback', (lastRetrieval.grepRate || 0) + '%', grepKpi);
-      row('Requests sampled', String(lastRetrieval.totalRequests));
+      const symbolRate = lastRetrieval.symbolHitRate || 0;
+      const cacheRate = lastRetrieval.cacheHitRate || 0;
+      const hitRate = symbolRate + cacheRate;
+      const kpi = hitRate >= 80 ? { cls: 'good', text: 'Good' } : hitRate >= 60 ? { cls: 'ok', text: 'OK' } : { cls: 'poor', text: 'Poor' };
+      bar('Cache hit rate', hitRate, { badge: kpi, fillCls: hitRate >= 80 ? 'good' : hitRate >= 60 ? 'ok' : 'poor' });
+      bar('Symbol index', symbolRate, { sub: true });
+      bar('Bundle cache', cacheRate, { sub: true });
+      const grepRate = lastRetrieval.grepRate || 0;
+      const grepKpi = grepRate <= 20 ? { cls: 'good', text: '✓ Low' } : { cls: 'poor', text: '✗ High' };
+      bar('Grep fallback', grepRate, { badge: grepKpi, fillCls: grepRate <= 20 ? 'good' : 'poor' });
+
+      const sampled = document.createElement('div'); sampled.className = 'usage-stat-row';
+      sampled.innerHTML = `<span class="lbl">Requests sampled</span><span class="val">${lastRetrieval.totalRequests}</span>`;
+      el.appendChild(sampled);
     }
 
     // Reset the clear button label if it was in "Clearing…" state.

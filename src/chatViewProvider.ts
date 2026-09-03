@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import type { ChatContent, ChatContentBlock, ChatMessage, Platform, TodoItem, CustomEndpoint, ReasoningEffort, PlanRunState } from './shared/types';
 import type { SecretStore } from './config/secrets';
 import type { SettingsStore } from './config/settingsStore';
@@ -309,6 +310,12 @@ interface Session {
    *  the agent's commands (see onTool in agentCallbacks). Edit-tool writes don't need this;
    *  they're attributed via CheckpointManager.record(). */
   commandBaselines: Map<string, Promise<Map<string, string>>>;
+  /** Wall-clock start time per toolCallId, recorded when a call first reports 'running' —
+   *  diffed against Date.now() when it settles to 'done'/'error' so the toolStatus message can
+   *  carry a real durationMs (see docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 3: the
+   *  status line shows `· {duration}` per step, not just the turn-level "Worked for Ns").
+   *  Entries are deleted on settlement — never grows past the calls currently in flight. */
+  toolStartTimes: Map<string, number>;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   /** How many `@mentions` resolved into context on the most recent send — carried through to
@@ -377,10 +384,18 @@ async function fetchOpenAICompatModels(
   baseUrl: string,
   key: string | undefined,
   extraHeaders?: Record<string, string>,
+  endpointType?: CustomEndpoint['type'],
 ): Promise<string[]> {
   const base = baseUrl.replace(/\/+$/, '');
   const headers: Record<string, string> = { Accept: 'application/json', ...(extraHeaders ?? {}) };
-  if (key) headers.Authorization = `Bearer ${key}`;
+  // Anthropic's Messages API authenticates with x-api-key + a pinned version header, not a
+  // Bearer token — using Bearer here gets a 401 even with a valid key.
+  if (endpointType === 'anthropic-messages') {
+    if (key) headers['x-api-key'] = key;
+    headers['anthropic-version'] = '2023-06-01';
+  } else if (key) {
+    headers.Authorization = `Bearer ${key}`;
+  }
 
   const tryFetch = async (url: string): Promise<{ ok: boolean; status: number; body: unknown }> => {
     const ctrl = new AbortController();
@@ -547,6 +562,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       liveSteps: new Map(),
       liveRationale: new Map(),
       commandBaselines: new Map(),
+      toolStartTimes: new Map(),
       model: undefined,
       reasoningEffort: undefined,
     };
@@ -591,6 +607,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       liveSteps: new Map(),
       liveRationale: new Map(),
       commandBaselines: new Map(),
+      toolStartTimes: new Map(),
       createdAt: s.ts ?? Date.now(),
       updatedAt: s.ts ?? Date.now(),
       model: s.model,
@@ -1421,6 +1438,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           id,
           name,
           baseUrl: m.baseUrl.replace(/\/+$/, ''),
+          type: m.endpointType,
           models: [],
           createdAt: Date.now(),
         };
@@ -1455,6 +1473,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           updated.baseUrl = m.baseUrl.replace(/\/+$/, '');
         }
         if (m.extraHeaders !== undefined) updated.extraHeaders = m.extraHeaders;
+        if (m.endpointType !== undefined) updated.type = m.endpointType;
         await this.deps.settings.upsertCustomEndpoint(updated);
 
         const { invalidateCustomProvider } = await import('./providers/index.js');
@@ -1512,7 +1531,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         }
 
-        endpoint.models.push({ modelId, displayName: m.displayName });
+        endpoint.models.push({
+          modelId,
+          displayName: m.displayName,
+          supportsTools: m.supportsTools,
+          supportsVision: m.supportsVision,
+          supportsReasoning: m.supportsReasoning,
+          tags: m.tags && m.tags.length ? m.tags : undefined,
+        });
         await this.deps.settings.upsertCustomEndpoint(endpoint);
 
         const fallback = this.deps.settings.getFallback();
@@ -1544,6 +1570,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         void this.sendConfig();
         break;
       }
+      case 'setCustomModelCaps': {
+        const endpoint = this.deps.settings.getCustomEndpoint(m.endpointId);
+        if (!endpoint) { void vscode.window.showWarningMessage('Endpoint not found.'); break; }
+        const model = endpoint.models.find((em) => em.modelId === m.modelId);
+        if (!model) { void vscode.window.showWarningMessage(`Model "${m.modelId}" not found.`); break; }
+        if (m.supportsTools !== undefined) model.supportsTools = m.supportsTools;
+        if (m.supportsVision !== undefined) model.supportsVision = m.supportsVision;
+        if (m.supportsReasoning !== undefined) model.supportsReasoning = m.supportsReasoning;
+        await this.deps.settings.upsertCustomEndpoint(endpoint);
+        void this.sendConfig();
+        break;
+      }
       case 'fetchCustomEndpointModels': {
         const endpoint = this.deps.settings.getCustomEndpoint(m.id);
         if (!endpoint) {
@@ -1552,7 +1590,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         try {
           const key = await this.deps.secrets.getCustomKey(m.id);
-          const models = await fetchOpenAICompatModels(endpoint.baseUrl, key, endpoint.extraHeaders);
+          const models = await fetchOpenAICompatModels(endpoint.baseUrl, key, endpoint.extraHeaders, endpoint.type);
           this.post({ type: 'customEndpointModels', id: m.id, models });
         } catch (e) {
           this.post({ type: 'customEndpointModels', id: m.id, models: [], error: e instanceof Error ? e.message : String(e) });
@@ -2858,7 +2896,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let reasoningText = '';
     let reasoningStart = 0;
     const flushReasoningDone = () => {
-      if (!reasoningStart || !reasoningText.trim()) return;
+      // `reasoningStart` being set means a 'running' block was ALREADY posted for this segment
+      // (both happen in the same onReasoning call), so it must be settled here no matter what
+      // the buffer ended up holding. The old guard also required non-empty text, which left a
+      // block spinning "Thinking…" forever whenever the burst collapsed to nothing after the
+      // leading-whitespace strip (a delta of just "\n\n" announces the block, then trims away).
+      if (!reasoningStart) return;
       const durationMs = Date.now() - reasoningStart;
       this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: reasoningId(), name: 'reasoning', args: undefined, state: 'done', detail: reasoningText, durationMs });
       reasoningStart = 0;
@@ -2912,10 +2955,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!live()) return;
         endReasoningSegment(); // reasoning gave way to a tool call — settle this burst, start a new segment
 
+        // Per-call timing (docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 3): record the
+        // start on the first 'running' sighting, diff against it once the call settles. A
+        // long-pending approval (running can sit for an arbitrary, user-controlled time — see
+        // PRESENT_TENSE_WHILE_RUNNING in ToolCard.ts) is fine to include; that wait genuinely
+        // is how long the call took from the model's perspective.
+        const mappedState = e.state === 'queued' ? 'running' : e.state as 'running' | 'done' | 'error';
+        if (mappedState === 'running') {
+          if (!s.toolStartTimes.has(e.toolCallId)) s.toolStartTimes.set(e.toolCallId, Date.now());
+        }
+        let durationMs: number | undefined;
+        if (mappedState === 'done' || mappedState === 'error') {
+          const start = s.toolStartTimes.get(e.toolCallId);
+          if (start != null) {
+            durationMs = Date.now() - start;
+            s.toolStartTimes.delete(e.toolCallId);
+          }
+        }
+
         const steps = s.liveSteps.get(requestId) ?? [];
         const i = steps.findIndex((st) => st.toolCallId === e.toolCallId);
-        const mappedState = e.state === 'queued' ? 'running' : e.state as 'running' | 'done' | 'error';
-        const entry: TranscriptStep = { toolCallId: e.toolCallId, name: e.name, args: e.args, state: mappedState, detail: e.detail };
+        const entry: TranscriptStep = { toolCallId: e.toolCallId, name: e.name, args: e.args, state: mappedState, detail: e.detail, durationMs };
         // NOTE: checkpoint baselines are captured by the tools themselves (onBeforeWrite →
         // CheckpointManager.record) BEFORE the write lands. The capture used to happen here,
         // but v3 fires every tool event from the engine's onStepEnd — after the tool already
@@ -2954,7 +3014,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           s.liveActivity = 'Modifications';
           this.postSessionList();
         }
-        this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: mappedState, detail: e.detail });
+        this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: e.toolCallId, name: e.name, args: e.args, state: mappedState, detail: e.detail, durationMs });
 
         // Crash-recovery snapshot: append this completed/errored tool call to the in-progress
         // transcript and persist immediately, so a mid-turn extension-host crash loses at most
@@ -3359,6 +3419,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         keyless: false,
         configured: !!(await this.deps.secrets.getCustomKey(ep.id)),
         modelCount: ep.models.length,
+        type: ep.type,
+        models: ep.models,
       })))),
     };
     this.post({ type: 'config', config, usageTotals: this.currentUsageTotals(this.current()) });
@@ -3501,7 +3563,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
    private getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
-    const uri = (f: string) => webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', f));
+    // asWebviewUri() returns the same vscode-webview-resource: URL for a given file path on
+    // every resolveWebviewView() call, and Chromium's on-disk HTTP cache (which survives across
+    // Extension Development Host restarts, since they share a profile dir) can keep serving the
+    // old bytes for that URL after the file changes on disk — an F5 relaunch then shows stale
+    // JS/CSS with no error. Appending the file's own mtime as a query string busts that cache.
+    const uri = (f: string) => {
+      const fileUri = vscode.Uri.joinPath(this.extensionUri, 'media', f);
+      let v = 0;
+      try { v = Math.round(fs.statSync(fileUri.fsPath).mtimeMs); } catch { /* fall through with v=0 */ }
+      return `${webview.asWebviewUri(fileUri).toString()}?v=${v}`;
+    };
     const csp = [
       `default-src 'none'`,
       `img-src ${webview.cspSource} https: data: blob:`,
@@ -3513,7 +3585,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       `script-src ${webview.cspSource} 'nonce-${nonce}'`,
       // pdf.js runs its parser in a Web Worker loaded from our own vendor directory.
       `worker-src ${webview.cspSource} blob:`,
-      `font-src ${webview.cspSource}`,
+      // `data:` is needed for fonts.css's inlined IBM Plex @font-face rules (base64 woff2) —
+      // there's no relative-path resolution risk that way, but font-src must explicitly admit it.
+      `font-src ${webview.cspSource} data:`,
     ].join('; ');
     return `<!DOCTYPE html>
 <html lang="en">
@@ -3523,6 +3597,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link href="${uri('vendor/highlight.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('vendor/diff2html.min.css')}" rel="stylesheet" nonce="${nonce}" />
+  <link href="${uri('styles/fonts.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/tokens.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/plan.css')}" rel="stylesheet" nonce="${nonce}" />
   <link href="${uri('styles/components/tool-card.css')}" rel="stylesheet" nonce="${nonce}" />

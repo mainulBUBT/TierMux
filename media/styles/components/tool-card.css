@@ -3,7 +3,7 @@
  * Markup emitted by media/src/ui/tool/ToolCard.ts (static) and upsertTool (live). */
 
 .tm-tool-card {
-  margin: 1px 0;
+  /* No own margin — the .flow / .tools container owns the vertical rhythm (see main.css). */
   border-radius: var(--tm-radius-sm);
   transition: background var(--tm-transition-fast);
 }
@@ -54,36 +54,21 @@
   max-width: 280px;
 }
 
-/* Status — AI Elements' Tool badge ("gap-1.5 rounded-full text-xs", secondary variant: a pill
- * carrying icon + status text), not the bare 8px dot this used to be. A dot forces the reader to
- * decode a colour; the pill says "completed" / "error" outright, which is the point of the
- * pattern. The row height is unchanged, so the compact chip-row flow this file was built around
- * survives — only the dot grows into a labelled chip. */
-.tm-tool-card-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+/* No text status badge — the design artifact conveys state purely through colour (the
+ * tool-type icon and the card's own left rail, both driven by the `tm-tool-card ${state}`
+ * class below), never a "Completed"/"Running" word. A colour-only signal matches the
+ * artifact's "spend boldness in one place" rule and keeps the row from reading as a form
+ * with a status field bolted onto every call. "· 0.4s" is the only text left — a colour
+ * can't say a duration — dimmer than the title, a secondary detail not part of what
+ * actually happened. */
+.tm-tool-card-duration {
   flex-shrink: 0;
-  padding: 1px var(--tm-gap-md);
-  border-radius: var(--tm-radius-full);
-  background: var(--tm-surface-panel);
+  white-space: nowrap;
   color: var(--tm-fg-muted);
+  opacity: .7;
   font-size: var(--tm-text-xs);
-  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
 }
-.tm-tool-card-state {
-  width: 6px;
-  height: 6px;
-  border-radius: var(--tm-radius-full);
-  background: var(--tm-fg-muted);
-  opacity: .5;
-  /* The ✓ / ✗ glyphs the markup puts inside would stretch the pill — the colour carries the
-   * state here and the adjacent label spells it out. */
-  font-size: 0;
-  flex-shrink: 0;
-}
-.tm-tool-card-state-label { white-space: nowrap; }
-.tm-tool-card.error .tm-tool-card-status { color: var(--tm-status-error); }
 
 /* Expand chevron — only shown when the card has a body to reveal; rotates on open. */
 .tm-tool-card-chevron {
@@ -97,17 +82,94 @@
 .tm-tool-card.has-body .tm-tool-card-chevron { opacity: .6; }
 .tm-tool-card.open .tm-tool-card-chevron { transform: rotate(180deg); }
 
-.tm-tool-card.running .tm-tool-card-state {
-  background: var(--tm-status-running);
-  opacity: 1;
-  animation: tm-tool-pulse 1.2s infinite;
-}
-.tm-tool-card.done .tm-tool-card-state { background: var(--tm-status-done); opacity: .7; }
-.tm-tool-card.error .tm-tool-card-state { background: var(--tm-status-error); opacity: 1; }
-.tm-tool-card.pending .tm-tool-card-state { background: var(--tm-status-pending); opacity: .6; }
-
 .tm-tool-card.running .tm-tool-card-icon { color: var(--tm-status-running); }
+.tm-tool-card.done .tm-tool-card-icon { color: var(--tm-status-done); }
 .tm-tool-card.error .tm-tool-card-icon { color: var(--tm-status-error); }
+
+/* A failed call is a full bordered box, not just a red rail: it is the one step in the
+   timeline the reader has to act on, and it already opens itself (item 7), so it should read
+   as a distinct object rather than one more line with a differently-coloured edge. */
+.tm-tool-card.error {
+  border: 1px solid var(--tm-status-error);
+  border-radius: var(--tm-radius-lg);
+  background: color-mix(in srgb, var(--tm-status-error) 5%, transparent);
+  padding-left: 0;
+  overflow: hidden;
+}
+.tm-tool-card.error .tm-tool-card-header { padding: 6px 10px; }
+.tm-tool-card.error:hover { background: color-mix(in srgb, var(--tm-status-error) 8%, transparent); }
+/* Failure output reads in the error colour — it is the message, not incidental output. */
+.tm-tool-card.error .tm-tool-card-output {
+  color: var(--tm-status-error);
+  border-color: color-mix(in srgb, var(--tm-status-error) 35%, transparent);
+  background: color-mix(in srgb, var(--tm-status-error) 6%, transparent);
+}
+
+/* Grouped read row (docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 1) — a run of same-tool
+   reads collapsed into one line. Deliberately has NONE of .tm-tool-card's chrome (no rail, no
+   pill, no chevron): a bare glyph + bold verb + dim targets is the whole point — this is the
+   thing item 2's flattening was reaching for, just for N calls instead of one. */
+.tm-tool-group {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0 2px 9px;
+  font-size: 12px;
+}
+/* Verb + targets wrap inside this box; the duration outside it stays on the first line. */
+.tm-tool-group-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+/* Shared live/settled status glyph (buildSpinGlyph in ToolCard.ts): a spinning ring while
+   running, a static mark once settled. Used here AND by reasoning.css's .tm-reasoning-header —
+   defined once, here, since this file loads before every other component stylesheet. One
+   glyph vocabulary for "something is running" across the whole transcript, rather than each
+   component (a grouped tool row, a reasoning block) carrying its own separate indicator. */
+.tm-spin-glyph {
+  position: relative;
+  width: 11px; height: 11px;
+  display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.tm-spin-glyph-ring {
+  display: none;
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  border: 1.4px solid var(--tm-card-border);
+  border-top-color: var(--tm-accent);
+}
+.tm-spin-glyph.live .tm-spin-glyph-ring {
+  display: block;
+  animation: tm-tool-spin .65s linear infinite;
+}
+.tm-spin-glyph-mark {
+  display: inline;
+  font-size: 11px; font-style: normal; line-height: 1;
+  color: var(--tm-fg-muted);
+}
+.tm-spin-glyph.live .tm-spin-glyph-mark { display: none; }
+.tm-spin-glyph.success .tm-spin-glyph-mark { color: var(--tm-status-done); }
+.tm-spin-glyph.error .tm-spin-glyph-mark { color: var(--tm-status-error); }
+@media (prefers-reduced-motion: reduce) {
+  .tm-spin-glyph.live .tm-spin-glyph-ring { animation: none; }
+}
+
+.tm-tool-group-verb { font-weight: 600; color: var(--tm-fg); flex-shrink: 0; }
+.tm-tool-group-targets {
+  color: var(--tm-fg-muted);
+  font-family: var(--tm-font-code);
+  font-size: 11.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.tm-tool-group-sep { color: var(--tm-fg-muted); opacity: .55; }
+.tm-tool-group-duration { color: var(--tm-fg-muted); opacity: .7; font-size: var(--tm-text-xs); font-variant-numeric: tabular-nums; flex-shrink: 0; margin-left: auto; }
+.tm-tool-group.error .tm-tool-group-verb { color: var(--tm-status-error); }
 
 /* Progress bar (running) — a thin underline. */
 .tm-tool-card-progress {
@@ -234,11 +296,6 @@
   50% { width: 70%; }
   100% { width: 100%; }
 }
-@keyframes tm-tool-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
-
 @media (max-width: 600px) {
   .tm-tool-card-hint { max-width: 140px; }
   .tm-tool-card-actions { opacity: 1; }

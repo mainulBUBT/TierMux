@@ -3,6 +3,8 @@ import type { BaseProvider } from './base';
 import { GoogleProvider } from './google';
 import { CloudflareProvider } from './cloudflare';
 import { OpenAICompatProvider, type OpenAICompatOpts } from './openai-compat';
+import { OpenAIResponsesProvider } from './openai-responses';
+import { AnthropicMessagesProvider } from './anthropic-messages';
 
 /** Session cache for custom endpoint providers. Cleared on endpoint edit/remove. */
 const customProviderCache = new Map<string, BaseProvider>();
@@ -105,17 +107,22 @@ export function resolveProvider(
 
     if (customProviderCache.has(epId)) return customProviderCache.get(epId);
 
-    const provider = new OpenAICompatProvider({
-      platform: 'custom',
+    const commonOpts = {
+      platform: 'custom' as const,
       name: endpoint.name,
       runtimeName: endpoint.name,
       baseUrl: endpoint.baseUrl.replace(/\/+$/, ''),
       extraHeaders: endpoint.extraHeaders,
       timeoutMs: CUSTOM_TIMEOUT_MS,
       ttftTimeoutMs: CUSTOM_TTFT_MS,
-
       skipPreflight: true,
-    });
+    };
+    // Undefined type = 'openai-chat' — the only shape every endpoint saved before this field
+    // existed already speaks, so it stays the default rather than needing a migration.
+    const provider: BaseProvider =
+      endpoint.type === 'anthropic-messages' ? new AnthropicMessagesProvider(commonOpts)
+      : endpoint.type === 'openai-responses' ? new OpenAIResponsesProvider(commonOpts)
+      : new OpenAICompatProvider(commonOpts);
     customProviderCache.set(epId, provider);
     return provider;
   }

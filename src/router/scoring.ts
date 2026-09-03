@@ -50,6 +50,14 @@ export interface SelectionContext {
    *  next turn, so equal-quality models share load instead of one eating every request until
    *  it 429s. Missing map / unknown key = never served. */
   lastServedAt?: Map<string, number>;
+  /**
+   * Catalog-shaped profiles for entries the Catalog itself can't resolve — today only custom
+   * endpoints, whose models are user-declared (capability ticks + role tags in the add-endpoint
+   * form) and therefore invisible to `catalog.find()`. Without this every custom model scored
+   * the "unknown → worst" 1e9 sentinel and lost every Auto ranking to any catalog model, no
+   * matter what the user said it was good at. Key `${platform}::${modelId}`.
+   */
+  profiles?: Map<string, CatalogModelLike>;
 }
 
 export type SkipReason =
@@ -115,7 +123,9 @@ export class ScoringEngine {
     let capMin = Infinity;
     let capMax = -Infinity;
     for (const e of entries) {
-      const m = this.catalog.find(e.platform, e.modelId);
+      // A custom endpoint's models are user-declared, not catalog rows — fall back to the
+      // profile the caller built from those declarations before treating one as "unknown".
+      const m = this.catalog.find(e.platform, e.modelId) ?? ctx.profiles?.get(rtKey(e.platform, e.modelId));
       const raw = m ? capabilityRaw(taskKind, m, ctx.reasoningEffort) : 1e9; // unknown → worst
       capRaw.set(rtKey(e.platform, e.modelId), raw);
       if (raw < capMin) capMin = raw;
@@ -440,7 +450,7 @@ function capabilityRaw(kind: TaskKind, m: CatalogModelLike, reasoningEffort?: Re
   }
 }
 
-type CatalogModelLike = {
+export type CatalogModelLike = {
   intelligenceRank: number;
   speedRank: number;
   contextWindow: number | null;

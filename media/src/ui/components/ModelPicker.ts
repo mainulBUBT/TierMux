@@ -89,6 +89,7 @@ export function createModelPicker(init: ModelPickerInit): ModelPickerHandle {
   );
 
   const searchEl = el('input', { class: 'tm-model-search', type: 'text', placeholder: 'Search models…', autocomplete: 'off' }) as HTMLInputElement;
+  const searchWrap = el('div', { class: 'tm-model-search-wrap' }, icon(ICON.search, 'tm-model-search-icon'), searchEl);
   const noteEl = el('div', { class: 'tm-effort-note hidden' }, 'This model has no reasoning mode');
   const segEl = el('div', { class: 'tm-effort-seg', role: 'radiogroup', 'aria-label': 'Reasoning effort' });
   const segBtns = new Map<string, HTMLButtonElement>();
@@ -223,7 +224,7 @@ export function createModelPicker(init: ModelPickerInit): ModelPickerHandle {
     content: el(
       'div',
       { class: 'tm-model-pop' },
-      searchEl,
+      searchWrap,
       el('div', { class: 'tm-effort' },
         el('span', { class: 'tm-effort-label' }, 'Reasoning'),
         segEl,

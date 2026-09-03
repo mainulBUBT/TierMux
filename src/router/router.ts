@@ -4,6 +4,7 @@ import type {
   ChatCompletionResponse,
   ChatMessage,
   CatalogModel,
+  CustomModel,
   FallbackEntry,
   Platform,
 } from '../shared/types';
@@ -32,7 +33,7 @@ import { getMockPlayer, buildMockCompletion, getCassetteRecorder } from './mockF
 import { rescueInlineToolCalls, findInlineToolOpener, repairToolArguments, toolSchemaMap } from '../agent/toolArgs';
 import { LatencyTracker } from './latencyTracker';
 import type { MetricsStore, MetricSample } from './metricsStore';
-import { ScoringEngine, type SelectionContext, type HealthState, type RationaleEntry, type CandidateRuntime } from './scoring';
+import { ScoringEngine, type SelectionContext, type HealthState, type RationaleEntry, type CandidateRuntime, type CatalogModelLike } from './scoring';
 import type { FailureType } from './scoringConfig';
 import { SCORING_CONFIG } from './scoringConfig';
 
@@ -483,6 +484,17 @@ export class Router {
     return info;
   }
 
+  /** A custom endpoint model has no catalog entry, so `catalog.find()` never resolves it —
+   *  every `supportsTools`/`supportsVision`/`supportsReasoning` check below falls back to this
+   *  instead. `modelId` arrives as `<endpointId>::<upstreamModel>`. Returns undefined for a
+   *  deleted/unknown endpoint (callers already treat that as "no explicit capability info"). */
+  private customModelCaps(modelId: string): Pick<CustomModel, 'supportsTools' | 'supportsVision' | 'supportsReasoning' | 'tags'> | undefined {
+    const epId = modelId.split('::')[0];
+    const upstream = modelId.split('::').slice(1).join('::');
+    const endpoint = this.settings.getCustomEndpoints().find((ep) => ep.id === epId);
+    return endpoint?.models.find((m) => m.modelId === upstream);
+  }
+
   /**
    * Last model that successfully served each CHAT SESSION — tried first next time, ahead of the
    * per-taskKind `lastGood` pin.
@@ -765,6 +777,11 @@ export class Router {
   private buildSelectionContext(kind: TaskKind, entries: FallbackEntry[], opts: RouteOptions): SelectionContext {
     const runtime = new Map<string, CandidateRuntime>();
     const loadByPlatform = new Map<string, number>();
+    // Catalog-shaped profiles for custom endpoints, built from what the user declared in the
+    // add-endpoint form (role tags + capability ticks). Without these the scorer sees "not in
+    // the catalog" and scores every custom model as worst-possible, so a local model tagged
+    // `coding` could never win an Auto coding turn no matter how it was tagged.
+    const profiles = new Map<string, CatalogModelLike>();
     for (const e of entries) {
       const m = this.catalog.find(e.platform, e.modelId);
       const h = this.healthOf(e.platform, e.modelId);
@@ -777,14 +794,30 @@ export class Router {
         providerLoad = this.rateTracker.recentLoad(e.platform);
         loadByPlatform.set(e.platform, providerLoad);
       }
+      const caps = e.platform === 'custom' ? this.customModelCaps(e.modelId) : undefined;
       const capable = opts.requireTools
-        ? m?.supportsTools !== false && !this.secrets.isToolIncompatible(e.platform, e.modelId)
+        ? (e.platform === 'custom' ? caps?.supportsTools !== false : m?.supportsTools !== false) && !this.secrets.isToolIncompatible(e.platform, e.modelId)
         : kind === 'vision'
-          ? !!m?.supportsVision
+          ? e.platform === 'custom'
+            ? caps?.supportsVision ?? isLikelyVisionModelId(e.modelId.split('::').slice(1).join('::'))
+            : !!m?.supportsVision
           : true;
       runtime.set(`${e.platform}::${e.modelId}`, { health, canSend, hasKey: true, capable, headroom, providerLoad });
+      if (e.platform === 'custom' && !m) {
+        // Mid-tier ranks: a user-added endpoint is neither assumed frontier nor assumed weak —
+        // its tags (and the runtime signals every candidate gets) decide, not a guessed tier.
+        profiles.set(`${e.platform}::${e.modelId}`, {
+          intelligenceRank: 3,
+          speedRank: 3,
+          contextWindow: null,
+          supportsTools: caps?.supportsTools !== false,
+          supportsVision: caps?.supportsVision ?? isLikelyVisionModelId(e.modelId.split('::').slice(1).join('::')),
+          supportsReasoning: caps?.supportsReasoning ?? false,
+          tags: caps?.tags,
+        });
+      }
     }
-    return { taskKind: kind, entries, runtime, requireTools: !!opts.requireTools, isVision: kind === 'vision', reasoningEffort: opts.reasoningEffort, lastServedAt: this.lastServedAt };
+    return { taskKind: kind, entries, runtime, requireTools: !!opts.requireTools, isVision: kind === 'vision', reasoningEffort: opts.reasoningEffort, lastServedAt: this.lastServedAt, profiles };
   }
 
   /**
@@ -841,7 +874,7 @@ export class Router {
         // a completely different project). Check the pin's real capability before honoring it.
         const info = this.catalog.find(forcedEntry.platform, forcedEntry.modelId);
         const canSeeImages = forcedEntry.platform === 'custom'
-          ? isLikelyVisionModelId(forcedEntry.modelId.split('::').slice(1).join('::'))
+          ? this.customModelCaps(forcedEntry.modelId)?.supportsVision ?? isLikelyVisionModelId(forcedEntry.modelId.split('::').slice(1).join('::'))
           : !!info?.supportsVision;
         const provider = resolveProvider(forcedEntry.platform, forcedEntry.modelId, this.settings.getCustomEndpoints());
         const flattens = !!(provider as { flattenContent?: boolean } | undefined)?.flattenContent;
@@ -869,7 +902,7 @@ export class Router {
 
       list = list.filter(
         (e) =>
-          this.catalog.find(e.platform, e.modelId)?.supportsTools !== false &&
+          (e.platform === 'custom' ? this.customModelCaps(e.modelId)?.supportsTools !== false : this.catalog.find(e.platform, e.modelId)?.supportsTools !== false) &&
           !this.secrets.isToolIncompatible(e.platform, e.modelId),
       );
     }
@@ -883,7 +916,7 @@ export class Router {
       // them outright (unknown != false) or blindly assuming every local model can see.
       const isVisionCapable = (e: FallbackEntry): boolean =>
         e.platform === 'custom'
-          ? isLikelyVisionModelId(e.modelId.split('::').slice(1).join('::'))
+          ? this.customModelCaps(e.modelId)?.supportsVision ?? isLikelyVisionModelId(e.modelId.split('::').slice(1).join('::'))
           : !!this.catalog.find(e.platform, e.modelId)?.supportsVision;
 
       let visionCapable = list.filter(isVisionCapable);
@@ -1572,7 +1605,7 @@ export class Router {
         if (eligible.has(`${e.platform}::${e.modelId}`)) continue;
         hidden.total++;
         if (this.secrets.isDeprecated(e.platform, e.modelId)) hidden.hiddenUnavailable++;
-        else if (opts.requireTools && (this.catalog.find(e.platform, e.modelId)?.supportsTools === false || this.secrets.isToolIncompatible(e.platform, e.modelId))) hidden.hiddenNoTools++;
+        else if (opts.requireTools && ((e.platform === 'custom' ? this.customModelCaps(e.modelId)?.supportsTools : this.catalog.find(e.platform, e.modelId)?.supportsTools) === false || this.secrets.isToolIncompatible(e.platform, e.modelId))) hidden.hiddenNoTools++;
         else hidden.hiddenNoKey++;
       }
       if (hidden.total > 0) hiddenCtx = hidden;
@@ -1772,6 +1805,12 @@ export class Router {
       }
 
       const model: CatalogModel | undefined = this.catalog.find(entry.platform, entry.modelId);
+      // Custom endpoints have no catalog entry, so `model` is always undefined for them —
+      // without this, a custom reasoning model (e.g. a local DeepSeek-R1 endpoint) could
+      // never receive reasoningEffort at all, no matter what the user asked for.
+      const supportsReasoning = entry.platform === 'custom'
+        ? this.customModelCaps(entry.modelId)?.supportsReasoning ?? false
+        : !!model?.supportsReasoning;
 
       if (model && !this.rateTracker.canSend(entry.platform, entry.modelId, model.rpmLimit, model.rpdLimit)) {
         const coolMs = this.rateTracker.rpmCooldownMs(entry.platform, entry.modelId, model.rpmLimit);
@@ -1811,7 +1850,7 @@ export class Router {
         tools: opts.tools,
         tool_choice: opts.tool_choice,
         parallel_tool_calls: opts.parallel_tool_calls,
-        reasoningEffort: model?.supportsReasoning ? opts.reasoningEffort : undefined,
+        reasoningEffort: supportsReasoning ? opts.reasoningEffort : undefined,
         baseUrlOverride: this.settings.getEndpoint(entry.platform),
         timeoutMs: this.requestCapMs(provider as { timeoutMs?: number }, forced, opts.timeoutMs),
         abortSignal: perCandidateAbort,

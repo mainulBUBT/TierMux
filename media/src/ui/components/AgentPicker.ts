@@ -91,11 +91,15 @@ export function createAgentPicker(opts: AgentPickerOptions): AgentPickerHandle {
         el(
           'div',
           { class: 'tm-agent-item-body' },
-          el('div', { class: 'tm-agent-item-name' }, m.label),
-          el('div', { class: 'tm-agent-item-desc' }, m.desc),
-          m.caps && m.caps.length
-            ? el('div', { class: 'tm-agent-item-caps' }, ...m.caps.map((c) => el('span', { class: 'tm-cap' }, c)))
-            : null,
+          el(
+            'div',
+            { class: 'tm-agent-item-head' },
+            el('div', { class: 'tm-agent-item-name' }, m.label),
+            m.caps && m.caps.length
+              ? el('div', { class: 'tm-agent-item-caps' }, ...m.caps.map((c) => el('span', { class: 'tm-cap' }, c)))
+              : null,
+          ),
+          el('div', { class: 'tm-agent-item-desc', title: m.desc }, m.desc),
         ),
         m.value === current ? icon(ICON.check, 'tm-agent-item-check') : null,
       );

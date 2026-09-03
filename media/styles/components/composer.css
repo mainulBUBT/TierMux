@@ -13,9 +13,14 @@
   position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 50;
   display: none; flex-direction: column; min-width: 0;
   background: var(--tm-surface-dropdown);
+  /* border-dropdown (not -soft): this is a floating overlay, not an inline divider — it
+     needs to actually read as a distinct surface against whatever's behind it, the same
+     as the todo sheet (composer.css below) already relies on. -soft mixes 65% toward the
+     background on purpose for inline hairlines; on a popover edge that mixing made the
+     boundary nearly disappear in several themes. */
   border: 1px solid var(--tm-border-dropdown);
-  border-radius: var(--tm-radius-lg);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  border-radius: var(--tm-radius-xl);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
   padding: var(--tm-gap-sm);
 }
 .tm-popover.tm-open {
@@ -53,7 +58,7 @@
   height: 26px; padding: 0 9px 0 10px;
   border-radius: var(--tm-radius-full);
   background: transparent; color: var(--tm-fg);
-  border: 1px solid var(--tm-border);
+  border: 1px solid transparent;
   font-size: 11.5px; font-weight: 600;
   cursor: pointer; max-width: 118px; min-width: 0;
   transition: background var(--tm-transition-fast), border-color var(--tm-transition-fast);
@@ -73,30 +78,42 @@
 /* Mode signal lives in the label text; the trigger icon stays the standard
    foreground like every other toolbar icon (per-mode tints read as inconsistent). */
 
-.tm-agent-pop { width: 288px; }
-.tm-agent-list { display: flex; flex-direction: column; gap: 2px; }
+.tm-agent-pop { width: 266px; }
+.tm-agent-list { display: flex; flex-direction: column; gap: 1px; }
 .tm-agent-item {
-  display: flex; align-items: flex-start; gap: var(--tm-gap-md);
-  padding: var(--tm-gap-md); border-radius: var(--tm-radius-md);
+  display: flex; align-items: flex-start; gap: var(--tm-gap-sm);
+  padding: 6px var(--tm-gap-sm); border-radius: var(--tm-radius-md);
   cursor: pointer;
+  transition: background var(--tm-transition-fast);
 }
 .tm-agent-item:hover { background: var(--tm-hover); }
-.tm-agent-item.selected { background: var(--tm-selection-active); }
+/* Soft accent tint + accent-filled icon tile, NOT a solid selection block — the same active
+   treatment the settings nav and the endpoint type-cards use. A heavy filled row was the one
+   place left that still shouted. */
+.tm-agent-item.selected { background: color-mix(in srgb, var(--tm-border-focus) 14%, transparent); }
+.tm-agent-item.selected .tm-agent-item-icon { background: var(--tm-accent); color: var(--tm-accent-fg); }
 .tm-agent-item-icon {
   flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; margin-top: 1px;
-  border-radius: var(--tm-radius-md);
+  width: 22px; height: 22px; margin-top: 1px;
+  border-radius: 6px;
+  transition: background var(--tm-transition-fast), color var(--tm-transition-fast);
   background: var(--tm-surface-panel); color: var(--tm-fg-muted);
 }
-.tm-agent-item.selected .tm-agent-item-icon { color: var(--tm-fg); }
+.tm-agent-item-icon svg { width: 12px; height: 12px; }
 .tm-agent-item-body { flex: 1 1 auto; min-width: 0; }
+/* Name + capability chips share one row (used to be a separate row 6px below the
+   description) — folding them together cuts a whole text line off every card. */
+.tm-agent-item-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .tm-agent-item-name { font-size: var(--tm-text-base); font-weight: 600; color: var(--tm-fg); }
+.tm-agent-item-caps { display: flex; flex-wrap: wrap; gap: 4px; }
+/* Clamped to 2 lines instead of wrapping freely — the full text is still one hover away
+   (title attr on the element), so nothing is lost, just kept off the fold. */
 .tm-agent-item-desc {
   font-size: var(--tm-text-sm); color: var(--tm-fg-muted);
-  line-height: 1.4; margin-top: 2px;
+  line-height: 1.35; margin-top: 1px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.tm-agent-item-caps { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.tm-agent-item-check { flex: 0 0 auto; display: inline-flex; margin-top: 4px; opacity: 0.9; }
+.tm-agent-item-check { flex: 0 0 auto; display: inline-flex; margin-top: 3px; opacity: 0.9; }
 
 /* ── Model picker ── */
 /* A quiet outline pill — secondary to the agent picker, and visually identical to it:
@@ -108,7 +125,7 @@
   height: 26px; padding: 0 9px 0 10px;
   border-radius: var(--tm-radius-full);
   background: transparent; color: var(--tm-fg);
-  border: 1px solid var(--tm-border);
+  border: 1px solid transparent;
   font-size: 11.5px; font-weight: 600; cursor: pointer;
   max-width: 150px; min-width: 0;
   transition: background var(--tm-transition-fast), border-color var(--tm-transition-fast);
@@ -122,10 +139,16 @@
 }
 .tm-model-trigger.tm-serving .tm-model-label { color: var(--tm-fg-link); animation: state-pulse 1.2s ease-in-out infinite; }
 
-.tm-model-pop { width: 296px; max-height: 52vh; }
+.tm-model-pop { width: 284px; max-height: 48vh; }
+.tm-model-search-wrap { position: relative; flex: 0 0 auto; margin-bottom: var(--tm-gap-sm); }
+.tm-model-search-icon {
+  position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
+  display: inline-flex; color: var(--tm-fg-muted); opacity: 0.7; pointer-events: none;
+}
+.tm-model-search-icon svg { width: 12px; height: 12px; }
 .tm-model-search {
-  width: 100%; box-sizing: border-box; flex: 0 0 auto;
-  margin-bottom: var(--tm-gap-sm); padding: 4px 8px;
+  width: 100%; box-sizing: border-box;
+  padding: 5px 8px 5px 26px;
   font-size: var(--tm-text-base);
   background: var(--tm-surface-input); color: var(--tm-fg-input);
   border: 1px solid var(--tm-border-input);
@@ -136,8 +159,8 @@
 /* Reasoning effort — segmented control inside the popover (a per-model property,
    so it lives with the model choice, not in the toolbar). */
 .tm-effort {
-  flex: 0 0 auto; display: flex; align-items: center; gap: var(--tm-gap-md);
-  padding: 2px var(--tm-gap-sm) var(--tm-gap-sm);
+  flex: 0 0 auto; display: flex; align-items: center; gap: var(--tm-gap-sm);
+  padding: 1px var(--tm-gap-sm) var(--tm-gap-sm);
   flex-wrap: wrap;
 }
 .tm-effort-label { font-size: var(--tm-text-sm); color: var(--tm-fg-muted); font-weight: 600; }
@@ -173,12 +196,13 @@
   padding: var(--tm-gap-md) var(--tm-gap-sm) var(--tm-gap-xs);
 }
 .tm-model-item {
-  display: flex; align-items: center; gap: var(--tm-gap-md);
-  padding: 4px var(--tm-gap-sm); border-radius: var(--tm-radius-md);
+  display: flex; align-items: center; gap: var(--tm-gap-sm);
+  padding: 3px var(--tm-gap-sm); border-radius: var(--tm-radius-md);
   cursor: pointer; font-size: var(--tm-text-base); color: var(--tm-fg);
+  transition: background var(--tm-transition-fast);
 }
 .tm-model-item:hover { background: var(--tm-hover); }
-.tm-model-item.selected { background: var(--tm-selection-active); }
+.tm-model-item.selected { background: color-mix(in srgb, var(--tm-border-focus) 14%, transparent); }
 .tm-model-item .tm-model-item-label {
   flex: 1 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -221,10 +245,10 @@
 }
 
 /* ── Toolbar divider between the control cluster and the action cluster ── */
-.toolbar-sep {
-  flex: 0 0 auto; width: 1px; height: 16px;
-  background: var(--tm-border); opacity: 0.7; margin: 0 2px;
-}
+/* Hidden (2026-09-03, composer redesign): every other control in this row is now borderless
+   at rest, so a hard vertical rule here was the one leftover piece of chrome — .tgroup.right's
+   own margin-left:auto already does the left/right split without it. */
+.toolbar-sep { display: none; }
 
 /* ── Working state — the composer's active border while the agent runs ── */
 /* The input itself signals the run: accent border + soft pulsing ring. Focus keeps its
@@ -332,7 +356,6 @@
   .tm-agent-trigger .tm-agent-label { max-width: 44px; }
   .tm-model-trigger { max-width: 88px; }
   .tm-model-trigger .tm-model-label { max-width: 56px; }
-  .toolbar-sep { display: none; }
 }
 
 
