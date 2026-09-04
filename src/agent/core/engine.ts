@@ -17,7 +17,7 @@ import type { AgentOpts, AgentResult, ToolEvent } from '../agent';
 import { createRouterProvider } from './routerProvider';
 import { buildV3ToolSet } from './tools/v3';
 import { makeRepairViaModelSelfCorrection } from './repair';
-import { compactIfNeeded } from './compact';
+import { compactIfNeeded, ageToolOutputs } from './compact';
 import { resolvePolicy, policyFromSettings } from '../../permissions/policy';
 import { recordOutcome, findCatalogModel } from '../../router/picker';
 import { resolveExecutionProfile } from '../executionProfile';
@@ -35,22 +35,6 @@ const FALLBACK_PROFILE = resolveExecutionProfile(undefined);
 const COORDINATION_TOOLS = ['todoWrite', 'delegateTask'];
 /** At/below this window the schema tax stops being affordable. */
 const SMALL_WINDOW_MAX = 16_384;
-
-// A reply that ANNOUNCES the next action instead of taking it ("Let me read the file…") is one
-// of the two shapes the agent-mode continuation nudge keys on (see runTurn). The stem list is
-// ^-anchored, and weak models routinely put a discourse marker in front of it — so the optional
-// lead below is part of the SAME guard, not a second one.
-//
-// Repro ×2 (2026-08-31, one Blade-modernization task routed across providers, each ending with a
-// 7-item plan at 0 done and the user typing "continue" by hand):
-//   Opencode/nemotron-3-ultra-free  — "Now I'll start editing the index.blade.php file first."
-//   Kilo/nemotron-3-ultra-550b-a55b — "Now let me rewrite the entire map-related JavaScript…"
-// Both MISSED the stem regex on the leading "Now", so no continuation ran at all.
-//
-// The stem must still match after the lead, which is what keeps this from swallowing real
-// answers: "Now the map uses AdvancedMarkerElement" leads with a marker but has no stem.
-const NARRATION_RE =
-  /^\s*(?:(?:ok|okay|alright|all right|now|next|then|so|great|perfect|good|sure|first|finally)\b[\s,.:!\u2014-]*){0,2}(?:the user|i'll|i will|we'll|we will|let's|let me|we need|we can|i need|first,|i should|we should|okay,? so)\b/i;
 
 /** UI-facing copy of a tool's result. `tr.output` was dropped entirely until 2026-09-01, so
  *  `ToolEvent.detail` was never populated — with two consequences neither side reported:
@@ -218,6 +202,10 @@ const planAccepted: StopCondition<ToolSet> = ({ steps }) =>
 export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentResult> {
   // Turn-start facts: if signalAborted=true here, no model request can ever run this turn.
   diagLog('engine.start', `mode=${opts.mode} msgs=${opts.messages?.length ?? 0} signalAborted=${opts.abortSignal?.aborted ?? 'none'} requestId=${opts.requestId ?? '-'}`);
+  // TTFT instrumentation anchor (tiermux.agent.diagTrace): every stage below logs elapsed
+  // ms from here, so a slow "nothing is happening" turn can be attributed — our routing vs
+  // the provider's queue+prefill — instead of guessed at.
+  const turnT0 = Date.now();
   const modelMessages = toModelMessages(opts.messages);
   // Plan mode's exitPlanMode tool hands its VALIDATED structure here; the turn stops on that
   // call (stopWhen below) and the host renders the plan card straight from this object — no
@@ -245,6 +233,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     onModelSelected: (platform, mdl, runtimeName) => {
       served = { platform, model: mdl, runtimeName };
       opts.onModel(platform, mdl, runtimeName);
+      // Fires when the candidate's response SETTLES (routerProvider's reportServed), not at
+      // pick time — the pick itself is timed by rp.chain in resolveCandidates. Diag-visible so
+      // a "why does the footer name THIS model" question has a timestamp next to the
+      // failover walk (see rp.failover logs).
+      diagLog('engine.served', `${Date.now() - turnT0}ms into the turn — ${platform}::${mdl} reported as the serving model`);
     },
     onUsage: opts.usageSink
       ? (info) => opts.usageSink?.({ inputTokens: info.inputTokens, outputTokens: info.outputTokens, contextTokens: info.inputTokens, model: info.model })
@@ -252,7 +245,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   });
 
   const { repair } = makeRepairViaModelSelfCorrection({ model, signal: opts.abortSignal });
-  const policy = policyFromSettings(false, opts.mode, opts.sessionId);
+  const policy = policyFromSettings(opts.autoApprove ?? false, opts.mode, opts.sessionId);
   const toolEvents: ToolEvent[] = [];
   let reasoningText = '';
   // ai v7 consumeStream() RESOLVES on stream errors (they go to its onError option) — the
@@ -290,6 +283,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // Which model actually served the turn — surfaced in AgentResult so the host's per-bubble
   // footer shows the real model (failover can switch it mid-turn; the LAST server wins).
   let served: { platform?: string; model?: string; runtimeName?: string } = {};
+  /** TTFT instrumentation (tiermux.agent.diagTrace): when the first content delta arrived.
+   *  Turn-start latency splits into OUR routing cost (rp.chain's "ms to resolve") vs the
+   *  provider's queue+prefill (engine.ttft). */
+  let firstDeltaAt: number | undefined;
 
   /** Serving model's ExecutionProfile, resolved per step — drives both the compaction budget
    *  and the tool-offer size. onModelSelected fires at step END, so step 0 falls back
@@ -342,8 +339,23 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           ? Object.keys(tools).filter((t) => !COORDINATION_TOOLS.includes(t))
           : undefined;
         const forcePlan = forcePlanToolOnNextStep && stepNumber === 0;
+        // Age FIRST, compact second: aging elides consumed tool output on EVERY step (no
+        // budget needed), and compaction then estimates on the aged transcript — a shrunken
+        // history crossing its 80% trigger later, or never. The tiermux.agent.toolCompaction
+        // setting drives the aging threshold: 'off' skips aging entirely, 'light' elides
+        // only large command outputs, 'aggressive' also line-caps search-shaped results via
+        // the lower threshold. Unknown values fall back to light.
+        const compactionMode = opts.toolCompaction ?? 'light';
+        const aging = compactionMode === 'off'
+          ? { stubbedChars: 0 as number, messages: undefined as ModelMessage[] | undefined }
+          : ageToolOutputs(messages, compactionMode === 'aggressive' ? 800 : 2_000);
+        if (aging.stubbedChars > 0) {
+          diagLog('engine.ageToolOutputs', `${aging.stubbedChars.toLocaleString()} chars of earlier tool output elided before step ${stepNumber}`);
+        }
+        const compaction = compactIfNeeded(aging.messages ?? messages, profile.pruneTarget);
+        const stepMessages = compaction.messages ?? aging.messages;
         return {
-          ...compactIfNeeded(messages, profile.pruneTarget),
+          ...(stepMessages ? { messages: stepMessages } : {}),
           // forcePlan's activeTools deliberately WINS over the small-window offer: on this one
           // step the turn has to close, and every tool outside PLAN_CLOSERS is a way not to.
           ...(forcePlan
@@ -360,6 +372,13 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       maxRetries: 1,
 
       onChunk: ({ chunk }) => {
+        // First streamed delta of the pass — the TTFT number (tiermux.agent.diagTrace).
+        // rp.chain's "ms to resolve" is OUR routing cost; the remainder to TTFT is the
+        // provider's queue + prompt prefill. Logged once per pass, never per chunk.
+        if (firstDeltaAt == null && (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta' || chunk.type === 'tool-call')) {
+          firstDeltaAt = Date.now();
+          diagLog('engine.ttft', `${firstDeltaAt - turnT0}ms to first delta (${chunk.type})`);
+        }
         if (chunk.type === 'text-delta') {
           narrationSinceToolCall = true;
           opts.onChunk(chunk.text);
@@ -496,15 +515,17 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   }
 
   // CONTINUATION NUDGE — one continuation when the turn ends without CLOSING
-  // (finish 'stop' only), skipped for questions so Q&A keeps its prose answer:
-  //   act-gap    — no tool ran; reply is empty / narration / a proposal fence.
-  //   report-gap — tools ran but the synthesis step ended empty or on narration (the SDK
-  //     always runs a next step after tool calls, so this is an empty synthesis, not an
-  //     early loop end). Narration-after-tools ANNOUNCES the next call instead of making
-  //     it — same unclosed loop. Repro ×2 (Kilo/stepfun step-3.7-flash:free, 2026-08-30
-  //     3:47/3:54 PM): ended on "Let me continue reading…" after 8 and 6 tool uses.
-  // This EXTENDS the existing guard's condition — one guard, not a second (SIMPLE_CORE_RESET
-  // rule: live repro → ONE targeted guard).
+  // (finish 'stop' only). Wire-level signals only, never prose classification:
+  //   act-gap    — no tool ran and the reply is empty.
+  //   report-gap — tools ran but the synthesis step came back empty (the SDK always
+  //     runs a next step after tool calls, so this is an empty synthesis, not an
+  //     early loop end).
+  //   plan-gap   — plan mode ended without an exitPlanMode call (see below).
+  // Deliberately NOT narration matching: guessing "announced the next action instead
+  // of taking it" from reply prose is a regex tower — every new phrasing misses it and
+  // every widening swallows a real answer. A non-empty synthesis ships as-is; when the
+  // model wrote todos, unfinished items surface the host's Continue affordance instead
+  // of burning a second model call on a guess.
   const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
   const lastUserText = typeof lastUser?.content === 'string' ? lastUser.content : '';
   // The carve-out that keeps plan mode able to ANSWER. It matters more since planGap stopped
@@ -521,8 +542,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       || /^(how|what|why|when|who|which|explain|tell me|describe|review)\b/i.test(lastUserText.trim())
       || /\b(an? example of|examples? of|the difference between|compare\b|walk me through|summar(?:y of|ise|ize))\b/i.test(lastUserText));
   const replyEmpty = outcome.text.trim().length === 0;
-  const replyIsNarration = !replyEmpty && NARRATION_RE.test(outcome.text);
-  diagLog('engine.turnEnd', `finish=${outcome.finishReason} textLen=${outcome.text.length} steps=${outcome.responseMessages.length} tools=${toolEvents.length} reasoningLen=${reasoningText.length} empty=${replyEmpty} narration=${replyIsNarration}`);
+  diagLog('engine.turnEnd', `finish=${outcome.finishReason} textLen=${outcome.text.length} steps=${outcome.responseMessages.length} tools=${toolEvents.length} reasoningLen=${reasoningText.length} empty=${replyEmpty}`);
   const didWork = toolEvents.length > 0;
   // Invariant 3 (SIMPLE_CORE_RESET): a turn gets AT MOST ONE continuation pass, whichever
   // trigger fires first. The nudge and the length-cut guard below both run off outcome, and
@@ -530,8 +550,8 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // is itself cut at the output budget would otherwise fall straight into the length guard
   // (probe: 4 model calls in one turn). This flag is the gate; no ladder.
   let continued = false;
-  const actGap = !didWork && (replyEmpty || replyIsNarration || outcome.text.includes('```'));
-  const reportGap = didWork && (replyEmpty || replyIsNarration);
+  const actGap = !didWork && replyEmpty;
+  const reportGap = didWork && replyEmpty;
   // plan-gap — the SAME unclosed loop, in plan mode: the model investigated and then ended on
   // narration instead of calling exitPlanMode, so the user gets "Now let me check if there's
   // any existing theme support…" and no plan card. The wire-level fact is identical to
@@ -566,7 +586,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     && !looksLikeQuestion
     && (actGap || reportGap || planGap)
   ) {
-    diagLog('engine.applyNudge', `${planGap ? 'plan-gap (no exitPlanMode call)' : reportGap ? 'report-gap (tools ran, empty synthesis)' : 'act-gap (no tools ran)'} (textLen=${outcome.text.length}, narration=${replyIsNarration}) — continuation pass`);
+    diagLog('engine.applyNudge', `${planGap ? 'plan-gap (no exitPlanMode call)' : reportGap ? 'report-gap (tools ran, empty synthesis)' : 'act-gap (no tools ran, empty reply)'} (textLen=${outcome.text.length}) — continuation pass`);
     // Pass-1 narration triggered the nudge — retract it (repro: nemotron-3-ultra-free 12:57
     // AM, both passes' narration stacked in one bubble); pass 2's text is the sole draft.
     if (outcome.text.trim()) opts.onRetractDraft?.();

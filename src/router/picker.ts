@@ -1,9 +1,10 @@
 // v3 model picker (plan step 8) — replaces src/router/router.ts's 2,235-LOC selection logic
 // and the whole scoring stack (scoring.ts, wilson.ts, metricsStore, rateTracker,
 // latencyTracker, capabilityProfile). Query-type → candidate chain + a MINIMAL per-model
-// cooldown. No learning, no hedging, no session pin, no circuit-breaker: a user can read
-// this table and know exactly which model answers what. The cooldown re-adds only the
-// lightweight "skip a model that just failed" behavior the delete-the-Router pass dropped;
+// cooldown. No hedging, no session pin: a user can read this table and know exactly which
+// model answers what. The cooldown re-adds only the lightweight "skip a model that just
+// failed" behavior the delete-the-Router pass dropped; the TTFT EWMA (recordTtft,
+// 2026-09-04) adds only "prefer the peer that actually answers" inside the enabled tail —
 // the rest of the Router's resilience machinery stays deleted.
 //
 // Sources (catalog/settings/secrets) are injected once at activation via setModelSources —
@@ -16,6 +17,7 @@ import type { SecretStore } from '../config/secrets';
 import { allPlatformInfo } from '../providers';
 import type { ChatMessage, CatalogModel } from '../shared/types';
 import { classifyTask, type TaskKind } from '../agent/routing';
+import { diagLog } from '../util/diag';
 
 /** platform::modelId → candidate chain per task kind. Ordered: best first. */
 export const TASK_ROUTING: Record<TaskKind, string[]> = {
@@ -165,13 +167,22 @@ function keylessFallback(): ModelSelection {
 /** Minimal per-model health (cooldown) — the ONLY resilience state the v3 picker keeps.
  *  A model that fails (429/5xx/timeout/network) is skipped until its cooldown elapses, so the
  *  fallback chain prefers healthy models; a success resets the streak. Exponential backoff
- *  (30s base → 2m cap) keeps a persistently-broken model from being retried every call
- *  without the full circuit-breaker the deleted Router had. In-memory only (resets on reload)
- *  — deliberate: this is "don't hammer a model that just 429'd", not durability. */
+ *  (30s base → 10m cap) keeps a persistently-broken model from being retried every call
+ *  without the full circuit-breaker the deleted Router had.
+ *
+ *  Persisted to globalState (see persistHealth/restoreHealth wiring in extension.ts) so a
+ *  reload doesn't re-learn every flapping free-tier provider from scratch. TTL-bounded on
+ *  restore — a stale cooldown from yesterday must not shadow today's healthy model. */
 interface ModelHealth { failures: number; cooldownUntil: number; }
 const modelHealth = new Map<string, ModelHealth>();
 const HEALTH_BASE_MS = 30_000;
-const HEALTH_MAX_MS = 2 * 60_000;
+/** 2m → 10m (2026-09-04): a free provider that is 429/500-ing stays down for MINUTES, and a
+ *  2-minute memory meant the same dead candidate re-headed the chain on almost every turn,
+ *  re-paying its failure latency each time. Live repro (TierMux Diag, 6:22 PM): opencode
+ *  500 (+1s) then ovh 429 (+3s) burned 4s of a 17s turn — exactly the candidates the
+ *  previous turns had already failed on. 30s base doubling still lets a recovered model
+ *  back in within a minute of its FIRST failure; only the repeated-failure ceiling moved. */
+const HEALTH_MAX_MS = 10 * 60_000;
 function healthKey(platform: string, modelId: string): string { return `${platform}::${modelId}`; }
 function cooldownFor(failures: number): number {
   return Math.min(HEALTH_BASE_MS * 2 ** Math.max(0, failures - 1), HEALTH_MAX_MS);
@@ -185,6 +196,88 @@ export function recordOutcome(platform: string, modelId: string, ok: boolean): v
 export function isInCooldown(platform: string, modelId: string): boolean {
   const h = modelHealth.get(healthKey(platform, modelId));
   return !!h && h.cooldownUntil > Date.now();
+}
+
+/** Serialize live cooldowns for persistence — only entries still in the future. Bounded so
+ *  the memento never grows with dead history. */
+export function snapshotHealth(): Array<{ key: string; failures: number; cooldownUntil: number }> {
+  const now = Date.now();
+  const out: Array<{ key: string; failures: number; cooldownUntil: number }> = [];
+  for (const [key, h] of modelHealth) {
+    if (h.cooldownUntil > now && out.length < 200) out.push({ key, failures: h.failures, cooldownUntil: h.cooldownUntil });
+  }
+  return out;
+}
+
+/** Restore persisted cooldowns — entries already expired (stale reload) are dropped. */
+export function restoreHealth(entries: Array<{ key: string; failures: number; cooldownUntil: number }>): void {
+  const now = Date.now();
+  for (const e of entries ?? []) {
+    if (typeof e?.key !== 'string' || !(e.cooldownUntil > now)) continue;
+    modelHealth.set(e.key, { failures: Math.max(0, e.failures | 0), cooldownUntil: e.cooldownUntil });
+  }
+}
+
+/** Recent time-to-first-chunk EWMA per model — the ONE latency fact the v3 picker keeps,
+ *  fed live by routerProvider (recordTtft on every candidate's first stream chunk / response).
+ *
+ *  Live repro (TierMux Diag, 2026-09-04 6:22 PM): the Auto chain reached
+ *  kilo::nemotron-3-ultra after two dead candidates and paid 13.4s of queue+keepalive for
+ *  its first byte — while the enabled tail behind it held fast-answering peers the picker
+ *  had no way to know about. Failure cooldown only smells BREAKAGE; it is blind to a
+ *  healthy model that is merely slow to start, so such a model re-served every turn.
+ *
+ *  Deliberately narrow: an EWMA + sample count, in-memory, no per-task split, no absolute
+ *  ms threshold anywhere (the demotion below is relative to the fastest candidate in the
+ *  pool being ranked). In-memory like modelHealth — "prefer the peer that answers" is a
+ *  session-scale fact, not durability. */
+const TTFT_EWMA_ALPHA = 0.3;
+/** Fresh measurement window: older than this and the EWMA is discarded rather than blended. */
+const TTFT_STALE_MS = 10 * 60_000;
+/** Samples before a model's TTFT is trusted enough to demote it (mirrors SCORING minSamples). */
+const TTFT_MIN_SAMPLES = 2;
+interface TtftSample { ms: number; samples: number; at: number; }
+const ttftByModel = new Map<string, TtftSample>();
+
+/** Record one first-chunk latency for `platform::modelId` (call on SUCCESS paths only —
+ *  failures are modelHealth's job). First sample seeds; then EWMA; a sample after a long
+ *  quiet period reseeds instead of blending into a stale average. */
+export function recordTtft(platform: string, modelId: string, ms: number): void {
+  if (!Number.isFinite(ms) || ms < 0) return;
+  const key = healthKey(platform, modelId);
+  const prev = ttftByModel.get(key);
+  if (!prev || Date.now() - prev.at > TTFT_STALE_MS) {
+    ttftByModel.set(key, { ms, samples: 1, at: Date.now() });
+    return;
+  }
+  ttftByModel.set(key, {
+    ms: prev.ms + TTFT_EWMA_ALPHA * (ms - prev.ms),
+    samples: prev.samples + 1,
+    at: Date.now(),
+  });
+}
+
+/** Trusted recent TTFT, or undefined when unmeasured/too few samples. */
+function trustedTtft(platform: string, modelId: string): number | undefined {
+  const s = ttftByModel.get(healthKey(platform, modelId));
+  return s && s.samples >= TTFT_MIN_SAMPLES ? s.ms : undefined;
+}
+
+/** Monotonic per-task-kind counter driving the equal-rank rotation — module-level so it
+ *  advances across turns within a session (and across sessions sharing this module).
+ *  Post-increment: the FIRST call returns 0 (no rotation — picker order stands until a
+ *  same-rank peer has proven itself), then 1, 2, … walk the group. */
+const taskRoundCounters = new Map<string, number>();
+function nextTaskRound(kind: string): number {
+  const cur = taskRoundCounters.get(kind) ?? 0;
+  taskRoundCounters.set(kind, cur + 1);
+  return cur;
+}
+
+/** Test seam ONLY — routing-gates e2e resets the rotation counters between blocks so
+ *  order-sensitive assertions are deterministic. Production never calls this. */
+export function __resetTaskRoundCounters(): void {
+  taskRoundCounters.clear();
 }
 
 /** The v3 selection: classify → table → pinned/user order first → enabled filter.
@@ -331,6 +424,13 @@ export async function selectModel(
     }
   }
   for (const key of TASK_ROUTING[taskKind] ?? TASK_ROUTING.chat) {
+    const [tPlatform, ...tRest] = key.split('::');
+    const tModelId = tRest.join('::');
+    // Dead-ID guard: a renamed/retired gateway model must say so in the rationale instead of
+    // silently contributing nothing while the turn falls into the settings-order tail.
+    if (tPlatform && tModelId && !sources.catalog.find(tPlatform, tModelId) && !skipReasons.has(key)) {
+      skip(key, 'routing table entry not in catalog (renamed or retired?)');
+    }
     const picked = await pick(key, `task table (${taskKind})`);
     if (picked && !chain.includes(picked)) chain.push(picked);
   }
@@ -341,7 +441,7 @@ export async function selectModel(
   // opencode/nemotron-3-ultra-free narrated a plan instead of acting on "@routes/web.php
   // optimize this" — it sat first in settings order after the task table's dead ids were
   // all skipped). Pinned models stay exempt (explicit user choice above).
-  const ranked: Array<{ key: string; rank: number }> = [];
+  const ranked: Array<{ key: string; rank: number; speed: number }> = [];
   for (const key of enabled) {
     // Already chained (pin/table pick)? Skip BEFORE re-picking: pick() would overwrite the
     // entry's original label ('pinned by you' / 'task table (chat)') with 'enabled model' and
@@ -353,23 +453,96 @@ export async function selectModel(
     const platform = key.split('::')[0];
     const modelId = key.split('::').slice(1).join('::');
     const meta = sources.catalog.find(platform, modelId);
-    ranked.push({ key: picked, rank: meta?.intelligenceRank ?? Number.POSITIVE_INFINITY });
+    ranked.push({ key: picked, rank: meta?.intelligenceRank ?? Number.POSITIVE_INFINITY, speed: meta?.speedRank ?? 5 });
   }
-  ranked.sort((a, b) => a.rank - b.rank); // stable — equal/unknown ranks keep settings order
+  // TTFT-aware tail order (2026-09-04): a tail sorted by intelligenceRank alone is blind to
+  // which peer actually ANSWERS fast. Two deterministic effects, both relative to THIS
+  // candidate pool (no absolute ms anywhere):
+  //   1. Within one rank, lower recent TTFT first (unmeasured keeps settings order after
+  //      measured ones — measured beats unmeasured so samples get used once earned).
+  //    Within-one-rank only: intelligence stays the primary sort, so a smarter-but-slower
+  //      model still outranks a trivially-fast weak one.
+  //   2. THE SLOW-MODEL DEMOTION — a model whose trusted TTFT is ≥ TTFT_SLOW_RATIO × the
+  //      fastest trusted peer in this pool drops behind EVERY non-slow candidate, crossing
+  //      rank lines. This is the balance-rule analog the deleted scoring Router had
+  //      (speedFloorRatio): serial failover makes a slow-queue model high in the chain tax
+  //      every turn it heads (live repro 2026-09-04: kilo::nemotron 13.4s to first byte —
+  //      while faster peers sat later in the same tail). The pinned model and the task-table
+  //      head (both upstream of this tail) are exempt — explicit/curated choice.
+  // TTFT_SLOW_RATIO 3× mirrors scoringConfig's speedFloorRatio.
+  const ttftOf = (key: string): number | undefined => {
+    const [platform, ...rest] = key.split('::');
+    return trustedTtft(platform, rest.join('::'));
+  };
+  const knownTtfts = ranked.map((r) => ttftOf(r.key)).filter((t): t is number => t !== undefined);
+  const fastestTtft = knownTtfts.length ? Math.min(...knownTtfts) : undefined;
+  const SLOW_RATIO = 3;
+  const isSlow = (key: string): boolean => {
+    const t = ttftOf(key);
+    return t !== undefined && fastestTtft !== undefined && t >= fastestTtft * SLOW_RATIO;
+  };
+  ranked.sort((a, b) => {
+    const slow = (isSlow(a.key) ? 1 : 0) - (isSlow(b.key) ? 1 : 0);
+    if (slow) return slow;
+    // Speed-aware grouping (2026-09-04): catalog speedRank 5 = a 397B-class model whose
+    // prefill alone runs a minute on a free gateway. It can still ANSWER, so it stays in
+    // the pool — but only as a last-resort fallback, never rotated into the head. Without
+    // this, quota rotation lifted ovh::Qwen3.5-397B-A17B (rank-1/speed-5) to the chain head
+    // and a simple chat turn took ~5 minutes ("Calculating… 4m56s").
+    const slowCapable = (e: { speed: number }): number => (e.speed >= 4 ? 1 : 0);
+    const sc = slowCapable(a) - slowCapable(b);
+    if (sc) return sc;
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    const ta = ttftOf(a.key) ?? Infinity;
+    const tb = ttftOf(b.key) ?? Infinity;
+    return ta - tb;
+  });
+  // Quota-spreading within one rank (2026-09-04): a deterministic rank+TTFT sort hands the
+  // SAME best model every turn, so one provider's free quota drains while equally-smart peers
+  // (same intelligenceRank) sit unused — "600 models catalog, but it keeps using the same 1-2."
+  // Rotate the head of each equal-rank group so the NEXT turn leads with a different peer.
+  // Deterministic per taskKind (no RNG): a monotonically increasing counter picks the group's
+  // start index, so repeated turns walk through the peers and quota spreads across providers.
+  // Pinned models, the task-table head, and slow-demoted models (all upstream of this sort,
+  // or flagged slow) are untouched.
+  {
+    const counter = nextTaskRound(taskKind);
+    let i = 0;
+    while (i < ranked.length) {
+      const groupRank = ranked[i].rank;
+      let j = i;
+      while (j < ranked.length && ranked[j].rank === groupRank) j++;
+      if (j - i > 1 && Number.isFinite(groupRank)) {
+        const offset = counter % (j - i);          // 0..(groupSize-1)
+        const rotated = [...ranked.slice(i, j).slice(offset), ...ranked.slice(i, j).slice(0, offset)];
+        ranked.splice(i, j - i, ...rotated);
+      }
+      i = j;
+    }
+  }
   for (const r of ranked) {
     if (Number.isFinite(r.rank)) pickLabels.set(r.key, `enabled tail · intelligence rank ${r.rank}`);
     chain.push(r.key);
   }
   if (chain.length === 0) return keylessFallback();
 
-  // Assemble the "Why this model?" report: chain in order (chain[0] = selected), then every
-  // skipped candidate with its reason. Chain positions after 0 are failover order.
+  // Assemble the "Why this model?" report: chain in order (chain[0] = selected), then a
+  // BOUNDED sample of skipped candidates with their reasons. Chain positions after 0 are
+  // failover order. 2026-09-04: the skip list ran to 361 entries (every disabled/cooldowned/
+  // keyless-blocked model in a 600-model catalog), so the report was re-serialized and
+  // re-posted on every agent step — diag showed `chat.rationale entries=373` per step, and
+  // the popover tried to render all of them. The chain carries the real decision; the skip
+  // sample just explains the top of it, capped with a count for the rest.
   const rankOf = (key: string): number | undefined => {
     const platform = key.split('::')[0];
     const modelId = key.split('::').slice(1).join('::');
     const meta = sources?.catalog.find(platform, modelId);
     return meta && typeof meta.intelligenceRank === 'number' ? meta.intelligenceRank : undefined;
   };
+  const MAX_SKIP_SHOWN = 15;
+  const skipList = [...skipReasons.entries()]
+    .filter(([key]) => !chain.includes(key))
+    .slice(0, MAX_SKIP_SHOWN);
   const rationale: SelectionRationale = {
     taskKind,
     picked: chain[0],
@@ -385,14 +558,15 @@ export async function selectModel(
           reason: i === 0 ? `${label} — serves this turn` : `${label} — failover #${i}`,
         };
       }),
-      ...[...skipReasons.entries()]
-        .filter(([key]) => !chain.includes(key))
-        .map(([key, reason]) => ({
-          model: key, selected: false, score: 0, capability: 0, runtime: 1, preference: 1, confidence: 0,
-          reason, skip: reason,
-        })),
+      ...skipList.map(([key, reason]) => ({
+        model: key, selected: false, score: 0, capability: 0, runtime: 1, preference: 1, confidence: 0,
+        reason, skip: reason,
+      })),
     ],
   };
+  // Report the bound (diag-visible, never in the popover) so the cap itself is auditable.
+  const hiddenSkips = skipReasons.size - skipList.length;
+  if (hiddenSkips > 0) diagLog('picker.rationale', `${chain.length} chained · ${skipList.length} of ${skipReasons.size} skips shown (${hiddenSkips} hidden)`);
 
   return { model: chain[0], fallbackChain: chain.slice(1), taskKind, rationale };
 }

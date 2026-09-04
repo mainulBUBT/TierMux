@@ -25,6 +25,12 @@
  * picker popup against the composer was the visible tell. Scoping it to :root instead does
  * not help: VS Code sets its own values closer to the content and wins the cascade.
  *
+ * No brand color is pinned any more (the one-day #4f46e5 experiment was reverted
+ * 2026-09-04 by user direction — accent back to the theme's own blue). The --tm-accent /
+ * --tm-border-focus / --tm-progress aliases are RE-DECLARED on BODY in main.css so they
+ * re-resolve where the --vscode-* values actually live. See "Accent follows the active
+ * theme" at the top of main.css.
+ *
  * The palette's two extra tones have no --vscode-* equivalent (VS Code names ONE muted
  * foreground and ONE panel border, the design uses fg/muted/dim and border/soft), so they
  * are derived from the theme's own values rather than pinned — they stay correct in light
@@ -83,6 +89,11 @@
   --tm-border-focus: var(--vscode-focusBorder);
   --tm-border-dropdown: var(--vscode-dropdown-border, var(--vscode-panel-border));
   --tm-border-widget: var(--vscode-editorWidget-border, var(--vscode-panel-border));
+  /* Hover border — a neutral grey one step stronger than --tm-border (user direction
+     2026-09-04: "border where need add grey"): pills, cards and the todo bar used to flip
+     their border to the accent on hover, which shouted louder than the grey hover fill
+     behind it. Keeps the accent border language reserved for focus and selection. */
+  --tm-border-hover: color-mix(in srgb, var(--vscode-foreground, #cccccc) 32%, transparent);
 
   /* ── Accent / status aliases ── */
   --tm-accent: var(--vscode-button-background);
@@ -94,9 +105,16 @@
   --tm-warning: var(--vscode-charts-yellow, #cca700);
   --tm-info: var(--vscode-charts-blue, #3794ff);
 
-  /* ── Interaction states ── */
-  --tm-hover: var(--vscode-list-hoverBackground);
-  --tm-hover-toolbar: var(--vscode-toolbar-hoverBackground);
+  /* ── Interaction states ──
+   * Hover is a NEUTRAL grey (user direction 2026-09-04: "hover bg jekhane grey dile valo
+   * grey daw — etai standard"): the tokens used to ride list-hoverBackground /
+   * toolbar-hoverBackground, and the list one is strongly hued in the default themes
+   * (Dark+ paints it #04395E blue), so every row hover in the chat flashed blue. Mixing
+   * the theme's own FOREGROUND over transparent gives a hueless grey wash in any theme —
+   * light ones included, where the same mix just flips to a darker wash. Toolbar hover is
+   * the same grey one step stronger for the small icon-button surfaces. */
+  --tm-hover: color-mix(in srgb, var(--vscode-foreground, #cccccc) 9%, transparent);
+  --tm-hover-toolbar: color-mix(in srgb, var(--vscode-foreground, #cccccc) 13%, transparent);
   --tm-selection-active: var(--vscode-list-activeSelectionBackground);
 
   /* ── Spacing (canonical -gap-* scale; -space-* kept as aliases) ── */

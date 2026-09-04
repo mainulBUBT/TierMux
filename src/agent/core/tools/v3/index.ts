@@ -72,9 +72,10 @@ export interface ToolsetBindings {
  *  every call through an ask; mutating file tools are absent AND policy-denied. `exitPlanMode`
  *  is plan mode's ONLY exit — the model calls it to hand the finished plan to the user, which
  *  also ends the turn (engine.ts stopWhen).
- *  `ask`: the full set MINUS editFile/writeFile/deleteFile — shell, search and sub-agents are
- *  all available so a question about the repo (git history, test output) is answerable; only
- *  file mutation is withheld. `agent`: the full set. */
+ *  `ask`: read/search plus READ-ONLY shell — runCommand is offered but the policy auto-runs
+ *  only confidently read-only commands (ls, git log), denies destructive ones outright, and
+ *  asks for the rest; the three file mutators are absent AND policy-denied.
+ *  `agent`: the full set. */
 // Return type pinned to ToolSet on purpose. The three branches no longer share a key
 // hierarchy (exitPlanMode exists ONLY in plan mode), so the inferred union stopped satisfying
 // ToolSet's index signature at the engine's cast site — nothing downstream uses the per-tool
@@ -108,13 +109,12 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
       exitPlanMode: createExitPlanModeTool(bindings.onPlanProposed),
     };
   }
-  // Ask mode is "everything except edits" — NOT "read-only tools only". The old strictly
-  // read-only set had no runCommand, so a plain "what did the last commit do?" was
-  // unanswerable: the model cannot shell out to `git log`, and glob/listDir hard-skip `.git`
-  // (search.ts SKIP), so its honest report was "no .git found" while a rival agent answered
-  // the same question by running `git log -1 --stat` from its own ask agent (live repro
-  // 2026-09-01). runCommand is offered here and gated by the normal approval chain; only the
-  // three file mutators are withheld, and resolvePolicy hard-denies them for this mode too.
+  // Ask mode is read-only Q&A: file mutation is withheld, shell is offered READ-ONLY.
+  // The policy auto-runs confidently read-only commands (ls, git log/status/diff),
+  // hard-denies destructive ones (rm -rf, push --force), and asks for the ambiguous
+  // rest — so "what did the last commit do?" is answered from real `git log` output,
+  // never from memory, while nothing can be changed. delegateTask stays: the sub-agent
+  // is read-only research, no mutation possible.
   if (mode === 'ask') {
     return {
       readFile,

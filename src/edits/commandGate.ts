@@ -3,7 +3,7 @@
 import * as vscode from 'vscode';
 import { spawn, type ChildProcess } from 'child_process';
 import type { RunContext } from '../agent/runContext';
-import { isReadOnlyCommand } from './commandClassify';
+import { isDangerous, isReadOnlyCommand } from './commandClassify';
 import { resolveWorkspacePath } from '../agent/core/tools/resolvePath';
 import { peekWorkspaceRoot } from '../agent/core/tools/workspaceRoot';
 import type { PersistentShellManager } from './persistentShell';
@@ -28,26 +28,8 @@ const DEFAULT_ALLOWLIST = [
   'php artisan test', 'composer test', 'make',
 ];
 
-/**
- * Destructive patterns that always prompt for confirmation, even when Auto-approve
- * is on — a safety net so unattended runs can't silently wipe data or rewrite history.
- */
-const DANGEROUS = [
-  /\brm\s+(-[a-z]*\s+)*-[a-z]*[rf]/i, // rm -rf / rm -fr / rm -r -f …
-  /\bgit\s+push\b.*(--force|-f\b)/i,
-  /\bgit\s+reset\s+--hard/i,
-  /\bgit\s+clean\b.*-[a-z]*f/i,
-  /\b(sudo|chmod|chown)\b/i,
-  /\b(mkfs|dd|shutdown|reboot|kill(all)?)\b/i,
-  /\bnpm\s+publish\b/i,
-  /[>]\s*\/dev\//i, // writing to device files
-  /:\s*\(\s*\)\s*\{/, // fork-bomb shape :(){ :|:& };:
-];
-
-/** True for commands too destructive to run unattended; these always ask, even in Auto-approve. */
-export function isDangerous(command: string): boolean {
-  return DANGEROUS.some((re) => re.test(command));
-}
+/** Re-exported so existing importers keep working — the canonical def lives in commandClassify. */
+export { isDangerous } from './commandClassify';
 
 function truncate(s: string): string {
   return s.length > MAX_OUTPUT ? s.slice(0, MAX_OUTPUT) + '\n…[output truncated]' : s;

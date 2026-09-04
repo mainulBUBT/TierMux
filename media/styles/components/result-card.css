@@ -52,7 +52,7 @@
 }
 
 .tm-result-card .rc-files { display: flex; flex-direction: column; gap: 2px; }
-.tm-result-card .cp-file.rc-clickable:hover { background: var(--vscode-list-hoverBackground); }
+.tm-result-card .cp-file.rc-clickable:hover { background: var(--tm-hover); }
 .tm-result-card .rc-more { opacity: 0.7; padding: 2px 4px; }
 
 /* Untested turns: no verdict badge, just a quiet note row. */

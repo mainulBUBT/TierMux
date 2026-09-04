@@ -30,6 +30,18 @@ function buildSpinGlyph(live: boolean, mark: string, variant?: 'success' | 'erro
   );
 }
 
+/** The leading status glyph for ONE tool row: spinner while running, green ✓ once settled,
+ *  red ✗ on error — the SAME tick vocabulary the grouped read rows use, extended to every
+ *  tool card (webSearch/fetchUrl/delegateTask/edits/…) so the whole timeline reads like the
+ *  reference rows ("✓ Read …"). Replaces the per-tool glyph (⊙/◎/⊞) that used to sit here:
+ *  state, not tool identity, is what the leading slot should communicate. Used by BOTH the
+ *  static card (createToolHeader) and the live upsert (main.ts), so the two can't drift. */
+export function toolStateGlyph(state?: 'running' | 'done' | 'error' | 'queued'): HTMLElement {
+  if (state === 'running' || state === 'queued') return buildSpinGlyph(true, '');
+  if (state === 'error') return buildSpinGlyph(false, '✗', 'error');
+  return buildSpinGlyph(false, '✓', 'success');
+}
+
 // ── Edit-diff preview thresholds (Chat-UX-parity plan; boundary-tested in scripts/toolDiff.e2e.ts).
 // A change under BOTH inline caps renders as a rich diff2html view directly in the card body;
 // between the inline caps and the preview ceiling it renders collapsed behind a <details>;
@@ -44,20 +56,20 @@ export const DIFF_PREVIEW_MAX_CHANGED_LINES = 2000;
 
 // ========== Structure ==========
 
-/** The `.tm-tool-card-header` row: icon + title + hint + state indicator + actions.
- *  Enhanced with AI Elements patterns for better visual hierarchy and UX. */
-function createToolHeader(icon: string, title: string, hint: string, state: 'running' | 'done' | 'error' | 'pending', onRetry?: () => void, onCancel?: () => void, durationMs?: number): HTMLElement {
+/** The `.tm-tool-card-header` row: state glyph + title + hint + duration + actions.
+ *  The leading slot is the STATE tick (toolStateGlyph), not a per-tool glyph — every row in
+ *  the timeline reads "✓ Searched …" / "✓ Fetched …" the way the grouped read rows do. */
+function createToolHeader(title: string, hint: string, state: 'running' | 'done' | 'error' | 'queued', onRetry?: () => void, onCancel?: () => void, durationMs?: number): HTMLElement {
   // No "Running"/"Completed"/"Error" text badge — the design artifact conveys state purely
-  // through colour (the tool-type icon and the card's own left rail recolor per state, see
-  // tool-card.css's .tm-tool-card.running/.done/.error), the same "spend boldness in one
-  // place, let colour/shape carry the rest" principle the composer's send button follows.
-  // Only the duration stays as text, since a colour can't say "0.4s".
+  // through the tick's colour (tool-card.css's .tm-tool-card.running/.done/.error), the same
+  // "spend boldness in one place, let colour/shape carry the rest" principle the composer's
+  // send button follows. Only the duration stays as text, since a colour can't say "0.4s".
   const durationLabel = durationMs != null && durationMs > 0 && (state === 'done' || state === 'error')
     ? fmtToolDuration(durationMs) : '';
 
   return el('div', { class: 'tm-tool-card-header' },
     el('div', { class: 'tm-tool-card-info' },
-      el('span', { class: 'tm-tool-card-icon' }, icon),
+      el('span', { class: 'tm-tool-card-icon' }, toolStateGlyph(state)),
       el('span', { class: 'tm-tool-card-title' }, title),
       hint ? el('span', { class: 'tm-tool-card-hint' }, hint) : null
     ),
@@ -292,15 +304,15 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
   }
 
   const state = step.state || 'done';
-  const { icon, title, hint } = toolLabel(step.name, step.args, step.detail, state);
+  const { title, hint } = toolLabel(step.name, step.args, step.detail, state);
 
-  const card = el('div', { 
-    class: `tm-tool-card ${state}`, 
-    dataset: step.toolCallId ? { tc: step.toolCallId } : undefined 
+  const card = el('div', {
+    class: `tm-tool-card ${state}`,
+    dataset: step.toolCallId ? { tc: step.toolCallId } : undefined
   });
-  
+
   // AI Elements-style header with actions
-  card.appendChild(createToolHeader(icon, title, hint || '', state, onRetry, onCancel, step.durationMs));
+  card.appendChild(createToolHeader(title, hint || '', state, onRetry, onCancel, step.durationMs));
 
   const { el: more, pre } = createToolBody();
   card.appendChild(more);
@@ -423,10 +435,34 @@ export function toolLabel(name: string, args: unknown, detail?: string, state?: 
     };
   }
 
+  // Special cases: the v3 toolset's coordination + network calls, whose target is a task, a
+  // URL or a question rather than a path/query — none of those read well through the generic
+  // M-map rows below, and three of them want a state-aware verb ("Delegating" vs "Delegated").
+  // These live in toolLabel so the live upsert AND the static replay render identically.
   const argFirst = String(firstArg(args) || '');
   const argsObj = args && typeof args === 'object' ? args : {};
   const path = shortPath(argFirst);
   const query = String((argsObj as { query?: string; pattern?: string; term?: string }).query || (argsObj as { pattern?: string }).pattern || (argsObj as { term?: string }).term || '').trim();
+
+  if (name === 'fetchUrl') {
+    const u = shortUrl(String((argsObj as { url?: string }).url || argFirst || ''));
+    const live = state === 'running' || state === 'queued';
+    return { icon: '⊙', title: u ? `${live ? 'Fetching' : 'Fetched'} ${u}` : live ? 'Fetching a page' : 'Fetched a page' };
+  }
+  if (name === 'delegateTask') {
+    const task = String((argsObj as { task?: string }).task || '').replace(/\s+/g, ' ').trim();
+    const excerpt = task.length > 64 ? task.slice(0, 63) + '…' : task;
+    const live = state === 'running' || state === 'queued';
+    if (live) return { icon: '◎', title: excerpt ? `Delegating: "${excerpt}"` : 'Delegating to a sub-agent' };
+    return { icon: '◎', title: excerpt ? `Delegated: "${excerpt}"` : 'Delegated to a sub-agent' };
+  }
+  if (name === 'askUser') {
+    const q = String((argsObj as { question?: string }).question || '').replace(/\s+/g, ' ').trim();
+    const excerpt = q.length > 64 ? q.slice(0, 63) + '…' : q;
+    const live = state === 'running' || state === 'queued';
+    if (live) return { icon: '◎', title: 'Asking…' };
+    return { icon: '◎', title: excerpt ? `Asked: "${excerpt}"` : 'Asked the user' };
+  }
 
   // Result summary from tool output
   const lines = detail ? String(detail).split('\n').filter(Boolean) : [];
@@ -454,7 +490,8 @@ export function toolLabel(name: string, args: unknown, detail?: string, state?: 
     glob: ['⊞', `Matched ${query || 'pattern'}${results('match')}`],
     grep: ['⌕', `Searched "${query}"${results('result')}`],
     webSearch: ['⊙', `Searched the web "${query}"${results('result')}`],
-    webFetch: ['⊙', argFirst ? `Fetched ${shortPath(argFirst)}` : 'Fetched a URL'],
+    // fetchUrl / delegateTask / askUser render through the special cases above (URL- and
+    // task-shaped targets, state-aware verbs) — not through this map.
     getDiagnostics: ['⊘', 'Checked diagnostics'],
     runCommand: ['▸', argFirst ? `Ran ${argFirst.split(/\s+/).slice(0, 6).join(' ')}` : 'Ran a command'],
     writeFile: ['◈', path ? `Wrote ${path}` : 'Wrote a file'],
@@ -465,8 +502,12 @@ export function toolLabel(name: string, args: unknown, detail?: string, state?: 
     buildGraph: ['⊕', 'Built the call graph'],
     getSymbolGraph: ['⊕', 'Indexed symbols'],
     getDependencyTree: ['⊕', 'Mapped dependencies'],
-    askUser: ['◎', 'Asking…'],
-    skill: ['◎', argFirst ? `Delegated to ${shortPath(argFirst)}` : 'Delegated to a sub-agent'],
+    // todoWrite: the TodoSheet is the rich display; the card stays a quiet count line so the
+    // raw todos JSON never dumps as the generic "TodoWrite" fallback it used to hit.
+    todoWrite: ['≣', `Updated todos${Array.isArray((argsObj as { todos?: unknown[] }).todos) ? ` (${(argsObj as { todos: unknown[] }).todos.length})` : ''}`],
+    // exitPlanMode IS plan mode's exit (the plan card is the real UI) — but the engine still
+    // fires a tool event for it, and that used to render as the generic "ExitPlanMode" card.
+    exitPlanMode: ['▦', 'Proposed the plan'],
     lspCheck: ['⊘', path ? `Checked ${path}` : 'Checked language diagnostics'],
   };
 
@@ -526,10 +567,16 @@ export function activityFor(name: string, args: unknown): string {
     case 'editFile': return path ? `Editing ${path}` : 'Editing';
     case 'deleteFile': return path ? `Deleting ${path}` : 'Deleting';
     case 'webSearch': return query ? `Searching the web for "${query}"` : 'Searching the web';
-    case 'webFetch': return argFirst ? `Fetching ${shortPath(argFirst)}` : 'Fetching';
+    case 'fetchUrl': return argFirst ? `Fetching ${shortUrl(String((argsObj as { url?: string }).url || argFirst))}` : 'Fetching a page';
+    case 'delegateTask': {
+      const task = String((argsObj as { task?: string }).task || '').replace(/\s+/g, ' ').trim();
+      return task ? `Delegating: "${task.slice(0, 64)}${task.length > 64 ? '…' : ''}"` : 'Delegating to a sub-agent';
+    }
+    case 'askUser': return 'Asking the user';
+    case 'todoWrite': return 'Updating todos';
+    case 'exitPlanMode': return 'Presenting the plan';
     case 'getDiagnostics': return 'Checking diagnostics';
     case 'repoMap': return 'Mapping the repository';
-    case 'skill': return argFirst ? `Delegating to ${shortPath(argFirst)}` : 'Delegating to a sub-agent';
     case 'lspCheck': return path ? `Checking ${path}` : 'Checking language diagnostics';
     default:
       if (name && name.indexOf('mcp__') === 0) return `Calling ${name.split('__')[1] || 'MCP tool'}`;
@@ -546,7 +593,7 @@ export function activityFor(name: string, args: unknown): string {
 function firstArg(a: unknown): string {
   if (!a || typeof a !== 'object') return '';
   const argsObj = a as Record<string, unknown>;
-  return String(argsObj.path || argsObj.file || argsObj.filePath || argsObj.filename || argsObj.relativePath || argsObj.query || argsObj.pattern || argsObj.dir || argsObj.directory || argsObj.term || argsObj.command || '');
+  return String(argsObj.path || argsObj.file || argsObj.filePath || argsObj.filename || argsObj.relativePath || argsObj.url || argsObj.query || argsObj.pattern || argsObj.dir || argsObj.directory || argsObj.term || argsObj.command || '');
 }
 
 /**
@@ -557,6 +604,16 @@ function shortPath(p: string): string {
   const s = String(p || '').replace(/\\/g, '/').replace(/^\.?\//, '');
   const parts = s.split('/').filter(Boolean);
   return parts.length <= 2 ? parts.join('/') : parts.slice(-2).join('/');
+}
+
+/**
+ * Shorten a URL for a tool-row title: protocol and www stripped, hard cap at ~48 chars so a
+ * long article path can't push the row's "· 0.4s" off the line. The domain stays intact —
+ * unlike shortPath()'s last-2-segments rule, "…/somepage" without its host says nothing.
+ */
+function shortUrl(u: string): string {
+  const s = String(u || '').replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/^www\./i, '');
+  return s.length > 48 ? s.slice(0, 47) + '…' : s;
 }
 
 const MARKDOWN_EXT = /\.(md|markdown|mdx)$/i;

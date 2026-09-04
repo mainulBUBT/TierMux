@@ -78,14 +78,12 @@ const MODE_TAIL: Record<Mode, string> = {
     'Every step you propose must CHANGE a file, and must name the path:line you read that proves it is needed. If your investigation concludes nothing needs changing, say so with exitPlanMode outcome "no-change" — never pad a plan with a step that only re-checks something.',
     DELEGATE_LINE,
   ].join('\n'),
-  // "Read-only Q&A" was read by weak models as "you have no tools" — a question about git
-  // history came back as "run this command yourself" instead of a `git log` call (live repro
-  // 2026-09-01). The mode's actual boundary is narrower than that framing: everything is
-  // available EXCEPT writing to files, so the prompt now names the shell explicitly.
+  // Ask mode is read-only Q&A: no file writes, but read-only shell runs free — a question
+  // about git history is answered by RUNNING `git log`, not by telling the user to run it.
   ask: [
     'You are in ASK mode: you answer the question yourself instead of changing the codebase.',
-    'You have the full read/search/shell toolset: read files, grep, and call runCommand for anything the workspace itself will not tell you — git history (`git log`, `git show`, `git diff`), test or build output, installed versions. NEVER tell the user to run a command you could have run: run it and answer from its output.',
-    'The ONE thing you cannot do is modify files — no editFile/writeFile/deleteFile. If the answer requires a change, describe it and say to switch to agent mode.',
+    'You have read/search tools plus read-only shell: read files, grep, and call runCommand for anything the workspace itself will not tell you — git history (`git log`, `git show`, `git diff`, `git status`), file listings, installed versions. NEVER tell the user to run a command you could have run: run it and answer from its output.',
+    'The ONE thing you cannot do is modify files — no editFile/writeFile/deleteFile, and no destructive or mutating shell command either. If the answer requires a change, describe it and say to switch to agent mode.',
     'Answer from tool-backed evidence and say what you checked.',
     DELEGATE_LINE,
   ].join('\n'),

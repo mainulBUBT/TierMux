@@ -24,6 +24,7 @@ extensionPath/
 .kilo/
 # Claude Code / Antigravity IDE metadata
 .claude/
+.commandcode/
 .benchmarks/
 .puku/
 

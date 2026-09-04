@@ -19,6 +19,35 @@ const GIT_READ_ONLY_SUBCOMMANDS = new Set([
   'status', 'diff', 'log', 'show', 'branch', 'remote', 'ls-files', 'blame', 'rev-parse', 'describe', 'shortlog',
 ]);
 
+/**
+ * Destructive patterns that always prompt for confirmation, even when Auto-approve
+ * is on — a safety net so unattended runs can't silently wipe data or rewrite history.
+ * Lives here (not commandGate.ts) so the vscode-free permission policy can share it.
+ */
+const DANGEROUS = [
+  /\brm\s+(-[a-z]*\s+)*-[a-z]*[rf]/i, // rm -rf / rm -fr / rm -r -f …
+  /\bgit\s+push\b.*(--force|-f\b)/i,
+  /\bgit\s+reset\s+--hard/i,
+  /\bgit\s+clean\b.*-[a-z]*f/i,
+  /\b(sudo|chmod|chown)\b/i,
+  /\b(mkfs|dd|shutdown|reboot|kill(all)?)\b/i,
+  /\bnpm\s+publish\b/i,
+  /[>]\s*\/dev\//i, // writing to device files
+  /:\s*\(\s*\)\s*\{/, // fork-bomb shape :(){ :|:& };:
+];
+
+/** True for commands too destructive to run unattended; these always ask, even in Auto-approve. */
+export function isDangerous(command: string): boolean {
+  return DANGEROUS.some((re) => re.test(command));
+}
+
+/** The `command` argument of a runCommand tool call, or undefined when absent/not a string. */
+export function commandFromInput(input: unknown): string | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const c = (input as Record<string, unknown>).command;
+  return typeof c === 'string' ? c : undefined;
+}
+
 const WRITE_REDIRECT_OPS = new Set(['>', '>>', '>|']);
 
 function isSegmentReadOnly(tokens: string[]): boolean {

@@ -14,7 +14,7 @@ import { $, escapeHtml, showToast } from './dom';
 import { renderMarkdown, appendStreamCursor } from './markdown';
 import { stripLegacyMarkdown } from '../../src/shared/workReport';
 import { renderPdfToPageImages, PDF_MAX_RENDER_PAGES } from './pdfPages';
-import { buildReasoningBlock, updateReasoningBlock, settleReasoningBlock, buildToolCard, buildEditDiff, editDiffArgs, toolLabel, activityFor, buildToolGroupRow, GROUPABLE_TOOL_NAMES } from './ui/tool/ToolCard';
+import { buildReasoningBlock, updateReasoningBlock, settleReasoningBlock, buildToolCard, buildEditDiff, editDiffArgs, toolLabel, activityFor, buildToolGroupRow, GROUPABLE_TOOL_NAMES, toolStateGlyph } from './ui/tool/ToolCard';
 import { createPlan, planDataFromStepText, planDataFromTodos, createResultCard } from './ui/components';
 import { createAgentPicker } from './ui/components/AgentPicker';
 import { createModelPicker } from './ui/components/ModelPicker';
@@ -766,6 +766,9 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
               <span class="empty-row-dot" title="${escapeHtml(STATUS_TITLE[s.status || 'idle'] || '')}">${escapeHtml(RECENT_DOT[s.status || 'idle'] || '\u25cf')}</span>
               <span class="empty-row-title">${escapeHtml(s.title || 'Untitled')}</span>
               <span class="empty-row-date">${escapeHtml(fmtTs(s.updatedAt || s.ts))}</span>
+              <span class="empty-row-delete" data-delete-id="${s.id}" role="button" title="Delete session">
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M6 2h4v1H6V2zm-2 2v9a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4H4zm2 2h1v5H6V6zm3 0h1v5H9V6zM1 3h14v1H1V3z"/></svg>
+              </span>
             </button>`).join('')}
         </div>
       </div>` : '';
@@ -808,7 +811,26 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
     const statusBtn = el.querySelector('#empty-status-btn');
     if (statusBtn) statusBtn.addEventListener('click', () => { settingsTab = 'providers'; toggleSettings(); });
     el.querySelectorAll('.empty-recent-row').forEach(row => {
-      row.addEventListener('click', () => {
+      row.addEventListener('click', (e) => {
+        // Delete beats open — a click on the hover trash must not also switch session
+        // (same contract as the history dropdown's delegated [data-delete-id] handler).
+        const del = (e.target as HTMLElement).closest('[data-delete-id]');
+        if (del) {
+          e.stopPropagation();
+          const sid = del.getAttribute('data-delete-id');
+          if (sid) {
+            // Optimistic removal — don't wait for the backend sessionList refresh.
+            row.remove();
+            sessionList = sessionList.filter(x => x.id !== sid);
+            // Last row gone → drop the whole Recent block, header included.
+            const listEl = row.closest('.empty-recent-list');
+            if (listEl && !listEl.querySelector('.empty-recent-row')) {
+              listEl.closest('.empty-recents')?.remove();
+            }
+            send({ type: 'deleteSessionById', sessionId: sid });
+          }
+          return;
+        }
         send({ type: 'switchSession', sessionId: row.dataset.id });
       });
     });
@@ -1178,20 +1200,36 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
       flow.appendChild(buildToolGroupRow(pendingGroup.items));
       pendingGroup = null;
     };
+    // Consecutive reasoning steps collapse into ONE "Thought for Ns" row — text joined with a
+    // blank line, durations summed — matching the live view's back-to-back burst merge
+    // (upsertTool); a replay used to re-stack them as a dozen 1-second "Thought" lines.
+    let pendingThought: { texts: string[]; durMs: number; tc?: string } | null = null;
+    const flushThought = () => {
+      if (!pendingThought) return;
+      const block = buildReasoningBlock(pendingThought.texts.join('\n\n'), pendingThought.tc, false, pendingThought.durMs || undefined);
+      block.classList.remove('streaming'); // Static render
+      flow.appendChild(block);
+      pendingThought = null;
+    };
     steps.forEach((step) => {
       if (step.name === 'reasoning' && step.content) {
         flushGroup();
-        const reasoningBlock = buildReasoningBlock(step.content, step.toolCallId, false);
-        reasoningBlock.classList.remove('streaming'); // Static render
-        flow.appendChild(reasoningBlock);
+        // durationMs rides the persisted step — without it the replay shows a bare "Thought"
+        // where the live run showed "Thought for Ns".
+        if (!pendingThought) pendingThought = { texts: [], durMs: 0, tc: step.toolCallId };
+        pendingThought.texts.push(step.content);
+        pendingThought.durMs += step.durationMs || 0;
       } else if (GROUPABLE_TOOL_NAMES.has(step.name)) {
+        flushThought();
         if (pendingGroup && pendingGroup.name === step.name) pendingGroup.items.push(step);
         else { flushGroup(); pendingGroup = { name: step.name, items: [step] }; }
       } else {
+        flushThought();
         flushGroup();
         flow.appendChild(buildToolCard(step));
       }
     });
+    flushThought();
     flushGroup();
 
     // Main answer text at the end (matches live: text segment appended after tool cards).
@@ -2255,15 +2293,45 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
 
   // ---------- tool cards / notices ----------
   // Turn raw tool calls into a human-readable "what the agent is doing" line.
+
+  // Back-to-back "Thought" merge state — see the reasoning branch of upsertTool below.
+  // acc.text is the text of all SETTLED bursts folded into this block (never the live one),
+  // acc.durMs their summed duration; the live burst's text/duration arrive per message.
+  const thoughtAcc = new WeakMap<HTMLElement, { text: string; durMs: number }>();
+  const mergeableThought = (n: Element | null): n is HTMLElement =>
+    !!n && n.classList.contains('tm-reasoning') && !n.classList.contains('streaming');
+
   function upsertTool(t, msg) {
     if (msg.name === 'reasoning') {
+      // A thought between two reads breaks the read-run: reset the pending group so the live
+      // view matches the replay's flush-on-reasoning (only STRICTLY consecutive same-tool
+      // calls group).
+      t.pendingReadGroup = null;
       let block = t.tools.querySelector<HTMLElement>(`[data-tc~="${msg.toolCallId}"]`);
+      if (!block && mergeableThought(t.tools.lastElementChild)) {
+        // Back-to-back thinking bursts: a narration retract or an empty text delta between two
+        // bursts advances the provider's segment id WITHOUT a tool card in between, and each
+        // new id used to stack another settled "Thought for Ns" row — a long turn read as
+        // "Thought, Thought, Thought" all the way down (user report 2026-09-04). Fold the new
+        // burst into the settled row above it instead: re-key it to the new segment id (its
+        // later messages ride that id) and accumulate text/duration in thoughtAcc.
+        block = t.tools.lastElementChild;
+        const prev = thoughtAcc.get(block)
+          || { text: (block.querySelector('.tm-reasoning-body')?.textContent || '').trim(), durMs: 0 };
+        thoughtAcc.set(block, prev);
+        block.dataset.tc = msg.toolCallId;
+      }
       if (!block) {
         // Born live (streaming) so the block auto-opens and shows "Thinking…" while deltas arrive.
         block = buildReasoningBlock(msg.detail || '', msg.toolCallId, msg.state !== 'done');
+        thoughtAcc.set(block, { text: '', durMs: 0 });
         t.tools.appendChild(block);
       } else {
-        updateReasoningBlock(block, msg.detail || '', msg.state === 'done', msg.durationMs);
+        const acc = thoughtAcc.get(block) || { text: '', durMs: 0 };
+        const combined = acc.text ? `${acc.text}\n\n${msg.detail || ''}` : (msg.detail || '');
+        const totalDur = msg.state === 'done' ? acc.durMs + (msg.durationMs || 0) : acc.durMs;
+        if (msg.state === 'done') thoughtAcc.set(block, { text: combined, durMs: totalDur });
+        updateReasoningBlock(block, combined, msg.state === 'done', totalDur || undefined);
         // Reasoning resumed after a tool call in between — re-append (moves the EXISTING node,
         // doesn't clone) so the block floats to the end of the flow, after that tool card, instead
         // of staying pinned at wherever it first appeared while newer tool cards pile up after it.
@@ -2356,10 +2424,13 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
       t.tools.appendChild(card);
     }
 
-    const { icon, title, hint } = toolLabel(msg.name, msg.args, msg.detail, msg.state);
-    
-    // Update AI Elements header
-    card.querySelector('.tm-tool-card-icon').textContent = icon;
+    const { title, hint } = toolLabel(msg.name, msg.args, msg.detail, msg.state);
+
+    // Update AI Elements header. The leading slot is the STATE glyph (spinner / green ✓ / red
+    // ✗) — the same tick every row in the timeline carries, from toolStateGlyph(), so the live
+    // card can't drift from what buildToolCard renders on replay.
+    const iconEl = card.querySelector('.tm-tool-card-icon');
+    if (iconEl) { iconEl.textContent = ''; iconEl.appendChild(toolStateGlyph(msg.state)); }
     card.querySelector('.tm-tool-card-title').textContent = title;
     const hintEl = card.querySelector('.tm-tool-card-hint');
     if (hintEl) hintEl.textContent = hint || '';

@@ -123,7 +123,7 @@ export function createTodoSheet(opts: TodoSheetOptions = {}): {
   const barIcon = el('span', { class: 'tm-todobar-icon' });
   barIcon.innerHTML = ICON.checkSquare;
   const barCount = el('span', { class: 'tm-todobar-count' });
-  const barText = el('span', { class: 'tm-todobar-text' });
+  const barText = el('span', { class: 'tm-todobar-text', style: 'text-decoration: none;' });
   const barAux = el('span', { class: 'tm-todobar-aux' });
   const barChev = el('span', { class: 'tm-todobar-chev' }, '▴');
   bar.append(barIcon, barCount, barText, barAux, barChev);

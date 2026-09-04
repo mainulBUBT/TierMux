@@ -76,13 +76,14 @@ async function main() {
 
   console.log('\n— the nudge and the length guard must not chain (invariant 3) —');
   {
-    // Agent mode: tools ran, the synthesis step ended on narration (report-gap) → nudge pass,
-    // and THAT pass is itself cut at the output budget. onEnd overwrites outcome.finishReason,
+    // Agent mode: tools ran, the synthesis came back EMPTY (report-gap) → nudge pass, and
+    // THAT pass is itself cut at the output budget. onEnd overwrites outcome.finishReason,
     // so without the `continued` gate the length guard fires too — 4 model calls, two
-    // continuations in one turn.
+    // continuations in one turn. (Non-empty prose never nudges, so the report-gap here is
+    // scripted as an empty synthesis — narration-matching was removed.)
     const m = createMockModel([
       { toolCalls: [{ toolName: 'readFile', input: { path: 'a.txt' } }] },
-      { text: 'Let me continue reading the PlaceNewOrder trait.' },
+      { text: '' },
       { text: 'Orders are placed via', finish: 'length' },
       { text: ' a pass that must never run.' },
     ], 'nudge-then-length');

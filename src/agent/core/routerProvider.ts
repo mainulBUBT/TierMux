@@ -26,9 +26,40 @@ import type {
 import type { ChatMessage, ChatToolChoice, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
 import { resolveProvider } from '../../providers';
 import { ProviderHttpError } from '../../providers/base';
-import { selectModel, setModelSources, getApiKeysFor, recordOutcome, rationaleForServed, type ModelSources, type SelectionRationale } from '../../router/picker';
+import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordTtft, rationaleForServed, type ModelSources, type SelectionRationale } from '../../router/picker';
 import { ThinkStripper, stripThinkTags, reasoningFromDelta, type Router, type RouteOptions } from '../../router/router';
 import { diagLog } from '../../util/diag';
+
+/** Monotonic counter driving the platform head-seat rotation (see resolveCandidates).
+ *  Module-level so consecutive calls (chat turn, watchdog retry, next turn) walk the pool
+ *  evenly. Deterministic, no RNG — a test seam reset exists for e2e determinism. */
+let chainRound = 0;
+function nextChainRound(): number {
+  return chainRound++;
+}
+export function __resetChainRound(): void {
+  chainRound = 0;
+}
+
+/** vscode config read that never throws — the picker path runs headless in e2e. */
+function vscodeConfigNumber(key: string, fallback: number): number {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const vscode = require('vscode') as typeof import('vscode');
+    const v = vscode?.workspace?.getConfiguration?.('tiermux')?.get<number>(key, fallback);
+    return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/** TTFT fast-failover ms for this call — mirrors the old router's tiermux.ttftTimeoutMs
+ *  (8s default). Disabled (0) for pinned/forced models (nothing to fail over to) and for
+ *  custom/local endpoints, matching BaseProvider's uncapped-local contract. */
+function ttftGateMsFor(platform: Platform, pinned: boolean): number {
+  if (pinned || platform === 'custom') return 0;
+  return vscodeConfigNumber('ttftTimeoutMs', 8000);
+}
 
 export { setModelSources };
 export type { ModelSources };
@@ -61,7 +92,7 @@ export interface RouterProviderOptions {
 export function isFailoverWorthy(e: unknown): boolean {
   if (e instanceof ProviderHttpError) {
     return e.status === 400 || e.status === 401 || e.status === 402 || e.status === 403
-      || e.status === 429 || (e.status !== undefined && e.status >= 500);
+      || e.status === 408 || e.status === 429 || (e.status !== undefined && e.status >= 500);
   }
   return e instanceof Error && /network|fetch failed|timed out|ECONN/i.test(e.message);
 }
@@ -76,12 +107,20 @@ export function isFailoverWorthy(e: unknown): boolean {
  *  for a failover chain: eight platforms declare 600_000 (ten minutes) and the median is the
  *  same. One unresponsive provider could therefore hold a turn hostage for ten minutes before
  *  the chain even reached the next candidate, and widening the chain (above) would have
- *  multiplied that. 25s is far past any healthy free-tier first byte.
+ *  multiplied that.
+ *
+ *  25s → 60s (2026-09-04, deliberate: slow-tolerant, zero new machinery): agent turns now carry
+ *  65k+ token transcripts (live repro the same day: poolside/laguna-s-2.1 catalogued a workspace
+ *  at 65.1k cumulative input), and a prefill that size on a slow provider can legitimately take
+ *  longer than 25s BEFORE its first byte — the old cap aborted models that were about to answer
+ *  and burned the chain on them. 60s matches the header-wait KeiRouter ships for the same reason.
+ *  Long agent tasks (10–15 min) stay legal: this caps only time-to-HEADERS; once a stream starts,
+ *  nothing in TierMux cuts it mid-flight.
  *
  *  NOT applied when the provider declares <= 0 (custom/local endpoints): a local model on the
  *  user's own hardware may legally take minutes to cold-load, and there is no failover pool
  *  that could serve it faster — see BaseProvider.fetchWithTimeout's own note. */
-const FAILOVER_CONNECT_TIMEOUT_MS = 25_000;
+const FAILOVER_CONNECT_TIMEOUT_MS = 60_000;
 
 /** Stop STARTING new candidates once the chain has burned this long. Never interrupts a
  *  candidate already streaming — it only declines to open another one. Bounds the pathological
@@ -341,6 +380,7 @@ export async function resolveCandidates(
    *  this for the chain alone and have no popover to feed. */
   out?: { rationale?: SelectionRationale },
 ): Promise<Candidate[]> {
+  const selectT0 = Date.now();
   const selection = await selectModel([], {
     pinnedModel: opts.pinnedModel,
     excludeModels: opts.excludeModels,
@@ -365,27 +405,18 @@ export async function resolveCandidates(
   // most MAX_PER_PLATFORM of the bound to a single platform on the first pass, then top the
   // chain back up from the overflow so a user who genuinely enabled only one provider still
   // gets a full chain.
-  // Round 0 now covers EVERY usable platform rather than stopping at a small bound. With 30
-  // usable platforms a bound of 6 tried 20% of them and let the turn die there, while two
-  // dozen keyed providers sat untouched ("6 ta diye korle amar jw 22+ providers tader models
-  // ki pore thakbe?"). Breadth is only safe because of FAILOVER_CONNECT_TIMEOUT_MS below —
-  // without it, widening the chain would widen the worst-case hang with it.
-  //
-  // Round-robin across platforms, not the picker's flat order. Walking that order and
-  // stopping at the bound fills the chain from whichever platform happens to rank highest and
-  // never LOOKS at the rest: live repro 2026-08-30 3:32 PM, where the chain came back
-  // opencode → ollama → ollama → cerebras and died, while google, kilo, mistral and kenari sat
-  // enabled, keyed, and untried ("egula charaw to google, kilo, mistral, kenari chilo").
-  // Taking each platform's best model first, then each platform's second, spends the bound on
-  // BREADTH — which is the only thing that helps when whole platforms are down, and on a
-  // free-tier stack whole platforms are down constantly.
-  const MAX_CANDIDATES = 12;
+  // Quota-spreading rotation (2026-09-04): the same platformOrder every turn hands the head
+  // seats to the same ~12 platforms while the rest of a 33-platform catalog sits untouched.
+  // Rotate the starting platform so each turn the head seats go to a DIFFERENT slice of the
+  // enabled pool — every platform's free quota gets used across turns, not just the top 12.
+  // Deliberately a coarse per-call counter (module-level): cheap, no RNG, deterministic.
+  const MAX_CANDIDATES = 20;
   /** Cap on how deep one platform's bucket goes — only reachable when few platforms are
    *  usable, which is exactly when repeating a platform is the best option left. */
   const MAX_PER_PLATFORM = MAX_CANDIDATES;
   /** Chain entries examined before giving up the scan. The picker's tail is every enabled
    *  model, which can run to hundreds; the buckets need only enough to fill the rounds. */
-  const MAX_SCAN = 80;
+  const MAX_SCAN = 200;
 
   // Memoized so one secret lookup per platform covers every model of that platform.
   const keyCache = new Map<string, string[]>();
@@ -413,7 +444,14 @@ export async function resolveCandidates(
     }
   }
 
-  // Interleave: round 0 is every platform's first choice (in the picker's platform order),
+  // Rotate the platform head-seat order — see the note above MAX_CANDIDATES. A single global
+  // counter means consecutive calls (chat turn, retry, next turn) walk the pool evenly.
+  if (platformOrder.length > 1) {
+    const rot = nextChainRound() % platformOrder.length;
+    if (rot > 0) platformOrder.push(...platformOrder.splice(0, rot));
+  }
+
+  // Interleave: round 0 is every platform's first choice (in the rotated platform order),
   // round 1 every platform's second, and so on until the bound.
   const chain: Candidate[] = [];
   for (let round = 0; chain.length < MAX_CANDIDATES; round++) {
@@ -429,10 +467,15 @@ export async function resolveCandidates(
   }
 
   // The resolved chain is the first thing to check when a turn dies on a provider error —
-  // "was there anything to fail over TO?" is not answerable from the error alone.
-  diagLog('rp.chain', chain.length
-    ? `${platformOrder.length} platform(s): ${chain.map((c) => `${c.platform}::${c.modelId}`).join(' \u2192 ')}`
-    : '<empty \u2014 no usable candidate>');
+  // "was there anything to fail over TO?" is not answerable from the error alone. The elapsed
+  // is the REAL routing cost (selection + key lookups + platform interleave): engine.ts's old
+  // "engine.select" number was taken from reportServed, which on the streaming path fires at
+  // response settle and therefore reported the whole generation as "model selection"
+  // (live repro: 18.2s "selection" on a turn whose TTFT was 17.3s).
+  diagLog('rp.chain', `${Date.now() - selectT0}ms to resolve — `
+    + (chain.length
+      ? `${platformOrder.length} platform(s): ${chain.map((c) => `${c.platform}::${c.modelId}`).join(' \u2192 ')}`
+      : '<empty \u2014 no usable candidate>'));
   // A pin that resolved to NO runnable candidate must fail the turn with its reason, not fall
   // back to other models — a set model runs alone (2026-08-31, user direction). Without this,
   // the generic "no model candidate resolved" fired and the pin's WHY stayed in the popover
@@ -651,6 +694,10 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
         // abandoning it for the next candidate.
         for (const apiKey of c.apiKeys) {
           try {
+          // TTFT for a non-streaming call is just the response wall-time (2026-09-04):
+          // recorded so the picker's slow-model demotion sees the same fact the streaming
+          // path measures. Utility callers (titles, condense) ride this path.
+          const t0 = Date.now();
           const data = await provider.chatCompletion(apiKey, messages, c.modelId, {
             temperature: options.temperature,
             max_tokens: options.maxOutputTokens,
@@ -659,6 +706,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             abortSignal: options.abortSignal,
             timeoutMs: connectTimeoutFor(c.platform),
           });
+          recordTtft(c.platform, c.modelId, Date.now() - t0);
           reportServed(c.platform, c.modelId, provider.runtimeName);
           if (data.usage) {
             providerOpts.onUsage?.({ inputTokens: data.usage.prompt_tokens, outputTokens: data.usage.completion_tokens, model: `${c.platform}::${c.modelId}` });
@@ -777,14 +825,48 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                 ? [...messages, { role: 'user' as const, content: 'You produced reasoning but no final answer and called no tool. Reply now with your final answer to the user — concise, no meta-commentary, no tool calls.' }]
                 : messages;
 
+              // TTFT fast-failover: a provider that accepted the request but emits NO chunk
+              // within ttftTimeoutMs (default 8s — queue + prefill stall, the classic
+              // free-tier dead-hold) is aborted and the next candidate takes over. Any first
+              // chunk (content, reasoning, tool-call, usage, finish) clears the timer — this
+              // is time-to-FIRST-BYTE, never a cap on generation length. Disabled for pinned
+              // models (nothing to fail over to) and custom/local endpoints (a local model
+              // may legally cold-load past 8s — the Stop button is the brake, as elsewhere).
+              const ttftMs = ttftGateMsFor(c.platform, !!providerOpts.pinnedModel);
+              const ttftController = new AbortController();
+              const ttftTimer = ttftMs > 0
+                ? setTimeout(() => {
+                    ttftController.abort(new ProviderHttpError(
+                      `${provider.name} produced no first token within ${ttftMs}ms — failing over`, 408));
+                  }, ttftMs)
+                : undefined;
+              // The SDK's own abort (Stop button / sub-agent timeout) must still kill the
+              // request — combine both signals rather than replacing the caller's.
+              const ttftSignal = options.abortSignal
+                ? AbortSignal.any([options.abortSignal, ttftController.signal])
+                : ttftController.signal;
+
+              // TTFT: time to the FIRST yielded chunk. This is exactly the "queue + prefill"
+              // wait the turn feels (live repro 2026-09-04: kilo 10.4s to headers, then 3s
+              // of keepalive before the first delta — engine.ttft 17.3s total). Measured per
+              // attempt (the nudge re-request re-measures), recorded for the picker's
+              // slow-model demotion so the NEXT Auto turn prefers faster-answering peers.
+              const t0 = Date.now();
+              let firstChunkAt: number | undefined;
+
               for await (const chunk of provider.streamChatCompletion(apiKey, attemptMessages, c.modelId, {
                 temperature: options.temperature,
                 max_tokens: options.maxOutputTokens,
                 tools,
                 reasoningEffort: providerOpts.effort,
-                abortSignal: options.abortSignal,
+                abortSignal: ttftSignal,
                 timeoutMs: connectTimeoutFor(c.platform),
               })) {
+                if (ttftTimer) clearTimeout(ttftTimer);
+                if (firstChunkAt === undefined) {
+                  firstChunkAt = Date.now();
+                  recordTtft(c.platform, c.modelId, firstChunkAt - t0);
+                }
                 if (chunk.usage) usage = chunk.usage;
                 const choice = chunk.choices?.[0];
                 if (!choice) continue;
@@ -814,6 +896,9 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                   acc.set(idx, slot);
                 }
               }
+              // Stream ended on its own — the TTFT gate is no longer needed. (The abort
+              // controller stays; aborting an already-finished stream is a no-op.)
+              if (ttftTimer) clearTimeout(ttftTimer);
 
               const flushed = splitter.flush();
               if (flushed.reasoning) {

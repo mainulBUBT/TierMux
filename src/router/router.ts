@@ -681,6 +681,15 @@ export class Router {
     const entry = entries.find((e) => e.platform === platform && e.modelId === modelId);
     if (!entry || !entry.enabled) return false;
     if (this.secrets.cooldownRemaining(platform as Platform) > 0) return false;
+    // Model-level rate-limit respect (2026-09-04): a utility picker (title/commit) that
+    // 429'd on a model keeps re-trying it every message — pickUtilityModel's keyless chain
+    // leads with ovh::gpt-oss-120b, and isReady only checked the PLATFORM cooldown, so one
+    // rate-limited model burned a failed attempt every single message while google/cerebras
+    // sat unused. Mirror the per-model rpm/rpd gate the main routing loop applies.
+    try {
+      const meta = this.catalog.find(platform as Platform, modelId);
+      if (meta && !this.rateTracker.canSend(platform as Platform, modelId, meta.rpmLimit, meta.rpdLimit)) return false;
+    } catch { /* rate tracker unavailable (headless) — fall through to key check */ }
     let key = await this.secrets.getModelKey(platform as Platform, modelId);
     if (!key) key = await this.secrets.resolveKey(platform as Platform);
     if (entry.key) key = entry.key;

@@ -4,6 +4,25 @@
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; padding: 0; }
+/* ── Accent follows the active theme (no pinned brand hex) ──────────────
+ * A brand-indigo palette (#4f46e5, forced onto the --vscode-button and focusBorder names
+ * with !important) lived here for one day; reverted 2026-09-04 by user direction — "ager color
+ * back koro, blue as vscode color". The accent is the THEME's own color again: the button
+ * blue in the stock themes, whatever the theme chooses otherwise. Light included.
+ *
+ * What REMAINS on BODY is a pure re-alias layer, still needed for the cascade reason in
+ * tokens.css: VS Code injects its --vscode-* values at the body level, so the --tm-*
+ * aliases declared on :root resolve against nothing there (and :root loses the cascade to
+ * body). Re-declaring them here — plainly, no !important, no overrides of VS Code's own
+ * names — makes var(--tm-accent)/var(--tm-border-focus)/var(--tm-progress) resolve against
+ * the theme's values on the element where those values actually live, and inherit into
+ * everything, popovers/dialogs on <body> included. */
+body, body.vscode-dark, body.vscode-light, body.vscode-high-contrast, body.vscode-high-contrast-light {
+  --tm-accent: var(--vscode-button-background);
+  --tm-accent-fg: var(--vscode-button-foreground);
+  --tm-border-focus: var(--vscode-focusBorder);
+  --tm-progress: var(--vscode-progressBar-background, var(--vscode-focusBorder));
+}
 body {
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size, 13px);
@@ -24,7 +43,7 @@ body {
   cursor: pointer; padding: 4px 6px; border-radius: 4px; font-size: 12px;
   display: inline-flex; align-items: center; justify-content: center; gap: 4px;
 }
-.icon-btn:hover { background: var(--vscode-toolbar-hoverBackground); }
+.icon-btn:hover { background: var(--tm-hover-toolbar); }
 .icon-btn svg { display: block; opacity: .85; }
 .icon-btn:hover svg { opacity: 1; }
 .send-btn svg { display: block; }
@@ -48,7 +67,7 @@ body {
   padding: 5px 8px; border-radius: 6px 6px 0 0; cursor: pointer; user-select: none;
   background: transparent; opacity: .7;
 }
-.session-tab:hover { background: var(--vscode-list-hoverBackground); opacity: 1; }
+.session-tab:hover { background: var(--tm-hover); opacity: 1; }
 .session-tab.active {
   background: var(--vscode-editor-background); opacity: 1; font-weight: 600;
   box-shadow: inset 0 -2px var(--vscode-focusBorder);
@@ -65,12 +84,12 @@ body {
   display: flex; align-items: center; justify-content: center; border-radius: 3px;
 }
 .session-tab:hover .session-tab-close, .session-tab.active .session-tab-close { opacity: .6; }
-.session-tab-close:hover { opacity: 1 !important; background: var(--vscode-toolbar-hoverBackground); }
+.session-tab-close:hover { opacity: 1 !important; background: var(--tm-hover-toolbar); }
 .session-tab-add {
   flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
   width: 24px; padding: 5px 0; cursor: pointer; opacity: .6; font-size: 14px;
 }
-.session-tab-add:hover { opacity: 1; background: var(--vscode-list-hoverBackground); border-radius: 4px; }
+.session-tab-add:hover { opacity: 1; background: var(--tm-hover); border-radius: 4px; }
 
 /* Chat header: brand + editable session title */
 .chat-header {
@@ -84,7 +103,7 @@ body {
   color: var(--vscode-foreground); opacity: .75;
   font-family: inherit; font-size: 12px; padding: 2px 6px; outline: none;
 }
-.chat-title:hover { background: var(--vscode-list-hoverBackground); }
+.chat-title:hover { background: var(--tm-hover); }
 .chat-title:focus { opacity: 1; border-color: var(--vscode-focusBorder); background: var(--vscode-input-background); }
 
 /* Thread */
@@ -213,7 +232,7 @@ body {
   background: transparent; border: none; color: inherit; cursor: pointer;
   padding: 2px; border-radius: 4px; opacity: .8; display: inline-flex; align-items: center;
 }
-.m-ic:hover { background: var(--vscode-toolbar-hoverBackground); opacity: 1; }
+.m-ic:hover { background: var(--tm-hover-toolbar); opacity: 1; }
 .m-ic.ok { color: var(--tm-status-done); }
 .m-ic.on { color: var(--vscode-focusBorder); opacity: 1; }
 .msg-foot { display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 11px; }
@@ -248,7 +267,9 @@ body {
   user-select: none; white-space: nowrap;
   transition: color var(--tm-transition-fast, .12s ease);
 }
-.work-sum-label:hover { color: var(--tm-fg, var(--vscode-foreground)); text-decoration: underline; }
+/* Hover brightens only — no underline (user direction: "underline do no need while hover or
+   want to click"); cursor:pointer already signals clickability. */
+.work-sum-label:hover { color: var(--tm-fg, var(--vscode-foreground)); }
 .work-sum-label::-webkit-details-marker { display: none; }
 /* The native marker above is hidden, so the disclosure affordance is this glyph — same
    ▸/▾ swap .tool-more, details.reasoning, and .tm-card-collapsible use. */
@@ -280,7 +301,7 @@ details[open].work-summary > .work-sum-label { color: var(--tm-fg, var(--vscode-
 .agent-status.hidden { display: none; }
 /* Single-glyph spinner — Claude-Code-style. Cycles a star via ::before content (Chromium
    webview supports animating `content`). Calmer than bouncing dots. */
-.agent-spin { flex: 0 0 auto; width: 1.1em; text-align: center; opacity: .85; color: var(--vscode-textLink-foreground, #4daafc); }
+.agent-spin { flex: 0 0 auto; width: 1.1em; text-align: center; opacity: .85; color: var(--tm-accent); }
 .agent-spin::before { content: '✻'; animation: spin-glyph 1s steps(1) infinite; }
 @keyframes spin-glyph {
   0%   { content: '✢'; }
@@ -310,11 +331,14 @@ details[open].work-summary > .work-sum-label { color: var(--tm-fg, var(--vscode-
    Toggled via the .hidden class from JS when a tool verb or "Responding…" takes over. */
 .agent-caret {
   margin-left: 1px; font-weight: 600;
-  color: var(--vscode-textLink-foreground, #4daafc);
+  color: var(--tm-accent);
   animation: agent-caret-blink 1s steps(1) infinite;
 }
 .agent-caret.hidden { display: none; }
 @keyframes agent-caret-blink { 50% { opacity: 0; } }
+/* Label keeps its plain text colour (user direction 2026-09-04: "color ager tai") — the
+   accent stays on the spinner ✻ and caret only; tinting the words themselves too made the
+   whole status line read as one colored block. */
 .agent-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-model { flex: 1 1 auto; min-width: 0; margin-left: 8px; color: var(--tm-fg-dim); font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-model:empty { display: none; }
@@ -354,7 +378,7 @@ details[open].work-summary > .work-sum-label { color: var(--tm-fg, var(--vscode-
   cursor: pointer; opacity: .7; transition: opacity .12s ease, background .12s ease;
 }
 .code-block-wrap:hover .code-copy-btn { opacity: 1; }
-.code-block-head .code-copy-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,.1)); }
+.code-block-head .code-copy-btn:hover { background: var(--tm-hover-toolbar); }
 .code-block-head .code-copy-btn.ok { color: var(--vscode-terminal-ansiGreen, #4caf50); opacity: 1; }
 /* The header can carry more than one action (mermaid adds a Diagram/Source toggle);
    `margin-right:auto` on the label keeps them grouped right without restructuring. */
@@ -416,29 +440,19 @@ details[open].work-summary > .work-sum-label { color: var(--tm-fg, var(--vscode-
 }
 .usage-tag { font-size: 10px; opacity: .6; }
 
-/* Tool rows — slim left-accent style, no heavy box */
+/* Tool rows — bare line, no heavy box, no left rail */
 /* Support both old and new class names for backward compatibility */
 .tool-card, .tm-tool-card {
   display: flex; flex-direction: column; gap: 0;
-  padding: 2px 0; font-size: 12px;
-  transition: border-color .15s, padding-left .15s;
+  /* Same 9px indent the grouped rows and reasoning blocks carry, so every timeline row's
+     tick sits on one vertical line (the rail used to supply this offset). */
+  padding: 2px 0 2px 9px; font-size: 12px;
 }
-/* Left rail always present, colour-coded by state (running/done/error) — matches the design
-   artifact's .tool-card exactly (accent while running, success once done, error on failure);
-   never a neutral/invisible rail. This replaces an earlier "chrome has to earn its keep" rule
-   that hid the rail entirely for a plain successful call with no body — the artifact conveys
-   state through this rail's colour alone (no text badge, see tool-card.css), so hiding it left
-   successful individual calls with no state signal at all. Grouped rows (.tm-tool-group) are a
-   deliberately separate, railless component and are untouched by this. */
-.tool-card, .tm-tool-card {
-  border-left: 2px solid var(--vscode-panel-border);
-  padding-left: 9px;
-}
-.tool-card.state-running, .tm-tool-card.running { border-color: var(--vscode-progressBar-background, #0a84ff); }
-.tool-card.state-done, .tm-tool-card.done    { border-color: var(--vscode-testing-iconPassed, #57a64a); }
-.tool-card.state-error, .tm-tool-card.error   { border-color: var(--vscode-errorForeground, #c33); }
-.tool-card.validation[data-val-result="pass"], .tm-tool-card.validation[data-val-result="pass"] { border-color: var(--vscode-testing-iconPassed, #57a64a); }
-.tool-card.validation[data-val-result="fail"], .tm-tool-card.validation[data-val-result="fail"] { border-color: var(--vscode-errorForeground, #c33); }
+/* The state rail is GONE: with the leading tick (toolStateGlyph) carrying state, the rail
+   was redundant chrome — and stacked rails read as stray brackets down the timeline's left
+   edge (user's screenshot). The tick says running/success/error; only a FAILED call gets a
+   border (the full red box in tool-card.css). Grouped rows (.tm-tool-group) stay railless. */
+.tool-card.state-error, .tm-tool-card.error { border-color: var(--vscode-errorForeground, #c33); }
 .tool-head, .tm-tool-card-header { display: flex; gap: 5px; align-items: center; min-width: 0; flex-wrap: nowrap; }
 .tool-ic, .tm-tool-card-icon { flex: 0 0 14px; font-size: 11px; text-align: center; }
 .tool-title, .tm-tool-card-title {
@@ -470,8 +484,65 @@ details[open].tool-more summary { opacity: .6; }
   padding: 6px 8px; border-radius: 4px; }
 /* Inline diff for edit/write tool cards */
 .tool-more pre.diff-view { background: none; padding: 0; }
-.diff-del { color: var(--vscode-diffEditor-removedTextBackground, #c33); background: color-mix(in srgb, #c33 8%, transparent); padding: 0 6px; white-space: pre-wrap; }
-.diff-add { color: var(--vscode-diffEditor-insertedTextBackground, #57a64a); background: color-mix(in srgb, #57a64a 8%, transparent); padding: 0 6px; white-space: pre-wrap; }
+.diff-del { color: var(--vscode-charts-red, #f85149); background: color-mix(in srgb, #c33 8%, transparent); padding: 0 6px; white-space: pre-wrap; }
+.diff-add { color: var(--vscode-charts-green, #3fb950); background: color-mix(in srgb, #57a64a 8%, transparent); padding: 0 6px; white-space: pre-wrap; }
+
+/* diff2html reskin — the vendored diff2html.min.css defines its whole palette as --d2h-*
+   variables on :root, hard-coded light (white file card, pastel gutters), so every edit diff
+   in the chat rendered as an unreadable bright island on the dark theme (user direction:
+   "we cannot read even — change design as per adjust with current"). Custom properties
+   inherit, so re-declaring the full set here on .d2h-wrapper re-skins every stock vendor
+   rule without touching the vendor file — and because the values are --vscode-* and --tm-*
+   aliases the diff follows ANY theme (light ones included) automatically. The --d2h-dark-*
+   set is not used: nothing in this webview adds d2h-dark-color-scheme, and per-theme forks
+   are exactly what this alias layer exists to avoid. */
+.d2h-wrapper {
+  /* Surfaces — file card melts into the tool card; header, hunk info and gutters go quiet. */
+  --d2h-bg-color: transparent;
+  --d2h-border-color: var(--tm-border-soft, var(--vscode-panel-border));
+  --d2h-line-border-color: var(--tm-border-soft, var(--vscode-panel-border));
+  --d2h-file-header-bg-color: var(--tm-surface-code, rgba(127, 127, 127, .18));
+  --d2h-file-header-border-color: var(--tm-border-soft, var(--vscode-panel-border));
+  --d2h-empty-placeholder-bg-color: var(--tm-surface-code, rgba(127, 127, 127, .12));
+  --d2h-empty-placeholder-border-color: transparent;
+  --d2h-info-bg-color: var(--tm-surface-code, rgba(127, 127, 127, .12));
+  --d2h-info-border-color: transparent;
+  --d2h-selected-color: var(--tm-hover, var(--tm-hover));
+  --d2h-dim-color: var(--tm-fg-dim, var(--vscode-descriptionForeground));
+  /* Diff tints come from the editor's own diff colors, so a changed line in chat reads
+     exactly like it does in VS Code's diff editor. */
+  --d2h-del-bg-color: var(--vscode-diffEditor-removedLineBackground, rgba(248, 81, 73, .14));
+  --d2h-del-border-color: var(--vscode-diffEditor-removedLineBackground, rgba(248, 81, 73, .28));
+  --d2h-del-highlight-bg-color: var(--vscode-diffEditor-removedTextBackground, rgba(248, 81, 73, .4));
+  --d2h-ins-bg-color: var(--vscode-diffEditor-insertedLineBackground, rgba(46, 160, 67, .14));
+  --d2h-ins-border-color: var(--vscode-diffEditor-insertedLineBackground, rgba(46, 160, 67, .28));
+  --d2h-ins-highlight-bg-color: var(--vscode-diffEditor-insertedTextBackground, rgba(46, 160, 67, .4));
+  --d2h-change-del-color: var(--vscode-diffEditor-removedLineBackground, rgba(248, 81, 73, .12));
+  --d2h-change-ins-color: var(--vscode-diffEditor-insertedLineBackground, rgba(46, 160, 67, .16));
+  /* Labels and the CHANGED/ADDED/DELETED chips. */
+  --d2h-del-label-color: var(--vscode-gitDecoration.deletedResourceForeground, var(--vscode-charts-red, #f85149));
+  --d2h-ins-label-color: var(--vscode-gitDecoration.addedResourceForeground, var(--vscode-charts-green, #3fb950));
+  --d2h-change-label-color: var(--tm-status-pending, var(--vscode-charts-yellow, #d29922));
+  --d2h-moved-label-color: var(--tm-info, var(--vscode-charts-blue, #3572b0));
+}
+/* Structural pass — bring the vendor's GitHub-style chrome down to tool-card rhythm. */
+.d2h-wrapper .d2h-file-wrapper { border-radius: var(--tm-radius-md, 6px); }
+.d2h-wrapper .d2h-file-header {
+  font-family: var(--tm-font-ui, var(--vscode-font-family));
+  height: auto; padding: 5px 10px;
+  color: var(--tm-fg-muted, var(--vscode-descriptionForeground));
+}
+.d2h-wrapper .d2h-file-name-wrapper { font-size: var(--tm-text-sm, 12px); color: inherit; }
+.d2h-wrapper .d2h-file-name { font-size: var(--tm-text-sm, 12px); font-weight: 600; color: var(--tm-fg, var(--vscode-foreground)); }
+.d2h-wrapper .d2h-tag { border-radius: var(--tm-radius-sm, 4px); font-size: 10px; letter-spacing: .3px; }
+.d2h-wrapper .d2h-diff-table {
+  font-family: var(--tm-font-code, monospace);
+  font-size: var(--tm-text-sm, 12px);
+  /* Nothing in the vendor sets a text color in the light scheme — code inherits the page.
+     Pin it so changed lines stay readable regardless of what wraps the card. */
+  color: var(--tm-fg, var(--vscode-foreground));
+}
+
 .notice { font-size: 11px; opacity: .7; font-style: italic; }
 
 /* Custom hover tooltip (native `title` isn't rendered by some webview hosts). */
@@ -582,7 +653,8 @@ details[open].reasoning summary::before { content: '▾ '; }
 .clarify {
   display: flex; flex-direction: column; gap: 8px;
   border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 10px 12px;
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.12));
+  /* No fill (user request): the panel border alone delineates the card — the old
+     inactiveSelectionBackground wash read as a lighter box floating on the chat. */
 }
 .clarify-intro { font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; opacity: .5; }
 .clarify-q-text { font-size: 13px; font-weight: 600; margin: 2px 0 4px; opacity: .95; }
@@ -593,8 +665,11 @@ details[open].reasoning summary::before { content: '▾ '; }
   border: none; border-radius: 5px; padding: 6px 6px;
   transition: background .1s;
 }
-.clarify-opt:hover { background: var(--vscode-list-hoverBackground, rgba(127,127,127,.08)); }
-.clarify-opt.selected { background: var(--vscode-list-activeSelectionBackground); }
+.clarify-opt:hover { background: var(--tm-hover); }
+/* Selected option: the system-wide "this row is chosen" tint (same as the model/agent
+   picker rows) — the theme's list-activeSelectionBackground here rendered as a navy blue
+   slab that matched nothing else in the card. */
+.clarify-opt.selected { background: color-mix(in srgb, var(--tm-border-focus) 14%, transparent); }
 .clarify-opt-num { flex: 0 0 22px; text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; opacity: .35; padding-top: 2px; }
 .clarify-radio { flex: 0 0 auto; width: 14px; height: 14px; margin-top: 3px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--vscode-descriptionForeground, #888); }
 .clarify-opt.selected .clarify-radio { border-color: var(--vscode-focusBorder); background: radial-gradient(circle, var(--vscode-focusBorder) 0 45%, transparent 50%); }
@@ -618,8 +693,10 @@ details[open].reasoning summary::before { content: '▾ '; }
   background: none; color: inherit; opacity: .55;
   border: none; border-radius: 5px; padding: 5px 8px;
 }
-.clarify-tab:hover { opacity: .85; background: var(--vscode-list-hoverBackground, rgba(127,127,127,.08)); }
-.clarify-tab.active { opacity: 1; background: var(--vscode-list-activeSelectionBackground); }
+.clarify-tab:hover { opacity: .85; background: var(--tm-hover); }
+/* Active question tab: brand-tinted like every other selected row — not the theme's navy
+   activeSelectionBackground it used to inherit. */
+.clarify-tab.active { opacity: 1; background: color-mix(in srgb, var(--tm-border-focus) 16%, transparent); }
 .clarify-tab.done:not(.active) { opacity: .75; }
 .clarify-tab.done::before { content: '✓ '; }
 .clarify-step { display: flex; flex-direction: column; gap: 6px; }
@@ -654,7 +731,7 @@ details[open].reasoning summary::before { content: '▾ '; }
 .cp-d > summary::-webkit-details-marker { display: none; }
 .cp-files { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
 .cp-file { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
-.cp-file:hover { background: var(--vscode-list-hoverBackground); }
+.cp-file:hover { background: var(--tm-hover); }
 .cp-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-badge {
   flex: 0 0 auto; width: 15px; height: 15px; line-height: 15px; text-align: center;
@@ -680,10 +757,10 @@ details[open].reasoning summary::before { content: '▾ '; }
 .index-status.hidden { display: none; }
 .index-status .idx-label { flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .index-status .idx-bar { flex: 1 1 auto; height: 4px; min-width: 40px; border-radius: 2px; overflow: hidden; background: var(--vscode-panel-border); }
-.index-status .idx-fill { display: block; height: 100%; width: 0; background: var(--vscode-progressBar-background, #0a84ff); transition: width .2s ease; }
+.index-status .idx-fill { display: block; height: 100%; width: 0; background: var(--tm-progress); transition: width .2s ease; }
 .index-status .idx-spinner {
   flex: 0 0 auto; width: 11px; height: 11px; border-radius: 50%;
-  border: 2px solid var(--vscode-panel-border); border-top-color: var(--vscode-progressBar-background, #0a84ff);
+  border: 2px solid var(--vscode-panel-border); border-top-color: var(--tm-progress);
   animation: idx-spin .8s linear infinite;
 }
 @keyframes idx-spin { to { transform: rotate(360deg); } }
@@ -717,7 +794,7 @@ details[open].reasoning summary::before { content: '▾ '; }
   background: transparent; color: var(--vscode-foreground);
   border: 1px solid var(--vscode-panel-border);
 }
-.changed-bar .cb-action:hover, .new-models-bar .cb-action:hover { background: var(--vscode-toolbar-hoverBackground); }
+.changed-bar .cb-action:hover, .new-models-bar .cb-action:hover { background: var(--tm-hover-toolbar); }
 .changed-bar .cb-close, .new-models-bar .cb-close {
   font-size: 13px; line-height: 1; cursor: pointer; padding: 0 4px;
   background: transparent; color: var(--vscode-foreground); border: none; opacity: .6;
@@ -766,12 +843,12 @@ details[open].reasoning summary::before { content: '▾ '; }
   overflow: hidden;
   transition: border-color .12s ease, background .12s ease;
 }
-.announcements-page .an-card:hover { border-color: var(--vscode-focusBorder, var(--vscode-panel-border)); }
+.announcements-page .an-card:hover { border-color: var(--tm-border-hover); }
 /* Unread tip: the same accent rail the composer strip is outlined in, so "unread" reads the
    same in both places. Surface stays standard. */
 .announcements-page .an-card.unread {
   border-left: 2px solid var(--vscode-charts-yellow, #cca700);
-  background: var(--vscode-list-hoverBackground, transparent);
+  background: var(--tm-hover);
 }
 .announcements-page .an-card-title {
   list-style: none; cursor: pointer; user-select: none;
@@ -787,7 +864,7 @@ details[open].reasoning summary::before { content: '▾ '; }
   transition: transform .12s ease;
 }
 .announcements-page .an-card[open] .an-card-title::before { transform: rotate(90deg); }
-.announcements-page .an-card-title:hover { background: var(--vscode-list-hoverBackground); }
+.announcements-page .an-card-title:hover { background: var(--tm-hover); }
 .announcements-page .an-new-pill {
   flex: 0 0 auto; font-size: 9px; font-weight: 700; letter-spacing: .06em;
   padding: 2px 6px; border-radius: 10px;
@@ -830,7 +907,7 @@ details[open].reasoning summary::before { content: '▾ '; }
   background: var(--vscode-input-background); color: var(--vscode-foreground);
   border: 1px solid var(--vscode-panel-border);
 }
-.changed-bar .cb-file:hover { background: var(--vscode-list-hoverBackground); border-color: var(--vscode-focusBorder); }
+.changed-bar .cb-file:hover { background: var(--tm-hover); border-color: var(--tm-border-hover); }
 .changed-bar .cb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Per-extension tile so file types are scannable at a glance (no icon assets shipped —
    a 2–4 letter ext on a tinted chip, colored by language family). */
@@ -882,7 +959,7 @@ details[open].reasoning summary::before { content: '▾ '; }
   padding: 11px 6px; border-radius: 4px; border-bottom: 1px solid var(--vscode-panel-border);
 }
 .setting-row:last-child { border-bottom: none; }
-.setting-row:hover { background: var(--vscode-list-hoverBackground); }
+.setting-row:hover { background: var(--tm-hover); }
 .setting-left { flex: 1 1 auto; min-width: 0; }
 .setting-label { font-size: 12.5px; font-weight: 600; }
 .setting-desc { font-size: 11px; opacity: .65; line-height: 1.5; margin-top: 3px; }
@@ -972,7 +1049,7 @@ details[open].reasoning summary::before { content: '▾ '; }
   max-width: 220px;
   transition: background var(--tm-transition-fast), border-color var(--tm-transition-fast);
 }
-.att-card:hover { background: var(--tm-card-hover); border-color: var(--tm-border-focus); }
+.att-card:hover { background: var(--tm-card-hover); border-color: var(--tm-border-hover); }
 
 .att-tile {
   width: 26px; height: 26px; flex: 0 0 auto;
@@ -1019,7 +1096,7 @@ details[open].reasoning summary::before { content: '▾ '; }
   background: var(--tm-surface-alt);
   transition: border-color var(--tm-transition-fast);
 }
-.msg-att-thumb:hover { border-color: var(--tm-border-focus); }
+.msg-att-thumb:hover { border-color: var(--tm-border-hover); }
 .msg-att-thumb:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
 .msg-att-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .msg-att-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 6px; border-radius: 10px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
@@ -1062,7 +1139,7 @@ details[open].reasoning summary::before { content: '▾ '; }
   flex: 0 1 auto; max-width: 140px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   transition: background .12s ease, border-color .12s ease;
 }
-.pill:hover { background: var(--vscode-toolbar-hoverBackground); border-color: var(--vscode-focusBorder); }
+.pill:hover { background: var(--tm-hover-toolbar); border-color: var(--tm-border-hover); }
 .pill:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
 /* The agent-type and model pickers are tm--prefixed components now
    (media/src/ui/components/{AgentPicker,ModelPicker}.ts + styles/components/composer.css). */
@@ -1137,7 +1214,7 @@ details[open].reasoning summary::before { content: '▾ '; }
 }
 .ac-pop.hidden { display: none; }
 .ac-item { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-.ac-item.active, .ac-item:hover { background: var(--vscode-list-hoverBackground); }
+.ac-item.active, .ac-item:hover { background: var(--tm-hover); }
 .ac-item .ac-icon { flex: 0 0 auto; width: 16px; display: inline-flex; align-items: center; justify-content: center; opacity: .8; }
 .ac-item .ac-label { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ac-item .ac-detail { flex: 1 1 auto; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
@@ -1163,7 +1240,7 @@ button.compact-divider { background: none; font: inherit; color: inherit; displa
    read as a foreign control in every non-default theme. */
 .send-btn {
   background: var(--vscode-button-background); color: var(--vscode-button-foreground);
-  border: none; cursor: pointer; border-radius: 50%; width: 34px; height: 34px; flex: 0 0 auto;
+  border: none; cursor: pointer; border-radius: 50%; width: 31px; height: 31px; flex: 0 0 auto;
   display: inline-flex; align-items: center; justify-content: center; font-size: 14px;
   transition: background .12s ease, filter .12s ease, transform .05s ease;
 }
@@ -1174,7 +1251,7 @@ button.compact-divider { background: none; font: inherit; color: inherit; displa
 .send-btn:disabled:hover { background: var(--vscode-button-background); filter: none; }
 /* The `submitted` state: sent, provider not streaming yet. */
 .send-spinner {
-  width: 13px; height: 13px; border-radius: 50%;
+  width: 12px; height: 12px; border-radius: 50%;
   border: 2px solid color-mix(in srgb, var(--vscode-button-foreground) 35%, transparent);
   border-top-color: var(--vscode-button-foreground);
   animation: send-spin .7s linear infinite;
@@ -1224,7 +1301,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 @container (max-width: 340px) {
   .footer .footer-chip .fc-label { display: none; }
 }
-.footer-clickable:hover .footer-chip { opacity: 1; background: var(--vscode-list-hoverBackground); }
+.footer-clickable:hover .footer-chip { opacity: 1; background: var(--tm-hover); }
 .usage-data-section { margin-top: 4px; display: flex; flex-direction: column; align-items: stretch; }
 /* The one quiet intro line a settings tab opens with (the nav already names the tab, so
    there is no second bold heading above it). */
@@ -1240,7 +1317,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .usage-donut circle { fill: none; stroke-width: 6; }
 .usage-donut .track { stroke: var(--tm-border-soft); }
 .usage-donut .fill {
-  stroke: var(--vscode-progressBar-background, #0a84ff);
+  stroke: var(--tm-progress);
   stroke-linecap: round;
   transition: stroke-dasharray .3s ease;
 }
@@ -1252,7 +1329,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .usage-legend-row { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--vscode-descriptionForeground); }
 .usage-legend-row .n { margin-left: auto; color: var(--vscode-foreground); font-weight: 600; font-variant-numeric: tabular-nums; }
 .usage-legend .sw { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
-.usage-legend .sw.reasoning { background: var(--vscode-progressBar-background, #0a84ff); }
+.usage-legend .sw.reasoning { background: var(--tm-progress); }
 .usage-legend .sw.other { background: var(--tm-border-soft); }
 .usage-tiles-mini { display: flex; gap: 14px; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--tm-border-soft); }
 .usage-tile-mini { display: flex; flex-direction: column; }
@@ -1331,7 +1408,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
   border: 1px solid var(--tm-border-soft);
   transition: background .15s ease, border-color .15s ease;
 }
-.empty-status:hover { background: var(--vscode-toolbar-hoverBackground); border-color: var(--vscode-descriptionForeground); }
+.empty-status:hover { background: var(--tm-hover-toolbar); border-color: var(--vscode-descriptionForeground); }
 .empty-status:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
 .empty-status.warn { border-color: color-mix(in srgb, var(--vscode-editorWarning-foreground) 45%, transparent); }
 .empty-status-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; }
@@ -1365,9 +1442,20 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .empty-recent-row.status-needsApproval .empty-row-dot { color: var(--vscode-charts-orange, #d18616); opacity: 1; font-weight: 700; }
 .empty-recent-row.status-running .empty-row-dot { color: var(--vscode-textLink-foreground); opacity: .9; }
 .empty-recent-row.status-finished .empty-row-dot { color: var(--vscode-charts-green, #89d185); opacity: .9; }
-.empty-recent-row:hover { background: var(--vscode-list-hoverBackground); }
+.empty-recent-row:hover { background: var(--tm-hover); }
 .empty-row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty-row-date { flex: 0 0 auto; font-size: 10.5px; color: var(--tm-fg-dim); font-variant-numeric: tabular-nums; }
+/* Hover trash — same vocabulary as the history dropdown's .history-delete-btn: invisible
+   until the row hovers, half-visible on row hover, full red on its own hover. A session can
+   be deleted right from the welcome screen without opening View all. */
+.empty-row-delete {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+  background: transparent; border: none; cursor: pointer; padding: 4px 6px; border-radius: 4px;
+  color: var(--vscode-foreground); opacity: 0;
+  transition: opacity .15s, color .1s, background .12s; line-height: 1;
+}
+.empty-recent-row:hover .empty-row-delete { opacity: .5; }
+.empty-row-delete:hover { opacity: 1; color: var(--vscode-errorForeground); background: var(--tm-hover-toolbar); }
 
 /* No light-theme override needed any more: editorWidget-background resolves per theme. */
 
@@ -1390,7 +1478,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
   transition: background .12s ease, border-color .12s ease;
 }
 .empty-tips:hover {
-  background: var(--vscode-list-hoverBackground);
+  background: var(--tm-hover);
   border-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 60%, transparent);
 }
 .empty-tips-badge {
@@ -1433,7 +1521,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
   border: none; border-radius: 7px; padding: 5px 9px; cursor: pointer;
   transition: background .15s ease, color .15s ease;
 }
-.ghost-btn:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
+.ghost-btn:hover { background: var(--tm-hover-toolbar); color: var(--vscode-foreground); }
 .ghost-btn:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
 .ghost-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
 .settings-search {
@@ -1452,7 +1540,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
   transition: background .15s ease, color .15s ease;
 }
 .settings-nav .nav-item svg { width: 14px; height: 14px; flex-shrink: 0; opacity: .85; }
-.settings-nav .nav-item:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
+.settings-nav .nav-item:hover { background: var(--tm-hover-toolbar); color: var(--vscode-foreground); }
 /* Active = a soft accent tint + a 2px accent bar, not a solid fill block — the same "spend
    boldness in one place" the composer's send button follows, matching the design artifact's
    .set-nav-item.active exactly. */
@@ -1472,7 +1560,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .provider-card { border: 1px solid var(--vscode-panel-border); border-radius: var(--tm-radius-xl); margin-bottom: 6px; overflow: hidden; }
 .provider-card.invalid .endpoint { border-color: var(--vscode-errorForeground); }
 .provider-head { display: flex; align-items: center; gap: 8px; padding: 9px 10px; cursor: pointer; user-select: none; }
-.provider-head:hover { background: var(--vscode-list-hoverBackground); }
+.provider-head:hover { background: var(--tm-hover); }
 /* The name is the only row-item allowed to flex/shrink — long names (e.g. "Google AI Studio")
    truncate with an ellipsis instead of wrapping internally, which used to squeeze the status
    text and key button into columns narrow enough that even THEIR short text wrapped
@@ -1502,7 +1590,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
   border-radius: 3px; border: 1px solid var(--vscode-panel-border); background: transparent;
   color: var(--vscode-descriptionForeground); cursor: pointer; padding: 0;
 }
-.cap-tick:hover { border-color: var(--vscode-focusBorder); }
+.cap-tick:hover { border-color: var(--tm-border-hover); }
 .cap-tick.on { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: var(--vscode-button-background); }
 /* Dashed "add new" row — reads as an empty-state affordance, not a button competing with
    the real provider rows above it. */
@@ -1513,7 +1601,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
   cursor: pointer; margin-bottom: 6px;
   transition: background .15s ease, border-color .15s ease, color .15s ease;
 }
-.custom-add-row:hover { background: var(--vscode-toolbar-hoverBackground); border-color: var(--vscode-descriptionForeground); color: var(--vscode-foreground); }
+.custom-add-row:hover { background: var(--tm-hover-toolbar); border-color: var(--vscode-descriptionForeground); color: var(--vscode-foreground); }
 .custom-add-row svg { width: 13px; height: 13px; flex-shrink: 0; }
 
 /* Key-pool count as a real badge, not just plain text — a glance should tell you "this
@@ -1531,7 +1619,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
   background: transparent; border: 1px solid var(--vscode-panel-border); border-radius: 999px;
   padding: 3px 9px; transition: background .15s ease, color .15s ease, border-color .15s ease;
 }
-.provider-head .prov-key-btn:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); border-color: var(--vscode-descriptionForeground); }
+.provider-head .prov-key-btn:hover { background: var(--tm-hover-toolbar); color: var(--vscode-foreground); border-color: var(--vscode-descriptionForeground); }
 .provider-head .prov-key-btn + .chev { margin-left: 0; }
 /* Provider on/off toggle switch */
 .prov-switch { position: relative; display: inline-flex; width: 28px; height: 16px; flex-shrink: 0; cursor: pointer; }
@@ -1570,7 +1658,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
    doing double duty now stay visually separate. */
 .mcp-server { border: 1px solid var(--vscode-panel-border); border-radius: var(--tm-radius-xl); margin-bottom: 6px; overflow: hidden; }
 .mcp-server-head { display: flex; align-items: center; gap: 10px; padding: 8px 10px; cursor: pointer; }
-.mcp-server-head:hover { background: var(--vscode-list-hoverBackground); }
+.mcp-server-head:hover { background: var(--tm-hover); }
 .mcp-tile {
   position: relative; width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
   background: var(--tm-surface-panel, var(--vscode-editorWidgetBackground)); color: var(--tm-fg-muted, var(--vscode-descriptionForeground));
@@ -1610,7 +1698,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
    above) and "servers you could add" tell apart by shape alone. */
 .registry-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 4px; }
 .registry-card2 { display: flex; flex-direction: column; gap: 7px; padding: 10px; border: 1px solid var(--vscode-panel-border); border-radius: var(--tm-radius-xl); }
-.registry-card2:hover { border-color: var(--vscode-focusBorder); }
+.registry-card2:hover { border-color: var(--tm-border-hover); }
 .registry-card2-head { display: flex; align-items: center; gap: 8px; }
 .registry-card2-head .mcp-tile { width: 24px; height: 24px; border-radius: 6px; }
 .registry-card2-head .mcp-tile svg { width: 12px; height: 12px; }
@@ -1690,8 +1778,13 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
   font-family: inherit; font-size: 12px; padding: 7px 10px; cursor: pointer; text-align: left;
   user-select: none; box-sizing: border-box;
 }
-.history-item:hover { background: var(--vscode-list-hoverBackground); }
-.history-item.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); font-weight: 600; }
+.history-item:hover { background: var(--tm-hover); }
+/* Active row: the brand-tinted selected language — the theme's navy
+   activeSelectionBackground slab matched nothing else in the dropdown. */
+.history-item.active {
+  background: color-mix(in srgb, var(--tm-border-focus) 14%, transparent);
+  color: var(--vscode-foreground); font-weight: 600;
+}
 .history-item-left { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; }
 .history-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; }
 .history-activity {
@@ -1713,7 +1806,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
   transition: opacity .15s, color .1s, background .12s; line-height: 1;
 }
 .history-item:hover .history-delete-btn { opacity: .5; }
-.history-delete-btn:hover { opacity: 1 !important; color: var(--vscode-errorForeground); background: var(--vscode-toolbar-hoverBackground); }
+.history-delete-btn:hover { opacity: 1 !important; color: var(--vscode-errorForeground); background: var(--tm-hover-toolbar); }
 
 
 
@@ -1734,7 +1827,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
   font-size: 11px; color: var(--vscode-descriptionForeground);
   display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border-radius: 6px;
 }
-.cf-cancel:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
+.cf-cancel:hover { background: var(--tm-hover-toolbar); color: var(--vscode-foreground); }
 
 .custom-form {
   border: 1px solid var(--vscode-panel-border); border-radius: var(--tm-radius-xl);
@@ -1766,7 +1859,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
   background: transparent; color: inherit; font: inherit;
   transition: border-color .15s ease, background .15s ease;
 }
-.cf-type-card:hover { background: var(--vscode-toolbar-hoverBackground); }
+.cf-type-card:hover { background: var(--tm-hover-toolbar); }
 .cf-type-card.active {
   border-color: var(--vscode-focusBorder);
   background: color-mix(in srgb, var(--vscode-focusBorder) 8%, transparent);
@@ -1826,7 +1919,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .cf-models-note { font-size: 10.5px; color: var(--vscode-descriptionForeground); line-height: 1.5; }
 .cf-models-list { max-height: 210px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; scrollbar-width: thin; }
 .cf-model-row { display: flex; flex-direction: column; gap: 5px; padding: 6px; border-radius: 6px; }
-.cf-model-row:hover { background: var(--vscode-list-hoverBackground); }
+.cf-model-row:hover { background: var(--tm-hover); }
 .cf-model-main { display: flex; align-items: center; gap: 8px; font-size: 12px; font-family: var(--tm-font-code, monospace); color: var(--vscode-foreground); cursor: pointer; }
 .cf-model-main input { accent-color: var(--vscode-button-background); flex-shrink: 0; margin: 0; }
 /* A fetched custom model is just an id string — the catalog's supportsTools/supportsVision/
@@ -1852,7 +1945,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
   font-family: inherit; font-size: 11.5px; font-weight: 500; color: var(--vscode-descriptionForeground);
   transition: background .15s ease, color .15s ease;
 }
-.cf-ghost-btn:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
+.cf-ghost-btn:hover { background: var(--tm-hover-toolbar); color: var(--vscode-foreground); }
 /* A quiet uppercase eyebrow label, not a bold heading — matches the artifact's
    .prov-section-title exactly (every current usage — "Custom Endpoints", "Add from
    registry", "MCP Servers" — plays that same quiet sub-section role, not a page title). */
@@ -1954,7 +2047,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 }
 .engine-onboard-bar-fill {
   height: 100%;
-  background: var(--vscode-progressBar-background, var(--vscode-focusBorder));
+  background: var(--tm-progress);
   transition: width 0.25s ease;
 }
 .engine-onboard.engine-onboard-error .engine-onboard-bar-fill { background: var(--vscode-errorForeground); }
@@ -2069,7 +2162,7 @@ details[open].tm-card-collapsible > summary::before { content: '▾ '; }
 .ctx-chip .ctx-ring circle { fill: none; stroke-width: 3; }
 .ctx-chip .ctx-ring .ring-bg { stroke: var(--vscode-panel-border, rgba(127,127,127,.45)); }
 .ctx-chip .ctx-ring .ring-fg {
-  stroke: var(--vscode-progressBar-background, #0a84ff);
+  stroke: var(--tm-progress);
   stroke-linecap: round;
   transition: stroke-dashoffset .3s ease;
 }
@@ -2103,7 +2196,7 @@ details[open].tm-card-collapsible > summary::before { content: '▾ '; }
   border-color: transparent;
   background: transparent;
 }
-.toolbar .icon-btn-sm:hover { background: var(--vscode-toolbar-hoverBackground); }
+.toolbar .icon-btn-sm:hover { background: var(--tm-hover-toolbar); }
 .toggle-pill.icon-only-sm.on {
   background: var(--vscode-button-background);
   color: var(--vscode-button-foreground);
@@ -2117,7 +2210,7 @@ details[open].tm-card-collapsible > summary::before { content: '▾ '; }
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8'><path d='M1 2.5 L4 5.5 L7 2.5' fill='none' stroke='%23888' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/></svg>");
   background-repeat: no-repeat; background-position: right 6px center; background-size: 8px;
 }
-.select-wrap select.pill:hover { background-color: var(--vscode-toolbar-hoverBackground); }
+.select-wrap select.pill:hover { background-color: var(--tm-hover-toolbar); }
 
 /* One consistent control height across the whole toolbar row. */
 .toolbar .pill { height: 24px; }
@@ -2145,6 +2238,6 @@ details[open].tm-card-collapsible > summary::before { content: '▾ '; }
   background: var(--vscode-editor-inactiveSelectionBackground, rgba(127, 127, 127, .12));
   color: var(--vscode-foreground); text-decoration: none; font-size: 11px;
 }
-.tm-source:hover { border-color: var(--vscode-focusBorder); }
+.tm-source:hover { border-color: var(--tm-border-hover); }
 .tm-source-host { flex: 0 0 auto; color: var(--vscode-textLink-foreground); }
 .tm-source-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); }

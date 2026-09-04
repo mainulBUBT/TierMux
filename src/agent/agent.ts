@@ -103,10 +103,15 @@ export interface AgentOpts {
   effort: ReasoningEffort;
   abortSignal?: AbortSignal;
   pinnedModel?: string;
+  /** Host auto-approve toggle for this session — forwarded to the toolApproval policy so
+   *  non-dangerous commands skip the inline prompt, like CommandGate/EditGate already do. */
+  autoApprove?: boolean;
+  /** Tool-result aging level for this turn — mirrors the tiermux.agent.toolCompaction
+   *  setting ('off' | 'light' | 'aggressive'). Threaded from host settings. */
+  toolCompaction?: 'off' | 'light' | 'aggressive';
   /** `platform::modelId` keys to skip during Auto selection for this call only — e.g. the
    *  auto-continue loop excluding the model that just got stuck, so the retry genuinely tries a
-   *  different model rather than very likely re-picking the same one (nothing about a stuck loop
-   *  looks like a failure to the router's own health/availability scoring). Ignored when
+   *  different model rather than very likely re-picking the same one. Ignored when
    *  `pinnedModel` names a specific model (the user's explicit choice always wins) — only affects
    *  Auto selection. */
   excludeModels?: string[];

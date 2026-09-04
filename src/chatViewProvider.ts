@@ -727,6 +727,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.updateViewTitle();
   }
 
+  /** Global (per-user) state handle — used by deactivate() to persist picker health. */
+  depsGlobalState(): vscode.Memento | undefined {
+    return this.deps.globalState;
+  }
+
   /** First-run engine onboarding progress (download %, verify, ready/error) — see
    *  the 'engineStatus' OutMessage variant. Queues like any other post() if the
    *  webview isn't open yet. */
@@ -951,11 +956,42 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.handleSend({ type: 'sendMessage', requestId, text, mode, model: 'auto', reasoningEffort: 'off' });
   }
 
+  /** A session with nothing in it yet — no messages, no in-flight run, nothing awaiting a click.
+   *  activeRequestId is set at the very start of a send (before the run queue), so a
+   *  queued/running session never reads as empty. */
+  private static isEmptySession(s: Session): boolean {
+    return s.transcript.length === 0
+      && s.history.length === 0
+      && !s.activeRequestId
+      && !s.inProgressTurn
+      && s.pendingApprovals.size === 0
+      && s.pendingPermissions.size === 0
+      && s.pendingAskUser.size === 0;
+  }
+
   newChat(): void {
+    // An untouched session IS the new chat: re-viewing it instead of creating another one
+    // stops the + / New chat path from stacking an empty session per click.
+    const cur = this.current();
+    if (ChatViewProvider.isEmptySession(cur)) {
+      this.post({ type: 'switchSession', sessionId: cur.id, messages: [] });
+      this.post({ type: 'busy', sessionId: cur.id, busy: false });
+      void this.sendConfig();
+      return;
+    }
 
     const s = this.createSession();
     this.viewedSessionId = s.id;
     void this.deps.workspaceState.update(CURRENT_KEY, s.id);
+    // A real new session orphans every OTHER still-empty one — drop them so the in-memory
+    // list never accumulates one empty chat per historic + press (empty sessions were never
+    // persisted, so this loses nothing).
+    for (const [id, other] of this.sessions) {
+      if (id !== s.id && ChatViewProvider.isEmptySession(other)) {
+        this.sessions.delete(id);
+        this.statusOf.delete(id);
+      }
+    }
     this.postSessionList();
     this.post({ type: 'switchSession', sessionId: s.id, messages: [] });
     this.post({ type: 'busy', sessionId: s.id, busy: false }); // reset the composer if a run was in flight
@@ -1844,13 +1880,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  every send (each attempt is a real LLM call against rate-limited free tiers). */
   private autoCondenseAt = new Map<string, number>();
   private static readonly AUTO_CONDENSE_COOLDOWN_MS = 10 * 60_000;
+  /** Auto-continue bound: when an agent turn ends with unfinished todos, the host resumes it
+   *  this many times on its own (Cline/Claude-Code-style "keep going" without the click) before
+   *  leaving the Continue button. Bounded so a stuck loop can't burn quota forever — each
+   *  round is a fresh model call against the free tier. */
+  private static readonly MAX_AUTO_CONTINUES = 3;
+  /** Default working-context ceiling, INDEPENDENT of the served model's window. Thresholding at
+   *  80% of the window let big-window models (e.g. 200k) grow history to 160k tokens — so a
+   *  trivial "what is this project?" shipped 65k input tokens and took 20-30s to first token on
+   *  EVERY provider (live repro 2026-09-04). Past the cap, older turns are summarized (not lost)
+   *  by condenseHistory — and the post-condense history is small (tail of 10 messages with
+   *  tool results re-capped), so regrowth to the cap takes many heavy turns, not one. User-
+   *  tunable via `tiermux.agent.autoCondenseTokenCap`; 0 restores window-only behavior. */
+  private static readonly AUTO_CONDENSE_TOKEN_CAP_DEFAULT = 32_000;
 
   /**
    * Automatic between-turn compaction. When the session history exceeds ~80% of the routed
-   * model's context window (and is long enough for condenseHistory to act on), summarize the
-   * older turns in place — same mechanism as /compact, just triggered by pressure instead of
-   * the user noticing slowness. Runs before the turn starts so the model begins with headroom
-   * rather than discovering the wall mid-turn.
+   * model's context window OR the working-context cap (and is long enough for
+   * condenseHistory to act on), summarize the older turns in place — same mechanism as
+   * /compact, just triggered by pressure instead of the user noticing slowness. Runs before
+   * the turn starts so the model begins with headroom rather than discovering the wall
+   * mid-turn.
    */
   private async maybeAutoCondense(s: Session): Promise<void> {
     try {
@@ -1860,7 +1910,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (!shouldCondense(s.history)) return;
       const profile = resolveExecutionProfile(this.deps.router.peekTopSelection('chat')?.model);
       const tokens = estimateMessagesTokens(s.history);
-      if (tokens <= profile.contextWindow * 0.8) return;
+      const cap = vscode.workspace.getConfiguration('tiermux.agent').get<number>('autoCondenseTokenCap', ChatViewProvider.AUTO_CONDENSE_TOKEN_CAP_DEFAULT);
+      const threshold = cap > 0 ? Math.min(profile.contextWindow * 0.8, cap) : profile.contextWindow * 0.8;
+      if (tokens <= threshold) return;
       this.autoCondenseAt.set(s.id, Date.now());
       const r = await condenseHistory(
         s.history,
@@ -2277,12 +2329,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       const after = this.deps.usage.get();
-      const usage = {
+      let usage = {
         promptTokens: after.promptTokens - before.promptTokens,
         completionTokens: after.completionTokens - before.completionTokens,
         reasoningTokens: after.reasoningTokens - before.reasoningTokens,
         totalTokens: after.totalTokens - before.totalTokens,
       };
+
+      // Auto-continue chain (agent mode only): if this turn ended with UNFINISHED todos,
+      // keep running bounded extra rounds so the user doesn't have to keep clicking Continue.
+      // The single requestId means the webview shows one continuous assistant turn; the last
+      // round's result replaces `result`, so the final persist/push below captures EVERY
+      // round's tool work and text. Skips plan/ask (a plan ends on approval, a question on
+      // the answer) and any turn that paused on a question or was aborted.
+      if (sdkMode === 'agent' && !result.paused && !result.failed && this.isActiveRun(s, m.requestId)) {
+        result = await this.autoContinueChain(s, m.requestId, result, { pinnedModel: m.model, effort: m.reasoningEffort ?? 'medium' });
+        const afterChain = this.deps.usage.get();
+        usage = {
+          promptTokens: afterChain.promptTokens - before.promptTokens,
+          completionTokens: afterChain.completionTokens - before.completionTokens,
+          reasoningTokens: afterChain.reasoningTokens - before.reasoningTokens,
+          totalTokens: afterChain.totalTokens - before.totalTokens,
+        };
+        if (!this.isActiveRun(s, m.requestId)) return; // user hit Stop during a chain round
+      }
 
       const agentClar = planClar ?? (!result.paused ? resolveClarifying(result.text, result.askQuestions) : { questions: null, text: result.text });
 
@@ -2310,10 +2380,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const modelLabel = turnModelLabel(s.model, result.model);
       const hasQuestions = !!(agentClar.questions && agentClar.questions.length);
 
-      // One-click Continue affordance: a turn that ended with unfinished plan items — or a
-      // step-cap pause — is resumable exactly like a paused turn (handleResume re-runs with
-      // the full transcript in memory, no work repeated). Surface the webview's existing
-      // Continue button for those stops instead of telling the user to type "continue".
+      /** One-click Continue affordance: a turn that ended with unfinished plan items — or a
+       *  step-cap pause — is resumable exactly like a paused turn (handleResume re-runs with
+       *  the full transcript in memory, no work repeated). Surface the webview's existing
+       *  Continue button for those stops instead of telling the user to type "continue". */
       const resumable = !hasQuestions && !result.failed && (result.paused
         || finalRemainingTodos.length > 0);
 
@@ -2862,6 +2932,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       mentionCount: s.lastMentionCount,
       abortSignal: s.cancel ? tokenToAbortSignal(s.cancel.token) : undefined,
       profiler: this.deps.profiler,
+      // The engine's toolApproval policy reads this (policyFromSettings): without it the
+      // composer toggle only gated CommandGate/EditGate while the v3 tool path kept asking.
+      autoApprove: this.autoApprove,
+      toolCompaction: (() => {
+        const v = vscode.workspace.getConfiguration('tiermux.agent').get<string>('toolCompaction', 'light');
+        return v === 'off' || v === 'aggressive' ? v : 'light';
+      })(),
       ...callbacks,
     };
   }
@@ -3156,6 +3233,80 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       'Manage Models',
     );
     if (choice === 'Manage Models') void vscode.commands.executeCommand('tiermux.openModelSettings');
+  }
+
+  /** Whether a fresh send/continue should keep chaining: only an AGENT turn with unfinished
+   *  todos that was NOT explicitly aborted, and that did not itself pause on a question. */
+  private shouldAutoContinue(s: Session, mode: string, result: AgentResult, active: boolean): boolean {
+    if (!active || mode !== 'agent' || result.failed || result.paused) return false;
+    const todos = (s.lastTodos ?? []).filter((t) => t.status !== 'completed');
+    if (!todos.length) return false;
+    // A reply that itself ended with a clarifying question is a pause, not a stop — the user
+    // must answer before any more work.
+    if (result.askQuestions?.length) return false;
+    return true;
+  }
+
+  /**
+   * Auto-continue chain: after an agent turn ends with UNFINISHED todos, keep running
+   * (Cline/Claude-Code-style) up to {@link MAX_AUTO_CONTINUES} extra rounds so the user
+   * doesn't have to keep clicking Continue. Each round pushes a terse "keep going" that
+   * names the remaining items, so the model resumes the plan instead of re-planning.
+   *
+   * Abort (Stop), a fresh send superseding this requestId, a question pause, a failure, or
+   * reaching the round bound all stop the chain. The single `requestId` stays the same, so
+   * the webview shows one continuous assistant turn across every round.
+   *
+   * Returns the LAST round's result (the caller persists it), so tool work lands in history
+   * exactly once via the normal persistAgentTurn path.
+   */
+  private async autoContinueChain(
+    s: Session,
+    requestId: string,
+    result: AgentResult,
+    opts: { pinnedModel?: string; effort: string },
+  ): Promise<AgentResult> {
+    let current = result;
+    let rounds = 0;
+    const model = opts.pinnedModel ?? s.model;
+    const effort = opts.effort as ReasoningEffort;
+    const cbk = this.agentCallbacks(s, requestId, 'agent');
+    // Seed history with the completed round's tool work so the NEXT round's model call sees
+    // its own earlier tool transcript. persistAgentTurn is NOT called between rounds — the
+    // final caller persists once — so push here and return workMessages: [] to avoid doubles.
+    const seedWork = [...(result.workMessages ?? [])];
+    if (seedWork.length) s.history.push(...seedWork);
+    const allText: string[] = [];
+    if (result.text) allText.push(result.text);
+    while (this.shouldAutoContinue(s, 'agent', current, this.isActiveRun(s, requestId))
+      && rounds < ChatViewProvider.MAX_AUTO_CONTINUES) {
+      rounds++;
+      const remaining = (s.lastTodos ?? []).filter((t) => t.status !== 'completed');
+      const list = remaining.map((t) => `- ${t.content}`).join('\n');
+      s.history.push({
+        role: 'user',
+        content: '[auto-continue] Keep going — finish the remaining steps below using the work '
+          + 'already done. Do not restart or repeat completed steps; update todos as you go.\n\n'
+          + `Remaining (${remaining.length}):\n${list}`,
+      });
+      this.post({ type: 'busy', sessionId: s.id, busy: true });
+      diagLog('send.autoContinue', `requestId=${requestId} round=${rounds} remaining=${remaining.length}`);
+      try {
+        const next = await runAgentStream(this.deps.router, this.makeAgentOpts(s, requestId, 'agent', effort, cbk, model), {});
+        if (!this.isActiveRun(s, requestId)) return { ...current, text: allText.join('\n\n'), workMessages: [] };
+        if (next.workMessages?.length) s.history.push(...next.workMessages);
+        if (next.text) allText.push(next.text);
+        current = next;
+      } catch (e) {
+        if (!this.isActiveRun(s, requestId)) return { ...current, text: allText.join('\n\n'), workMessages: [] };
+        this.post({ type: 'error', sessionId: s.id, requestId, message: e instanceof Error ? e.message : String(e) });
+        return { ...current, text: allText.join('\n\n'), workMessages: [] };
+      }
+    }
+    // Final result: every round's text stitched (so the bubble shows the FULL run, not just
+    // the last round), and workMessages emptied — every round's tool work is ALREADY in
+    // s.history via the pushes above, and persistAgentTurn would otherwise double it.
+    return { ...current, text: allText.join('\n\n') || current.text, workMessages: [] };
   }
 
   /**

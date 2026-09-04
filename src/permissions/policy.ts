@@ -14,6 +14,7 @@
 import * as vscode from 'vscode';
 import type { ToolApprovalStatus } from 'ai';
 import { READ_ONLY_TOOLS } from '../agent/core/tools/v3';
+import { commandFromInput, isDangerous, isReadOnlyCommand } from '../edits/commandClassify';
 
 export type PermissionMode = 'ask' | 'auto' | 'full-auto';
 
@@ -71,16 +72,37 @@ export function resolvePolicy(
     return Promise.resolve({ type: 'denied', reason: 'plan mode is read-only — edits are disabled until the plan is approved' });
   }
 
-  // Ask mode: "everything except edits". The toolset already withholds the three file
-  // mutators; this is the second lock, so a full-auto session (or a pinned alwaysAllow from an
-  // earlier agent-mode turn) can never turn a Q&A turn into a writing turn. runCommand
-  // deliberately falls through to the normal chain below — asking about the repo means
-  // running `git log`/`npm test`, and those go through the same approval the user configured.
+  // Ask mode: read-only Q&A. File mutators are hard-denied (toolset withholds them too).
+  // Shell is allowed READ-ONLY: a confidently read-only command (ls, git log/status/diff)
+  // auto-runs so "what did the last commit do?" is answerable from real output; a dangerous
+  // command (rm -rf, push --force) is hard-denied; anything ambiguous falls through to the
+  // normal approval chain below. alwaysAllow from an earlier agent-mode turn is ignored for
+  // shell here — ask-mode approval is per-turn, never blanket.
   if (config.sessionMode === 'ask' && MUTATING_FILE_TOOLS.has(call.toolName)) {
     return Promise.resolve({ type: 'denied', reason: 'ask mode answers questions — file edits are disabled; switch to agent mode to change files' });
   }
+  if (config.sessionMode === 'ask' && call.toolName === 'runCommand') {
+    const cmd = commandFromInput(call.input);
+    if (cmd && isDangerous(cmd)) {
+      return Promise.resolve({ type: 'denied', reason: 'ask mode never runs destructive commands — switch to agent mode for that' });
+    }
+    if (cmd && isReadOnlyCommand(cmd)) return Promise.resolve({ type: 'approved' });
+    if (!requestApproval) return Promise.resolve({ type: 'denied', reason: 'no approval channel configured' });
+    return requestApproval({ tool: call.toolName, input: call.input }).then((d) => {
+      return d === 'allow'
+        ? { type: 'approved' as const }
+        : { type: 'denied' as const, reason: 'user denied' };
+    });
+  }
 
   if (config.alwaysAllow.has(call.toolName)) {
+    // A session-scoped "Always" grant from an agent-mode turn must never unlock mutation
+    // in ask mode — plan mode returned above before reaching here, and ask-mode mutating
+    // tools were denied above, so this is defense-in-depth. Shell is exempt: ask mode
+    // handles runCommand in its own branch above (read-only auto, dangerous deny).
+    if (config.sessionMode === 'ask' && MUTATING_FILE_TOOLS.has(call.toolName)) {
+      return Promise.resolve({ type: 'denied', reason: 'ask mode is read-only — a prior "Always" grant does not carry over' });
+    }
     return Promise.resolve({ type: 'approved' });
   }
   if (READ_ONLY_TOOLS.has(call.toolName)) {

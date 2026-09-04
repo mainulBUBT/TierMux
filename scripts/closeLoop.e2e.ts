@@ -1,16 +1,9 @@
-/* A turn that ran tools and then ANNOUNCED its next tool call instead of making it must get
- * the same one continuation an empty synthesis gets.
+/* A turn that ran tools and came back EMPTY gets one continuation.
  *
- * Two live repros, same shape, same model (Kilo/stepfun/step-3.7-flash:free, 2026-08-30):
- *   3:47 PM — 8 tool uses, ended on "Let me continue reading from where it was cut off…"
- *   3:54 PM — 6 tool uses, ended on "Let me continue reading the PlaceNewOrder trait…"
- * 173 out tokens, no answer, the task untouched. The second is AFTER the readFile paging fix,
- * so the tool was no longer withholding an offset — the model just stops at the narration.
- *
- * It fell through both existing gaps: actGap requires that no tool ran, reportGap required an
- * empty reply. This locks the third quadrant, and — just as importantly — locks the cases that
- * must NOT be nudged, so the guard stays one guard instead of growing into the tower the
- * SIMPLE_CORE_RESET removed.
+ * Wire-level signals only — never prose classification. Guessing "announced the next action
+ * instead of taking it" from reply text is a regex tower: every new phrasing misses it and
+ * every widening swallows a real answer. A non-empty synthesis ships as-is (unfinished todos
+ * surface the host's Continue affordance instead of burning a second model call on a guess).
  *
  * Run: npm run test:e2e:close-loop
  */
@@ -50,23 +43,18 @@ async function turn(model: ReturnType<typeof createMockModel>, over: Partial<Age
 const readCall = { toolCalls: [{ toolName: 'readFile', input: { path: 'a.txt' } }] };
 
 async function main() {
-  console.log('— the 3:54 PM shape: tools ran, then narration —');
+  console.log('— tools ran, non-empty synthesis ships as-is (no prose guessing) —');
   {
     const m = createMockModel([
       readCall,
       { text: 'Let me continue reading the PlaceNewOrder trait to understand the full flow.' },
-      { text: 'Orders are placed via PlaceNewOrder::new_place_order(), called from OrderController.' },
     ], 'narration-after-tools');
     const r = await turn(m);
-    ok('a continuation pass ran', m.calls.length === 3, `${m.calls.length} model calls`);
-    ok('the nudge told it to close the loop',
-      /CLOSE the task|final answer/i.test(JSON.stringify(m.calls[2].messages ?? '')),
-      JSON.stringify(m.calls[2].messages ?? '').slice(-160));
-    ok('the narration is not what ships', !r.text.startsWith('Let me continue'), r.text.slice(0, 60));
-    ok('the real answer ships instead', r.text.includes('new_place_order'), r.text.slice(0, 80));
+    ok('no continuation on non-empty synthesis', m.calls.length === 2, `${m.calls.length} model calls`);
+    ok('the synthesis ships verbatim', r.text.includes('Let me continue reading'), r.text.slice(0, 60));
   }
 
-  console.log('\n— the already-covered quadrants still behave —');
+  console.log('\n— the wire-level gaps still nudge —');
   {
     const m = createMockModel([readCall, { text: '' }, { text: 'Done: read a.txt.' }], 'empty-after-tools');
     const r = await turn(m);
@@ -74,38 +62,34 @@ async function main() {
     ok('and ships the continuation', r.text.includes('Done'), r.text);
   }
   {
-    const m = createMockModel([{ text: "I'll read the file and report back." }, { text: 'Read it: hello.' }], 'narration-no-tools');
+    const m = createMockModel([{ text: '' }, { text: 'Read it: hello.' }], 'empty-no-tools');
     const r = await turn(m);
-    ok('no tools + narration still nudges', m.calls.length === 2, `${m.calls.length}`);
+    ok('no tools + empty reply still nudges', m.calls.length === 2, `${m.calls.length}`);
     ok('and ships the continuation', r.text.includes('hello'), r.text);
   }
 
-  console.log('\n— narration behind a discourse marker (2026-08-31 repro) —');
+  console.log('\n— non-empty prose after tools is never second-guessed —');
   {
-    // Opencode/nemotron-3-ultra-free ended the turn here with its 7-item plan at 0 done. The
-    // leading "Now" is the whole reason the ^-anchored stem regex missed it and NO continuation
-    // ran — the user was left typing "continue" by hand.
     const m = createMockModel([
       readCall,
       { text: "Now I'll start editing the index.blade.php file first. Let me create the modernized version." },
-      { text: 'Edited index.blade.php: the drawing toolbar now uses AdvancedMarkerElement.' },
     ], 'narration-behind-marker');
     const r = await turn(m);
-    ok('a "Now I\'ll…" narration is nudged', m.calls.length === 3, `${m.calls.length} model calls`);
-    ok('the continuation is what ships', r.text.includes('AdvancedMarkerElement'), r.text.slice(0, 70));
+    ok('a "Now I\'ll…" narration is NOT nudged', m.calls.length === 2, `${m.calls.length} model calls`);
+    ok('it ships verbatim', r.text.includes("Now I'll start editing"), r.text.slice(0, 70));
   }
   {
     // Kilo/nemotron-3-ultra-550b, same task, same shape, different stem.
     const m = createMockModel([
       readCall,
       { text: 'Now let me rewrite the entire map-related JavaScript section in index.blade.php.' },
-      { text: 'Rewrote the map section in index.blade.php.' },
     ], 'narration-behind-marker-2');
-    ok('a "Now let me…" narration is nudged', (await turn(m), m.calls.length === 3), `${m.calls.length}`);
+    const r = await turn(m);
+    ok('a "Now let me…" narration is NOT nudged', m.calls.length === 2, `${m.calls.length}`);
+    ok('it ships verbatim', r.text.includes('Now let me rewrite'), r.text.slice(0, 70));
   }
   {
-    // The guard must not widen into "anything starting with a marker": the stem still has to
-    // match, so a real answer that merely opens with "Now" is left alone.
+    // A real answer that merely opens with a discourse marker is left alone.
     const m = createMockModel([
       readCall,
       { text: 'Now the map uses AdvancedMarkerElement in both files (index.blade.php:401).' },

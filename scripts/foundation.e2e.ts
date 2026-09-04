@@ -724,19 +724,17 @@ async function main() {
     ok('21. engine: reasoning concatenation matches', (out.reasoning ?? '') === 'part one part two part three', `reasoning=${JSON.stringify(out.reasoning)}`);
   }
 
-  // ── Scenario 22: act-gap nudge retracts the pass-1 narration draft ──────────
-  // Live repro (nemotron-3-ultra-free, 12:57 AM): pass 1 streamed narration ("The user is
-  // asking me to… Let me grep…"), the act-gap nudge fired, and pass 2's text streamed into
-  // the SAME draft — the reply bubble showed the narration TWICE. The engine must retract
-  // the draft before the continuation pass so pass-1 narration becomes Chain-of-Thought and
-  // pass 2 is the sole reply.
+  // ── Scenario 22: non-empty prose ships as-is, no narration guessing ──────────
+  // The old act-gap nudge fired on reply TEXT matching ("Let me grep…") and retracted the
+  // draft before a continuation pass. That prose classification is removed: a non-empty
+  // synthesis ships verbatim in one model call, with no retract. Empty replies still nudge
+  // (see the close-loop suite); this locks that prose is never second-guessed.
   {
     const ws = makeWorkspace();
     const retracts: number[] = [];
     const chunks: string[] = [];
     const m = createMockModel([
       { text: 'The user is asking me to search for hello. Let me grep for hello' },
-      { text: 'The user is asking me to search for hello. Let me grep again' },
     ], 's22');
     const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
       messages: [{ role: 'user', content: 'Hello' }],
@@ -744,10 +742,10 @@ async function main() {
       onChunk: (t) => chunks.push(t),
       onRetractDraft: () => retracts.push(1),
     })));
-    ok('22. nudge fired (two model calls)', m.calls.length === 2, `calls=${m.calls.length}`);
-    ok('22. pass-1 narration retracted before pass 2', retracts.length === 1, `retracts=${retracts.length}`);
-    ok('22. result.text is the continuation pass only', out.text === 'The user is asking me to search for hello. Let me grep again', `text=${JSON.stringify(out.text)}`);
-    ok('22. both passes still streamed (host re-routes pass 1 to CoT)', chunks.length === 2, `chunks=${JSON.stringify(chunks)}`);
+    ok('22. no nudge on non-empty prose (one model call)', m.calls.length === 1, `calls=${m.calls.length}`);
+    ok('22. no draft retracted', retracts.length === 0, `retracts=${retracts.length}`);
+    ok('22. result.text is the prose verbatim', out.text === 'The user is asking me to search for hello. Let me grep for hello', `text=${JSON.stringify(out.text)}`);
+    ok('22. the prose streamed once', chunks.length === 1, `chunks=${JSON.stringify(chunks)}`);
   }
 
   // ── Scenario 23: provider stream error → honest failed result, not a phantom turn ──
@@ -903,7 +901,7 @@ async function main() {
     // Tail ordering: rank-sorted (best first), NOT raw settings order — a paper-strong model
     // sitting first in settings order used to serve every task after the table ids went dead.
     setModelSources({
-      catalog: { find: (_p: string, m: string) => ({ supportsTools: true, intelligenceRank: m === 'a-model' ? 1 : m === 'b-model' ? 2 : 3 }) } as never,
+      catalog: { find: (_p: string, m: string) => ({ supportsTools: true, intelligenceRank: m === 'a-model' ? 1 : m === 'b-model' ? 2 : 3, speedRank: 1 }) } as never,
       settings: {
         getFallback: () => [
           { platform: 'p1', modelId: 'c-model', enabled: true, priority: 0 },
@@ -944,7 +942,7 @@ async function main() {
     // re-pick the same key with the generic 'enabled model' label and overwrite the popover's
     // why (live repro: table-picked opencode/hy3-free showed "enabled model — serves this turn").
     setModelSources({
-      catalog: { find: (_p: string, m: string) => (m === 'gemini-2.5-flash' ? { supportsTools: true, intelligenceRank: 1 } : undefined) } as never,
+      catalog: { find: (_p: string, m: string) => (m === 'gemini-2.5-flash' ? { supportsTools: true, intelligenceRank: 1, speedRank: 1 } : undefined) } as never,
       settings: {
         getFallback: () => [{ platform: 'google', modelId: 'gemini-2.5-flash', enabled: true, priority: 0 }],
         getDisabledProviders: () => [],
@@ -1007,19 +1005,30 @@ async function main() {
     const askTools = buildV3ToolSet('ask');
     ok('F. web tools offered in ask mode too', 'webSearch' in askTools && 'fetchUrl' in askTools);
 
-    // Ask mode = "everything except edits" (2026-09-01): a question about git history has to be
-    // answerable by RUNNING `git log`, not by telling the user to run it. runCommand is offered;
-    // the three file mutators are withheld by the toolset AND hard-denied by the policy.
-    ok('F. runCommand offered in ask mode', 'runCommand' in askTools);
+    // Ask mode = read-only Q&A: file mutators are withheld by the toolset AND hard-denied
+    // by the policy. Shell is offered READ-ONLY — `git log` auto-runs, destructive commands
+    // are denied outright, the ambiguous rest go through the approval channel.
+    ok('F. runCommand offered read-only in ask mode', 'runCommand' in askTools);
     ok('F. ask mode still has no editors',
       !('editFile' in askTools) && !('writeFile' in askTools) && !('deleteFile' in askTools));
     const askPolicy = { ...prodDefaultPolicy, sessionMode: 'ask' as const, mode: 'full-auto' as const, alwaysAllow: new Set(['editFile']), alwaysDeny: new Set<string>() };
     const askEdit = await resolvePolicy({ toolName: 'editFile' }, askPolicy);
     ok('F. edits hard-denied in ask mode even under full-auto + alwaysAllow',
       (askEdit as { type: string }).type === 'denied', JSON.stringify(askEdit));
-    const askShell = await resolvePolicy({ toolName: 'runCommand' }, askPolicy);
-    ok('F. runCommand follows the normal chain in ask mode',
-      (askShell as { type: string }).type === 'approved', JSON.stringify(askShell));
+    const askReadOnly = await resolvePolicy({ toolName: 'runCommand', input: { command: 'git log --oneline -5' } }, askPolicy);
+    ok('F. read-only shell auto-runs in ask mode',
+      (askReadOnly as { type: string }).type === 'approved', JSON.stringify(askReadOnly));
+    const askDanger = await resolvePolicy({ toolName: 'runCommand', input: { command: 'rm -rf dist' } }, askPolicy);
+    ok('F. destructive shell hard-denied in ask mode even under full-auto',
+      (askDanger as { type: string }).type === 'denied', JSON.stringify(askDanger));
+    let asked = 0;
+    const askAmbiguous = await resolvePolicy(
+      { toolName: 'runCommand', input: { command: 'npm test' } },
+      { ...askPolicy, mode: 'ask' as const },
+      async () => { asked++; return 'allow'; },
+    );
+    ok('F. ambiguous shell asks in ask mode (no blanket allow)',
+      (askAmbiguous as { type: string }).type === 'approved' && asked === 1, JSON.stringify(askAmbiguous));
   }
 
   console.log(failures === 0 ? '\nALL 25 FOUNDATION SCENARIOS PASS — gate open for steps 9-10' : `\n${failures} FAILURE(S) — FOUNDATION GATE BLOCKED, adapt the plan before deleting`);

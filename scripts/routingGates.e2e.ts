@@ -19,8 +19,8 @@
  *
  * Run: npm run test:e2e:routing-gates
  */
-import { selectModel, setModelSources } from '../src/router/picker';
-import { resolveCandidates, isFailoverWorthy } from '../src/agent/core/routerProvider';
+import { selectModel, setModelSources, __resetTaskRoundCounters } from '../src/router/picker';
+import { resolveCandidates, isFailoverWorthy, __resetChainRound } from '../src/agent/core/routerProvider';
 import { ProviderHttpError } from '../src/providers/base';
 import type { FallbackEntry } from '../src/shared/types';
 
@@ -37,8 +37,9 @@ function makeSources(fallback: FallbackEntry[], disabledProviders: string[], key
   return {
     catalog: {
       // Everything ranks 1 and supports tools — this test is about gating and chain shape,
-      // not about ranking.
-      find: (_p: string, _m: string) => ({ intelligenceRank: 1, supportsTools: true }),
+      // not about ranking. Fast speedRank so the speed-aware sort doesn't relegate the mock
+      // models to last-resort fallback.
+      find: (_p: string, _m: string) => ({ intelligenceRank: 1, speedRank: 1, supportsTools: true }),
     },
     settings: {
       getFallback: () => fallback,
@@ -58,9 +59,11 @@ function makeSources(fallback: FallbackEntry[], disabledProviders: string[], key
 const platformsOf = (keys: string[]) => keys.map((k) => k.split('::')[0]);
 
 async function main() {
+  __resetChainRound();
 
 console.log('— the provider switch gates Auto/Smart selection even with a key stored —');
 {
+  __resetTaskRoundCounters();
   // ollama is switched OFF but still has a saved key; groq is on. The old getFallback() read
   // let all three ollama models through because their per-model flags were untouched.
   const fallback = [
@@ -81,6 +84,7 @@ console.log('— the provider switch gates Auto/Smart selection even with a key 
 
 console.log('\n— re-enabling the provider brings its models straight back —');
 {
+  __resetTaskRoundCounters(); __resetChainRound();
   const fallback = [entry('ollama', 'glm-5.2', 0), entry('groq', 'openai/gpt-oss-120b', 1)];
   setModelSources(makeSources(fallback, [], ['ollama', 'groq']));
   const sel = await selectModel([{ role: 'user', content: 'hello' } as never], {});
@@ -90,6 +94,7 @@ console.log('\n— re-enabling the provider brings its models straight back —'
 
 console.log('\n— the chain spends its bound on BREADTH, not on one provider —');
 {
+  __resetTaskRoundCounters(); __resetChainRound();
   // The 3:32 PM repro: the picker's flat order was walked and cut at the bound, so the chain
   // came back opencode → ollama → ollama → cerebras while google/kilo/mistral/kenari sat
   // enabled, keyed, and never looked at.
@@ -120,6 +125,11 @@ console.log('\n— the chain spends its bound on BREADTH, not on one provider �
     plats.slice(0, keyed.length).filter((p) => p === 'ollama').length === 1, plats.join(' → '));
   ok('only AFTER round 0 does a platform get a second model',
     plats.slice(keyed.length).every((p) => round0.includes(p)), plats.slice(keyed.length).join(' → ') || '<none>');
+  // Breadth assertions above are platform-level, which rotation preserves. The head model is
+  // opencode (only model of its rank-group whose catalog rank this mock reports — all rank 1,
+  // so rotation may reorder the multi-model ollama block, never the chain HEAD unless a second
+  // turn has passed). First-call counter = 0, so this single-turn assert still holds the
+  // picker's own first choice.
   ok('the first choice is still the picker\'s first choice',
     `${cands[0].platform}::${cands[0].modelId}` === 'opencode::muse-spark',
     `${cands[0].platform}::${cands[0].modelId}`);
@@ -127,6 +137,7 @@ console.log('\n— the chain spends its bound on BREADTH, not on one provider �
 
 console.log('\n— one usable provider still gets a full-length chain —');
 {
+  __resetTaskRoundCounters(); __resetChainRound();
   // The breadth rule must not shorten the chain for a user who enabled only one provider:
   // repeating that platform is the best option left, so the rounds keep drawing from it.
   const fallback = [
@@ -139,13 +150,19 @@ console.log('\n— one usable provider still gets a full-length chain —');
   setModelSources(makeSources(fallback, [], ['ollama']));
   const cands = await resolveCandidates({});
   ok('a single-platform chain still fills', cands.length === 4, `${cands.length}`);
-  ok('and keeps the picker order',
-    cands.map((c) => c.modelId).join(',') === 'glm-5.2,kimi-k2.6,kimi-k2.7-code,qwen3.5:397b',
+  // Equal-rank quota rotation (2026-09-04) deliberately reorders same-rank peers between
+  // turns so one provider's free quota doesn't drain while equally-smart peers sit unused.
+  // The four ollama models are all rank 1 in this mock — assert the SET is preserved, not
+  // the exact order.
+  const ids = cands.map((c) => c.modelId).sort().join(',');
+  ok('and keeps every model of the picker order',
+    ids === 'glm-5.2,kimi-k2.6,kimi-k2.7-code,qwen3.5:397b',
     cands.map((c) => c.modelId).join(','));
 }
 
 console.log('\n— an account-level refusal condemns the platform, not just the model —');
 {
+  __resetTaskRoundCounters();
   // 2026-08-30 3:23 PM: "Cerebras API error 402: Payment required to access this resource."
   // killed a turn, and the message gave no sign that failover had run at all. 402 IS
   // failover-worthy, so the chain DID advance — it just had nothing left to advance to, and
