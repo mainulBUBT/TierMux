@@ -109,6 +109,14 @@ export interface AgentOpts {
   /** Tool-result aging level for this turn — mirrors the tiermux.agent.toolCompaction
    *  setting ('off' | 'light' | 'aggressive'). Threaded from host settings. */
   toolCompaction?: 'off' | 'light' | 'aggressive';
+  /** Host auto-continue chain rounds only: force the round's FIRST step to make a real tool
+   *  call (`toolChoice: 'required'`) instead of letting a model end a continuation round on
+   *  planning narration alone. Root-cause fix for the "wrote todos, never acted → 0/N steps
+   *  done" dead turn: each chain round previously re-nudged in prose and a narration-only
+   *  model could burn all MAX_AUTO_CONTINUES rounds without touching a tool. The model may
+   *  pick ANY offered tool (including todoWrite to fix bookkeeping, or askUser) — this only
+   *  forbids closing the round prose-only. */
+  forceRealToolOnStart?: boolean;
   /** `platform::modelId` keys to skip during Auto selection for this call only — e.g. the
    *  auto-continue loop excluding the model that just got stuck, so the retry genuinely tries a
    *  different model rather than very likely re-picking the same one. Ignored when

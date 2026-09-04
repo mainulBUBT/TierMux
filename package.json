@@ -465,6 +465,12 @@
           "default": true,
           "description": "Automatically compact the conversation (summarize older turns) when its history approaches ~80% of the routed model's context window, before a turn starts — so the model begins with headroom instead of losing tool evidence to mid-turn pruning. The manual Compact command still works regardless."
         },
+        "tiermux.agent.autoCondenseTokenCap": {
+          "type": "number",
+          "default": 32000,
+          "minimum": 0,
+          "description": "Absolute token ceiling for auto-compact targeting, even when the routed model advertises a larger context window. 0 disables the cap (window-only sizing)."
+        },
         "tiermux.agent.sessionModelLock": {
           "type": "boolean",
           "default": true,

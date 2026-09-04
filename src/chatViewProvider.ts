@@ -2919,6 +2919,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     pinnedModel?: string,
     excludeModels?: string[],
     stepDifficulty?: 'easy' | 'medium' | 'hard',
+    extra?: Partial<AgentOpts>,
   ): AgentOpts {
     return {
       messages: s.history,
@@ -2940,6 +2941,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return v === 'off' || v === 'aggressive' ? v : 'light';
       })(),
       ...callbacks,
+      ...extra,
     };
   }
 
@@ -3292,7 +3294,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: 'busy', sessionId: s.id, busy: true });
       diagLog('send.autoContinue', `requestId=${requestId} round=${rounds} remaining=${remaining.length}`);
       try {
-        const next = await runAgentStream(this.deps.router, this.makeAgentOpts(s, requestId, 'agent', effort, cbk, model), {});
+        // forceRealToolOnStart: this round's first step MUST call a tool (engine prepares step 0
+        // with toolChoice 'required'). A narration-only model can no longer burn the whole chain
+        // round after round without touching a tool — the root cause of the "0/N steps done" dead
+        // turn. Any offered tool is legal, so the model may investigate, act, or fix its own todo
+        // bookkeeping; it just cannot close the round prose-only.
+        const next = await runAgentStream(this.deps.router, this.makeAgentOpts(s, requestId, 'agent', effort, cbk, model, undefined, undefined, { forceRealToolOnStart: true }), {});
         if (!this.isActiveRun(s, requestId)) return { ...current, text: allText.join('\n\n'), workMessages: [] };
         if (next.workMessages?.length) s.history.push(...next.workMessages);
         if (next.text) allText.push(next.text);

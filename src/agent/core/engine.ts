@@ -339,6 +339,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           ? Object.keys(tools).filter((t) => !COORDINATION_TOOLS.includes(t))
           : undefined;
         const forcePlan = forcePlanToolOnNextStep && stepNumber === 0;
+        // Agent-mode auto-continue rounds (host chain): the round must ACT, not narrate. Same
+        // wire-level guarantee plan-gap gets — any offered tool is a legitimate close, prose
+        // alone is not. See AgentOpts.forceRealToolOnStart.
+        const forceReal = !!opts.forceRealToolOnStart && stepNumber === 0;
         // Age FIRST, compact second: aging elides consumed tool output on EVERY step (no
         // budget needed), and compaction then estimates on the aged transcript — a shrunken
         // history crossing its 80% trigger later, or never. The tiermux.agent.toolCompaction
@@ -358,9 +362,13 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           ...(stepMessages ? { messages: stepMessages } : {}),
           // forcePlan's activeTools deliberately WINS over the small-window offer: on this one
           // step the turn has to close, and every tool outside PLAN_CLOSERS is a way not to.
+          // forceReal mirrors that for agent auto-continue: toolChoice 'required' means step 0
+          // MUST emit a tool call; activeTools is left unset so every offered tool stays legal.
           ...(forcePlan
             ? { activeTools: PLAN_CLOSERS, toolChoice: 'required' as const }
-            : offer ? { activeTools: offer } : {}),
+            : forceReal
+              ? { toolChoice: 'required' as const }
+              : offer ? { activeTools: offer } : {}),
         };
       },
       // exitPlanMode IS the end of a plan-mode turn (Claude Code's ExitPlanMode has the same
