@@ -418,6 +418,14 @@ details[open].work-summary > .work-sum-label { color: var(--tm-fg, var(--vscode-
   font-size: 12px; padding: 1px 5px; border-radius: 4px;
   background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.18));
 }
+/* Clickable `path:line` citations (linkifyCodeRefs in media/src/markdown.ts). Read as links
+   rather than as ordinary inline code, and NOT scoped to .bubble — reasoning bodies and the
+   markdown doc preview go through the same renderer. */
+code.code-ref {
+  color: var(--vscode-textLink-foreground); cursor: pointer;
+  text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px;
+}
+code.code-ref:hover, code.code-ref:focus-visible { text-decoration-style: solid; }
 .bubble p { margin: 6px 0; }
 .bubble p:first-child { margin-top: 0; }
 .bubble p:last-child { margin-bottom: 0; }

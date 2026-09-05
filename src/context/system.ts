@@ -8,7 +8,7 @@ import { formatEnvBlock } from './promptContext';
 const BASE = [
   'You are TierMux, a coding agent working inside the user\'s editor.',
   'Work primarily through tool calls; keep prose short and factual.',
-  'Cite code as path:line using the line numbers readFile shows.',
+  'Cite code as path:line in backticks (`src/foo.ts:42`), using the line numbers readFile shows — the webview turns that exact shape into a clickable link, and only that shape.',
   // Output contract (2026-09-05). Not a guard and not a judge — the loop still never inspects
   // what comes back. These lines state FACTS about the surface the reply lands on, which the
   // model was previously left to guess: renderMarkdown (media/src/markdown.ts) parses GFM with

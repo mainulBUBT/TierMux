@@ -95,6 +95,7 @@ export function renderMarkdown(md: string): HTMLElement {
           } catch { /* diff2html optional */ }
         });
       }
+      linkifyCodeRefs(div);
       addCodeCopyButtons(div);
       return div;
     }
@@ -102,6 +103,42 @@ export function renderMarkdown(md: string): HTMLElement {
   const pre = document.createElement('div');
   pre.textContent = md;
   return pre;
+}
+
+/** A workspace-relative file citation written in inline code — `src/foo.ts:42`, with an
+ *  optional column. Absolute paths and Windows drive letters cannot match (a path segment
+ *  never starts with `/`, and `\` is not in the class), which is exactly what the host needs:
+ *  openGrepResult joins the path onto the workspace root. A file extension is REQUIRED so that
+ *  ordinary inline code like `3:14` or `localhost:8080` stays plain text. */
+const CODE_REF = /^([A-Za-z0-9_.@~-]+\/)*[A-Za-z0-9_.@~-]+\.[A-Za-z0-9]{1,12}:(\d{1,7})(?::\d{1,7})?$/;
+
+/**
+ * Turn `path:line` inline-code citations into clickable file links (host message
+ * `openGrepResult`, the same one the /grep autocomplete uses).
+ *
+ * The system prompt has asked the model to "Cite code as path:line" since the simple-core
+ * reset, but nothing ever linkified the result — every citation rendered as dead text, so
+ * only half of that contract existed. Scoped deliberately: INLINE code only (never inside a
+ * fenced block), and only when the citation is the code span in its entirety, so a path
+ * mentioned mid-sentence is left alone instead of having the DOM rewritten around it.
+ */
+function linkifyCodeRefs(div: HTMLElement): void {
+  div.querySelectorAll('code').forEach((code) => {
+    if (code.closest('pre') || code.closest('a')) return;
+    const text = (code.textContent || '').trim();
+    if (!CODE_REF.test(text)) return;
+    const cut = text.indexOf(':');
+    const path = text.slice(0, cut);
+    const line = parseInt(text.slice(cut + 1), 10);
+    if (!path || !Number.isFinite(line) || line < 1) return;
+    code.classList.add('code-ref');
+    code.setAttribute('role', 'link');
+    code.setAttribute('tabindex', '0');
+    code.title = `Open ${path} at line ${line}`;
+    const open = () => send({ type: 'openGrepResult', path, line });
+    code.addEventListener('click', open);
+    code.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+  });
 }
 
 /** Block containers whose last child we keep descending through while hunting the element
