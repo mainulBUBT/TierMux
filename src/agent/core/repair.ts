@@ -5,8 +5,11 @@
 //   - On failure it calls repairToolCall EXACTLY ONCE with the error
 //     (NoSuchToolError | InvalidToolInputError) and the step's input messages.
 //   - If repair returns null (or the repaired call is also invalid), the ORIGINAL call is
-//     wrapped `invalid: true` and forwarded to execute() anyway — which is why the tools
-//     defensively return { error } for unparseable input (Path A defense, plan §4).
+//     marked `invalid: true` and is NOT executed: the step loop skips it (dist/index.js
+//     `if (toolCall.invalid)`) and executeTools filters it out (`!toolCall.invalid`), so the
+//     model receives a tool-error part carrying the validation message instead. (Corrected
+//     2026-09-05 — this header used to say the call was "forwarded to execute() anyway",
+//     which is why some tools grew runtime clamps that duplicate their own zod schema.)
 //
 // The repair asks the model itself to re-emit the call correctly:
 //   - the correction prompt shows the model its own bad call, the error, and the tool's

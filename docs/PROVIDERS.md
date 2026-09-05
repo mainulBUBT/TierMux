@@ -173,12 +173,6 @@ The ones worth knowing (`Settings → Extensions → TierMux`, or `tiermux.*` in
 |---|---|---|
 | `tiermux.catalog.url` | TierMux worker | where the model + provider catalog comes from |
 | `tiermux.models.autoEnableNew` | `true` | auto-enable models newly discovered in the catalog |
-| `tiermux.agent.smartScoring` | `true` | learned runtime metrics on the utility Router (off = fixed priority) |
-| `tiermux.agent.sessionModelLock` | `true` | keep a conversation on the model already serving it well; releases on real failure |
-| `tiermux.hedging` / `tiermux.hedgeDelayMs` | `true` / `2500` | race the next candidate when the primary emits nothing |
-| `tiermux.ttftTimeoutMs` | `8000` | time-to-first-token fast failover |
-| `tiermux.requestTimeoutMs` | `30000` | per-provider timeout (custom endpoints and pinned models run uncapped) |
-| `tiermux.rateLimitCooldownMs` | `60000` | how long a rate-limited provider is skipped (honours `Retry-After`) |
 | `tiermux.agent.autoCompactThreshold` | `0.8` | compact the conversation past this fraction of the window (`0` disables) |
 | `tiermux.agent.toolCompaction` | `light` | `light` = head+tail of large command output; `aggressive` reaches further |
 | `tiermux.agent.commandApproval` | `always` | how `runCommand` is gated |

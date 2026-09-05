@@ -82,7 +82,7 @@ account, no config**. Add keys later for more headroom → [Providers & keys](do
  ┌─────────────── candidate 2 · Cerebras (next provider) ─────┐
  └──────────────────────────┬─────────────────────────────────┘
                             ▼
-        Google ─▶ OpenRouter ─▶ Kilo ─▶ …   up to 12 candidates
+        Google ─▶ OpenRouter ─▶ Kilo ─▶ …   up to 20 candidates
 ```
 
 **What counts as a failure** — every row moves to the next candidate:

@@ -100,9 +100,9 @@ detector, stop and re-read this file.
   system+tools overhead from the window-fraction target, and the 12k floor no longer exceeds
   small windows — before that, every model below a ~45k window overflowed BEFORE pruning fired
   (the "loses context mid-turn" repro). A user-pinned `tiermux.agent.pruneAtTokens` keeps its
-  literal meaning. Below a 40k window the toolset itself is cut to the 10-tool essential set
-  (~3.2k vs ~6.3k schema tokens — the small-context-agent pattern: Cline ~10 tools, aider
-  none); `npm run test:e2e:tool-offer` pins it.
+  literal meaning. At or below a 16k window (`SMALL_WINDOW_MAX`, engine.ts) the two coordination tools
+  (`todoWrite`, `delegateTask`) are withdrawn from the offer via `activeTools`; every
+  capability tool survives. `npm run test:e2e:tool-offer` pins it.
 - **SDK-native mechanics:** `stopWhen` `[isStepCount(50), askQuestionsStop]`, `toolApproval`
   (createToolApproval), `repairToolCall` (3-tier incl. `tryModelRepair`), tool circuit breaker
 - **UI contract:** `AgentResult` unchanged; `workReport` (ResultCard), `changedFiles`, todos,

@@ -97,9 +97,14 @@ changes its APIs, only `agent/core/` changes.
   non-cooled platforms.
 - **Failover walks platforms round-robin**, not the flat chain: round 0 takes
   every usable platform's best model, later rounds its second and third,
-  bounded at 12 candidates and a 25 s connect timeout for the whole scan. The
-  starting platform rotates deterministically between turns, so one provider is
-  not always first to absorb a burst.
+  bounded at 20 candidates (`MAX_CANDIDATES`, routerProvider.ts). Each candidate
+  gets 60 s to answer with headers and the chain stops STARTING new ones after
+  120 s; a candidate already streaming is never interrupted. Among models tied
+  on intelligence rank the picker rotates which one leads between turns, so
+  quota spreads — that rotation runs BEFORE the "Why this model?" rationale is
+  emitted. A second rotation of the platform order, downstream of the rationale,
+  was removed on purpose (413ecb5): it made the popover name a model that never
+  ran.
 - **Failure handling:** classify error → 429 cool the key, rotate the pool
   (or cool the platform); 401/403 → invalid; bad request + tools → quarantine
   the model as tool-incompatible; 404 → deprecated. Per-model cooldown is
@@ -194,42 +199,43 @@ itself stays `vscode`-free and independently testable).
 3. handleSend builds AgentOpts and dispatches to
    runAgentStream | runPlanStream | runAskStream (agent.ts).
 4. agent.ts dynamically imports core/engine.ts and calls runTurn(opts).
-5. runTurn() calls streamText({ model: wrapLanguageModel(createRouterProvider(router, …)),
-   tools: createToolSet(opts, mcp), toolApproval: createToolApproval(opts), … }).
-6. Each doGenerate/doStream call inside the provider adapter calls
-   Router.route() → 1+ provider adapter calls (with failover/rotation/cooling) —
-   entirely in-process, no HTTP hop.
+5. runTurn() calls streamText({ model: createRouterProvider(providerOpts),
+   tools: buildV3ToolSet(mode, bindings), toolApproval: the permissions/policy.ts
+   verdict, prepareStep: compaction + tool-output aging, stopWhen: [...] }).
+6. Each doGenerate/doStream call inside the provider adapter walks the picker's
+   candidate chain → 1+ provider adapter calls (with failover/rotation/cooling)
+   — entirely in-process, no HTTP hop.
 7. runTurn() consumes result.fullStream directly, mapping text-delta/
    reasoning-delta/tool-call/tool-result/tool-error parts onto the AgentOpts
    callbacks (onChunk, onTool, onReasoning, onTodos, onStep, onError).
-8. On stream end: finish with accumulated text. Token usage → UsageTracker
-   (incremented inside Router.route() itself, independent of the AI SDK
-   layer) + UsageStore. Title generation fires in the background.
+8. On stream end: finish with accumulated text; in agent mode with mutated
+   files, the verify gate runs and the work report is built. Token usage →
+   UsageStore. Title generation fires in the background via routeOnce.
 ```
 
 ---
 
 ## Three modes
 
-| Mode | Tools attached | Streaming via Router? | Notes |
-|---|---|---|---|
-| Ask | 0 (none) | yes | Pure conversational Q&A — no file/tool access at all (see `ASK_MODE_TAIL` in `promptBuilder.ts`). |
-| Plan | 6 (read-only + `todowrite` + `question`) | no (tools non-empty) | Read-only: no `writeFile`/`createFile`/`editFile`/`deleteFile`/`runCommand`. Also has its own `???QUESTIONS???` text-sentinel pre-flight clarify channel, independent of the `question` tool. |
-| Agent | 11 (full set) | no (tools non-empty) | Everything, including MCP tools if configured. |
+`buildV3ToolSet(mode)` (`tools/v3/index.ts`) is the single source of truth for
+what each mode can do; the permissions policy denies anything a mode does not
+offer, so the two lists cannot drift apart.
 
-`Router.route()`'s `wantsStream` gate (`router.ts`) only streams when
-`tools` is empty — Plan/Agent always have tools attached, so they always
-take the buffered path; Ask, since it now carries zero tools, is the only
-mode that streams through Router. The buffered path has a token-estimate
-fallback (`estimateMessagesTokens`/`estimateTokens`) for providers that
-omit or zero-fill `usage` on their response, matching the one the
-streaming path already had.
+| Mode | Tools offered | Notes |
+|---|---|---|
+| Ask | read/search + web + `todoWrite`, `getDiagnostics`, `askUser`, `delegateTask`, and a READ-ONLY `runCommand` | The policy auto-runs confidently read-only commands (`ls`, `git log`), hard-denies destructive ones, asks for the rest. No file mutation. |
+| Plan | the Ask set plus `exitPlanMode` | `exitPlanMode` is plan mode's ONLY exit — see `docs/PLAN_MODE_TOOL_BOUNDARY_2026-08-31.md`. No file mutation. |
+| Agent | everything: the above plus `editFile`, `writeFile`, `deleteFile`, and every connected MCP server's tools | MCP tools are agent-only because their capability is unknowable and the read-only modes cannot gate what they cannot classify. |
+
+Every mode streams. The old buffered-vs-streaming split (`wantsStream`) was a
+property of the retired Router and is gone with it.
 
 ---
 
 ## Async utilities (shipped, no agent involvement)
 
-These bypass the agent core entirely and call `Router.route()` directly:
+These bypass the agent loop and make one non-agentic call through
+`routeOnce` (`src/agent/core/routeOnce.ts`):
 
 - `inlineChat` (Cmd+I) — edit selection via `EditGate`.
 - `commitMessage` (git SCM) — generate commit message from diff.
@@ -240,24 +246,23 @@ These bypass the agent core entirely and call `Router.route()` directly:
 
 ## Configuration surface
 
-Settings (`package.json:contributes.configuration`):
+Settings (`package.json:contributes.configuration`) — `package.json` is the
+authority; this is the shape, not the registry:
 
-- `tiermux.fallback` — fallback chain.
-- `tiermux.endpoints` — per-platform base URL overrides.
-- `tiermux.disabledProviders` — excluded providers.
-- `tiermux.customEndpoints` — custom OpenAI-compatible endpoints.
-- `tiermux.agent.{maxIterations, maxConcurrentRuns, requireWriteConfirmation,
-  commandApproval, commandTimeoutMs, commandAllowlist, autoCompactThreshold}`.
-- `tiermux.context.{includeOpenEditors, ambientSliceRadius, ambientMaxChars,
-  ambientMaxTabs}`.
-- `tiermux.tools.{web, exaApiKey, braveApiKey, searchEndpoint,
-  searchProviderPriority}`.
-- `tiermux.embeddings.{enabled, provider, model, autoContext, batchSize,
-  requestDelayMs, rerank}`.
-- `tiermux.cache.{fileEnabled, searchEnabled, searchTtlMs, researchEnabled}`.
-- `tiermux.usage.{referencePriceInPer1M, referencePriceOutPer1M}`.
-- `tiermux.catalog.url` — remote CSV for the model catalog.
+- `tiermux.agent.{maxStepsPerTurn, maxConcurrentRuns, requireWriteConfirmation,
+  commandApproval, commandAllowlist, commandTimeoutMs, verifyCommand,
+  verifyFixRounds, toolCompaction, autoCondense, autoCondenseTokenCap,
+  autoCompactThreshold, diagTrace}`.
+- `tiermux.completions.{enabled, model, debounceMs}`, `tiermux.utilityModel`.
+- `tiermux.context.{includeOpenEditors, ambientSliceRadius}`.
+- `tiermux.index.{enabled, excludes, maxFiles}`, `tiermux.graph.enabled`.
+- `tiermux.plan.{saveToFile, folder}`, `tiermux.profiler.{enabled, ringSize}`.
+- `tiermux.catalog.url`, `tiermux.models.autoEnableNew`.
 - `tiermux.{mcpServers, mcpRegistryUrl, mcpRegistrySearchUrl}`.
+
+The fallback chain, endpoint overrides, custom endpoints and disabled
+providers are NOT settings — they live in `SettingsStore` (globalState) so
+the model picker can mutate them without a settings write.
 
 Secret storage (`vscode.SecretStorage`): `tiermux.key.<platform>`,
 `tiermux.keys.<platform>`, `tiermux.modelKey.<platform>::<modelId>`, plus
@@ -273,8 +278,8 @@ today.
 
 ### Adaptive Orchestrator — `ExecuteRequest` / `ExecutionEvent` / `ExecutionPolicy` (CHAT | AGENT | INLINE | BACKGROUND)
 
-The current `Router` is the classic multi-provider failover cascade. The
-future design is a single `AdaptiveOrchestrator.execute()` that:
+The current picker + routerProvider pair is the classic multi-provider
+failover cascade. The future design is a single `AdaptiveOrchestrator.execute()` that:
 
 - Takes a typed `ExecuteRequest` (messages, mode, model, policy, signal).
 - Returns `AsyncIterable<ExecutionEvent>` (`model_chosen`, `provider_switch`,
@@ -283,14 +288,12 @@ future design is a single `AdaptiveOrchestrator.execute()` that:
 - Is the single entry point for every model call (CHAT, AGENT, INLINE,
   BACKGROUND).
 
-### `Router.capabilities(needs)` — pure capability resolver
+### A pure capability resolver
 
-A new public API on the Router that answers "which models can do this
-task?" without ordering or failover. Capability bits (CODING | REASONING
-| VISION | TOOLS | LONG_CTX | CHEAP | FAST) are already present on
-`CatalogModel` (see `capability_bits` in the catalog schema) but not yet
-consumed by routing logic — `Router.candidates` still uses
-`supportsTools !== false` as its only capability filter.
+A public API that answers "which models can do this task?" without ordering
+or failover. `src/router/capabilityProfile.ts` is the seed: it already reads
+tools/vision/reasoning off `CatalogModel`, but the picker still uses
+`supportsTools !== false` as its only hard capability filter.
 
 ### Performance Knowledge Base (SQLite) — Phase 4+
 
@@ -302,8 +305,8 @@ Three tables built after real usage patterns emerge:
 | `runtime_health` | cooldown, latency, success_rate, 429 count | Router on every call |
 | `benchmark_scores` | Offline eval scores | Bench command |
 
-The current in-memory state (`Router.lastGood`, `health` map, `rateTracker`,
-`rateTracker`) is the Phase 1 stand-in.
+The current in-memory state (picker.ts's `modelHealth` cooldown map and
+`taskRoundCounters`, plus `RateTracker`) is the Phase 1 stand-in.
 
 ### History — three agent execution eras
 
@@ -355,8 +358,8 @@ The current in-memory state (`Router.lastGood`, `health` map, `rateTracker`,
 6. **Local SecretStorage for keys** — keys live in `vscode.SecretStorage`,
    per VS Code install. No account, no cross-device sync, no managed keys.
 7. **In-process, no loopback bridge** — v7's Router Proxy (HTTP, bound to
-   `127.0.0.1`) no longer exists; the AI SDK calls `Router.route()` directly
-   in the same process. There is still no remote-TierMux option.
+   `127.0.0.1`) no longer exists; the AI SDK's `LanguageModelV4` adapter
+   walks the picker's chain directly in the same process. There is still no remote-TierMux option.
 8. **No rollback to OpenCode** — the v8 removal was deliberate and total
    (no dual-engine toggle, no "native" naming implying an alternative
    engine still exists). There is no flip-back-to-OpenCode path.

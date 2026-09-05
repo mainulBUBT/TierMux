@@ -49,10 +49,11 @@ model that just 429'd”, not durability.
 
 **Failover walks platforms round-robin**, not the flat chain order. Round 0 takes *every*
 usable platform's best model; later rounds take each platform's second, third, and so on,
-bounded at 12 candidates. Without this, a provider with twenty enabled models eats the
-whole chain and dies in four seconds while two dozen keyed providers sit untried. Breadth
-is bounded by a 25 s connect timeout per candidate — a candidate already streaming is never
-interrupted, TierMux just declines to open another one once the chain has burned that long.
+bounded at 20 candidates. Without this, a provider with twenty enabled models eats the
+whole chain and dies in four seconds while two dozen keyed providers sit untried. Each
+candidate gets 60 s to answer with headers (raised from 25 s after a live gateway needed 10 s
+plus keepalives), and the whole chain stops STARTING new candidates after 120 s — a candidate
+already streaming is never interrupted, TierMux just declines to open another one.
 
 ### B. Utility calls — `routeOnce` (`src/agent/core/routeOnce.ts`)
 
@@ -155,7 +156,7 @@ All implemented natively — there is no external routing service in the path.
 | Exponential per-model cooldown (30 s → 2 min) | picker | stops hammering a model that just failed; resets on success |
 | Round-robin platform diversity in the failover scan | picker | one provider's twenty models can't consume every retry |
 | Per-key rotation with per-key cooldown | secret store | a dead/limited key rotates inside the provider before the platform is written off |
-| Deterministic platform rotation | picker | successive turns start at different platforms, so one provider is not always the first to absorb a burst |
+| Equal-rank head rotation | picker | among models tied on intelligence rank, successive turns start at a different one, so quota spreads without the rationale naming a model that never ran |
 | Time-boxed tool-incompatible / deprecated quarantine | secret store | models that advertise tools then reject them (or 404) self-heal after the window |
 | Conservative rate-limit floors for unknown quotas | rate tracker | a catalog limit of `0` means “unknown”, not “unlimited” — guessing low is the safe direction |
 | Per-model context fitting with reserved anchors | budget | the task and the conversation anchor can never be evicted by a fat tool result |

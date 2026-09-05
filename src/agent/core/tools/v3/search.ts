@@ -11,15 +11,19 @@ import * as path from 'path';
 import * as fsp from 'fs/promises';
 import { resolveWorkspacePath } from '../resolvePath';
 import { capToolOutput } from '../capOutput';
-import { peekWorkspaceRoot } from '../workspaceRoot';
+import { effectiveRootUri, peekWorkspaceRoot } from '../workspaceRoot';
 
 const LIST_MAX_CHARS = 10_000;
 const GLOB_MAX_RESULTS = 200;
 const GREP_MAX_OUTPUT = 20 * 1024;
 const GREP_TIMEOUT_MS = 15_000;
-/** Ceiling on `context` (2026-09-05). Each context line is re-sent on every remaining step of
- *  the turn (see capOutput.ts), so an unbounded -C turns one grep into a whole-file read by
- *  another name — which is the cost this option exists to avoid. */
+/** Ceiling on `context` (2026-09-05). Not a re-send bound — compact.ts's `ageToolOutputs`
+ *  already stubs any tool result over 2k chars once it leaves the last three tool messages,
+ *  and grep is first in its REDERIVABLE_TOOLS list, so a fat grep lives for ~3 steps, not the
+ *  whole turn. This is a per-CALL bound: every context line multiplies the per-file volume
+ *  (`-m 200` counts MATCHED lines only), and past 10 a wide-context grep is a readFile with a
+ *  worse marker. Enforced by the schema alone — the SDK filters a call that fails validation
+ *  out of execution, so no runtime clamp is needed. */
 const MAX_CONTEXT_LINES = 10;
 
 export function createListDirTool() {
@@ -115,10 +119,12 @@ export function createGrepTool(runAbort?: AbortSignal) {
   return tool({
     description:
       'Search file contents in the workspace for a regex pattern (ripgrep-backed). Results are '
-      + '`path:line:text` per match. ALWAYS narrow the scope: pass `glob` (e.g. "*.ts") or `path` '
-      + '(a subdirectory). Use `filesOnly` when you only need WHICH files match, and `context` '
-      + 'when you need the surrounding lines — both avoid a follow-up readFile. '
-      + 'Caps at 200 matches per file and ~20KB output.',
+      + '`path:line:text` per match; with `context`, surrounding lines appear as `path-line-text` '
+      + 'and `--` separates non-adjacent groups; with `filesOnly`, one matching path per line and '
+      + 'nothing else (`context` is ignored). ALWAYS narrow the scope: pass `glob` (e.g. "*.ts") '
+      + 'or `path` (a subdirectory). Use `filesOnly` when you only need WHICH files match, and '
+      + '`context` when you need the surrounding lines — both avoid a follow-up readFile. Caps at '
+      + '200 matches per file (line mode) and ~20KB output.',
     inputSchema: z.object({
       pattern: z.string().describe('Regex pattern to search for.'),
       path: z.string().optional().describe('Workspace-relative path to search within (defaults to the whole workspace).'),
@@ -135,48 +141,75 @@ export function createGrepTool(runAbort?: AbortSignal) {
     ): Promise<string | { error: string }> => {
       try {
         if (!pattern) return { error: 'Missing required "pattern" argument.' };
-        const root = peekWorkspaceRoot() ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        if (!root) return { error: 'No workspace folder is open.' };
+        // Same containment every other path-taking tool has (resolvePath.ts). grep was the one
+        // tool handing its `path` to a subprocess raw, so `../` or an absolute path searched
+        // OUTSIDE the workspace — and `filesOnly` had just made enumerating a sibling tree
+        // cheap and quiet (review 2026-09-05). Search stays rooted at cwd so hits print
+        // workspace-relative, as before.
+        const root = effectiveRootUri().fsPath;
+        const target = rel && rel.trim() ? path.relative(root, resolveWorkspacePath(rel).fsPath) || '.' : '.';
         const merged = runAbort || options.abortSignal
           ? AbortSignal.any([runAbort, options.abortSignal].filter((s): s is AbortSignal => !!s))
           : undefined;
 
-        // `-l` prints paths only, so line numbers/context are meaningless with it — rg would
-        // accept them and silently ignore them, but keeping the argv honest makes the failure
-        // mode (if any) legible in a trace.
+        // -l prints paths only; rg silently ignores -n/-C/-m alongside it, so don't pass them.
         const rgArgs = ['--no-heading', '--color', 'never'];
         if (filesOnly) {
           rgArgs.push('--files-with-matches');
         } else {
           rgArgs.push('--line-number', '-m', '200');
-          if (context && context > 0) rgArgs.push('--context', String(Math.min(context, MAX_CONTEXT_LINES)));
+          if (context) rgArgs.push('--context', String(context));
         }
         if (ignoreCase) rgArgs.push('--ignore-case');
         if (glob) rgArgs.push('--glob', glob);
-        rgArgs.push('--', pattern, rel && rel.length ? rel : '.');
+        rgArgs.push('--', pattern, target);
 
-        const out: string = await new Promise<string>((resolve, reject) => {
+        const out = await new Promise<{ text: string; capped: boolean }>((resolve, reject) => {
           let buf = '';
           let err = '';
+          let capped = false;
+          let settled = false;
           const child = spawn(rgPath, rgArgs, { cwd: root, signal: merged });
+          const done = (fn: () => void) => { if (!settled) { settled = true; clearTimeout(timer); fn(); } };
           const timer = setTimeout(() => {
             child.kill();
-            reject(new Error(`grep timed out after ${GREP_TIMEOUT_MS}ms.`));
+            done(() => reject(new Error(`grep timed out after ${GREP_TIMEOUT_MS}ms.`)));
           }, GREP_TIMEOUT_MS);
-          child.stdout.on('data', (d) => { if (buf.length < GREP_MAX_OUTPUT) buf += d.toString(); });
-          child.stderr.on('data', (d) => { if (err.length < GREP_MAX_OUTPUT) err += d.toString(); });
-          child.on('error', (e) => { clearTimeout(timer); reject(e); });
-          child.on('close', (code) => {
-            clearTimeout(timer);
-            if (code === 1 && !buf) { resolve(''); return; }
-            if (code !== 0 && code !== 1) { reject(new Error(err || `ripgrep exited with code ${code}`)); return; }
-            resolve(buf);
+          child.stdout.on('data', (d: Buffer) => {
+            if (capped) return;
+            buf += d.toString();
+            // Stop rg the moment the cap is reached. Before this it kept scanning the whole
+            // tree with its output discarded, until it finished or the 15s timer fired — and
+            // the timer REJECTED, throwing away the 20KB already in hand. `context` made that
+            // ~21x more likely (200 matches × 21 lines fills the cap inside one file).
+            if (buf.length >= GREP_MAX_OUTPUT) {
+              capped = true;
+              buf = buf.slice(0, GREP_MAX_OUTPUT);
+              child.kill();
+            }
           });
+          child.stderr.on('data', (d: Buffer) => { if (err.length < GREP_MAX_OUTPUT) err += d.toString(); });
+          child.on('error', (e) => done(() => reject(e)));
+          child.on('close', (code) => done(() => {
+            // A capped run was killed by us: the buffer IS the result. Otherwise rg's exit
+            // codes are 0 = matches, 1 = none, 2 = SOME path errored — and 2 arrives with the
+            // matches it did find still on stdout (one chmod-000 dir, a dangling symlink, a
+            // root-owned cache). Only an EMPTY buffer with a non-1 exit is a failure.
+            if (capped || buf) { resolve({ text: buf, capped }); return; }
+            if (code === 1 || code === 0) { resolve({ text: '', capped: false }); return; }
+            reject(new Error(err.trim() || `ripgrep exited with code ${code}`));
+          }));
         });
         const hint = filesOnly
           ? 'Add a "path" or "glob" filter, or a more specific pattern.'
           : 'Add a "path" or "glob" filter, a more specific pattern, or pass filesOnly:true to get just the paths.';
-        return capToolOutput(out.trim() || '(no matches)', GREP_MAX_OUTPUT, hint);
+        const text = out.text.trim() || '(no matches)';
+        // A capped run was stopped mid-search, so the true total is unknown — say so rather
+        // than let capToolOutput print "N of M" against the clipped buffer (the review's
+        // repro: 720KB of matches reported as "45,056 of 65,536 chars omitted").
+        return out.capped
+          ? `${text}\n…[truncated at ${GREP_MAX_OUTPUT.toLocaleString()} chars — search stopped early, more matches exist. ${hint}]`
+          : capToolOutput(text, GREP_MAX_OUTPUT, hint);
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) };
       }

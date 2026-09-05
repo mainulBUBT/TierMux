@@ -470,6 +470,21 @@ export function toolLabel(name: string, args: unknown, detail?: string, state?: 
   const firstLine = (lines[0] || '').trim().slice(0, 80);
   const results = (unit: string) => count > 0 ? `  · ${count} ${unit}${count !== 1 ? 's' : ''}` : '';
 
+  // grep's output is not one-match-per-line once `context` or `filesOnly` is set: context
+  // lines come back as `path-N-text` with `--` between groups, and filesOnly returns bare
+  // paths. Count only `path:N:` hit lines (or files, labelled as such) so "· 11 results"
+  // does not appear for a single match with context:5. "(no matches)" is zero, not one.
+  const grepResults = (): string => {
+    if (!count || /^\(no matches\)$/.test(lines[0]?.trim() ?? '')) return '';
+    const go = argsObj as { filesOnly?: boolean };
+    if (go.filesOnly) {
+      const n = lines.filter((l) => !l.startsWith('…[')).length;
+      return `  · ${n} file${n !== 1 ? 's' : ''}`;
+    }
+    const n = lines.filter((l) => /^.+?:\d+:/.test(l)).length;
+    return n > 0 ? `  · ${n} result${n !== 1 ? 's' : ''}` : '';
+  };
+
   // Special cases with rich formatting
   if (name === 'readFile') {
     const ao = argsObj as { offset?: number; startLine?: number; start_line?: number; limit?: number; count?: number };
@@ -488,7 +503,7 @@ export function toolLabel(name: string, args: unknown, detail?: string, state?: 
     repoMap: ['⊕', 'Mapped the repository'],
     searchWorkspace: ['⌕', `Searched "${query}"${results('result')}`],
     glob: ['⊞', `Matched ${query || 'pattern'}${results('match')}`],
-    grep: ['⌕', `Searched "${query}"${results('result')}`],
+    grep: ['⌕', `Searched "${query}"${grepResults()}`],
     webSearch: ['⊙', `Searched the web "${query}"${results('result')}`],
     // fetchUrl / delegateTask / askUser render through the special cases above (URL- and
     // task-shaped targets, state-aware verbs) — not through this map.
