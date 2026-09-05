@@ -28,17 +28,11 @@ function paramsB(id: string): number | undefined {
 const clampRank = (n: number): number => Math.max(1, Math.min(5, Math.round(n)));
 
 /**
- * Measured intelligence ranks (1 = frontier … 5 = weak) for well-known model families, from
- * public MMLU-Pro / GPQA / HumanEval leaderboards (llm-stats, Open LLM Leaderboard). These
- * are REAL benchmark scores — not the estimated prices, which we deliberately ignore.
- *
- * Checked in order; the FIRST matching pattern wins, so list specific families before
- * generic ones. Models not matched here fall through to the param-count proxy in
- * deriveMetadata(). Speed is NOT table-driven — it is physics (tokens/s scales ~1/param
- * count, memory-bandwidth-bound), so it always derives from params below.
- *
- * Keep ranges coarse (±0.5 tier): the goal is correct ordering, not false precision. The
- * live runtime scorer (reliability/health) breaks ties and self-corrects.
+ * Intelligence ranks (1 = frontier … 5 = weak) for well-known model families, from public
+ * MMLU-Pro / GPQA / HumanEval leaderboards. Checked in order — first match wins, so list
+ * specific families before generic ones; unmatched models fall through to the param-count
+ * proxy in deriveMetadata(). Speed always derives from params (tokens/s scales ~1/params).
+ * Keep ranges coarse: the goal is correct ordering, not false precision.
  */
 const BENCH_INTEL: Array<[RegExp, number]> = [
   // R1 distills/students (r1-distill-*, r1-<size>b, r1-0528-qwen3-*) are 1.5–70B students of
@@ -153,9 +147,9 @@ export function deriveMetadata(d: DiscoveredModel): Pick<
     intelligenceRank: clampRank(intel),
     speedRank: clampRank(speed),
     sizeLabel: p !== undefined ? `${p}B` : small ? 'small' : big ? 'large' : '',
-    // Unknown tool support defaults to true on purpose: the router self-corrects via
-    // markToolIncompatible on the first bad_request-with-tools, whereas defaulting to
-    // false would silently exclude the model from agent mode forever with no way to learn.
+    // Unknown tool support defaults to true on purpose: a 400-with-tools quarantines the model
+    // (picker.noteModelFailure), whereas defaulting to false would exclude it from agent mode
+    // forever with no way to learn.
     supportsTools: d.supportsTools ?? true,
     supportsVision: d.supportsVision ?? isLikelyVisionModelId(id),
     supportsReasoning: d.supportsReasoning ?? /\br1\b|reason|think|\bo[1-4]\b|kimi-k3/i.test(id),

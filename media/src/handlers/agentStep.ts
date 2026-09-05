@@ -1,21 +1,5 @@
-/* Handler for 'agentStep' messages - updates the live status label during a run.
- *
- * This is Phase D2's third extracted handler (PR5.2).
- *
- * Dependencies (via focused AgentStepContext):
- * - ensureTarget: Get or create the Target object for this requestId
- * - setStatusLabel: Set the activity label (e.g. an explicit agent status message)
- * - startStatusTimer: Ensure the elapsed time timer is running
- * - scrollDown: Keep the latest activity in view
- *
- * Context: This handler updates only the status display; it performs NO Target
- * state mutation. Note: `ensureTarget` is called for its side-effect (creating
- * the message bubble if needed); its return value is unused here.
- *
- * Capability count note: 4 capabilities (soft limit). `scrollDown` is required
- * because an explicit agent-step status update should bring the activity feed
- * into view, unlike assistantStart which does not scroll.
- */
+/* Handler for 'agentStep': updates the live status label during a run and scrolls the
+ * activity into view. `ensureTarget` is called for its side effect (creating the bubble). */
 
 // ----- Types ---------------------------------------------------------------
 
@@ -63,16 +47,7 @@ export interface AgentStepContext {
 
 // ----- Handler ---------------------------------------------------------------
 
-/**
- * Handle the 'agentStep' message from the extension host.
- *
- * An explicit status message (msg.label) wins over the current activity
- * label; otherwise the existing label is left untouched. The timer is ensured
- * running and the view scrolls to the latest activity.
- *
- * @param ctx - Focused context with only the 4 capabilities this handler needs
- * @param msg - Message carrying the optional explicit status label
- */
+/** Handle 'agentStep': an explicit msg.label wins over the current activity label. */
 export function handleAgentStep(ctx: AgentStepContext, msg: AgentStepMessage): void {
   // ensureTarget is called for its side-effect (creates the bubble if needed);
   // we don't use the returned Target, so no need to capture it.

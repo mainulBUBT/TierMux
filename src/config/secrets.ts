@@ -1,7 +1,7 @@
 
 import * as vscode from 'vscode';
 import type { KeyStatus, Platform } from '../shared/types';
-import { allPlatformInfo, getPlatformInfo } from '../providers';
+import { allPlatformInfo } from '../providers';
 
 const PREFIX = 'tiermux.key.';
 const KEYS_PREFIX = 'tiermux.keys.';
@@ -16,15 +16,8 @@ function modelKeyId(platform: Platform, modelId: string): string {
 
 export class SecretStore {
   private statuses = new Map<Platform, KeyStatus>();
-  /** Epoch-ms until which a platform should be skipped after a rate limit. */
-  private cooldownUntil = new Map<Platform, number>();
-  /** Epoch-ms until which a specific API key value is in rate-limit cooldown. */
-  private keyCooldownUntil = new Map<string, number>();
   /** Epoch-ms until which a `platform::modelId` is treated as tool-incompatible. */
   private toolIncompatUntil = new Map<string, number>();
-  /** Running count of "soft" tool failures (HTTP-200 tool-call misbehavior) per `platform::modelId`,
-   *  with the first-strike timestamp so stale runs reset. See noteToolSoftFailure. */
-  private toolSoftFails = new Map<string, { count: number; first: number }>();
   /** Epoch-ms until which a `platform::modelId` is treated as deprecated/removed (404). */
   private deprecatedUntil = new Map<string, number>();
   private readonly _onChange = new vscode.EventEmitter<void>();
@@ -89,45 +82,6 @@ export class SecretStore {
   async removeKey(platform: Platform, key: string): Promise<void> {
     const existing = await this.getKeys(platform);
     await this.setKeys(platform, existing.filter((k) => k !== key));
-  }
-
-  /** Cool a specific API key value (not the whole platform). */
-  setCooldownForKey(key: string, ms: number): void {
-    this.keyCooldownUntil.set(key, Date.now() + Math.max(0, ms));
-  }
-
-  /** Milliseconds left on a specific key's rate-limit cooldown (0 if ready). */
-  keyCooldownRemaining(key: string): number {
-    return Math.max(0, (this.keyCooldownUntil.get(key) ?? 0) - Date.now());
-  }
-
-  /** Masked display hints for each stored key, safe to send to the webview. */
-  async getKeyHints(platform: Platform): Promise<string[]> {
-    const keys = await this.getKeys(platform);
-    return keys.map((k) => {
-      if (k.length <= 8) return '••••' + k.slice(-4);
-      return k.slice(0, 4) + '••••' + k.slice(-4);
-    });
-  }
-
-  /**
-   * Return the first key in the pool that is not in per-key cooldown.
-   * Returns undefined when all keys are cooled (caller should then cool the
-   * whole platform and fail over to the next provider).
-   */
-  async getNextAvailableKey(platform: Platform): Promise<string | undefined> {
-    const info = getPlatformInfo(platform);
-    if (info?.keyless) return '';
-    const keys = await this.getKeys(platform);
-    for (const k of keys) {
-      if (this.keyCooldownRemaining(k) === 0) return k;
-    }
-    // A keyOptional platform still serves its free tier anonymously, so "no usable key"
-    // is not a dead end the way it is elsewhere — fall through to the anonymous tier
-    // instead of failing the model over. Checked *after* the pool so a stored key (and
-    // the paid models it unlocks) always wins, which is why this can't just be `keyless`.
-    if (info?.keyOptional) return '';
-    return undefined; // all keys cooled
   }
 
   async getModelKey(platform: Platform, modelId: string): Promise<string | undefined> {
@@ -212,27 +166,11 @@ export class SecretStore {
   setStatus(platform: Platform, status: KeyStatus): void {
     this.statuses.set(platform, status);
 
-    if (status === 'healthy') this.cooldownUntil.delete(platform);
     this._onChange.fire();
   }
 
-  /** Put a platform in a rate-limit cooldown (skip it until the window elapses). */
-  setCooldown(platform: Platform, ms: number): void {
-    this.cooldownUntil.set(platform, Date.now() + Math.max(0, ms));
-    this.setStatus(platform, 'rate_limited');
-  }
-
-  /** Milliseconds left before a rate-limited platform is eligible again (0 if ready). */
-  cooldownRemaining(platform: Platform): number {
-    return Math.max(0, (this.cooldownUntil.get(platform) ?? 0) - Date.now());
-  }
-
-  /**
-   * Mark a model as effectively tool-incompatible for a window — a runtime
-   * override of the catalog `supportsTools` flag for models that advertise tools
-   * but reject the tools payload (bad_request / 413). Time-boxed so a provider
-   * fix self-heals.
-   */
+  /** Time-boxed runtime override of the catalog `supportsTools` flag for a model that rejected
+   *  the tools payload (400/413). Set by picker.noteModelFailure. */
   markToolIncompatible(platform: Platform, modelId: string, ms = 600_000): void {
     this.toolIncompatUntil.set(`${platform}::${modelId}`, Date.now() + Math.max(0, ms));
   }
@@ -240,32 +178,6 @@ export class SecretStore {
   isToolIncompatible(platform: Platform, modelId: string): boolean {
     const until = this.toolIncompatUntil.get(`${platform}::${modelId}`);
     return until !== undefined && until > Date.now();
-  }
-
-  /**
-   * Record a "soft" tool failure — the model returned HTTP 200 but misbehaved on tools: it emitted
-   * a tool call as plain text (rescued by rescueInlineToolCalls) or announced an action and called
-   * no tool at all. markToolIncompatible's 400/413 path never catches these (the request
-   * "succeeded"), so weak models kept getting re-selected turn after turn. After `threshold` strikes
-   * within `windowMs`, mark the model tool-incompatible so the router routes around it (time-boxed —
-   * it self-heals). Returns true when this strike tipped it over. Idempotent once already benched.
-   */
-  noteToolSoftFailure(platform: Platform, modelId: string, threshold = 2, windowMs = 600_000): boolean {
-    if (this.isToolIncompatible(platform, modelId)) return false;
-    const key = `${platform}::${modelId}`;
-    const now = Date.now();
-    const rec = this.toolSoftFails.get(key);
-    if (!rec || now - rec.first > windowMs) {
-      this.toolSoftFails.set(key, { count: 1, first: now });
-      return false;
-    }
-    rec.count++;
-    if (rec.count >= threshold) {
-      this.toolSoftFails.delete(key);
-      this.markToolIncompatible(platform, modelId);
-      return true;
-    }
-    return false;
   }
 
   /**
@@ -311,38 +223,4 @@ export class SecretStore {
     return out;
   }
 
-  /** Resolve the best available key for a platform; keyless platforms return ''.
-   *  Prefers a non-cooled key; falls back to the first key if all are cooled
-   *  (the router checks per-key cooldown separately and handles failover). */
-  async resolveKey(platform: Platform, modelId?: string): Promise<string | undefined> {
-
-    if (platform === 'custom' && modelId) {
-      const epId = modelId.split('::')[0];
-      const upstream = modelId.split('::').slice(1).join('::');
-      if (upstream) {
-        const mk = await this.getCustomModelKey(epId, upstream);
-        if (mk) return mk;
-      }
-      const ek = await this.getCustomKey(epId);
-      return ek ?? ''; // keyless local endpoint allowed
-    }
-    const info = getPlatformInfo(platform);
-    if (info?.keyless) return '';
-    const next = await this.getNextAvailableKey(platform);
-    let key = next;
-    if (key === undefined) {
-
-      const keys = await this.getKeys(platform);
-      key = keys[0];
-    }
-    if (key === undefined) return undefined;
-
-    if (platform === 'cloudflare') {
-      const accountId = await this.getCloudflareAccountId();
-      if (accountId && !key.startsWith(accountId + ':')) {
-        key = accountId + ':' + key;
-      }
-    }
-    return key;
-  }
 }

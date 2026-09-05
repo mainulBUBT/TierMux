@@ -83,14 +83,9 @@ platformInfo.set('cloudflare', { platform: 'cloudflare', name: 'Cloudflare Worke
 
 for (const c of COMPAT) registerCompat(c);
 
-// Local LLM servers (llama.cpp, LM Studio, koboldcpp, etc.) are often CPU-bound and
-// can take far longer per turn than cloud APIs, especially for long/agentic completions.
-//
-// UNCAPPED BY REQUEST (2026-08-23, user direction): a 10-minute cap still executed long local
-// generations mid-answer. Custom endpoints now run with NO request timeout and NO TTFT gate —
-// the model takes as long as it takes (cold VRAM load + prefill + generation), and the only
-// brake is the user's Stop button. Cloud failover math doesn't apply:
-// there is no faster pool to fail over TO for a model that only exists on the user's machine.
+// Custom/local endpoints run with NO request timeout (2026-08-23, user direction): a
+// CPU-bound local model takes as long as it takes, the Stop button is the only brake, and
+// there is no faster pool to fail over to.
 const CUSTOM_TIMEOUT_MS = 0;
 const CUSTOM_TTFT_MS = 0;
 
@@ -192,11 +187,6 @@ export function upsertCompatFromCatalog(defs: RemoteProviderDef[]): number {
           name: d.name ?? platform,
           baseUrl: d.baseUrl,
           keyless: d.keyless ?? false,
-          // Remote-registered providers are unvetted upstreams; a hostile 1-token/1.2s
-          // preflight ping (especially against reasoning models) fails them silently and
-          // looks like an "empty" result. Skip the ping and give generous headroom, mirroring
-          // the custom-endpoint path. Without this, every newly added catalog provider with a
-          // slow/thinking model reproduces the Token Router/kimi-k3-empty bug.
           skipPreflight: true,
           timeoutMs: CUSTOM_TIMEOUT_MS,
           ...(d.keyUrl ? { keyUrl: d.keyUrl } : {}),

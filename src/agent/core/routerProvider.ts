@@ -17,7 +17,7 @@ import type {
 import type { ChatMessage, ChatToolChoice, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
 import { resolveProvider } from '../../providers';
 import { ProviderHttpError } from '../../providers/base';
-import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordRequest, rationaleForServed, type ModelSources, type SelectionRationale } from '../../router/picker';
+import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, rationaleForServed, type ModelSources, type SelectionRationale } from '../../router/picker';
 import { ThinkStripper, stripThinkTags, reasoningFromDelta } from '../../util/thinkTags';
 import { diagLog } from '../../util/diag';
 
@@ -55,13 +55,14 @@ export interface RouterProviderOptions {
 }
 
 /** Retryable candidate failure: rate limit, auth, quota/credit (402/403 — free gateways
- *  answer "out of credit" that way), server error, network abort/timeout, and 400 ("context
- *  length exceeded" is per-model; the next model can succeed). 401 counts so the key loop can
- *  rotate a single dead key before the candidate is abandoned. */
+ *  answer "out of credit" that way), server error, network abort/timeout, 400/413 ("context
+ *  length exceeded" is per-model; the next model can succeed) and 404 (the model is gone from
+ *  this provider). 401 counts so the key loop can rotate a single dead key first. */
 export function isFailoverWorthy(e: unknown): boolean {
   if (e instanceof ProviderHttpError) {
     return e.status === 400 || e.status === 401 || e.status === 402 || e.status === 403
-      || e.status === 408 || e.status === 429 || (e.status !== undefined && e.status >= 500);
+      || e.status === 404 || e.status === 408 || e.status === 413 || e.status === 429
+      || (e.status !== undefined && e.status >= 500);
   }
   return e instanceof Error && /network|fetch failed|timed out|ECONN/i.test(e.message);
 }
@@ -478,6 +479,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             lastError = e;
             candidateError = e;
             recordOutcome(c.platform, c.modelId, false);
+            noteModelFailure(c.platform, c.modelId, e instanceof ProviderHttpError ? e.status : undefined, !!tools?.length);
             if (isFailoverWorthy(e)) {
               providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
               continue; // next key; when keys run out, the candidate loop advances
@@ -696,6 +698,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             lastError = e;
             candidateError = e;
             recordOutcome(c.platform, c.modelId, false);
+            noteModelFailure(c.platform, c.modelId, e instanceof ProviderHttpError ? e.status : undefined, !!tools?.length);
             if (isFailoverWorthy(e)) {
               providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
               continue; // next key; when keys run out, the candidate loop advances

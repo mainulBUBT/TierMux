@@ -133,15 +133,9 @@ export function stripThinkTags(text: string): string {
   return result.trim();
 }
 
-/**
- * Extract a reasoning/thinking delta from a streamed chunk's `delta`. Providers disagree on the
- * field: DeepSeek/OpenRouter use `reasoning_content`, some send `reasoning`, and OpenAI/OpenCode
- * Zen send an array `reasoning_details` of `{ type: 'reasoning.text', text }`. Returns '' if the
- * chunk carries no reasoning.
- */
-/** Extract a reasoning/thinking delta from a streamed chunk's `delta` — shared by Router.route
- *  and the v3 routerProvider (providers disagree: reasoning_content / reasoning /
- *  reasoning_details[]). Returns '' when the chunk carries no reasoning. */
+/** Extract a reasoning delta from a streamed chunk's `delta`. Providers disagree on the field:
+ *  `reasoning_content` (DeepSeek/OpenRouter), `reasoning`, or a `reasoning_details` array of
+ *  `{ type: 'reasoning.text', text }`. Returns '' when the chunk carries no reasoning. */
 export function reasoningFromDelta(delta: Record<string, unknown>): string {
   return reasoningFromDeltaImpl(delta);
 }

@@ -346,17 +346,9 @@ function balancedJsonFrom(text: string, start: number): { text: string; end: num
   return null; // truncated before the matching close — caller skips
 }
 
-/** Index of the `{` opening a `<function=NAME>`'s JSON body, or -1 if this occurrence doesn't have
- *  one (meaning it belongs to the `<parameter=…>` dialect, shape 6). Skips leading whitespace AND
- *  an opening code fence: weak models wrap JSON in ```json … ``` constantly — the rest of this
- *  codebase already fights that in stripJsonFence — and a fenced body used to fail the bare
- *  `text[after + lead] !== '{'` test, so the call was dropped by shape 1 and then found no
- *  `<parameter=` for shape 6 either, vanishing entirely.
- *
- *  Doubles as the ownership boundary between shapes 1 and 6: `>= 0` means shape 1 owns this
- *  occurrence, `-1` means shape 6 does. That makes them provably exclusive per-occurrence, which
- *  is what lets shape 6 run over the same text instead of being suppressed whenever shape 1
- *  matched anything (a reply mixing both dialects used to silently lose the second call). */
+/** Index of the `{` opening a `<function=NAME>`'s JSON body (skipping whitespace and a
+ *  ```json fence), or -1 when the occurrence belongs to the `<parameter=…>` dialect (shape 6).
+ *  This is the ownership boundary between shapes 1 and 6, so both can scan the same text. */
 function jsonBodyStart(text: string, after: number): number {
   const lead = /^\s*/.exec(text.slice(after))![0].length;
   let i = after + lead;
@@ -398,18 +390,10 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
   const calls: RescuedCall[] = [];
   let m: RegExpExecArray | null;
 
-  // Shape 1 — the explicit dialect FORCE_ACTION_NUDGE tells weak models to emit when they can't
-  // produce a native call:  <function=NAME>{ ...args... }</function>   (closing tag optional —
-  // tolerate a response truncated mid-call). The `{...}` is captured by BALANCED brace scanning
-  // (balancedJsonFrom), NOT a non-greedy regex: writeFile/editFile payloads routinely hold `}`
-  // inside the `content`/`replace` string (any code with braces), and `\{[\s\S]*?\}` truncated
-  // at that first inner `}` → invalid JSON → the call was dropped and the raw `<function=…>`
-  // text streamed through as the reply → no tool ran → loop. Balance-tracking fixes it.
-  // The `{` must be the FIRST non-whitespace thing after the tag. firstBalancedJson scans
-  // FORWARD from the tag, so without this guard `<function=editFile><parameter=search>…{…}…`
-  // (shape 6) matched here, lifted a brace out of the search payload as the whole argument
-  // object, and — because every later shape only runs when nothing matched — suppressed the
-  // branch that would have parsed it correctly. Measured cost: an edit that wrote nothing.
+  // Shape 1: <function=NAME>{ ...args... }</function> (closing tag optional). The body is
+  // captured by BALANCED brace scanning, not a non-greedy regex — editFile payloads hold `}`
+  // inside strings. The `{` must be the first non-whitespace after the tag, or a shape-6
+  // `<parameter=search>…{…}` body would be lifted as the whole argument object.
   const fnAnchor = /<function=([a-zA-Z0-9_\-]+)[^>]*>/g;
   while ((m = fnAnchor.exec(text)) !== null) {
     const resolved = resolveDialectToolName(m[1], toolNames);
@@ -460,17 +444,10 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
   }
 
   if (calls.length === 0) {
-    // Shape 4: the XML "tool_call" dialect some weak free models (Qwen/GLM-style chat templates)
-    // emit as plain content when the server doesn't wire the tools API:
+    // Shape 4 (Qwen/GLM chat templates):
     //   <tool_call>NAME
-    //   <arg_key>limit</arg_key><arg_value>30</arg_value>
     //   <arg_key>path</arg_key><arg_value>routes/web.php</arg_value>
-    //   </tool_call>
-    // The tool name follows the opening tag; each argument is an <arg_key>/<arg_value> pair.
-    // (A <tool_call>{"name":...,"arguments":...}</tool_call> variant is already covered by the
-    // JSON shapes above, which scan the whole text.) The closing tag is optional to tolerate a
-    // response truncated mid-call. Without this branch the XML streamed straight through as the
-    // final answer and the turn died with no tool ever running.
+    //   </tool_call>            (closing tag optional)
     const tcTag = /<tool_call>\s*([a-zA-Z0-9_.\-]+)\s*([\s\S]*?)(?:<\/tool_call>|$)/g;
     while ((m = tcTag.exec(text)) !== null) {
       const resolved = resolveDialectToolName(m[1], toolNames);
@@ -514,31 +491,12 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
   }
 
   {
-    // NOTE: deliberately NOT gated on `calls.length === 0`, unlike shapes 2-5. Shape 6 shares the
-    // `<function=NAME>` opener with shape 1, and `jsonBodyStart` splits ownership cleanly between
-    // them (JSON body → shape 1, tagged parameters → shape 6), so both can scan the full text
-    // without double-counting an occurrence. Under the old guard a reply that mixed the two — very
-    // common, since weak models switch dialects between calls in one turn — kept only whichever
-    // came first: a verified repro dropped the `editFile` entirely while the `readFile` went
-    // through, so zero bytes were written and nothing reported an error.
-    // Shape 6: the Hermes/Qwen `<parameter=KEY>` dialect — same `<function=NAME>` opener as
-    // shape 1 but with tagged parameters instead of a JSON body, usually wrapped in <tool_call>:
-    //   <tool_call>
-    //   <function=editFile>
-    //   <parameter=path>
-    //   package.json
-    //   </parameter>
-    //   <parameter=search>
-    //   …possibly-braced code…
-    //   </parameter>
-    //   </function>
-    //   </tool_call>
-    // Captured from a real run where this was the turn's ONLY edit attempt: nothing parsed it,
-    // so zero bytes changed on disk and the raw XML was shown to the user as the answer.
-    // Values are NOT trimmed — an editFile `search` body must match the file byte for byte, so
-    // only the single newline the dialect puts after the opening tag (and the newline plus any
-    // indent before the closing one) is removed. Closing tags are optional to tolerate a
-    // response truncated mid-call.
+    // Shape 6 (Hermes/Qwen): <function=NAME> with tagged parameters instead of a JSON body —
+    //   <function=editFile><parameter=path>package.json</parameter>
+    //   <parameter=search>…possibly-braced code…</parameter></function>
+    // Not gated on `calls.length === 0`: jsonBodyStart splits ownership with shape 1, and a
+    // reply mixing both dialects used to lose the second call. Values are NOT trimmed beyond
+    // the dialect's own newline+indent — an editFile `search` must match byte for byte.
     const fnParamAnchor = /<function=([a-zA-Z0-9_\-]+)[^>]*>/g;
     while ((m = fnParamAnchor.exec(text)) !== null) {
       const resolved = resolveDialectToolName(m[1], toolNames);
@@ -573,19 +531,10 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
   }
 
   {
-    // Shape 7: the Liquid LFM / Llama-3.1 single-line python-call dialect, emitted as plain
-    // content when the provider doesn't wire the special tokens:
+    // Shape 7 (Liquid LFM / Llama-3.1 python-call dialect, 2026-08-15 repro):
     //   <tool_call_start>|[readFile(path='public/landing.blade.php')]<tool_call_end>|
-    // Captured from a real 2026-08-15 OpenRouter liquid/lfm-2.5-2.6b run: the model drove 14
-    // read calls fine, then emitted its edit exactly once in THIS dialect — no shape above
-    // matched (`<tool_call_start>` fails shape 4's literal `<tool_call>`; no `<function=`,
-    // no JSON blob), so the call never ran, the raw text streamed to chat as the reply, and
-    // the turn ended on "What would you like to know?". The bare `[name(kw='v')]` form (same
-    // dialect, special tokens already stripped by the provider) parses identically — the
-    // toolNames membership test is the false-positive guard, since prose brackets don't start
-    // with a real tool name followed by `(`.
-    // Runs unconditionally (like 1/6): it shares no opener with any other shape, and the
-    // dedupe pass below collapses any overlap.
+    // The bare `[name(kw='v')]` form parses identically; the toolNames membership test is the
+    // false-positive guard. Runs unconditionally — no shared opener; the dedupe pass covers overlap.
     const pyAnchor = /(?:<tool_call_start>\|?\s*)?\[([a-zA-Z0-9_\-]+)\s*\(/g;
     while ((m = pyAnchor.exec(text)) !== null) {
       const resolved = resolveDialectToolName(m[1], toolNames);
@@ -639,16 +588,10 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
   }
 
   {
-    // Shape 8: the GLM-4.x raw CHANNEL dialect — the provider hands back the model's own
-    // tool-call template unparsed as plain content (captured 2026-08-21 in plan mode:
-    // `<|start|>assistant<|channel|>commentary to=functions.listDir <|constrain|>json={"path":""}<|call|>`
-    // streamed straight into the chat, no tool ran, and plan mode looked broken). Shape:
+    // Shape 8 (GLM-4.x raw channel template, 2026-08-21 repro):
     //   <|channel|>commentary to=functions.NAME <|constrain|>json={ ...args... }<|call|>
-    // `<|call|>` needs no handling of its own — balanced-JSON scanning ends the args. Runs
-    // unconditionally like 1/6/7: no shared opener, and the dedupe pass covers overlap.
-    // GLM also tends to snake_case names against TierMux's camelCase registry
-    // (functions.read_file vs readFile), so an exact miss falls back to case-variant
-    // resolution instead of dropping the call.
+    // Balanced-JSON scanning ends the args. GLM snake_cases names (functions.read_file), so a
+    // miss falls back to case-variant resolution.
     const chanAnchor = /<\|channel\|>\s*commentary\s+to\s*=\s*functions\.([a-zA-Z0-9_\-]+)/g;
     while ((m = chanAnchor.exec(text)) !== null) {
       const resolved = resolveDialectToolName(m[1], toolNames);
@@ -669,16 +612,8 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
   }
 
   if (calls.length === 0) {
-    // Shape 9: the plain Claude/Anthropic-style `<invoke name="X"><parameter name="Y">value
-    // </parameter></invoke>` dialect (optionally namespaced, e.g. `<invoke>`), emitted as
-    // plain content when a provider serves an Anthropic-trained model without wiring the tools
-    // API. Distinct from shape 5 (DeepSeek's DSML dialect uses the fullwidth ｜ wrapper around
-    // "invoke"/"parameter"; this has none) and shape 6 (Hermes/Qwen's `<function=NAME>` /
-    // `<parameter=KEY>` attribute-free tags). Captured from a 2026-08-23 run: the model narrated
-    // "Let me check CarpoolBooking for rider_notes." then emitted this exact XML as its final
-    // answer text instead of a real tool call — no shape above matched it, so nothing ran and the
-    // raw markup streamed to the user as the reply. Closing tags are optional to tolerate a
-    // response truncated mid-call.
+    // Shape 9 (Anthropic-style, 2026-08-23 repro): <invoke name="X"><parameter name="Y">value
+    // </parameter></invoke>, optionally namespaced. Closing tags optional.
     const invokeTag = /<(?:\w+:)?invoke\s+name="([a-zA-Z0-9_\-]+)"[^>]*>/g;
     while ((m = invokeTag.exec(text)) !== null) {
       const resolved = resolveDialectToolName(m[1], toolNames);
@@ -701,24 +636,12 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
   }
 
   if (calls.length === 0) {
-    // Shape 10 — the GENERIC fallback, and the reason this list should stop growing. Shapes
-    // 1/4/5/6/9 each pin one vendor's exact markup, so every provider that serves a tool-trained
-    // model without wiring the tools API cost a new shape — and, until someone hit it live, a
-    // dead turn with raw markup shown as the answer. This shape pins no vendor: it walks every
-    // opening tag and asks one question — does this tag NAME a tool the caller registered?
-    // Dialects put that name in exactly three places, so all three are read:
-    //   attribute   <invoke name="readFile">   <call name="readFile">   <tool name="readFile">
-    //   after '='   <function=readFile>
-    //   the tag     <readFile><path>src/app.ts</path></readFile>
-    // stripDialectSleeve removes an XML namespace and DeepSeek's ｜DSML｜ wrapper first, so a
-    // sleeved variant of any of the three parses without its own shape, and argsFromDialectBody
-    // reads the body by the same open question instead of a fixed parameter syntax.
-    // resolveDialectToolName against the REGISTERED tool set is the entire false-positive guard:
-    // `<div>`, `<h1>`, `<script>` in an answer resolve to nothing and are skipped. The bare-tag
-    // form passes allowAliases=false on top of that — `<search>` and `<link>` are real HTML
-    // elements, and aliasing them to grep/readFile would turn quoted markup into tool calls.
-    // Nothing but a model calling a tool writes `<invoke name="read">`, so the other two forms
-    // keep the alias table.
+    // Shape 10 — the GENERIC fallback (the reason this list should stop growing): walk every
+    // opening tag and ask whether it NAMES a registered tool, in the three places dialects put
+    // the name — an attribute (<invoke name="readFile">), after '=' (<function=readFile>), or
+    // the tag itself (<readFile>…). The registered-tool lookup is the whole false-positive guard;
+    // the bare-tag form also passes allowAliases=false so <search>/<link> in quoted HTML are not
+    // aliased to grep/readFile.
     const anyTag = new RegExp(ANY_OPEN_TAG.source, 'g');
     while ((m = anyTag.exec(text)) !== null) {
       const [, rawToken, attrs] = m;

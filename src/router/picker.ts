@@ -199,6 +199,16 @@ export function isInCooldown(platform: string, modelId: string): boolean {
   return !!h && h.cooldownUntil > Date.now();
 }
 
+/** Time-boxed quarantines on top of the cooldown, for failures that say something specific
+ *  about the MODEL rather than the moment: a 400 while tools were offered means it rejects the
+ *  tools payload (10 min), a 404 means it is gone from the provider (24 h). The old Router set
+ *  these; the picker read them but nothing had set them since it was retired (2026-09-05). */
+export function noteModelFailure(platform: string, modelId: string, status: number | undefined, toolsOffered: boolean): void {
+  if (!sources) return;
+  if (status === 404) sources.secrets.markDeprecated?.(platform as never, modelId);
+  else if ((status === 400 || status === 413) && toolsOffered) sources.secrets.markToolIncompatible?.(platform as never, modelId);
+}
+
 /** Monotonic per-task-kind counter driving the equal-rank rotation — module-level so it
  *  advances across turns within a session (and across sessions sharing this module).
  *  Post-increment: the FIRST call returns 0 (no rotation — picker order stands until a
@@ -299,11 +309,16 @@ export async function selectModel(
         return undefined;
       }
     }
-    if (opts.requireTools && sources) {
+    if (sources) {
       const modelId = key.split('::').slice(1).join('::');
-      const meta = sources.catalog.find(platform, modelId);
-      if (meta?.supportsTools === false) { skip(key, 'catalog says this model cannot call tools'); return undefined; }
-      if (sources.secrets.isToolIncompatible?.(platform as never, modelId)) { skip(key, 'tool-incompatible platform'); return undefined; }
+      if (sources.secrets.isDeprecated?.(platform as never, modelId) && opts.pinnedModel !== key) {
+        skip(key, 'the provider returned 404 for this model — deprecated or removed'); return undefined;
+      }
+      if (opts.requireTools) {
+        const meta = sources.catalog.find(platform, modelId);
+        if (meta?.supportsTools === false) { skip(key, 'catalog says this model cannot call tools'); return undefined; }
+        if (sources.secrets.isToolIncompatible?.(platform as never, modelId)) { skip(key, 'tool-incompatible platform'); return undefined; }
+      }
     }
     pickLabels.set(key, label);
     return key;

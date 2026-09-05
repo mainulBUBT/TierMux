@@ -1,15 +1,5 @@
-/* Handler for 'assistantStart' messages - initializes assistant message bubble.
- *
- * This is Phase D2's second extracted handler (PR5.1).
- *
- * Dependencies (via focused AssistantStartContext):
- * - ensureTarget: Get or create the Target object for this requestId
- * - setStatusLabel: Set the "Thinking…" status label
- * - startStatusTimer: Start the elapsed time timer
- *
- * Context: This handler initializes the Target state (model, status, timer).
- * It performs minimal Target mutation (t.model) which is metadata only.
- */
+/* Handler for 'assistantStart': creates the assistant bubble, sets the model metadata and the
+ * "Thinking…" label, starts the elapsed timer. */
 
 // ----- Types ---------------------------------------------------------------
 
@@ -38,18 +28,7 @@ export interface Target {
 
 // ----- Context ---------------------------------------------------------------
 
-/**
- * Focused context for the assistantStart handler.
- *
- * This is NOT the full HandlerContext - it only exposes the 3 capabilities
- * this handler needs. This continues the context segregation pattern (PR7).
- *
- * Why this matters:
- * - If we exported the full HandlerContext, we'd propagate the God Object
- * - By using a focused interface, we keep the handler decoupled
- * - Future handlers can define their own focused contexts
- * - Eventually we'll split HandlerContext into focused interfaces (PR7)
- */
+/** Only the capabilities this handler needs — not the full HandlerContext. */
 export interface AssistantStartContext {
   /**
    * Get or create the Target object for this requestId.
@@ -72,19 +51,7 @@ export interface AssistantStartContext {
 
 // ----- Handler ---------------------------------------------------------------
 
-/**
- * Handle the 'assistantStart' message from the extension host.
- *
- * This initializes the assistant message bubble when the agent starts responding.
- * It performs the following actions:
- * - Gets or creates the Target object for this requestId
- * - Sets the model metadata (platform/model)
- * - Displays "Thinking…" status label
- * - Starts the elapsed time timer
- *
- * @param ctx - Focused context with only the 3 capabilities this handler needs
- * @param msg - Message containing the start signal and model info
- */
+/** Handle 'assistantStart' from the extension host. */
 export function handleAssistantStart(ctx: AssistantStartContext, msg: AssistantStartMessage): void {
   const t = ctx.ensureTarget(msg.requestId, msg.platform, msg.model);
   // Set the model metadata so the footer shows which model produced the answer

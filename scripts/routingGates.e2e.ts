@@ -19,7 +19,7 @@
  *
  * Run: npm run test:e2e:routing-gates
  */
-import { selectModel, setModelSources, __resetTaskRoundCounters } from '../src/router/picker';
+import { selectModel, setModelSources, noteModelFailure, __resetTaskRoundCounters } from '../src/router/picker';
 import { resolveCandidates, isFailoverWorthy } from '../src/agent/core/routerProvider';
 import { ProviderHttpError } from '../src/providers/base';
 import type { FallbackEntry } from '../src/shared/types';
@@ -185,6 +185,35 @@ console.log('\n— an account-level refusal condemns the platform, not just the 
   ok('403 is account-level', accountLevel(forbidden));
   ok('429 is NOT account-level — the next model may serve', !accountLevel(rate));
   ok('5xx is NOT account-level', !accountLevel(server));
+}
+
+console.log('— a 404 / a 400-with-tools quarantines the MODEL, not just the moment —');
+{
+  // The old Router set these marks; the picker read them but nothing had set them since it was
+  // retired, so a deprecated model was retried every turn and a 404 killed the turn outright.
+  __resetTaskRoundCounters();
+  const quarantined = new Map<string, string>();
+  const src = makeSources([entry('groq', 'gone-model', 0), entry('groq', 'live-model', 1), entry('groq', 'no-tools', 2)], [], ['groq']);
+  (src as unknown as { secrets: Record<string, unknown> }).secrets = {
+    getKeys: async () => ['sk-test'],
+    getCloudflareAccountId: async () => undefined,
+    isToolIncompatible: (_p: string, m: string) => quarantined.get(m) === 'tools',
+    isDeprecated: (_p: string, m: string) => quarantined.get(m) === 'gone',
+    markToolIncompatible: (_p: string, m: string) => { quarantined.set(m, 'tools'); },
+    markDeprecated: (_p: string, m: string) => { quarantined.set(m, 'gone'); },
+  };
+  setModelSources(src);
+  ok('404 fails over instead of killing the turn', isFailoverWorthy(new ProviderHttpError('not found', 404)));
+  noteModelFailure('groq', 'gone-model', 404, false);
+  noteModelFailure('groq', 'no-tools', 400, true);
+  noteModelFailure('groq', 'live-model', 429, true);
+  ok('404 marks the model deprecated', quarantined.get('gone-model') === 'gone');
+  ok('400 with tools offered marks it tool-incompatible', quarantined.get('no-tools') === 'tools');
+  ok('429 marks nothing (a moment, not the model)', !quarantined.has('live-model'));
+  const sel = await selectModel([{ role: 'user', content: 'x' }], { requireTools: true });
+  ok('the next selection skips both', sel.model === 'groq::live-model' && !sel.fallbackChain.includes('groq::gone-model') && !sel.fallbackChain.includes('groq::no-tools'), JSON.stringify(sel.fallbackChain));
+  const pinned = await selectModel([{ role: 'user', content: 'x' }], { pinnedModel: 'groq::gone-model' });
+  ok('a pin still runs alone on a deprecated model (the user asked for it)', pinned.model === 'groq::gone-model', pinned.model);
 }
 
 console.log(bad === 0 ? '\nAll routing gates hold.' : `\n${bad} FAILED`);
