@@ -3,7 +3,7 @@
 //
 // @ts-nocheck
 import { ICON } from './icons';
-import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate, fmtDuration, fmtToolDuration } from './format';
+import { fmtTime, fmtTokens, fmtCompact, fmtUsd, fmtSessionDate, fmtDuration, fmtToolDuration } from './format';
 import { send } from './bridge';
 import type { RxMessage } from './bridge';
 import { $, escapeHtml, showToast } from './dom';
@@ -871,9 +871,10 @@ import { handleToolStatus } from './handlers/toolStatus';
     bindHoverTip(b);
     return b;
   }
-  // Smart Auto "Why this model?" — a (?) on the footer that toggles a small popover
-  // explaining the scoring (winner + why-not for each candidate). Only added when the
-  // turn was smart-routed (rationale present).
+  // "Served this turn" — ONE compact chip on a reply footer (replaces the old "+N" badge
+  // and the (?) "Why this model?" icon). Click toggles a small popover: which models wrote
+  // tokens this turn, a one-line "how it was chosen", with the scoring behind a collapsed
+  // disclosure. Only present when the turn was smart-routed (rationale present).
   let openRationalePop: HTMLElement | null = null;
   function closeRationalePop() {
     if (openRationalePop) { openRationalePop.remove(); openRationalePop = null; }
@@ -882,7 +883,7 @@ import { handleToolStatus } from './handlers/toolStatus';
   }
   function onRationaleKey(e) { if (e.key === 'Escape') closeRationalePop(); }
   function onRationaleOutside(e) {
-    if (openRationalePop && !openRationalePop.contains(e.target) && !e.target.closest?.('.why-ic')) closeRationalePop();
+    if (openRationalePop && !openRationalePop.contains(e.target) && !e.target.closest?.('.served-chip')) closeRationalePop();
   }
   /** Score/Cap/Run/Conf for one candidate as a hover tooltip — the numbers describe the model,
    *  not the decision (the picker orders by pin → task table → rank), so they belong one level
@@ -890,10 +891,11 @@ import { handleToolStatus } from './handlers/toolStatus';
   function rationaleMetricsTitle(e) {
     return `Score ${e.score.toFixed(2)} · Cap ${e.capability.toFixed(2)} · Run ×${e.runtime.toFixed(2)} · Conf ${Math.round(e.confidence * 100)}%\n${e.reason}`;
   }
-  // Two sections, each model exactly once: "Answered this turn" (who wrote tokens, how many,
-  // which pass) and "Didn't answer" (who was in line and why they never ran). `answered` is
-  // absent on transcripts persisted before it existed — those fall back to the flat candidate
-  // list, so an old session still opens a popover instead of an empty one.
+  // One popover tells the whole turn story: "Served this turn" (who wrote tokens, how many,
+  // which pass), a one-line "how it was chosen", and — collapsed by default so a 10-candidate
+  // turn never spills — the scored "Other candidates". `answered` is absent on transcripts
+  // persisted before it existed; those fall back to the flat candidate list shown OPEN, so an
+  // old session still gets an explanation instead of an empty popover.
   function showRationalePopover(anchor, data) {
     if (openRationalePop) { closeRationalePop(); return; } // toggle off
     const pop = document.createElement('div');
@@ -905,16 +907,27 @@ import { handleToolStatus } from './handlers/toolStatus';
     const head = document.createElement('div');
     head.className = 'rationale-pop-head';
     const title = document.createElement('span');
-    // One title regardless of count: a turn is not always one model, and the model that answered
-    // is already the first row below — naming it here too said the same thing twice.
-    title.textContent = 'Why these models?';
+    // The turn is not always one model — the head names the SECTION, and the first row below
+    // is the serving model, so naming one model here said the same thing twice.
+    title.textContent = answered.length ? 'Served this turn' : 'Why this pick';
     head.appendChild(title);
+    const headRight = document.createElement('span');
+    headRight.className = 'rationale-pop-head-right';
     if (data.taskKind) {
       const meta = document.createElement('span');
       meta.className = 'rationale-pop-meta';
       meta.textContent = data.taskKind;
-      head.appendChild(meta);
+      headRight.appendChild(meta);
     }
+    // Explicit close — alongside Escape and outside-click, a visible X so the popover
+    // never feels stuck open.
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button'; closeBtn.className = 'rationale-pop-x';
+    closeBtn.title = 'Close'; closeBtn.setAttribute('aria-label', 'Close');
+    closeBtn.innerHTML = ICON.x;
+    closeBtn.addEventListener('click', (ev) => { ev.stopPropagation(); closeRationalePop(); });
+    headRight.appendChild(closeBtn);
+    head.appendChild(headRight);
     pop.appendChild(head);
 
     const section = (label, right) => {
@@ -928,34 +941,52 @@ import { handleToolStatus } from './handlers/toolStatus';
     if (answered.length) {
       const total = answered.reduce((n, a) => n + a.inputTokens + a.outputTokens, 0);
       const sec = document.createElement('div');
-      sec.className = 'rationale-sec' + (answered.length > 1 ? '' : ' single');
+      sec.className = 'rationale-sec';
       sec.appendChild(section('Answered this turn', `${answered.length} · ${fmtTokens(total)} tok`));
       answered.forEach((a, i) => {
         const row = document.createElement('div');
         row.className = 'rationale-ans';
         const e = byName.get(a.model);
         if (e) { row.title = rationaleMetricsTitle(e); bindHoverTip(row); }
-        const tok = a.inputTokens + a.outputTokens;
-        const share = total > 0 ? Math.max(2, Math.round((tok / total) * 100)) : 0;
-        // The share bar compares models; with one answerer it is a 100% bar that only steals
-        // room from the name, so it is dropped and the name column widens.
+        // One line per model — name, in/out tokens, pass. No share bar: a 3-model turn is
+        // 3 short lines, and the token counts already say who carried the turn.
         row.innerHTML =
           `<span class="ra-no">${i + 1}</span>` +
           `<span class="ra-name">${escapeHtml(a.model)}</span>` +
-          (answered.length > 1 ? `<span class="ra-bar"><span class="ra-fill" style="width:${share}%"></span></span>` : '') +
           `<span class="ra-tok">${escapeHtml(fmtTokens(a.inputTokens))} in · ${escapeHtml(fmtTokens(a.outputTokens))} out</span>` +
           `<span class="ra-role">${a.pass > 1 ? 'continuation' : 'first pass'}</span>`;
         sec.appendChild(row);
       });
       pop.appendChild(sec);
+      // One muted line explaining HOW the pick was made (mirrors the picker's own label
+      // stripping in rationaleForServed): "Auto · task table (coding)" reads actionably,
+      // "pinned by you" says the user set it. Everything below the line is depth.
+      const why = whyLine(data);
+      if (why) {
+        const w = document.createElement('div');
+        w.className = 'rationale-why';
+        w.textContent = why;
+        pop.appendChild(w);
+      }
     }
 
-    const rest = (data.entries || []).filter((e) => !answeredNames.has(e.model));
+    // "Other candidates" are keyless fallbacks only: free, zero-setup models that could
+    // actually join this turn. Keyed models, cooldowns and rate-limit skips are the picker's
+    // internal churn — listing them all turned the popover into a wall of models. Legacy
+    // rationales lack the keyless flag, so those keep the full list rather than open empty.
+    const keylessKnown = (data.entries || []).every((e) => typeof e.keyless === 'boolean');
+    let rest = (data.entries || []).filter((e) => !answeredNames.has(e.model));
+    if (answered.length && keylessKnown) rest = rest.filter((e) => e.keyless === true);
+    const restTotal = rest.length;
     if (rest.length) {
       const sec = document.createElement('div');
       sec.className = 'rationale-sec' + (answered.length ? ' recede' : '');
-      sec.appendChild(section(answered.length ? 'Other candidates' : 'Candidates', `${rest.length} of ${(data.entries || []).length}`));
-      for (const e of rest) {
+      sec.appendChild(section(answered.length ? 'Other candidates' : 'Candidates',
+        answered.length ? `keyless · ${restTotal}` : `${restTotal} of ${(data.entries || []).length}`));
+      // Cap stays tight even for keyless tails — the count in the header is the truth.
+      const EXTRA_CAP = 6;
+      const shown = rest.slice(0, EXTRA_CAP);
+      for (const e of shown) {
         const row = document.createElement('div');
         row.className = 'rationale-skip' + (e.selected ? ' selected' : '');
         row.title = rationaleMetricsTitle(e); bindHoverTip(row);
@@ -973,11 +1004,29 @@ import { handleToolStatus } from './handlers/toolStatus';
           `<span class="rs-why">${escapeHtml(why)}</span>`;
         sec.appendChild(row);
       }
-      pop.appendChild(sec);
+      if (restTotal > EXTRA_CAP) {
+        const more = document.createElement('div');
+        more.className = 'rationale-more';
+        more.textContent = `+ ${restTotal - EXTRA_CAP} more keyless fallbacks in line`;
+        sec.appendChild(more);
+      }
+      if (answered.length) {
+        // Depth is opt-in: "Served this turn" + the why-line already answer the question, so
+        // the scored candidates fold behind a disclosure instead of dominating the popover.
+        const det = document.createElement('details');
+        det.className = 'rationale-details';
+        const sum = document.createElement('summary');
+        sum.textContent = 'Scoring & other candidates';
+        det.appendChild(sum);
+        det.appendChild(sec);
+        pop.appendChild(det);
+      } else {
+        pop.appendChild(sec);
+      }
     }
     document.body.appendChild(pop);
     openRationalePop = pop;
-    // Position: prefer above the (?) icon, flip below if there's no room; clamp to viewport.
+    // Position: prefer above the chip, flip below if there's no room; clamp to viewport.
     const r = anchor.getBoundingClientRect();
     const pw = pop.offsetWidth, ph = pop.offsetHeight;
     let left = Math.max(6, Math.min(r.left + r.width / 2 - pw / 2, window.innerWidth - pw - 6));
@@ -989,15 +1038,65 @@ import { handleToolStatus } from './handlers/toolStatus';
     document.addEventListener('keydown', onRationaleKey, true);
     document.addEventListener('mousedown', onRationaleOutside, true);
   }
-  function attachWhyBtn(acts, data) {
-    const existing = acts.querySelector('.why-ic');
-    if (existing) existing.remove(); // refresh if rationale updated
-    const b = iconBtn(ICON.routing, 'Why this model?', (ev) => {
-      ev.stopPropagation();
-      showRationalePopover(ev.currentTarget, data);
-    });
-    b.classList.add('why-ic');
-    acts.appendChild(b);
+  // One-line "how it was chosen" for the popover — the picker's label minus the
+  // "— serves this turn" suffix (the same strip rationaleForServed applies), prefixed
+  // with "Auto · " unless the user pinned the model.
+  function whyLine(data) {
+    if (!data || !data.entries || !data.entries.length) return null;
+    const first = data.entries[0];
+    let why = (first.reason || '').split(' — serves this turn')[0].trim();
+    if (why && !/pinned/i.test(why)) why = `Auto · ${why}`;
+    return why || null;
+  }
+  // One "served by" chip per reply footer — replaces the old "+N" badge AND the (?)
+  // "Why this model?" icon as the single model affordance. Styled like the composer's
+  // model pill (quiet chrome, border only on hover). The leading glyph answers "how was
+  // it chosen" in one glance: sparkle = smart Auto pick, chip = pinned by you. Label =
+  // the PRIMARY serving model (first to write tokens), extras folded into a "+N" count
+  // inside the same pill. Click opens showRationalePopover anchored on the chip.
+  function makeServedChip(modelText, rationale) {
+    const text = modelText || '';
+    const sep = text.indexOf('  ·  ');
+    const namePart = sep >= 0 ? text.slice(0, sep) : text;
+    const answered = ((rationale && rationale.answered) || []).filter((a) => a && (a.inputTokens || a.outputTokens));
+    const extra = answered.length - 1;
+    const pinned = !!(rationale && rationale.entries && rationale.entries[0] && /pinned/i.test(rationale.entries[0].reason || ''));
+    const primary = answered.length
+      ? answered[0].model
+      : rationale && rationale.entries && rationale.entries.length ? rationale.entries[0].model : namePart;
+    const chip = document.createElement('button');
+    chip.type = 'button'; chip.className = 'served-chip';
+    const glyph = document.createElement('span'); glyph.className = 'served-chip-icon';
+    glyph.innerHTML = pinned ? ICON.chip : ICON.sparkle;
+    chip.appendChild(glyph);
+    const name = document.createElement('span'); name.className = 'served-chip-name'; name.textContent = primary;
+    chip.appendChild(name);
+    if (extra > 0) {
+      const count = document.createElement('span'); count.className = 'served-chip-count'; count.textContent = `+${extra}`;
+      chip.appendChild(count);
+    }
+    chip.title = extra > 0 ? `${answered.length} models served this turn — click for details` : 'Model that served this turn — click for details';
+    chip._rationale = rationale;
+    chip.addEventListener('click', (ev) => { ev.stopPropagation(); showRationalePopover(ev.currentTarget, chip._rationale); });
+    return chip;
+  }
+  // A late-arriving selectionRationale relabels the chip in place (label, folded +N and
+  // click data are all driven off _rationale) without rebuilding the footer.
+  function refreshServedChip(chip, rationale) {
+    if (!chip || !rationale) return;
+    const answered = (rationale.answered || []).filter((a) => a && (a.inputTokens || a.outputTokens));
+    const extra = answered.length - 1;
+    const nameEl = chip.querySelector('.served-chip-name');
+    const primary = answered.length ? answered[0].model
+      : rationale.entries && rationale.entries.length ? rationale.entries[0].model : null;
+    if (primary && nameEl) nameEl.textContent = primary;
+    let countEl = chip.querySelector('.served-chip-count');
+    if (extra > 0) {
+      if (!countEl) { countEl = document.createElement('span'); countEl.className = 'served-chip-count'; chip.appendChild(countEl); }
+      countEl.textContent = `+${extra}`;
+    } else if (countEl) { countEl.remove(); }
+    chip.title = extra > 0 ? `${answered.length} models served this turn — click for details` : 'Model that served this turn — click for details';
+    chip._rationale = rationale;
   }
   function copyBtn(el) {
     const b = iconBtn(ICON.copy, 'Copy message', () => {
@@ -1106,32 +1205,82 @@ import { handleToolStatus } from './handlers/toolStatus';
     body.appendChild(toggle); // sits directly under the text, inside the left column
   }
 
-  function assistantFooter(el, model, ts, requestId, rationale) {
+  // One icon-led stat for the reply footer: [icon][value]. Icons give the numbers a
+  // shape — a bare "· 12.4k in · 1.1k out · 32s" string read as one undifferentiated
+  // tail, while [chip]tokens [clock]32s let the eye land on each piece (2026-09-05).
+  function footStat(iconSvg, value, title) {
+    const s = document.createElement('span');
+    s.className = 'foot-stat';
+    if (title) s.title = title;
+    const ic = document.createElement('span'); ic.className = 'foot-stat-icon'; ic.innerHTML = iconSvg;
+    const v = document.createElement('span'); v.className = 'foot-stat-value'; v.textContent = value;
+    s.appendChild(ic); s.appendChild(v);
+    return s;
+  }
+
+  // Turn-wide token accounting for the footer. A multi-model turn must NOT show only the
+  // final model's usage — that row disagrees with the "Served this turn" popover, which
+  // sums every model that wrote tokens. Prefer the rationale aggregate (matches the
+  // popover exactly); fall back to the final message's own usage when no rationale exists.
+  function footerTokens(rationale, usage) {
+    const answered = ((rationale && rationale.answered) || []).filter((a) => a && (a.inputTokens || a.outputTokens));
+    if (answered.length) {
+      return {
+        total: answered.reduce((n, a) => n + a.inputTokens + a.outputTokens, 0),
+        inTok: answered.reduce((n, a) => n + a.inputTokens, 0),
+        outTok: answered.reduce((n, a) => n + a.outputTokens, 0),
+        models: answered.length,
+      };
+    }
+    if (usage && (usage.promptTokens || usage.completionTokens)) {
+      return {
+        total: (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0),
+        inTok: usage.promptTokens ?? 0,
+        outTok: usage.completionTokens ?? 0,
+        models: 1,
+      };
+    }
+    return null;
+  }
+
+  function assistantFooter(el, info, ts, requestId, rationale) {
     const foot = document.createElement('div'); foot.className = 'msg-foot';
     const left = document.createElement('span'); left.className = 'foot-left';
     // Model name only — the time is already shown on the user bubble of this turn, and
     // stamping it here too made a sub-minute Q+A read "1:02 AM" twice in one bubble.
-    // "+N": more than one model wrote this reply (failover or continuation landed elsewhere).
-    // Sits right after the model NAME — `model` arrives as "name  ·  usage  ·  secs", so split
-    // at the first separator and put the badge between. Opens the same popover the (?) does.
-    const extra = rationale && rationale.answered ? rationale.answered.filter((a) => a && (a.inputTokens || a.outputTokens)).length - 1 : 0;
-    const text = model ? model : '';
-    const cut = extra > 0 ? text.indexOf('  ·  ') : -1;
-    left.appendChild(document.createTextNode(cut >= 0 ? text.slice(0, cut) : text));
-    if (extra > 0) {
-      const badge = document.createElement('button');
-      badge.type = 'button'; badge.className = 'foot-more'; badge.textContent = `+${extra}`;
-      badge.title = `${extra + 1} models answered this turn — see which`;
-      badge.addEventListener('click', (ev) => { ev.stopPropagation(); showRationalePopover(ev.currentTarget, rationale); });
-      left.appendChild(badge);
-      if (cut >= 0) left.appendChild(document.createTextNode(text.slice(cut)));
+    // ONE model affordance: when the turn was smart-routed the model name renders as a
+    // compact "served by" chip (primary server + folded "+N" for the rest) that opens
+    // the "Served this turn" popover — replacing the old "+N" badge and (?) icon.
+    // Otherwise it is plain text. Next to it, icon-led stats — model, tokens, duration,
+    // failovers — the same small info line providers like LM Studio show under a reply.
+    const model = (info && info.model) || '';
+    const canExplain = rationale && ((rationale.answered && rationale.answered.length) || (rationale.entries && rationale.entries.length));
+    if (canExplain) {
+      left.appendChild(makeServedChip(model, rationale));
+    } else {
+      const name = document.createElement('span'); name.className = 'foot-model'; name.textContent = model;
+      left.appendChild(name);
+    }
+    const toks = footerTokens(rationale, info && info.usage);
+    if (toks) {
+      // Both directions visible — providers show in/out, not a single total — but the
+      // numbers still sum every model that wrote tokens so they match the popover.
+      const detail = `${fmtTokens(toks.inTok)} in · ${fmtTokens(toks.outTok)} out`;
+      const title = toks.models > 1
+        ? `${fmtTokens(toks.total)} tokens · ${detail} — across ${toks.models} models`
+        : `${fmtTokens(toks.total)} tokens · ${detail}`;
+      left.appendChild(footStat(ICON.coins, detail, title));
+    }
+    if (info && info.duration) left.appendChild(footStat(ICON.clock, info.duration, 'Time to answer'));
+    if (info && info.failovers) {
+      left.appendChild(footStat(ICON.routing, `${info.failovers}`, `${info.failovers} failover${info.failovers > 1 ? 's' : ''} — rerouted mid-turn`));
     }
     const acts = document.createElement('span'); acts.className = 'foot-acts';
     acts.appendChild(copyBtn(el));
     acts.appendChild(feedbackBtns(requestId));
-    if (rationale && rationale.entries && rationale.entries.length) attachWhyBtn(acts, rationale);
     foot.appendChild(left); foot.appendChild(acts);
     foot._acts = acts;
+    foot._servedChip = left.querySelector('.served-chip') || null;
     return foot;
   }
 
@@ -1228,13 +1377,14 @@ import { handleToolStatus } from './handlers/toolStatus';
     // Only attach flow if it has children (pure-text ask-mode: just the text seg).
     if (flow.children.length) el.appendChild(flow);
 
-    let footStr = (model || '');
-    if (details.usage) footStr += `  ·  ${fmtUsage(details.usage)}`;
-    if (secs != null) footStr += `  ·  ${fmtDuration(secs)}`;
     // Pass requestId + rationale so a replayed turn keeps the SAME footer affordances a live one
-    // has: working like/dislike votes and the "Why this model?" (?) popover. Both used to be
-    // dropped here, so every reload/session switch silently stripped them from the transcript.
-    el.appendChild(assistantFooter(el, footStr, ts, details.requestId, details.rationale));
+    // has: working like/dislike votes and the "served by" chip. Both used to be lost here, so
+    // every reload/session switch silently stripped them from the transcript.
+    el.appendChild(assistantFooter(el, {
+      model: model || '',
+      usage: details.usage,
+      duration: secs != null ? fmtDuration(secs) : undefined,
+    }, ts, details.requestId, details.rationale));
     (currentTurn || activeThreadEl).appendChild(el);
   }
 
@@ -2542,8 +2692,8 @@ import { handleToolStatus } from './handlers/toolStatus';
     wrap.append(buildModelSelectRow(
       'Completions model',
       'Model used for inline (ghost-text) completions. Auto uses a fast enabled model.',
-      (state.settings || {})['completions.model'],
-      (value) => send({ type: 'setExtensionSetting', key: 'completions.model', value }),
+      state.completionsModel,
+      (value) => send({ type: 'setCompletionsModel', model: value }),
     ));
 
     // Keybinding for "Add Selection to Chat": VS Code doesn't let extensions register
@@ -4381,11 +4531,11 @@ import { handleToolStatus } from './handlers/toolStatus';
       case 'selectionRationale': {
         const t = ensureTarget(msg.requestId);
         // Stash the latest scoring rationale on the turn. Agent turns route many times;
-        // keep the most recent selection. It surfaces as a (?) on the message footer,
-        // which is built later at assistantDone. If the footer already exists (rationale
-        // arrived late), refresh its (?) in place.
+        // keep the most recent selection. It surfaces as the served-by chip on the message
+        // footer, which is built later at assistantDone. If the footer already exists
+        // (rationale arrived late), relabel its chip in place.
         t.rationale = { picked: msg.picked, entries: msg.entries, answered: msg.answered, taskKind: msg.taskKind };
-        if (t.footActs) attachWhyBtn(t.footActs, t.rationale);
+        if (t.servedChip) refreshServedChip(t.servedChip, t.rationale);
         break;
       }
       case 'keyRotated': {
@@ -4719,16 +4869,18 @@ import { handleToolStatus } from './handlers/toolStatus';
         // failed over before assistantStart could set t.model).
         if (msg.model) t.model = `${msg.platform || ''}/${msg.model}`;
         {
-          let usageStr = '';
-          if (msg.usage) usageStr = `  ·  ${fmtUsage(msg.usage)}`;
           const startedAt = t.startedAt ?? startTimes.get(msg.requestId);
           const secs = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
-          const durStr = secs != null ? `  ·  ${fmtDuration(secs)}` : '';
           // Failover count comes from the turn's telemetry (single source) — the silent
-          // failoverNotice chatter stays hidden, but the reroute shows as ⟳ N in the footer.
-          const failStr = turnFailovers > 0 ? `  ·  ⟳ ${turnFailovers}` : '';
-          const foot = assistantFooter(t.el, (t.model || '') + usageStr + durStr + failStr, Date.now(), msg.requestId, t.rationale);
-          t.footActs = foot._acts; // so a late-arriving selectionRationale can still attach its (?)
+          // failoverNotice chatter stays hidden, but the reroute shows as an icon-led count.
+          const foot = assistantFooter(t.el, {
+            model: t.model || '',
+            usage: msg.usage,
+            duration: secs != null ? fmtDuration(secs) : undefined,
+            failovers: turnFailovers > 0 ? turnFailovers : undefined,
+          }, Date.now(), msg.requestId, t.rationale);
+          t.footActs = foot._acts;
+          t.servedChip = foot._servedChip; // so a late-arriving selectionRationale can still relabel the chip
           t.el.appendChild(foot);
         }
         // The run stopped before finishing (step cap or a model dropping out). Offer a
@@ -5543,6 +5695,15 @@ import { handleToolStatus } from './handlers/toolStatus';
     const models = (lt.byModel || []).filter((m) => m && m.totalTokens > 0);
     if (models.length) {
       const hdr = document.createElement('div'); hdr.className = 'usage-stat-hdr'; hdr.textContent = 'Per model'; el.appendChild(hdr);
+      // Per-model filter — a live search over the rows below (matches provider too, since a
+      // row's text is "Provider/model"). Rebuilt with the card on every usageTotals refresh,
+      // matching how the providers/MCP tab searches behave (2026-09-05).
+      const filter = document.createElement('input');
+      filter.type = 'text';
+      filter.className = 'settings-search usage-model-filter';
+      filter.placeholder = 'Filter models…';
+      filter.setAttribute('aria-label', 'Filter the per-model usage list');
+      el.appendChild(filter);
       const top = models[0].totalTokens;
       const list = document.createElement('div'); list.className = 'usage-models';
       for (const m of models) {
@@ -5556,6 +5717,12 @@ import { handleToolStatus } from './handlers/toolStatus';
           `<span class="um-usd">${m.estimatedSavingsUsd > 0 ? escapeHtml(fmtUsd(m.estimatedSavingsUsd)) : '—'}</span>`;
         list.appendChild(row);
       }
+      filter.addEventListener('input', () => {
+        const q = filter.value.trim().toLowerCase();
+        list.querySelectorAll('.usage-model-row').forEach((row) => {
+          row.style.display = !q || row.textContent.toLowerCase().includes(q) ? '' : 'none';
+        });
+      });
       el.appendChild(list);
     }
 

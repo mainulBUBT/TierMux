@@ -128,6 +128,10 @@ export interface ConfigPayload {
   modelKeys: string[];
   /** Selected model for utility tasks (titles, commit messages); 'auto' = keyless-preferred. */
   utilityModel: string;
+  /** Selected model for inline (ghost-text) completions; 'auto' = fast enabled model. Carried
+   *  separately from `settingsMeta` because the key is not a generic Settings field — the
+   *  "Others" tab renders it as a live model dropdown, like `utilityModel`. */
+  completionsModel: string;
   /** Row definitions for the "Others" tab generic settings editor. */
   settingsMeta: SettingMeta[];
   /** Current value of every key in `settingsMeta`, read live from `tiermux.*` config. */
@@ -218,6 +222,7 @@ export type InMessage =
   | { type: 'revertTo'; requestId: string }
   | { type: 'copyText'; text: string }
   | { type: 'setUtilityModel'; model: string }
+  | { type: 'setCompletionsModel'; model: string }
   | { type: 'setExtensionSetting'; key: string; value: boolean | number | string }
   | { type: 'openKeybinding'; command: string }
   | { type: 'setAutoApprove'; enabled: boolean }
@@ -305,6 +310,10 @@ export interface SelectionRationaleEntry {
   confidence: number;
   reason: string;
   skip?: string;
+  /** True when the platform needs no API key. The webview's "Other candidates" section
+   *  lists only keyless models — free, zero-setup fallbacks that could actually join a
+   *  turn — instead of the whole enabled fallback chain. */
+  keyless?: boolean;
 }
 
 /** One model that actually produced tokens this turn, aggregated across its steps. `model` is

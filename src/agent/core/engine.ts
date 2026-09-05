@@ -440,9 +440,15 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       },
 
       onError: ({ error }) => {
-        // streamText's onError does NOT fire for model-stream failures in ai v7; the real capture
-        // is consumeStream's onError below. Kept for internal errors that DO route here.
-        diagLog('engine.error', String(error));
+        // streamText's onError does NOT fire for MID-STREAM model failures in ai v7 (the real
+        // capture for those is consumeStream's onError below) — but it IS where a doStream
+        // SETUP rejection lands, e.g. resolveCandidates' "Pinned model X could not run: …".
+        // That error used to be only diagLogged and the turn shipped as an empty 'unknown'
+        // "success" (repro 2026-09-05 22:50, pinned Experiential Labs/qwen3.8-27b,
+        // supportsTools=false → silent "No model request completed this turn" bubble). Capture
+        // it into streamError so the existing post-pass guard fails the turn with the reason.
+        streamError = error instanceof Error ? error.message : String(error);
+        diagLog('engine.error', streamError.slice(0, 160));
       },
 
       onEnd: ({ steps, finishReason }) => {

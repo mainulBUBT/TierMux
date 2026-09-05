@@ -1,11 +1,14 @@
 // Model picker: task kind → candidate chain, plus per-model cooldown and declared rpm/rpd
-// windows. No learned scoring, no hedging, no session pin — the table is readable. (A learned
-// slow-model demotion was tried for a day in 2026-09 and removed; do not re-add.) Sources are
-// injected at activation via setModelSources; headless callers get keyless platforms only.
+// windows. Ordering is readable: pin → task table → speed class → intelligence rank, with an
+// OPTIONAL user-feedback tiebreak (👍/👎 from ModelStatsStore) that picks the preferred model
+// among otherwise-equal peers. No learned health scoring, no hedging — a slow-model demotion
+// was tried for a day in 2026-09 and removed; do not re-add. Sources are injected at
+// activation via setModelSources; headless callers get keyless platforms only.
 
 import type { Catalog } from '../catalog/catalog';
 import type { SettingsStore } from '../config/settingsStore';
 import type { SecretStore } from '../config/secrets';
+import type { ModelStatsStore } from '../config/modelStats';
 import { allPlatformInfo } from '../providers';
 import type { ChatMessage, CatalogModel } from '../shared/types';
 import { classifyTask, type TaskKind } from '../agent/routing';
@@ -48,6 +51,8 @@ export interface SelectionRationale {
     reason: string;
     /** Skip reason when absent from the chain (mirrors the old Router's string skip). */
     skip?: string;
+    /** Keyless platforms need no API key — the webview lists only these as candidates. */
+    keyless?: boolean;
   }>;
 }
 
@@ -98,6 +103,10 @@ export interface ModelSources {
   catalog: Catalog;
   settings: SettingsStore;
   secrets: SecretStore;
+  /** Optional per-task-kind 👍/👎 feedback store. When wired, a model's net vote score
+   *  breaks ties among otherwise-equal peers (same speed class + intelligence rank).
+   *  Absent for headless/library callers, so ordering there equals no-vote behavior. */
+  stats?: ModelStatsStore;
 }
 
 let sources: ModelSources | undefined;
@@ -128,6 +137,21 @@ export async function getApiKeysFor(platform: string): Promise<string[]> {
     return keys.map((k) => (k.startsWith(accountId + ':') ? k : `${accountId}:${k}`));
   }
   return keys;
+}
+
+/** Whether a model key needs no API key — keyless platforms run free with zero setup. The
+ *  webview's "Other candidates" section lists only keyless models (the fallbacks that can
+ *  actually join a turn), so the picker stamps every rationale entry with this flag. */
+function keylessOf(key: string): boolean {
+  return allPlatformInfo().find((p) => p.platform === key.split('::')[0])?.keyless ?? false;
+}
+
+/** Net user feedback (👍−👎) for a model on this task kind. 0 when no stats store is wired
+ *  (headless/library) or no votes exist, so the comparator collapses back to today's exact
+ *  ordering. */
+function voteScore(taskKind: string, key: string): number {
+  const sep = key.indexOf('::');
+  return sources?.stats?.score(taskKind, sep >= 0 ? key.slice(0, sep) : key, sep >= 0 ? key.slice(sep + 2) : '') ?? 0;
 }
 
 /** Declared-quota accounting, inherited from the deleted Router (plan §4.2). Hydrated from the
@@ -377,6 +401,7 @@ export async function selectModel(
             model: pinned, selected: true,
             score: 1, capability: 1, runtime: 1, preference: 1, confidence: 0,
             reason: 'pinned by you — serves this turn (no failover: a set model runs alone)',
+            keyless: keylessOf(pinned),
           }],
         },
       };
@@ -397,6 +422,7 @@ export async function selectModel(
             model: opts.pinnedModel, selected: false,
             score: 0, capability: 0, runtime: 1, preference: 1, confidence: 0,
             reason, skip: reason,
+            keyless: keylessOf(opts.pinnedModel),
           }],
         },
       };
@@ -416,7 +442,7 @@ export async function selectModel(
   // ALWAYS pad the chain with the rest of the usable enabled models, best intelligence rank
   // first (settings order let whichever model sat first serve every task — 2026-08-28,
   // nemotron-3-ultra-free). Pinned models are exempt.
-  const ranked: Array<{ key: string; rank: number; speed: number }> = [];
+  const ranked: Array<{ key: string; rank: number; speed: number; vote: number }> = [];
   const modelRank = rankByModel(enabled);
   for (const key of enabled) {
     // Already chained (pin/table pick)? Skip BEFORE re-picking: pick() would overwrite the
@@ -433,27 +459,36 @@ export async function selectModel(
       key: picked,
       rank: modelRank.get(canonicalModelId(modelId)) ?? meta?.intelligenceRank ?? Number.POSITIVE_INFINITY,
       speed: meta?.speedRank ?? 5,
+      // Net 👍−👎 for this task kind — the tiebreak that lets feedback pick the preferred
+      // model among equal peers. Zero without a stats store or any votes.
+      vote: voteScore(taskKind, picked),
     });
   }
-  // Tail order: speed class, then MODEL rank, then this row's speed (the fastest gateway for a
-  // model leads its slower twins) — all from the catalog. A speedRank-5 row (397B-class, a
-  // minute of prefill on a free gateway) stays in the pool as a last resort but is never
-  // rotated into the head (2026-09-04: a chat turn took ~5 minutes that way).
+  // Tail order: speed class, then MODEL rank, then user feedback, then this row's speed (the
+  // fastest gateway for a model leads its slower twins) — all from the catalog. Feedback sits
+  // between rank and speed on purpose: a liked model leads its rank even if a peer is faster,
+  // and a disliked one sinks to the rank's end, but a vote can NEVER skip a higher rank. A
+  // speedRank-5 row (397B-class, a minute of prefill on a free gateway) stays in the pool as
+  // a last resort but is never rotated into the head (2026-09-04: a chat turn took ~5 minutes
+  // that way).
   const slowCapable = (e: { speed: number }): number => (e.speed >= 4 ? 1 : 0);
-  ranked.sort((a, b) => slowCapable(a) - slowCapable(b) || a.rank - b.rank || a.speed - b.speed);
-  // Quota-spreading among peers: rotate the head of each equal-rank-and-speed group so the
-  // NEXT turn leads with a different peer ("600 models, but it keeps using the same 1-2").
-  // Deterministic per taskKind via a counter — no RNG.
+  ranked.sort((a, b) => slowCapable(a) - slowCapable(b) || a.rank - b.rank || b.vote - a.vote || a.speed - b.speed);
+  // Quota-spreading among peers: rotate the head of each equal-rank, equal-speed, equal-vote
+  // group so the NEXT turn leads with a different peer ("600 models, but it keeps using the
+  // same 1-2"). Deterministic per taskKind via a counter — no RNG. Vote equals are required
+  // for a peer group, otherwise rotating would scramble the feedback order.
   {
     const counter = nextTaskRound(taskKind);
     let i = 0;
     while (i < ranked.length) {
       const groupRank = ranked[i].rank;
       const groupSpeed = ranked[i].speed;
+      const groupVote = ranked[i].vote;
       let j = i;
-      // Peers = same model rank AND same speed class, so rotation never lifts a slower
-      // gateway above a faster one carrying the same quality.
-      while (j < ranked.length && ranked[j].rank === groupRank && ranked[j].speed === groupSpeed) j++;
+      // Peers = same model rank, same speed class AND same vote score, so rotation never
+      // lifts a slower gateway above a faster one of the same quality, nor a disliked model
+      // back above a liked one.
+      while (j < ranked.length && ranked[j].rank === groupRank && ranked[j].speed === groupSpeed && ranked[j].vote === groupVote) j++;
       if (j - i > 1 && Number.isFinite(groupRank)) {
         const offset = counter % (j - i);          // 0..(groupSize-1)
         const rotated = [...ranked.slice(i, j).slice(offset), ...ranked.slice(i, j).slice(0, offset)];
@@ -488,16 +523,25 @@ export async function selectModel(
         const rank = rankOf(key);
         const capability = rank !== undefined ? +((6 - rank) / 5).toFixed(2) : 0.5;
         const label = pickLabels.get(key) ?? 'enabled model';
+        const vote = voteScore(taskKind, key);
+        // The winner explains WHY it won: label, plus a "your feedback" tag when the user's
+        // 👍/👎 actually moved it (rationaleForServed strips everything through the
+        // "— serves this turn" tail, so the tag rides in the label half).
+        const why = i === 0
+          ? `${label}${vote !== 0 ? ` · your ${vote > 0 ? '👍' : '👎'} (score ${vote > 0 ? '+' : ''}${vote})` : ''} — serves this turn`
+          : `${label} — failover #${i}`;
         return {
           model: key,
           selected: i === 0,
           score: capability, capability, runtime: 1, preference: 1, confidence: 0,
-          reason: i === 0 ? `${label} — serves this turn` : `${label} — failover #${i}`,
+          reason: why,
+          keyless: keylessOf(key),
         };
       }),
       ...skipList.map(([key, reason]) => ({
         model: key, selected: false, score: 0, capability: 0, runtime: 1, preference: 1, confidence: 0,
         reason, skip: reason,
+        keyless: keylessOf(key),
       })),
     ],
   };

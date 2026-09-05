@@ -116,7 +116,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const usageStore = new UsageStore(context.globalState);
     const modelStats = new ModelStatsStore(context.globalState);
 
-    setModelSources({ catalog, settings, secrets });
+    setModelSources({ catalog, settings, secrets, stats: modelStats });
     // Declared rpm/rpd windows survive a reload (see picker.setQuotaStore).
     setQuotaStore(new QuotaStore(context.globalState));
 

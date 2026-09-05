@@ -1308,6 +1308,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await vscode.workspace.getConfiguration('tiermux').update('utilityModel', m.model, vscode.ConfigurationTarget.Global);
         await this.sendConfig();
         break;
+      case 'setCompletionsModel':
+        await vscode.workspace.getConfiguration('tiermux').update('completions.model', m.model, vscode.ConfigurationTarget.Global);
+        await this.sendConfig();
+        break;
       case 'setExtensionSetting': {
         if (!SETTINGS_META.some((meta) => meta.key === m.key)) break;
         await vscode.workspace.getConfiguration('tiermux').update(m.key, m.value, vscode.ConfigurationTarget.Global);
@@ -3033,6 +3037,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       deprecated: this.deps.secrets.deprecatedKeys(),
       modelKeys,
       utilityModel: vscode.workspace.getConfiguration('tiermux').get<string>('utilityModel', 'auto'),
+      completionsModel: vscode.workspace.getConfiguration('tiermux').get<string>('completions.model', 'auto'),
       settingsMeta: SETTINGS_META,
       settings: Object.fromEntries(
         SETTINGS_META.map((meta) => [meta.key, vscode.workspace.getConfiguration('tiermux').get(meta.key, defaultForSetting(meta))]),

@@ -235,8 +235,15 @@ body {
 .m-ic:hover { background: var(--tm-hover-toolbar); opacity: 1; }
 .m-ic.ok { color: var(--tm-status-done); }
 .m-ic.on { color: var(--vscode-focusBorder); opacity: 1; }
-.msg-foot { display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 11px; }
-.foot-left { color: var(--tm-fg-dim); }
+.msg-foot { display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 10px; }
+.foot-left { display: inline-flex; align-items: center; gap: 10px; min-width: 0; color: var(--tm-fg-dim); }
+.foot-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Icon-led stats: [icon][value]. The whole info line stays the footer's muted gray,
+   exactly as it read before the chips existed — nothing here is white or accent-tinted. */
+.foot-stat { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 10px; color: var(--tm-fg-dim); }
+.foot-stat-icon { display: inline-flex; align-items: center; color: var(--tm-fg-dim); opacity: .8; }
+.foot-stat-icon svg { width: 11px; height: 11px; }
+.foot-stat-value { font-size: 10px; color: var(--tm-fg-dim); font-variant-numeric: tabular-nums; }
 .foot-acts { margin-left: auto; display: flex; gap: 2px; opacity: .6; }
 .msg.assistant:hover .foot-acts { opacity: 1; }
 /* "Worked for Ns" disclosure over the agent's steps */
@@ -565,14 +572,14 @@ details[open].tool-more summary { opacity: .6; }
 }
 .hover-tip.show { opacity: 1; }
 
-/* Smart Auto "Why this model?" — a (?) on the message footer opens this popover. */
+/* Smart Auto "Served this turn" — the reply-footer chip opens this compact popover. */
 /* Same surface as every other popover (agent / model pickers): tm-* tokens throughout, not a
    mix of tm-* chrome tokens with raw vscode-editorWidget-* colors — the shell (border/radius/
    shadow) got migrated to tm-* already, but the fill color and every row inside it (selection,
    labels, meta) were still the old hand-rolled look, so it read as a different widget system
    opening from the same transcript despite the matching outline. */
 .rationale-pop {
-  position: fixed; z-index: 40; max-width: min(490px, 94vw); max-height: 52vh; overflow-y: auto;
+  position: fixed; z-index: 40; max-width: min(340px, 94vw); max-height: min(380px, 48vh); overflow-y: auto;
   padding: var(--tm-gap-sm); font-size: var(--tm-text-xs); line-height: 1.4;
   background: var(--tm-surface-dropdown); color: var(--tm-fg);
   /* border-dropdown, not -soft — same floating-overlay reasoning as .tm-popover
@@ -596,13 +603,36 @@ details[open].tool-more summary { opacity: .6; }
 .rationale-meta { color: var(--tm-fg-muted); margin-top: 1px; font-variant-numeric: tabular-nums; }
 .rationale-metric { cursor: help; white-space: nowrap; }
 .rationale-metric b { font-weight: 600; opacity: .8; border-bottom: 1px dotted currentColor; }
-.rationale-why { color: var(--tm-fg-muted); opacity: .85; margin-top: 2px; line-height: 1.35; }
+/* One-line "how it was chosen" under the served list — e.g. "Auto · task table (coding)". */
+.rationale-why {
+  display: flex; align-items: center; gap: 6px;
+  color: var(--tm-fg-muted); opacity: .9; margin-top: 4px; padding: 0 var(--tm-gap-sm) 4px;
+  font-size: 10px; line-height: 1.35;
+}
+.rationale-why::before {
+  content: ''; flex: 0 0 auto; width: 3px; height: 3px; border-radius: 50%;
+  background: var(--tm-accent); opacity: .7;
+}
 
 /* Two-section popover: "Answered this turn" (who wrote tokens) over "Didn't answer" (who was in
    line and why not). Each model appears exactly once. Per-row metrics live in the hover tooltip
    so a long candidate list stays one line per model. */
-.rationale-pop-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.rationale-pop-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 0 8px; border-bottom: 1px solid var(--tm-border-soft); margin: 0 0 4px; }
+.rationale-pop-head-right { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 .rationale-pop-meta { font-weight: 400; font-size: var(--tm-text-xs); color: var(--tm-fg-muted); font-variant-numeric: tabular-nums; }
+/* Close control in the popover head — alongside Escape and outside-click, a visible X so
+   the popover never feels stuck open. */
+.rationale-pop-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0; flex: 0 0 auto;
+  background: transparent; border: none; border-radius: var(--tm-radius-md);
+  color: var(--tm-fg-muted); cursor: pointer; opacity: .7;
+  transition: background var(--tm-transition-fast, .12s ease), opacity var(--tm-transition-fast, .12s ease);
+}
+.rationale-pop-x:hover { background: var(--tm-hover-toolbar); opacity: 1; }
+.rationale-pop-x:focus-visible { outline: 1px solid var(--tm-border-focus); outline-offset: 1px; }
+/* "+N more" row under the capped keyless candidate list. */
+.rationale-more { padding: 4px var(--tm-gap-sm) 2px; font-size: 10px; color: var(--tm-fg-muted); }
 .rationale-sec { padding: 8px var(--tm-gap-sm) 9px; }
 .rationale-sec + .rationale-sec { border-top: 1px solid var(--tm-border-soft); margin-top: 6px; }
 .rationale-sec.recede { background: color-mix(in srgb, var(--tm-fg) 4%, transparent); border-radius: var(--tm-radius-md); }
@@ -611,16 +641,15 @@ details[open].tool-more summary { opacity: .6; }
   font-size: 9.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--tm-fg-muted);
 }
 .rationale-sec-right { font-weight: 400; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
+/* Answered rows: one line per model — rank, name, in/out tokens, pass. No share bar: the
+   token counts already say who carried the turn and a slim popover stays a slim popover. */
 .rationale-ans {
-  display: grid; grid-template-columns: 12px minmax(0, 1fr) 44px 104px 72px; align-items: center; gap: 10px;
+  display: grid; grid-template-columns: 12px minmax(0, 1fr) 104px 72px; align-items: center; gap: 10px;
   padding: 7px 0; cursor: help;
 }
 .rationale-ans + .rationale-ans { border-top: 1px solid var(--tm-border-soft); }
-.rationale-sec.single .rationale-ans { grid-template-columns: 12px minmax(0, 1fr) 104px 72px; }
 .ra-no { font-size: 10px; font-weight: 700; color: var(--tm-accent); }
 .ra-name { font-weight: 600; color: var(--tm-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ra-bar { height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--tm-fg) 10%, transparent); overflow: hidden; }
-.ra-fill { display: block; height: 100%; background: var(--tm-accent); border-radius: 3px; }
 .ra-tok { text-align: right; font-variant-numeric: tabular-nums; color: var(--tm-fg); white-space: nowrap; }
 .ra-role { text-align: right; font-size: 10px; color: var(--tm-fg-muted); }
 /* Reason column: one line, ellipsis — the picker's full wording stays in the row's tooltip. The
@@ -634,15 +663,47 @@ details[open].tool-more summary { opacity: .6; }
 .rationale-skip.selected .rs-name { color: var(--tm-fg); font-weight: 600; }
 .rs-why { font-size: 10px; color: var(--tm-fg-muted); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* Footer "+N" — more than one model wrote this reply. Same popover as the (?) icon. */
-.foot-more {
-  display: inline-flex; align-items: center; margin-left: 6px; padding: 0 6px; height: 15px;
-  font: inherit; font-size: 10px; font-weight: 700; line-height: 1; letter-spacing: .02em;
-  color: var(--tm-accent); background: color-mix(in srgb, var(--tm-accent) 14%, transparent);
-  border: 0; border-radius: 20px; cursor: pointer; vertical-align: 1px;
+/* Scoring depth is opt-in: with "Served this turn" + the why-line answered, the scored
+   candidates fold behind a disclosure instead of dominating the popover. */
+.rationale-details { margin-top: 4px; }
+.rationale-details > summary {
+  cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px;
+  padding: 6px var(--tm-gap-sm); font-size: 10px; font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--tm-accent);
+  user-select: none; border-radius: var(--tm-radius-md);
 }
-.foot-more:hover, .foot-more:focus-visible { background: color-mix(in srgb, var(--tm-accent) 24%, transparent); outline: none; }
+.rationale-details > summary:hover { background: color-mix(in srgb, var(--tm-fg) 6%, transparent); }
+.rationale-details > summary::-webkit-details-marker { display: none; }
+.rationale-details > summary::before { content: '▸'; font-size: 9px; transition: transform .12s ease; }
+.rationale-details[open] > summary::before { transform: rotate(90deg); }
 
+/* "Served by" chip — the ONE model affordance on a reply footer, styled like the
+   composer's model pill so the transcript and toolbar speak the same language: quiet
+   chrome (transparent, border appears only on hover), full-radius, regular-weight name
+   (the old footer text was never bold). Leading glyph answers "how was it chosen" at a
+   glance — sparkle = smart Auto pick, chip = pinned by you. A folded "+N" count appears
+   when more models wrote tokens. Click opens the "Served this turn" popover. Replaces
+   the old "+N" badge and the (?) "Why this model?" icon. */
+.served-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 17px; padding: 0 7px 0 6px;
+  font: inherit; font-size: 10px; font-weight: 400; line-height: 1; vertical-align: middle;
+  color: var(--tm-fg-dim); background: transparent;
+  border: 1px solid transparent; border-radius: var(--tm-radius-full);
+  cursor: pointer; max-width: 200px;
+  transition: background var(--tm-transition-fast, .12s ease), border-color var(--tm-transition-fast, .12s ease);
+}
+.served-chip:hover { background: var(--tm-hover-toolbar); border-color: var(--tm-border-hover); }
+.served-chip:focus-visible { outline: 1px solid var(--tm-border-focus); outline-offset: 1px; }
+.served-chip-icon { flex: 0 0 auto; display: inline-flex; opacity: .7; color: var(--tm-fg-muted); }
+.served-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.served-chip-count {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  min-width: 14px; height: 13px; padding: 0 4px;
+  font-size: 9px; font-weight: 700; line-height: 1;
+  color: var(--tm-accent); background: color-mix(in srgb, var(--tm-accent) 12%, transparent);
+  border-radius: var(--tm-radius-full);
+}
 /* Final-answer reasoning disclosure */
 details.reasoning {
   border-left: 2px solid var(--vscode-panel-border); padding: 2px 0 2px 9px; font-size: 12px;
@@ -1413,6 +1474,8 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .usage-stat-row .lbl { flex: 1 1 auto; color: var(--vscode-descriptionForeground); }
 .usage-stat-row .val { flex: 0 0 auto; color: var(--vscode-foreground); font-variant-numeric: tabular-nums; font-weight: 600; }
 .usage-stat-hdr { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--tm-fg-dim); margin: 10px 0 5px; }
+/* Per-model usage filter — a compact settings-search sized for the usage card. */
+.usage-model-filter { max-width: 220px; margin: 0 0 8px; padding: 6px 10px; font-size: 11px; }
 /* Verdict pill on a retrieval bar — a tinted capsule, not a hard-filled chip. */
 .usage-badge {
   flex: 0 0 auto; font-size: 9.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px;

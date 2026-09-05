@@ -57,7 +57,7 @@ export interface AgentResult {
 export interface SelectionRationaleInfo {
   taskKind: string;
   picked?: string;
-  entries: Array<{ model: string; selected: boolean; score: number; capability: number; runtime: number; preference: number; confidence: number; reason: string; skip?: string }>;
+  entries: Array<{ model: string; selected: boolean; score: number; capability: number; runtime: number; preference: number; confidence: number; reason: string; skip?: string; keyless?: boolean }>;
 }
 
 export type AgentMode = 'plan' | 'agent' | 'ask';
