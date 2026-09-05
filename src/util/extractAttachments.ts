@@ -5,20 +5,13 @@ import mammoth from 'mammoth';
 import type { Attachment, AttachmentKind } from '../messages';
 import { diagLog } from './diag';
 
-/**
- * pdf-parse wraps pdfjs-dist, which expects browser globals (DOMMatrix, …). A top-level
- * `import` makes esbuild evaluate pdfjs at bundle-load time → "DOMMatrix is not defined"
- * crashes EXTENSION ACTIVATION. So pdf-parse is loaded lazily (only when a PDF is actually
- * parsed), with the browser globals polyfilled first. A parse failure returns '' instead of
- * throwing — a PDF must never take down the attachment flow or the host.
- */
+/** pdf-parse wraps pdfjs-dist, which expects browser globals; a top-level import crashed
+ *  EXTENSION ACTIVATION ("DOMMatrix is not defined"). Loaded lazily with the globals polyfilled
+ *  first; a parse failure returns '' rather than throwing. */
 function ensureBrowserGlobals(): void {
   const g = globalThis as Record<string, unknown>;
-  // pdfjs does `const { platform } = navigator` at module scope. Plain Node 21+ and
-  // `ELECTRON_RUN_AS_NODE` both define a global `navigator`, but the VS Code extension host
-  // does NOT — so pdfjs threw "Cannot destructure property 'platform' of 'navigator'" and
-  // every PDF came back with no text, indistinguishable from a genuine scan. Defined via
-  // defineProperty because on some runtimes `navigator` is a getter-only global.
+  // pdfjs destructures `navigator` at module scope, which the extension host does not define —
+  // every PDF read as a scan. defineProperty because on some runtimes it is a getter-only global.
   if (!g.navigator) {
     const platform = process.platform === 'darwin' ? 'MacIntel'
       : process.platform === 'win32' ? 'Win32'
@@ -167,12 +160,9 @@ export async function buildAttachmentFromUri(uri: vscode.Uri, source: Attachment
   return att;
 }
 
-/**
- * Run `fn` with pdf.js recognising that it is on Node. The extension host is Electron with
- * `process.type` set, which pdf.js reads as "browser" and then fails on browser-only globals
- * — every PDF came back as "scanned, no text layer". Hide `process.type` for the duration of
- * the parse (pdf.js re-checks during worker setup), then restore it.
- */
+/** Run `fn` with pdf.js recognising Node: the extension host is Electron with `process.type`
+ *  set, which pdf.js reads as "browser" and then fails on browser-only globals. Hidden for the
+ *  duration of the parse (pdf.js re-checks during worker setup). */
 async function withNodeDetection<T>(fn: () => Promise<T>): Promise<T> {
   const proc = process as unknown as { type?: string };
   const masked = !!process.versions.electron && typeof proc.type === 'string' && proc.type !== 'browser';
@@ -194,22 +184,15 @@ async function withNodeDetection<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/**
- * Why every PDF failure must record a reason:
- * a swallowed error here is indistinguishable from a genuinely scanned PDF, so the user gets
- * told "no text layer" about a text-rich document and there is nothing else to go on. This
- * holds the last failure so the UI notice can name the real cause instead of guessing.
- */
+/** Last PDF failure reason. A swallowed error is indistinguishable from a genuine scan, so the
+ *  notice would say "no text layer" about a text-rich document. */
 let lastPdfError: string | undefined;
 export function lastPdfFailureReason(): string | undefined {
   return lastPdfError;
 }
 
-/**
- * Load pdf-parse lazily (a top-level import would crash extension activation — see
- * ensureBrowserGlobals). CJS `require` first, then dynamic `import`: the extension host is
- * fussier about ESM than plain Node. Each failure reason is kept for the user-facing notice.
- */
+/** Load pdf-parse lazily (see ensureBrowserGlobals): CJS `require` first, then dynamic `import`
+ *  — the extension host is fussier about ESM than plain Node. Failure reasons are kept. */
 async function loadPdfParse(): Promise<any | null> {
   ensureBrowserGlobals();
   const errors: string[] = [];

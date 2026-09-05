@@ -260,14 +260,9 @@ export class GoogleProvider extends BaseProvider {
     const parts = candidate?.content?.parts;
     const toolCalls = extractToolCalls(parts);
     const text = extractText(parts);
-    // A blocked prompt (candidates empty/absent, `promptFeedback.blockReason` set) or a
-    // safety/recitation-finished candidate with no parts both look like an ordinary
-    // empty-but-200 response otherwise — the caller has no way to tell "the model chose to say
-    // nothing" from "the model was never allowed to answer". Throw a specific, actionable error
-    // instead of silently returning empty text: the generic "I wasn't able to produce a
-    // response" fallback further up the stack gives the user no clue this was a content block,
-    // which is exactly what a scanned-PDF-as-rasterized-images request can trip. A candidate that
-    // legitimately finished with STOP and no parts (rare but not a block) falls through as before.
+    // A blocked prompt (`promptFeedback.blockReason`) or a safety/recitation candidate with no
+    // parts looks like an ordinary empty 200; throw a specific error so the user learns it was a
+    // content block (rasterised-PDF requests trip this). A STOP with no parts falls through.
     const BLOCK_REASONS = new Set(['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'OTHER']);
     const promptBlockReason = data.promptFeedback?.blockReason;
     const candidateBlockReason = candidate?.finishReason && BLOCK_REASONS.has(candidate.finishReason.toUpperCase())
@@ -302,19 +297,9 @@ export class GoogleProvider extends BaseProvider {
     };
   }
 
-  /**
-   * REAL token-by-token streaming via `:streamGenerateContent?alt=sse`.
-   *
-   * This used to be a fake generator: it awaited the blocking `chatCompletion()` and yielded the
-   * entire reply as ONE chunk. Everything downstream worked, but the user saw the whole answer
-   * appear at once ("splash") instead of streaming, on every Google/Gemini turn — while other
-   * providers, which go through openai-compat's real SSE path, streamed normally. Gemini has
-   * always supported SSE; TierMux simply never called that endpoint.
-   *
-   * Gemini's SSE frames are Gemini-shaped (`{candidates:[{content:{parts:[...]}}]}`), NOT
-   * OpenAI-shaped, so `base.readSseStream` (which JSON.parses each frame straight into a
-   * ChatCompletionChunk) cannot be reused — each frame is converted here instead.
-   */
+  /** Real token-by-token streaming via `:streamGenerateContent?alt=sse`. This used to await the
+   *  blocking call and yield one chunk, so every Gemini turn "splashed". Frames are Gemini-shaped,
+   *  not OpenAI-shaped, so base.readSseStream cannot be reused — each is converted here. */
   async *streamChatCompletion(apiKey: string, messages: ChatMessage[], modelId: string, options?: CompletionOptions): AsyncGenerator<ChatCompletionChunk> {
     const { contents, systemInstruction } = await toGeminiContents(messages);
     const base = options?.baseUrlOverride?.trim()?.replace(/\/+$/, '') || API_BASE;

@@ -25,11 +25,8 @@ export function toolStateGlyph(state?: 'running' | 'done' | 'error' | 'queued'):
   return buildSpinGlyph(false, '✓', 'success');
 }
 
-// ── Edit-diff preview thresholds.
-// A change under BOTH inline caps renders as a rich diff2html view directly in the card body;
-// between the inline caps and the preview ceiling it renders collapsed behind a <details>;
-// at/over the ceiling only a summary line is shown (the saved file itself is always the
-// source of truth). ──
+// ── Edit-diff preview tiers: under both inline caps → rich diff inline; up to the preview
+// ceiling → collapsed behind <details>; at/over → summary line only (the file is the truth). ──
 /** Changed lines below which the diff renders expanded inline. */
 export const INLINE_DIFF_MAX_CHANGED_LINES = 400;
 /** Diff byte size below which the diff renders expanded inline (CRLF normalized first). */
@@ -89,11 +86,7 @@ function createToolBody(): { el: HTMLDetailsElement; pre: HTMLPreElement; } {
 
 // ========== Public API ==========
 
-/**
- * Build a reasoning/thinking block for display in the tool flow.
- * Used for both live "Thinking" blocks and static "Thought" cards.
- * Enhanced with AI Elements Reasoning component patterns.
- */
+/** A reasoning/thinking block for the tool flow — live "Thinking" and static "Thought" alike. */
 export function buildReasoningBlock(text: string, tc?: string, isStreaming?: boolean, durationMs?: number): HTMLElement {
   const block = el('div', {
     class: `tm-reasoning ${isStreaming ? 'streaming open' : ''}`,
@@ -170,11 +163,8 @@ export function settleReasoningBlock(block: HTMLElement, durationMs?: number): v
   }, 1000);
 }
 
-/** Build a tool card from a step object (reasoning blocks delegate to buildReasoningBlock). */
 // ========== Grouped read rows ==========
-// A run of consecutive SAME-TOOL read calls collapses into one line: bold verb + comma-joined
-// targets. Never a mix of tools under one verb ("Read a.ts, 'foo'" makes no sense if the second
-// was a grep).
+// Consecutive SAME-TOOL read calls collapse into one line: bold verb + comma-joined targets.
 
 /** Tools eligible for grouping — genuinely side-effect-free inspection calls only. Anything
  *  that writes, runs a command, or has meaningfully different per-call output (diagnostics,
@@ -211,11 +201,9 @@ export interface ToolGroupItem {
   durationMs?: number;
 }
 
-/** Build one collapsed row for a run of same-tool reads. Status is aggregated across the
- *  group (spinning while ANY item is still running, a check once ALL settle, an error mark if
- *  ANY did) — matching the "one glyph, two states" rule item 5 already applies to reasoning;
- *  a group showing N independent spinners would be exactly the chrome this is meant to remove.
- *  Duration is the sum of each item's own durationMs, shown once every item has one. */
+/** One collapsed row for a run of same-tool reads. Status aggregates across the group (spinning
+ *  while ANY runs, a check once ALL settle, an error if ANY did); duration is the sum, shown once
+ *  every item has one. */
 export function buildToolGroupRow(items: ToolGroupItem[]): HTMLElement {
   const name = items[0]?.name ?? '';
   const verb = GROUP_VERB[name] ?? 'Read';
@@ -239,11 +227,8 @@ export function buildToolGroupRow(items: ToolGroupItem[]): HTMLElement {
   const main = el('span', { class: 'tm-tool-group-main' });
   main.appendChild(el('span', { class: 'tm-tool-group-verb' }, verb));
 
-  // One span per DISTINCT target: the agent re-reading the same path twice in a row is real,
-  // but "Read routes/api.php, routes/api.php" reads as a rendering fault, not as information.
-  // Every call id that resolved to the same target rides on that one span (space-separated,
-  // matched with the [data-tc~="id"] selector), so each call is still individually
-  // addressable when its own running → done update lands.
+  // One span per DISTINCT target ("Read api.php, api.php" reads as a fault). Every call id that
+  // resolved to that target rides on the span ([data-tc~="id"]) so each stays addressable.
   const byTarget = new Map<string, string[]>();
   for (const it of items) {
     const label = groupTargetFor(it.name, it.args);
@@ -581,11 +566,8 @@ function shortPath(p: string): string {
   return parts.length <= 2 ? parts.join('/') : parts.slice(-2).join('/');
 }
 
-/**
- * Shorten a URL for a tool-row title: protocol and www stripped, hard cap at ~48 chars so a
- * long article path can't push the row's "· 0.4s" off the line. The domain stays intact —
- * unlike shortPath()'s last-2-segments rule, "…/somepage" without its host says nothing.
- */
+/** Shorten a URL for a row title: protocol/www stripped, capped at ~48 chars, domain kept —
+ *  unlike shortPath(), "…/somepage" without its host says nothing. */
 function shortUrl(u: string): string {
   const s = String(u || '').replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/^www\./i, '');
   return s.length > 48 ? s.slice(0, 47) + '…' : s;
@@ -593,13 +575,8 @@ function shortUrl(u: string): string {
 
 const MARKDOWN_EXT = /\.(md|markdown|mdx)$/i;
 
-/**
- * The full markdown text a tool card can preview, or null when there is none.
- * Only tools that carry a whole document qualify: writeFile/createFile hold it in
- * `content`, and a single-path readFile returns it as the tool output. editFile is
- * deliberately excluded — its old_string/new_string pair is a fragment, and the
- * existing inline diff is the more useful view of it.
- */
+/** The full markdown a card can preview, or null. Only whole documents qualify (writeFile/
+ *  createFile `content`, single-path readFile output); editFile's fragment is better as a diff. */
 function markdownDocSource(step: ToolStep): string | null {
   const args = step.args && typeof step.args === 'object' ? step.args as Record<string, unknown> : null;
   if (!args) return null;
@@ -618,11 +595,8 @@ function markdownDocSource(step: ToolStep): string | null {
   return null;
 }
 
-/**
- * Rendered markdown with a Preview/Source switch, for the body of a tool card that
- * wrote or read a `.md` file. Preview is the default view — the point of the card is
- * to show what the document looks like; Source is one click away for the exact bytes.
- */
+/** Rendered markdown with a Preview/Source switch for a card that wrote or read a `.md` file.
+ *  Preview is the default; Source is one click away. */
 function buildMarkdownDoc(md: string): HTMLElement {
   const root = el('div', { class: 'tm-md-doc' });
 
@@ -679,14 +653,8 @@ function renderDiff2Html(diffText: string): HTMLElement | null {
   }
 }
 
-/** Build the body for an edit tool card from before/after text. ToolCard consumes UNIFIED-DIFF
- *  STRINGS only (via unifiedDiff) — never ad-hoc −/+ fragments. Rendering tier by the plan's
- *  named constants: ≤ both inline caps → expanded rich diff; over an inline cap but under the
- *  preview ceiling → same rich diff collapsed behind a "View diff" disclosure; at/over the
- *  ceiling → summary note only. */
-/** The before/after pair out of an edit tool's arguments: `search`/`replace`, an `edits[]`
- *  array of hunks (joined into one pair — they apply atomically), or MCP-style
- *  `old_string`/`new_string`. Null when the arguments carry no usable pair. */
+/** The before/after pair out of an edit tool's arguments: `search`/`replace`, an `edits[]` array
+ *  (joined — they apply atomically), or MCP-style `old_string`/`new_string`. Null otherwise. */
 export function editDiffArgs(args: unknown): { before: string; after: string; path?: string } | null {
   if (!args || typeof args !== 'object') return null;
   const a = args as Record<string, unknown>;
@@ -708,6 +676,8 @@ export function editDiffArgs(args: unknown): { before: string; after: string; pa
   return null;
 }
 
+/** Edit-card body from before/after text — consumes UNIFIED-DIFF strings only, rendered by the
+ *  tier constants above (inline → collapsed → summary). */
 export function buildEditDiff(oldStr: string, newStr: string, path?: string): HTMLElement {
   const box = el('div', { class: 'tm-edit-diff' });
   const oldText = String(oldStr ?? '');

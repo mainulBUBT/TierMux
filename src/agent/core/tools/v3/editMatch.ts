@@ -1,12 +1,8 @@
-// Search/replace matcher for editFile. Pure text, no vscode. Matching tiers:
-//   1. exact indexOf, required UNIQUE
-//   2. whitespace-tolerant line-based fallback (CRLF/indent drift), still unique-only
-//   3. re-indent of the replacement to the matched text's real indentation
-//
-// Failure diagnostics are derived deterministically from the two strings in hand — no fuzzy
-// scoring, no model call: WHERE the near-misses are (line numbers), WHICH line first diverged
-// and what the file holds there, and WHETHER the search lines exist but not consecutively. A
-// bare "not found" left the model re-issuing near-identical calls until the step cap.
+// Search/replace matcher for editFile. Pure text. Tiers: exact indexOf (unique) → whitespace-
+// tolerant line match (CRLF/indent drift, still unique) → re-indent the replacement to the
+// matched text. Failure diagnostics are derived from the two strings — WHERE the near-misses
+// are, WHICH line first diverged, WHETHER the lines exist non-consecutively — because a bare
+// "not found" left the model re-issuing near-identical calls until the step cap.
 
 /** Longest quoted file/search fragment in a diagnostic — long enough to identify a line,
  *  short enough that a failing multi-hunk edit cannot flood the transcript. */

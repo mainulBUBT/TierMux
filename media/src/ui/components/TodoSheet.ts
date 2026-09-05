@@ -1,18 +1,8 @@
-// TodoSheet — the compact checklist bar above the composer, with a slide-up bottom sheet.
-//
-// The checklist used to render as a one-line truncated banner ("Plan · step 1/7 — …"): it
-// SAID things but never showed the list. Now the bar is collapsed by default and the whole
-// bar is the toggle — click (or chevron) opens a bottom sheet anchored above the composer
-// with every step and its status; the minimize chevron (or clicking the bar again, or
-// clicking outside) collapses it back. Fed from BOTH the live agent todo list ('todos') and
-// the plan runner's progress state (planProgress) — see main.ts wiring.
-//
-// A run that FINISHES cleanly does not leave the bar above the composer: after a short linger
-// (long enough to read "Plan completed (5/5 steps)") the bar removes itself. A FAILED run keeps
-// the bar pinned with its dismiss × — a failure needs a decision, not a timeout.
-//
-// Boundary: strict-checked, may only import from media/src/**. Host interaction is via
-// callbacks (onResume — the paused plan-run affordance); no send() directly.
+// TodoSheet — the collapsed checklist bar above the composer; clicking it opens a bottom sheet
+// with every step and its status. Fed from the live todo list ('todos') and the plan runner's
+// progress (planProgress). A run that FINISHES removes the bar after a short linger; a FAILED
+// run keeps it pinned with a dismiss × — a failure needs a decision, not a timeout. Host
+// interaction via callbacks (onResume) only.
 
 import { el } from '../dom';
 import { ICON } from '../../icons';

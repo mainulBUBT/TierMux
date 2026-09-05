@@ -1,11 +1,6 @@
-/**
- * End-to-end proof that the "Why this model?" report reaches the host naming the model that
- * ACTUALLY served — not chain[0]. rationaleServed.e2e.ts tests the pure relabelling; this
- * drives the real createRouterProvider().doStream() path with a stubbed fetch, so a fix that
- * exists but is never CALLED still fails here.
- *
- * Repro shape: chain[0] answers 429, chain[1] streams a normal reply.
- */
+/** End-to-end proof the rationale reaches the host naming the model that served: drives the real
+ *  createRouterProvider().doStream() with a stubbed fetch (chain[0] 429s, chain[1] streams), so a
+ *  fix that exists but is never CALLED still fails here. */
 import { createRouterProvider, setModelSources } from '../src/agent/core/routerProvider';
 import type { SelectionRationale } from '../src/router/picker';
 import type { FallbackEntry } from '../src/shared/types';

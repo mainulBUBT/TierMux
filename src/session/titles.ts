@@ -1,11 +1,8 @@
 import type { TodoItem } from '../shared/types';
 import { splitReasoning } from '../agent/content';
 
-/**
- * Reduce a model's reply to a clean short title, or '' if it doesn't look like one.
- * Reasoning models often leak chain-of-thought (sometimes truncated mid-thought with
- * no <think> tags) — reject anything that reads like an explanation rather than a title.
- */
+/** Reduce a model's reply to a clean short title, or ''. Reasoning models leak chain-of-thought
+ *  (sometimes with no <think> tags), so anything that reads like an explanation is rejected. */
 export function sanitizeTitle(raw: string): string {
   let s = (splitReasoning(raw || '').content || '')
     .split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '';
@@ -42,13 +39,9 @@ export function deriveTitleFrom(text: string): string {
 const PLAN_EDIT_VERB = /^(add|create|implement|build|writ|fix|refactor|rename|move|delete|remove|updat|chang|modif|edit|replac|wir|integrat|convert|migrat|install|configur|extract|split|merg|append|insert|expos|export|hook|connect|introduc|switch|drop|bump|upgrad|enabl|disabl|set ?up|scaffold|register|inject|guard|validat|sync|audit|document|correct|review|ensur|verify|test|apply|enforce|generat|wir)\w*\b/i;
 const PLAN_PATHISH = /[\w./-]+\.[a-z]{1,6}\b|\b[\w-]+\/[\w-]+/;
 
-/** Turn an approved plan's text into an initial all-pending todo list. Accepts four step
- *  shapes so the plan card opens regardless of which model produced it: bulleted/numbered
- *  list items (`-`/`*`/`1.`), markdown headings (`## …`), bold-only heading lines
- *  (`**…**`), and — the case free models hit most — bare imperative PARAGRAPH lines that
- *  name a file ("Create resources/views/landing.blade.php …", "Update routes/web.php:").
- *  Without that fourth shape a plan written as paragraphs (no list markers) parsed to zero
- *  steps and the plan card never opened. */
+/** An approved plan's text as an all-pending todo list. Four step shapes: list items, markdown
+ *  headings, bold-only lines, and bare imperative PARAGRAPH lines naming a file — the shape free
+ *  models produce most, which used to parse to zero steps so the plan card never opened. */
 export function planStepsToTodos(steps: string): TodoItem[] {
   return (steps || '')
     .split('\n')
@@ -74,16 +67,9 @@ export function planStepsToTodos(steps: string): TodoItem[] {
     .slice(0, 20);
 }
 
-/**
- * True when plan text reads like ACTIONABLE changes (imperative steps and/or file references)
- * rather than a descriptive answer. Gates the "Approve & Run" UI: a reply to "give me 6 changes"
- * or "how does this work?" is a discussion answer (no run button), not a plan to execute.
- *
- * Counts concrete actionable steps: bulleted/heading steps that look like edits, PLUS imperative
- * paragraph lines naming a file (the no-list-marker plan format). Returns true at ≥2 such steps —
- * a real plan touches more than one thing, while a prose Q&A answer rarely leads with edit verbs
- * aimed at files.
- */
+/** True when plan text reads like ACTIONABLE changes rather than a descriptive answer — gates
+ *  "Approve & Run". Counts edit-like steps plus imperative lines naming a file; true at ≥2, since
+ *  a real plan touches more than one thing and prose Q&A rarely leads with edit verbs. */
 export function looksLikeActionablePlan(text: string): boolean {
   const t = text || '';
   const actionables = new Set<string>();

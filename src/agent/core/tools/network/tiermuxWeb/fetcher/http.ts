@@ -22,13 +22,8 @@ type JSDOMConstructor = new (html: string) => { window: { document: DomDocument 
 const cache = new LRUCache<FetcherResult>(TIERMUXWEB_CONFIG.cacheMaxEntries, TIERMUXWEB_CONFIG.cacheTTL);
 const inflight = new InflightMap<FetcherResult | null>();
 
-/**
- * jsdom is large (~15 MB). The fetcher chain usually succeeds via the markdown,
- * RSS, or github-raw layers and never needs HTML parsing — so jsdom is loaded
- * lazily on first use, keeping agent cold start small. Loaded via dynamic
- * import() so esbuild keeps it external (see esbuild.js) and Node resolves it
- * from the extension's node_modules at runtime.
- */
+/** jsdom (~15 MB) is loaded lazily on first use — the chain usually succeeds via markdown/RSS/
+ *  github-raw first. Dynamic import() keeps it external in esbuild and resolved at runtime. */
 let jsdomCtorPromise: Promise<JSDOMConstructor> | undefined;
 function loadJSDOM(): Promise<JSDOMConstructor> {
   if (!jsdomCtorPromise) jsdomCtorPromise = import("jsdom").then((m) => m.JSDOM as unknown as JSDOMConstructor);

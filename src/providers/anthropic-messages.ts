@@ -95,12 +95,9 @@ function toAnthropicContentBlocks(content: ChatMessage['content']): AnthropicBlo
   return blocks;
 }
 
-/** Internal ChatMessage[] → Anthropic's {system, messages}. Two shape differences from every
- *  OpenAI-wire message list TierMux otherwise deals with: (1) system prompt is a top-level
- *  string, never a message with role:'system'; (2) a tool result is a `user` message carrying
- *  a `tool_result` block, not its own `role:'tool'` — and since ChatMessage models each tool
- *  result as a SEPARATE message, several in a row (multi-tool-call turn) would otherwise become
- *  several consecutive `user` messages, which the API rejects ("roles must alternate"). */
+/** ChatMessage[] → Anthropic's {system, messages}: the system prompt is a top-level string, and
+ *  a tool result is a `user` message with a `tool_result` block — consecutive results must be
+ *  merged into one user message or the API rejects ("roles must alternate"). */
 function toAnthropicMessages(messages: ChatMessage[]): { system?: string; messages: AnthropicMessage[] } {
   const systemText = messages
     .filter((m) => m.role === 'system')
@@ -281,18 +278,10 @@ export class AnthropicMessagesProvider extends BaseProvider {
     };
   }
 
-  /**
-   * Anthropic's SSE events are its own shape (`message_start`/`content_block_start`/
-   * `content_block_delta`/`message_delta`/`message_stop`), not OpenAI's — `base.readSseStream`
-   * (which JSON.parses each frame straight into a ChatCompletionChunk) cannot be reused. Each
-   * event is translated to TierMux's internal chunk shape here instead, mirroring how
-   * google.ts's real-SSE path does the same thing for Gemini.
-   *
-   * Tool-call arguments stream as `input_json_delta` fragments (`partial_json`) keyed by block
-   * index — emitted here as OpenAI-style incremental `tool_calls[].function.arguments` deltas
-   * (first fragment carries `id`+`name`, later ones omit them) — the shape routerProvider's
-   * accumulator already concatenates.
-   */
+  /** Anthropic's SSE events (`message_start` … `message_stop`) are translated to the internal
+   *  chunk shape here (base.readSseStream cannot be reused). Tool arguments arrive as
+   *  `input_json_delta` fragments keyed by block index and are emitted as OpenAI-style
+   *  incremental `tool_calls[].function.arguments` deltas, which routerProvider concatenates. */
   async *streamChatCompletion(apiKey: string, messages: ChatMessage[], modelId: string, options?: CompletionOptions): AsyncGenerator<ChatCompletionChunk> {
     const res = await this.fetchWithTimeout(`${this.resolveBaseUrl(options)}/messages`, {
       method: 'POST',

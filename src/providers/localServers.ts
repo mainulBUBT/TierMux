@@ -1,19 +1,13 @@
 
 /**
- * Local model servers — detection, and the context window actually loaded right now. A custom
- * endpoint has no catalog entry, and LM Studio/Ollama/llama.cpp load a model with a context
- * length chosen at LOAD time (commonly 4096), so a ~6k-token agent prompt into a 4k window came
- * back empty with nothing saying why (cline#6494 is the same bug). None of them put the number
- * in `/v1/models`, hence one server-specific request each:
- *
+ * Local model servers: detection, and the context window loaded RIGHT NOW (chosen at load time,
+ * commonly 4096, and absent from `/v1/models` — a 6k prompt into a 4k window came back empty):
  *   LM Studio   GET  {origin}/api/v0/models              → loaded_context_length ?? max_context_length
  *   Ollama      POST {origin}/api/show {model}           → model_info["<arch>.context_length"]
  *   llama.cpp   GET  {origin}/props                      → default_generation_settings.n_ctx
  *   KoboldCpp   GET  {origin}/api/v1/config/max_context_length → { value }
  *   vLLM        GET  {origin}/v1/models                  → data[].max_model_len
- *
- * Best-effort: short timeouts, defensive parsing, and only a server that actually answers is
- * believed — nothing is inferred from a port or URL alone.
+ * Best-effort: short timeouts, nothing inferred from a port or URL alone.
  */
 
 export type LocalServerKind = 'lmstudio' | 'ollama' | 'llamacpp' | 'koboldcpp' | 'vllm' | 'sglang' | 'tgi' | 'openai-compat';
@@ -63,11 +57,8 @@ export const KNOWN_LOCAL_PORTS = [
   1234, 11434, 8080, 8000, 1337, 5001, 12434, 30000, 3000, 4891, 5000, 8081, 39281, 8090,
 ];
 
-/**
- * True when this base URL points at the user's own machine or LAN. Only these are probed: a
- * cloud endpoint would neither answer these paths nor appreciate four extra requests, and
- * probing an arbitrary remote host the user configured is a request they did not ask for.
- */
+/** True when the base URL is the user's own machine or LAN — the only hosts probed; a remote
+ *  host the user configured did not ask for four extra requests. */
 export function isLocalUrl(baseUrl: string): boolean {
   let host: string;
   try { host = new URL(baseUrl).hostname.toLowerCase(); } catch { return false; }
@@ -79,11 +70,8 @@ export function isLocalUrl(baseUrl: string): boolean {
   return false;
 }
 
-/**
- * The server root for a configured base URL. Users paste the OpenAI-compatible path
- * (`http://localhost:1234/v1`), but every native probe below lives at the ORIGIN — so
- * `/v1`, `/api/v0` and a trailing slash all come off.
- */
+/** Server root for a configured base URL: users paste `http://localhost:1234/v1`, but every
+ *  native probe lives at the ORIGIN. */
 export function originOf(baseUrl: string): string {
   try {
     const u = new URL(baseUrl);
@@ -271,13 +259,8 @@ export function invalidateLocalServerCache(): void {
   cache.clear();
 }
 
-/**
- * What kind of local server this endpoint is, and how much context it currently has for this
- * model. Returns undefined for a non-local URL or a server that answered nothing.
- *
- * `now` and `fetchImpl` are injectable so the e2e can drive this deterministically without a
- * server or a clock.
- */
+/** Which local server this is and how much context it currently has for this model; undefined
+ *  for a non-local URL or a silent server. `now`/`fetchImpl` are injectable for the e2e. */
 export async function probeLocalServer(
   baseUrl: string,
   modelId: string,
@@ -328,14 +311,8 @@ function openAiPathFor(origin: string): string {
   return port === '12434' ? `${origin}/engines/v1` : `${origin}/v1`;
 }
 
-/**
- * Knock on the ports local model servers use and report what is actually running, so a user can
- * add one without knowing its URL or which of the OpenAI-compatible paths it uses.
- *
- * Every port is probed concurrently with a short timeout, and a closed port fails instantly
- * (ECONNREFUSED) rather than waiting — so the whole sweep costs about one timeout, not fourteen.
- * Nothing is contacted beyond localhost.
- */
+/** Knock on the ports local model servers use and report what is running. All ports probed
+ *  concurrently with a short timeout (a closed port fails instantly), localhost only. */
 export async function discoverLocalServers(
   opts: { fetchImpl?: Fetcher; timeoutMs?: number; host?: string; ports?: number[] } = {},
 ): Promise<DiscoveredServer[]> {
@@ -358,15 +335,9 @@ export async function discoverLocalServers(
   return found.filter((x): x is DiscoveredServer => !!x);
 }
 
-/**
- * The safe input budget for a local server, and the advice to give when it is too small to work
- * with. Pure — the caller supplies the numbers, so this is the piece worth testing.
- *
- * `needed` is what the turn actually wants to send. Below `MIN_WORKABLE_CONTEXT` an agentic turn
- * cannot fit at all: the scaffolding, the skills index and the tool schemas alone exceed it, so
- * the honest answer is to tell the user to reload the model with a bigger window rather than to
- * silently ship a prompt that will be truncated into nonsense.
- */
+/** Safe input budget for a local server and the advice when it is too small. Pure. Below
+ *  MIN_WORKABLE_CONTEXT the scaffolding, skills index and tool schemas alone overflow, so the
+ *  honest answer is "reload with a bigger window", not a prompt truncated into nonsense. */
 export const MIN_WORKABLE_CONTEXT = 8192;
 
 export function localContextAdvice(info: LocalServerInfo, needed: number): string | undefined {

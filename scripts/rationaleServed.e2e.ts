@@ -1,11 +1,6 @@
-/**
- * "Why this model?" must name the model that ACTUALLY served the turn.
- *
- * Live repro 2026-08-31 5:57 PM: the footer read "ChatAnywhere/gpt-4.1 · 1.5k in · 15 out"
- * while the popover insisted "✓ opencode/muse-spark-1.2-contributor-free — serves this
- * turn". selectModel() builds the report before the first byte is sent, so `picked` is
- * chain[0]; when chain[0] fails over, nothing re-pointed the report at the winner.
- */
+/** "Why this model?" must name the model that ACTUALLY served. Repro 2026-08-31: the footer said
+ *  ChatAnywhere/gpt-4.1 while the popover insisted opencode/muse-spark served — selectModel()
+ *  builds the report before the first byte, and nothing re-pointed it after failover. */
 import { rationaleForServed, type SelectionRationale } from '../src/router/picker';
 
 let failures = 0;

@@ -1,9 +1,7 @@
-// In-turn context control: the SDK's pruneMessages behind TierMux's budget (the served model's
-// ExecutionProfile), plus tool-output aging that runs every step.
-//
-// Two prune tiers: tier 1 drops only re-derivable searches (early blanking "was destroying
-// tool evidence the model still needed" — SIMPLE_CORE_RESET); tier 2 sheds file reads too,
-// because a small-window model overflows the provider call otherwise.
+// In-turn context control: the SDK's pruneMessages behind TierMux's budget, plus tool-output
+// aging every step. Two prune tiers: tier 1 drops only re-derivable searches (early blanking
+// destroyed tool evidence the model still needed — SIMPLE_CORE_RESET); tier 2 sheds file reads
+// too, since a small-window model overflows the provider call otherwise.
 
 import { pruneMessages, type ModelMessage } from 'ai';
 import { estimateTokens as estimateTextTokens } from '../budget';
@@ -59,11 +57,10 @@ export function compactIfNeeded(
   return { messages: pruneAggressive(gentle) };
 }
 
-// ── Tool-output aging — runs every step, budget-independent. compactIfNeeded only fires at
-// 80% of the window, so a big-window model otherwise re-sends every 30k readFile result on
-// each of 15–25 round trips (free gateways don't prompt-cache; 10–17s TTFT repros). This is
-// what makes OpenCode/Kilo feel fast on the same models. Stubs name the tool + input and say
-// to re-run it, so elision degrades to a re-read. Errors and short outputs stay verbatim.
+// ── Tool-output aging — every step, budget-independent. compactIfNeeded fires only at 80% of
+// the window, so a big-window model re-sent every 30k readFile result on each of 15–25 round
+// trips (free gateways do not prompt-cache; 10–17s TTFT repros). Stubs name the tool + input
+// and say to re-run it. Errors and short outputs stay verbatim.
 
 const AGE_MIN_CHARS = 2_000;
 

@@ -7,12 +7,9 @@ const GREETING = /^(hi+|hey+|hello+|yo|sup|howdy|gm|gn|good (morning|afternoon|e
 
 const TASK_VERB = /\b(add|create|implement|build|write|fix|refactor|rename|move|delete|remove|update|change|modif(?:y|ies)|edit|generate|migrate|install|set ?up|wire|integrate|replace|convert|optimi[sz]e|run|test|make|put|turn|set|swap|drop|append|insert|extract|split|merge|comment|uncomment|format|bump|upgrade|downgrade|configure|enable|disable|support|handle|apply|hook|connect|expose|document|export|validate|cache|scaffold)\b/i;
 
-/** `error` is excluded when it heads a UI noun — "error state(s)", "error handling/handled",
- *  "error boundary". Those name something to BUILD, not a failure being reported: "add error
- *  states to the checkout form" is a coding task, and routing it to `debug` picks a debug-tier
- *  model and the debug prompt for work that is nothing of the sort. (Found via the /design skill
- *  body, which lists "empty, loading, and error states" and was classified `debug` because of
- *  this one word.) Every other failure phrasing is untouched. */
+/** `error` is excluded when it heads a UI noun ("error state", "error handling", "error
+ *  boundary") — that names something to BUILD, and routing it to `debug` picked a debug-tier
+ *  model for a coding task (found via the /design skill body). */
 const DEBUG_HINT = /\b(debug|bug|error(?!\s*(?:state|handling|handled|boundar))|exception|stack ?trace|traceback|failing|fails?|failed|broken|crash(?:es|ed)?|throws?|not working|isn'?t working|won'?t (?:work|run|build|compile)|doesn'?t (?:work|run)|null pointer|segfault)\b|\bnot (?:loading|showing|rendering|displaying|working|saving|submitting|connecting|fetching|appearing|updating|redirecting|running|opening|logging in)\b|\b(?:can'?t|cannot|couldn'?t|won'?t|didn'?t|doesn'?t)\s+(?:log ?in|load|show|work|submit|run|open|save|fetch|connect|find|access|see|get|send|redirect|register|authenticate)\b|\b(?:shows?|returns?|displays?|gives?|outputs?)\s+(?:0|zero|null|undefined|nothing|empty|wrong|incorrect|the wrong)\b|\b(?:something (?:wrong|broken|off)|is (?:wrong|broken|incorrect)|looks (?:wrong|broken)|seems (?:broken|wrong)|does nothing|do nothing|nothing happens)\b/i;
 
 // `what (kind|sort|type) of …` is listed explicitly: TASK_VERB contains nouns that double as verbs
@@ -21,11 +18,9 @@ const DEBUG_HINT = /\b(debug|bug|error(?!\s*(?:state|handling|handled|boundar))|
 const EXPLAIN_Q = /^\s*(how (?:do|to|can|could|would|does|is|are)|what (?:kind|sort|type)s? of|what(?:'?s| is| are| does| do)|why (?:do|does|is|are|would)|when (?:should|do|does|is)|which |who |whose |where (?:is|are|do|does|can)|should i|is it|are there|can i|could i|do i|does it|explain|describe|tell me|walk me|difference between)\b/i
 
 
-/** The explanation verbs again, WITHOUT the `^` anchor. EXPLAIN_Q only matches at the start of a
- *  message, so "ok so explain how routing works" — or any language that puts the verb last, e.g.
- *  romanized Bengali "ei file ta explain koro" — fell through to TASK_VERB/`agent` and got an
- *  edit-capable tool set for what was a read-only question. Kept separate (and checked after the
- *  anchored form) so the leading-question fast path keeps its precedence. */
+/** The explanation verbs WITHOUT the `^` anchor: "ok so explain how routing works" and
+ *  verb-last languages ("ei file ta explain koro") fell through to `agent`. Checked after the
+ *  anchored form so the leading-question fast path keeps precedence. */
 const EXPLAIN_VERB = /\b(explain|describe|walk me through|tell me about|bujhiye|bujhao|bojhao|bujhai)\b/i
 
 /** Romanized Bengali ("Banglish") signals — routing should be language-invariant, and the
@@ -60,11 +55,9 @@ export function attachmentKindsFromContent(content: ChatContent): NonNullable<Cl
   });
 }
 
-/** Classify the latest user message into a task kind from cheap heuristics. Bias: anything
- *  not clearly a greeting or a question defaults to `agent`, so an edit request without a
- *  textbook verb still gets the tool loop. An image/PDF attachment upgrades to `vision`. */
-/** Same classification as `classifyTask`, but also reports whether a regex actually matched
- *  (`confident`) vs. we fell through to a best-guess default. */
+/** Classify the latest user message from cheap heuristics. Bias: anything not clearly a greeting
+ *  or question defaults to `agent`; an image/PDF attachment upgrades to `vision`. `confident`
+ *  reports whether a regex actually matched vs. a best-guess default. */
 export function classifyTaskCore(text: string, signals?: ClassifySignals): { kind: TaskKind; confident: boolean } {
   const t = (text || '').trim();
   if (!t) return { kind: 'chat', confident: true };

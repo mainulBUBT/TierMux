@@ -48,12 +48,9 @@ export class SettingsStore {
     );
     const known = new Set(kept.map((e) => `${e.platform}::${e.modelId}`));
 
-    // A model the catalog gained since last reconcile goes live on its own — the user
-    // opted into the *provider*, and re-opting into each model it later adds is exactly
-    // the manual curation this is meant to avoid. Models on providers the user hasn't
-    // enabled are still filtered out downstream by enabledByPriority, so this cannot
-    // flood routing with a provider they never chose. Staged rows (ready === false) and
-    // an explicit opt-out both keep the old off-by-default behavior.
+    // A model the catalog gained since last reconcile goes live on its own — the user opted into
+    // the PROVIDER, and enabledByPriority still filters out providers they never enabled. Staged
+    // rows (ready === false) and an explicit opt-out keep the old off-by-default behaviour.
     const autoEnable = vscode.workspace
       .getConfiguration('tiermux')
       .get<boolean>('models.autoEnableNew', true);
@@ -98,11 +95,9 @@ export class SettingsStore {
     void this.state.update(NOTIFIED_MODELS_KEY, keys);
   }
 
-  /** Providers (platform infos) registered since the last check that the user hasn't
-   *  been told about yet — i.e. brand-new providers merged in from the remote catalog.
-   *  Marks them notified as a side effect. A provider only counts once its platform has
-   *  a registered info entry, so static COMPAT providers are covered by the first-run
-   *  seed and only later additions surface here. */
+  /** Providers registered since the last check that the user has not been told about (new ones
+   *  merged from the remote catalog). Marks them notified. Static COMPAT providers are covered by
+   *  the first-run seed. */
   checkForNewProviders(): PlatformInfo[] {
     const notified = new Set(this.state.get<string[]>(NOTIFIED_PROVIDERS_KEY, []));
     const fresh = allPlatformInfo().filter((p) => p.platform !== 'custom' && !notified.has(p.platform));

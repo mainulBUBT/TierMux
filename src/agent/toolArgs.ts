@@ -8,12 +8,9 @@ interface JsonSchemaish {
   items?: JsonSchemaish;
 }
 
-/** Parse the leading balanced JSON value (object or array) out of `text`, discarding anything
- *  after it. Needed because a weak model can glue hallucinated trailing content onto an
- *  otherwise-valid value — e.g. `[{"search":"a","replace":"b"}], "oldEdits": [...]` — which makes
- *  `JSON.parse` on the whole string throw even though the real value up front is fine. Tracks a
- *  bracket stack (not a single depth counter) so `{`/`[` can nest in either order, and honors
- *  string-literal/escape state so a bracket character inside a quoted value doesn't miscount. */
+/** Parse the leading balanced JSON value out of `text`, discarding what follows — a weak model can
+ *  glue hallucinated trailing content onto a valid value. Bracket stack + string/escape state so
+ *  brackets inside quoted values do not miscount. */
 function leadingBalancedJsonValue(text: string): unknown | undefined {
   const first = text[0];
   if (first !== '{' && first !== '[') return undefined;
@@ -118,13 +115,8 @@ export function repairToolArguments(args: string, paramSchema?: JsonSchemaish): 
   return changed ? JSON.stringify(parsed) : args;
 }
 
-/**
- * Strip leaked control tokens from a tool-call function name. Some models
- * (notably gpt-oss / OpenAI "Harmony" format on Groq/Cerebras/OVH) emit raw
- * channel tokens inside the function name — e.g. `searchWorkspace<|channel|>commentary`
- * — or namespace it as `functions.searchWorkspace`. Returns the bare tool name so
- * it matches our registered tools instead of failing as "unknown tool".
- */
+/** Strip leaked control tokens from a tool-call name: gpt-oss/Harmony on Groq/Cerebras/OVH emits
+ *  `searchWorkspace<|channel|>commentary` or `functions.searchWorkspace`. Returns the bare name. */
 export function sanitizeToolName(name: string): string {
   if (!name) return name;
   let n = name;
@@ -135,14 +127,9 @@ export function sanitizeToolName(name: string): string {
   return n.trim();
 }
 
-/**
- * Clean gpt-oss / Harmony output for display. These models emit channels —
- * `<|channel|>analysis<|message|>…<|end|>` (chain-of-thought) and
- * `<|channel|>final<|message|>…` (the answer). Naively deleting the tokens would
- * merge the reasoning INTO the answer, so we instead keep only the final channel
- * as the visible text and fold any analysis/commentary into a <think> block, which
- * the reasoning splitter then shows separately (never as the message itself).
- */
+/** Clean gpt-oss/Harmony output: keep only the `final` channel as visible text and fold any
+ *  analysis/commentary into a <think> block. Deleting the tokens naively merged the reasoning
+ *  INTO the answer. */
 export function stripHarmonyTokens(text: string): string {
   if (!text || text.indexOf('<|') === -1) return text;
   if (/<\|channel\|>/.test(text)) {
@@ -236,14 +223,10 @@ function escapeRegExp(s: string): string {
  *  Group 1 is the tag word (which may carry a `=NAME` suffix), group 2 its attributes. */
 const ANY_OPEN_TAG = /<(?![/!?])([^\s></]{1,120})((?:\s[^>]*)?)>/g;
 
-/**
- * Arguments out of a dialect call's BODY, without knowing which dialect wrote it. Tries, in
- * order: `<arg_key>/<arg_value>` pairs; any child tag whose key is its `name="…"` attribute,
- * its `=KEY` suffix, or its own tag word; then a JSON body. Values are NOT trimmed beyond the
- * single newline+indent a dialect puts inside the tags — an editFile `search` body must match
- * the file byte for byte — and a multi-line value skips JSON coercion, which would either fail
- * on code or (worse) succeed and reshape it.
- */
+/** Arguments out of a dialect call's BODY without knowing the dialect: `<arg_key>/<arg_value>`
+ *  pairs, then child tags keyed by `name=`, `=KEY` or the tag word, then a JSON body. Values keep
+ *  every byte beyond the dialect's own newline+indent (editFile `search` must match exactly), and
+ *  multi-line values skip JSON coercion, which could reshape code. */
 function argsFromDialectBody(body: string): Record<string, unknown> {
   const args: Record<string, unknown> = {};
   let p: RegExpExecArray | null;
@@ -316,13 +299,9 @@ function normalizeDialectParams(name: string, argsJson: string): string {
   return changed ? JSON.stringify(parsed) : argsJson;
 }
 
-/** Scan one balanced JSON object out of `text`, starting from the opening `{` at index `start`.
- *  Walks the string tracking string-literal / escape state so a `}` INSIDE a string value does
- *  NOT end the capture — writeFile/editFile `content`/`replace` routinely contain code with
- *  braces, and the old non-greedy regex `\{[\s\S]*?\}` truncated at that first inner `}`,
- *  yielding invalid JSON, dropping the rescued call, and showing the model's `<function=…>`
- *  text as chat (the "tool call as text, stuck in loop" symptom). Returns the matched
- *  substring and the index past the closing `}`, or null if no balanced close is found. */
+/** Scan one balanced JSON object from the `{` at `start`, honouring string/escape state so a `}`
+ *  inside a string value does not end the capture — the old non-greedy regex truncated at the
+ *  first inner brace and the rescued call was lost ("tool call as text, stuck in loop"). */
 function balancedJsonFrom(text: string, start: number): { text: string; end: number } | null {
   if (text[start] !== '{') return null;
   let depth = 0;
@@ -357,13 +336,9 @@ function jsonBodyStart(text: string, after: number): number {
   return text[i] === '{' ? i : -1;
 }
 
-/** Normalize a rescued call's argument payload to a JSON-object string, or null if it isn't one.
- *  Weak models emit it two ways: as a real object (`"arguments": {...}`) or — mimicking the
- *  OpenAI wire format, where `arguments` is literally a string — as an ESCAPED JSON STRING
- *  (`"arguments": "{\"path\":\"src/app.ts\"}"`). The string form failed the old
- *  `typeof inner === 'object'` test, so the call was dropped with no log and no fallthrough: no
- *  tool ran and the raw JSON streamed to chat as the final answer — the exact "tool call as text"
- *  symptom this module exists to prevent, triggered by the single most standard encoding there is. */
+/** A rescued call's argument payload as a JSON-object string, or null. Weak models emit it as a
+ *  real object OR, mimicking the OpenAI wire format, as an ESCAPED JSON STRING — the string form
+ *  used to be dropped silently, streaming the raw JSON to chat as the answer. */
 function liftArgsPayload(inner: unknown): string | null {
   if (inner !== null && typeof inner === 'object') return JSON.stringify(inner);
   if (typeof inner === 'string') {
@@ -381,11 +356,8 @@ function firstBalancedJson(text: string, from: number): { text: string; end: num
   return brace === -1 ? null : balancedJsonFrom(text, brace);
 }
 
-/**
- * Best-effort rescue of tool calls a weak model emitted as inline dialect text
- * (e.g. `<function=NAME>{...}</function>` or a bare `{"name":...,"arguments":...}`
- * blob) and that the provider handed back in `error.failed_generation`.
- */
+/** Best-effort rescue of tool calls a weak model emitted as inline dialect text
+ *  (`<function=NAME>{...}</function>`, a bare `{"name":…,"arguments":…}` blob, …). */
 export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { detected: boolean; calls: RescuedCall[] } {
   const calls: RescuedCall[] = [];
   let m: RegExpExecArray | null;
@@ -461,14 +433,10 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
   }
 
   if (calls.length === 0) {
-    // Shape 5: DeepSeek V3.2/V4's "DSML" tool-call markup, emitted as plain content when the
-    // provider doesn't natively parse the ｜DSML｜ special token:
-    //   <｜DSML｜tool_calls><｜DSML｜invoke name="readFile">
-    //   <｜DSML｜parameter name="path" string="true">README.md</｜DSML｜parameter>
-    //   </｜DSML｜invoke></｜DSML｜tool_calls>
-    // The fullwidth vertical bar (｜, U+FF5C) around DSML is sometimes doubled by the model
-    // (｜｜DSML｜｜) — match one-or-more so both variants parse. `string="true"` on a <parameter>
-    // means "treat as a literal string" (DSML has no other type marker), so it skips JSON coercion.
+    // Shape 5: DeepSeek "DSML" markup emitted as plain content —
+    //   <｜DSML｜invoke name="readFile"><｜DSML｜parameter name="path" string="true">README.md</｜DSML｜parameter>…
+    // The fullwidth bar (U+FF5C) is sometimes doubled, so match one-or-more; `string="true"`
+    // means literal string, so it skips JSON coercion.
     const invokeTag = /<｜+DSML｜+invoke\s+name="([a-zA-Z0-9_\-]+)"[^>]*>/g;
     while ((m = invokeTag.exec(text)) !== null) {
       const resolved = resolveDialectToolName(m[1], toolNames);
@@ -491,12 +459,9 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
   }
 
   {
-    // Shape 6 (Hermes/Qwen): <function=NAME> with tagged parameters instead of a JSON body —
-    //   <function=editFile><parameter=path>package.json</parameter>
-    //   <parameter=search>…possibly-braced code…</parameter></function>
-    // Not gated on `calls.length === 0`: jsonBodyStart splits ownership with shape 1, and a
-    // reply mixing both dialects used to lose the second call. Values are NOT trimmed beyond
-    // the dialect's own newline+indent — an editFile `search` must match byte for byte.
+    // Shape 6 (Hermes/Qwen): <function=NAME> with <parameter=KEY> tags instead of a JSON body.
+    // Not gated on `calls.length === 0`: a reply mixing dialects used to lose the second call.
+    // Values are not trimmed beyond the dialect's own newline+indent.
     const fnParamAnchor = /<function=([a-zA-Z0-9_\-]+)[^>]*>/g;
     while ((m = fnParamAnchor.exec(text)) !== null) {
       const resolved = resolveDialectToolName(m[1], toolNames);
@@ -519,12 +484,9 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
         // would either fail or (worse) succeed and reshape it.
         args[p[1]] = raw.includes('\n') ? raw : coerceInlineArgValue(raw);
       }
-      // Pushed even with NO parameters. A parameterless tool (`listTodos`, `getDiagnostics` with
-      // no args) legitimately emits `<function=listTodos></function>`, and the old
-      // `Object.keys(args).length > 0` guard meant such a call could never be rescued at all —
-      // the turn died with the raw XML shown as the answer. Safe now only because the
-      // `jsonBodyStart` check above already excluded shape 1's occurrences: without it this would
-      // push a duplicate `{}` call for every JSON-bodied one.
+      // Pushed even with NO parameters (`<function=listTodos></function>` is legitimate; the old
+      // non-empty guard made it unrescuable). Safe only because jsonBodyStart already excluded
+      // shape 1's occurrences — otherwise every JSON-bodied call would get a duplicate `{}`.
       calls.push({ name: resolved, arguments: normalizeDialectParams(resolved, JSON.stringify(args)) });
       if (close) fnParamAnchor.lastIndex = close.index + close[0].length;
     }
@@ -636,12 +598,10 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
   }
 
   if (calls.length === 0) {
-    // Shape 10 — the GENERIC fallback (the reason this list should stop growing): walk every
-    // opening tag and ask whether it NAMES a registered tool, in the three places dialects put
-    // the name — an attribute (<invoke name="readFile">), after '=' (<function=readFile>), or
-    // the tag itself (<readFile>…). The registered-tool lookup is the whole false-positive guard;
-    // the bare-tag form also passes allowAliases=false so <search>/<link> in quoted HTML are not
-    // aliased to grep/readFile.
+    // Shape 10 — the GENERIC fallback (the reason this list should stop growing): any opening tag
+    // that NAMES a registered tool as an attribute, after '=', or as the tag itself. The
+    // registered-tool lookup is the false-positive guard; bare tags pass allowAliases=false so
+    // <search>/<link> in quoted HTML are not aliased.
     const anyTag = new RegExp(ANY_OPEN_TAG.source, 'g');
     while ((m = anyTag.exec(text)) !== null) {
       const [, rawToken, attrs] = m;

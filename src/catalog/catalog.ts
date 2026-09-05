@@ -52,11 +52,8 @@ export class Catalog {
     }
   }
 
-  /** Load the last successfully-fetched remote catalog from globalState. Instant,
-   *  works offline — call once on startup before the list is first read.
-   *  `catalogUrl` is the currently configured `tiermux.catalog.url`: when the user
-   *  has blanked it out, any stale cache from a previous non-blank URL is dropped
-   *  instead of silently continuing to shadow the bundled catalog. */
+  /** Load the last fetched remote catalog from globalState (instant, offline). A blanked
+   *  `tiermux.catalog.url` drops any stale cache instead of shadowing the bundled catalog. */
   loadCached(mem: vscode.Memento, catalogUrl: string): void {
     if (!catalogUrl.trim()) {
       this.remote = undefined;
@@ -74,12 +71,9 @@ export class Catalog {
     if (Array.isArray(disabled)) this.remoteDisabledPlatforms = disabled;
   }
 
-  /** Fetch the worker at `base`: `/models` is the catalog (providers→models), `/providers`
-   *  carries endpoint metadata (base URLs/keyless/keyUrl) merged into the registry. Both are
-   *  fetched together on each refresh. `/models` may also be a legacy published-sheet CSV.
-   *  Best-effort: any failure (offline, bad URL, empty/garbled body) silently keeps the
-   *  cached/bundled list. `/providers` failure degrades gracefully to a models-only refresh.
-   *  Fires onDidChange only when the active list actually changes. */
+  /** Fetch `/models` (catalog, or a legacy published-sheet CSV) and `/providers` (endpoint
+   *  metadata merged into the registry) from the worker at `base`. Best-effort: any failure keeps
+   *  the cached/bundled list. Fires onDidChange only when the active list changes. */
   async refresh(baseRaw: string | undefined, mem: vscode.Memento): Promise<CatalogSyncReport | null> {
     const base = (baseRaw ?? '').trim();
     if (!base) return null;
@@ -93,12 +87,8 @@ export class Catalog {
     ]);
     if (modelsText === null) return null; // offline / timeout / bad URL → keep what we have
 
-    // Register/update providers BEFORE reading the registry below, so any new platform the
-    // `/models` payload references is already resolvable. A missing/empty `/providers`
-    // response is fine — the hardcoded registry stays as-is. `providersApplied` counts how
-    // many entries were added/refreshed: even when the model list is unchanged, a registry
-    // change (e.g. a brand-new platform appeared) must re-notify the webview so the new
-    // provider shows up in settings.
+    // Register providers BEFORE reading the registry so a new platform in `/models` resolves.
+    // `providersApplied` re-notifies the webview even when the model list is unchanged.
     let providersApplied = 0;
     if (providersText) {
       const defs = parseWorkerProviders(providersText);
@@ -184,11 +174,8 @@ export class Catalog {
     return `${platform}::${modelId}`;
   }
 
-  /**
-   * Default fallback chain: every catalog model disabled by default, ordered by
-   * intelligence then speed (smartest/fastest first) so the priority order is
-   * ready once the user opts models in.
-   */
+  /** Default fallback chain: every catalog model, disabled, ordered smartest/fastest first so the
+   *  priority order is ready once the user opts models in. */
   defaultFallback(): FallbackEntry[] {
     const sorted = [...this.all()].sort((a, b) =>
       a.intelligenceRank - b.intelligenceRank ||
@@ -265,16 +252,10 @@ export async function fetchText(url: string): Promise<string | null> {
 }
 
 /**
- * Parse the TierMux worker catalog JSON into CatalogModels. The worker schema carries no
- * rank columns, so intelligence/speed are derived from the model id via deriveMetadata
- * (benchmark table → param proxy); capabilities, limits, pricing, and tags come straight
- * from the catalog. Provider/model `enabled` is honored — disabled rows are dropped.
- *
- * Two payload shapes are accepted:
- *  - nested:  { providers: [{ provider_id, enabled, models: [...] }] }
- *  - flat:    { models: [{ model_id, provider_id, enabled, ... }] }   (provider_id inline)
- *
- * Returns null when the body is neither shape so the caller can fall back to CSV.
+ * Parse the worker catalog JSON into CatalogModels. No rank columns in the schema, so
+ * intelligence/speed come from deriveMetadata; disabled providers/models are dropped. Accepts
+ * nested `{ providers: [{ provider_id, models }] }` or flat `{ models: [{ model_id, provider_id }] }`;
+ * null for neither so the caller can fall back to CSV.
  */
 function parseWorkerCatalog(text: string): { models: CatalogModel[]; disabledPlatforms: Platform[] } | null {
   let body: unknown;

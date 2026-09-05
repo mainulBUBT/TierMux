@@ -3,21 +3,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import * as vscode from 'vscode';
 
-/**
- * Per-async-context workspace root, used by the fleet pipeline so each parallel worker sub-agent
- * resolves file paths against its OWN git worktree instead of the live VS Code workspace folder.
- *
- * Why AsyncLocalStorage and not a parameter: every path-taking tool factory is nullary and reads
- * `vscode.workspace.workspaceFolders[0]` live, inside `execute`, at call time. That property is
- * read-only in the real VS Code API, so there is no per-call way to redirect it. ALS lets a worker
- * establish a root for its whole async subtree (the nested `generateText` loop and every tool call
- * it makes) without touching a single factory signature — `runWithWorkspaceRoot` wraps the call and
- * the tools consult `peekWorkspaceRoot()` first, falling back to `workspaceFolders[0]` when nothing
- * is set. The main-agent path never sets a store, so its behavior is bit-identical to before.
- *
- * Concurrency: each worker runs in its own ALS context (`rootStore.run`), and tools read the store
- * lazily inside `execute`, so parallel workers in a `Promise.all` never cross-contaminate roots.
- */
+/** Per-async-context workspace root, so a parallel worker sub-agent resolves paths against its
+ *  OWN git worktree. AsyncLocalStorage rather than a parameter because every path-taking tool
+ *  factory is nullary and reads `workspaceFolders[0]` live inside `execute` — ALS redirects a
+ *  whole async subtree without touching a factory signature. The main-agent path never sets a
+ *  store, so its behaviour is unchanged; each worker's `rootStore.run` context never leaks. */
 const rootStore = new AsyncLocalStorage<string>();
 
 /** Run `fn` with `root` (an absolute filesystem path) as the implicit workspace root for any

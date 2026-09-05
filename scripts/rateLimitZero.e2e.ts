@@ -1,17 +1,7 @@
-/* A declared rate limit of 0 must mean "unknown", never "unlimited".
- *
- * From a 2026-08-20 catalog audit: two models shipped with `rpm: 0, rpd: 0` (blank cells in the
- * source sheet). `canSend` opened with `if (!rpmLimit && !rpdLimit) return true`, so the two
- * models that looked MOST restricted were the only ones in the whole catalog with no throttling
- * at all — they would hammer their provider straight into 429s, and `headroom` reported them as
- * perfectly fresh so the router actively PREFERRED them.
- *
- * `null` still means genuinely unlimited: that's the custom-endpoint case (local llama.cpp /
- * LM Studio), where there really is no quota. Every catalogued model carries a positive number,
- * so the two cases never collide.
- *
- * Run: npm run test:e2e:rate-limit-zero
- */
+/* A declared rate limit of 0 means "unknown", never "unlimited" (2026-08-20 audit: two models
+ * with blank sheet cells had no throttling at all and `headroom` reported them fresh, so the
+ * router PREFERRED them). `null` still means genuinely unlimited (custom endpoints).
+ * Run: npm run test:e2e:rate-limit-zero */
 import { RateTracker } from '../src/router/rateTracker';
 
 let bad = 0;

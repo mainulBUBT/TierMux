@@ -1,16 +1,7 @@
-/**
- * verifyDetect e2e — stack-wise verify-command detection (detectVerifyCommand).
- *
- * The bug this locks down: a Laravel app carrying a package.json for its Vite assets was
- * verified with `npm run build` (or, in a docs-only folder, nothing at all — which then told
- * the user their work was "Not tested yet" and asked them for a command). Detection must be
- * strength-ranked across ALL stacks present, and must stay SILENT (undefined) when the only
- * honest answer is "this project has no check I can run".
- *
- * Fixtures are built in a temp dir — no network, no installs, no real test runners invoked.
- *
- * Run: npm run test:e2e:verify-detect
- */
+/** verifyDetect e2e — stack-wise verify-command detection. A Laravel app with a Vite package.json
+ *  was verified with `npm run build`, and a docs-only folder was told "Not tested yet". Detection
+ *  must be strength-ranked across ALL stacks present and SILENT (undefined) when there is no
+ *  honest check. Fixtures in a temp dir; nothing installed or run. Run: npm run test:e2e:verify-detect */
 
 import * as fs from 'fs';
 import * as os from 'os';

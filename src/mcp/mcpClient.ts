@@ -33,13 +33,8 @@ export interface McpRemoteServerConfig {
 
 export type McpServerConfig = McpLocalServerConfig | McpRemoteServerConfig;
 
-/**
- * Upgrades a legacy (pre-native-schema) `tiermux.mcpServers` entry — which had no
- * `type` discriminator, a bare `command` string, `env`/`disabled` instead of
- * `environment`/`enabled` — into the current schema. Already-current entries
- * (`type` present) pass through unchanged. Returns undefined for an entry that has
- * neither `command` nor `url` (nothing to migrate).
- */
+/** Upgrade a legacy `tiermux.mcpServers` entry (no `type`, bare `command`, `env`/`disabled`) to
+ *  the current schema. Current entries pass through; undefined when neither `command` nor `url`. */
 export function normalizeMcpServerConfig(raw: unknown): McpServerConfig | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const r = raw as Record<string, unknown>;

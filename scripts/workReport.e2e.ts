@@ -1,14 +1,6 @@
-/**
- * workReport e2e — the structured end-of-turn report (WorkReportData) and its legacy
- * markdown serialization. Covers:
- *   1. renderLegacyMarkdown output for every verifyOutcome, including the load-bearing
- *      marker phrases e2e suites key on ('Verification failed', 'Unverified').
- *   2. Emit/strip round-trip: stripLegacyMarkdown(text + render(report), report) === text,
- *      and render(strip(text, report)) === render — live==replay through one implementation.
- *   3. WorkReportData shape invariants (version, telemetry nesting, status letters).
- *
- * Run: npm run test:e2e:workReport
- */
+/** workReport e2e: renderLegacyMarkdown for every verifyOutcome (incl. the marker phrases other
+ *  suites key on), the emit/strip round-trip, and WorkReportData shape invariants.
+ *  Run: npm run test:e2e:workReport */
 
 import {
   renderLegacyMarkdown,

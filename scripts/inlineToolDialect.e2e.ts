@@ -1,19 +1,9 @@
-/* A tool call the model wrote as TEXT still runs.
- *
- * A model served without a wired tools API writes its call in whatever markup it was trained on
- * and hands it back as ordinary content on a clean HTTP 200. toolArgs.ts has parsed those
- * dialects for a long time — but its only call site was openai-compat's `failed_generation`
- * handler, the HTTP-ERROR path, so a 200 reached no rescue at all. Captured 2026-09-01, xKiro
- * deepseek-v4-pro: the model emitted `<invoke name="readFile"><parameter name="path">…` as its
- * whole reply, the markup was rendered to the user as the answer, nothing ran, and the turn
- * ended. Two of the three defenses on that path were dead code.
- *
- * Guards, in order: the generic decoder (shape 10) parses a dialect nobody hardcoded; the
- * streaming opener holds such markup back from the chat bubble; and Router.route adopts the text
- * call into a real one so the tool actually executes.
- *
- * Run: npm run test:e2e:inline-tool-dialect
- */
+/* A tool call the model wrote as TEXT still runs. toolArgs.ts parsed these dialects for a long
+ * time, but its only call site was the HTTP-ERROR path, so a clean 200 reached no rescue
+ * (2026-09-01, xKiro deepseek-v4-pro: `<invoke name="readFile">…` rendered as the answer, nothing
+ * ran). Guards in order: the generic decoder (shape 10), the streaming opener holding markup back
+ * from the bubble, and adoption of the text call into a real one.
+ * Run: npm run test:e2e:inline-tool-dialect */
 import { rescueInlineToolCalls } from '../src/agent/toolArgs';
 
 let bad = 0;
@@ -57,13 +47,9 @@ ok('edit replace keeps its braces byte for byte', edited.replace === 'function f
 const HTML = 'Here is the page:\n<div class="wrap"><h1>Hi</h1><p>Body</p><search><input name="q"></search></div>';
 ok('html answer yields no calls', parse(HTML).length === 0, parse(HTML).join(' | '));
 
-// ── 6. End to end ────────────────────────────────────────────────────────────────────────────
-// This section used to drive Router.route() with a mock fixture and assert that the ROUTE layer
-// adopted the dialect text as tool_calls. Both the Router and its fixture replay were retired on
-// 2026-09-05 (docs/AGENT_RELIABILITY_PLAN_2026-09-05.md §4.2), and the adoption they wrapped was
-// a SECOND pass over a rescue that already happens one layer down: openai-compat.ts:143 calls
-// rescueInlineToolCalls on every provider response, so the picker path gets the same behaviour
-// the Router did. Sections 1-5 above pin the helpers that pass does the work with.
+// ── 6. End to end — retired with the Router on 2026-09-05: the adoption it tested was a second
+// pass over a rescue that already happens one layer down (openai-compat.ts calls
+// rescueInlineToolCalls on every provider response). Sections 1-5 pin the helpers that use.
 
 console.log(bad === 0 ? '\nAll inline-dialect checks passed.' : `\n${bad} check(s) FAILED.`);
 process.exit(bad === 0 ? 0 : 1);

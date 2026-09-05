@@ -23,11 +23,9 @@ export function formatDiagnosticEntries(entries: [vscode.Uri, vscode.Diagnostic[
   return results;
 }
 
-/** Language servers re-lint asynchronously after an edit lands — reading `getDiagnostics`
- *  immediately can return stale (pre-edit) results. Waits for the next `onDidChangeDiagnostics`
- *  touching `uri`, bounded by `timeoutMs`, so a same-turn verify check reflects the edit that was
- *  just made rather than racing the language server. Resolves with whatever's current either way
- *  (a clean file that never fires a diagnostics event is the common case, not a failure). */
+/** Language servers re-lint asynchronously, so reading diagnostics right after an edit can be
+ *  stale. Waits for the next `onDidChangeDiagnostics` touching `uri`, bounded by `timeoutMs`;
+ *  resolves with whatever is current either way. */
 export function waitForDiagnosticsSettled(uri: vscode.Uri, timeoutMs = 1200): Promise<vscode.Diagnostic[]> {
   return new Promise((resolve) => {
     let done = false;
@@ -48,12 +46,8 @@ export function waitForDiagnosticsSettled(uri: vscode.Uri, timeoutMs = 1200): Pr
 /** Prefix of editFile's post-edit diagnostics note — a stable sentinel for callers. */
 export const NEW_DIAGNOSTICS_MARKER = '⚠ New diagnostics after this edit:';
 
-/** Wait briefly for language servers to finish re-linting after a batch of edits, then read the
- *  WHOLE-WORKSPACE diagnostic set (vs `waitForDiagnosticsSettled`, which targets one uri). Resolves
- *  on the first `onDidChangeDiagnostics` event of any kind, or the timeout — whichever fires first
- *  — then returns whatever `getDiagnostics()` currently holds. Used by the end-of-turn workspace
- *  verify to catch errors in files OTHER than the one just edited (a cross-file break the per-edit
- *  `verifyNoteFor` check can't see). */
+/** Workspace-wide counterpart of waitForDiagnosticsSettled: first diagnostics event of any kind
+ *  or the timeout, then the whole set. Catches cross-file breaks the per-edit check cannot see. */
 export function waitForWorkspaceDiagnosticsSettled(timeoutMs = 1200): Promise<[vscode.Uri, vscode.Diagnostic[]][]> {
   return new Promise((resolve) => {
     let done = false;

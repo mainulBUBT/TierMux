@@ -281,11 +281,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     diagLog(`engine.${tag}StreamError`, (error instanceof Error ? error.message : String(error)).slice(0, 160));
   // True while the current step has streamed reply text but no tool call yet (see onChunk).
   let narrationSinceToolCall = false;
-  // Armed for the plan-gap continuation pass only: its FIRST step must close the turn with a
-  // tool call (toolChoice 'required' + activeTools = PLAN_CLOSERS). Step 0 only. It does not
-  // pin WHICH closer — pinning exitPlanMode forced a plan out of a hesitating model
-  // (2026-09-01: "Let me re-read the user's actual words carefully…"); askUser is the other
-  // legitimate close.
+  // Armed for the plan-gap continuation only: step 0 must close the turn with a tool call
+  // (toolChoice 'required' + PLAN_CLOSERS). Does not pin WHICH closer — pinning exitPlanMode
+  // forced a plan out of a hesitating model (2026-09-01); askUser is the other legitimate close.
   let forcePlanToolOnNextStep = false;
   /** The only two tool calls that close a plan-mode turn. askUser does not stop the turn — its
    *  answer comes back and the loop continues. */
@@ -420,12 +418,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           toolEvents.push(ev);
           opts.onTool(ev);
 
-          // No-progress counting: identical bytes in + error out, REPEAT_FAILURE_LIMIT times IN
-          // A ROW; the tool's reason is never read. ANY success clears the WHOLE table — a model
-          // that failed, got something to work, then failed the same call again has made
-          // progress (foundation 27b caught per-signature clearing counting that as one
-          // streak). A strict fail/succeed/fail alternation never trips this; the step cap is
-          // the backstop, and a wrong stop is worse than a late one.
+          // No-progress counting: identical bytes in + error out, REPEAT_FAILURE_LIMIT times IN A
+          // ROW; the tool's reason is never read. ANY success clears the WHOLE table (foundation
+          // 27b). A fail/succeed/fail alternation never trips this — the step cap is the backstop.
           const signature = `${tr.toolName}:${JSON.stringify(tr.input ?? null)}`;
           if (!isFailed && !isFailureOutput(tr.output)) {
             failureCounts.clear();
@@ -530,11 +525,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     };
   }
 
-  // Stream-error guard: a provider failure consumeStream resolved used to fall through as a
-  // "successful" empty turn (0 in/0 out) with the real reason (401/403/429/credit, or "all
-  // candidates failed") swallowed — repro 1:18 AM, dead in 1s. Surface it, but only when the
-  // turn produced NOTHING; partial output from a later-step failure still ships. A
-  // dead-at-start abort returns paused instead (guard above).
+  // Stream-error guard: a provider failure consumeStream resolved used to ship as a "successful"
+  // empty turn with the real reason swallowed (repro 1:18 AM, dead in 1s). Surfaced only when the
+  // turn produced NOTHING; partial output from a later-step failure still ships.
   if (
     streamError
     && !opts.abortSignal?.aborted
@@ -554,13 +547,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     };
   }
 
-  // CONTINUATION NUDGE — ONE continuation when the turn ends (finish 'stop') without closing.
-  // Wire-level signals only, never prose classification:
-  //   act-gap    — no tool ran and the reply is empty.
-  //   report-gap — tools ran but the synthesis step came back empty.
-  //   plan-gap   — plan mode ended without an exitPlanMode call (below).
-  // A non-empty synthesis ships as-is; unfinished todos surface the host's Continue button
-  // instead of a second model call on a guess.
+  // CONTINUATION NUDGE — ONE continuation when the turn ends without closing, on wire-level
+  // signals only: act-gap (no tool, empty reply), report-gap (tools ran, empty synthesis),
+  // plan-gap (plan mode ended without exitPlanMode). Unfinished todos go to the host's Continue
+  // button, never a second model call on a guess.
   const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
   const lastUserText = typeof lastUser?.content === 'string' ? lastUser.content : '';
   // The carve-out that keeps plan mode able to ANSWER a question instead of being forced into
@@ -579,13 +569,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let continued = false;
   const actGap = !didWork && replyEmpty;
   const reportGap = didWork && replyEmpty;
-  // plan-gap — plan mode ended on narration instead of a tool call ("Now let me check if
-  // there's any existing theme support…" — 2026-08-31, nemotron-3-ultra; "I found the key
-  // line. Let me look at…" — 2026-09-01, step-3.7-flash). In plan mode there are exactly three
-  // legitimate closes — a plan, a 'no-change' finding, or a prose answer to a question — and the
-  // first two are tool calls, so no tool call + a non-question request = unclosed, whatever the
-  // prose looks like. The reply's shape is deliberately NOT tested (a narration regex was a
-  // tower; every new phrasing missed it).
+  // plan-gap — plan mode ended on narration instead of a tool call (2026-08-31 nemotron-3-ultra;
+  // 2026-09-01 step-3.7-flash). The only legitimate closes are a plan, a no-change finding
+  // (both tool calls) or a prose answer to a question, so no tool call + non-question = unclosed.
+  // The reply's shape is deliberately NOT tested — a narration regex was a tower.
   const planGap = opts.mode === 'plan' && !proposedPlan;
   if (
     (opts.mode === 'agent' || planGap)

@@ -1,8 +1,6 @@
-// The AI SDK seam: a LanguageModelV4 over the picker. Owns the candidate loop (model +
-// fallbackChain), API-key lookup, translation between the V4 part protocol and the OpenAI wire
-// the providers speak, and two failover rules, both reported to the picker's cooldown via
-// recordOutcome: (1) availability — 429/5xx/401/network/timeout → next candidate; (2) quality —
-// nothing usable (no text, no tool call, no foldable reasoning) → next candidate.
+// The AI SDK seam: a LanguageModelV4 over the picker. Owns the candidate loop, API-key lookup,
+// V4-part ↔ OpenAI-wire translation, and two failover rules reported to the picker's cooldown:
+// availability (429/5xx/401/network/timeout) and quality (nothing usable came back).
 
 import type {
   LanguageModelV4,
@@ -21,14 +19,10 @@ import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordReque
 import { ThinkStripper, stripThinkTags, reasoningFromDelta } from '../../util/thinkTags';
 import { diagLog } from '../../util/diag';
 
-/** Post-headers STALL bound: how long a stream that has produced no chunk at all may hang
- *  before the candidate is abandoned — a provider that answers with headers and then never
- *  sends a body, which no header timeout can fire on. Tracks FAILOVER_CONNECT_TIMEOUT_MS
- *  rather than the old 8s hedge trigger, which fired before any header timeout could and made
- *  the 60s tolerance unreachable (kilo, 10.4s to headers + keepalives).
- *
- *  Disabled (0) for pinned models (nothing to fail over to) and custom/local endpoints, whose
- *  cold load may legally run minutes — the Stop button is the brake there, as elsewhere. */
+/** Post-headers STALL bound: a stream that has produced no chunk at all is abandoned after this
+ *  (headers then no body — no header timeout can fire). Tracks FAILOVER_CONNECT_TIMEOUT_MS; the
+ *  old 8s hedge made the 60s tolerance unreachable (kilo, 10.4s to headers). 0 for pinned
+ *  models and custom/local endpoints, whose cold load may run minutes. */
 function ttftGateMsFor(platform: Platform, pinned: boolean): number {
   if (pinned || platform === 'custom') return 0;
   return FAILOVER_CONNECT_TIMEOUT_MS;
@@ -67,12 +61,9 @@ export function isFailoverWorthy(e: unknown): boolean {
   return e instanceof Error && /network|fetch failed|timed out|ECONN/i.test(e.message);
 }
 
-/** Per-candidate ceiling on TIME TO RESPONSE HEADERS while failing over — never on generation
- *  length. The registry's own timeouts are single-shot (eight platforms declare ten minutes),
- *  which would let one unresponsive provider hold a turn hostage before the chain moved on.
- *  25s → 60s on 2026-09-04: a 65k-token prefill on a slow provider legitimately takes longer
- *  than 25s before its first byte (poolside/laguna-s-2.1 repro). Not applied to custom/local
- *  endpoints (cold VRAM load may take minutes; nothing to fail over to). */
+/** Per-candidate ceiling on TIME TO HEADERS while failing over — never on generation length; the
+ *  registry's single-shot timeouts would let one dead provider hold a turn. 25s → 60s on
+ *  2026-09-04 (65k prefill on poolside/laguna-s-2.1). Not applied to custom/local endpoints. */
 const FAILOVER_CONNECT_TIMEOUT_MS = 60_000;
 
 /** Stop STARTING new candidates once the chain has burned this long. Never interrupts a
@@ -114,13 +105,10 @@ function connectTimeoutFor(platform: Platform): number | undefined {
   return platform === 'custom' ? undefined : FAILOVER_CONNECT_TIMEOUT_MS;
 }
 
-/** 401/402/403 are ACCOUNT-level: a dead key or an unpaid bill applies to every model on the
- *  platform, so retrying its other models burns the chain on failures that cannot succeed
- *  (ollama/cerebras 402 repros, 2026-08-30). 429 and 5xx are per-model and deliberately not
- *  here. Checked only after key rotation is exhausted. */
-/** The turn-killing error, naming every candidate and its outcome so the user can see that
- *  failover ran — a bare "Cerebras API error 402" read as no failover at all (2026-08-30). A
- *  single-candidate chain keeps the provider's own wording. */
+/** 401/402/403 are ACCOUNT-level (dead key, unpaid bill), so the platform's other models cannot
+ *  succeed either (ollama/cerebras 402, 2026-08-30). 429 and 5xx are per-model and not here. */
+/** The turn-killing error, naming every candidate and its outcome so failover is visible — a
+ *  bare "Cerebras API error 402" read as no failover (2026-08-30). */
 function chainExhaustedError(
   candidates: Candidate[],
   attempts: string[],
@@ -306,12 +294,10 @@ export async function resolveCandidates(
   if (selection.rationale) opts.onSelectionRationale?.(selection.rationale);
   if (out) out.rationale = selection.rationale;
 
-  // A bounded chain needs PLATFORM DIVERSITY or the bound defeats the failover: ollama alone
-  // ships five rank-1 models, so a rank-sorted tail could be all one provider and a single
-  // provider-wide 402 burned the whole chain (2026-08-30). At most MAX_PER_PLATFORM per
-  // platform on the first pass, then top up from the overflow so a one-provider user still
-  // gets a full chain. Do NOT rotate the platform order here: that ran after the selection
-  // rationale was emitted and made the popover name a model that never ran (removed 413ecb5).
+  // A bounded chain needs PLATFORM DIVERSITY: ollama alone ships five rank-1 models, and one
+  // provider-wide 402 burned a single-platform chain (2026-08-30). MAX_PER_PLATFORM first, then
+  // top up from the overflow. Never rotate the platform order here — that made the rationale
+  // popover name a model that never ran (removed 413ecb5).
   const MAX_CANDIDATES = 20;
   /** Cap on how deep one platform's bucket goes — only reachable when few platforms are
    *  usable, which is exactly when repeating a platform is the best option left. */

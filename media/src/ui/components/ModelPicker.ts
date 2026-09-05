@@ -1,13 +1,7 @@
-// Model picker — a quiet toolbar pill opening a rich popover: search, the
-// reasoning-effort segmented control (a per-model property, so it lives here rather
-// than in the toolbar), the "Auto — smart routing" entry, and the enabled models
-// grouped by provider with capability chips (T/V/R) and status tags
-// (unavailable / off).
-//
-// Model DATA stays owned by main.ts (`getEnabledModelOptions()` reads the host
-// config); the component renders whatever it is given and reports changes through
-// callbacks. The serving-model indicator (which model actually served the current
-// turn, incl. failovers) is driven by setServing()/setServing(null).
+// Model picker — toolbar pill opening a popover: search, reasoning-effort control (a per-model
+// property), "Auto", and enabled models grouped by provider with capability chips. Model DATA
+// stays owned by main.ts; this renders what it is given and reports through callbacks. The
+// serving-model indicator is driven by setServing().
 
 import { el, icon } from '../dom';
 import { ICON } from '../../icons';
@@ -103,11 +97,8 @@ export function createModelPicker(init: ModelPickerInit): ModelPickerHandle {
   const listEl = el('div', { class: 'tm-model-list' });
 
   // ── trigger ──
-  // Auto stays "Auto" on the pill even while a turn is being served — the whole point of
-  // Auto is the user doesn't pick a model, so swapping the label to whatever it picked
-  // under the hood would just be noise. The actual model still shows in the tooltip.
-  // A pinned model still swaps its label to the serving one (e.g. on failover), since
-  // that's a real deviation from the user's explicit pick.
+  // Auto stays "Auto" on the pill while serving (the point of Auto is not picking; the actual
+  // model shows in the tooltip). A pinned model DOES swap to the serving one, e.g. on failover.
   function renderTrigger() {
     const isAuto = value === 'auto';
     trigger.classList.toggle('tm-serving', !!serving);

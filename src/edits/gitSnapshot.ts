@@ -34,13 +34,9 @@ export async function isGitRepo(cwd: string): Promise<boolean> {
   return out === 'true';
 }
 
-/**
- * Write the full current working tree (tracked + untracked, non-ignored) to a tree object via
- * a THROWAWAY index file, returning the tree SHA. Does NOT mutate HEAD, the real index, or the
- * working tree. Returns null only if `cwd` isn't a git repo at all — a repo with zero commits
- * still works: `read-tree HEAD` simply no-ops (caught by `git()`) and `add -A` builds the tree
- * from a fresh empty index, which captures the same "everything currently present" snapshot.
- */
+/** Write the current working tree (tracked + untracked, non-ignored) to a tree object via a
+ *  THROWAWAY index, returning its SHA. Mutates nothing. Null only outside a git repo; a repo with
+ *  zero commits still works (`read-tree HEAD` no-ops, `add -A` builds from an empty index). */
 export async function captureWorkingTree(cwd: string): Promise<string | null> {
   if (!(await isGitRepo(cwd))) return null;
   return writeWorkTree(cwd);
@@ -65,11 +61,8 @@ async function treePaths(cwd: string, tree: string): Promise<Set<string>> {
   return new Set(out.split('\n').map((s) => s.trim()).filter(Boolean));
 }
 
-/**
- * Files changed between `beginTree` and the CURRENT working tree, classified. Captures the
- * current tree the same way and diffs the two trees directly (no index involvement), so a file
- * whose content is identical to begin never appears — even if it's untracked.
- */
+/** Files changed between `beginTree` and the CURRENT working tree, classified — a direct tree
+ *  diff, so a file identical to begin never appears even if untracked. */
 export async function changedSince(cwd: string, beginTree: string): Promise<CheckpointFile[]> {
   const curTree = await writeWorkTree(cwd);
   if (!curTree) return [];
@@ -124,13 +117,8 @@ async function pathExists(p: vscode.Uri): Promise<boolean> {
   return true;
 }
 
-/**
- * Workspace-relative paths git currently reports as dirty (tracked + untracked, non-ignored),
- * mapped to their full `git status --porcelain` line (status codes + path). Cheap (no tree
- * write), used to attribute workspace changes to the agent's shell commands: a path whose
- * line appears/changes between just-before and just-after a command was edited by that
- * command. Renames ("XY old -> new") are keyed by the NEW path.
- */
+/** Dirty paths → their `git status --porcelain` line. Cheap (no tree write); used to attribute
+ *  changes to the agent's shell commands by diffing before/after. Renames key on the NEW path. */
 export async function statusLines(cwd: string): Promise<Map<string, string>> {
   const out = await git(cwd, ['status', '--porcelain']);
   const map = new Map<string, string>();

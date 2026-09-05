@@ -17,13 +17,10 @@ const LIST_MAX_CHARS = 10_000;
 const GLOB_MAX_RESULTS = 200;
 const GREP_MAX_OUTPUT = 20 * 1024;
 const GREP_TIMEOUT_MS = 15_000;
-/** Ceiling on `context` (2026-09-05). Not a re-send bound — compact.ts's `ageToolOutputs`
- *  already stubs any tool result over 2k chars once it leaves the last three tool messages,
- *  and grep is first in its REDERIVABLE_TOOLS list, so a fat grep lives for ~3 steps, not the
- *  whole turn. This is a per-CALL bound: every context line multiplies the per-file volume
- *  (`-m 200` counts MATCHED lines only), and past 10 a wide-context grep is a readFile with a
- *  worse marker. Enforced by the schema alone — the SDK filters a call that fails validation
- *  out of execution, so no runtime clamp is needed. */
+/** Ceiling on `context` (2026-09-05): a per-CALL bound, not a re-send bound (ageToolOutputs
+ *  already stubs fat grep results after ~3 steps). Every context line multiplies per-file volume,
+ *  and past 10 a wide-context grep is a readFile with a worse marker. Schema-enforced — the SDK
+ *  drops a call that fails validation, so no runtime clamp. */
 const MAX_CONTEXT_LINES = 10;
 
 export function createListDirTool() {
@@ -141,11 +138,9 @@ export function createGrepTool(runAbort?: AbortSignal) {
     ): Promise<string | { error: string }> => {
       try {
         if (!pattern) return { error: 'Missing required "pattern" argument.' };
-        // Same containment every other path-taking tool has (resolvePath.ts). grep was the one
-        // tool handing its `path` to a subprocess raw, so `../` or an absolute path searched
-        // OUTSIDE the workspace — and `filesOnly` had just made enumerating a sibling tree
-        // cheap and quiet (review 2026-09-05). Search stays rooted at cwd so hits print
-        // workspace-relative, as before.
+        // Same containment as every other path-taking tool (resolvePath.ts): grep handed its
+        // `path` to a subprocess raw, so `../` searched OUTSIDE the workspace (review 2026-09-05).
+        // Rooted at cwd so hits print workspace-relative.
         const root = effectiveRootUri().fsPath;
         const target = rel && rel.trim() ? path.relative(root, resolveWorkspacePath(rel).fsPath) || '.' : '.';
         const merged = runAbort || options.abortSignal

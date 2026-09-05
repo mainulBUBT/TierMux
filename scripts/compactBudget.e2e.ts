@@ -1,22 +1,9 @@
-/* Compaction: the budget comes from the SERVED model, and the transcript surgery is the SDK's.
- *
- * Two regressions this locks down:
- *
- *  (1) The v3 rewrite replaced the per-window budget with a flat `COMPACT_BUDGET_TOKENS =
- *      32_768`, whose own comment admitted "the adaptive per-window scaling died with
- *      executionProfile". That constant is wrong in BOTH directions: an 8k-window free model's
- *      transcript can never reach 32k, so compaction never fires and the provider call
- *      overflows instead; a 200k model compacts at ~16% of its window and throws away evidence
- *      that comfortably fit. executionProfile.pruneTarget was still exported the whole time.
- *
- *  (2) compact.ts hand-rolled its own pass that stubbed EVERY tool result in the older half
- *      with "(result omitted — compacted)". pruneMessages (already on the adoption list, but
- *      used in zero files after the rewrite) does it granularly — and, critically, drops the
- *      assistant tool-call part together with its tool result, so the OpenAI wire never sees
- *      an orphaned tool_call_id. That invariant is what the last block here guards.
- *
- * Run: npm run test:e2e:compact-budget
- */
+/* Compaction: the budget comes from the SERVED model and the transcript surgery is the SDK's.
+ * (1) A flat 32k budget was wrong both ways — an 8k model never reached it and overflowed, a
+ * 200k model compacted at 16% and threw away evidence. (2) The hand-rolled pass stubbed EVERY
+ * older tool result; pruneMessages is granular and drops the assistant tool-call part with its
+ * result, so the wire never sees an orphaned tool_call_id — the last block guards that.
+ * Run: npm run test:e2e:compact-budget */
 import type { ModelMessage } from 'ai';
 import { compactIfNeeded, estimateTokens } from '../src/agent/core/compact';
 import { resolveExecutionProfile } from '../src/agent/executionProfile';

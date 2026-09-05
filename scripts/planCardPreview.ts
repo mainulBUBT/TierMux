@@ -1,15 +1,7 @@
-/** Visual preview harness for the Plan card — renders the real component from the real card
- *  text, so the design can be inspected in a plain browser without a model, a provider, or the
- *  extension host.
- *
- *  Why it exists: judging the card through a live turn couples "does the design look right?" to
- *  "did a free-tier model call the tool?" — and on 2026-09-01 two different models answered a
- *  question ABOUT plan mode by pasting the schema, so no card ever rendered and the design was
- *  never actually on screen. This decouples them. `npm run preview:plan`, then open
- *  dist/planCardPreview.html.
- *
- *  The input is deliberately the OUTPUT of formatPlanForCard, not a hand-written PlanData: what
- *  you see here is exactly what the webview builds from what the tool emits. */
+/** Visual preview harness for the Plan card: renders the real component from the real card text
+ *  in a plain browser, decoupling "does the design look right?" from "did a free-tier model call
+ *  the tool?" (2026-09-01: no card ever rendered). Input is the OUTPUT of formatPlanForCard.
+ *  `npm run preview:plan`, then open dist/planCardPreview.html. */
 import { createPlan, planDataFromStepText } from '../media/src/ui/components';
 
 // The card text is produced by the REAL formatPlanForCard, but on the Node side of the build

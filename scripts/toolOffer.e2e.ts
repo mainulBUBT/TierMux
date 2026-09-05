@@ -1,19 +1,8 @@
-/* The tool offer is sized to the serving model's context window.
- *
- * Measured 2026-08-30: the agent toolset serializes to ~3,570 tokens of JSON Schema on EVERY
- * request (14 tools; webSearch 533, readFile 505, todoWrite 470, editFile 396, delegateTask
- * 270 …). Against an 8k-window model — whose whole compaction budget is 6,963 — that is 51%
- * of the budget spent before a single message is sent.
- *
- * The fix is `activeTools` in prepareStep, and the interesting half is what it does NOT drop.
- * Only the two COORDINATION tools go: the model still reads, searches, edits, runs commands
- * and browses, it just doesn't keep a todo list or spawn a sub-agent. The web tools are the
- * single largest schema in the set and are deliberately kept — tools/v3/index.ts records that
- * they were "restored from the v2 toolset after live deflections", i.e. withdrawing a
- * capability makes the model refuse the task rather than do it more cheaply.
- *
- * Run: npm run test:e2e:tool-offer
- */
+/* The tool offer is sized to the serving model's window. Measured 2026-08-30: the agent toolset
+ * is ~3,570 tokens of JSON Schema per request — 51% of an 8k model's compaction budget before a
+ * message is sent. `activeTools` drops only the two COORDINATION tools (todo list, sub-agent);
+ * the web tools are the largest schema and deliberately kept, since withdrawing a capability
+ * makes the model refuse the task rather than do it cheaper. Run: npm run test:e2e:tool-offer */
 import { createMockModel } from './mockModel';
 import { runAgentStream } from '../src/agent/agent';
 import { __setEngineModelForTests } from '../src/agent/core/engine';

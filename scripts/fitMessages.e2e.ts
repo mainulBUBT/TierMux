@@ -1,20 +1,8 @@
-/* fitMessages must never drop the task the model is being asked to do.
- *
- * From a 2026-08-13 audit: fitMessages runs on EVERY model call (routerProvider),
- * and filled the window newest-first. An agent turn is
- * `[system, user(task), assistant(tool_calls), tool, …]`, so the backward walk spent the whole
- * budget on recent tool output — a single capped readFile result is ~7.5k tokens — and the user's
- * task was the last thing standing, hence the first thing dropped. The follow-up
- * `while (kept[0].role !== 'user') kept.shift()` then emptied whatever remained.
- *
- * Measured before the fix, on the realistic turn below at a 2.5k budget (a free 8k-context model
- * after reserving output + tool schemas): the request went out as literally `["system"]` — no
- * user message at all. The provider either 400s ("messages must contain at least one user
- * message") or the model answers a question it was never shown. This is the mechanism behind the
- * "agent doesn't understand the project / ignores what I asked" symptom class.
- *
- * Run: npm run test:e2e:fit-messages
- */
+/* fitMessages must never drop the task the model is being asked to do (2026-08-13 audit): the
+ * newest-first fill spent the budget on tool output and, on a realistic turn at a 2.5k budget,
+ * shipped literally `["system"]` — the provider 400s or the model answers a question it never
+ * saw. This is the mechanism behind "the agent ignores what I asked".
+ * Run: npm run test:e2e:fit-messages */
 import { fitMessages, estimateMessagesTokens } from '../src/agent/budget';
 import type { ChatMessage } from '../src/shared/types';
 

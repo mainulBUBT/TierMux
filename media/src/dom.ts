@@ -1,8 +1,5 @@
-// Stateless DOM helpers extracted from the legacy main.ts (Phase D, PR1).
-// Every function here is pure / side-effect-contained with NO closure captures
-// on module state — safe to strict-check and import from anywhere in the webview.
-// Do NOT add helpers that close over `thread`, `state`, `targets`, etc. here;
-// those belong with the rendering/state layer (later Phase D PRs).
+// Stateless DOM helpers — pure, no closures over module state. Anything that needs `thread`,
+// `state` or `targets` belongs with the rendering layer, not here.
 
 /** querySelector shorthand. `root` defaults to `document`. */
 export function $(sel: string, root?: ParentNode | null): Element | null {
@@ -15,12 +12,8 @@ export function escapeHtml(s: unknown): string {
   return String(s).replace(/[&<>"]/g, (c) => map[c] ?? c);
 }
 
-/**
- * Transient toast tooltip. When `anchor` is given (and reports a rect) it
- * positions the toast just above the anchor (flipping below if there's no
- * room); otherwise it floats centered near the bottom of the viewport.
- * Self-removes after the animation.
- */
+/** Transient toast: above `anchor` when given (flipping below if no room), else centred near
+ *  the bottom. Self-removes after the animation. */
 export function showToast(text: string, anchor?: HTMLElement | null): void {
   const t = document.createElement('div');
   t.className = 'toast';

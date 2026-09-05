@@ -1,10 +1,5 @@
-/**
- * Central tuning knobs for the web engine. Defaults are intentional; change a
- * value here rather than scattering magic numbers across modules.
- *
- * The engine owns its own in-process LRU cache (see cache.ts) — TierMux has no
- * shared cache abstraction, so this stands alone by design, not oversight.
- */
+/** Central tuning knobs for the web engine — change values here, not as scattered magic numbers.
+ *  The engine owns its own LRU cache (cache.ts) by design; TierMux has no shared one. */
 export interface TierMuxWebConfig {
   /** Engines tried, in order, when the caller doesn't pin one. */
   defaultSearchEngines: string[];

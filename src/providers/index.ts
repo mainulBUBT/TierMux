@@ -15,11 +15,8 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'nvidia', name: 'NVIDIA NIM', baseUrl: 'https://integrate.api.nvidia.com/v1', forceSingleToolCall: true, keyUrl: 'https://build.nvidia.com' },
   { platform: 'mistral', name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', keyUrl: 'https://console.mistral.ai/api-keys' },
   { platform: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', reasoningStyle: 'openrouter', extraHeaders: { 'HTTP-Referer': 'https://github.com/mainulBUBT/TierMux', 'X-Title': 'tiermux' }, keyUrl: 'https://openrouter.ai/keys' },
-  // GitHub Models was fully retired on 2026-07-30 — the inference API, catalog, playground and
-  // BYOK are all gone. Verified 2026-08-20: models.github.ai returns HTTP 410
-  // ("github_models_retirement_brownout") and the legacy models.inference.ai.azure.com returns
-  // 404. Kept as a commented-out record so nobody re-adds it from an old README:
-  // { platform: 'github', name: 'GitHub Models', baseUrl: 'https://models.github.ai/inference', ... }
+  // GitHub Models retired 2026-07-30 (models.github.ai → HTTP 410, verified 2026-08-20). Do not
+  // re-add from an old README.
   { platform: 'zhipu', name: 'Zhipu AI', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', keyUrl: 'https://open.bigmodel.cn' },
   { platform: 'huggingface', name: 'HuggingFace Router', baseUrl: 'https://router.huggingface.co/v1', keyUrl: 'https://huggingface.co/settings/tokens' },
   { platform: 'ollama', name: 'Ollama Cloud', baseUrl: 'https://ollama.com/v1', timeoutMs: 120000, skipPreflight: true, keyUrl: 'https://ollama.com/settings/keys' },
@@ -147,17 +144,10 @@ export interface RemoteProviderDef {
   keyless?: boolean;
 }
 
-/** Merge provider definitions fetched from the remote catalog into the live registry.
- *  - Brand-new platforms become a registered OpenAI-compat provider (so a newly added
- *    upstream is usable without an extension update).
- *  - Existing compat providers get their base URL (and key/keyless/name when given)
- *    refreshed — useful when an upstream moves endpoints and the hardcoded value is now
- *    stale or "missing".
- *  - Providers with a dedicated implementation (Google, Cloudflare) are never touched,
- *    since swapping in a generic OpenAI-compat instance would lose their custom code.
- *  Returns the number of entries that caused a real change (a new platform, or a changed
- *  base URL/key/keyless/name), so callers can avoid noisy "changed" notifications when the
- *  remote payload merely repeats what is already registered. */
+/** Merge remote-catalog provider definitions into the registry: new platforms become an
+ *  OpenAI-compat provider, existing compat providers get base URL/key/keyless/name refreshed,
+ *  dedicated implementations (Google, Cloudflare) are never touched. Returns the count of real
+ *  changes so callers can skip noisy "changed" notifications. */
 export function upsertCompatFromCatalog(defs: RemoteProviderDef[]): number {
   let applied = 0;
   for (const d of defs) {

@@ -1,12 +1,7 @@
-// runShell (src/agent/core/tools/shell.ts) — the one spawn path behind the runCommand tool and
-// the verify gate. Verifies the abort/timeout tree-kill:
-//   1. An in-flight `sleep 60` dies on abort() (the Stop-button path).
-//   2. The shell's own children die too — without `detached: true` only the shell is signalled
-//      and a backgrounded `sleep` keeps running.
-//   3. An unrelated concurrent shell is not collateral.
-//   4. A timeout kills the same way and says so.
-//
-// Run: npm run test:e2e:abort-stops-shell
+// runShell — the one spawn path behind runCommand and the verify gate. Verifies the abort/timeout
+// tree-kill: an in-flight `sleep 60` dies on abort(); the shell's children die too (without
+// `detached: true` only the shell is signalled); an unrelated shell is not collateral; a timeout
+// kills the same way and says so. Run: npm run test:e2e:abort-stops-shell
 import { runShell } from '../src/agent/core/tools/shell';
 
 let failures = 0;

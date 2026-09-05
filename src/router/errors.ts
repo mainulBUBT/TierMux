@@ -3,11 +3,9 @@
 import type { Platform } from '../shared/types';
 
 export class AllModelsFailedError extends Error {
-  /** Why enabled models never became candidates this turn — keeps the report honest when the
-   *  pool the user sees ("eto models on") is larger than the pool this turn could actually try.
-   *  Live repro (2026-08-25): "All 5 configured models are unavailable" while a dozen models
-   *  were toggled on — the untried rest were silent casualties of the tools/key/deprecated
-   *  pre-filters, and the message counted only the survivors. */
+  /** Why enabled models never became candidates this turn — "All 5 configured models are
+   *  unavailable" while a dozen were toggled on (2026-08-25) counted only the pre-filter
+   *  survivors. */
   constructor(
     readonly failures: Array<{ platform: Platform; model: string; reason: string; detail?: string }>,
     readonly context?: { total: number; hiddenNoKey: number; hiddenNoTools: number; hiddenUnavailable: number },
@@ -84,15 +82,9 @@ export class AllModelsFailedError extends Error {
   }
 }
 
-/**
- * Thrown when a message carries a visual attachment (an image, or a PDF whose
- * text couldn't be extracted) but no vision-capable model can be found anywhere in the
- * catalog — not even as a last-resort fallback. Better to stop here with an actionable
- * message than to send a turn a text-only model can never fulfill — the model would just
- * refuse ("I can't read this PDF") after burning a request. See candidates(): the vision
- * filter keys off taskKind==='vision' and widens to the full catalog before giving up, so
- * this should only fire when the user has no API key configured for any vision provider.
- */
+/** A message carries a visual attachment but no vision-capable model exists anywhere in the
+ *  catalog (candidates() already widens to the full catalog first). Stopping here beats burning
+ *  a request on a text-only model that will refuse. */
 
 export class NoVisionModelError extends Error {
   constructor(reason: 'no_vision_model' | 'no_raw_pdf_provider' = 'no_vision_model') {

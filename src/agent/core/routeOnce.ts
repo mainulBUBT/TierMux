@@ -1,19 +1,9 @@
-// One non-streaming completion through the v3 picker — the replacement for `Router.route()`
-// on the utility path (titles, commit messages, condense, handoff, inline chat/completions,
-// grounding verify). Plan §4.2, 2026-09-05.
-//
-// WHY THIS EXISTS RATHER THAN A THIN WRAPPER OVER THE ROUTER
-// The Router never failed over on a FORCED pick — `route({ model })` tried exactly that model
-// and threw. Every caller therefore hand-rolled its own retry ladder, and condense.ts carried
-// the same 25-line ladder twice (once in condenseHistory, once in generateHandoff), each with
-// slightly different exclude bookkeeping. Here failover is the default: the picker's chain is
-// walked, dead keys rotate within a candidate, and a platform that returns an account-level
-// refusal is dropped for the rest of the call. A `model` is a PREFERENCE for the head of the
-// chain, never a cage — no utility caller wants "this model or nothing", which is exactly the
-// semantics that made them all write ladders.
-//
-// Deliberately NOT an AI-SDK LanguageModel: utility callers want one string back. The SDK
-// shape is what createRouterProvider is for (the engine path).
+// One non-streaming completion through the v3 picker, for the utility path (titles, commit
+// messages, condense, handoff, inline completions). Failover is the default here: the chain is
+// walked, dead keys rotate within a candidate, and an account-level refusal drops the platform
+// for the rest of the call. `model` is a PREFERENCE for the head of the chain, never a cage — the
+// old Router forced it and threw, so every caller hand-rolled its own retry ladder.
+// Deliberately not an AI-SDK LanguageModel: utility callers want one string back.
 
 import type { ChatMessage, Platform, ReasoningEffort } from '../../shared/types';
 import { resolveProvider } from '../../providers';
@@ -154,13 +144,8 @@ export async function routeOnceOrUndefined(
   }
 }
 
-/** `tiermux.utilityModel` as a PREFERENCE (undefined when 'auto'/unset/headless).
- *
- *  Replaces `Router.pickUtilityModel()`, whose hand-rolled keyless chain is now just the
- *  picker's `trivial` task table. The behavioural change is deliberate: the Router FORCED this
- *  model and threw when its key was dead, so every caller wrapped it in a try/catch that
- *  re-routed unforced. Passed to routeOnce it heads the chain and the rest is failover, which
- *  is what those catch blocks were reconstructing by hand. */
+/** `tiermux.utilityModel` as a PREFERENCE (undefined when 'auto'/unset/headless). Heads the
+ *  chain; the rest is failover — which is what every caller's try/catch used to rebuild. */
 export function utilityModelPreference(): string | undefined {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports

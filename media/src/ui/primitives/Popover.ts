@@ -1,12 +1,6 @@
-// Reusable anchored popover — the shared chrome + behavior for the composer's picker
-// popovers (agent type, model). The old hand-rolled pickers each duplicated the same
-// open/close recipe (`.hidden` toggle, stopPropagation on the trigger, document
-// click-away, window blur, visibilitychange); this primitive owns all of it plus mutual
-// exclusion: opening one registered popover closes any other that is open.
-//
-// Positioning is pure CSS: `.tm-popover` is absolutely positioned relative to this
-// wrapper (`.tm-pop-wrap`), anchored above the trigger — the same recipe the old
-// `.mode-pop`/`.model-pop` used, now defined once in styles/components/composer.css.
+// Reusable anchored popover for the composer's pickers: owns the open/close recipe (`.hidden`
+// toggle, click-away, blur, visibilitychange) plus mutual exclusion — opening one closes any
+// other. Positioning is pure CSS (`.tm-popover` inside `.tm-pop-wrap`, composer.css).
 
 import { el } from '../dom';
 

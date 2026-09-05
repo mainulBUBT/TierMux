@@ -1,22 +1,9 @@
-/* Tool-output aging — the budget-independent sibling of compactIfNeeded.
- *
- * compactIfNeeded only fires at 80% of the model's window, so a big-window model carries
- * EVERY tool result verbatim through every remaining step: one readFile returns up to 30k
- * chars, an agent turn runs 15–25 round trips, and each one re-prefills the whole history
- * (free gateways don't prompt-cache). ageToolOutputs elides all but the most recent tool
- * message's text outputs into instructive stubs — the same move OpenCode/Kilo make, which
- * is why the same "slow" models feel fast there.
- *
- * Regressions this locks down:
- *   1. The most recent tool message stays verbatim; older fat ones are stubbed.
- *   2. Stubs are instructive (tool + input named, re-run hint) — never a dead reference.
- *   3. Short outputs and error payloads stay untouched (no churn, recovery path intact).
- *   4. Idempotent across steps: stubbing an already-stubbed transcript changes nothing,
- *      matching prepareStep's sticky-override semantics.
- *   5. User/assistant text messages are never touched.
- *
- * Run: npm run test:e2e:tool-output-aging
- */
+/* Tool-output aging — the budget-independent sibling of compactIfNeeded, which fires only at
+ * 80% of the window and so let a big-window model re-send every 30k readFile result on each of
+ * 15–25 round trips. Locks down: the most recent tool message stays verbatim; stubs are
+ * instructive (tool + input named, re-run hint); short outputs and errors stay untouched;
+ * idempotent across steps; user/assistant text is never touched.
+ * Run: npm run test:e2e:tool-output-aging */
 import type { ModelMessage } from 'ai';
 import { ageToolOutputs } from '../src/agent/core/compact';
 

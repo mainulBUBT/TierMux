@@ -1,10 +1,7 @@
-// Model picker: task kind → candidate chain, plus a per-model cooldown and the declared
-// rpm/rpd windows. No learned scoring, no hedging, no session pin — a user can read the table
-// and know which model answers what. (A learned TTFT/slow-model demotion was tried for one day
-// in 2026-09 and removed; the static speedRank tail sort covers the same case. Do not re-add.)
-//
-// Sources (catalog/settings/secrets) are injected once at activation via setModelSources;
-// headless callers that never set them get keyless platforms from the static registry.
+// Model picker: task kind → candidate chain, plus per-model cooldown and declared rpm/rpd
+// windows. No learned scoring, no hedging, no session pin — the table is readable. (A learned
+// slow-model demotion was tried for a day in 2026-09 and removed; do not re-add.) Sources are
+// injected at activation via setModelSources; headless callers get keyless platforms only.
 
 import type { Catalog } from '../catalog/catalog';
 import type { SettingsStore } from '../config/settingsStore';
@@ -209,6 +206,36 @@ export function noteModelFailure(platform: string, modelId: string, status: numb
   else if ((status === 400 || status === 413) && toolsOffered) sources.secrets.markToolIncompatible?.(platform as never, modelId);
 }
 
+/** The model behind a catalog row, independent of who serves it: `openai/gpt-oss-120b` on
+ *  groq, `gpt-oss-120b` on cerebras and `openai/gpt-oss-120b:free` on openrouter are one
+ *  model. Ranking is by MODEL; speed stays per row, because the same weights on a slow gateway
+ *  genuinely are slower. */
+export function canonicalModelId(modelId: string): string {
+  return modelId.toLowerCase()
+    .replace(/^[^/]+\//, '')            // vendor namespace: openai/, nvidia/, @cf/meta/…
+    .replace(/:(free|latest)$/, '')       // gateway tier suffix
+    .replace(/-free$/, '')
+    .replace(/[-_.]instruct$|[-_.]it$/, '');
+}
+
+/** Intelligence rank per MODEL, not per row. The catalog derives a rank per provider row, so
+ *  the same model carried different ranks on different gateways (nemotron-3-super: 2 on kilo,
+ *  6 on openrouter) and the tail interleaved them as if they were different models. The best
+ *  rank any provider reports for the model is the model's rank. */
+function rankByModel(keys: Iterable<string>): Map<string, number> {
+  const best = new Map<string, number>();
+  if (!sources) return best;
+  for (const key of keys) {
+    const platform = key.split('::')[0];
+    const modelId = key.split('::').slice(1).join('::');
+    const r = sources.catalog.find(platform, modelId)?.intelligenceRank;
+    if (typeof r !== 'number') continue;
+    const id = canonicalModelId(modelId);
+    best.set(id, Math.min(best.get(id) ?? Number.POSITIVE_INFINITY, r));
+  }
+  return best;
+}
+
 /** Monotonic per-task-kind counter driving the equal-rank rotation — module-level so it
  *  advances across turns within a session (and across sessions sharing this module).
  *  Post-increment: the FIRST call returns 0 (no rotation — picker order stands until a
@@ -385,6 +412,7 @@ export async function selectModel(
   // first (settings order let whichever model sat first serve every task — 2026-08-28,
   // nemotron-3-ultra-free). Pinned models are exempt.
   const ranked: Array<{ key: string; rank: number; speed: number }> = [];
+  const modelRank = rankByModel(enabled);
   for (const key of enabled) {
     // Already chained (pin/table pick)? Skip BEFORE re-picking: pick() would overwrite the
     // entry's original label ('pinned by you' / 'task table (chat)') with 'enabled model' and
@@ -396,24 +424,31 @@ export async function selectModel(
     const platform = key.split('::')[0];
     const modelId = key.split('::').slice(1).join('::');
     const meta = sources.catalog.find(platform, modelId);
-    ranked.push({ key: picked, rank: meta?.intelligenceRank ?? Number.POSITIVE_INFINITY, speed: meta?.speedRank ?? 5 });
+    ranked.push({
+      key: picked,
+      rank: modelRank.get(canonicalModelId(modelId)) ?? meta?.intelligenceRank ?? Number.POSITIVE_INFINITY,
+      speed: meta?.speedRank ?? 5,
+    });
   }
-  // Tail order: speed class first, then intelligence rank — stable, both from the CATALOG.
-  // A catalog speedRank-5 model (397B-class, a minute of prefill on a free gateway) stays in
-  // the pool as a last resort but is never rotated into the head — quota rotation once put
-  // ovh::Qwen3.5-397B at the head and a chat turn took ~5 minutes (2026-09-04).
+  // Tail order: speed class, then MODEL rank, then this row's speed (the fastest gateway for a
+  // model leads its slower twins) — all from the catalog. A speedRank-5 row (397B-class, a
+  // minute of prefill on a free gateway) stays in the pool as a last resort but is never
+  // rotated into the head (2026-09-04: a chat turn took ~5 minutes that way).
   const slowCapable = (e: { speed: number }): number => (e.speed >= 4 ? 1 : 0);
-  ranked.sort((a, b) => slowCapable(a) - slowCapable(b) || a.rank - b.rank);
-  // Quota-spreading within one rank: rotate the head of each equal-rank group so the NEXT
-  // turn leads with a different peer ("600 models, but it keeps using the same 1-2").
+  ranked.sort((a, b) => slowCapable(a) - slowCapable(b) || a.rank - b.rank || a.speed - b.speed);
+  // Quota-spreading among peers: rotate the head of each equal-rank-and-speed group so the
+  // NEXT turn leads with a different peer ("600 models, but it keeps using the same 1-2").
   // Deterministic per taskKind via a counter — no RNG.
   {
     const counter = nextTaskRound(taskKind);
     let i = 0;
     while (i < ranked.length) {
       const groupRank = ranked[i].rank;
+      const groupSpeed = ranked[i].speed;
       let j = i;
-      while (j < ranked.length && ranked[j].rank === groupRank) j++;
+      // Peers = same model rank AND same speed class, so rotation never lifts a slower
+      // gateway above a faster one carrying the same quality.
+      while (j < ranked.length && ranked[j].rank === groupRank && ranked[j].speed === groupSpeed) j++;
       if (j - i > 1 && Number.isFinite(groupRank)) {
         const offset = counter % (j - i);          // 0..(groupSize-1)
         const rotated = [...ranked.slice(i, j).slice(offset), ...ranked.slice(i, j).slice(0, offset)];

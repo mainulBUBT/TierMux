@@ -1,20 +1,9 @@
-/* A reply cut off by the output-token budget (finish_reason "length") must get exactly ONE
- * mechanical continuation pass, and the shipped answer must be BOTH halves.
- *
- * Live repro (2026-08-30, Cloudflare @cf/deepseek-ai/deepseek-r1-distill-qwen-32b, two turns
- * in one session): each reply cut mid-sentence ("…making sure to cite the specific files and
- * lines where I"), finish 'length', 2m24s — the distill burned its whole output budget on
- * think-style narration before the answer began. AI SDK v7 (unlike v4's `continueSteps`)
- * never continues a 'length' step on its own, and engine.ts's act/report-gap nudge fires only
- * on 'stop', so the cut answer used to ship truncated with nothing behind it.
- *
- * Locks the one-continuation invariant too (invariant 3): a second 'length' in a row must NOT
- * grow a ladder, and a nudge pass that is ITSELF length-cut must not chain into this guard —
- * onEnd overwrites outcome.finishReason with the continuation's own reason, so the two guards
- * do not exclude each other on their own.
- *
- * Run: npm run test:e2e:length-continue
- */
+/* A reply cut off by the output budget (finish 'length') gets exactly ONE mechanical
+ * continuation and the shipped answer is BOTH halves. Repro 2026-08-30, Cloudflare
+ * deepseek-r1-distill-qwen-32b: cut mid-sentence after 2m24s of think-narration; AI SDK v7 never
+ * continues a 'length' step and the act/report-gap nudge fires only on 'stop'. Also locks the
+ * one-continuation invariant: a second 'length' must not grow a ladder, and a length-cut nudge
+ * pass must not chain into this guard. Run: npm run test:e2e:length-continue */
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';

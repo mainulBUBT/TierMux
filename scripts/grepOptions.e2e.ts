@@ -1,27 +1,8 @@
-/* grep must be able to answer "which files?" and "what's around it?" without a readFile —
- * and must not lose what it found.
- *
- * The tool shipped with pattern/path/glob only, so two of the commonest search shapes each
- * cost an extra round trip and a large payload:
- *   - "where is X used?" returned every matching LINE (~20KB cap) when the answer was a list
- *     of paths;
- *   - "what does the code around X look like?" had no way to widen, so the model followed the
- *     grep with a whole-file readFile.
- * ripgrep already does both (-l, -C, -i); only the schema withheld them.
- *
- * The review of that change (2026-09-05) then found three older faults in the same function,
- * pinned here too:
- *   - `path` went to ripgrep raw, so `../` searched OUTSIDE the workspace — the containment
- *     every other path-taking tool has (resolvePath.ts), grep alone lacked;
- *   - rg exits 2 when ANY path errors (a chmod-000 dir, a dangling symlink) even with matches
- *     on stdout, and the close handler turned that into {error}, discarding the matches;
- *   - at the 20KB cap rg was never killed, so it ran on until the 15s timer REJECTED — and
- *     threw away the 20KB already buffered.
- *
- * These assertions are about the OUTPUT SHAPE, not about any model behaving better with it.
- *
- * Run: npm run test:e2e:grep-options
- */
+/* grep must answer "which files?" (-l) and "what's around it?" (-C) without a readFile, and must
+ * not lose what it found. Also pins three older faults from the 2026-09-05 review: `path` went
+ * to ripgrep raw (so `../` searched OUTSIDE the workspace); rg exit 2 with matches on stdout was
+ * turned into {error}; and at the 20KB cap rg was never killed, so the timer rejected and threw
+ * away the buffer. Assertions are about OUTPUT SHAPE only. Run: npm run test:e2e:grep-options */
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';

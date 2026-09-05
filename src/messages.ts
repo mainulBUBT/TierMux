@@ -4,14 +4,9 @@ import type { WorkReportData } from './shared/workReport';
 import type { McpServerConfig } from './mcp/mcpClient';
 export type { McpServerConfig, McpLocalServerConfig, McpRemoteServerConfig, McpOAuthConfig } from './mcp/mcpClient';
 
-/**
- * Anything a user attaches to a message. Three sending modes:
- *  - 'file' / 'doc' / 'pdf' carry extracted `text` so any text model can answer.
- *  - 'image' / 'pdf' additionally carry a `dataUrl` so a vision-capable model
- *    (Gemini, Groq Vision, Pixtral, …) can also see the original. For PDFs on
- *    Gemini the dataUrl is the canonical "send the PDF as-is" path; everywhere
- *    else the text is the source of truth and the dataUrl is ignored.
- */
+/** Anything a user attaches. 'file' / 'doc' / 'pdf' carry extracted `text` for any model;
+ *  'image' / 'pdf' also carry a `dataUrl` for vision models. For PDFs on Gemini the dataUrl is
+ *  the canonical path; elsewhere the text is the truth and the dataUrl is ignored. */
 export type AttachmentKind = 'file' | 'image' | 'pdf' | 'doc';
 
 export interface Attachment {

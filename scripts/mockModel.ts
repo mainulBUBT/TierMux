@@ -1,12 +1,7 @@
-// POC ONLY — scripted LanguageModelV4 for the v3 foundation scenarios (step 1 of the plan).
-// Test infrastructure: moved out of src/agent/poc/ to scripts/ on 2026-09-05 when the rest of
-// the POC was deleted. Every e2e that needs a scripted LanguageModelV4 imports it from here.
-//
-// The script is a FIFO queue: every doStream/doGenerate call pops the next response.
-// A response can be plain text (final answer), native tool calls (args as an object —
-// serialized to the raw JSON string the SDK's parseToolCall expects), or a raw/malformed
-// input string to exercise the InvalidToolInputError path, or an unknown tool name to
-// exercise NoSuchToolError. `hang` emulates a stalled provider so abort can be tested.
+// Scripted LanguageModelV4 for the e2e suites (moved here from the deleted POC, 2026-09-05). The
+// script is a FIFO: each doStream/doGenerate pops the next response — plain text, native tool
+// calls (args as an object), a raw/malformed input string (InvalidToolInputError), an unknown tool
+// name (NoSuchToolError), or `hang` to emulate a stalled provider for abort tests.
 
 import type {
   LanguageModelV4,

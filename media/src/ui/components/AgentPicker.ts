@@ -1,11 +1,5 @@
-// Agent type picker — the composer's primary control ("how the assistant handles my
-// message"). A per-mode tinted trigger pill opening a popover of rich agent cards:
-// icon tile, name, full description, capability chips (read-only / edits after
-// approval / full access), and a check on the selected mode.
-//
-// The mode DATA (values, labels, descriptions) stays owned by main.ts (it also drives
-// placeholders and the sendMessage payload); this component only renders + reports
-// selection changes.
+// Agent type picker — tinted trigger pill opening a popover of mode cards (icon, name,
+// description, capability chips). Mode DATA stays owned by main.ts; this renders and reports.
 
 import { el, icon } from '../dom';
 import { ICON } from '../../icons';

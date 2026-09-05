@@ -1,12 +1,7 @@
 
-// Auto-enrichment for outgoing user prompts: a hidden, model-facing snapshot of what the user
-// is looking at (active file, selection, cursor) plus that file's live diagnostics. The visible
-// transcript is untouched — only the MODEL-facing copy of the message gains this block, so a bare
-// "fix this" still resolves to the right place without the user spelling it out.
-//
-// Reuses formatDiagnosticEntries (the same formatter the getDiagnostics tool uses) so enrichment
-// diagnostics read identically to an explicit tool call. Returns `null` (never '') when there is
-// nothing to add — callers treat null as "skip".
+// Auto-enrichment for outgoing prompts: a hidden, MODEL-facing snapshot of the active file,
+// selection, cursor and that file's diagnostics (same formatter as the getDiagnostics tool), so
+// a bare "fix this" resolves. The visible transcript is untouched. Null when nothing to add.
 
 import * as vscode from 'vscode';
 import { formatDiagnosticEntries } from '../agent/core/tools/workspace/formatDiagnostics';

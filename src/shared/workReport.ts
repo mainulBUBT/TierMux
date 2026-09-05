@@ -1,11 +1,6 @@
-/**
- * Structured end-of-turn report — the durable representation of what a turn did. Imported by
- * BOTH the host and the webview bundle: type-only imports only, no runtime imports.
- *
- * Token semantics: TurnTelemetry.inputTokens/outputTokens accumulate across ALL model calls
- * of the turn (turn COST); ContextTelemetry.contextTokens is the MOST RECENT request's context
- * size (window PRESSURE), measured against the SERVING model's window.
- */
+/** Structured end-of-turn report, imported by host AND webview (type-only imports here).
+ *  TurnTelemetry tokens accumulate across the turn's model calls (COST); ContextTelemetry is the
+ *  most recent request's context size against the serving model's window (PRESSURE). */
 
 import type { TaskKind } from '../agent/routing';
 

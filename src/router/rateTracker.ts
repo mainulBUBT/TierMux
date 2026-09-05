@@ -5,19 +5,10 @@ import type { QuotaStore } from '../config/quotaStore';
 const MIN_MS = 60_000;
 const DAY_MS = 86_400_000;
 
-/**
- * Conservative stand-ins for a limit the catalog declares as exactly `0`.
- *
- * `0` is never a real rate limit — it means the source spreadsheet cell was blank or garbled.
- * The old falsy check (`if (!rpmLimit && !rpdLimit) return true`) read it as "no limit at all",
- * so the models that looked MOST restricted were the only ones with no throttling whatsoever,
- * and they hammered their provider straight into 429s. Guessing low is the safe direction: an
- * over-tight guess costs some throughput, an over-loose one costs the whole provider.
- *
- * `null`/`undefined` still mean genuinely unlimited — that is the custom-endpoint case (local
- * llama.cpp / LM Studio), where there really is no quota. Every catalogued model carries a
- * positive number, so the two cases never collide.
- */
+/** Stand-ins for a limit the catalog declares as exactly `0` — never a real limit, just a blank
+ *  sheet cell. The old falsy check read it as "unlimited", so the most restricted-looking models
+ *  had no throttling and hammered straight into 429s. `null`/`undefined` still mean genuinely
+ *  unlimited (custom/local endpoints); every catalogued model carries a positive number. */
 const UNKNOWN_RPM = 5;
 const UNKNOWN_RPD = 200;
 
@@ -31,11 +22,8 @@ export class RateTracker {
 
   private ts = new Map<string, number[]>();
 
-  /**
-   * @param store Optional persistent ledger. When given, the tracker hydrates its windows from
-   *  the last session's stamps (so a window reload keeps respecting RPM/RPD already consumed)
-   *  and writes each model's stamps back (debounced inside the store).
-   */
+  /** @param store Optional persistent ledger: hydrates windows from the last session's stamps and
+   *  writes each model's stamps back (debounced inside the store). */
   constructor(private readonly store?: QuotaStore) {
     if (store) this.ts = store.snapshot();
   }
@@ -63,13 +51,9 @@ export class RateTracker {
     this.store?.setStamps(key, stamps);
   }
 
-  /**
-   * Remaining quota as a fraction [0..1] against the *tightest* declared limit — 1 = untouched,
-   * 0 = at the cap. Unlike `canSend` (a cliff that only fires once you've already hit the wall)
-   * this is a gradient, so a model at 90% of its daily allowance yields to an idle peer before
-   * either one is exhausted. Models with no declared limit report 1 (neutral, not "infinite
-   * headroom") so they neither gain nor lose against limited peers.
-   */
+  /** Remaining quota as a fraction [0..1] of the tightest declared limit — a gradient, unlike
+   *  canSend's cliff, so a model at 90% of its daily allowance yields to an idle peer. No declared
+   *  limit reports 1 (neutral). */
   headroom(platform: string, modelId: string, rpmRaw: number | null, rpdRaw: number | null): number {
     const rpmLimit = declared(rpmRaw, UNKNOWN_RPM);
     const rpdLimit = declared(rpdRaw, UNKNOWN_RPD);

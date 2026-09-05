@@ -27,21 +27,13 @@ function paramsB(id: string): number | undefined {
 
 const clampRank = (n: number): number => Math.max(1, Math.min(5, Math.round(n)));
 
-/**
- * Intelligence ranks (1 = frontier … 5 = weak) for well-known model families, from public
- * MMLU-Pro / GPQA / HumanEval leaderboards. Checked in order — first match wins, so list
- * specific families before generic ones; unmatched models fall through to the param-count
- * proxy in deriveMetadata(). Speed always derives from params (tokens/s scales ~1/params).
- * Keep ranges coarse: the goal is correct ordering, not false precision.
- */
+/** Intelligence ranks (1 = frontier … 5 = weak) for well-known families, from public MMLU-Pro /
+ *  GPQA / HumanEval boards. First match wins — specific before generic; unmatched models use the
+ *  param-count proxy. Coarse on purpose: correct ordering, not false precision. */
 const BENCH_INTEL: Array<[RegExp, number]> = [
-  // R1 distills/students (r1-distill-*, r1-<size>b, r1-0528-qwen3-*) are 1.5–70B students of
-  // the 671B teacher — mid-tier, slow, and think-loop prone: on Cloudflare, r1-distill-qwen-32b
-  // burned its whole 16k output budget narrating a plan and truncated mid-sentence
-  // (finish_reason=length, 2m24s, answer never started). Must be listed BEFORE `deepseek-r1\b`
-  // below, which otherwise matches them via the `-` word boundary and hands them frontier rank.
-  // The size branch lists the ACTUAL student sizes — a bare `-\d+b` also swallowed
-  // `deepseek-r1-671b`, i.e. the frontier teacher itself, and demoted it from rank 1 to 3.5.
+  // R1 distills (1.5–70B students) are mid-tier and think-loop prone (r1-distill-qwen-32b burned
+  // its whole 16k output narrating). Listed BEFORE `deepseek-r1\b`, which otherwise matches them;
+  // the size branch names the ACTUAL student sizes so it cannot swallow the 671B teacher.
   [/r1.{0,6}distill|deepseek-r1-(?:1\.5|7|8|14|32|70)b|r1-\d{4}-qwen/i, 3.5],
   // ---- Frontier / strong reasoning (1–1.5) ----
   [/nemotron.{0,4}ultra/i, 1],
@@ -91,17 +83,10 @@ function benchIntel(id: string): number | undefined {
   return undefined;
 }
 
-/**
- * Derive the curated-looking fields from whatever we have. Names carry most of the signal:
- * size, tier word, and specialty are all encoded there even for providers that return
- * nothing but an id. Deliberately conservative — an unrecognizable name lands on the
- * neutral middle rank (3) rather than pretending to a confidence we don't have.
- */
-/**
- * Well-known open/free vision-model families whose id doesn't contain "vision", "vl",
- * "multimodal", or "omni" — the generic keyword check below misses these, which was
- * silently routing image turns away from free models that can actually see them.
- */
+/** Derive the curated-looking fields from the id, which carries size, tier word and specialty
+ *  even when the provider returns nothing else. Conservative: unrecognised ⇒ neutral rank 3. */
+/** Open vision families whose id lacks "vision"/"vl"/"multimodal"/"omni" — the keyword check
+ *  missed them and routed image turns away from free models that can see. */
 const KNOWN_VISION_FAMILIES =
   /llava|moondream|pixtral|cogvlm|cogagent|minicpm-v|idefics|fuyu|florence-?2|glm-?4\.?\d*v\b/;
 

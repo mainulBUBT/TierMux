@@ -1,18 +1,8 @@
-// ResultCard — the structured end-of-turn work report (AI Elements "Result"-style).
-//
-// Renders WorkReportData — the durable, versioned object produced by the agent loop and
-// persisted on the transcript entry. The SAME component serves the live turn (posted via the
-// `workReport` message) and replay (renderAssistantStatic reads entry.workReport), so both
-// paths are pixel-identical by construction.
-//
-// Deliberately COMPACT: token/model/duration telemetry stays in the message footer where it
-// already lives — this card carries only what the footer CAN'T say: verification status and
-// what changed. No manual verify button: the agent owns the recheck (bounded fix rounds run
-// inside the turn; a failed card means the agent already tried), so the card never hands
-// verification work back to the user.
-//
-// Boundary: strict-checked, may only import from media/src/** + src/shared/** (type-only for
-// the latter). Host interaction is via callbacks (onDiffFile) — no send() here.
+// ResultCard — the structured end-of-turn work report. Renders WorkReportData for both the live
+// turn (`workReport` message) and replay (entry.workReport), so both are identical by
+// construction. Compact on purpose: telemetry stays in the footer; this carries only what the
+// footer cannot — verification status and what changed. No manual verify button: the agent owns
+// the recheck. Host interaction via callbacks (onDiffFile) only.
 
 import { el } from '../dom';
 import { fmtDuration } from '../../format';
@@ -46,14 +36,9 @@ const BADGE_CLS = { A: 'cp-created', M: 'cp-modified', D: 'cp-deleted' } as cons
 
 // ========== Component ==========
 
-/** Build the card from the WHOLE report object. Returns NULL when there is nothing the user
- *  needs to be told — a verified pass is the expected outcome, not news (the agent always
- *  verifies when it can), so success renders SILENT. The card only speaks when the outcome
- *  differs: a failed gate (after the agent's own fix rounds) or untested work.
- *
- *  "Untested" is only worth a card when this workspace HAS a check to run. When no stack in
- *  it offers one (verifyAvailable === false), there is nothing to say — the card stays
- *  silent too, rather than labelling every turn of every command-less project as untested. */
+/** Build the card, or NULL when there is nothing to tell: a verified pass is the expected
+ *  outcome, so success is SILENT; the card speaks only for a failed gate or untested work — and
+ *  "untested" only when the workspace HAS a check to run (verifyAvailable !== false). */
 export function createResultCard(report: WorkReportData, opts?: ResultCardOptions): HTMLElement | null {
   if (report.verifyOutcome === 'verified' || report.verifyOutcome === 'changes-only') return null;
   if (report.verifyOutcome === 'unverified' && report.verifyAvailable === false) return null;

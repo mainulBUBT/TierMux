@@ -260,13 +260,9 @@ export class OpenAIResponsesProvider extends BaseProvider {
     };
   }
 
-  /**
-   * The Responses API's SSE events (`response.output_item.added`, `response.output_text.delta`,
-   * `response.function_call_arguments.delta`, `response.completed`, …) are its own shape, not
-   * OpenAI Chat Completions' `choices[].delta` — `base.readSseStream` cannot be reused. Each
-   * event is translated to TierMux's internal chunk shape here, the same pattern google.ts and
-   * anthropic-messages.ts use for their own non-Chat-Completions streams.
-   */
+  /** Responses API SSE events (`response.output_text.delta`, `response.function_call_arguments.
+   *  delta`, …) are their own shape; translated to the internal chunk shape here like google.ts
+   *  and anthropic-messages.ts do. */
   async *streamChatCompletion(apiKey: string, messages: ChatMessage[], modelId: string, options?: CompletionOptions): AsyncGenerator<ChatCompletionChunk> {
     const res = await this.fetchWithTimeout(`${this.resolveBaseUrl(options)}/responses`, {
       method: 'POST',

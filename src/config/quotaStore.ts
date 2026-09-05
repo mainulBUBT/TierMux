@@ -1,19 +1,8 @@
 import * as vscode from 'vscode';
 
-/**
- * Persistent backing store for the Router's RateTracker (RPM/RPD accounting).
- *
- * RateTracker is in-memory by design — fast, no I/O on the hot path — which means a window
- * reload used to zero its rolling minute/day windows. The very next request after a reload
- * then re-hammered a provider that had just 429'd, re-learned the cooldown from scratch, and
- * burned another serial failover chain. This store keeps the raw request stamps in
- * globalState so a fresh RateTracker can hydrate them and keep respecting declared limits
- * across restarts.
- *
- * Same Memento idiom as UsageStore/MetricsStore: versioned shape, hydrate-once in the
- * constructor, debounced write-back (the tracker records on every outbound attempt; a
- * synchronous globalState write per request would be waste).
- */
+/** Persistent backing for the RateTracker's RPM/RPD windows. The tracker is in-memory, so a
+ *  window reload used to zero it and the next request re-hammered a provider that had just
+ *  429'd. Same Memento idiom as UsageStore: versioned shape, hydrate once, debounced write-back. */
 
 interface PersistedQuotaV1 {
   version: 1;
@@ -28,11 +17,8 @@ const DAY_MS = 86_400_000;
 const FLUSH_DELAY_MS = 2_000;
 /** Force a write after this many records even inside the debounce window. */
 const FLUSH_EVERY_N = 50;
-/**
- * Cap on stored stamps per model. The largest declared rpdLimit in the catalog is far higher
- * than any human-driven session will reach; past this cap the oldest stamps drop and the
- * provider's own 429 handling (learned reactively) takes over — globalState stays bounded.
- */
+/** Cap on stored stamps per model; past it the oldest drop and the provider's own 429 handling
+ *  takes over, so globalState stays bounded. */
 const MAX_STAMPS_PER_MODEL = 2_000;
 
 export class QuotaStore {

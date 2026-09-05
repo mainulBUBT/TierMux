@@ -43,13 +43,9 @@ export abstract class BaseProvider {
   preflightTimeoutMs?: number;
   skipPreflight = false;
   ttftTimeoutMs?: number;
-  /**
-   * Whether this provider actually forwards a `type:'file'` content block (raw PDF bytes) to the
-   * underlying API, as opposed to silently dropping it. Distinct from image support — most
-   * OpenAI-compat providers happily forward `image_url` blocks but have no code path for raw
-   * PDF file parts, so `supportsVision` alone is not a safe signal for PDF delivery. Defaults to
-   * false; only providers with real file-block handling should override it to true.
-   */
+  /** Whether this provider forwards a `type:'file'` block (raw PDF bytes) rather than dropping it.
+   *  Distinct from image support: most OpenAI-compat providers forward `image_url` but have no
+   *  code path for file parts. */
   carriesRawPdf = false;
 
   abstract chatCompletion(
@@ -66,14 +62,9 @@ export abstract class BaseProvider {
     options?: CompletionOptions,
   ): AsyncGenerator<ChatCompletionChunk>;
 
-  /** `init.signal`, if the caller set one (see CompletionOptions.abortSignal), is combined with
-   *  our own timeout-based controller — previously it was silently overwritten below, so an
-   *  external cancellation (Stop button, a sub-agent's own timeout) never reached the actual
-   *  in-flight request and only stopped FUTURE calls, not the one currently hanging. */
-  /** timeoutMs <= 0 runs with NO self-imposed timeout — only the caller's abortSignal governs
-   *  (Stop button, sub-agent timeouts). Used by custom endpoints: a local model on the user's
-   *  own hardware may legally take arbitrarily long (cold load + long generations), and there
-   *  is no cloud failover pool that could serve it faster. */
+  /** `init.signal` is combined with the timeout controller (it used to be overwritten, so Stop
+   *  never reached the in-flight request). timeoutMs <= 0 means NO self-imposed timeout — custom
+   *  endpoints, where a local cold load may legally take minutes. */
   protected async fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 60000): Promise<Response> {
     const controller = new AbortController();
     const timeout = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
@@ -100,11 +91,8 @@ export abstract class BaseProvider {
     if (!reader) throw new Error('No response body');
     const decoder = new TextDecoder();
     let buffer = '';
-    // Diagnostic capture (gated by tiermux.agent.diagTrace): the reader silently drops any
-    // line that isn't a `data:` JSON chunk. If an upstream answers stream:true with a plain
-    // JSON body, an HTML error page, or an alternate event format, every byte is skipped and
-    // the turn comes back "instant empty". Capture the content-type + first raw lines + any
-    // parse failures so the cause is visible in the "TierMux Diag" channel instead of silent.
+    // Diagnostic capture (tiermux.agent.diagTrace): the reader drops any non-`data:` line, so a
+    // plain JSON body or HTML error page on stream:true came back "instant empty" with no trace.
     let rawSampled = 0;
     let chunkCount = 0;
     const ctype = res.headers.get('content-type') || '<none>';

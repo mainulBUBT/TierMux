@@ -1,11 +1,5 @@
-// Minimal hyperscript-style element builder for ui/** components — cuts down the
-// `const x = document.createElement(...); x.className = ...; x.append(...)` repetition
-// that would otherwise recur in every new primitive/component.
-//
-// Distinct from the top-level media/src/dom.ts (which holds `$`/escapeHtml/showToast,
-// generic helpers used by main.ts directly): this one is specifically the DOM-building
-// primitive for the ui/** layer. Stateless, no closure captures — safe to import from
-// anywhere in the webview.
+// Hyperscript-style element builder for ui/** components. Distinct from media/src/dom.ts
+// (`$`/escapeHtml/showToast for main.ts). Stateless, safe to import anywhere in the webview.
 
 export type ElChild = Node | string | number | null | undefined | false;
 

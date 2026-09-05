@@ -1,20 +1,8 @@
-// exitPlanMode e2e — plan mode's planning→execution boundary as an explicit TOOL CALL.
-//
-// What this locks down (the 2026-08-31 plan-mode redesign):
-//   1. Toolset wiring — the tool exists ONLY in plan mode; plan mode still has no editors.
-//   2. Policy      — it is read-only, so it never puts an "Allow exitPlanMode?" prompt in
-//                    front of the real approval UI; edits stay hard-denied.
-//   3. Tool        — cleans/validates its input, hands the structure to the host, degrades to
-//                    { error } with no host callback (sub-agent/e2e contexts).
-//   4. Engine      — drives the REAL engine through the __setEngineModelForTests seam: the
-//                    tool call lands in AgentResult.plan AND ENDS THE TURN (stopWhen), so no
-//                    second model call re-narrates the plan under the card.
-//   5. Card text   — formatPlanForCard round-trips through the webview's OWN parsers
-//                    (Plan.ts parsePlanSteps + detectStepFiles), so no webview change is
-//                    needed to render a structured plan.
-//   6. isCleanNumberedList — the guard that skips the structurer model call for a plan that
-//                    is already clean.
-//
+// exitPlanMode e2e — the planning→execution boundary as an explicit TOOL CALL (2026-08-31).
+// Locks down: the tool exists only in plan mode (no editors there); it is read-only so it never
+// prompts; it validates input and degrades to { error } without a host; through the real engine
+// the call lands in AgentResult.plan AND ends the turn; formatPlanForCard round-trips through
+// the webview's own parsers; isCleanNumberedList skips the structurer for a clean plan.
 // Run: npm run test:e2e:exit-plan-mode
 
 import { createExitPlanModeTool } from '../src/agent/core/tools/v3/exitPlanMode';
@@ -220,13 +208,10 @@ async function main(): Promise<void> {
       model.calls[0].tools.includes('exitPlanMode'), JSON.stringify(model.calls[0].tools));
   }
 
-  // ── 4b. A REJECTED plan does not end the turn ─────────────────────────────
-  // stopWhen used to be hasToolCall('exitPlanMode'), which fired on the CALL: a plan the tool
-  // refused (blank steps here) ended the turn anyway, so the model never saw the error and the
-  // user got a dead turn with no card. `planAccepted` (engine.ts) stops on the accepted RESULT,
-  // which keeps the AI SDK's own tool-error path open — the { error } goes back as the next
-  // step's input and the model re-submits. Prerequisite for the schema tightening: every new
-  // rejection reason is only safe because of this.
+  // ── 4b. A REJECTED plan does not end the turn: stopWhen used to fire on the CALL, so a plan
+  // the tool refused ended the turn with no card. `planAccepted` stops on the accepted RESULT,
+  // keeping the SDK's tool-error path open so the model re-submits — every schema rejection
+  // reason is only safe because of this.
   {
     const model = createMockModel([
       { toolCalls: [{ toolName: 'exitPlanMode', input: { outcome: 'plan', title: 'x', interpretation: 'r', steps: [{ what: '   ' }] } }] },
@@ -263,18 +248,12 @@ async function main(): Promise<void> {
     }
   }
 
-  // ── 4b. plan-gap continuation nudge ────────────────────────────────────────
-  // Live repro (2026-08-31, Ollama/nemotron-3-ultra, "add a dark mode toggle to setting"):
-  // the model read its way through the codebase and then ended the turn on "Now let me check
-  // if there's any existing theme or dark mode support…" — no exitPlanMode call, so no plan
-  // card and 236 output tokens of narration shipped as the answer.
-  // ── 4c. The nudge accepts a QUESTION as a valid close ─────────────────────
-  // Live repro (2026-09-01, vendor order-view "category off / product status off"): the model
-  // could not tell whether the fix belonged in the shared Item::scopeActive() scope or only in
-  // the vendor controller. It narrated that hesitation rather than phrasing it as a question,
-  // so looksLikeQuestion did not spare it, and the old toolChoice pin would have compelled a
-  // plan — which is exactly what shipped: two steps that changed nothing. Asking must be a way
-  // to finish the nudged step, not something the wire forbids.
+  // ── 4b. plan-gap continuation nudge — 2026-08-31, nemotron-3-ultra ended the turn on "Now let
+  // me check if there's any existing theme…": no exitPlanMode call, 236 tokens of narration
+  // shipped as the answer.
+  // ── 4c. The nudge accepts a QUESTION as a valid close — 2026-09-01: the model narrated a
+  // hesitation instead of asking, and the old toolChoice pin compelled a plan that changed
+  // nothing. Asking must be a way to finish the nudged step.
   {
     const model = createMockModel([
       { toolCalls: [{ toolName: 'grep', input: { pattern: 'scopeActive', path: '.' } }] },

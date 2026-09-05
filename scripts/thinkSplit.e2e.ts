@@ -1,12 +1,7 @@
-// Think-splitting contract for the v3 streaming path (user-verified checklist):
-//   - `<think>` content goes to the REASONING channel, never pollutes chat text
-//   - tags split across chunk boundaries are handled at EVERY split position
-//   - duplicate reasoning (gateway sends thinking via BOTH native field and <think> markup)
-//     is suppressed — first channel to produce output wins
-//   - an unclosed think block (R1-style thinking to EOF) surfaces as reasoning on flush
-// Drives ThinkStripper.feedParts/flushParts and createStreamTextSplitter directly — no
-// provider, no network.
-// Run: npm run test:e2e:think-split
+// Think-splitting contract for the v3 streaming path: `<think>` content goes to the REASONING
+// channel; tags split across chunks work at EVERY split position; duplicate reasoning (native
+// field AND <think> markup) is suppressed, first channel wins; an unclosed block surfaces on
+// flush. Drives ThinkStripper and createStreamTextSplitter directly. Run: npm run test:e2e:think-split
 
 import { ThinkStripper } from '../src/util/thinkTags';
 import { createStreamTextSplitter, foldEmptyFinal, needsFinalNudge } from '../src/agent/core/routerProvider';

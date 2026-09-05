@@ -1,23 +1,10 @@
-// Rasterize a scanned PDF's pages to images, in the webview.
-//
-// WHY HERE and not in the extension host: a PDF with no text layer can only be read by a
-// model that can SEE it, and only Google forwards raw PDF bytes — every other provider
-// silently drops the file part. Rendering the pages to ordinary images fixes that for every
-// vision-capable model. Host-side rendering needs @napi-rs/canvas, whose native binding
-// Electron refuses to load ("Failed to load native binding"), so it can never work there.
-// The webview is a real browser: <canvas> is native, no binary required.
-//
-// Two constraints shape this file:
-//
-//  1. SIZE — pdf.js + its worker are ~1.4 MB, so they are NOT script tags in the webview
-//     HTML. `loadPdfJs()` injects them on demand the first time a scanned PDF is attached;
-//     a session that never attaches one never pays for it (same approach as mermaid).
-//
-//  2. CSP — the webview runs under `script-src <cspSource> 'nonce-…'`. pdf.js is an ES
-//     module, and a module's own `import` is matched against the SOURCE LIST, not the nonce
-//     (a nonce only authorizes the <script> element itself). So the loader injects a nonced
-//     inline module whose `import` is allowed by cspSource, and hands the namespace back on
-//     `window.__pdfjsLib__`. Its worker is likewise loaded from cspSource (`worker-src`).
+// Rasterize a scanned PDF's pages to images, in the webview. Only Google forwards raw PDF bytes;
+// page images work for every vision model, and host-side rendering is impossible (Electron
+// refuses @napi-rs/canvas's native binding) while <canvas> is native here.
+//  1. SIZE — pdf.js + worker (~1.4 MB) are injected on demand by loadPdfJs(), like mermaid.
+//  2. CSP — a module's own `import` is matched against the source list, not the nonce, so the
+//     loader injects a nonced inline module whose import cspSource allows, and hands the
+//     namespace back on `window.__pdfjsLib__`; the worker likewise loads from cspSource.
 
 /** Hard cap on rendered pages — each page becomes a separate image in the request, which is
  *  expensive in tokens and payload size, so a huge scan contributes a usable prefix instead
@@ -95,11 +82,8 @@ export interface PdfRenderResult {
   error?: string;
 }
 
-/**
- * Render the first pages of a PDF `data:` URL to image `data:` URLs.
- * Never throws — a failure resolves with `pages: []` and a reason, so the caller can fall
- * back to sending the raw file (which only Google can read) rather than losing the turn.
- */
+/** Render the first pages of a PDF `data:` URL to image `data:` URLs. Never throws — failure
+ *  resolves `pages: []` plus a reason so the caller can fall back to the raw file. */
 export async function renderPdfToPageImages(dataUrl: string): Promise<PdfRenderResult> {
   const lib = await loadPdfJs();
   if (!lib) return { pages: [], total: 0, error: 'pdf.js failed to load' };

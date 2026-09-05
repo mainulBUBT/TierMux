@@ -1,18 +1,7 @@
-/* A truncated file read must always say where to resume.
- *
- * Live repro 2026-08-30 3:47 PM: asked to trace order placement, the model read a 42,864-char
- * PlaceNewOrder.php, then ended the turn with "The file is very long (42,864 chars). Let me
- * continue reading from where it was cut off to see the rest of the `new_place_order` method."
- * — and stopped. It was not being lazy: readOne appended its "read again with offset=N" marker
- * at the END of the body, and the 30,000-char cap was applied by slicing the END off. The cap
- * therefore deleted the one instruction that says how to continue, and cut mid-line as well.
- *
- * The fix pages on a LINE boundary inside readOne, so the marker always survives and always
- * names a real next line. Nothing here judges the model's answer — the tool simply stops
- * handing back a window with no exit.
- *
- * Run: npm run test:e2e:read-paging
- */
+/* A truncated file read must always say where to resume. Repro 2026-08-30: readOne appended its
+ * "read again with offset=N" marker at the END of the body and the 30,000-char cap sliced the
+ * end off — deleting the one instruction that says how to continue. The fix pages on a LINE
+ * boundary so the marker survives and names a real next line. Run: npm run test:e2e:read-paging */
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';

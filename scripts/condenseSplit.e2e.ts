@@ -1,18 +1,8 @@
-/* condenseHistory must actually be able to compact a tool-heavy session.
- *
- * From a 2026-08-13 audit: the tail boundary was found by scanning FORWARD from
- * `length - KEEP_TAIL` for a `user` message. A tool-heavy agentic session ends in a long
- * `assistant`/`tool` run, so the scan walked off the end and `condenseHistory` returned null —
- * meaning the sessions with the LARGEST contexts, exactly the ones compaction exists for, could
- * never compact. The user saw "Compaction produced no summary after retrying with a different
- * model", auto-compaction was a silent no-op every turn, and the context grew until
- * `fitMessages` began evicting the user's own task (see fitMessages.e2e.ts — same root symptom).
- *
- * Scanning BACKWARD finds a boundary while preserving the invariant that matters: the verbatim
- * tail starts on a `user` turn, so no tool result is orphaned and no tool call is left dangling.
- *
- * Run: npm run test:e2e:condense-split
- */
+/* condenseHistory must be able to compact a tool-heavy session (2026-08-13 audit): the tail
+ * boundary scanned FORWARD for a `user` message, walked off the end of a long assistant/tool
+ * run, and returned null — so the largest sessions could never compact and fitMessages began
+ * evicting the task. Scanning BACKWARD finds a boundary while keeping the verbatim tail on a
+ * `user` turn, so nothing is orphaned. Run: npm run test:e2e:condense-split */
 import { condenseHistory, shouldCondense } from '../src/agent/condense';
 import { __setRouteOnceForTests } from '../src/agent/core/routeOnce';
 import type { ChatMessage } from '../src/shared/types';

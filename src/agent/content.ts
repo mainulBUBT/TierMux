@@ -24,11 +24,9 @@ export function flattenMessageContent(messages: ChatMessage[]): ChatMessage[] {
   return messages.map((m) => ({ ...m, content: contentToString(m.content) as ChatContent }));
 }
 
-/** A visual/file attachment reduced to the fields every consumer actually needs.
- *  `mime` is threaded from `Attachment` at attach time when known, but is recovered
- *  from the `data:` URL header when the block carries an empty/missing/generic mime —
- *  otherwise an image attached without a mime mis-routes as a text `doc` and the
- *  vision path (model choice + per-turn re-injection) never fires. */
+/** A visual/file attachment reduced to what consumers need. `mime` is recovered from the `data:`
+ *  URL header when missing/generic — otherwise an image mis-routes as a text `doc` and the
+ *  vision path never fires. */
 export interface AttachmentBlock {
   mime: string;
   filename?: string;
@@ -72,11 +70,9 @@ export function normalizeAttachmentBlocks(content: ChatContent): AttachmentBlock
   return out;
 }
 
-/**
- * Wire shape for OpenAI-compat endpoints: drop `type: 'file'` blocks (the PDF's extracted text
- * is already in the message) and narrow `image_url` to `{ url }` — the internal `mime`/
- * `filename` fields make schema-validating gateways 400 the whole request.
- */
+/** Wire shape for OpenAI-compat endpoints: drop `type: 'file'` blocks (the extracted text is
+ *  already in the message) and narrow `image_url` to `{ url }` — extra fields make
+ *  schema-validating gateways 400. */
 export function stripFileBlocks(content: ChatContent): ChatContent {
   if (!Array.isArray(content)) return content;
   const out: ChatContent = [];

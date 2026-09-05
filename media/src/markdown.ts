@@ -1,10 +1,5 @@
-// Markdown rendering for the webview — strict-checked extraction from the
-// legacy main.ts (Phase D, PR2). Owns the ONLY code that touches the
-// marked/highlight.js/diff2html vendor globals, so this is also where those
-// `any` typings get replaced by real (minimal structural) types.
-//
-// Only `renderMarkdown` is public. `configureMarked` + the `markedReady` flag
-// are module-private (called only from renderMarkdown).
+// Markdown rendering for the webview — the ONLY code that touches the marked/highlight.js/
+// diff2html vendor globals. Public surface: renderMarkdown, appendStreamCursor.
 import { escapeHtml, showToast } from './dom';
 import { send } from './bridge';
 import { ICON } from './icons';
@@ -44,13 +39,9 @@ function cleanThinkTags(text: string): string {
   return result;
 }
 
-/**
- * Render a markdown string into a detached DOM node.
- * Parses via marked (GFM + line breaks), strips <script> and neutralizes
- * script-y URLs, syntax-highlights fenced code via highlight.js, and renders
- * ```diff blocks via diff2html. Falls back to a plain text node if marked is
- * unavailable.
- */
+/** Render markdown into a detached node: marked (GFM + breaks), <script> and script-y URLs
+ *  stripped, fenced code via highlight.js, real unified diffs via diff2html, `path:line`
+ *  citations linkified. Plain text node if marked is unavailable. */
 export function renderMarkdown(md: string): HTMLElement {
   try {
     const cleanMd = cleanThinkTags(md);
@@ -71,12 +62,8 @@ export function renderMarkdown(md: string): HTMLElement {
       const d2h = window.Diff2Html;
       if (d2h) {
         div.querySelectorAll('pre code.language-diff').forEach((b) => {
-          // Diff2Html expects a proper UNIFIED diff (file headers / @@ hunks).
-          // A bare -/+ block (commonly used as pseudo-diff in chat) isn't one —
-          // Diff2Html returns empty for it, and replacing the <pre> with an
-          // empty .d2h-wrapper would swallow the content entirely. Only hand
-          // off to Diff2Html when the content actually looks like a real diff;
-          // otherwise leave the code block as-is (hljs handles the rest).
+          // Diff2Html needs a real UNIFIED diff; for a bare -/+ pseudo-diff it returns empty and
+          // would swallow the block, so only hand off what looks like one.
           const src = b.textContent || '';
           const looksLikeDiff = /^(@@|diff --git |diff --cc |Index: |--- |\+\+\+ )/m.test(src);
           if (!looksLikeDiff) return;
@@ -105,23 +92,14 @@ export function renderMarkdown(md: string): HTMLElement {
   return pre;
 }
 
-/** A workspace-relative file citation written in inline code — `src/foo.ts:42`, with an
- *  optional column. Absolute paths and Windows drive letters cannot match (a path segment
- *  never starts with `/`, and `\` is not in the class), which is exactly what the host needs:
- *  openGrepResult joins the path onto the workspace root. A file extension is REQUIRED so that
- *  ordinary inline code like `3:14` or `localhost:8080` stays plain text. */
+/** A workspace-relative citation in inline code (`src/foo.ts:42[:col]`). Absolute paths cannot
+ *  match — openGrepResult joins onto the workspace root — and an extension is required so
+ *  `3:14` / `localhost:8080` stay plain. */
 const CODE_REF = /^([A-Za-z0-9_.@~-]+\/)*[A-Za-z0-9_.@~-]+\.[A-Za-z0-9]{1,12}:(\d{1,7})(?::\d{1,7})?$/;
 
-/**
- * Turn `path:line` inline-code citations into clickable file links (host message
- * `openGrepResult`, the same one the /grep autocomplete uses).
- *
- * The system prompt has asked the model to "Cite code as path:line" since the simple-core
- * reset, but nothing ever linkified the result — every citation rendered as dead text, so
- * only half of that contract existed. Scoped deliberately: INLINE code only (never inside a
- * fenced block), and only when the citation is the code span in its entirety, so a path
- * mentioned mid-sentence is left alone instead of having the DOM rewritten around it.
- */
+/** Turn `path:line` inline-code citations into clickable links (openGrepResult). Inline code
+ *  only, and only when the citation is the whole span, so prose is never rewritten. The prompt
+ *  asked for these citations long before anything linkified them. */
 function linkifyCodeRefs(div: HTMLElement): void {
   div.querySelectorAll('code').forEach((code) => {
     if (code.closest('pre') || code.closest('a')) return;
@@ -147,15 +125,9 @@ function linkifyCodeRefs(div: HTMLElement): void {
  *  puts inline content inside them, so the walk always terminates right after. */
 const CURSOR_DESCEND = new Set(['UL', 'OL', 'LI', 'BLOCKQUOTE', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'DIV']);
 
-/**
- * Append the single streaming caret (`<span class="stream-cursor">▍</span>`) to the one
- * element that visually ends the message: walk the last-child chain down through list /
- * blockquote structure and stop at the first non-container, so exactly ONE caret rides the
- * true last line at any nesting depth. The previous CSS `:last-child::after` approach
- * matched every sub-list's final item and every paragraph closing a blockquote or loose
- * li — CSS scopes `:last-child` per parent, so it cannot express "the one globally-last
- * line" and several carets blinked at once during nested-list streaming.
- */
+/** Append the single streaming caret to the element that visually ends the message: walk the
+ *  last-child chain through list/blockquote structure and stop at the first non-container. CSS
+ *  `:last-child::after` is scoped per parent and blinked several carets in nested lists. */
 export function appendStreamCursor(root: HTMLElement): void {
   const cursor = document.createElement('span');
   cursor.className = 'stream-cursor';
@@ -231,12 +203,8 @@ function addCodeCopyButtons(div: HTMLElement): void {
   });
 }
 
-/**
- * Upgrade a ```mermaid code block into a rendered diagram with a Diagram/Source
- * toggle in the block header. The code block IS the fallback: it stays visible
- * until (and unless) mermaid returns an SVG, so an unsupported diagram type, a
- * missing bundle, or a half-streamed fence simply reads as source.
- */
+/** Upgrade a ```mermaid block into a diagram with a Diagram/Source toggle. The code block IS the
+ *  fallback: an unsupported type, missing bundle or half-streamed fence simply reads as source. */
 function attachDiagram(wrap: HTMLElement, head: HTMLElement, copyBtn: HTMLElement, src: string): void {
   if (!mermaidAvailable()) return;
   wrap.classList.add('mermaid-block');

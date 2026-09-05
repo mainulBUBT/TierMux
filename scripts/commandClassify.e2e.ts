@@ -1,10 +1,6 @@
-// Regression test for isReadOnlyCommand() (src/edits/commandClassify.ts) — the classifier
-// that lets the permission policy skip the approval prompt for confidently read-only shell
-// commands (ls, git status, grep, ...). Security-relevant: a FALSE POSITIVE (classifying a
-// mutating command as read-only) would let it run without approval, so this test leans heavily
-// on cases that must NOT be misclassified, not just the happy path.
-//
-// Run: npm run test:e2e:command-classify
+// isReadOnlyCommand() — lets the permission policy skip approval for confidently read-only shell
+// commands. Security-relevant: a FALSE POSITIVE would run a mutating command unapproved, so this
+// leans on cases that must NOT be misclassified. Run: npm run test:e2e:command-classify
 import { isReadOnlyCommand } from '../src/edits/commandClassify';
 
 let failures = 0;

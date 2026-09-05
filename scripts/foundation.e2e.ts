@@ -1,34 +1,9 @@
-// v3 Foundation Gate (plan §13) — the scenarios that must ALL pass. 1-10 technical,
-// 11-14 user-facing critical, 15-24 agent-parity (todoWrite, rules/env context, diagnostics
-// feedback, permission persistence, incremental reasoning, nudge draft-retract, stream-error surfacing, failover classification). Scenarios 1-10 are the
-// §8 technical cases (SDK-level, via the POC's runAgent + scripted LanguageModelV4 mock);
-// 11-14 are the user-facing critical cases and drive the REAL engine (src/agent/agent.ts →
-// core/engine.ts) through the __setEngineModelForTests seam.
-//
-//   #  Coverage
-//   1. Tool call (basic)
-//   2. Edit/diff correctness
-//   3. Error recovery Path A (InvalidToolInputError → repairToolCall → budget)
-//   4. Error recovery Path A (NoSuchToolError)
-//   5. Error recovery Path B (SDK tool-error wrap)
-//   6. Multi-step loop (stepCountIs(50) does NOT fire)
-//   7. Cancellation (abortSignal + requestId shell-kill)
-//   8. Permissions — toolApproval asks the user
-//   9. Permissions — read auto-approved, mutating prompts
-//  10. Permissions — Priority 1 wins (alwaysDeny cannot be bypassed, even in full-auto)
-//  11. Plan mode flow (§12) — read/search free, shell ASKS, edit hard-deny; the plan is an
-//      exitPlanMode tool call that ends the turn; approve → agent mode re-gates every tool
-//      (approve ≠ blanket approval)
-//  12. Context correctness — system prompt + user text + prior tool results reach the model
-//      verbatim; nothing fabricated
-//  13. Streaming + reasoning + think-tag — event order, reasoning channel, no <think> leak
-//  14. Session persistence — transcript round-trip: turn 2 sees turn 1's tool results, no re-plan
-//
-// Pass criteria (§13): all 14 pass → steps 9-10 proceed. ANY failure → gate blocks; adapt the
-// plan, do not delete. One file on purpose (over-engineering guardrail); mockProvider +
-// scripts/vscodeMock.cjs reused throughout.
-//
-// Run: npm run test:e2e:foundation
+// v3 Foundation Gate — THE contract for the engine; every scenario must pass. 1-10 are SDK-level
+// technical cases (runAgent + a scripted LanguageModelV4 mock): tool calls, edit correctness,
+// repair paths, multi-step, cancellation, permissions. 11+ drive the REAL engine through the
+// __setEngineModelForTests seam: plan mode, context correctness, streaming/reasoning, session
+// persistence, todoWrite, diagnostics feedback, nudges, stream-error surfacing, failover, MCP.
+// One file on purpose. Run: npm run test:e2e:foundation
 
 import * as fs from 'fs';
 import * as os from 'os';
@@ -870,13 +845,10 @@ async function main() {
     ok('24. network errors rotate', isFailoverWorthy(new Error('fetch failed')));
   }
 
-  // ── Scenario 25: checkpoint baseline is the TRUE pre-write content (undo restores) ──
-  // Live repro (2026-08-28, "undo not restoreing files"): the only baseline capture for v3
-  // write tools lived in chatViewProvider's onTool — which v3 fires from the engine's
-  // onStepEnd, i.e. AFTER the tool had already written. Every "before" snapshot therefore
-  // held the POST-edit content, so checkpoint restore rewrote files with the very content it
-  // was supposed to undo: "Restored N files" with zero visible change. The tools now capture
-  // the baseline themselves (onBeforeWrite) BEFORE mutating.
+  // ── Scenario 25: checkpoint baseline is the TRUE pre-write content (2026-08-28, "undo not
+  // restoreing files"): the only baseline capture ran from onStepEnd, AFTER the tool had written,
+  // so restore rewrote files with the content it was meant to undo. Tools now capture the
+  // baseline themselves (onBeforeWrite).
   {
     const ws = makeWorkspace(); // foo.txt = 'hello world', bar.txt = 'second file'
     const { CheckpointManager } = await import('../src/edits/checkpoints');

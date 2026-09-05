@@ -1,12 +1,6 @@
-// Text/stream utilities — pure functions and one state machine, no vscode, no providers.
-//
-//   · clampOutputToContext — cap a requested max_tokens against the model's window
-//   · ThinkStripper        — split-tag-safe <think> separation (chat text vs reasoning)
-//   · stripThinkTags       — one-shot form of the above
-//   · reasoningFromDelta   — read the reasoning channel out of an OpenAI-shaped delta
-//
-// Every provider dialect is covered by scripts/thinkSplit.e2e.ts; do not inline a regex
-// version of any of this anywhere else.
+// Text/stream utilities — pure, no vscode: clampOutputToContext, ThinkStripper (split-tag-safe
+// <think> separation), stripThinkTags, reasoningFromDelta. Every provider dialect is covered by
+// scripts/thinkSplit.e2e.ts; do not inline a regex version of any of this elsewhere.
 
 /** Lower an output-token request to something a small local context can actually honour. Returns
  *  `want` unchanged when there is no known window or the window is comfortable — this only ever
@@ -17,15 +11,9 @@ export function clampOutputToContext(want: number, contextWindow: number | undef
   return Math.min(want, cap);
 }
 
-/**
- * Streaming `<think>…</think>` stripper. Buffers incoming deltas and emits only
- * the non-reasoning text. Handles tags that span multiple chunks, dangling
- * opening tags (incomplete at stream end), and nested/multiple think blocks.
- *
- * Some models (Qwen3, DeepSeek-R1, etc.) emit reasoning inside `<think>` tags
- * directly in the content stream. Without stripping, the client sees the raw
- * reasoning markup alongside the actual answer.
- */
+/** Streaming `<think>…</think>` stripper: emits only non-reasoning text; handles tags spanning
+ *  chunks, dangling opens at stream end, and multiple blocks. Qwen3/DeepSeek-R1 emit reasoning
+ *  inside these tags in the content stream. */
 const THINK_OPEN_RE = /<(think|thinking|thought|reasoning)>/i;
 const THINK_CLOSE_RE = /<\/(think|thinking|thought|reasoning)>/i;
 const OPEN_TAG_PREFIXES = ['<think>', '<thinking>', '<thought>', '<reasoning>'];

@@ -1,12 +1,9 @@
 
-// Verify command: detection + execution for the end-of-turn verify gate (engine.ts). LSP
-// diagnostics prove the edited FILES parse; this proves the PROJECT still works, and a
-// non-zero exit feeds the output back for `agent.verifyFixRounds` fix rounds.
-//
-// Detection is stack-wise, not Node-first: a Laravel app with a package.json for its Vite
-// assets verifies with `php artisan test`, not `npm run build`. Each stack contributes
-// candidates with a strength (test suite > typecheck > build) and the strongest wins. A
-// stack whose dependencies are not installed (no vendor/, no node_modules/) is withheld.
+// Verify command for the end-of-turn gate: LSP diagnostics prove the edited FILES parse, this
+// proves the PROJECT works, and a non-zero exit feeds `agent.verifyFixRounds`. Detection is
+// stack-wise, not Node-first (a Laravel app with a Vite package.json verifies with `php artisan
+// test`): each stack contributes candidates by strength (test > typecheck > build) and the
+// strongest wins; a stack without installed dependencies is withheld.
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -232,11 +229,9 @@ const DETECTORS: Array<(c: Ctx) => Candidate | undefined> = [
   detectCMake, detectMake,
 ];
 
-/** Best-effort, zero-LLM detection of "the one command that proves this project still works".
- *  Every stack present in the workspace is asked; the strongest candidate wins, so a polyglot
- *  repo verifies with its real test suite rather than whichever manifest happened to be checked
- *  first. Returns undefined when nothing trustworthy exists — the caller then skips the gate
- *  (and stays QUIET about it) rather than running a guess. */
+/** Zero-LLM detection of the one command that proves this project still works: every stack
+ *  present is asked and the strongest candidate wins. Undefined when nothing trustworthy exists —
+ *  the caller then skips the gate quietly rather than running a guess. */
 export function detectVerifyCommand(root: string): string | undefined {
   const c = makeCtx(root);
   let best: Candidate | undefined;

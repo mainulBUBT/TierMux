@@ -17,12 +17,8 @@ export interface CompletionOptions {
   abortSignal?: AbortSignal;
   /** Base URL override (from the settings store); falls back to the default. */
   baseUrlOverride?: string;
-  /** Requested structured-output mode (generateObject/generateText output:'object'|'enum').
-   *  Plumbed through for future per-provider native `response_format` support — NOT yet
-   *  consumed by any adapter (see routerProvider.ts's doGenerate, which relies on a trailing
-   *  prompt instruction + fence-stripping instead, since ~18 heterogeneous free providers'
-   *  actual `response_format` support is unverified and a wrong guess would 400 real requests).
-   *  Wire a specific adapter to it only after confirming that platform's API actually accepts
-   *  the field. */
+  /** Requested structured-output mode. NOT yet consumed by any adapter — routerProvider's
+   *  doGenerate relies on a trailing prompt instruction + fence-stripping, since ~18 free
+   *  providers' `response_format` support is unverified. Wire an adapter only after confirming. */
   responseFormat?: { type: 'json'; schema?: unknown };
 }

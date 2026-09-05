@@ -1,6 +1,5 @@
-// Webview controller (vanilla TS, bundled by esbuild). Not yet typechecked — converted from
-// the legacy main.js and migrated section by section into strict modules under ./ui, ./handlers,
-// ./format. Do NOT let @ts-nocheck spread to other files.
+// Webview controller (vanilla TS, bundled by esbuild). Converted from the legacy main.js and
+// migrated section by section into strict modules; do NOT let @ts-nocheck spread to other files.
 //
 // @ts-nocheck
 import { ICON } from './icons';
@@ -34,13 +33,9 @@ import { handleToolStatus } from './handlers/toolStatus';
   /** Waiting-for-the-provider spinner on the submit button (AI Elements' `submitted` state). */
   const SEND_SPINNER = '<span class="send-spinner" aria-hidden="true"></span>';
   let sessionList = [];
-  // Per-session render state used to live here as single module-level singletons. Now every
-  // open session gets its own persistent DOM pane (mounted for as long as the tab exists, not
-  // just while viewed) plus its own copy of these maps — see `panes` / `activatePane()` below.
-  // These `let` bindings still exist because every render helper in this file (ensureTarget,
-  // addUserBubble, upsertTool, setStatusLabel, scrollDown, ...) closes over them directly; on
-  // each inbound message we repoint them at the target session's pane instead of threading a
-  // context object through every function signature.
+  // Per-session render state. Each open session has its own pane and its own copy of these
+  // maps; every inbound message repoints them at the target pane (activatePane) because every
+  // render helper below closes over them directly.
   let targets = new Map(); // requestId -> { el, body, tools }
   let userTargets = new Map(); // requestId -> user message element (for the restore bar)
   let startTimes = new Map(); // requestId -> send time, for "Worked for Ns"
@@ -108,11 +103,8 @@ import { handleToolStatus } from './handlers/toolStatus';
     </div>`;
 
   const thread = $('#thread'); // scroll container — holds every session's pane at once
-  // `thread` no longer holds a single session's messages: it holds one `.session-pane` div per
-  // open session (all mounted simultaneously), and only the viewed one is shown (display:none
-  // on the rest via CSS — see .session-pane.hidden in main.css). This is what lets a background
-  // session keep streaming tool cards / answer text into its own DOM while another tab is in
-  // view, instead of that state being silently dropped (the old single-`thread` design).
+  // One `.session-pane` per open session, all mounted at once and only the viewed one shown —
+  // a background session keeps streaming into its own DOM instead of being dropped.
   const panes = new Map(); // sessionId -> { id, el, targets, userTargets, startTimes, statusTimers, currentTurn }
   let activeThreadEl = thread; // the pane element render helpers append into; falls back to
                                 // `thread` itself before the first pane exists (initial empty state)
@@ -128,7 +120,9 @@ import { handleToolStatus } from './handlers/toolStatus';
     el.className = 'session-pane hidden';
     el.dataset.sessionId = id;
     thread.appendChild(el);
-    const p = { id, el, targets: new Map(), userTargets: new Map(), startTimes: new Map(), statusTimers: new Map(), currentTurn: null };
+    // todoState/planState/busy live on the pane: the checklist bar above the composer is one
+    // element for the viewed session, so a background session's todos must not overwrite it.
+    const p = { id, el, targets: new Map(), userTargets: new Map(), startTimes: new Map(), statusTimers: new Map(), currentTurn: null, todoState: null, planState: null, busy: false };
     panes.set(id, p);
     return p;
   }
@@ -176,23 +170,25 @@ import { handleToolStatus } from './handlers/toolStatus';
   // checklist), 'planProgress' (plan runner), and the Execute click's preparing state.
   const todoSheet = createTodoSheet({
     onResume: () => send({ type: 'resumePlan' }),
-    onDismiss: () => { agentTodoState = null; todoSheet.update(null); },
+    onDismiss: () => { const p = panes.get(viewedSessionId); if (p) { p.todoState = null; p.planState = null; } todoSheet.update(null); },
   });
   $('#plan-progress-bar').replaceWith(todoSheet.root);
-  // The agent checklist's LAST state — the 'todos' messages all arrive mid-run (busy), so
-  // the terminal state can only be applied when busy flips false. Without this the bar kept
-  // its last mid-run state forever: "3/3" tasks all ticked but still pinned above the
-  // composer with no dismiss (live repro: "when a todo task done it still showing bottom").
-  let agentTodoState: { title: string; steps: Array<{ text: string; status: 'done' | 'active' | 'pending' | 'failed' }> } | null = null;
+  /** Render the checklist bar for the VIEWED session from its own pane state — a plan run if
+   *  one is active, else the agent's todos. The 'todos' messages arrive mid-run, so the
+   *  terminal state (completed note + dismiss ×) is applied when that pane's busy flips false.
+   *  Called on every todos/planProgress/busy message for the viewed session and on switch. */
   function renderAgentTodoBar() {
-    if (!agentTodoState) return;
-    const { title, steps } = agentTodoState;
+    const p = panes.get(viewedSessionId);
+    if (!p) { todoSheet.update(null); return; }
+    if (p.planState) { renderPlanProgress(p.planState); return; }
+    if (!p.todoState) { todoSheet.update(null); return; }
+    const { title, steps } = p.todoState;
     const allDone = steps.length > 0 && steps.every((s) => s.status === 'done' || s.status === 'failed');
-    const finished = !busy;
+    const finished = !p.busy;
     todoSheet.update({
       title,
       steps,
-      running: busy,
+      running: p.busy,
       finished,
       note: finished && allDone ? `${title} completed (${steps.filter((s) => s.status === 'done').length}/${steps.length})` : undefined,
     });
@@ -364,23 +360,15 @@ import { handleToolStatus } from './handlers/toolStatus';
   let acQueryId = 0;       // latest mention query id (to ignore stale results)
   let acDebounce;
 
-  // ── Stick-to-bottom (AI Elements' Conversation) ──────────────────────────────
-  // scrollDown() used to slam `scrollTop = scrollHeight` on every update, so scrolling UP to
-  // re-read something during a long stream was impossible — the next token yanked you back.
-  // Their Conversation wraps StickToBottom: follow the tail only while the reader is already
-  // AT the tail, and otherwise offer a button back. `NEAR_BOTTOM_PX` is the slack that keeps
-  // "close enough" counting as at-bottom, so a stray pixel of overscroll does not detach.
+  // ── Stick-to-bottom ── follow the tail only while the reader is already at it, otherwise offer
+  // a button back. NEAR_BOTTOM_PX is the slack so a stray pixel of overscroll does not detach.
   const NEAR_BOTTOM_PX = 48;
   const atBottom = () => thread.scrollHeight - thread.scrollTop - thread.clientHeight <= NEAR_BOTTOM_PX;
   /** True while the reader has scrolled away; the tail stops following and the button shows. */
   let detachedFromBottom = false;
 
-  // ── Sources (AI Elements' Sources / InlineCitation) ─────────────────────────
-  // webSearch's result text has a stable shape (formatWebSearchResults in
-  // src/agent/core/tools/network/tiermuxWeb/search.ts): `[1] Title` then an indented
-  // `URL: https://…`. The links were only ever visible by expanding the tool card, so an
-  // answer built from the web cited nothing. Parsed here and rendered as a collapsible
-  // "Used N sources" row under the turn.
+  // ── Sources ── webSearch results have a stable shape (`[1] Title` + indented `URL:`), parsed
+  // here into a collapsible "Used N sources" row so a web-built answer cites something.
   function parseSearchSources(detail) {
     const out = [];
     const lines = String(detail || '').split('\n');
@@ -601,12 +589,8 @@ import { handleToolStatus } from './handlers/toolStatus';
     });
   }
 
-  // ---------- always-visible session tab strip ----------
-  // This is a "working set" of tabs — NOT the full history (that's what the history dropdown
-  // is for, opened on demand and listing every persisted session). A session only becomes a
-  // tab once you've actually visited it this run: switching to it (from history, "+", or a
-  // click) adds its id here; closing a tab (×) just drops it from this set, it does NOT
-  // delete the underlying session — reopen it any time from the history dropdown.
+  // Session tab strip = the working set, not history: a session becomes a tab when visited this
+  // run; closing a tab drops it from the set without deleting the session.
   let openTabIds = [];
 
   function renderSessionTabs() {
@@ -717,11 +701,8 @@ import { handleToolStatus } from './handlers/toolStatus';
       ? `<img class="empty-logo-img" src="${window.__LOGO_URI__}" alt="" onerror="this.style.display='none'" />`
       : `<div class="empty-logo">${ICON.zap}</div>`;
 
-    // The one thing a welcome screen can say that nothing else on screen does: is this
-    // actually wired up and routing? Counted from the real config (enabled fallback entries
-    // on providers that aren't disabled), never a guess — and when the count is zero it stops
-    // being a status line and becomes the way out, because a fresh install with no key would
-    // otherwise just fail on first send with no hint why.
+    // Counted from the real config, never guessed; at zero it becomes the way out, since a fresh
+    // install with no key would otherwise fail on first send with no hint why.
     const disabled = new Set(state.disabledProviders || []);
     const ready = (state.fallback || []).filter((e) => e.enabled && !disabled.has(e.platform)).length;
     const knowsConfig = Array.isArray(state.platforms) && state.platforms.length > 0;
@@ -1255,12 +1236,8 @@ import { handleToolStatus } from './handlers/toolStatus';
     'orchestrating', 'scheming', 'dreaming', 'noodling', 'booping', 'combobulating', 'typing',
     'writing', 'doodling', 'scribbling', 'sketching',
   ];
-  // Labels that mean "idle thinking" — when one of these is set, we engage the rolling
-  // verb instead of showing the literal word. Tool verbs opt out. "Responding…" is in the
-  // set deliberately: a slow model can sit 10-30s before its next token (TTFT, or the
-  // post-nudge continuation pass), and a static "Responding…" with no caret reads as
-  // frozen/dead — the rolling "Writing/Typing/Drafting…" verb + blinking caret is what
-  // makes the wait read as "the agent is writing" (live repro: nemotron-3-ultra-free).
+  // "Idle thinking" labels get the rolling verb instead of the literal word. "Responding…" is in
+  // on purpose: a 10-30s TTFT wait behind a static label read as frozen (nemotron-3-ultra-free).
   const IDLE_LABELS = new Set(['Thinking…', 'Working…', 'Working.', 'Reasoning…', 'Responding…']);
   // Random gap between verb rotations, 2–5s, so the rolling word doesn't feel metronomic.
   function nextRotateDelay() { return 2000 + Math.floor(Math.random() * 3001); }
@@ -1304,11 +1281,8 @@ import { handleToolStatus } from './handlers/toolStatus';
       // `text != null` so this never unhides an empty row on an opts.done-only call.
       if (t.statusEl) t.statusEl.classList.remove('hidden');
       if (IDLE_LABELS.has(text)) {
-        // Engage the rolling whimsical verb for the thinking phase; startStatusTimer
-        // rotates it every 2–5s until a tool verb or "Responding…" takes over. The verb
-        // is typed out char-by-char with a blinking caret so it reads like live writing.
-        // Only ENGAGE once: 'Responding…' arrives on every streamed chunk, and re-picking
-        // a random verb per token would flicker the label instead of writing it.
+        // Engage the rolling verb ONCE: 'Responding…' arrives on every chunk, and re-picking a
+        // verb per token would flicker the label instead of typing it out.
         if (!t.rotating) {
           t.rotating = true;
           t.rotateWord = pickThinkingVerb(t.rotateWord);
@@ -1327,11 +1301,8 @@ import { handleToolStatus } from './handlers/toolStatus';
   }
   function startStatusTimer(requestId) {
     if (statusTimers.has(requestId)) return; // already ticking
-    // Snapshot THIS pane's targets/statusTimers Map objects now, synchronously, while they're
-    // correctly bound — `update` below runs on a 500ms setInterval that outlives this tick, by
-    // which point the module-level `targets`/`statusTimers` bindings may well have been
-    // repointed at a different (background) session's pane. Maps are reference types, so the
-    // snapshot keeps ticking against the RIGHT pane's data regardless of what's currently active.
+    // Snapshot this pane's Maps now: `update` runs on a 500ms interval that outlives this tick,
+    // by which time the module-level bindings may point at another session's pane.
     const targetsRef = targets;
     const statusTimersRef = statusTimers;
     const start = startTimes.get(requestId) || Date.now();
@@ -1362,12 +1333,9 @@ import { handleToolStatus } from './handlers/toolStatus';
       if (t && t.statusEl) t.statusEl.classList.add('hidden');
     }
   }
-  // Wraps a flow's tool cards and think-blocks into a collapsed <details> summary so the final
-  // answer is immediately visible, with the step-by-step trace tucked behind "Worked for Ns".
-  // Shared by BOTH the live finish path (finalizeWork) and the static reconstruction path
-  // (renderAssistantStatic, used after closing/reopening or switching sessions) — without this
-  // being shared, a reopened session showed every tool call as a flat, uncollapsed list instead of
-  // matching what the live run looked like, because only the live path used to call it.
+  // Collapse a flow's tool cards and think-blocks behind "Worked for Ns" so the answer shows
+  // first. Shared by the live finish path AND static reconstruction — a reopened session used
+  // to show the trace flat because only the live path collapsed it.
   function collapseFlowTimeline(flow, elapsedSeconds, planEl, extraStats) {
     if (!flow) return;
 
@@ -1379,20 +1347,14 @@ import { handleToolStatus } from './handlers/toolStatus';
 
     if (flow.children.length === 0) { flow.remove(); return; }
 
-    // Split the flow at the LAST tool card / reasoning block. Everything up to and including it
-    // is the "working timeline" (tools + the model's interim thinking-as-text — noise that weak
-    // free models stream as content, not a real reasoning channel). Everything AFTER it is the
-    // clean final answer. This is the Cursor/Copilot model: a collapsed step-by-step timeline
-    // with the answer beneath it — as opposed to dumping ALL streamed text below the tools,
-    // which buried the real answer under paragraphs of the model thinking out loud.
+    // Split at the LAST tool card / reasoning block: everything through it is the working
+    // timeline, everything after is the answer — dumping all streamed text below the tools
+    // buried the answer under thinking-out-loud.
     const children = Array.from(flow.children);
     let lastWorkIdx = -1;
     for (let i = 0; i < children.length; i++) {
-      // `.tm-tool-group` belongs here too: every groupable call (readFile/grep/glob/listDir/
-      // searchWorkspace) now renders as a grouped row rather than a card, so a turn made only
-      // of reads had NO recognised work node at all — lastWorkIdx stayed -1, this bailed out,
-      // and the whole timeline sat outside the "Worked for Ns" disclosure instead of tucking
-      // into it.
+      // `.tm-tool-group` counts as work too: a turn made only of grouped reads had no recognised
+      // work node, so the whole timeline sat outside the disclosure.
       if (children[i].classList.contains('tm-tool-card')
         || children[i].classList.contains('tm-tool-group')
         || children[i].classList.contains('tm-reasoning')) lastWorkIdx = i;
@@ -1400,21 +1362,15 @@ import { handleToolStatus } from './handlers/toolStatus';
     // No tools and no reasoning ran — this is a plain text answer, leave it exactly as is.
     if (lastWorkIdx === -1) return;
 
-    // The final answer is the LAST text segment in the flow. It must ALWAYS stay visible, never be
-    // swept into the collapsed timeline — even when a tool-card or reasoning block streamed AFTER
-    // it (weak free models interleave text and reasoning, so the answer often precedes the last
-    // work node). Bug: slicing the prefix `children[0..lastWorkIdx]` blindly buried that answer
-    // inside the collapsed <details>, leaving the chat panel showing only "Worked for Ns".
+    // The answer is the LAST text segment and must never be swept into the timeline, even when
+    // a tool card streamed after it (weak models interleave text and reasoning).
     let answerNode = null;
     for (let i = children.length - 1; i >= 0; i--) {
       if (children[i].classList.contains('flow-text') && children[i].textContent.trim()) { answerNode = children[i]; break; }
     }
 
-    // The timeline is the chronological prefix through the last work node, minus the final answer
-    // AND minus the plan/todo list. The todo list (planEl) is mounted at the top of the flow, so a
-    // blind prefix slice would sweep it into the collapsed "Worked for Ns" summary and hide it — but
-    // the plan is a persistent progress overview, not step noise, so it must stay visible (it stays
-    // above the collapsed timeline, matching Cursor's always-visible checklist).
+    // Timeline = chronological prefix through the last work node, minus the answer and the plan
+    // (planEl sits at the top of the flow and is a persistent overview, not step noise).
     const timelineNodes = children.slice(0, lastWorkIdx + 1).filter((el) => el !== answerNode && el !== planEl);
     // Nothing left to collapse once the answer and plan are excluded — leave the flow as-is.
     if (!timelineNodes.length) return;
@@ -1524,11 +1480,8 @@ import { handleToolStatus } from './handlers/toolStatus';
 
   const ERROR_TALK = /\b(?:errors?|crash(?:e[sd])?|exceptions?|stack ?trace|traceback|fail(?:s|ed|ing|ure)?|broken|not working|does(?:n'?t| not) work)\b/i;
 
-  /**
-   * One hint for the draft, or null to stay quiet. Deliberately conservative: a lint that
-   * fires on everything gets tuned out, and it must always clear as the user adds detail —
-   * a line that never goes away reads as a scold rather than a tip.
-   */
+  /** One hint for the draft, or null. Conservative on purpose: a lint that fires on everything
+   *  gets tuned out, and it must clear as the user adds detail. */
   function lintDraft(text) {
     if (text.startsWith('/')) return null;            // slash commands carry their own scope
     if (pendingAttachments.length > 0) return null;   // a chip already supplies the context
@@ -1576,12 +1529,9 @@ import { handleToolStatus } from './handlers/toolStatus';
   // leaving and restores it for the one we're entering, so each tab keeps its own in-progress
   // message and settings — like separate chat tabs.
   const composerState = new Map(); // sessionId -> { draft, model, mode, reasoning, attachments }
-  /** Bucket for composer state typed BEFORE any session exists. At boot `viewedSessionId` is
-   *  null until the host's first switchSession lands, so anything typed in that window belonged
-   *  to no session and used to be dropped on the floor: it was never saved, and the switch then
-   *  called loadComposer() for a session with no stored draft, which blanked the box — the user
-   *  watched their half-typed message vanish a second after load. It is stashed here instead and
-   *  adopted by whichever session the host opens first (see the switchSession handler). */
+  /** Composer text typed before any session exists (viewedSessionId is null until the host's
+   *  first switchSession). Used to be dropped and the box blanked; now adopted by the first
+   *  session the host opens. */
   const PENDING_SESSION = ' pending';
   function saveComposer(id) {
     if (!id) return;
@@ -1671,11 +1621,8 @@ import { handleToolStatus } from './handlers/toolStatus';
     }
   });
 
-  // Drag-and-drop onto the composer: any file (image, PDF, doc) goes to the
-  // workspace picker path? No — the file is already in the user's hand, just
-  // read it and attach it directly. We only need the host for PDF/DOCX text
-  // extraction (which the workspace picker triggers); for images we can use
-  // the data URL straight from the dropped file.
+  // Drag-and-drop onto the composer: the file is already in hand, so attach it directly. The
+  // host is only needed for PDF/DOCX text extraction; images use the dropped file's data URL.
   ['dragenter', 'dragover'].forEach((ev) =>
     composer.addEventListener(ev, (e) => { if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) { e.preventDefault(); composer.classList.add('drag'); } })
   );
@@ -1698,12 +1645,8 @@ import { handleToolStatus } from './handlers/toolStatus';
       addImageAttachmentFromFile(file, source);
       return;
     }
-    // Non-image files (PDF, DOCX, etc.): the webview is sandboxed and can't
-    // read paths or extract text. We can read the data URL for the host, but
-    // for PDFs the canonical path is: save to a temp workspace file → workspace
-    // picker path. Simpler: forward the bytes to the host and let it do the
-    // extract + attach. The host replies with `attachmentAdded` over the same
-    // channel as the workspace picker.
+    // Non-image files (PDF, DOCX): the sandboxed webview cannot extract text, so forward the
+    // bytes to the host, which extracts and replies with `attachmentAdded` like the picker does.
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result;
@@ -1856,11 +1799,8 @@ import { handleToolStatus } from './handlers/toolStatus';
 
   // escapeHtml lives in ./dom (stateless, strict-checked).
 
-  // Inline modal dialog. VS Code webviews run in a sandboxed iframe without
-  // allow-modals, so window.prompt/confirm/alert are silently blocked (prompt
-  // returns null, confirm returns false). This renders a real form over the
-  // panel instead. Pass `fields` for a form (resolves to string[] or null on
-  // cancel); omit fields for a confirm/alert (resolves to true/false).
+  // Inline modal: the webview iframe lacks allow-modals, so window.prompt/confirm/alert are
+  // silently blocked. `fields` ⇒ form (string[] | null); no fields ⇒ confirm (true/false).
   function inlineDialog({ title, message, fields, okLabel = 'OK', danger = false }) {
     return new Promise((resolve) => {
       const isForm = Array.isArray(fields) && fields.length > 0;
@@ -1941,11 +1881,9 @@ import { handleToolStatus } from './handlers/toolStatus';
     document.body.appendChild(overlay);
   }
 
-  /** True unless a specific (non-Auto) model is pinned and its catalog entry says it
-   *  can't see images — Auto always reads as capable since the router may still land
-   *  on a vision model per attachment (routing.ts's vision task-kind override). PDFs/
-   *  docs are NOT gated by this — their extracted text reaches any model regardless of
-   *  vision support, so this check is only ever used for image attachments. */
+  /** True unless a pinned (non-Auto) model's catalog entry says it cannot see images; Auto may
+   *  still land on a vision model per attachment. Image attachments only — extracted PDF/doc
+   *  text reaches any model. */
   function currentModelSupportsVision() {
     if (currentModel === 'auto') return true;
     const [p, ...rest] = currentModel.split('::');
@@ -2006,12 +1944,8 @@ import { handleToolStatus } from './handlers/toolStatus';
     // unknown pin → the bare model id).
     const hit = options.find((opt) => opt.value === currentModel);
     modelPicker.setValue(currentModel, hit ? hit.label : undefined);
-    // A pinned model is honored as-is — the message goes to THAT model only (the router
-    // isolates it to a single candidate). Only 'auto' triggers smart routing. Previously a
-    // pinned model that fell out of the enabled set (provider toggled, catalog refresh, …)
-    // was silently rewritten to 'auto', which then rerouted the turn to whatever Auto ranked
-    // first — surfacing as a different provider name than the one picked. Keep the pin and
-    // surface the unavailability instead, so the user re-picks deliberately.
+    // A pinned model that fell out of the enabled set is kept and its unavailability surfaced,
+    // not silently rewritten to 'auto' (which rerouted the turn to a different provider).
     if (currentModel !== 'auto' && !hit) {
       const bare = currentModel.split('::').slice(1).join('::') || currentModel;
       showComposerStatus(`${bare} is no longer in the enabled set — still pinned (Auto routing off). Re-pick or switch to Auto.`);
@@ -2029,11 +1963,8 @@ import { handleToolStatus } from './handlers/toolStatus';
     // routing gives a clear "needs an API key" error if they pin it.
     const _disabledProviders = new Set(state.disabledProviders || []);
     const _remoteDisabled = new Set(state.remoteDisabledProviders || []);
-    // Enabled platforms — user toggled on at the provider level, not disabled
-    // upstream by the shared catalog, AND either keyless (free, no key needed)
-    // or configured (a key is stored). A paid platform the user enabled but
-    // hasn't keyed yet is left out here rather than surfacing a "needs an API
-    // key" error at send time — Settings already shows it as "no key".
+    // Enabled platforms: toggled on, not disabled upstream, and keyless or keyed. A paid
+    // platform without a key is left out here rather than failing at send time.
     const activePlatforms = new Set(
       (state.platforms || [])
         .filter((p) => !_disabledProviders.has(p.platform) && !_remoteDisabled.has(p.platform))
@@ -2062,11 +1993,8 @@ import { handleToolStatus } from './handlers/toolStatus';
       const upstreamId = e.modelId.split('::').slice(1).join('::');
       options.push({ value: `custom::${e.modelId}`, label: upstreamId, group: ep ? ep.name : 'Custom', model: { supportsReasoning: false } });
     });
-    // Keep each provider's models contiguous (a provider header must appear once, not
-    // once per model). The catalog list isn't guaranteed grouped by platform, so sort by
-    // each group's FIRST occurrence — this preserves the original provider order (incl.
-    // custom endpoints staying last) while pulling a provider's models together. The
-    // sort is stable, so models keep their catalog order within the group.
+    // Keep each provider's models contiguous (one header per provider): stable sort by each
+    // group's FIRST occurrence, so provider order and in-group catalog order both survive.
     const groupOrder = new Map();
     let g = 0;
     for (const opt of options) if (!groupOrder.has(opt.group)) groupOrder.set(opt.group, g++);
@@ -2183,12 +2111,9 @@ import { handleToolStatus } from './handlers/toolStatus';
       t.pendingReadGroup = null;
       let block = t.tools.querySelector<HTMLElement>(`[data-tc~="${msg.toolCallId}"]`);
       if (!block && mergeableThought(t.tools.lastElementChild)) {
-        // Back-to-back thinking bursts: a narration retract or an empty text delta between two
-        // bursts advances the provider's segment id WITHOUT a tool card in between, and each
-        // new id used to stack another settled "Thought for Ns" row — a long turn read as
-        // "Thought, Thought, Thought" all the way down (user report 2026-09-04). Fold the new
-        // burst into the settled row above it instead: re-key it to the new segment id (its
-        // later messages ride that id) and accumulate text/duration in thoughtAcc.
+        // Back-to-back thinking bursts (segment id advanced with no tool card between) fold into
+        // the settled row above instead of stacking "Thought, Thought, Thought" (2026-09-04):
+        // re-key it to the new segment id and accumulate text/duration in thoughtAcc.
         block = t.tools.lastElementChild;
         const prev = thoughtAcc.get(block)
           || { text: (block.querySelector('.tm-reasoning-body')?.textContent || '').trim(), durMs: 0 };
@@ -2214,11 +2139,8 @@ import { handleToolStatus } from './handlers/toolStatus';
       scrollDown();
       return;
     }
-    // Grouped reads (docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 1): consecutive SAME-TOOL
-    // calls (readFile, readFile, readFile) collapse into one row instead of N cards. toolMsgs is
-    // refreshed on every message regardless of path below, so a group is always rebuilt from
-    // the same data buildToolGroupRow would render for a static replay — the live view can't
-    // drift from what reopening the session would show.
+    // Grouped reads: consecutive same-tool calls collapse into one row. toolMsgs is refreshed on
+    // every message, so the live group is built from the same data a static replay would use.
     t.toolMsgs.set(msg.toolCallId, { name: msg.name, args: msg.args, state: msg.state, durationMs: msg.durationMs });
     const existingEl = t.tools.querySelector(`[data-tc~="${msg.toolCallId}"]`);
 
@@ -2434,11 +2356,9 @@ import { handleToolStatus } from './handlers/toolStatus';
   let mcpSearchTimer;
   // MCP Add/Edit form state: null = closed, '' = new server, or the name being edited.
   let mcpFormOpenFor = null;
-  /** Add-custom-endpoint inline form. One flow: fill the fields → "Save & fetch models" creates
-   *  the endpoint and asks it for /models → tick the ones you want (with role tags) → "Add
-   *  selected models". `phase` drives which half of the form is on screen; `endpointId` is
-   *  filled in once the host confirms the created endpoint (matched by name in the next config
-   *  push, since addCustomEndpoint has no reply of its own). */
+  /** Add-custom-endpoint form: fill fields → "Save & fetch models" → tick models → add. `phase`
+   *  picks the half on screen; `endpointId` is matched by name in the next config push, since
+   *  addCustomEndpoint has no reply of its own. */
   let cfForm = null; // null = closed, else { name, url, type, key, phase, error, endpointId, models }
   const CF_TAGS = [
     { id: 'coding', label: 'Coder' },
@@ -4118,11 +4038,8 @@ import { handleToolStatus } from './handlers/toolStatus';
     upsertTool(t: Target, msg: unknown): void;
   }
 
-  // NOTE(Phase D2): ensureTarget is used by every extracted handler (todos,
-  // assistantStart, agentStep, toolStatus) and is the first candidate for a
-  // future shared abstraction (e.g. a TargetManager). Do NOT extract it yet —
-  // wait until a concrete second responsibility justifies it, to avoid
-  // premature abstraction.
+  // ensureTarget is shared by every extracted handler; do not abstract it until a second
+  // concrete responsibility justifies it.
   function createHandlerContext(): HandlerContext {
     return {
       targets,
@@ -4145,19 +4062,14 @@ import { handleToolStatus } from './handlers/toolStatus';
 
   // Message handler functions (Phase D2: typed boundaries)
 
-  // Message types that belong to one specific session's persistent pane. For every one of
-  // these that carries a sessionId, we repoint targets/userTargets/startTimes/statusTimers/
-  // currentTurn/activeThreadEl at that session's pane BEFORE running its case body — so the
-  // (otherwise unchanged) render logic below writes into the right session's DOM regardless of
-  // which session is currently being viewed. 'switchSession' is included so its case body can
-  // use the returned `existed` flag to tell a brand-new pane from an already-live one.
+  // Message types scoped to one session's pane: when one carries a sessionId, the pane-bound
+  // state is repointed at that session BEFORE its case body runs. 'switchSession' is included
+  // so its body can use the returned `existed` flag.
   const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'planData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'workReport', 'planProposed', 'planDiscarded', 'editApproval', 'permissionAsk', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
 
   // ---------- inbound messages ----------
-  // Diagnostic ring: the last 150 host messages with payload sizes. When a turn renders
-  // wrong, `__tmLog()` in the devtools console prints exactly what the host sent (types,
-  // requestIds, text/detail lengths) — the difference between "host posted nothing" and
-  // "webview dropped it" is undecidable without this trace.
+  // Diagnostic ring of the last 150 host messages; `__tmLog()` in devtools prints them, which is
+  // the only way to tell "host posted nothing" from "webview dropped it".
   const tmMsgLog: Array<Record<string, unknown>> = [];
   (window as any).__tmLog = () => JSON.stringify(tmMsgLog, null, 1);
   window.addEventListener('message', (event) => {
@@ -4197,9 +4109,14 @@ import { handleToolStatus } from './handlers/toolStatus';
           refreshTipsStrip();
           break;
         }
-        case 'planProgress':
-          renderPlanProgress(msg.state);
+        case 'planProgress': {
+          // Pane-scoped like 'todos': a background session's plan run must not take over the
+          // viewed session's checklist bar.
+          const pane = panes.get(msg.sessionId) || createPaneObj(msg.sessionId);
+          pane.planState = msg.state && msg.state.status !== 'aborted' ? msg.state : null;
+          if (msg.sessionId === viewedSessionId) renderAgentTodoBar();
           break;
+        }
       case 'openAnnouncements':
         // Host-driven open (the "new announcement" toast's View button).
         if (!announcementsOpen) toggleAnnouncements(true);
@@ -4272,6 +4189,7 @@ import { handleToolStatus } from './handlers/toolStatus';
         if (!openTabIds.includes(viewedSessionId)) openTabIds.push(viewedSessionId);
         renderSessionTabs(); // move the active-tab highlight now, don't wait for the next sessionList broadcast
         renderChangedBar({ files: [] }); // reset; the host re-sends this session's own bar via postCheckpoints
+        renderAgentTodoBar(); // the checklist bar is per session — show this one's, or nothing
         if (rebuildInPlace) {
           activeThreadEl.innerHTML = '';
           currentTurn = null;
@@ -4304,12 +4222,9 @@ import { handleToolStatus } from './handlers/toolStatus';
         renderSessionTabs();
         const vp = panes.get(viewedSessionId);
         if (vp && vp.el.querySelector('.empty')) { activatePane(viewedSessionId); renderEmpty(); deactivatePane(); }
-        // The BOOT welcome screen goes straight onto `thread` — before any pane exists and
-        // before viewedSessionId is set — so the pane-keyed refresh above cannot see it. Without
-        // this branch, RECENT stays missing until the first pane is created, which tears the
-        // whole welcome screen down and rebuilds it with the list: the screen visibly changes
-        // under the reader a beat after load (and the tips ticker jumps with it, since
-        // refreshTipsStrip re-homes it between the welcome slot and the composer strip).
+        // The BOOT welcome screen sits on `thread` before any pane exists, so the pane-keyed
+        // refresh above cannot see it; without this branch it was torn down and rebuilt a beat
+        // after load, visibly jumping under the reader.
         else if (!panes.size && thread.querySelector('.empty')) renderEmpty();
         break;
       }
@@ -4366,11 +4281,11 @@ import { handleToolStatus } from './handlers/toolStatus';
         next.classList.add('collapsed'); // the composer's todo bar + sheet carries the live view
         if (t.planEl) t.planEl.replaceWith(next); else t.flow.insertBefore(next, t.flow.firstChild);
         t.planEl = next;
-        agentTodoState = {
+        activePaneObj.todoState = {
           title: msg.followingPlan ? 'Plan' : 'Tasks',
           steps: (msg.todos || []).map((td) => ({ text: td.content, status: td.status === 'completed' ? 'done' : td.status === 'in_progress' ? 'active' : 'pending' })),
         };
-        renderAgentTodoBar();
+        if (msg.sessionId === viewedSessionId) renderAgentTodoBar();
         scrollDown();
         break;
       }
@@ -4640,18 +4555,14 @@ import { handleToolStatus } from './handlers/toolStatus';
         break;
       }
       case 'clearDraft': {
-        // A tool call just arrived in the same step as text that streamed live as a tentative
-        // reply — that text was narration, not the answer. Only the segment currently being
-        // streamed is affected (this step's narration); earlier steps already closed their own
-        // .flow-text divs (see toolStatus.ts resetting currentText per tool card) and may hold a
-        // legitimately finalized answer from an earlier step in this same turn — those stay.
+        // A tool call arrived in the same step as text that streamed as a tentative reply — that
+        // text was narration. Only the segment currently streaming is affected; earlier steps'
+        // closed .flow-text divs may hold a real answer and stay.
         const t = ensureTarget(msg.requestId);
         if (t.currentText) {
-          // With a reasoning segment named, RE-LABEL the streamed text rather than deleting it:
-          // build the CoT block around the text already on screen and keep it in the same slot in
-          // the flow. The matching reasoning post arrives with this same toolCallId and updates
-          // this node, so the thought reads as one continuous stream. Deleting here (the old
-          // behavior) is what made the Thinking block appear all at once a moment later.
+          // With a reasoning segment named, RE-LABEL the streamed text in place rather than
+          // deleting it — the matching reasoning post updates this node, so the thought reads as
+          // one stream instead of appearing all at once a moment later.
           const streamedText = msg.reasoningId ? (t.currentText._buf ?? t.currentText.textContent ?? '') : '';
           if (msg.reasoningId && streamedText.trim()) {
             const block = buildReasoningBlock(streamedText, msg.reasoningId, true);
@@ -4671,12 +4582,8 @@ import { handleToolStatus } from './handlers/toolStatus';
       case 'assistantMessage': {
         const t = ensureTarget(msg.requestId);
         stopStatusTimer(msg.requestId, true);
-        // A mid-stream provider error can land BEFORE any assistant text has streamed, in
-        // which case finalizeWork's empty-flow-collapse removed t.flow from the document.
-        // Anything we then append to t.flow would be an orphan — the user only sees the
-        // reply after a reload, when the transcript re-renders from persisted state. If
-        // the flow is detached, re-attach it to the still-connected t.el so the bubble
-        // actually reaches the DOM.
+        // A provider error can land before any text streamed, after finalizeWork removed the
+        // empty flow; re-attach it or the reply is an orphan the user only sees after a reload.
         if (t.flow && !t.flow.isConnected && t.el) t.el.appendChild(t.flow);
         // Remove streaming cursor from all text segments
         t.flow.querySelectorAll('.streaming').forEach((el) => el.classList.remove('streaming'));
@@ -4891,13 +4798,8 @@ import { handleToolStatus } from './handlers/toolStatus';
         // Replace any prior error notice for this turn so a failed retry (e.g. an
         // escalated takeover that also errors) can't stack two identical red marks.
         dest.querySelectorAll('.error-notice').forEach((e) => e.remove());
-        // Cross-turn dedup: re-sending the same failing query (or a model that keeps
-        // returning the same 404) used to stack one identical red notice per attempt,
-        // which made the chat unreadable. Bump a per-message counter on the most recent
-        // error notice: if the new error is identical to the last one we just showed
-        // (within ~5s — the user is retrying the same broken thing), replace it with a
-        // single "Same error (N attempts)" line so the count is visible but the chat
-        // stays clean.
+        // Cross-turn dedup: an identical error within ~5s (the user retrying the same broken
+        // thing) replaces the last notice with "Same error (N attempts)" instead of stacking.
         const now = Date.now();
         const last = lastErrorNotice;
         if (last && last.parentNode && (now - last._at) < 5000 && last._text === msg.message) {
@@ -4918,6 +4820,7 @@ import { handleToolStatus } from './handlers/toolStatus';
       case 'busy': {
         // The composer's Send/Stop button is singular (one composer for the viewed session)
         // — a background session's busy flip must not touch it.
+        if (msg.sessionId) { const p = panes.get(msg.sessionId); if (p) p.busy = msg.busy; }
         if (!msg.sessionId || msg.sessionId === viewedSessionId) {
           busy = msg.busy;
           // AI Elements' PromptInput submit cycles submitted → streaming → idle. `busy` alone
@@ -4941,11 +4844,8 @@ import { handleToolStatus } from './handlers/toolStatus';
         // return) still flips busy off — clear any lingering live status in THIS message's
         // own session's pane ('busy' is pane-scoped, so `statusTimers` here is that pane's map).
         if (!msg.busy) for (const id of statusTimers.keys()) stopStatusTimer(id, true);
-        // Belt-and-braces: the run is over, so nothing may still be "Thinking…". The host
-        // settles each burst itself (settleReasoning, which also carries the real duration),
-        // but that depends on every finish path remembering to call it — a cancel, an early
-        // return or a burst that flushed to nothing would otherwise leave a block spinning
-        // forever. Settling here can only ever ADD a terminal state, never undo a real one.
+        // The run is over, so nothing may still be "Thinking…": the host settles bursts itself,
+        // but a cancel or early return could leave one spinning. This only ADDS a terminal state.
         if (!msg.busy) {
           const pane = msg.sessionId ? panes.get(msg.sessionId) : activePaneObj;
           const root = pane ? pane.el : activeThreadEl;
@@ -5201,7 +5101,6 @@ import { handleToolStatus } from './handlers/toolStatus';
    *  terminal summary when done/failed. The step checklist itself renders through the
    *  normal todos path; this bar carries only run status. */
   function renderPlanProgress(state) {
-    agentTodoState = null; // the plan runner owns the bar now — don't let a later busy:false resurrect stale agent todos
     if (!state || state.status === 'aborted') { todoSheet.update(null); return; }
     const status = state.status || 'done';
     const steps = (state.steps || []).map((st, i) => ({
@@ -5537,11 +5436,8 @@ import { handleToolStatus } from './handlers/toolStatus';
     const lt = lastLifetime;
     el.innerHTML = '';
 
-    // A real chart, not a decorative one: the only relationship this data actually supports
-    // is composition (reasoning tokens are a SUBSET of total tokens) — lifetime/retrieval are
-    // cumulative counters, not a time series, so a trend line would have to fabricate history
-    // that doesn't exist. A donut of that real part-to-whole split, plus bars for the
-    // retrieval percentages below, covers "a real chart" honestly instead of inventing data.
+    // The only relationship this data supports is composition (reasoning ⊂ total tokens);
+    // lifetime counters are not a time series, so a trend line would fabricate history.
     const total = lt.totalTokens || 0;
     const reasoning = Math.min(lt.totalReasoningTokens || 0, total);
     const other = Math.max(0, total - reasoning);

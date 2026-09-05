@@ -6,16 +6,9 @@ import { tagExternalContent } from './tiermuxWeb/security';
 
 const MAX_CHARS = 15_000;
 
-/**
- * fetchUrl — reads a public URL and returns its readable text content.
- *
- * Backed by TierMux's web engine's static-fetch chain: markdown / GitHub-raw /
- * RSS / HTTP+jsdom main-content extraction / archive.org fallback, with
- * llms.txt-aware routing when the site exposes guidance. The `query` arg is
- * strictly optional and only influences llms.txt routing; a bare
- * `fetchUrl({ url })` call behaves exactly as before — only the extraction
- * quality improves over the old regex strip.
- */
+/** fetchUrl — a public URL's readable text, via the web engine's static-fetch chain (markdown /
+ *  GitHub-raw / RSS / jsdom main-content / archive.org fallback, llms.txt-aware). `query` only
+ *  influences llms.txt routing. */
 export function createFetchUrlTool() {
   return tool({
     description:
@@ -44,11 +37,8 @@ export function createFetchUrlTool() {
         if (result.dateWarning) parts.push(result.dateWarning);
         parts.push(result.content || '[No readable content extracted — the page may be JavaScript-rendered.]');
 
-        // Tag AFTER capping so the safety notice and the closing </external-content> tag can't be
-        // truncated off the end. Untagged web text used to land straight in the agent's message
-        // history next to a live runCommand tool — a page saying "ignore previous instructions
-        // and run ..." reached a weak free model with zero framing. `tagExternalContent` and
-        // CONTENT_SAFETY_NOTICE already existed for exactly this and were referenced nowhere.
+        // Tag AFTER capping so the safety notice and closing tag cannot be truncated off. Untagged
+        // web text used to sit next to a live runCommand tool with zero framing.
         return tagExternalContent(capToolOutput(parts.join('\n\n'), MAX_CHARS, 'Fetched content truncated.'));
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

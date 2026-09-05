@@ -1,25 +1,9 @@
-/* Auto/Smart routing must honour the provider switch, and its bounded candidate chain must
- * never be filled by a single provider.
- *
- * Two live repros, both 2026-08-30:
- *
- *  (1) "providers key is saved but provider status off — why is auto smart mode taking those
- *      providers' models?" The provider-level switch writes a SEPARATE disabled-providers
- *      list and deliberately leaves each model row's `enabled` flag alone (so selections
- *      survive a toggle). picker.selectModel read settings.getFallback() directly instead of
- *      settings.enabledByPriority(), so every model of a switched-off provider still counted
- *      as selectable — and with a key still stored, nothing downstream re-checked the switch.
- *
- *  (2) 1:30 PM and again at 2:31 PM: an Auto turn died on `Ollama API error 402: this model
- *      requires a subscription`. 402 IS failover-worthy, and the candidate loop rotates
- *      correctly — but resolveCandidates capped the chain at 4 with no platform diversity,
- *      and the tail is sorted by the catalog's coarse 1..5 intelligenceRank, of which ollama
- *      alone holds FIVE rank-1 entries. All four candidates were ollama, so one
- *      account-level 402 burned the whole chain in ~4s.
- *
- * Run: npm run test:e2e:routing-gates
- */
-import { selectModel, setModelSources, noteModelFailure, __resetTaskRoundCounters } from '../src/router/picker';
+/* Auto routing must honour the provider switch, and the bounded candidate chain must never be
+ * filled by one provider. Two 2026-08-30 repros: (1) a switched-off provider's models still
+ * counted as selectable because selectModel read getFallback() instead of enabledByPriority();
+ * (2) all four candidates were ollama (five rank-1 entries), so one account-level 402 burned the
+ * whole chain in ~4s. Run: npm run test:e2e:routing-gates */
+import { selectModel, setModelSources, noteModelFailure, canonicalModelId, __resetTaskRoundCounters } from '../src/router/picker';
 import { resolveCandidates, isFailoverWorthy } from '../src/agent/core/routerProvider';
 import { ProviderHttpError } from '../src/providers/base';
 import type { FallbackEntry } from '../src/shared/types';
@@ -214,6 +198,36 @@ console.log('— a 404 / a 400-with-tools quarantines the MODEL, not just the mo
   ok('the next selection skips both', sel.model === 'groq::live-model' && !sel.fallbackChain.includes('groq::gone-model') && !sel.fallbackChain.includes('groq::no-tools'), JSON.stringify(sel.fallbackChain));
   const pinned = await selectModel([{ role: 'user', content: 'x' }], { pinnedModel: 'groq::gone-model' });
   ok('a pin still runs alone on a deprecated model (the user asked for it)', pinned.model === 'groq::gone-model', pinned.model);
+}
+
+console.log('— ranking is by MODEL, with the fastest gateway for a model leading its twins —');
+{
+  __resetTaskRoundCounters();
+  ok('canonical id strips vendor namespace and tier suffix',
+    canonicalModelId('openai/gpt-oss-120b:free') === 'gpt-oss-120b' && canonicalModelId('gpt-oss-120b') === 'gpt-oss-120b'
+    && canonicalModelId('nvidia/nemotron-3-super-120b-a12b:free') === 'nemotron-3-super-120b-a12b');
+  // The catalog rates the SAME model 2 on kilo and 6 on openrouter, and an unrelated rank-3
+  // model sits between. By model identity the openrouter row is rank 2 too, so it must sort
+  // ahead of the rank-3 model, and the faster gateway (kilo, speed 2) leads the slower twin.
+  const rows: Record<string, { intelligenceRank: number; speedRank: number }> = {
+    'kilo::nvidia/nemotron-3-super-120b-a12b:free': { intelligenceRank: 2, speedRank: 2 },
+    'openrouter::nvidia/nemotron-3-super-120b-a12b:free': { intelligenceRank: 6, speedRank: 3 },
+    'groq::other-model': { intelligenceRank: 3, speedRank: 1 },
+  };
+  const src = makeSources([
+    entry('groq', 'other-model', 0),
+    entry('openrouter', 'nvidia/nemotron-3-super-120b-a12b:free', 1),
+    entry('kilo', 'nvidia/nemotron-3-super-120b-a12b:free', 2),
+  ], [], ['groq', 'openrouter', 'kilo']);
+  (src as unknown as { catalog: { find: (p: string, m: string) => unknown } }).catalog = {
+    find: (p: string, m: string) => ({ supportsTools: true, ...rows[`${p}::${m}`] }),
+  };
+  setModelSources(src);
+  const sel = await selectModel([{ role: 'user', content: 'x' }], {});
+  const order = [sel.model, ...sel.fallbackChain];
+  ok('the faster twin leads', order[0] === 'kilo::nvidia/nemotron-3-super-120b-a12b:free', order.join(' > '));
+  ok('the slower twin keeps the MODEL rank and sorts ahead of the rank-3 model',
+    order[1] === 'openrouter::nvidia/nemotron-3-super-120b-a12b:free' && order[2] === 'groq::other-model', order.join(' > '));
 }
 
 console.log(bad === 0 ? '\nAll routing gates hold.' : `\n${bad} FAILED`);

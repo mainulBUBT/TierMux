@@ -1,15 +1,6 @@
-// Regression test for the Plan-mode structured-output wiring:
-//   1. structurePlanSteps() (src/agent/planStructurer.ts) actually parses a fake model's
-//      structured JSON output into a clean string[], and falls back to null on bad/empty input.
-//   2. formatStructuredSteps() re-serializes that list into the exact numbered-list text format
-//      the webview's Plan.ts (parsePlanSteps) and session/titles.ts (planStepsToTodos) already
-//      parse — this is what lets chatViewProvider.ts's structurePlanText() drop the model's clean
-//      steps straight into the existing `planProposed.steps` field with no webview changes.
-//
-// Drives the REAL structurePlanSteps() -> createRouterProvider() -> generateText() pipeline with
-// a fake Router — only the model layer is faked, everything above it (including the AI SDK's own
-// structured-output JSON parsing/validation) is real.
-//
+// Plan-mode structured-output wiring: structurePlanSteps() parses a fake model's JSON into a
+// clean string[] (null on bad input), and formatStructuredSteps() re-serializes it into the exact
+// numbered-list text Plan.ts and titles.ts already parse. Only the model layer is faked.
 // Run: npm run test:e2e:plan-structurer
 import { structurePlanSteps, formatStructuredSteps } from '../src/agent/planStructurer';
 import { __setPlanModelForTests } from '../src/agent/planStructurer';

@@ -2,13 +2,9 @@
 
 import { parse, type ParseEntry } from 'shell-quote';
 
-/**
- * Binaries that are read-only no matter what arguments they're given (flags only ever narrow
- * what they read, never cause a write) — deliberately excludes anything ambiguous (`npm`, `git`,
- * `node`, `docker`, `make`...) where the SAME binary name can mutate depending on subcommand;
- * those are either handled as a special case below (`git`, `find`) or just never classified as
- * read-only, falling through to normal approval gating.
- */
+/** Binaries that are read-only whatever their arguments. Deliberately excludes anything whose
+ *  subcommand can mutate (`npm`, `git`, `node`, `docker`, `make`); `git`/`find` are special-cased
+ *  below, the rest fall through to normal approval. */
 const ALWAYS_READ_ONLY = new Set([
   'ls', 'pwd', 'whoami', 'date', 'env', 'printenv', 'uname', 'which', 'type', 'hostname', 'id',
   'cat', 'head', 'tail', 'wc', 'file', 'stat', 'du', 'df', 'ps', 'echo',
@@ -81,13 +77,10 @@ function isSegmentReadOnly(tokens: string[]): boolean {
   return false;
 }
 
-/**
- * Conservative read-only classifier: a confidently read-only command (`ls`, `git status`) can
- * skip the approval prompt. Fails closed — a parse failure, command substitution, an unknown
- * operator, redirection, or an unlisted binary/subcommand returns false and normal gating
- * applies. A false negative costs one prompt; a false positive would skip approval for a
- * mutating command, which this must never do.
- */
+/** Conservative read-only classifier: a confidently read-only command skips the approval prompt.
+ *  Fails closed — a parse failure, substitution, unknown operator, redirection or unlisted
+ *  binary returns false. A false negative costs one prompt; a false positive skips approval
+ *  for a mutating command, which this must never do. */
 export function isReadOnlyCommand(command: string): boolean {
   const cmd = command.trim();
   if (!cmd) return true;

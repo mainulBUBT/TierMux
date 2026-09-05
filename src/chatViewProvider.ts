@@ -104,11 +104,8 @@ function incompleteTodosNote(allTodos: TodoItem[], remainingTodos: TodoItem[]): 
   return `\n\n---\n**Stopped with unfinished work — ${doneCount}/${allTodos.length} steps done.** Remaining:\n${list}`;
 }
 
-/** Why a turn stopped when it stopped ITSELF instead of finishing — the step cap, or the
- *  no-progress guard (see `AgentResult.stopReason`). Both leave real work on the table, and
- *  until 2026-09-05 both ended the turn looking exactly like completion. The host knows the
- *  reason from the wire, so this text is deterministic — the model is never asked to explain
- *  its own stop. The Continue button is live in both cases (`resumable` keys on `paused`). */
+/** Why a turn stopped ITSELF (step cap or no-progress guard). Until 2026-09-05 both looked like
+ *  completion; the host knows the reason from the wire, so the model is never asked to explain. */
 function stopReasonNote(stopReason: NonNullable<AgentResult['stopReason']>, remaining: TodoItem[]): string {
   const list = remaining.length
     ? `\n\nRemaining:\n${remaining.map((t) => `- ${t.content}`).join('\n')}`
@@ -134,11 +131,9 @@ function completedTodosNote(allTodos: TodoItem[]): string {
   return `\n\n---\n**Completed all ${allTodos.length} steps:**\n${list}`;
 }
 
-/** A short, bare "keep going" message — NOT a fresh task. Weak free models often re-plan from
- *  scratch on such a message (worse if history was compacted), redoing finished work. We detect it
- *  to splice in explicit resume context (see resumeContextBlock). Kept intentionally narrow: only
- *  a message that is ESSENTIALLY just a continuation word, so a real instruction like "continue but
- *  use TypeScript" is left untouched. */
+/** A bare "keep going" message — NOT a fresh task. Weak models re-plan from scratch on these, so
+ *  we splice in resume context (resumeContextBlock). Narrow on purpose: "continue but use
+ *  TypeScript" must not match. */
 const CONTINUATION_RE = /^(continue|keep going|go on|carry on|proceed|resume|go ahead|carry on then|finish it|finish|next|keep going please|continue please|yes continue)\b[\s!.]*$/i;
 function isBareContinuation(text: string): boolean {
   const t = (text || '').trim();
@@ -186,12 +181,9 @@ function withModeTag(content: ChatContent, mode: AgentMode, previousMode: AgentM
   );
 }
 
-/** A short follow-up that leans on a pronoun ("it", "that") or opens with a correction ("no",
- *  "don't", "wait") without naming what it's about — e.g. "no fix it", "make it faster", "undo
- *  that". Unlike {@link isBareContinuation} these aren't a fixed phrase, so weak models (and
- *  sometimes strong ones) read them as a fresh, contextless request instead of tying them back
- *  to the last thing the agent did. Kept to short messages only: a longer sentence usually spells
- *  out its own context ("that error you mentioned in api.ts is still happening"). */
+/** A short follow-up leaning on a pronoun or opening with a correction ("no fix it", "undo that")
+ *  that weak models read as a contextless fresh request. Short messages only — a longer one
+ *  usually names its own context. */
 const AMBIGUOUS_FOLLOWUP_REF_RE = /\b(it|that|this|those|same|again|instead)\b/i;
 const AMBIGUOUS_FOLLOWUP_START_RE = /^(no|nope|nah|don'?t|actually|wait|hm+|not (quite|really))\b/i;
 function isAmbiguousFollowup(text: string): boolean {
@@ -241,12 +233,9 @@ function ambiguousFollowupBlock(summary: string): string {
     + 'it is genuinely unrelated.]';
 }
 
-/**
- * One chat session's full state — both the persisted conversation (history/transcript/title)
- * and the never-persisted runtime (the in-flight run, approvals, checkpoints, votes). Promoting
- * all of this off the provider onto a per-session object is what lets multiple agents run at
- * once: each session owns its own run, and the provider just tracks which one is viewed.
- */
+/** One chat session's full state: the persisted conversation plus the never-persisted runtime
+ *  (in-flight run, approvals, checkpoints). Per-session ownership is what lets several agents run
+ *  at once; the provider only tracks which one is viewed. */
 interface Session {
   id: string;
   history: ChatMessage[];
@@ -310,11 +299,8 @@ interface Session {
    *  the agent's commands (see onTool in agentCallbacks). Edit-tool writes don't need this;
    *  they're attributed via CheckpointManager.record(). */
   commandBaselines: Map<string, Promise<Map<string, string>>>;
-  /** Wall-clock start time per toolCallId, recorded when a call first reports 'running' —
-   *  diffed against Date.now() when it settles to 'done'/'error' so the toolStatus message can
-   *  carry a real durationMs (see docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 3: the
-   *  status line shows `· {duration}` per step, not just the turn-level "Worked for Ns").
-   *  Entries are deleted on settlement — never grows past the calls currently in flight. */
+  /** Start time per toolCallId (first 'running'), diffed on settlement so toolStatus carries a
+   *  real durationMs. Deleted on settlement — never grows past the calls in flight. */
   toolStartTimes: Map<string, number>;
   model?: string;
   reasoningEffort?: ReasoningEffort;
@@ -323,11 +309,8 @@ interface Session {
    *  turns apart from ambiguous ones without re-parsing the message text. Persists across a
    *  retry of the same turn (only overwritten by the next fresh send). */
   lastMentionCount?: number;
-  /** Incremental snapshot of the CURRENTLY RUNNING turn's tool transcript, updated after every
-   *  tool completion (see agentCallbacks' onTool) and persisted immediately so a crash mid-turn
-   *  (extension host restart) doesn't lose in-progress work. Cleared by clearInProgressTurn()
-   *  once the run finishes normally — persistAgentTurn() has already committed the authoritative
-   *  transcript into `history` by then, so this is purely a crash-recovery fallback. */
+  /** Crash-recovery snapshot of the running turn's tool transcript, persisted after every tool
+   *  completion and cleared once persistAgentTurn has committed the authoritative copy. */
   inProgressTurn?: { requestId: string; workMessages: ChatMessage[] };
 }
 
@@ -441,12 +424,8 @@ function displayNameForEntry(entry: { platform: string; modelId: string }, deps:
   return getPlatformInfo(entry.platform as import('./shared/types').Platform)?.name ?? entry.platform;
 }
 
-/**
- * Source-of-truth provider label for a turn's footer. Prefers the name the router reported for
- * the run; falls back to the pinned model's platform when the run produced no metadata (empty
- * or errored turn) so the footer never goes blank as `/modelId` — the user always sees which
- * provider their pinned selection targeted, even when it failed to respond.
- */
+/** Provider label for a turn's footer: the router-reported name, else the pinned model's
+ *  platform, so an empty or errored turn never shows a blank `/modelId`. */
 function turnPlatformLabel(pinnedModel: string | undefined, reported: { runtimeName?: string; platform?: string } | undefined, deps: ChatDeps): string {
   if (reported?.runtimeName) return reported.runtimeName;
   if (reported?.platform) {
@@ -472,12 +451,8 @@ function turnModelLabel(pinnedModel: string | undefined, reportedModel: string |
     : undefined;
 }
 
-/**
- * If the agent's response ends with a question or an invitation for user input, extract the
- * last paragraph as the prompt text. Covers both `?`-terminated questions and common
- * conversational forms that don't end with a question mark (e.g. "Let me know which step",
- * "Please tell me", "Which one would you prefer").
- */
+/** If the response ends with a question or an invitation for input ("?", "Let me know which",
+ *  "Which one would you prefer"), extract the last paragraph as the prompt text. */
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'tiermux.chat';
@@ -510,11 +485,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     deps.settings.onDidChange(() => void this.sendConfig());
   }
 
-  /**
-   * Slash-command skills loaded from `.tiermux/skills/*.md` (bundled defaults, overridable
-   * per-workspace). loadSkills() caches in-memory and invalidates via fs.watch, so an edited
-   * skill file still takes effect on the next `/name` without paying disk I/O on every call.
-   */
+  /** Slash-command skills from `.tiermux/skills/*.md` (bundled defaults, per-workspace override).
+   *  Cached in memory, invalidated via fs.watch. */
   private skills() {
     return loadSkills(this.extensionUri.fsPath, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
   }
@@ -840,12 +812,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.pendingAskUser.clear();
   }
 
-  /**
-   * In-chat backing for the agent's `askUser` tool (Plan + Agent modes only). Posts an
-   * `askUserPrompt` card to the webview and resolves with the user's answer (or '' on cancel).
-   * The callId is the OpenAI tool_call_id, so the resolved string lands as the observation
-   * for the right tool call when the agent loop resumes.
-   */
+  /** In-chat backing for the `askUser` tool: posts an askUserPrompt card and resolves with the
+   *  answer ('' on cancel). callId is the tool_call_id, so the answer lands on the right call. */
   private requestAskUser(s: Session, requestId: string, callId: string, question: string, options?: string[]): Promise<string> {
     if (!this.view) return Promise.resolve('');
     try { this.view.show?.(true); } catch { /* reveal is best-effort */ }
@@ -864,11 +832,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return Math.max(1, vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxConcurrentRuns', 3));
   }
 
-  /**
-   * Acquire one of the limited concurrent-run slots, queueing (and marking the tab "queued")
-   * if the cap is reached. The returned function releases the slot and starts the next queued
-   * run, skipping any whose session was deleted while waiting.
-   */
+  /** Acquire a concurrent-run slot, queueing (tab marked "queued") at the cap. The returned
+   *  function releases it and starts the next queued run whose session still exists. */
   private async acquireRunSlot(sessionId: string): Promise<() => void> {
     if (!this.runningSessions.has(sessionId) && this.runningSessions.size >= this.maxConcurrent()) {
       this.setStatus(sessionId, 'queued');
@@ -1563,11 +1528,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  so the user isn't left guessing why the model later refuses or answers from nothing. */
   private warnIfPdfTextExtractionFailed(attachment: Attachment): void {
     if (attachment.kind === 'pdf' && !attachment.text) {
-      // Only report a real MALFUNCTION here. A genuine scan (no text layer) is not an error:
-      // the webview converts its pages to images right after this and reports the outcome
-      // itself, so claiming "sending the raw file" now would contradict what actually happens.
-      // The library-failed-to-load case is different — it makes every PDF look like a scan and
-      // must be named, because nothing else distinguishes the two.
+      // Only a real MALFUNCTION is an error here: a scan (no text layer) is handled by the webview
+      // converting pages to images next, but a library that failed to load makes every PDF look
+      // like a scan and must be named.
       const why = lastPdfFailureReason();
       if (!why || why.startsWith('getText returned no text')) return;
       this.post({
@@ -1854,11 +1817,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'notice', sessionId: s.id, text: 'Compaction produced no summary after retrying with a different model; context unchanged. Try again in a moment, or switch/enable another model.' });
         return;
       }
-      // Report actual TOKEN counts, not just message counts — a session with a couple of huge
-      // tool-result messages in the kept tail can shrink from e.g. 12 → 7 messages while barely
-      // dropping in tokens, which reads as "compact did nothing" even though it genuinely ran.
-      // Showing the real before/after (now that recapTailToolResults also shrinks oversized tool
-      // results within the kept tail — see condense.ts) makes a real reduction visible and provable.
+      // Report TOKEN counts, not message counts: dropping 12 → 7 messages while barely shrinking
+      // in tokens reads as "compact did nothing", and the reverse is now common (condense.ts also
+      // shrinks oversized tool results inside the kept tail).
       const priorMessages = s.history.length;
       const priorTokens = estimateMessagesTokens(s.history);
       s.history = r.messages;
@@ -1907,11 +1868,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (a.kind === 'image' && a.dataUrl) {
         visualBlocks.push({ type: 'image_url', image_url: { url: a.dataUrl, mime: a.mime, filename: a.name } });
       } else if (a.kind === 'pdf' && a.dataUrl && !a.text) {
-        // Scanned PDF: prefer the page images the webview rendered (see media/src/pdfPages.ts)
-        // — every vision-capable model can read `image_url` blocks, whereas raw PDF bytes (the
-        // `file` block below) only Google actually forwards (BaseProvider.carriesRawPdf). Fall
-        // back to the raw file when rendering failed, preserving the pre-existing Google-only
-        // behavior rather than dropping the attachment entirely.
+        // Scanned PDF: prefer the page images the webview rendered — every vision model reads
+        // `image_url`, whereas raw PDF bytes only Google forwards (carriesRawPdf). Fall back to the
+        // raw file when rendering failed.
         if (a.pageImages?.length) {
           a.pageImages.forEach((url, i) => {
             // Read the mime off the data URL itself — the webview encodes JPEG, and an
@@ -2007,11 +1966,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     const userContent = this.buildUserContent(prompt, ctx, m.attachments);
-    // Deterministic resume: a bare "continue"/"keep going" isn't a fresh task — it means "pick up
-    // the unfinished work". If the agent's visible plan still has open todos, splice them into the
-    // MODEL-facing copy of the message so it resumes precisely instead of re-planning from scratch
-    // (a common weak-model failure, made worse when history compaction dropped the tool transcript).
-    // The DISPLAYED transcript below still shows only what the user typed.
+    // Deterministic resume: on a bare "continue" with open todos, splice them into the MODEL-facing
+    // copy of the message so it picks up instead of re-planning (a weak-model failure, worse after
+    // compaction). The displayed transcript still shows only what the user typed.
     const pendingTodos = (m.mode === 'agent' && isBareContinuation(prompt))
       ? (s.lastTodos ?? []).filter((t) => t.status !== 'completed')
       : [];
@@ -2137,12 +2094,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
 
-      // The turn genuinely failed (router/provider error with no salvageable text or tool
-      // calls) — onError already posted a thin error notice from inside runTurn, but that's
-      // easy to miss in a chat UI. Show a real reply bubble with the failure reason instead —
-      // honest text, no fake usage/footer (there was no completion to report stats for) — and
-      // don't persist it into the model-context history (nothing happened for the model to
-      // remember) or pop the trailing user turn so a retry isn't confused by a dangling one.
+      // The turn genuinely failed: show a real reply bubble with the reason (the thin onError
+      // notice is easy to miss), no fake footer, and nothing persisted into model history.
       if (result.failed) {
         if (s.history[s.history.length - 1]?.role === 'user') s.history.pop();
         const errorText = result.errorMessage || 'I wasn\'t able to produce a response. Try again, or switch to a different model.';
@@ -2160,12 +2113,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         totalTokens: after.totalTokens - before.totalTokens,
       };
 
-      // A turn that ended with unfinished todos surfaces the Continue button below (see
-      // `resumable`) — the host does NOT resume it on its own. Auto-resuming up to 3 rounds
-      // lived here for a day (2026-09-04 → 09-05): it spent triple the free-tier quota on a
-      // decision the user was already one click away from making, and its history bookkeeping
-      // wrote every agent turn's reply twice while bypassing persistAgentTurn's Stop
-      // invariant. One click beats a quota-burning guess.
+      // Unfinished todos surface the Continue button (`resumable`); the host never auto-resumes.
+      // Auto-resume lived here for a day (2026-09-04 → 05) and tripled free-tier spend on a
+      // decision one click away, while double-writing history.
 
       // Final check, independent of WHY the turn ended (guardrail stop, round-cap exhaustion, or
       // plain completion): does the plan written this send still have unfinished items? Computed
@@ -2230,11 +2180,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /**
-   * A real git commit landed — the working-tree edits the pinned bar was tracking are now
-   * history, not something "Undo all" should touch. Drop every session's checkpoints and
-   * refresh the bar (hides it) rather than trying to reconcile which files got committed.
-   */
+  /** A real git commit landed: the tracked edits are history now, not something "Undo all" should
+   *  touch. Drop every session's checkpoints and hide the bar. */
   async clearAllCheckpoints(): Promise<void> {
     for (const s of this.sessions.values()) {
       s.checkpoints.clear();
@@ -2249,11 +2196,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.postCheckpoints(s);
   }
 
-  /**
-   * Re-emit a checkpoint marker for every turn that captured edits. Each carries the
-   * cumulative set of files that restoring "to before this message" would revert, so
-   * earlier commands show a larger set than later ones (Cursor/Windsurf semantics).
-   */
+  /** Re-emit a checkpoint marker per turn that captured edits, each carrying the cumulative set
+   *  restoring "to before this message" would revert (Cursor/Windsurf semantics). */
   private async postCheckpoints(s: Session): Promise<void> {
     for (const cp of s.checkpoints.list()) {
       const files = await s.checkpoints.changedFiles(cp.id);
@@ -2559,12 +2503,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /**
-   * Append an agent run's outcome to the conversation history. Agent/Debug runs return
-   * their full working transcript (tool calls + results + final answer) as workMessages —
-   * persisting that is what lets a paused/failed run resume with memory instead of redoing
-   * work. Tool-less runs (chat/trivial) have no workMessages, so fall back to the final text.
-   */
+  /** Append a run's outcome to history. Agent runs return their full working transcript as
+   *  workMessages — persisting it is what lets a paused/failed run resume with memory. Tool-less
+   *  runs fall back to the final text. */
   private persistAgentTurn(s: Session, result: AgentResult): void {
     // An aborted run's working transcript must not bleed into the next turn's history — the
     // model treated an abandoned tool call as a real request ("the next hola answered against
@@ -2577,22 +2518,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     else s.history.push({ role: 'assistant', content: result.text });
   }
 
-  /**
-   * Record a finished assistant turn in the transcript WITH the details the live view showed
-   * (reasoning, tool steps, usage, duration) so a re-render — e.g. after "Revert to here" or a
-   * session switch — can rebuild the "Reasoning" and "Worked for Ns" disclosures instead of
-   * dropping them. Drains the per-requestId step accumulator.
-   */
+  /** Record a finished turn WITH what the live view showed (reasoning, steps, usage, duration) so
+   *  a re-render can rebuild the disclosures. Drains the per-requestId step accumulator. */
   private pushAssistantTurn(s: Session, requestId: string, result: AgentResult, sentAt: number, usage?: { promptTokens: number; completionTokens: number; reasoningTokens?: number; totalTokens: number }): void {
     const steps = s.liveSteps.get(requestId);
     s.liveSteps.delete(requestId);
     const rationale = s.liveRationale.get(requestId);
     s.liveRationale.delete(requestId);
-    // The transcript is the durable structured representation: when the turn produced a
-    // WorkReportData, it is persisted ON the entry (canonical) and posted to the webview
-    // (live ResultCard). `.text` additionally carries the legacy markdown serialization so
-    // transcripts written before WorkReportData keep rendering — new code renders from the
-    // structured field and never parses that markdown back.
+    // WorkReportData is persisted ON the entry (canonical) and posted live; `.text` also carries
+    // the legacy markdown so older transcripts keep rendering — it is never parsed back.
     let text = result.text;
     // The agent loop leaves `checkpointId` unset (it has no requestId); the HOST owns the turn
     // identity, so it is stamped here — before the report is posted OR persisted, so the live
@@ -2638,11 +2572,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const qi = this.runQueue.findIndex((q) => q.sessionId === sessionId);
     if (qi >= 0) { this.runQueue.splice(qi, 1)[0].resolve(); }
-    // Capture before clearing — handleApprovePlan's own `finally` only posts
-    // `planExecuting:false` when `isActiveRun` is still true, which Stop/cancel deliberately
-    // breaks by nulling `activeRequestId` right below. Without this, cancelling mid-plan-
-    // execution left the mode pill permanently stuck on "Agent ⚡" until some other plan
-    // happened to run (which merely reassigns the stuck state, never clears it).
+    // Capture before clearing: handleApprovePlan's finally only posts planExecuting:false while
+    // isActiveRun holds, which Stop breaks below — the mode pill stayed stuck on "Agent ⚡".
     const wasExecutingPlan = s.executingPlan;
     const executingRequestId = s.activeRequestId;
     s.cancel?.cancel();
@@ -2702,31 +2633,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // assistantStart is posted at ENTER and assistantMessage + busy:false at finish.
     const live = (): boolean => this.isActiveRun(s, requestId);
 
-    // Reasoning stream state — ONE block per thinking "burst", not one coalesced block per turn, so
-    // the UI renders a think→tool→think→tool timeline. Each burst carries its own segment id; when a
-    // tool call interrupts, the current burst is settled ('done', with a "Thought for Ns" duration)
-    // and the segment id advances so the NEXT reasoning delta opens a fresh block below the tool
-    // card. Each burst accumulates its own text (reset per segment) rather than the whole turn's.
+    // Reasoning stream: ONE block per thinking burst (think→tool→think timeline). A tool call
+    // settles the current burst with its duration and advances the segment id so the next delta
+    // opens a fresh block below the tool card.
     let reasoningSeg = 0;
     const reasoningId = () => `reason-${requestId}-${reasoningSeg}`;
     let reasoningText = '';
     let reasoningStart = 0;
     const flushReasoningDone = () => {
-      // `reasoningStart` being set means a 'running' block was ALREADY posted for this segment
-      // (both happen in the same onReasoning call), so it must be settled here no matter what
-      // the buffer ended up holding. The old guard also required non-empty text, which left a
-      // block spinning "Thinking…" forever whenever the burst collapsed to nothing after the
-      // leading-whitespace strip (a delta of just "\n\n" announces the block, then trims away).
+      // `reasoningStart` set ⇒ a 'running' block was already posted, so settle it regardless of
+      // the buffer: requiring text left a block spinning forever when the burst trimmed to nothing.
       if (!reasoningStart) return;
       const durationMs = Date.now() - reasoningStart;
       this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: reasoningId(), name: 'reasoning', args: undefined, state: 'done', detail: reasoningText, durationMs });
       reasoningStart = 0;
-      // Advance the segment HERE, not only in endReasoningSegment: whichever flush path runs
-      // first (onChunk's flush or onTool's segment end) must hand the NEXT burst a fresh id +
-      // empty buffer. Live repro: onChunk flushed the burst when reply text arrived, leaving
-      // reasoningText non-empty under the OLD segment id — the next step's reasoning appended
-      // to the same toolCallId, and upsertTool re-opened the settled block and re-appended the
-      // whole combined reasoning at the END of the flow (the "reasoning suddenly appears" bug).
+      // Advance the segment HERE too: whichever flush path runs first must hand the next burst a
+      // fresh id, or the next step's reasoning re-opened the settled block and re-appended the
+      // whole thing at the end of the flow (the "reasoning suddenly appears" bug).
       reasoningSeg++;
       reasoningText = '';
     };
@@ -2771,11 +2694,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!live()) return;
         endReasoningSegment(); // reasoning gave way to a tool call — settle this burst, start a new segment
 
-        // Per-call timing (docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 3): record the
-        // start on the first 'running' sighting, diff against it once the call settles. A
-        // long-pending approval (running can sit for an arbitrary, user-controlled time — see
-        // PRESENT_TENSE_WHILE_RUNNING in ToolCard.ts) is fine to include; that wait genuinely
-        // is how long the call took from the model's perspective.
+        // Per-call timing: start on the first 'running', diff on settlement. A long-pending
+        // approval counts — that wait is how long the call took from the model's perspective.
         const mappedState = e.state === 'queued' ? 'running' : e.state as 'running' | 'done' | 'error';
         if (mappedState === 'running') {
           if (!s.toolStartTimes.has(e.toolCallId)) s.toolStartTimes.set(e.toolCallId, Date.now());
@@ -2792,20 +2712,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const steps = s.liveSteps.get(requestId) ?? [];
         const i = steps.findIndex((st) => st.toolCallId === e.toolCallId);
         const entry: TranscriptStep = { toolCallId: e.toolCallId, name: e.name, args: e.args, state: mappedState, detail: e.detail, durationMs };
-        // NOTE: checkpoint baselines are captured by the tools themselves (onBeforeWrite →
-        // CheckpointManager.record) BEFORE the write lands. The capture used to happen here,
-        // but v3 fires every tool event from the engine's onStepEnd — after the tool already
-        // wrote — so the "before" snapshot held post-edit content and undo restored files to
-        // their already-edited state ("Restored N files" with zero visible change).
+        // Checkpoint baselines are captured by the tools (onBeforeWrite → CheckpointManager.record),
+        // not here: v3 fires tool events from onStepEnd, after the write, so a snapshot taken here
+        // held post-edit content and undo restored nothing.
         if (i >= 0) steps[i] = entry; else steps.push(entry);
         s.liveSteps.set(requestId, steps);
 
-        // Attribute shell-command workspace edits to the agent: snapshot git's dirty set just
-        // before the command runs, diff just after. Files whose porcelain line appeared or
-        // changed were edited BY the command → mark them TierMux-touched so the changed-files
-        // overview (agentChangedFiles) includes them. The user editing a file exactly WHILE a
-        // command runs would misattribute — a rare, acceptable window. Edit-tool writes don't
-        // need this; record() already tags them.
+        // Attribute shell-command edits to the agent: diff git's dirty set before/after the
+        // command and mark changed files TierMux-touched. A user editing exactly while a command
+        // runs would misattribute — rare, acceptable.
         if (e.name === 'runCommand') {
           const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
           if (cwd) {
@@ -2940,11 +2855,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
   }
 
-  /**
-   * When a run fails because every configured model was exhausted (escalation couldn't find a
-   * stronger one either), show a plain notice and offer to manage models. No-op for any other
-   * error kind.
-   */
+  /** When every configured model was exhausted, show a plain notice and offer to manage models.
+   *  No-op for any other error kind. */
   private async maybeRecommendModels(e: unknown): Promise<void> {
     if (!(e instanceof AllModelsFailedError)) return;
     const enabledCount = this.deps.settings.enabledByPriority().length;
@@ -2958,12 +2870,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (choice === 'Manage Models') void vscode.commands.executeCommand('tiermux.openModelSettings');
   }
 
-  /**
-   * Resume an agent run that paused — whether it hit the step cap or a free model dropped
-   * out. The prior working transcript is already in history (see persistAgentTurn), so the
-   * agent picks up where it left off rather than re-planning. Always runs in Agent mode so a
-   * follow-up never triggers a fresh Plan pass.
-   */
+  /** Resume a paused run (step cap or a free model dropping out). The working transcript is
+   *  already in history, so the agent picks up rather than re-planning. Always Agent mode. */
   private async handleResume(m: Extract<InMessage, { type: 'resume' }>): Promise<void> {
     const s = this.current();
 
@@ -3174,11 +3082,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.titleGenerated = true; // guard before the call to avoid duplicate runs
 
     const snippet = messageText.slice(0, 800);
-    // Up to three models, skipping any whose title is empty or a generic placeholder. The
-    // hardcoded free-model list and the isReady pre-filter are gone with the Router: routeOnce
-    // walks the picker's `trivial` chain, which is already "enabled, keyed, not rate-limited,
-    // small and fast" — the properties that list was naming by hand. A well-formed but useless
-    // title is not an error, so it is the only reason left to loop.
+    // Up to three models, skipping empty or placeholder titles. routeOnce's `trivial` chain is
+    // already enabled/keyed/not-rate-limited/small, so a useless title is the only reason to loop.
     let title = '';
     const tried: string[] = [];
     for (let attempt = 0; attempt < 3 && !title; attempt++) {
@@ -3206,11 +3111,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
    private getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
-    // asWebviewUri() returns the same vscode-webview-resource: URL for a given file path on
-    // every resolveWebviewView() call, and Chromium's on-disk HTTP cache (which survives across
-    // Extension Development Host restarts, since they share a profile dir) can keep serving the
-    // old bytes for that URL after the file changes on disk — an F5 relaunch then shows stale
-    // JS/CSS with no error. Appending the file's own mtime as a query string busts that cache.
+    // Chromium's on-disk cache survives Extension Development Host restarts and can serve stale
+    // bytes for an unchanged asWebviewUri() URL; the file's mtime as a query string busts it.
     const uri = (f: string) => {
       const fileUri = vscode.Uri.joinPath(this.extensionUri, 'media', f);
       let v = 0;

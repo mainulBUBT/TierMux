@@ -1,10 +1,5 @@
-/**
- * Pluggable web-search providers. Each provider knows how to turn a query into
- * a list of raw results via native fetch() + an HTML parser. Adding a new
- * engine (Brave, Mojeek, SearXNG, Bing, …) is a one-file change: implement
- * SearchProvider, parse its HTML in search-html.ts, and append it to
- * `searchProviders` below.
- */
+/** Pluggable web-search providers. Adding an engine is one file: implement SearchProvider, parse
+ *  its HTML in search-html.ts, append to `searchProviders`. */
 import type { WebSearchEngine } from './types';
 import { buildWebSearchUrl } from './url';
 import { TIERMUXWEB_CONFIG } from './config';

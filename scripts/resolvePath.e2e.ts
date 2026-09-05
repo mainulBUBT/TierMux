@@ -1,22 +1,8 @@
-/* resolveWorkspacePath: absolute-path normalization + real containment.
- *
- * From a 2026-08-13 audit, two defects sharing one line
- * (`Uri.joinPath(root, relPath.replace(/^\/+/, ''))` + `startsWith(root.path)`):
- *
- * 1. ABSOLUTE PATHS SILENTLY BECAME JUNK PATHS. Weak models echo absolute paths straight back out
- *    of grep hits and diagnostics. Stripping the leading slash turned `<root>/src/a.ts` into
- *    `<root>/<root>/src/a.ts`, which still passed containment. `readFile` then reported
- *    "File not found" for a file that exists, while `writeFile` CREATED the junk file, returned
- *    `applied: true`, and reported "Wrote <root>/src/a.ts" — a fully successful-looking edit that
- *    never touched the real file.
- *
- * 2. SIBLING DIRECTORIES ESCAPED THE WORKSPACE. `Uri.joinPath` normalizes `..`, and the guard was
- *    a bare string prefix, so with root `/htdocs/Proj` the path `../Proj-backup/.env` resolved to
- *    `/htdocs/Proj-backup/.env` — which `.startsWith('/htdocs/Proj')` accepts. Reachable from
- *    readFile / writeFile / editFile / deleteFile, and from runCommand's `cwd`.
- *
- * Run: npm run test:e2e:resolve-path
- */
+/* resolveWorkspacePath: absolute-path normalization + real containment (2026-08-13 audit).
+ * (1) Stripping the leading slash turned `<root>/src/a.ts` into `<root>/<root>/src/a.ts` —
+ * readFile said "not found" while writeFile CREATED the junk file and reported success.
+ * (2) joinPath normalizes `..` and the guard was a bare prefix, so `../Proj-backup/.env` escaped
+ * from every path-taking tool and runCommand's cwd. Run: npm run test:e2e:resolve-path */
 import * as vscode from 'vscode';
 import { resolveWorkspacePath } from '../src/agent/core/tools/resolvePath';
 

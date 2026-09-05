@@ -1,24 +1,10 @@
-/* The edit matcher: tolerant of whitespace, never of ambiguity.
- *
- * "Search text not found in file" is the most common weak-model edit failure, and it is almost
- * never a wrong location — it is one space of indentation, a trailing space, or CRLF vs LF. Before
- * this, `locateUnique` was a bare `indexOf`, so every one of those cost a whole retry turn against
- * a free tier's request quota. Aider's editblock matcher has the same tiers for the same reason.
- *
- * This file exists mostly to pin the SAFETY properties, because the failure mode of a too-clever
- * matcher is silently patching the wrong code:
- *   - a relaxed match must still be UNIQUE (two candidates → error, never a guess)
- *   - line CONTENT is never fuzzy-matched; one differing character still fails
- *   - offsets must address the ORIGINAL buffer, so a CRLF file is not corrupted byte-by-byte
- *   - the replacement is re-indented to wherever the code actually lives
- *
- * TARGET: src/agent/core/tools/v3/editMatch.ts — the matcher the AGENT actually runs. Until
- * 2026-09-05 this suite imported EditGate.applyHunk from src/edits/applyEdit.ts instead, which
- * is the legacy copy kept alive only for inlineChat: every assertion below was green against
- * code the agent never executes. src/edits/** keeps its own coverage in editGate.e2e.ts.
- *
- * Run: npm run test:e2e:edit-match
- */
+/* The edit matcher: tolerant of whitespace, never of ambiguity. "Search text not found" is the
+ * commonest weak-model edit failure and is almost always one space, a trailing space or CRLF —
+ * each cost a whole retry turn when locateUnique was a bare indexOf. Pins the SAFETY properties:
+ * a relaxed match is still UNIQUE, line CONTENT is never fuzzy, offsets address the ORIGINAL
+ * buffer (CRLF files stay intact), the replacement is re-indented to where the code lives.
+ * TARGET is src/agent/core/tools/v3/editMatch.ts — until 2026-09-05 this suite tested the legacy
+ * src/edits copy the agent never runs. Run: npm run test:e2e:edit-match */
 import { applyHunk } from '../src/agent/core/tools/v3/editMatch';
 
 let bad = 0;

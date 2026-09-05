@@ -1,22 +1,9 @@
-// Mermaid diagram rendering for ```mermaid fenced blocks in chat markdown.
-//
-// Three constraints shape this file:
-//
-//  1. SIZE — the mermaid bundle is ~3.5 MB, far larger than every other webview
-//     vendor combined. It is therefore NOT a <script> tag in the webview HTML;
-//     `loadMermaid()` injects it on demand the first time a mermaid fence is
-//     rendered, so a session that never shows a diagram never pays for it.
-//
-//  2. CSP — the webview runs under `style-src <cspSource> 'nonce-…'`. A nonce
-//     disables 'unsafe-inline' entirely, and nonces do not apply to `style=""`
-//     ATTRIBUTES. Mermaid's output relies on both a <style> block and inline
-//     style attributes, so `adoptStyles()` rewrites both into one nonce-carrying
-//     stylesheet. Without this, diagrams render unstyled.
-//
-//  3. STREAMING — renderMarkdown re-runs on every streamed chunk, so a mermaid
-//     fence is usually seen half-written first. `mermaid.parse` gates on that:
-//     an incomplete diagram just stays a plain code block, and the final
-//     (complete) render swaps in the SVG. No error UI ever flashes mid-stream.
+// Mermaid rendering for ```mermaid fences. Three constraints:
+//  1. SIZE — the ~3.5 MB bundle is injected on demand by loadMermaid(), never a <script> tag.
+//  2. CSP — a nonce disables 'unsafe-inline' and does not cover style="" attributes; mermaid
+//     needs both, so adoptStyles() rewrites everything into one nonce-carrying stylesheet.
+//  3. STREAMING — renderMarkdown re-runs per chunk, so `mermaid.parse` gates: a half-written
+//     fence stays a code block and the complete render swaps in the SVG. No error UI mid-stream.
 
 let mermaidPromise: Promise<Mermaid | null> | null = null;
 
@@ -69,11 +56,8 @@ function isDarkTheme(): boolean {
 let renderQueue: Promise<unknown> = Promise.resolve();
 let renderSeq = 0;
 
-/**
- * Render `src` and hand back a detached container holding the SVG plus its
- * CSP-safe stylesheet. Resolves null when mermaid is unavailable or the source
- * is not (yet) a valid diagram — the caller keeps showing the code block.
- */
+/** Render `src` into a detached container (SVG + CSP-safe stylesheet); null when mermaid is
+ *  unavailable or the source is not (yet) valid — the caller keeps the code block. */
 export function renderMermaid(src: string): Promise<HTMLElement | null> {
   const job = renderQueue.then(async () => {
     const m = await loadMermaid();
@@ -98,15 +82,9 @@ export function renderMermaid(src: string): Promise<HTMLElement | null> {
   return job.catch(() => null);
 }
 
-/**
- * Move every style mermaid emitted into a single nonce-carrying <style>, because
- * the webview CSP allows neither un-nonced <style> blocks nor style attributes:
- *   - the SVG's own <style> block is re-emitted as an HTML <style nonce=…>
- *   - each `style="…"` attribute becomes a generated `.tm-mi-N` class rule
- * Declarations lifted off attributes get `!important` so they keep beating
- * mermaid's own (higher-specificity) `#id .node rect` rules, the way the inline
- * attribute they came from used to.
- */
+/** Move every style mermaid emitted into one nonce-carrying <style>: the SVG's <style> block is
+ *  re-emitted with the nonce, and each `style="…"` attribute becomes a `.tm-mi-N` rule with
+ *  `!important` so it still beats mermaid's higher-specificity selectors. */
 function adoptStyles(host: HTMLElement, id: string): void {
   const nonce = window.__NONCE__;
   if (!nonce) return;

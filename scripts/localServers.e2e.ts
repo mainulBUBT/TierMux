@@ -1,17 +1,8 @@
-/* Local model servers: does TierMux find out how much context they actually have?
- *
- * Why this exists: a custom endpoint has no catalog entry, so inputBudget fell back to its
- * 32768-token default while LM Studio/Ollama/llama.cpp had loaded the model with 4096. TierMux
- * then posted a ~6k-token prompt into a 4k window; the server truncated it or returned nothing,
- * and the turn came back empty in a second with no explanation anywhere. (The same default breaks
- * other agents — cline#6494 is the identical report against LM Studio.)
- *
- * The fixtures below are the REAL response shapes of each server's native endpoint, because the
- * whole value of this module is reading those specific fields correctly. Everything is driven
- * through an injected fetch, so this runs with no server, no network and no clock.
- *
- * Run: npm run test:e2e:local-servers
- */
+/* Local model servers: does TierMux learn how much context they actually have? A custom endpoint
+ * has no catalog entry, so inputBudget fell back to 32768 while the server had loaded 4096 — a
+ * 6k prompt came back empty in a second (cline#6494 is the same report). Fixtures are the REAL
+ * response shapes of each server's native endpoint; driven through an injected fetch, no network.
+ * Run: npm run test:e2e:local-servers */
 import {
   probeLocalServer, invalidateLocalServerCache, isLocalUrl, originOf,
   localContextAdvice, MIN_WORKABLE_CONTEXT, discoverLocalServers,

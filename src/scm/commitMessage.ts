@@ -39,11 +39,8 @@ interface GitApi { repositories: GitRepo[] }
 /** Lockfiles / generated / minified paths whose diffs are noise for a commit message. */
 const NOISE_FILE = /(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|composer\.lock|Cargo\.lock|Gemfile\.lock|poetry\.lock|.+\.min\.(?:js|css)|.+\.map|.+\.lock)$/i;
 
-/**
- * Drop noise from a unified diff: lockfiles, minified/generated files, and binary
- * blobs — so the model sees real code changes and spends fewer tokens. Falls back to
- * the original diff if filtering would remove everything.
- */
+/** Drop lockfiles, minified/generated files and binary blobs from a unified diff so the model
+ *  sees real code changes. Falls back to the original if filtering would remove everything. */
 function filterDiff(diff: string): string {
   const parts = diff.split(/(?=^diff --git )/m);
   const kept = parts.filter((p) => {
@@ -110,11 +107,8 @@ export async function generateCommitMessage(): Promise<void> {
 
     try {
 
-      // Up to three models, skipping any whose output is garbage. The hardcoded fallback list
-      // and the isReady pre-filter are gone: routeOnce walks the picker's `trivial` chain,
-      // which is already "enabled, keyed, not rate-limited, small and fast" — the properties
-      // that list was approximating by name. What routeOnce CANNOT see is a well-formed
-      // response that happens to be junk, so that is the only reason left to loop.
+      // Up to three models. routeOnce's `trivial` chain is already enabled/keyed/not-rate-limited/
+      // small; a well-formed but junk response is the only reason left to loop.
       let msg = '';
       const tried: string[] = [];
       for (let attempt = 0; attempt < 3 && !msg; attempt++) {

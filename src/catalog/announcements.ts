@@ -9,12 +9,8 @@ export const SEEN_ANNOUNCEMENTS_KEY = 'tiermux.seenAnnouncements';
 /** Announcement ids a toast has already been shown for (first-run seed keeps installs quiet). */
 export const NOTIFIED_ANNOUNCEMENTS_KEY = 'tiermux.notifiedAnnouncements';
 
-/**
- * Fetch the worker's `/announcements` endpoint: `{ announcements: [{ id, title, details }],
- * last_updated }`. The worker serves rows oldest-first (`ORDER BY id`), so items are re-sorted
- * NEWEST-first here — every consumer (webview feed, toasts) wants the latest announcement at
- * the top. Returns null on any failure (offline, bad URL, non-JSON) so callers can no-op.
- */
+/** Fetch the worker's `/announcements`. The worker serves oldest-first; re-sorted NEWEST-first
+ *  here since every consumer wants the latest on top. Null on any failure so callers no-op. */
 export async function fetchAnnouncements(baseRaw: string | undefined): Promise<{ items: AnnouncementItem[]; lastUpdated?: string } | null> {
   const base = (baseRaw ?? '').trim();
   if (!base) return null;
@@ -45,11 +41,8 @@ export function parseAnnouncementsBody(text: string): { items: AnnouncementItem[
   return { items, lastUpdated };
 }
 
-/**
- * Announcements not yet toasted, marking them notified as a side effect. A missing notified
- * key (first run of this feature) seeds silently with every current id so an install isn't
- * greeted with a toast for the whole backlog — same pattern as seedNotifiedModels.
- */
+/** Announcements not yet toasted, marking them notified. A missing key (first run) seeds
+ *  silently with every current id so an install is not greeted with the whole backlog. */
 export function unnotifiedAnnouncements(mem: vscode.Memento, items: AnnouncementItem[]): AnnouncementItem[] {
   if (!items.length) return [];
   const stored = mem.get<number[]>(NOTIFIED_ANNOUNCEMENTS_KEY);

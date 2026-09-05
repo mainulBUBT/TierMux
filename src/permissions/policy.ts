@@ -1,14 +1,8 @@
-// Tool-approval policy, passed to streamText as `toolApproval`.
-//
-// Priority chain, ALWAYS in this order:
-//   1. alwaysDeny  — hard block; even full-auto cannot bypass it.
-//   2. alwaysAllow — user-pinned allow; beats everything except deny.
-//   3. READ_ONLY   — non-mutating tools are always safe.
-//   4. mode        — 'full-auto' approves the rest; 'auto' approves allowlisted shell commands;
-//                    `autoApproveWrites` approves file mutation.
-//   5. ask         — prompt the user via the approval channel.
-//
-// policyFromSettings reads vscode config; resolvePolicy is pure so e2e drives it directly.
+// Tool-approval policy for streamText's `toolApproval`. Priority, always in this order:
+//   1. alwaysDeny (even full-auto cannot bypass)  2. alwaysAllow  3. READ_ONLY tools
+//   4. mode — 'full-auto' approves the rest; 'auto' approves allowlisted shell commands;
+//      `autoApproveWrites` approves file mutation  5. ask the user.
+// policyFromSettings reads vscode config; resolvePolicy is pure so the e2e drives it directly.
 
 import * as vscode from 'vscode';
 import type { ToolApprovalStatus } from 'ai';
@@ -82,12 +76,9 @@ export function resolvePolicy(
     return Promise.resolve({ type: 'denied', reason: 'plan mode is read-only — edits are disabled until the plan is approved' });
   }
 
-  // Ask mode: read-only Q&A. File mutators are hard-denied (toolset withholds them too).
-  // Shell is allowed READ-ONLY: a confidently read-only command (ls, git log/status/diff)
-  // auto-runs so "what did the last commit do?" is answerable from real output; a dangerous
-  // command (rm -rf, push --force) is hard-denied; anything ambiguous falls through to the
-  // normal approval chain below. alwaysAllow from an earlier agent-mode turn is ignored for
-  // shell here — ask-mode approval is per-turn, never blanket.
+  // Ask mode: file mutators hard-denied; shell READ-ONLY — a confidently read-only command
+  // (ls, git log/status/diff) auto-runs, a dangerous one is denied, anything ambiguous falls
+  // through to the normal chain. alwaysAllow from an agent-mode turn is ignored for shell here.
   if (config.sessionMode === 'ask' && MUTATING_FILE_TOOLS.has(call.toolName)) {
     return Promise.resolve({ type: 'denied', reason: 'ask mode answers questions — file edits are disabled; switch to agent mode to change files' });
   }
@@ -152,11 +143,9 @@ export function resolvePolicy(
   });
 }
 
-/** Live config snapshot from vscode settings + the legacy per-session auto-approve flag.
- *  `sessionId` keys the module-level grant store: the ALWAYS-ALLOW/ALWAYS-DENY sets returned
- *  are the STORED set REFERENCES, not copies — resolvePolicy's `config.alwaysAllow.add(...)`
- *  (the 'allow-always' path) mutates the store directly, so a grant survives across turns.
- *  Callers that omit sessionId share the 'workspace' key. */
+/** Live config snapshot from settings + the per-session grant store. The ALWAYS-ALLOW/DENY sets
+ *  are the STORED REFERENCES, not copies — resolvePolicy's 'allow-always' path mutates them, so
+ *  a grant survives across turns. Callers without a sessionId share the 'workspace' key. */
 const sessionGrants = new Map<string, { allow: Set<string>; deny: Set<string> }>();
 function grantsFor(sessionId?: string): { allow: Set<string>; deny: Set<string> } {
   const key = sessionId ?? 'workspace';

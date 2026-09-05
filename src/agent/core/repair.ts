@@ -1,23 +1,10 @@
-// POC ONLY — v3 repair callback (plan §2). Replaces toolArgs.ts's 677-LOC regex ladder.
-//
-// Verified SDK semantics this builds on (ai@7.0.58, dist/index.js:3837-3910):
-//   - parseToolCall validates the model's raw JSON input string against the tool's inputSchema.
-//   - On failure it calls repairToolCall EXACTLY ONCE with the error
-//     (NoSuchToolError | InvalidToolInputError) and the step's input messages.
-//   - If repair returns null (or the repaired call is also invalid), the ORIGINAL call is
-//     marked `invalid: true` and is NOT executed: the step loop skips it (dist/index.js
-//     `if (toolCall.invalid)`) and executeTools filters it out (`!toolCall.invalid`), so the
-//     model receives a tool-error part carrying the validation message instead. (Corrected
-//     2026-09-05 — this header used to say the call was "forwarded to execute() anyway",
-//     which is why some tools grew runtime clamps that duplicate their own zod schema.)
-//
-// The repair asks the model itself to re-emit the call correctly:
-//   - the correction prompt shows the model its own bad call, the error, and the tool's
-//     JSON Schema (for invalid input) or the tool list (for an unknown tool);
-//   - the inner streamText runs ONE step with execute-stripped tools, so the corrected
-//     call is captured but never executed here — the outer loop executes it after
-//     re-validation;
-//   - a per-turn budget (3) stops a model that keeps re-emitting broken calls.
+// v3 repair callback. SDK semantics (ai@7.0.58): parseToolCall validates the raw input; on failure
+// repairToolCall runs EXACTLY ONCE; if it returns null the call is marked invalid and NOT executed
+// — the model gets a tool-error part (corrected 2026-09-05; this header once claimed otherwise,
+// which is why some tools grew runtime clamps duplicating their zod schema). The repair shows the
+// model its bad call, the error and the tool's JSON Schema (or the tool list), runs ONE step with
+// execute-stripped tools so the corrected call is captured not executed, and a per-turn budget of
+// 3 stops a model that keeps re-emitting broken calls.
 
 import {
   streamText,

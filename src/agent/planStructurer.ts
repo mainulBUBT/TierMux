@@ -1,10 +1,8 @@
 
 
-// Plan-text helpers. The primary path is the `exitPlanMode` tool: `formatPlanForCard` turns
-// its structure into card text. `structurePlanSteps` is the fallback for models that reply
-// in prose instead of calling the tool, with titles.ts's regex `planStepsToTodos` behind it.
-// There is deliberately NO classifier deciding whether prose "was a plan"
-// (docs/PLAN_MODE_TOOL_BOUNDARY_2026-08-31.md).
+// Plan-text helpers. Primary path is the `exitPlanMode` tool (`formatPlanForCard`);
+// `structurePlanSteps` is the fallback for models that reply in prose. Deliberately NO
+// classifier deciding whether prose "was a plan" (docs/PLAN_MODE_TOOL_BOUNDARY_2026-08-31.md).
 import { generateText, Output, type LanguageModel } from 'ai';
 import { z } from 'zod';
 import type { ProposedPlan } from '../shared/types';
@@ -55,19 +53,16 @@ export function formatStructuredSteps(steps: string[]): string {
   return steps.map((s, i) => `${i + 1}. ${s}`).join('\n');
 }
 
-/** Serialize a tool-declared {@link ProposedPlan} into the numbered-list text the
- *  `planProposed` card carries, shaped for Plan.ts's own parsers: `description` above the list
- *  (extractPlanDescription), one `N. ` line per step (parsePlanSteps), files in backticks
- *  (detectStepFiles). */
-/** Card-text header encoding. Line-prefixed, not markdown-sectioned: the text is hand-editable
- *  and parsed back by both this file and the webview, and `Reading:` cannot collide with the
- *  step-bullet regex. Retired `Approach:` / `Q:` / `A:` lines still occur in cards persisted by
- *  older sessions, so the re-parsers keep skipping them. */
+/** Card-text header encoding: line-prefixed, not markdown-sectioned, because the text is
+ *  hand-editable and parsed back by this file and the webview. Retired `Approach:` / `Q:` / `A:`
+ *  lines still occur in older persisted cards, so the re-parsers keep skipping them. */
 export const CARD_READING_RE = /^Reading:\s*(.+)$/;
 /** Retired header lines (approach / on-card questions and answers), still skipped when
  *  re-parsing a card saved before 2026-09-01 so they do not leak into a re-saved description. */
 export const CARD_RETIRED_HEADER_RE = /^(?:Approach|Q|A):\s*/;
 
+/** A tool-declared plan as the numbered-list card text Plan.ts parses: description above,
+ *  one `N. ` line per step, files in backticks. */
 export function formatPlanForCard(plan: ProposedPlan): string {
   const lines: string[] = [];
   // Header block FIRST: the reading is the one thing a reader must see before the steps, since

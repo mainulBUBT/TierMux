@@ -22,14 +22,8 @@ class BaselineContentProvider implements vscode.TextDocumentContentProvider {
   }
 }
 
-/**
- * Shared singleton backing every checkpoint diff. Registered exactly ONCE for the
- * `fla-checkpoint` scheme (see registerCheckpointContentProvider); each session's
- * CheckpointManager writes only its own globally-unique tokens into this store, so
- * concurrent sessions never collide. (Per-session checkpoint *data* still lives on
- * each CheckpointManager instance — only the content-provider plumbing is shared,
- * because VS Code allows one provider per scheme.)
- */
+/** Shared singleton behind every checkpoint diff — VS Code allows one content provider per
+ *  scheme. Each session writes only its own globally-unique tokens, so sessions never collide. */
 export const baselineProvider = new BaselineContentProvider();
 
 /** Register the checkpoint diff content provider. Call exactly once in activate(). */
@@ -85,13 +79,9 @@ export class CheckpointManager {
     }));
   }
 
-  /**
-   * Open a checkpoint for a new agent turn. Captures the working tree as a git snapshot
-   * (non-mutating) so edits the agent applies DIRECTLY to the workspace — bypassing
-   * TierMux's EditGate/record() — are still revertible. Must be awaited before the run
-   * applies edits, so the begin tree is captured first. In a non-git repo beginTree stays
-   * undefined and the record()/snaps fallback path is used instead.
-   */
+  /** Open a checkpoint for a new turn: a non-mutating git snapshot of the working tree, so edits
+   *  that bypass record() are still revertible. Await before the run edits. Non-git repos leave
+   *  beginTree undefined and use the snaps path. */
   async begin(requestId: string, label: string): Promise<void> {
     const beginTree = this.cwd ? await captureWorkingTree(this.cwd) : undefined;
     this.current = { id: `cp${++this.counter}`, requestId, label, ts: Date.now(), snaps: new Map(), beginTree: beginTree ?? undefined, touched: new Set() };
@@ -129,12 +119,8 @@ export class CheckpointManager {
     return this.checkpoints.map((c) => ({ id: c.id, requestId: c.requestId }));
   }
 
-  /**
-   * Aggregate the earliest baseline for every file touched from a checkpoint
-   * onward — i.e. the workspace state immediately *before* that turn. A file not
-   * touched between turn N and its first edit hasn't changed, so its first
-   * recorded baseline equals its pre-N content.
-   */
+  /** Earliest baseline for every file touched from checkpoint `id` onward — the workspace state
+   *  immediately before that turn. */
   private aggregateSince(id: string): Map<string, Snapshot> {
     const start = this.checkpoints.findIndex((c) => c.id === id);
     const earliest = new Map<string, Snapshot>();
@@ -147,12 +133,8 @@ export class CheckpointManager {
     return earliest;
   }
 
-  /**
-   * The git working tree captured at the START of checkpoint `id` — i.e. the workspace state
-   * immediately before that turn. Used as the restore target in git mode. Falls back to a
-   * later checkpoint's beginTree if `id`'s capture failed, and ultimately to undefined
-   * (snaps path).
-   */
+  /** The git tree captured at the START of checkpoint `id` (restore target in git mode); falls
+   *  back to a later checkpoint's tree, then undefined (snaps path). */
   private beginTreeSince(id: string): string | undefined {
     const start = this.checkpoints.findIndex((c) => c.id === id);
     if (start < 0) return undefined;
@@ -176,13 +158,9 @@ export class CheckpointManager {
     return out;
   }
 
-  /**
-   * Files that would be reverted by restoring to before this message. Git mode (beginTree
-   * present) covers everything `git add -A` can see, i.e. tracked + non-ignored untracked
-   * files. It CANNOT see gitignored files (.env, generated configs, ...) since `add -A`
-   * skips them — so snap-based results are always merged in on top, not treated as a
-   * mutually-exclusive fallback, to cover exactly those files.
-   */
+  /** Files restoring to before this message would revert. Git mode sees what `git add -A` sees,
+   *  which excludes gitignored files (.env, generated configs) — so snap results are always
+   *  merged on top, never treated as a fallback. */
   async changedFiles(id: string): Promise<CheckpointFile[]> {
     const beginTree = this.beginTreeSince(id);
     const snapFiles = await this.changedFilesFromSnaps(id);
@@ -205,14 +183,10 @@ export class CheckpointManager {
     return touched;
   }
 
-  /**
-   * changedFiles() filtered to what TIERMUX itself edited — the set the pinned composer
-   * "changed files" overview shows. Without this filter the bar lists EVERY workspace change
-   * since the session's first turn (the user's own edits, build output, other tools), which
-   * misrepresents the review list as agent work. Revert semantics (restore/`Undo all`) still
-   * use the full changedFiles() set. Falls back to unfiltered when no touched data exists
-   * (checkpoints persisted before touched-tracking was added).
-   */
+  /** changedFiles() filtered to what TierMux itself edited — the pinned "changed files" overview.
+   *  Unfiltered it listed every workspace change since the first turn (the user's own edits, build
+   *  output). Revert still uses the full set. Unfiltered when no touched data exists (older
+   *  checkpoints). */
   async agentChangedFiles(id: string): Promise<CheckpointFile[]> {
     const all = await this.changedFiles(id);
     const touched = this.aggregateTouchedSince(id);
@@ -280,12 +254,9 @@ export class CheckpointManager {
     return this.checkpoints.find((c) => c.requestId === requestId)?.id;
   }
 
-  /** Like {@link idForRequest}, but also matches the turn still IN FLIGHT. The Work Report is
-   *  stamped when the assistant turn is pushed to the transcript, which happens before
-   *  finishCheckpoint() commits — so the turn's own checkpoint is still `current` and
-   *  idForRequest alone would return undefined for every live turn. A commit that discards the
-   *  checkpoint (no edits captured) leaves a stale id behind, which is harmless: such a turn has
-   *  no changed files to click, and openDiff() no-ops on an unknown id. */
+  /** Like idForRequest, but also matches the turn still IN FLIGHT: the Work Report is stamped
+   *  before finishCheckpoint() commits, so the turn's checkpoint is still `current`. A stale id
+   *  from a discarded checkpoint is harmless — openDiff() no-ops on an unknown id. */
   idForTurn(requestId: string): string | undefined {
     if (this.current?.requestId === requestId) return this.current.id;
     return this.idForRequest(requestId);

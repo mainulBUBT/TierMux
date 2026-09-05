@@ -1,13 +1,7 @@
-// Plan component — mirrors Vercel AI Elements "Plan".
-//
-// A collapsible document card: icon + title + chevron, an optional description paragraph,
-// titled sections (e.g. "Key Steps") rendered as a bullet list, and a primary "Build" action.
-// One component serves both phases:
-//  - mode 'live': read-only bullets with a subtle status marker (✓ / › / •) as execution progresses.
-//  - mode 'edit': editable numbered bullets + Build / Discuss / Discard actions (pre-approval).
-//
-// Boundary: strict-checked, may only import from media/src/**. Host interaction is via callbacks
-// (onApprove/onDefer/onDiscard); no send()/renderMarkdown() directly.
+// Plan component (mirrors AI Elements "Plan"): a collapsible card with title, optional
+// description, titled bullet sections and a primary action. mode 'live' = read-only bullets
+// with ✓ / › / • progress; mode 'edit' = editable bullets + Build / Discuss / Discard.
+// Host interaction is via callbacks only; may import only from media/src/**.
 
 import { el } from '../dom';
 import { ICON } from '../../icons';
@@ -153,15 +147,10 @@ function collectSteps(host: HTMLElement): string {
 
 // ========== Parsing helpers (exported for main.ts) ==========
 
-// Edit-verb prefixes and a path detector — mirror titles.ts planStepsToTodos' fourth branch so
-// the card renders the same steps the host detected. Kept inline (not imported) because the
-// webview bundle may only import from media/src/** and src/shared/**.
-// The plan's header block, mirroring src/agent/planStructurer.ts's CARD_*_RE. These lines carry
-// the reading; they must never be mistaken for steps — a reading naming a path would otherwise
-// match the bare-imperative branch below (edit verb + path) and render as a "rejectable" step.
-// `Approach` / `Q` / `A` are retired (2026-09-01 — questions now go through askUser BEFORE the
-// plan), but cards persisted by older sessions still replay with those lines, so they stay
-// skipped here.
+// Edit-verb prefixes and path detector mirror titles.ts planStepsToTodos (inline: the webview
+// may not import from src/). The header block mirrors planStructurer.ts's CARD_*_RE and must
+// never be mistaken for steps — a reading naming a path would match the bare-imperative branch.
+// `Approach` / `Q` / `A` are retired (2026-09-01) but older persisted cards still replay them.
 const PLAN_HEADER_LINE = /^\s*(?:Reading|Approach|Q|A):\s*/;
 
 const PLAN_EDIT_VERB = /^(add|create|implement|build|writ|fix|refactor|rename|move|delete|remove|updat|chang|modif|edit|replac|wir|integrat|convert|migrat|install|configur|extract|split|merg|append|insert|expos|export|hook|connect|introduc|switch|drop|bump|upgrad|enabl|disabl|set ?up|scaffold|register|inject|guard|validat|sync|audit|document|correct|review|ensur|verify|test|apply|enforce|generat)\w*\b/i;
@@ -285,11 +274,8 @@ export function planDataFromTodos(title: string, todos: { status: 'completed' | 
 
 function createActions(host: HTMLElement, opts: PlanOptions): HTMLElement {
   const actions = el('div', { class: 'tm-plan-actions' });
-  // Two primary affordances:
-  //  - Execute: save the plan AND run it now (switch to Agent mode, auto-launch). This is the
-  //    "do it" button — the explicit execute-or-not choice the flow was missing.
-  //  - Save: write the plan to a file only; the user runs it later by switching to Agent.
-  // "Save", not "Build", because it no longer auto-runs — Execute is the run path now.
+  // Execute = save the plan AND run it now (switch to Agent, auto-launch); Save = write the file
+  // only, run later. "Save" not "Build" because it no longer auto-runs.
   const execIcon = el('span', { class: 'tm-plan-action-icon' });
   execIcon.innerHTML = ICON.zap;
   const execute = el('button', { class: 'tm-plan-action primary', type: 'button', title: 'Save the plan and start executing it in Agent mode now' },
@@ -360,14 +346,10 @@ export function createPlan(opts: PlanOptions): HTMLElement {
     always.appendChild(el('div', { class: `tm-plan-settled ${settled}` },
       settled === 'discarded' ? '✗ Discarded' : '— Kept for discussion, never run —'));
   }
-  // The reading sits ABOVE the description and stays visible when the card is collapsed: a plan
-  // can be right in every step and still implement the wrong request, and that is only catchable
-  // if the premise is the first thing read (2026-09-01 vendor-order repro, where an inverted
-  // requirement hid behind two individually-defensible steps).
-  // No "Reading" label: the sentence reads as the plan's own opening line, which is what
-  // AI Elements' PlanDescription does too. The label only named what the sentence already is.
-  // (The `Reading:` prefix stays in the CARD TEXT — that is the serialization the saved
-  // document and collectSteps parse; it is not what the user reads.)
+  // The reading sits ABOVE the description and stays visible when collapsed: a plan can be right
+  // in every step and still implement the wrong request (2026-09-01 vendor-order repro). No
+  // "Reading" label — the sentence reads as the plan's opening line; the `Reading:` prefix stays
+  // in the CARD TEXT only, as the serialization collectSteps parses.
   if (data.reading) {
     always.appendChild(el('div', { class: 'tm-plan-reading' },
       el('span', { class: 'tm-plan-meta-text' }, data.reading)));

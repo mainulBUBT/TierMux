@@ -13,13 +13,7 @@ export interface AssistantStartMessage {
   model?: string;
 }
 
-/**
- * Target object represents the assistant message bubble and its DOM structure.
- * This is a subset of the full Target type - only what this handler needs.
- *
- * In the full implementation, Target has many more properties (statusEl, flow, etc.),
- * but this handler only needs el, body, and model (metadata).
- */
+/** The subset of the assistant-bubble Target this handler needs (el, body, model). */
 export interface Target {
   el: HTMLElement;         // .msg container
   body: HTMLElement;       // .bubble (main content area)

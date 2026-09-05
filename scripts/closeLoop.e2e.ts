@@ -1,12 +1,6 @@
-/* A turn that ran tools and came back EMPTY gets one continuation.
- *
- * Wire-level signals only — never prose classification. Guessing "announced the next action
- * instead of taking it" from reply text is a regex tower: every new phrasing misses it and
- * every widening swallows a real answer. A non-empty synthesis ships as-is (unfinished todos
- * surface the host's Continue affordance instead of burning a second model call on a guess).
- *
- * Run: npm run test:e2e:close-loop
- */
+/* A turn that ran tools and came back EMPTY gets one continuation — on wire-level signals only.
+ * Guessing "announced instead of acting" from reply text is a regex tower. A non-empty synthesis
+ * ships as-is; unfinished todos surface the host's Continue button. Run: npm run test:e2e:close-loop */
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';

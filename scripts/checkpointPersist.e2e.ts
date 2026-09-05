@@ -1,13 +1,7 @@
-/* Regression test for "Revert to here" / "Undo all" silently restoring 0 files after an
- * extension host restart. CheckpointManager used to be rebuilt empty on every session hydrate
- * (see chatViewProvider.ts's hydrateSession) — the revert button stayed visible and its confirm
- * dialog still fired, but there was nothing left to restore from, so it quietly did nothing.
- * Reported directly by the user testing real edits across a reload ("file not revert").
- * Fixed by serializing checkpoints (toJSON) into StoredSession and restoring them
- * (constructor's `restored` param) in hydrateSession.
- *
- * Run: npm run test:e2e:checkpoint-persist
- */
+/* "Revert to here" / "Undo all" restored 0 files after an extension host restart: the
+ * CheckpointManager was rebuilt empty on every hydrate while the button stayed visible. Fixed by
+ * serializing checkpoints into StoredSession and restoring them in hydrateSession.
+ * Run: npm run test:e2e:checkpoint-persist */
 import * as vscode from 'vscode';
 import { CheckpointManager } from '../src/edits/checkpoints';
 

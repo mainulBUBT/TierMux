@@ -36,14 +36,9 @@ export interface OpenAICompatOpts {
   preflightTimeoutMs?: number;
   skipPreflight?: boolean;
   ttftTimeoutMs?: number;
-  /**
-   * Floor applied to `max_tokens` when the caller doesn't specify one (OC often
-   * doesn't). Needed for providers whose reasoning isn't optional and shares the
-   * same output budget as the answer (e.g. Poolside) — a small/unset max_tokens
-   * lets the model exhaust its budget mid-`<think>`, so ThinkStripper correctly
-   * discards the (still-open) reasoning and the whole turn comes back empty even
-   * though tokens were billed.
-   */
+  /** Floor for `max_tokens` when the caller sets none. Providers whose reasoning is mandatory and
+   *  shares the output budget (Poolside) otherwise exhaust it mid-`<think>` and the turn comes
+   *  back empty though tokens were billed. */
   defaultMaxTokens?: number;
 }
 
