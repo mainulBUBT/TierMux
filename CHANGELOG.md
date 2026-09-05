@@ -3,6 +3,15 @@
 All notable changes to TierMux are documented here. The format is loosely
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [3.0.1] — 2026-09-06
+
+### Changed — model rationale UI
+
+- The model-selection rationale is now a compact footer chip in the chat composer instead
+  of an inline block; the details live in a redesigned, collapsible popover.
+- The rationale filters out disabled providers and tracks which model actually served the
+  turn.
+
 ## [3.0.0] — 2026-08-31
 
 ### Added — plan mode's boundary is a tool call

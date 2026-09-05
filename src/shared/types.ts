@@ -37,6 +37,7 @@ export type Platform =
   | 'airforce'
   | 'modelscope'
   | 'unorouter'
+  | 'experientiallabs'
   | 'custom';
 
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';

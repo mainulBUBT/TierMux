@@ -66,13 +66,13 @@ Details: [Routing](docs/ROUTING.md).
 ## Providers
 
 <!-- catalog:start -->
-**382 models** across **32 providers**, and the catalog updates itself —
+**387 models** across **33 providers**, and the catalog updates itself —
 new free models and whole new providers appear without an extension update.
 
 | | |
 |---|---|
 | **Keyless — zero setup** | Kilo Gateway · OpenCode Zen · OVH AI Endpoints · Pollinations |
-| **With a free API key** | Agnes AI · Aion Labs · Api.Airforce · Cerebras · ChatAnywhere · Cloudflare Workers AI · Cohere · Google AI Studio · Groq · Kenari · LLM7 · Mistral · ModelScope · Nara Router · NVIDIA NIM · Ollama Cloud · OpenAdapter · OpenRouter · OrcaRouter · Poolside · Requesty · Router9 · SambaNova · Token Router · xKiro · Zhipu AI |
+| **With a free API key** | Agnes AI · Aion Labs · Api.Airforce · Cerebras · ChatAnywhere · Cloudflare Workers AI · Cohere · Experiential Labs · Google AI Studio · Groq · Kenari · LLM7 · Mistral · ModelScope · Nara Router · NVIDIA NIM · Ollama Cloud · OpenAdapter · OpenRouter · OrcaRouter · Poolside · Requesty · Router9 · SambaNova · Token Router · xKiro · Zhipu AI |
 | **Your own** | any OpenAI-compatible URL — vLLM, LiteLLM, LM Studio, Ollama, llama.cpp, Azure OpenAI |
 <!-- catalog:end -->
 

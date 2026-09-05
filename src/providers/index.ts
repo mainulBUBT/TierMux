@@ -45,8 +45,8 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'xkiro', name: "xKiro", baseUrl: "https://api.xkiro.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://xkiro.com/dashboard/api/keys" }, // auto-synced
   { platform: 'airforce', name: "Api.Airforce", baseUrl: "https://api.airforce/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://api.airforce/" }, // auto-synced
   { platform: 'modelscope', name: "ModelScope", baseUrl: "https://api-inference.modelscope.cn/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://modelscope.cn/my/myaccesstoken" }, // auto-synced
-  { platform: 'unorouter', name: "UnoRouter", baseUrl: "https://api.unorouter.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://unorouter.com/en/token" }, // auto-synced
   { platform: 'tokenrouter', name: "Token Router", baseUrl: "https://api.tokenrouter.com/v1", skipPreflight: true, timeoutMs: 600000 }, // auto-synced
+  { platform: 'experientiallabs', name: "Experiential Labs", baseUrl: "https://api.experientiallabs.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://platform.experientiallabs.ai/settings" }, // auto-synced
 ];
 
 const providers = new Map<Platform, BaseProvider>();

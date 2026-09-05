@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Synced from remote /models JSON — 560 models from 33 providers.",
+  "note": "Synced from remote /models JSON — 554 models from 34 providers.",
   "models": [
     {
       "platform": "agnes",
@@ -15,9 +15,10 @@
       "rpdLimit": 28800,
       "monthlyTokenBudget": "~free",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -40,6 +41,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -64,6 +66,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -87,6 +90,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ],
@@ -110,6 +114,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -133,6 +139,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "coding",
         "reasoner",
         "free"
@@ -157,6 +164,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -181,6 +189,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -204,6 +213,8 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -248,9 +259,10 @@
       "monthlyTokenBudget": "64.9M input tokens/mo (est.)",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "insight": "MoE reasoning model balancing coding quality, speed, and efficient inference.",
@@ -273,6 +285,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -342,6 +355,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -363,6 +377,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -383,6 +398,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -403,6 +419,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -423,6 +440,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -445,6 +463,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -466,6 +485,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -486,10 +506,11 @@
       "rpdLimit": 1000,
       "monthlyTokenBudget": "~free",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "insight": "Excellent coding model with large context window",
@@ -509,9 +530,11 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "TRUE",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -535,7 +558,9 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "coding",
+        "reasoner",
         "free"
       ],
       "insight": "Strong coding agent model with long context and tool support",
@@ -558,6 +583,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -581,6 +607,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -602,6 +629,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -622,6 +651,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -645,6 +676,7 @@
       "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "insight": "Very fast reasoning + tool-capable model",
@@ -668,6 +700,7 @@
       "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "router",
         "free"
       ],
@@ -691,6 +724,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ],
@@ -717,6 +751,7 @@
       "origInputPricePer1M": 0.4,
       "origOutputPricePer1M": 2,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -777,6 +812,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ],
@@ -798,12 +834,13 @@
       "monthlyTokenBudget": "~1B tok/mo",
       "supportsTools": true,
       "supportsVision": true,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "insight": "Free Experiment plan",
       "origInputPricePer1M": 0.15,
       "origOutputPricePer1M": 0.6,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ]
     },
@@ -845,28 +882,7 @@
       "origInputPricePer1M": 0.09,
       "origOutputPricePer1M": 0.45,
       "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "nvidia",
-      "modelId": "nvidia/nemotron-3-nano-30b-a3b",
-      "displayName": "Nemotron 3 Nano 30B (NVIDIA)",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "released": "2025-08",
-      "sizeLabel": "Medium",
-      "contextWindow": 128000,
-      "rpmLimit": 40,
-      "rpdLimit": 57600,
-      "monthlyTokenBudget": "credits",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "origInputPricePer1M": 0.05,
-      "origOutputPricePer1M": 0.2,
-      "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -911,6 +927,7 @@
       "origInputPricePer1M": 0.65,
       "origOutputPricePer1M": 3.25,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -928,9 +945,10 @@
       "rpdLimit": 1000,
       "monthlyTokenBudget": "~free",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -953,32 +971,13 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
       "insight": "Free reasoning model with tool calling and structured outputs. OpenCode dynamically routes requests to different backend models.",
       "origInputPricePer1M": 0.65,
       "origOutputPricePer1M": 3.25
-    },
-    {
-      "platform": "opencode",
-      "modelId": "laguna-s-2.1-free",
-      "displayName": "Poolside Laguna S 2.1 Free",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 256000,
-      "rpmLimit": 60,
-      "rpdLimit": 1000,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.1,
-      "origOutputPricePer1M": 0.2
     },
     {
       "platform": "openrouter",
@@ -996,6 +995,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -1019,6 +1019,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -1042,7 +1043,9 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "coding",
+        "reasoner",
         "free"
       ],
       "insight": "Fast coding focused model",
@@ -1066,6 +1069,8 @@
       "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
+        "planner",
         "router",
         "free"
       ],
@@ -1087,6 +1092,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -1106,13 +1112,14 @@
       "rpdLimit": 2880,
       "monthlyTokenBudget": "anonymous",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "insight": "No key needed; 2 RPM per IP",
       "origInputPricePer1M": 0.4,
       "origOutputPricePer1M": 1.2,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ]
     },
@@ -1133,6 +1140,7 @@
       "supportsReasoning": true,
       "insight": "No key needed; 2 RPM per IP",
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -1157,6 +1165,7 @@
       "supportsReasoning": true,
       "insight": "No key needed; 2 RPM per IP",
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -1178,12 +1187,13 @@
       "monthlyTokenBudget": "anonymous",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "insight": "No key needed; 2 RPM per IP",
       "origInputPricePer1M": 0.15,
       "origOutputPricePer1M": 0.6,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ]
     },
@@ -1206,6 +1216,7 @@
       "origOutputPricePer1M": 0.6,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ]
     },
@@ -1225,6 +1236,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -1251,6 +1264,7 @@
       "origInputPricePer1M": 0.28,
       "origOutputPricePer1M": 0.42,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -1274,6 +1288,7 @@
       "origInputPricePer1M": 0.27,
       "origOutputPricePer1M": 1.1,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -1294,6 +1309,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -1341,6 +1357,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -1367,6 +1384,7 @@
       "origInputPricePer1M": 0.06,
       "origOutputPricePer1M": 0.4,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -1390,6 +1408,7 @@
       "origInputPricePer1M": 0.06,
       "origOutputPricePer1M": 0.18,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -1408,6 +1427,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -1428,6 +1449,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -1441,6 +1463,28 @@
       "intelligenceRank": 3,
       "speedRank": 3,
       "contextWindow": 262144,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "kenari",
+      "modelId": "glm-4-7-flash:free",
+      "displayName": "GLM 4.7 Flash",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 131072,
       "rpmLimit": 5,
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
@@ -1468,31 +1512,12 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.03,
       "origOutputPricePer1M": 0.15
-    },
-    {
-      "platform": "nararouter",
-      "modelId": "agnes-2.0-flash",
-      "displayName": "Agnes 2.0 Flash",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": 512000,
-      "rpmLimit": 60,
-      "rpdLimit": 86400,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.03,
-      "origOutputPricePer1M": 0.11
     },
     {
       "platform": "nararouter",
@@ -1509,50 +1534,11 @@
       "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.04,
       "origOutputPricePer1M": 0.23
-    },
-    {
-      "platform": "nararouter",
-      "modelId": "mistral-medium-3-5",
-      "displayName": "Mistral Medium 3.5",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 256000,
-      "rpmLimit": 30,
-      "rpdLimit": 50000,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.3,
-      "origOutputPricePer1M": 1.5
-    },
-    {
-      "platform": "nararouter",
-      "modelId": "mistral-large",
-      "displayName": "Mistral Large",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": 252000,
-      "rpmLimit": 30,
-      "rpdLimit": 50000,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.15,
-      "origOutputPricePer1M": 0.45
     },
     {
       "platform": "kenari",
@@ -1565,10 +1551,11 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -1588,6 +1575,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -1608,6 +1596,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -1628,6 +1618,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -1648,6 +1639,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -1668,6 +1660,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -1688,11 +1681,33 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0,
       "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "kenari",
+      "modelId": "agnes-2-5-flash:free",
+      "displayName": "Agnes 2 5 Flash",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 512000,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "kenari",
@@ -1705,9 +1720,10 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -1728,6 +1744,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -1748,6 +1765,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -1765,10 +1784,11 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -1789,6 +1809,7 @@
       "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -1809,6 +1830,8 @@
       "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
+        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -1828,6 +1851,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -1845,34 +1869,16 @@
       "rpdLimit": 7500,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "coding",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.1,
       "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "0G-DeepSeek-v4-Flash",
-      "displayName": "0G DeepSeek V4 Flash",
-      "intelligenceRank": 2,
-      "speedRank": 2,
-      "contextWindow": 256000,
-      "rpmLimit": 0.035,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.14,
-      "origOutputPricePer1M": 0.28
     },
     {
       "platform": "kenari",
@@ -1885,10 +1891,12 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
         "general",
+        "coding",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -1908,7 +1916,10 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
+        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.45,
@@ -1926,9 +1937,10 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "router",
         "free"
       ],
@@ -1947,9 +1959,10 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.15,
@@ -1966,10 +1979,11 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.33,
@@ -1989,6 +2003,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2129,6 +2144,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2149,6 +2165,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2169,6 +2186,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2189,6 +2207,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2207,9 +2226,10 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.17,
@@ -2227,9 +2247,10 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.63,
@@ -2249,6 +2270,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner"
       ],
       "origInputPricePer1M": 0.8,
@@ -2268,6 +2290,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner"
       ],
       "origInputPricePer1M": 3,
@@ -2287,6 +2310,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner"
       ],
       "origInputPricePer1M": 0.7,
@@ -2325,6 +2349,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2345,6 +2370,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2365,6 +2391,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -2385,6 +2413,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -2406,6 +2436,7 @@
       "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -2425,6 +2456,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2445,6 +2477,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2465,6 +2498,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2485,6 +2519,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2505,26 +2540,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "kilo",
-      "modelId": "meituan/longcat-2.0-free",
-      "displayName": "Meituan: LongCat 2.0",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 1048756,
-      "rpmLimit": 5,
-      "rpdLimit": 200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2545,6 +2561,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2565,6 +2582,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2585,6 +2603,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -2621,7 +2640,9 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
+        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -2641,7 +2662,9 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
+        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -2661,6 +2684,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2681,6 +2705,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2701,6 +2726,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2755,7 +2781,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
@@ -2793,9 +2819,10 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -2816,6 +2843,7 @@
       "supportsReasoning": false,
       "tags": [
         "general",
+        "coding",
         "free"
       ]
     },
@@ -2847,7 +2875,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
@@ -2887,6 +2915,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -2907,6 +2936,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -2925,29 +2955,12 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
       "origOutputPricePer1M": 2.4
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "GPT-120-OSS",
-      "displayName": "GPT 120 OSS",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 128000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
     },
     {
       "platform": "openadapter",
@@ -2963,6 +2976,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -2981,6 +2995,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -3002,6 +3017,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -3012,7 +3028,7 @@
       "displayName": "Hermes 4 405B",
       "intelligenceRank": 1,
       "speedRank": 5,
-      "contextWindow": null,
+      "contextWindow": 128000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -3020,6 +3036,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -3056,7 +3073,9 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
+        "planner",
         "free"
       ]
     },
@@ -3098,26 +3117,6 @@
     },
     {
       "platform": "openadapter",
-      "modelId": "Llama-3.3-70B",
-      "displayName": "Llama 3.3 70B",
-      "intelligenceRank": 3,
-      "speedRank": 4,
-      "contextWindow": 128000,
-      "rpmLimit": 20,
-      "rpdLimit": 20,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.6,
-      "origOutputPricePer1M": 1.2
-    },
-    {
-      "platform": "openadapter",
       "modelId": "Magistral-Small",
       "displayName": "Magistral Small",
       "intelligenceRank": 4,
@@ -3130,6 +3129,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -3148,6 +3148,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -3166,6 +3167,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ]
@@ -3181,7 +3184,7 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -3224,6 +3227,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -3296,6 +3300,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ]
@@ -3312,9 +3317,10 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ]
     },
@@ -3330,9 +3336,10 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ]
     },
@@ -3347,10 +3354,11 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ]
     },
@@ -3383,10 +3391,11 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.33,
@@ -3406,6 +3415,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ]
@@ -3422,9 +3432,10 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": true,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ]
     },
@@ -3442,6 +3453,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -3454,7 +3467,7 @@
       "displayName": "Mistral Nemo Instruct 2407",
       "intelligenceRank": 5,
       "speedRank": 3,
-      "contextWindow": null,
+      "contextWindow": 128000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -3480,6 +3493,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -3500,6 +3514,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -3520,6 +3535,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -3541,6 +3557,8 @@
       "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
+        "planner",
         "router",
         "free"
       ],
@@ -3553,7 +3571,7 @@
       "displayName": "Gemini Flash Lite Latest",
       "intelligenceRank": 4,
       "speedRank": 2,
-      "contextWindow": null,
+      "contextWindow": 1048576,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -3561,6 +3579,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -3571,7 +3590,7 @@
       "displayName": "Gemini 3.5 Flash Lite",
       "intelligenceRank": 4,
       "speedRank": 2,
-      "contextWindow": null,
+      "contextWindow": 1048576,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -3579,6 +3598,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -3589,7 +3609,7 @@
       "displayName": "Yi Large",
       "intelligenceRank": 2,
       "speedRank": 4,
-      "contextWindow": null,
+      "contextWindow": 32000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -3669,6 +3689,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ]
@@ -3705,6 +3726,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ]
@@ -3721,9 +3743,10 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -3743,6 +3766,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ]
@@ -3761,6 +3785,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ]
@@ -3775,7 +3800,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
@@ -3789,7 +3814,7 @@
       "displayName": "Gemma 3 4B It",
       "intelligenceRank": 5,
       "speedRank": 2,
-      "contextWindow": null,
+      "contextWindow": 131072,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -3815,6 +3840,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -3853,6 +3879,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ]
@@ -3871,6 +3898,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ]
@@ -3889,6 +3917,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ]
@@ -3899,7 +3928,7 @@
       "displayName": "Llama 3.2 11B Vision Instruct",
       "intelligenceRank": 5,
       "speedRank": 2,
-      "contextWindow": null,
+      "contextWindow": 128000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -3917,7 +3946,7 @@
       "displayName": "Llama 3.2 90B Vision Instruct",
       "intelligenceRank": 2,
       "speedRank": 4,
-      "contextWindow": null,
+      "contextWindow": 128000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -3958,10 +3987,11 @@
       "rpdLimit": 200,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -4032,10 +4062,12 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
+        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.45,
@@ -4055,6 +4087,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ]
@@ -4065,7 +4098,7 @@
       "displayName": "Mistral 7B Instruct V0.3",
       "intelligenceRank": 5,
       "speedRank": 2,
-      "contextWindow": null,
+      "contextWindow": 65536,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -4088,7 +4121,7 @@
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -4103,7 +4136,7 @@
       "displayName": "Mistral Nemotron",
       "intelligenceRank": 5,
       "speedRank": 3,
-      "contextWindow": null,
+      "contextWindow": 128000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -4147,7 +4180,9 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
+        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.95,
@@ -4159,7 +4194,7 @@
       "displayName": "Kimi K3",
       "intelligenceRank": 2,
       "speedRank": 3,
-      "contextWindow": null,
+      "contextWindow": 1048576,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -4167,6 +4202,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -4177,7 +4213,7 @@
       "displayName": "Mistral Nemo 12B Instruct",
       "intelligenceRank": 5,
       "speedRank": 3,
-      "contextWindow": null,
+      "contextWindow": 16000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -4195,14 +4231,15 @@
       "displayName": "Cosmos Reason2 8B",
       "intelligenceRank": 5,
       "speedRank": 2,
-      "contextWindow": null,
+      "contextWindow": 131072,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -4231,11 +4268,11 @@
       "displayName": "Llama 3.1 Nemotron 70B Instruct",
       "intelligenceRank": 2,
       "speedRank": 4,
-      "contextWindow": null,
+      "contextWindow": 128000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -4249,7 +4286,7 @@
       "displayName": "Llama 3.1 Nemotron Ultra 253B V1",
       "intelligenceRank": 1,
       "speedRank": 5,
-      "contextWindow": null,
+      "contextWindow": 128000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -4257,6 +4294,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -4311,6 +4349,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -4331,6 +4370,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -4351,6 +4391,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -4389,6 +4430,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -4431,27 +4473,6 @@
     },
     {
       "platform": "nvidia",
-      "modelId": "openai/gpt-oss-120b",
-      "displayName": "GPT-OSS 120B",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": 131072,
-      "rpmLimit": 30,
-      "rpdLimit": 1000,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.15,
-      "origOutputPricePer1M": 0.6,
-      "outputTokenLimit": 32768
-    },
-    {
-      "platform": "nvidia",
       "modelId": "openai/gpt-oss-20b",
       "displayName": "GPT-OSS 20B",
       "intelligenceRank": 4,
@@ -4464,6 +4485,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -4485,6 +4507,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -4569,7 +4593,7 @@
       "displayName": "Kimi K3",
       "intelligenceRank": 2,
       "speedRank": 3,
-      "contextWindow": null,
+      "contextWindow": 1048576,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -4577,7 +4601,9 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
+        "planner",
         "free"
       ]
     },
@@ -4587,7 +4613,7 @@
       "displayName": "Nemotron 3 Super",
       "intelligenceRank": 3,
       "speedRank": 3,
-      "contextWindow": null,
+      "contextWindow": 262144,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -4595,6 +4621,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -4610,10 +4637,13 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
+        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.45,
@@ -4633,6 +4663,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ]
@@ -4643,12 +4675,12 @@
       "displayName": "Mistral Large 3 675B",
       "intelligenceRank": 2,
       "speedRank": 5,
-      "contextWindow": null,
+      "contextWindow": 262144,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -4669,6 +4701,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -4689,7 +4723,10 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
+        "planner",
         "free"
       ],
       "origInputPricePer1M": 0.95,
@@ -4701,7 +4738,7 @@
       "displayName": "Nemotron 3 Nano 30B",
       "intelligenceRank": 3,
       "speedRank": 2,
-      "contextWindow": null,
+      "contextWindow": 1048576,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -4709,6 +4746,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -4727,6 +4765,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -4748,6 +4787,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -4766,9 +4806,10 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.63,
@@ -4788,6 +4829,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -4808,6 +4851,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "coding",
         "reasoner",
         "free"
@@ -4821,15 +4865,16 @@
       "displayName": "Qwen3.5 397B",
       "intelligenceRank": 1,
       "speedRank": 5,
-      "contextWindow": null,
+      "contextWindow": 262144,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ]
     },
@@ -4845,9 +4890,10 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.6,
@@ -4867,6 +4913,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -4888,6 +4935,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -4908,6 +4956,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -4928,29 +4977,12 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.75,
       "origOutputPricePer1M": 3.75
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "0GM-1.0-35B-A3B",
-      "displayName": "0GM 1.0 35B A3B",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": 245760,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
     },
     {
       "platform": "openadapter",
@@ -4964,9 +4996,10 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 3.5,
@@ -4986,6 +5019,8 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -5006,6 +5041,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5026,6 +5062,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5046,6 +5083,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5062,11 +5100,12 @@
       "rpmLimit": 5,
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.8,
@@ -5096,17 +5135,20 @@
       "displayName": "GLM 5.3 Flash",
       "intelligenceRank": 2,
       "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
+      "contextWindow": 128000,
+      "rpmLimit": 60,
+      "rpdLimit": 10000,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": true,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
-      ]
+      ],
+      "origInputPricePer1M": 0.0001,
+      "origOutputPricePer1M": 0.0002
     },
     {
       "platform": "llm7",
@@ -5114,7 +5156,7 @@
       "displayName": "GPT OSS",
       "intelligenceRank": 3,
       "speedRank": 3,
-      "contextWindow": null,
+      "contextWindow": 131072,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -5122,6 +5164,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ]
@@ -5132,15 +5175,16 @@
       "displayName": "Qwen3.8 Flash",
       "intelligenceRank": 4,
       "speedRank": 2,
-      "contextWindow": null,
+      "contextWindow": 1000000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": true,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5154,11 +5198,12 @@
       "rpmLimit": 15,
       "rpdLimit": 30,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.63,
@@ -5170,15 +5215,16 @@
       "displayName": "GLM 5.3 Flash",
       "intelligenceRank": 2,
       "speedRank": 2,
-      "contextWindow": null,
+      "contextWindow": 1000000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ]
     },
@@ -5216,6 +5262,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5236,6 +5283,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5253,9 +5301,10 @@
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
-      "supportsVision": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ],
@@ -5277,6 +5326,7 @@
       "supportsReasoning": false,
       "tags": [
         "general",
+        "coding",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -5356,6 +5406,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -5376,6 +5428,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5396,6 +5449,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -5416,6 +5471,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5436,6 +5492,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5456,6 +5513,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5476,6 +5534,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -5496,6 +5556,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5516,6 +5577,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5536,6 +5598,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5556,6 +5619,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5576,7 +5640,9 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
+        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -5596,6 +5662,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5616,6 +5683,8 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -5636,7 +5705,9 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
+        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -5656,6 +5727,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5676,7 +5748,10 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
+        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -5696,7 +5771,9 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
+        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -5716,6 +5793,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5736,6 +5814,8 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -5756,6 +5836,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5776,7 +5857,9 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
+        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -5796,6 +5879,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5816,6 +5900,8 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ],
@@ -5836,6 +5922,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5856,6 +5943,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "coding",
         "reasoner",
         "free"
@@ -5877,6 +5965,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5897,6 +5986,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5917,6 +6007,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5937,26 +6028,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "free/ling-3-0-flash-fin",
-      "displayName": "Ling 3.0 Flash Fin (free)",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -5991,10 +6063,11 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -6011,11 +6084,13 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
+        "planner",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -6031,10 +6106,12 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
+        "general",
+        "coding",
         "reasoner",
         "free"
       ]
@@ -6045,14 +6122,15 @@
       "displayName": "Mistral Code Latest",
       "intelligenceRank": 3,
       "speedRank": 3,
-      "contextWindow": null,
+      "contextWindow": 256000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ],
@@ -6093,6 +6171,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -6105,12 +6184,12 @@
       "displayName": "Voxtral Small Latest",
       "intelligenceRank": 4,
       "speedRank": 2,
-      "contextWindow": null,
+      "contextWindow": 32000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6131,9 +6210,10 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": true,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "tags": [
         "general",
+        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.2,
@@ -6169,8 +6249,8 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6193,6 +6273,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -6209,28 +6290,8 @@
       "rpmLimit": 5,
       "rpdLimit": 7200,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
-      "modelId": "llama-3.3-70b-instruct-fp8-fast",
-      "displayName": "Llama 3.3 70B",
-      "intelligenceRank": 3,
-      "speedRank": 4,
-      "contextWindow": 128000,
-      "rpmLimit": 20,
-      "rpdLimit": 20,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6249,11 +6310,11 @@
       "rpmLimit": 5,
       "rpdLimit": 7200,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
-        "reasoner",
+        "general",
         "free"
       ],
       "origInputPricePer1M": 0.2,
@@ -6269,11 +6330,11 @@
       "rpmLimit": 5,
       "rpdLimit": 7200,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
-        "reasoner",
+        "general",
         "free"
       ],
       "origInputPricePer1M": 0.2,
@@ -6289,8 +6350,8 @@
       "rpmLimit": 5,
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6329,31 +6390,12 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
         "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
-      "modelId": "llama-4-scout-17b-16e-instruct",
-      "displayName": "Llama 4 Scout 17B 16E Instruct",
-      "intelligenceRank": 4,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
+        "coding",
         "free"
       ],
       "origInputPricePer1M": 0.2,
@@ -6365,12 +6407,12 @@
       "displayName": "Voxtral Small 2507",
       "intelligenceRank": 4,
       "speedRank": 2,
-      "contextWindow": null,
+      "contextWindow": 32000,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6385,14 +6427,15 @@
       "displayName": "Mistral Code Agent Latest",
       "intelligenceRank": 3,
       "speedRank": 3,
-      "contextWindow": null,
+      "contextWindow": 262144,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ],
@@ -6433,6 +6476,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -6441,35 +6485,15 @@
     },
     {
       "platform": "airforce",
-      "modelId": "mistral-small-3.1-24b-instruct",
-      "displayName": "Mistral Small 3.1 24B Instruct",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
       "modelId": "rnj-1",
       "displayName": "Rnj 1",
       "intelligenceRank": 3,
       "speedRank": 3,
-      "contextWindow": null,
+      "contextWindow": 32768,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -6489,10 +6513,11 @@
       "rpmLimit": 30,
       "rpdLimit": 50000,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -6509,34 +6534,14 @@
       "rpmLimit": 5,
       "rpdLimit": 7200,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
-        "reasoner",
+        "general",
         "free"
       ],
       "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
-      "modelId": "gemma-4-26b-a4b-it",
-      "displayName": "Gemma 4 26B",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 256000,
-      "rpmLimit": 15,
-      "rpdLimit": 1500,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.13,
       "origOutputPricePer1M": 0.2
     },
     {
@@ -6545,12 +6550,12 @@
       "displayName": "Mistral Medium 3",
       "intelligenceRank": 3,
       "speedRank": 3,
-      "contextWindow": null,
+      "contextWindow": 131072,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6569,7 +6574,7 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
@@ -6589,11 +6594,12 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
         "general",
+        "coding",
         "free"
       ],
       "origInputPricePer1M": 0.2,
@@ -6621,26 +6627,6 @@
     },
     {
       "platform": "airforce",
-      "modelId": "qwen3-30b-a3b-fp8",
-      "displayName": "Qwen3 30B A3B FP8",
-      "intelligenceRank": 3,
-      "speedRank": 4,
-      "contextWindow": 131072,
-      "rpmLimit": 300,
-      "rpdLimit": 432000,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
       "modelId": "gpt-oss-120b",
       "displayName": "GPT-OSS 120B",
       "intelligenceRank": 2,
@@ -6653,6 +6639,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -6669,8 +6656,8 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6713,6 +6700,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "general",
         "coding",
         "reasoner",
         "free"
@@ -6734,6 +6722,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ],
@@ -6750,10 +6739,11 @@
       "rpmLimit": 5,
       "rpdLimit": 7200,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -6770,10 +6760,11 @@
       "rpmLimit": 5,
       "rpdLimit": 7200,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
+        "general",
         "reasoner",
         "free"
       ],
@@ -6794,7 +6785,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
-        "reasoner",
+        "general",
         "free"
       ],
       "origInputPricePer1M": 0.2,
@@ -6810,10 +6801,11 @@
       "rpmLimit": 5,
       "rpdLimit": 7200,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
+      "supportsTools": true,
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "general",
         "coding",
         "free"
       ],
@@ -6830,8 +6822,8 @@
       "rpmLimit": 5,
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
+      "supportsTools": true,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "general",
@@ -6850,6 +6842,90 @@
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "coding",
+        "free"
+      ],
+      "origInputPricePer1M": 0.2,
+      "origOutputPricePer1M": 0.2
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "displayName": "DeepSeek V4 Flash",
+      "intelligenceRank": 2,
+      "speedRank": 2,
+      "contextWindow": 128000,
+      "rpmLimit": 15,
+      "rpdLimit": 30,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.17,
+      "origOutputPricePer1M": 0.5
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "deepseek-ai/DeepSeek-V4-Pro",
+      "displayName": "DeepSeek V4 Pro",
+      "intelligenceRank": 1,
+      "speedRank": 4,
+      "contextWindow": 1048576,
+      "rpmLimit": 15,
+      "rpdLimit": 30,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "deepseek-ai/DeepSeek-V4-Pro-0813",
+      "displayName": "DeepSeek V4 Pro",
+      "intelligenceRank": 1,
+      "speedRank": 4,
+      "contextWindow": 1048576,
+      "rpmLimit": 15,
+      "rpdLimit": 30,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "early-access/EA-29B-A4B",
+      "displayName": "EA 29B A4B",
+      "intelligenceRank": 4,
+      "speedRank": 3,
+      "contextWindow": null,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
       "supportsTools": false,
       "supportsVision": false,
       "supportsReasoning": false,
@@ -6857,8 +6933,1115 @@
         "general",
         "free"
       ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "MedAIBase/AntAngelMed",
+      "displayName": "AntAngelMed",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 32768,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "meituan-longcat/LongCat-Flash-Lite",
+      "displayName": "LongCat Flash Lite",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "MiniMax/MiniMax-M1-80k",
+      "displayName": "MiniMax M1 80K",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "MiniMax/MiniMax-M3",
+      "displayName": "MiniMax: MiniMax M3 (free)",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 2,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "mistralai/Mistral-Large-Instruct-2407",
+      "displayName": "Mistral Large 3",
+      "intelligenceRank": 2,
+      "speedRank": 4,
+      "contextWindow": 256000,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "OpenGVLab/InternVL3_5-241B-A28B",
+      "displayName": "InternVL3 5 241B A28B",
+      "intelligenceRank": 1,
+      "speedRank": 5,
+      "contextWindow": 40960,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "PaddlePaddle/ERNIE-4.5-21B-A3B-PT",
+      "displayName": "ERNIE 4.5 21B A3B PT",
+      "intelligenceRank": 4,
+      "speedRank": 3,
+      "contextWindow": 131072,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "PaddlePaddle/ERNIE-4.5-300B-A47B-PT",
+      "displayName": "ERNIE 4.5 300B A47B PT",
+      "intelligenceRank": 1,
+      "speedRank": 5,
+      "contextWindow": 131072,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "PaddlePaddle/ERNIE-4.5-VL-28B-A3B-PT",
+      "displayName": "ERNIE 4.5 VL 28B A3B PT",
+      "intelligenceRank": 4,
+      "speedRank": 3,
+      "contextWindow": 131072,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3-14B",
+      "displayName": "Qwen3 14B",
+      "intelligenceRank": 4,
+      "speedRank": 3,
+      "contextWindow": 40960,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3-235B-A22B",
+      "displayName": "Qwen3 235B A22B",
+      "intelligenceRank": 1,
+      "speedRank": 5,
+      "contextWindow": 40960,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "displayName": "Qwen3 235B A22B Instruct 2507",
+      "intelligenceRank": 1,
+      "speedRank": 5,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3-235B-A22B-Thinking-2507",
+      "displayName": "Qwen3 235B A22B Thinking 2507",
+      "intelligenceRank": 1,
+      "speedRank": 5,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3-30B-A3B",
+      "displayName": "Qwen3 30B A3B FP8",
+      "intelligenceRank": 3,
+      "speedRank": 4,
+      "contextWindow": 131072,
+      "rpmLimit": 300,
+      "rpdLimit": 432000,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.051,
+      "origOutputPricePer1M": 0.335
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3-30B-A3B-Thinking-2507",
+      "displayName": "Qwen3 30B A3B Thinking 2507",
+      "intelligenceRank": 3,
+      "speedRank": 4,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3-4B",
+      "displayName": "Qwen3 4B",
+      "intelligenceRank": 5,
+      "speedRank": 2,
+      "contextWindow": 40960,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3-8B",
+      "displayName": "Qwen3 8B",
+      "intelligenceRank": 5,
+      "speedRank": 2,
+      "contextWindow": 40960,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+      "displayName": "Qwen3 Coder 30B A3B Instruct",
+      "intelligenceRank": 2,
+      "speedRank": 4,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "coding",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3-Next-80B-A3B-Instruct",
+      "displayName": "Qwen3 Next 80B A3B Instruct",
+      "intelligenceRank": 2,
+      "speedRank": 4,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3-Next-80B-A3B-Thinking",
+      "displayName": "Qwen3 Next 80B A3B Thinking",
+      "intelligenceRank": 2,
+      "speedRank": 4,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3-VL-235B-A22B-Instruct",
+      "displayName": "Qwen3 VL 235B A22B Instruct",
+      "intelligenceRank": 1,
+      "speedRank": 5,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3-VL-8B-Instruct",
+      "displayName": "Qwen3 VL 8B Instruct",
+      "intelligenceRank": 5,
+      "speedRank": 2,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3-VL-8B-Thinking",
+      "displayName": "Qwen3 VL 8B Thinking",
+      "intelligenceRank": 5,
+      "speedRank": 2,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3.5-122B-A10B",
+      "displayName": "Qwen3.5 122B A10B",
+      "intelligenceRank": 2,
+      "speedRank": 4,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3.5-27B",
+      "displayName": "Qwen3.5 27B",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3.5-35B-A3B",
+      "displayName": "Qwen3.5 35B A3B",
+      "intelligenceRank": 3,
+      "speedRank": 4,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3.5-397B-A17B",
+      "displayName": "Qwen3.5 397B A17B (Free)",
+      "intelligenceRank": 1,
+      "speedRank": 5,
+      "contextWindow": 262144,
+      "rpmLimit": 2,
+      "rpdLimit": 2880,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3.8-27B",
+      "displayName": "Qwen 3.8 27B",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262000,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.33,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Qwen/Qwen3.8-Flash-Next",
+      "displayName": "Qwen3.8 Flash Next",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Shanghai_AI_Laboratory/Intern-S1",
+      "displayName": "Intern S1",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 65536,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Shanghai_AI_Laboratory/Intern-S1-mini",
+      "displayName": "Intern S1 Mini",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 65536,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Shanghai_AI_Laboratory/Intern-S2-Preview",
+      "displayName": "Intern S2 Preview",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "stepfun-ai/Step-3.5-Flash",
+      "displayName": "Step 3.5 Flash",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "stepfun-ai/Step-3.7-Flash",
+      "displayName": "Step 3.7 Flash Free",
+      "intelligenceRank": 2,
+      "speedRank": 2,
+      "contextWindow": 128000,
+      "rpmLimit": 15,
+      "rpdLimit": 800,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.26,
+      "origOutputPricePer1M": 1.5
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "Tencent-Hunyuan/Hy3",
+      "displayName": "Hy3 Free",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 256000,
+      "rpmLimit": 60,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.13,
+      "origOutputPricePer1M": 0.53
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "XGenerationLab/XiYanSQL-QwenCoder-32B-2412",
+      "displayName": "XiYanSQL QwenCoder 32B 2412",
+      "intelligenceRank": 3,
+      "speedRank": 4,
+      "contextWindow": 32768,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "coding",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "XGenerationLab/XiYanSQL-QwenCoder-32B-2504",
+      "displayName": "XiYanSQL QwenCoder 32B 2504",
+      "intelligenceRank": 3,
+      "speedRank": 4,
+      "contextWindow": 32768,
+      "rpmLimit": 10,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "coding",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "ZhipuAI/GLM-4.7-Flash",
+      "displayName": "GLM-4.7 Flash",
+      "intelligenceRank": 2,
+      "speedRank": 2,
+      "contextWindow": 131072,
+      "rpmLimit": 1,
+      "rpdLimit": 1440,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.06,
+      "origOutputPricePer1M": 0.4
+    },
+    {
+      "platform": "modelscope",
+      "modelId": "ZhipuAI/GLM-5.2",
+      "displayName": "Z.ai: GLM 5.2",
+      "intelligenceRank": 1,
+      "speedRank": 3,
+      "contextWindow": 205000,
+      "rpmLimit": 10,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "cohere",
+      "modelId": "c4ai-aya-vision-32b",
+      "displayName": "C4ai Aya Vision 32B",
+      "intelligenceRank": 3,
+      "speedRank": 4,
+      "contextWindow": 16000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ]
+    },
+    {
+      "platform": "cohere",
+      "modelId": "command-r7b-arabic-02-2025",
+      "displayName": "Command R7b Arabic 02 2025",
+      "intelligenceRank": 5,
+      "speedRank": 2,
+      "contextWindow": 128000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "free"
+      ]
+    },
+    {
+      "platform": "cohere",
+      "modelId": "north-mini-code-1-0",
+      "displayName": "North Mini Code 1 0",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 256000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "reasoner",
+        "free"
+      ]
+    },
+    {
+      "platform": "chatanywhere",
+      "modelId": "gpt-5.4-mini",
+      "displayName": "GPT 5.4 Mini",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 400000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ]
+    },
+    {
+      "platform": "chatanywhere",
+      "modelId": "gpt-5.4-nano",
+      "displayName": "GPT 5.4 Nano",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 400000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ]
+    },
+    {
+      "platform": "google",
+      "modelId": "gemini-3.8-flash",
+      "displayName": "Gemini 3.8 Flash",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 1048576,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "reasoner",
+        "free"
+      ]
+    },
+    {
+      "platform": "kenari",
+      "modelId": "muse-spark-1-3-contributor:free",
+      "displayName": "Muse Spark 1 3 Contributor Free",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ]
+    },
+    {
+      "platform": "opencode",
+      "modelId": "muse-spark-1.3-contributor-free",
+      "displayName": "Muse Spark 1.3 Contributor Free",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ]
+    },
+    {
+      "platform": "openrouter",
+      "modelId": "inclusionai/ling-3.0-flash-sante:free",
+      "displayName": "inclusionAI: Ling 3.0 Flash Sante (free)",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "kilo",
+      "modelId": "inclusionai/ling-3.0-flash-sante:free",
+      "displayName": "inclusionAI: Ling 3.0 Flash Sante (free)",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "experientiallabs",
+      "modelId": "qwen3.8-27b",
+      "displayName": "Qwen3.8 27B",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 2700,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.32,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "experientiallabs",
+      "modelId": "deepseek-v4-flash",
+      "displayName": "Deepseek V4 Flash",
+      "intelligenceRank": 1,
+      "speedRank": 2,
+      "contextWindow": 1048576,
+      "rpmLimit": 10,
+      "rpdLimit": 14400,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.042448,
+      "origOutputPricePer1M": 0.084896
+    },
+    {
+      "platform": "experientiallabs",
+      "modelId": "gpt-5.6-luna",
+      "displayName": "Gpt 5.6 Luna",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1050000,
+      "rpmLimit": 10,
+      "rpdLimit": 5000,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
       "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
+      "origOutputPricePer1M": 1.2
+    },
+    {
+      "platform": "experientiallabs",
+      "modelId": "claude-fable-5.1",
+      "displayName": "Claude Fable 5.1",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1000000,
+      "rpmLimit": 1,
+      "rpdLimit": 240,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 10,
+      "origOutputPricePer1M": 50
+    },
+    {
+      "platform": "experientiallabs",
+      "modelId": "gpt-6-astra",
+      "displayName": "Gpt 6 Astra",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1050000,
+      "rpmLimit": 1,
+      "rpdLimit": 500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 10,
+      "origOutputPricePer1M": 50
     },
     {
       "platform": "unorouter",
@@ -9641,804 +10824,6 @@
       "origOutputPricePer1M": 0
     },
     {
-      "platform": "modelscope",
-      "modelId": "deepseek-ai/DeepSeek-V4-Flash-0731",
-      "displayName": "DeepSeek V4 Flash",
-      "intelligenceRank": 2,
-      "speedRank": 2,
-      "contextWindow": 128000,
-      "rpmLimit": 15,
-      "rpdLimit": 30,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.17,
-      "origOutputPricePer1M": 0.5
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "deepseek-ai/DeepSeek-V4-Pro",
-      "displayName": "DeepSeek V4 Pro",
-      "intelligenceRank": 1,
-      "speedRank": 4,
-      "contextWindow": 1048576,
-      "rpmLimit": 15,
-      "rpdLimit": 30,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "deepseek-ai/DeepSeek-V4-Pro-0813",
-      "displayName": "DeepSeek V4 Pro",
-      "intelligenceRank": 1,
-      "speedRank": 4,
-      "contextWindow": 1048576,
-      "rpmLimit": 15,
-      "rpdLimit": 30,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "early-access/EA-29B-A4B",
-      "displayName": "EA 29B A4B",
-      "intelligenceRank": 4,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "MedAIBase/AntAngelMed",
-      "displayName": "AntAngelMed",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "meituan-longcat/LongCat-Flash-Lite",
-      "displayName": "LongCat Flash Lite",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "MiniMax/MiniMax-M1-80k",
-      "displayName": "MiniMax M1 80K",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "MiniMax/MiniMax-M3",
-      "displayName": "MiniMax: MiniMax M3 (free)",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 1048576,
-      "rpmLimit": 2,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "mistralai/Mistral-Large-Instruct-2407",
-      "displayName": "Mistral Large 3",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": 256000,
-      "rpmLimit": 5,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "OpenGVLab/InternVL3_5-241B-A28B",
-      "displayName": "InternVL3 5 241B A28B",
-      "intelligenceRank": 1,
-      "speedRank": 5,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "PaddlePaddle/ERNIE-4.5-21B-A3B-PT",
-      "displayName": "ERNIE 4.5 21B A3B PT",
-      "intelligenceRank": 4,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "PaddlePaddle/ERNIE-4.5-300B-A47B-PT",
-      "displayName": "ERNIE 4.5 300B A47B PT",
-      "intelligenceRank": 1,
-      "speedRank": 5,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "PaddlePaddle/ERNIE-4.5-VL-28B-A3B-PT",
-      "displayName": "ERNIE 4.5 VL 28B A3B PT",
-      "intelligenceRank": 4,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3-14B",
-      "displayName": "Qwen3 14B",
-      "intelligenceRank": 4,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3-235B-A22B",
-      "displayName": "Qwen3 235B A22B",
-      "intelligenceRank": 1,
-      "speedRank": 5,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3-235B-A22B-Instruct-2507",
-      "displayName": "Qwen3 235B A22B Instruct 2507",
-      "intelligenceRank": 1,
-      "speedRank": 5,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3-235B-A22B-Thinking-2507",
-      "displayName": "Qwen3 235B A22B Thinking 2507",
-      "intelligenceRank": 1,
-      "speedRank": 5,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3-30B-A3B",
-      "displayName": "Qwen3 30B A3B FP8",
-      "intelligenceRank": 3,
-      "speedRank": 4,
-      "contextWindow": 131072,
-      "rpmLimit": 300,
-      "rpdLimit": 432000,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.051,
-      "origOutputPricePer1M": 0.335
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3-30B-A3B-Thinking-2507",
-      "displayName": "Qwen3 30B A3B Thinking 2507",
-      "intelligenceRank": 3,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3-4B",
-      "displayName": "Qwen3 4B",
-      "intelligenceRank": 5,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3-8B",
-      "displayName": "Qwen3 8B",
-      "intelligenceRank": 5,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
-      "displayName": "Qwen3 Coder 30B A3B Instruct",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "coding",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3-Next-80B-A3B-Instruct",
-      "displayName": "Qwen3 Next 80B A3B Instruct",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3-Next-80B-A3B-Thinking",
-      "displayName": "Qwen3 Next 80B A3B Thinking",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "displayName": "Qwen3 VL 235B A22B Instruct",
-      "intelligenceRank": 1,
-      "speedRank": 5,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3-VL-8B-Instruct",
-      "displayName": "Qwen3 VL 8B Instruct",
-      "intelligenceRank": 5,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3-VL-8B-Thinking",
-      "displayName": "Qwen3 VL 8B Thinking",
-      "intelligenceRank": 5,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "reasoner",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3.5-122B-A10B",
-      "displayName": "Qwen3.5 122B A10B",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3.5-27B",
-      "displayName": "Qwen3.5 27B",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3.5-35B-A3B",
-      "displayName": "Qwen3.5 35B A3B",
-      "intelligenceRank": 3,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3.5-397B-A17B",
-      "displayName": "Qwen3.5 397B A17B (Free)",
-      "intelligenceRank": 1,
-      "speedRank": 5,
-      "contextWindow": 262144,
-      "rpmLimit": 2,
-      "rpdLimit": 2880,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3.8-27B",
-      "displayName": "Qwen 3.8 27B",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262000,
-      "rpmLimit": 5,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.33,
-      "origOutputPricePer1M": 2.4
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Qwen/Qwen3.8-Flash-Next",
-      "displayName": "Qwen3.8 Flash Next",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Shanghai_AI_Laboratory/Intern-S1",
-      "displayName": "Intern S1",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Shanghai_AI_Laboratory/Intern-S1-mini",
-      "displayName": "Intern S1 Mini",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Shanghai_AI_Laboratory/Intern-S2-Preview",
-      "displayName": "Intern S2 Preview",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "stepfun-ai/Step-3.5-Flash",
-      "displayName": "Step 3.5 Flash",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "stepfun-ai/Step-3.7-Flash",
-      "displayName": "Step 3.7 Flash Free",
-      "intelligenceRank": 2,
-      "speedRank": 2,
-      "contextWindow": 128000,
-      "rpmLimit": 15,
-      "rpdLimit": 800,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.26,
-      "origOutputPricePer1M": 1.5
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "Tencent-Hunyuan/Hy3",
-      "displayName": "Hy3 Free",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 256000,
-      "rpmLimit": 60,
-      "rpdLimit": 100,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.13,
-      "origOutputPricePer1M": 0.53
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "XGenerationLab/XiYanSQL-QwenCoder-32B-2412",
-      "displayName": "XiYanSQL QwenCoder 32B 2412",
-      "intelligenceRank": 3,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "coding",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "XGenerationLab/XiYanSQL-QwenCoder-32B-2504",
-      "displayName": "XiYanSQL QwenCoder 32B 2504",
-      "intelligenceRank": 3,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "coding",
-        "free"
-      ]
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "ZhipuAI/GLM-4.7-Flash",
-      "displayName": "GLM-4.7 Flash",
-      "intelligenceRank": 2,
-      "speedRank": 2,
-      "contextWindow": 131072,
-      "rpmLimit": 1,
-      "rpdLimit": 1440,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.06,
-      "origOutputPricePer1M": 0.4
-    },
-    {
-      "platform": "modelscope",
-      "modelId": "ZhipuAI/GLM-5.2",
-      "displayName": "Z.ai: GLM 5.2",
-      "intelligenceRank": 1,
-      "speedRank": 3,
-      "contextWindow": 205000,
-      "rpmLimit": 10,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
       "platform": "unorouter",
       "modelId": "qwen-plus-2025-07-28:free",
       "displayName": "Qwen Plus 0728 (Free)",
@@ -10679,80 +11064,6 @@
       "origOutputPricePer1M": 0
     },
     {
-      "platform": "requesty",
-      "modelId": "tensorx/deepseek-v4-pro-0813",
-      "displayName": "DeepSeek V4 Pro",
-      "intelligenceRank": 1,
-      "speedRank": 4,
-      "contextWindow": 1048576,
-      "rpmLimit": 15,
-      "rpdLimit": 30,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "cohere",
-      "modelId": "c4ai-aya-vision-32b",
-      "displayName": "C4ai Aya Vision 32B",
-      "intelligenceRank": 3,
-      "speedRank": 4,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "cohere",
-      "modelId": "command-r7b-arabic-02-2025",
-      "displayName": "Command R7b Arabic 02 2025",
-      "intelligenceRank": 5,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "cohere",
-      "modelId": "north-mini-code-1-0",
-      "displayName": "North Mini Code 1 0",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "coding",
-        "free"
-      ]
-    },
-    {
       "platform": "unorouter",
       "modelId": "llama-4-scout:free",
       "displayName": "Llama 4 Scout Free",
@@ -10771,42 +11082,6 @@
       ],
       "origInputPricePer1M": 0,
       "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "chatanywhere",
-      "modelId": "gpt-5.4-mini",
-      "displayName": "GPT 5.4 Mini",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
-    },
-    {
-      "platform": "chatanywhere",
-      "modelId": "gpt-5.4-nano",
-      "displayName": "GPT 5.4 Nano",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ]
     },
     {
       "platform": "unorouter",
