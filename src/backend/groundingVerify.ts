@@ -1,7 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { runPlanStream, type AgentOpts, type ToolEvent } from '../agent/agent';
-import type { Router } from '../router/router';
 
 const TEST_QUESTIONS = [
   { q: 'List the files and folders directly inside your current working directory.', type: 'specific' as const },
@@ -36,11 +35,11 @@ export interface VerifyResult {
   results: SingleResult[];
 }
 
-export async function verifyGrounding(router: Router, workspaceRoot: string): Promise<VerifyResult> {
+export async function verifyGrounding(workspaceRoot: string): Promise<VerifyResult> {
   const results: SingleResult[] = [];
 
   for (const { q, type } of TEST_QUESTIONS) {
-    results.push(await runOne(router, workspaceRoot, q, type));
+    results.push(await runOne(workspaceRoot, q, type));
   }
 
   const passed = results.filter((r) => r.ok).length;
@@ -49,7 +48,6 @@ export async function verifyGrounding(router: Router, workspaceRoot: string): Pr
 }
 
 async function runOne(
-  router: Router,
   workspaceRoot: string,
   question: string,
   type: 'specific' | 'broad',
@@ -74,7 +72,8 @@ async function runOne(
     onError: (e) => { errors.push(typeof e === 'string' ? e : (e as any)?.message ?? JSON.stringify(e)); },
   };
 
-  const result = await runPlanStream(router, opts, {});
+  // The v3 engine ignores this argument — selection lives in router/picker.ts.
+  const result = await runPlanStream(opts, {});
   const text = result.text || '';
 
   const distinctTools = new Map<string, ToolEvent>();

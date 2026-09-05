@@ -29,6 +29,10 @@ export interface PolicyConfig {
   alwaysAllow: Set<string>;
   alwaysDeny: Set<string>;
   autoModeAllowlist: Set<string>;
+  /** `commandApproval: 'never'` — the shell is OFF, not auto-approved. Kept separate from
+   *  `mode` because 'never' means both "never ask" AND "never run", and folding it into
+   *  full-auto lost the second half entirely (see resolvePolicy). */
+  shellDisabled?: boolean;
 }
 
 export const defaultPolicy: PolicyConfig = {
@@ -108,6 +112,22 @@ export function resolvePolicy(
   if (READ_ONLY_TOOLS.has(call.toolName)) {
     return Promise.resolve({ type: 'approved' });
   }
+  // `commandApproval: 'never'` means "Disable terminal command execution entirely" — that is
+  // its enumDescription in package.json, and CommandGate.run/runApproved have always honoured
+  // it by refusing to spawn. policyFromSettings, however, folded 'never' into `full-auto`, and
+  // the v3 runCommand tool spawns DIRECTLY (tools/v3/runCommand.ts) rather than through
+  // CommandGate — so the one setting a user picks to switch the shell OFF auto-approved every
+  // command with no prompt at all. Exactly inverted, and silent.
+  //
+  // The flag below preserves the "don't ask" half (that is what full-auto is for) while
+  // restoring the "don't run" half for shell specifically. Found 2026-09-05 while wiring the
+  // verify gate, which hit the CommandGate side of the same contradiction.
+  if (config.shellDisabled === true && call.toolName === 'runCommand') {
+    return Promise.resolve({
+      type: 'denied',
+      reason: 'terminal command execution is disabled (tiermux.agent.commandApproval = "never")',
+    });
+  }
   if (config.mode === 'full-auto') {
     return Promise.resolve({ type: 'approved' });
   }
@@ -163,5 +183,9 @@ export function policyFromSettings(
     alwaysAllow: grants.allow,
     alwaysDeny: grants.deny,
     autoModeAllowlist: new Set(cfg.get<string[]>('commandAllowlist', []).flatMap((s) => s.split(/\s+/))),
+    // 'never' disables the shell. The session auto-approve toggle does NOT re-enable it — that
+    // toggle is about skipping prompts, and a user who switched the terminal off did not ask
+    // for it back.
+    shellDisabled: approval === 'never',
   };
 }

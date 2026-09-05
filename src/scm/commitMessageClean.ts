@@ -1,6 +1,6 @@
 
 
-import { REFUSAL_PREFIXES, hasRepeatedLineRun } from '../agent/answerQuality';
+import { REFUSAL_PREFIXES, hasRepeatedLineRun } from './commitMessageText';
 
 /**
  * Reduce a raw model reply to ONLY the commit message. Strips reasoning

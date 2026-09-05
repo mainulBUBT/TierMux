@@ -8,7 +8,7 @@
 // provider, no network.
 // Run: npm run test:e2e:think-split
 
-import { ThinkStripper } from '../src/router/router';
+import { ThinkStripper } from '../src/util/thinkTags';
 import { createStreamTextSplitter, foldEmptyFinal, needsFinalNudge } from '../src/agent/core/routerProvider';
 
 let bad = 0;

@@ -1,7 +1,7 @@
 # The Simple Core Reset (2026-08-24)
 
 > **Audience:** any agent (or human) working on this repo after 2026-08-24. Read this before
-> touching `src/agent/core/loop.ts`, adding a "quality" retry, or reviving a detector. It
+> touching `src/agent/core/engine.ts`, adding a "quality" retry, or reviving a detector. It
 > documents what the reset removed, what it kept, the invariants that must survive, and how to
 > verify all of it.
 ## TL;DR — before / after
@@ -18,7 +18,10 @@ Net: **−5,300 lines**. Rollback at any time: `git reset --hard pre-simple-core
 
 ## The architectural rule (enforce it in review)
 
-**`src/agent/core/loop.ts` is a MECHANICAL EXECUTION ENGINE. It never judges.**
+**`src/agent/core/engine.ts` is a MECHANICAL EXECUTION ENGINE. It never judges.**
+(Named `loop.ts` before the v3 rewrite; every reference to that filename below means
+`engine.ts`. Corrected 2026-09-05 — the old name had outlived the file and was sending
+readers to a path that does not exist.)
 
 The loop MAY:
 - execute tools and models

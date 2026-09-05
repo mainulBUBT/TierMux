@@ -26,8 +26,8 @@ import type {
 import type { ChatMessage, ChatToolChoice, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
 import { resolveProvider } from '../../providers';
 import { ProviderHttpError } from '../../providers/base';
-import { selectModel, setModelSources, getApiKeysFor, recordOutcome, rationaleForServed, type ModelSources, type SelectionRationale } from '../../router/picker';
-import { ThinkStripper, stripThinkTags, reasoningFromDelta, type Router, type RouteOptions } from '../../router/router';
+import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordRequest, rationaleForServed, type ModelSources, type SelectionRationale } from '../../router/picker';
+import { ThinkStripper, stripThinkTags, reasoningFromDelta } from '../../util/thinkTags';
 import { diagLog } from '../../util/diag';
 
 /** Post-headers STALL bound: how long a stream that has produced no chunk at all may hang
@@ -483,137 +483,8 @@ export async function resolveCandidates(
  *   - `createRouterProvider(providerOpts)` — v3 engine path: selection via router/picker.ts.
  *   - `createRouterProvider(router, providerOpts)` — utility path (plan structuring, condense,
  *     titles): the Router's own routing/failover serves the call. v3.1 migrates these callers. */
-export function createRouterProvider(
-  routerOrOpts?: Router | RouterProviderOptions,
-  maybeOpts: RouterProviderOptions = {},
-): LanguageModelV4 {
-  if (routerOrOpts && typeof (routerOrOpts as Router).route === 'function') {
-    return createRouterBackedProvider(routerOrOpts as Router, maybeOpts);
-  }
-  const providerOpts = (routerOrOpts as RouterProviderOptions | undefined) ?? maybeOpts;
+export function createRouterProvider(providerOpts: RouterProviderOptions = {}): LanguageModelV4 {
   return createPickerProvider(providerOpts);
-}
-
-/** The pre-v3 behavior, kept for utility callers that pass the scoring Router. */
-function createRouterBackedProvider(router: Router, providerOpts: RouterProviderOptions): LanguageModelV4 {
-  return {
-    specificationVersion: 'v4',
-    provider: 'tiermux',
-    modelId: providerOpts.pinnedModel ?? `auto-${providerOpts.effort ?? 'medium'}`,
-    supportedUrls: {},
-
-    async doGenerate(options: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> {
-      const messages = toRouterMessages(options.prompt);
-      const tools = toRouterTools(options.tools);
-      const routeOpts: RouteOptions = {
-        model: providerOpts.pinnedModel ?? 'auto',
-        temperature: options.temperature,
-        max_tokens: options.maxOutputTokens,
-        tools,
-        tool_choice: toRouterToolChoice(options.toolChoice),
-        requireTools: !!tools?.length,
-        reasoningEffort: providerOpts.effort,
-        taskKind: providerOpts.taskKind as RouteOptions['taskKind'],
-        sessionId: providerOpts.sessionId,
-        onFailover: providerOpts.onFailover ? (info: { from: { platform: string; modelId: string }; reason: string }) => providerOpts.onFailover?.(`${info.from.platform}::${info.from.modelId}`, info.reason) : undefined,
-        abortSignal: options.abortSignal,
-      };
-      const result = await router.route(messages, routeOpts);
-      providerOpts.onModelSelected?.(result.platform, result.model, result.runtimeName);
-      const msg = result.response.choices?.[0]?.message;
-      const content: LanguageModelV4GenerateResult['content'] = [];
-      if (msg?.content) {
-        const raw = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-        const clean = stripThinkTags(raw);
-        if (clean) content.push({ type: 'text', text: clean });
-      }
-      for (const tc of msg?.tool_calls ?? []) {
-        content.push({ type: 'tool-call', toolCallId: tc.id, toolName: tc.function.name, input: tc.function.arguments ?? '{}', providerExecuted: false });
-      }
-      const hasCalls = !!msg?.tool_calls?.length;
-      const rawFR = result.response.choices?.[0]?.finish_reason;
-      return {
-        content,
-        finishReason: { unified: hasCalls ? 'tool-calls' : (isTruncationFinish(rawFR) ? 'length' : 'stop'), raw: hasCalls ? 'tool_calls' : (rawFR ?? 'stop') },
-        usage: toV4Usage(result.response.usage?.prompt_tokens, result.response.usage?.completion_tokens),
-        warnings: [],
-      };
-    },
-
-    async doStream(options: LanguageModelV4CallOptions): Promise<LanguageModelV4StreamResult> {
-      const messages = toRouterMessages(options.prompt);
-      const tools = toRouterTools(options.tools);
-      let controller!: ReadableStreamDefaultController<LanguageModelV4StreamPart>;
-      const stream = new ReadableStream<LanguageModelV4StreamPart>({ start(c) { controller = c; } });
-      controller.enqueue({ type: 'stream-start', warnings: [] });
-
-      const think = new ThinkStripper();
-      const textId = 'text-0';
-      let textStarted = false;
-      let chunkCount = 0;
-
-      const routeOpts: RouteOptions = {
-        model: providerOpts.pinnedModel ?? 'auto',
-        temperature: options.temperature,
-        max_tokens: options.maxOutputTokens,
-        tools,
-        tool_choice: toRouterToolChoice(options.toolChoice),
-        requireTools: !!tools?.length,
-        reasoningEffort: providerOpts.effort,
-        taskKind: providerOpts.taskKind as RouteOptions['taskKind'],
-        sessionId: providerOpts.sessionId,
-        onChunk: (delta: string) => {
-          chunkCount++;
-          const clean = think.feed(delta);
-          if (clean) {
-            if (!textStarted) { textStarted = true; controller.enqueue({ type: 'text-start', id: textId }); }
-            controller.enqueue({ type: 'text-delta', id: textId, delta: clean });
-          }
-        },
-        onFailover: providerOpts.onFailover ? (info: { from: { platform: string; modelId: string }; reason: string }) => providerOpts.onFailover?.(`${info.from.platform}::${info.from.modelId}`, info.reason) : undefined,
-        abortSignal: options.abortSignal,
-      };
-
-      router.route(messages, routeOpts).then((result) => {
-        providerOpts.onModelSelected?.(result.platform, result.model, result.runtimeName);
-        const msg = result.response.choices?.[0]?.message;
-        const rawFR = result.response.choices?.[0]?.finish_reason;
-        const hasToolCalls = !!msg?.tool_calls?.length;
-
-        if (chunkCount === 0 && msg?.content && !hasToolCalls) {
-          if (!textStarted) { textStarted = true; controller.enqueue({ type: 'text-start', id: textId }); }
-          const fullText = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-          controller.enqueue({ type: 'text-delta', id: textId, delta: stripThinkTags(fullText) });
-        }
-        const tail = think.flush();
-        if (tail) {
-          if (!textStarted) { textStarted = true; controller.enqueue({ type: 'text-start', id: textId }); }
-          controller.enqueue({ type: 'text-delta', id: textId, delta: tail });
-        }
-        if (textStarted) controller.enqueue({ type: 'text-end', id: textId });
-
-        if (hasToolCalls) {
-          for (const tc of msg!.tool_calls!) {
-            controller.enqueue({ type: 'tool-input-start', id: tc.id, toolName: tc.function.name });
-            controller.enqueue({ type: 'tool-input-delta', id: tc.id, delta: tc.function.arguments ?? '{}' });
-            controller.enqueue({ type: 'tool-input-end', id: tc.id });
-            controller.enqueue({ type: 'tool-call', toolCallId: tc.id, toolName: tc.function.name, input: tc.function.arguments ?? '{}' });
-          }
-        }
-
-        controller.enqueue({
-          type: 'finish',
-          finishReason: { unified: hasToolCalls ? 'tool-calls' : (isTruncationFinish(rawFR) ? 'length' : 'stop'), raw: hasToolCalls ? 'tool_calls' : (rawFR ?? 'stop') },
-          usage: toV4Usage(result.response.usage?.prompt_tokens, result.response.usage?.completion_tokens),
-        });
-        controller.close();
-      }).catch((err: unknown) => {
-        controller.error(err);
-      });
-
-      return { stream };
-    },
-  };
 }
 
 /** Degenerate stream end: reasoning present, but NO text and NO tool calls. The model
@@ -685,6 +556,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             abortSignal: options.abortSignal,
             timeoutMs: connectTimeoutFor(c.platform),
           });
+          recordRequest(c.platform, c.modelId);
           reportServed(c.platform, c.modelId, provider.runtimeName);
           if (data.usage) {
             providerOpts.onUsage?.({ inputTokens: data.usage.prompt_tokens, outputTokens: data.usage.completion_tokens, model: `${c.platform}::${c.modelId}` });
@@ -913,7 +785,8 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
               }
             }
 
-            reportServed(c.platform, c.modelId, provider.runtimeName);
+            recordRequest(c.platform, c.modelId);
+          reportServed(c.platform, c.modelId, provider.runtimeName);
             // A FOLDED turn is not a success. `folded` above means this candidate produced NO
             // content channel and NO tool call — only reasoning, which the fold promoted so the
             // user sees something instead of an empty bubble. Reporting that as `true` marked the

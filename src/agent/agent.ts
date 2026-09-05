@@ -5,7 +5,6 @@
 // AI-SDK-shaped lives inside ./core/*, loaded lazily (see loadCore below) so this file stays
 // vscode-free and independently testable, and so a future AI SDK version bump only touches
 // ./core/*, not this file or chatViewProvider.ts.
-import type { Router } from '../router/router';
 import type { ChatMessage, TodoItem, ReasoningEffort, ProposedPlan } from '../shared/types';
 import type { IProfilerService } from '../profiler/profilerService';
 import type { ClarifyingQuestion } from './clarify';
@@ -33,10 +32,14 @@ export interface AgentResult {
   taskKind?: string;
   workMessages?: ChatMessage[];
   paused?: boolean;
-  /** Set when the turn was TERMINATED by a loop-control guardrail (over budget, or stuck
-   *  repeating/thrashing) rather than finishing naturally. The autonomous continuation loop in
-   *  chatViewProvider uses this to HALT — auto-continuing a budget/stuck stop just repeats the
-   *  waste. Undefined = the model concluded on its own terms (may still have pending todos). */
+  /** Set when the turn STOPPED ITSELF rather than finishing: 'budget' — the step cap cut it
+   *  while tool calls were still in flight; 'stuck' — the same tool call failed with identical
+   *  input REPEAT_FAILURE_LIMIT times in a row. Both also set `paused`, so the host shows
+   *  Continue and `stopReasonNote` prints a footer naming the reason. Undefined = the model
+   *  concluded on its own terms (which may still leave pending todos — a different thing).
+   *
+   *  Live since 2026-09-05. It was declared but never assigned for the whole v3 era, described
+   *  in terms of a "continuation loop in chatViewProvider" that no longer exists. */
   stopReason?: 'budget' | 'stuck' | 'askQuestions';
   /** Set when the model called the plan-mode `askQuestions` tool this turn — the caller uses
    *  this directly instead of parsing `text` for the legacy ???QUESTIONS??? sentinel. */
@@ -59,16 +62,23 @@ export interface AgentResult {
    *  `workMessages`. Lets the caller render a deterministic "Files changed" recap independent of
    *  the model's prose, so a turn that ended on a bare tool call still surfaces what it changed. */
   changedFiles?: { path: string; status: 'created' | 'modified' | 'deleted' }[];
-  /** Outcome of the end-of-turn command verify gate (loop.ts): 'passed' — the project's verify
+  /** NOT PRODUCED BY THE v3 ENGINE (2026-09-05). `src/agent/core/tools/workspace/verifyCommand.ts`
+   *  implements the gate, but nothing calls `runVerifyCommand`, so this is always undefined —
+   *  see docs/AGENT_RELIABILITY_PLAN_2026-09-05.md §2.1, which is the decision to wire it or
+   *  delete it. Contract as designed, for whoever wires it:
+   *  Outcome of the end-of-turn command verify gate: 'passed' — the project's verify
    *  command ran and exited 0 (possibly after fix rounds); 'failed' — it exited non-zero even
    *  after the bounded fix rounds (`tiermux.agent.verifyFixRounds` — the agent owns the
    *  recheck, the user is never asked to re-run it); 'unverified' — the turn mutated files but
    *  no verify command exists. Undefined — no mutation (nothing to verify). The step engine
-   *  (core/stepEngine.ts) treats 'failed' as "the step is NOT accepted": a model marking its
+   *  (a pre-v3 step engine, also gone) treated 'failed' as "the step is NOT accepted": a model marking its
    *  todos completed while the verify command fails gets one focused extra round instead of a
    *  handshake. */
   verifyOutcome?: 'passed' | 'failed' | 'unverified';
-  /** Structured end-of-turn report (loop.ts builds it; the host persists it in the transcript
+  /** NOT PRODUCED BY THE v3 ENGINE (2026-09-05) — the host reads and persists it, and
+   *  media/src/ui/components/ResultCard.ts renders it, but nothing ever sets it. §2.2 of the
+   *  reliability plan is the decision to build it or delete all four layers.
+   *  Structured end-of-turn report (the host persists it in the transcript
    *  as the canonical representation and posts it to the webview for the ResultCard). The
    *  legacy markdown block in `text` is compatibility serialization only. */
   workReport?: import('../shared/workReport').WorkReportData;
@@ -109,6 +119,15 @@ export interface AgentOpts {
   /** Tool-result aging level for this turn — mirrors the tiermux.agent.toolCompaction
    *  setting ('off' | 'light' | 'aggressive'). Threaded from host settings. */
   toolCompaction?: 'off' | 'light' | 'aggressive';
+  /** Hard cap on model round-trips in one turn — mirrors `tiermux.agent.maxStepsPerTurn`,
+   *  threaded from host settings like toolCompaction (core/ stays vscode-free so the e2e
+   *  gate can run it headless). The setting shipped documented since v3 while the engine
+   *  hardcoded 50, so changing it did nothing. Omitted ⇒ the engine's own default. */
+  maxStepsPerTurn?: number;
+  /** Fix-and-recheck rounds after the end-of-turn verify command fails — mirrors
+   *  `tiermux.agent.verifyFixRounds`, threaded from host settings. 0 reports the failure
+   *  without retrying; it never disables the gate itself (that is `verifyCommand: 'off'`). */
+  verifyFixRounds?: number;
   /** `platform::modelId` keys to skip during Auto selection for this call only — e.g. the
    *  auto-continue loop excluding the model that just got stuck, so the retry genuinely tries a
    *  different model rather than very likely re-picking the same one. Ignored when
@@ -182,24 +201,21 @@ async function loadCore(): Promise<typeof import('./core/engine').runTurn> {
   return runTurn;
 }
 
-/** Agent mode: full tool loop, via the AI SDK. The trailing `_tools` param is unused (the
- *  engine builds its own tool set) — kept only so existing call sites in chatViewProvider.ts
- *  don't all need a mechanical edit. The `router` argument is likewise ignored: v3 model
- *  selection lives in router/picker.ts. */
-export async function runAgentStream(router: Router, opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
-  void router;
-  return (await loadCore())(router, { ...opts, mode: 'agent' });
+/** Agent mode: full tool loop, via the AI SDK. The trailing `_tools` param is unused — the
+ *  engine builds its own tool set. The leading `router` argument is gone as of 2026-09-05
+ *  (plan §4.2): it had been ignored since v3, and the Router it referred to no longer exists.
+ *  Model selection lives in router/picker.ts. */
+export async function runAgentStream(opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
+  return (await loadCore())(undefined, { ...opts, mode: 'agent' });
 }
 
 /** Plan mode: read-only toolset (readFile/listDir/glob/grep) — the policy still gates anything
  *  mutating, and the mode filter drops those tools from the model's view entirely. */
-export async function runPlanStream(router: Router, opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
-  void router;
-  return (await loadCore())(router, { ...opts, mode: 'plan' });
+export async function runPlanStream(opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
+  return (await loadCore())(undefined, { ...opts, mode: 'plan' });
 }
 
 /** Ask mode: read-only Q&A — same toolset as plan, different system-prompt framing. */
-export async function runAskStream(router: Router, opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
-  void router;
-  return (await loadCore())(router, { ...opts, mode: 'ask' });
+export async function runAskStream(opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
+  return (await loadCore())(undefined, { ...opts, mode: 'ask' });
 }

@@ -25,7 +25,7 @@ export function estimateTokens(messages: ModelMessage[]): number {
 
 /** Searches: large, noisy, and cheap for the model to re-run if it truly needs them again.
  *  These go first and are the only thing tier 1 touches. */
-const REDERIVABLE_TOOLS = ['grep', 'glob', 'listDir', 'webSearch', 'deepSearch'];
+const REDERIVABLE_TOOLS = ['grep', 'glob', 'listDir', 'webSearch'];
 
 /** Tier 1 — drop stale reasoning plus re-derivable search output, keeping file reads and
  *  edits (the evidence a later step actually reasons over) intact. */
@@ -73,8 +73,8 @@ export function compactIfNeeded(
 // accumulated history (free gateways don't prompt-cache — full price every time; the same
 // TTFT repros that motivated the picker's TTFT EWMA: 10–17s to first byte). OpenCode/Kilo
 // feel fast on the SAME models because they prune consumed outputs between steps; this is
-// that move, budget-independent: run on every step, keep only the most recent tool
-// message's results verbatim, and elide the older ones into instructive stubs.
+// that move, budget-independent: run on every step, keep the most recent few tool messages'
+// results verbatim, and elide the older ones into instructive stubs.
 //
 // Safety: stubs name the tool + input and tell the model how to see the content again
 // (re-run the tool), so elision degrades to a re-read, never to a dead reference. Error
@@ -83,6 +83,16 @@ export function compactIfNeeded(
 // short, so later passes leave it alone.
 
 const AGE_MIN_CHARS = 2_000;
+
+/** How many of the most recent tool messages stay verbatim (2026-09-05: 1 → 3).
+ *
+ *  One was too tight for the commonest autonomous pattern there is — read A, read B, edit A.
+ *  By the edit step A's content was already a stub, while `editFile.search` has to match it
+ *  byte-for-byte, so aging manufactured the exact failure editMatch.ts then had to diagnose.
+ *  Three covers read→read→edit and read→search→read→edit without a per-tool exemption list
+ *  (which would be the start of a tower). The cost is bounded and small: three steps of
+ *  output instead of one, against turns that run 15-25 steps. */
+const KEEP_RECENT_TOOL_MESSAGES = 3;
 
 /** toolCallId → the ARGUMENTS that produced the result. `ToolResultPart` carries only
  *  toolCallId/toolName/output — the args live on the ASSISTANT message's `tool-call` part
@@ -134,19 +144,21 @@ export interface AgeToolOutputsResult {
 }
 
 export function ageToolOutputs(messages: ModelMessage[], minChars = AGE_MIN_CHARS): AgeToolOutputsResult {
-  // The LAST message carrying tool results is the step the model is currently acting on —
-  // kept verbatim, parts and all. Everything before it is fair game.
-  let lastToolIdx = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'tool') { lastToolIdx = i; break; }
+  // The most recent KEEP_RECENT_TOOL_MESSAGES tool messages are the steps the model is still
+  // working from — kept verbatim, parts and all. Everything before the oldest of them is fair
+  // game. Walking backwards means the boundary is the OLDEST kept message's index.
+  const recent: number[] = [];
+  for (let i = messages.length - 1; i >= 0 && recent.length < KEEP_RECENT_TOOL_MESSAGES; i--) {
+    if (messages[i].role === 'tool') recent.push(i);
   }
-  if (lastToolIdx <= 0) return { stubbedChars: 0 };
+  const keepFrom = recent.length ? recent[recent.length - 1] : -1;
+  if (keepFrom <= 0) return { stubbedChars: 0 };
 
   const inputById = toolCallInputs(messages);
   let stubbedChars = 0;
   let changed = false;
   const out = messages.map((m, i) => {
-    if (i >= lastToolIdx || m.role !== 'tool' || !Array.isArray(m.content)) return m;
+    if (i >= keepFrom || m.role !== 'tool' || !Array.isArray(m.content)) return m;
     let touched = false;
     const content = (m.content as Array<Record<string, unknown>>).map((part) => {
       if (part.type !== 'tool-result') return part;

@@ -1,5 +1,5 @@
 // Quick test for ThinkStripper logic
-import { ThinkStripper, stripThinkTags } from '../src/router/router';
+import { ThinkStripper, stripThinkTags } from '../src/util/thinkTags';
 
 function test(name: string, fn: () => void) {
   try {

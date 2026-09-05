@@ -1,9 +1,8 @@
 
 
 import * as vscode from 'vscode';
-import type { Router } from '../router/router';
+import { routeOnce } from '../agent/core/routeOnce';
 import type { EditGate } from '../edits/applyEdit';
-import { contentToString } from '../agent/content';
 import { PRODUCT_NAME } from '../shared/branding';
 
 const SYSTEM = `You are a precise code editor. The user gives an instruction and a code
@@ -15,7 +14,7 @@ function stripFences(text: string): string {
   return m ? m[1] : text;
 }
 
-export function registerInlineChat(router: Router, editGate: EditGate): vscode.Disposable {
+export function registerInlineChat(editGate: EditGate): vscode.Disposable {
   return vscode.commands.registerCommand('tiermux.inlineChat', async () => {
     const editor = vscode.window.activeTextEditor;
     if (!editor) { void vscode.window.showInformationMessage('Open a file first.'); return; }
@@ -30,14 +29,14 @@ export function registerInlineChat(router: Router, editGate: EditGate): vscode.D
 
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `${PRODUCT_NAME}: editing…` }, async () => {
       try {
-        const result = await router.route(
+        const result = await routeOnce(
           [
             { role: 'system', content: SYSTEM },
             { role: 'user', content: `Instruction: ${instruction}\n\nLanguage: ${lang}\n\nCode:\n\`\`\`${lang}\n${code}\n\`\`\`` },
           ],
-          {},
+          { taskKind: 'coding', label: 'inlineChat' },
         );
-        const newCode = stripFences(contentToString(result.response.choices[0]?.message.content)).trimEnd();
+        const newCode = stripFences(result.text).trimEnd();
         if (useWholeFile) {
           await editGate.write(editor.document.uri, newCode + '\n');
         } else {

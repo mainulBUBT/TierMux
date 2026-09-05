@@ -18,12 +18,15 @@ import { createRouterProvider } from './routerProvider';
 import { buildV3ToolSet } from './tools/v3';
 import { makeRepairViaModelSelfCorrection } from './repair';
 import { compactIfNeeded, ageToolOutputs } from './compact';
+import { resolveVerifyCommand, runVerifyCommand } from './tools/workspace/verifyCommand';
 import { resolvePolicy, policyFromSettings } from '../../permissions/policy';
 import { recordOutcome, findCatalogModel } from '../../router/picker';
 import { resolveExecutionProfile } from '../executionProfile';
 import { composeSystemPrompt } from '../../context/system';
 import { gatherPromptContext } from '../../context/promptContext';
 import { diagLog } from '../../util/diag';
+import type { WorkReportData } from '../../shared/workReport';
+import type { TaskKind } from '../routing';
 
 /** Profile used until the serving model is known (see currentProfile() in runTurn). */
 const FALLBACK_PROFILE = resolveExecutionProfile(undefined);
@@ -199,6 +202,31 @@ const planAccepted: StopCondition<ToolSet> = ({ steps }) =>
       && !(typeof r.output === 'object' && r.output !== null && 'error' in r.output),
   );
 
+/** Default step cap. `tiermux.agent.maxStepsPerTurn` overrides it — the setting has existed
+ *  and been documented since v3 while the engine hardcoded 50, so changing it did nothing. */
+const DEFAULT_MAX_STEPS = 50;
+
+/** Fix-and-recheck rounds after the verify command fails. `tiermux.agent.verifyFixRounds`
+ *  overrides it. 0 disables the retry (the failure is reported as-is), never the gate. */
+const DEFAULT_VERIFY_FIX_ROUNDS = 2;
+
+/** Identical failing tool call this many times in one turn ⇒ the turn is not progressing.
+ *  Three, not two: a model that re-reads after a failure and legitimately retries the same
+ *  edit once is still making a decision; a third identical failure is not. */
+const REPEAT_FAILURE_LIMIT = 3;
+
+/** True when a tool RESULT is a failure. Two shapes, because v3 tools never throw: the SDK's
+ *  own tool-error state (execute threw — `state: 'error'` upstream), and the v3 contract's
+ *  `{ error }` return, which the SDK reports as an ordinary json result. Missing the second
+ *  is why "the tool keeps failing" was invisible to everything until now. */
+function isFailureOutput(output: unknown): boolean {
+  if (typeof output !== 'object' || output === null) return false;
+  const o = output as { type?: unknown; value?: unknown };
+  if (o.type === 'error-text' || o.type === 'error-json') return true;
+  const v = o.type === 'json' || o.type === 'text' ? o.value : output;
+  return typeof v === 'object' && v !== null && 'error' in (v as Record<string, unknown>);
+}
+
 export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentResult> {
   // Turn-start facts: if signalAborted=true here, no model request can ever run this turn.
   diagLog('engine.start', `mode=${opts.mode} msgs=${opts.messages?.length ?? 0} signalAborted=${opts.abortSignal?.aborted ?? 'none'} requestId=${opts.requestId ?? '-'}`);
@@ -206,6 +234,13 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // ms from here, so a slow "nothing is happening" turn can be attributed — our routing vs
   // the provider's queue+prefill — instead of guessed at.
   const turnT0 = Date.now();
+  // WorkReportData.telemetry inputs — accumulated across EVERY model call this turn makes
+  // (main pass, continuation nudge, length continuation, verify-fix rounds), which is what
+  // "turn cost" means. See src/shared/workReport.ts's token-semantics note.
+  let usageIn = 0;
+  let usageOut = 0;
+  let lastContextTokens = 0;
+  let failovers = 0;
   const modelMessages = toModelMessages(opts.messages);
   // Plan mode's exitPlanMode tool hands its VALIDATED structure here; the turn stops on that
   // call (stopWhen below) and the host renders the plan card straight from this object — no
@@ -228,7 +263,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     sessionId: opts.sessionId,
     excludeModels: opts.excludeModels,
     requireTools: true, // the engine always offers tools — non-tool models would deflect
-    onFailover: opts.onFailover,
+    onFailover: (...args: Parameters<NonNullable<typeof opts.onFailover>>) => {
+      failovers++;
+      opts.onFailover?.(...args);
+    },
     onSelectionRationale: opts.onSelectionRationale,
     onModelSelected: (platform, mdl, runtimeName) => {
       served = { platform, model: mdl, runtimeName };
@@ -239,15 +277,35 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       // failover walk (see rp.failover logs).
       diagLog('engine.served', `${Date.now() - turnT0}ms into the turn — ${platform}::${mdl} reported as the serving model`);
     },
-    onUsage: opts.usageSink
-      ? (info) => opts.usageSink?.({ inputTokens: info.inputTokens, outputTokens: info.outputTokens, contextTokens: info.inputTokens, model: info.model })
-      : undefined,
+    // Accumulate here as well as forwarding: WorkReportData.telemetry is TURN cost — every
+    // model call the turn made, continuations and verify-fix rounds included — and the host's
+    // sink is a different (session-wide) accounting, so the report cannot be derived from it.
+    onUsage: (info) => {
+      usageIn += info.inputTokens || 0;
+      usageOut += info.outputTokens || 0;
+      lastContextTokens = info.inputTokens || lastContextTokens;
+      opts.usageSink?.({ inputTokens: info.inputTokens, outputTokens: info.outputTokens, contextTokens: info.inputTokens, model: info.model });
+    },
   });
 
   const { repair } = makeRepairViaModelSelfCorrection({ model, signal: opts.abortSignal });
   const policy = policyFromSettings(opts.autoApprove ?? false, opts.mode, opts.sessionId);
   const toolEvents: ToolEvent[] = [];
   let reasoningText = '';
+  // ── Turn-level stop bookkeeping (2026-09-05, docs/AGENT_RELIABILITY_PLAN_2026-09-05.md §0)
+  // Both facts below are WIRE-LEVEL — a step count, and identical bytes in / error out N times.
+  // Neither judges the answer, so neither is the kind of detector SIMPLE_CORE_RESET forbids.
+  // What they fix is that the turn used to end IDENTICALLY whether the model finished or ran
+  // out of room: no `paused`, so the host showed no Continue button and the user could not
+  // tell "done" from "gave up".
+  const maxSteps = Math.max(1, opts.maxStepsPerTurn ?? DEFAULT_MAX_STEPS);
+  /** Set when the step cap cut the turn while the model was still calling tools. */
+  let hitStepCap = false;
+  /** `toolName+input` → consecutive failure count, turn-scoped across continuation passes. */
+  const failureCounts = new Map<string, number>();
+  /** The signature that tripped REPEAT_FAILURE_LIMIT — also the stop condition's trigger. */
+  let stuckSignature: string | undefined;
+  const notMakingProgress: StopCondition<ToolSet> = () => stuckSignature !== undefined;
   // ai v7 consumeStream() RESOLVES on stream errors (they go to its onError option) — the
   // try/catch below never sees provider failures; captured here for the post-pass guard.
   let streamError: string | undefined;
@@ -370,7 +428,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       // semantics): the plan is now the user's move, so a further step could only narrate the
       // plan a second time into the chat bubble underneath the card. Harmless in agent/ask mode,
       // where the tool isn't offered at all.
-      stopWhen: [stepCountIs(50), planAccepted],
+      // notMakingProgress reads the counter onStepEnd fills in below. A StopCondition, not an
+      // abort: the SDK finishes the current step cleanly, so the transcript stays intact and
+      // the turn returns paused/resumable exactly like the step cap does.
+      stopWhen: [stepCountIs(maxSteps), planAccepted, notMakingProgress],
       abortSignal: opts.abortSignal,
       maxRetries: 1,
 
@@ -418,6 +479,28 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           };
           toolEvents.push(ev);
           opts.onTool(ev);
+
+          // No-progress counting: identical bytes in + error out, REPEAT_FAILURE_LIMIT times
+          // IN A ROW. The tool's reason is never read.
+          //
+          // ANY success clears the WHOLE table, not just the matching signature. Deliberately
+          // conservative: a model that failed twice, then got something to work, then fails the
+          // same call again has made progress in between — that is recovery, not thrashing, and
+          // stopping it would be a false positive on a working agent. Clearing only the matching
+          // signature counted those non-consecutive failures as one streak (caught by scenario
+          // 27b). The cost is that a strict fail/succeed/fail alternation never trips this guard;
+          // the step cap is still the backstop for that, and a wrong stop is worse than a late one.
+          const signature = `${tr.toolName}:${JSON.stringify(tr.input ?? null)}`;
+          if (!isFailed && !isFailureOutput(tr.output)) {
+            failureCounts.clear();
+            continue;
+          }
+          const n = (failureCounts.get(signature) ?? 0) + 1;
+          failureCounts.set(signature, n);
+          if (n >= REPEAT_FAILURE_LIMIT && !stuckSignature) {
+            stuckSignature = signature;
+            diagLog('engine.stuck', `${tr.toolName} failed ${n}× with identical input — stopping the turn (resumable)`);
+          }
         }
       },
 
@@ -439,6 +522,13 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
         // call in step 1 then a silent step 2, erasing the only visible content (repro:
         // gpt-oss-120b, 270 out tokens discarded at settle). Continuation passes APPEND their
         // messages and keep the earlier text if the retry ends silent.
+        // Cap hit WHILE the model was still calling tools ⇒ the turn was cut, not finished.
+        // The trailing-tool-calls half matters: a model that lands its final answer exactly on
+        // step `maxSteps` also satisfies stepCountIs, and that turn IS complete.
+        if (steps.length >= maxSteps && (steps.at(-1)?.toolCalls?.length ?? 0) > 0) {
+          hitStepCap = true;
+          diagLog('engine.stepCap', `stopped at the ${maxSteps}-step cap with tool calls still in flight — turn is resumable`);
+        }
         const passText = [...steps].reverse().find((s) => s.text?.trim())?.text ?? '';
         outcome = {
           finishReason: fr,
@@ -696,7 +786,113 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     outcome.text = reasoningText.trim();
   }
 
+  // ── VERIFY GATE (2026-09-05, plan §2.1) ───────────────────────────────────────────────
+  // verifyCommand.ts shipped complete and uncalled for the whole v3 era while two settings
+  // advertised it, so "I edited 6 files" never became "…and the tests still pass". This is the
+  // wiring. It is mechanical, not a quality judgement: it runs the user's OWN command (from
+  // their manifest or their setting) and reacts to a real exit code — the SIMPLE_CORE_RESET
+  // rule bars detectors that guess at answer quality, not gates that read an exit status.
+  //
+  // Bounded three ways: only when the turn actually MUTATED files, only in agent mode (plan
+  // proposes and ask answers — neither owns a build), and at most `verifyFixRounds` extra
+  // model calls. An abort skips it entirely; a command that cannot run (`ok: null`) is "no
+  // signal", never a failure.
+  let verifyOutcome: AgentResult['verifyOutcome'];
+  let verifyCmd: string | undefined;
+  let verifyAvailable = false;
+  let fixRounds = 0;
+  const mutated = changedFilesFrom(toChatMessages(outcome.responseMessages));
+  if (opts.mode === 'agent' && mutated.length > 0 && !opts.abortSignal?.aborted && !stuckSignature) {
+    verifyCmd = resolveVerifyCommand();
+    verifyAvailable = !!verifyCmd;
+    if (!verifyCmd) {
+      // Nothing detectable and nothing configured: the turn is unverified as a property of the
+      // PROJECT, not of the work. The report says so quietly rather than flagging it.
+      verifyOutcome = 'unverified';
+      diagLog('engine.verify', `${mutated.length} file(s) changed but no verify command — unverified`);
+    } else {
+      const maxFixRounds = Math.max(0, opts.verifyFixRounds ?? DEFAULT_VERIFY_FIX_ROUNDS);
+      let run = await runVerifyCommand(verifyCmd);
+      diagLog('engine.verify', `\`${verifyCmd}\` → ${run.ok === null ? 'could not run' : run.ok ? 'passed' : 'FAILED'}`);
+      while (run.ok === false && fixRounds < maxFixRounds && !opts.abortSignal?.aborted) {
+        fixRounds++;
+        diagLog('engine.verifyFix', `round ${fixRounds}/${maxFixRounds} — feeding the failure back`);
+        try {
+          await runPass([
+            ...modelMessages,
+            ...outcome.responseMessages,
+            {
+              role: 'user',
+              content: `The verify command \`${verifyCmd}\` failed after your changes. Fix the cause, then stop — `
+                + 'it is re-run automatically. Do not re-run it yourself and do not explain the failure instead of '
+                + `fixing it.\n\nOutput:\n${run.output.slice(0, 6_000)}`,
+            },
+          ]).consumeStream({ onError: passError('verifyFix') });
+        } catch {
+          break; // a failed fix round must not lose the turn's real work
+        }
+        run = await runVerifyCommand(verifyCmd);
+        diagLog('engine.verify', `after fix round ${fixRounds}: ${run.ok === null ? 'could not run' : run.ok ? 'passed' : 'still failing'}`);
+      }
+      verifyOutcome = run.ok === true ? 'passed' : run.ok === false ? 'failed' : 'unverified';
+    }
+  }
+
   const workMessages = toChatMessages(outcome.responseMessages);
+  // A turn cut by the step cap or by no-progress is NOT finished — say so, so the host's
+  // Continue affordance appears (`resumable` keys on `paused`) and the work report can name
+  // the real stop. Without this both cases returned looking exactly like a completed turn.
+  // `stuck` outranks `budget`: it is the more specific fact, and it is what stopped the turn.
+  const stopReason = stuckSignature ? 'stuck' as const : hitStepCap ? 'budget' as const : undefined;
+
+  // ── WORK REPORT (2026-09-05, plan §2.2) ───────────────────────────────────────────────
+  // Built here for the first time. The type, the host plumbing, the `workReport` message and
+  // media/src/ui/components/ResultCard.ts all existed and had never once had a value to carry
+  // — the engine simply never produced one. Every input below already existed in this
+  // function; nothing new is measured.
+  //
+  // Emitted only for turns that CHANGED something. A pure question has nothing to report and
+  // a card saying "0 files, unverified" is worse than no card.
+  const changedFiles = changedFilesFrom(workMessages);
+  const workReport = changedFiles.length > 0 ? {
+    version: 1 as const,
+    // AgentResult and WorkReportData use different vocabularies on purpose: the first is the
+    // GATE's result, the second is what the USER is told. 'unverified' splits in two —
+    // 'changes-only' when the project has no verify command at all (nothing to flag, the UI
+    // stays quiet), 'unverified' when one exists but produced no signal.
+    verifyOutcome: verifyOutcome === 'passed' ? 'verified' as const
+      : verifyOutcome === 'failed' ? 'failed' as const
+      : verifyAvailable ? 'unverified' as const : 'changes-only' as const,
+    verifyAvailable,
+    ...(verifyCmd ? { verifyCmd } : {}),
+    fixRounds,
+    changedFiles: changedFiles.map((f) => ({
+      path: f.path,
+      status: (f.status === 'created' ? 'A' : f.status === 'deleted' ? 'D' : 'M') as 'A' | 'M' | 'D',
+    })),
+    toolTally: [...toolEvents.reduce((m, e) => (
+      e.state === 'done' || e.state === 'error' ? m.set(e.name, (m.get(e.name) ?? 0) + 1) : m
+    ), new Map<string, number>())].map(([name, count]) => ({ name, count })),
+    stopReason: stopReason ?? outcome.finishReason,
+    telemetry: {
+      model: served.platform && served.model ? `${served.platform}/${served.model}` : 'unknown',
+      taskKind: (opts.taskKind ?? 'chat') as TaskKind,
+      inputTokens: usageIn,
+      outputTokens: usageOut,
+      toolCalls: toolEvents.filter((e) => e.state === 'done' || e.state === 'error').length,
+      thoughts: reasoningText ? 1 : 0,
+      failovers,
+      elapsedMs: Date.now() - turnT0,
+    },
+    ...(lastContextTokens > 0 ? {
+      context: {
+        contextTokens: lastContextTokens,
+        contextWindow: currentProfile().contextWindow,
+        percent: Math.floor((lastContextTokens / currentProfile().contextWindow) * 100),
+      },
+    } : {}),
+  } satisfies WorkReportData : undefined;
+
   return {
     text: outcome.text,
     reasoning: reasoningText || undefined,
@@ -705,7 +901,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     model: served.model,
     runtimeName: served.runtimeName,
     workMessages,
-    changedFiles: changedFilesFrom(workMessages),
+    changedFiles,
+    ...(verifyOutcome ? { verifyOutcome } : {}),
+    ...(workReport ? { workReport } : {}),
+    ...(stopReason ? { stopReason, paused: true } : {}),
     ...(proposedPlan ? { plan: proposedPlan } : {}),
   };
 }

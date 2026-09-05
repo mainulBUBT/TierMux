@@ -16,7 +16,7 @@ import {
   probeLocalServer, invalidateLocalServerCache, isLocalUrl, originOf,
   localContextAdvice, MIN_WORKABLE_CONTEXT, discoverLocalServers,
 } from '../src/providers/localServers';
-import { clampOutputToContext } from '../src/router/router';
+import { clampOutputToContext } from '../src/util/thinkTags';
 import { inputBudget } from '../src/agent/budget';
 
 let failures = 0;

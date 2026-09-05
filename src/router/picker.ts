@@ -21,6 +21,8 @@ import type { SecretStore } from '../config/secrets';
 import { allPlatformInfo } from '../providers';
 import type { ChatMessage, CatalogModel } from '../shared/types';
 import { classifyTask, type TaskKind } from '../agent/routing';
+import { RateTracker } from './rateTracker';
+import type { QuotaStore } from '../config/quotaStore';
 import { diagLog } from '../util/diag';
 
 /** platform::modelId → candidate chain per task kind. Ordered: best first. */
@@ -153,12 +155,46 @@ export async function getApiKeysFor(platform: string): Promise<string[]> {
   return keys;
 }
 
+/** Declared-quota accounting, inherited from the deleted Router (plan §4.2). Hydrated from the
+ *  QuotaStore at activation so a window reload keeps respecting limits already consumed.
+ *  Module-level like the health map: one tracker per extension host. */
+let rateTracker = new RateTracker();
+export function setQuotaStore(store: QuotaStore | undefined): void {
+  rateTracker = new RateTracker(store);
+}
+/** Record a request against the declared rpm/rpd windows — called on every served candidate. */
+export function recordRequest(platform: string, modelId: string): void {
+  rateTracker.record(platform, modelId);
+}
+
 /** Catalog lookup through the wired sources — lets callers resolve a served model's metadata
  *  (context window, ranks) without holding their own Catalog reference. `undefined` when no
  *  sources are wired (headless) or the id is not in the catalog, which every caller must treat
  *  as "unknown model" rather than an error. */
 export function findCatalogModel(platform: string, modelId: string): CatalogModel | undefined {
   return sources?.catalog.find(platform, modelId);
+}
+
+/** The model that WOULD serve this task kind right now, without making a request. Replaces
+ *  `Router.peekTopSelection()` (2026-09-05, plan §4.2); the one caller is the auto-compaction
+ *  budget, which needs a context window before the turn starts.
+ *
+ *  Runs the real selection, so it reflects cooldowns, the enabled set and the task table — but
+ *  it also ADVANCES the equal-rank rotation counter, which peeking should not do. Hence the
+ *  save/restore: a peek must not change which model the next real turn picks. */
+export async function peekTopModel(taskKind: string): Promise<CatalogModel | undefined> {
+  if (!sources) return undefined;
+  const saved = taskRoundCounters.get(taskKind);
+  try {
+    const sel = await selectModel([], { taskKind, requireTools: true });
+    const [platform, ...rest] = sel.model.split('::');
+    return findCatalogModel(platform, rest.join('::'));
+  } catch {
+    return undefined; // a peek must never fail a turn
+  } finally {
+    if (saved === undefined) taskRoundCounters.delete(taskKind);
+    else taskRoundCounters.set(taskKind, saved);
+  }
 }
 
 /** Expand 'auto' into the full enabled-model list when no sources are wired (headless). */
@@ -300,6 +336,19 @@ export async function selectModel(
     // agent turn offers tools, so a model the catalog marks supportsTools=false can never
     // call them and deflects instead ("I don't have access to…"). Without this, Auto picks
     // non-tool models and every tool — webSearch/fetchUrl included — silently "doesn't work".
+    // Declared rpm/rpd quota — the ONE piece of the deleted Router the picker had to inherit
+    // (2026-09-05, plan §4.2). TierMux exists to multiplex free tiers, and free tiers publish
+    // hard per-minute/per-day limits; without this the picker would only learn a limit by
+    // being 429'd, spending a real request and a failure cooldown to discover a number the
+    // catalog already knows. Not scoring — a declared cap, read from the catalog.
+    if (sources) {
+      const modelId = key.split('::').slice(1).join('::');
+      const meta = sources.catalog.find(platform, modelId);
+      if (meta && !rateTracker.canSend(platform, modelId, meta.rpmLimit, meta.rpdLimit)) {
+        skip(key, 'at its declared rate limit (rpm/rpd) right now');
+        return undefined;
+      }
+    }
     if (opts.requireTools && sources) {
       const modelId = key.split('::').slice(1).join('::');
       const meta = sources.catalog.find(platform, modelId);

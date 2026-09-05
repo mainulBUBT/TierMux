@@ -37,25 +37,31 @@ const call = (id: string, input: Record<string, unknown> = { path: `src/f${id}.t
   content: [{ type: 'tool-call', toolCallId: id, toolName: 'readFile', input }],
 } as unknown as ModelMessage);
 
-// ── 1+2: last tool message verbatim, older fat one stubbed, stub is instructive ──
+// ── 1+2: the RECENT WINDOW stays verbatim, older fat output is stubbed, stub is instructive ──
 {
   const messages: ModelMessage[] = [
     { role: 'user', content: 'explore' },
     call('a1'), result('a1', 'x'.repeat(30_000)),
     call('a2'), result('a2', 'y'.repeat(28_000)),
+    call('a3'), result('a3', 'z'.repeat(27_000)),
+    call('a4'), result('a4', 'w'.repeat(26_000)),
     { role: 'assistant', content: [{ type: 'text', text: 'thinking' }] },
   ] as unknown as ModelMessage[];
   const r = ageToolOutputs(messages);
   const out = r.messages!;
   ok('stubbed chars counted', r.stubbedChars === 30_000, `${r.stubbedChars}`);
   const first = (out[2] as any).content[0];
-  const second = (out[4] as any).content[0];
   ok('older fat output elided', first.output.value.includes('elided') && first.output.value.length < 400, `${first.output.value.length} chars`);
   ok('stub names tool + input', first.output.value.includes('readFile src/fa1.ts'));
   ok('stub carries re-run hint', first.output.value.includes('Re-run the tool'));
-  ok('last tool message verbatim', second.output.value === 'y'.repeat(28_000));
-  ok('user + assistant text untouched', (out[0] as any).content === 'explore' && (out[5] as any).content[0].text === 'thinking');
+  ok('the three most recent tool messages stay verbatim',
+    (out[4] as any).content[0].output.value === 'y'.repeat(28_000)
+    && (out[6] as any).content[0].output.value === 'z'.repeat(27_000)
+    && (out[8] as any).content[0].output.value === 'w'.repeat(26_000));
+  ok('user + assistant text untouched', (out[0] as any).content === 'explore' && (out[9] as any).content[0].text === 'thinking');
   ok('no stub when nothing to age (single tool step)', ageToolOutputs([call('z'), result('z', 'x'.repeat(30_000))]).stubbedChars === 0);
+  ok('no stub while the window is not yet full (two tool steps)',
+    ageToolOutputs([call('p'), result('p', 'x'.repeat(30_000)), call('q'), result('q', 'y'.repeat(30_000))]).stubbedChars === 0);
 }
 
 // ── 3: short + error outputs untouched ──
@@ -74,7 +80,12 @@ const call = (id: string, input: Record<string, unknown> = { path: `src/f${id}.t
 
 // ── 4: idempotent — re-aging an aged transcript is a no-op ──
 {
-  const messages: ModelMessage[] = [call('a1'), result('a1', 'x'.repeat(30_000)), call('a2'), result('a2', 'y'.repeat(28_000))];
+  const messages: ModelMessage[] = [
+    call('a1'), result('a1', 'x'.repeat(30_000)),
+    call('a2'), result('a2', 'y'.repeat(28_000)),
+    call('a3'), result('a3', 'z'.repeat(27_000)),
+    call('a4'), result('a4', 'w'.repeat(26_000)),
+  ];
   const once = ageToolOutputs(messages);
   const twice = ageToolOutputs(once.messages!);
   ok('idempotent on second pass', twice.stubbedChars === 0 && twice.messages === undefined);
@@ -87,6 +98,8 @@ const call = (id: string, input: Record<string, unknown> = { path: `src/f${id}.t
   const messages: ModelMessage[] = [
     call('j1'), { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'j1', toolName: 'runCommand', output: { type: 'json', value: { error: 'x'.repeat(30_000) } } }] },
     call('j2'), result('j2', 'y'.repeat(28_000)),
+    call('j3'), result('j3', 'z'.repeat(27_000)),
+    call('j4'), result('j4', 'w'.repeat(26_000)),
   ] as unknown as ModelMessage[];
   const r = ageToolOutputs(messages);
   ok('fat error payload never aged', r.stubbedChars === 0 && r.messages === undefined);
@@ -97,9 +110,29 @@ const call = (id: string, input: Record<string, unknown> = { path: `src/f${id}.t
   const messages: ModelMessage[] = [
     call('p1', { path: 'src/deep/target.ts' }), result('p1', 'x'.repeat(30_000)),
     call('p2', { pattern: 'TODO' }), result('p2', 'y'.repeat(28_000)),
+    call('p3'), result('p3', 'z'.repeat(27_000)),
+    call('p4'), result('p4', 'w'.repeat(26_000)),
   ] as unknown as ModelMessage[];
   const stub = (ageToolOutputs(messages).messages![1] as any).content[0].output.value as string;
   ok('stub names the path with no input on the result part', stub.includes('readFile src/deep/target.ts'), stub.slice(0, 80));
+}
+
+// ── 8: read → read → edit. THE reason the window is 3 and not 1 (2026-09-05) ──
+// With a one-message window, file A's content was already a stub by the time the model wrote
+// the edit for it — while editFile.search has to match A byte-for-byte. Aging was manufacturing
+// the exact failure editMatch.ts then had to diagnose.
+{
+  const fileA = 'export function a() {\n' + '  // body\n'.repeat(3000) + '}\n';
+  const messages: ModelMessage[] = [
+    { role: 'user', content: 'update a.ts using b.ts as a reference' },
+    call('rA', { path: 'src/a.ts' }), result('rA', fileA),
+    call('rB', { path: 'src/b.ts' }), result('rB', 'y'.repeat(28_000)),
+    { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'e1', toolName: 'editFile', input: { path: 'src/a.ts', search: 'export function a() {', replace: 'export function a(x: number) {' } }] },
+    { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'e1', toolName: 'editFile', output: { type: 'text', value: 'Edited src/a.ts.' } }] },
+  ] as unknown as ModelMessage[];
+  const r = ageToolOutputs(messages);
+  ok('read → read → edit keeps the FIRST read verbatim', r.stubbedChars === 0 && r.messages === undefined,
+    `stubbed=${r.stubbedChars}`);
 }
 
 // ── 5: no tool messages at all → no-op ──

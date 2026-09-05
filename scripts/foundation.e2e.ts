@@ -41,6 +41,11 @@ import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
 import { runAgentStream as engineRun, runPlanStream as engineRunPlan, runAskStream as engineRunAsk } from '../src/agent/agent';
 import { __setEngineModelForTests } from '../src/agent/core/engine';
 import { resolvePolicy, defaultPolicy as prodDefaultPolicy, policyFromSettings, clearSessionGrants } from '../src/permissions/policy';
+import { setGates } from '../src/agent/core/tools/gates';
+import { setMcpManager } from '../src/agent/core/tools/mcp/manager';
+import { buildV3ToolSet } from '../src/agent/core/tools/v3';
+import { CommandGate } from '../src/edits/commandGate';
+import { EditGate } from '../src/edits/applyEdit';
 import { createStreamTextSplitter } from '../src/agent/core/routerProvider';
 import { composeSystemPrompt } from '../src/context/system';
 import { gatherPromptContext, invalidatePromptContext } from '../src/context/promptContext';
@@ -106,7 +111,7 @@ async function engineTurn(model: ReturnType<typeof createMockModel>, opts: Agent
   // The public entries force their mode (same as production callers) — pick by requested mode.
   const entry = opts.mode === 'plan' ? engineRunPlan : opts.mode === 'ask' ? engineRunAsk : engineRun;
   try {
-    return await entry(undefined as never, opts);
+    return await entry(opts);
   } finally {
     __setEngineModelForTests(undefined);
   }
@@ -133,7 +138,10 @@ function engineTracker() {
 
 /** Drives the engine's permission mode, which comes from settings (policyFromSettings), not
  *  from a policy object a caller can hand in — production has no such seam and neither should
- *  the gate. 'always' → ask, 'allowlist' → auto, 'never' → full-auto. */
+ *  the gate. 'always' → ask, 'allowlist' → auto.
+ *
+ *  'never' is NOT full-auto. It means "disable terminal command execution entirely" — its own
+ *  enumDescription — and scenario 29 pins that. For don't-ask runs use `autoApprove: true`. */
 function withCommandApproval<T>(value: 'always' | 'allowlist' | 'never', fn: () => Promise<T>): Promise<T> {
   const g = globalThis as { __tiermuxTestConfig?: Record<string, unknown> };
   const prev = g.__tiermuxTestConfig;
@@ -142,6 +150,14 @@ function withCommandApproval<T>(value: 'always' | 'allowlist' | 'never', fn: () 
 }
 
 async function main() {
+  // extension.ts wires these at activation; without them every shell path (the verify gate
+  // included) returns "could not run" and silently proves nothing.
+  setGates(new EditGate(() => false), new CommandGate(
+    () => (globalThis as { __tiermuxTestConfig?: Record<string, unknown> }).__tiermuxTestConfig?.commandApproval as 'always' | 'allowlist' | 'never' ?? 'always',
+    () => 120_000,
+    () => [],
+  ));
+
   // ── Scenario 1: read ─────────────────────────────────────────────────────────
   {
     const ws = makeWorkspace();
@@ -1078,7 +1094,258 @@ async function main() {
       (askAmbiguous as { type: string }).type === 'approved' && asked === 1, JSON.stringify(askAmbiguous));
   }
 
-  console.log(failures === 0 ? '\nALL 25 FOUNDATION SCENARIOS PASS — gate open for steps 9-10' : `\n${failures} FAILURE(S) — FOUNDATION GATE BLOCKED, adapt the plan before deleting`);
+  // ── Scenario 26: a turn cut by the STEP CAP must say so ─────────────────────
+  // Before 2026-09-05 the cap ended the turn with paused: undefined, indistinguishable from a
+  // finished one — no Continue button, no explanation. docs/AGENT_RELIABILITY_PLAN_2026-09-05.md §0.1.
+  {
+    const ws = makeWorkspace();
+    // Distinct SUCCEEDING calls, so this exercises the cap and not the no-progress guard.
+    const model = createMockModel([
+      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
+      { toolCalls: [{ toolName: 'readFile', input: { path: 'bar.txt' } }] },
+      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
+      { toolCalls: [{ toolName: 'readFile', input: { path: 'bar.txt' } }] },
+      { text: 'never reached — the cap stops the turn first' },
+    ], 's26');
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'keep reading' }],
+      mode: 'agent',
+      maxStepsPerTurn: 4,
+    })));
+    ok('26. the cap actually bound the turn', model.calls.length === 4, `calls=${model.calls.length}`);
+    ok('26. a capped turn is RESUMABLE, not a silent success', out.paused === true, `paused=${out.paused}`);
+    ok('26. and it names the reason', out.stopReason === 'budget', `stopReason=${out.stopReason}`);
+    ok('26. the work done so far is preserved for the resume',
+      (out.workMessages?.length ?? 0) > 0, `workMessages=${out.workMessages?.length}`);
+  }
+
+  // ── Scenario 26b: maxStepsPerTurn is a real setting, not decoration ──────────
+  {
+    const ws = makeWorkspace();
+    const model = createMockModel([
+      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
+      { toolCalls: [{ toolName: 'readFile', input: { path: 'bar.txt' } }] },
+      { text: 'done within the budget' },
+    ], 's26b');
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'read both' }],
+      mode: 'agent',
+      maxStepsPerTurn: 10,
+    })));
+    ok('26b. a turn that finishes inside the cap is NOT marked paused',
+      out.paused !== true && out.stopReason === undefined, `paused=${out.paused} stopReason=${out.stopReason}`);
+    ok('26b. and finishes normally', out.finishReason === 'stop', `finish=${out.finishReason}`);
+  }
+
+  // ── Scenario 27: a model repeating one FAILING call stops instead of thrashing ─
+  // v3 tools never throw — they return `{ error }` — so a failing edit looked like an ordinary
+  // result to everything. A model could re-issue the identical call until the step cap, burning
+  // 50 free-tier requests for zero work. §0.2.
+  {
+    const ws = makeWorkspace();
+    const bad = { path: 'foo.txt', search: 'this text is not in the file', replace: 'x' };
+    const model = createMockModel([
+      { toolCalls: [{ toolName: 'editFile', input: bad }] },
+      { toolCalls: [{ toolName: 'editFile', input: bad }] },
+      { toolCalls: [{ toolName: 'editFile', input: bad }] },
+      { toolCalls: [{ toolName: 'editFile', input: bad }] },
+      { toolCalls: [{ toolName: 'editFile', input: bad }] },
+      { text: 'never reached' },
+    ], 's27');
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'edit foo.txt' }],
+      mode: 'agent',
+      autoApprove: true,
+      maxStepsPerTurn: 50,
+    })));
+    ok('27. stopped at the third identical failure, not at the step cap',
+      model.calls.length === 3, `calls=${model.calls.length}`);
+    ok('27. the turn is resumable rather than silently over', out.paused === true, `paused=${out.paused}`);
+    ok('27. and reports WHY it stopped', out.stopReason === 'stuck', `stopReason=${out.stopReason}`);
+    ok('27. the file was never touched', ws.read('foo.txt') === 'hello world', ws.read('foo.txt'));
+  }
+
+  // ── Scenario 27b: a SUCCESS clears the streak — retrying is not thrashing ────
+  {
+    const ws = makeWorkspace();
+    const bad = { path: 'foo.txt', search: 'absent text', replace: 'x' };
+    const model = createMockModel([
+      { toolCalls: [{ toolName: 'editFile', input: bad }] },
+      { toolCalls: [{ toolName: 'editFile', input: bad }] },
+      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'fixed' } }] },
+      { toolCalls: [{ toolName: 'editFile', input: bad }] },
+      { toolCalls: [{ toolName: 'editFile', input: bad }] },
+      { text: 'recovered, then explored again' },
+    ], 's27b');
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'edit foo.txt' }],
+      mode: 'agent',
+      autoApprove: true,
+      maxStepsPerTurn: 50,
+    })));
+    ok('27b. two failures then progress does NOT trip the guard',
+      model.calls.length === 6 && out.stopReason === undefined,
+      `calls=${model.calls.length} stopReason=${out.stopReason}`);
+    ok('27b. the successful edit applied', ws.read('foo.txt') === 'fixed world', ws.read('foo.txt'));
+  }
+
+  // ── Scenario 28: the VERIFY GATE and the WORK REPORT (§2.1 / §2.2) ───────────
+  // Both shipped fully built and never invoked for the whole v3 era: verifyCommand.ts had zero
+  // callers while two settings advertised it, and WorkReportData was declared, posted, rendered
+  // live and on replay — and never once produced by the engine.
+  {
+    const ws = makeWorkspace();
+    const g = globalThis as { __tiermuxTestConfig?: Record<string, unknown> };
+    const prev = g.__tiermuxTestConfig;
+    // A command the temp workspace really runs, so the gate is exercised end to end.
+    g.__tiermuxTestConfig = { ...(prev ?? {}), verifyCommand: 'exit 0' };
+    let out: AgentResult;
+    try {
+      const model = createMockModel([
+        { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'verified' } }] },
+        { text: 'edited' },
+      ], 's28');
+      out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+        messages: [{ role: 'user', content: 'edit foo.txt' }],
+        mode: 'agent',
+        autoApprove: true,
+        verifyFixRounds: 2,
+      })));
+    } finally {
+      g.__tiermuxTestConfig = prev;
+    }
+    ok('28. the verify gate ran and passed', out.verifyOutcome === 'passed', `verifyOutcome=${out.verifyOutcome}`);
+    ok('28. a work report is produced at all (it never was before)', !!out.workReport, 'AgentResult.workReport');
+    const r = out.workReport!;
+    ok('28. the report is the versioned shape the webview renders', r.version === 1);
+    ok('28. it names the verify outcome in USER vocabulary', r.verifyOutcome === 'verified', String(r.verifyOutcome));
+    ok('28. it carries the command that was run', r.verifyCmd === 'exit 0', String(r.verifyCmd));
+    ok('28. no fix rounds were needed', r.fixRounds === 0, String(r.fixRounds));
+    ok('28. changed files use the A/M/D badge vocabulary',
+      r.changedFiles.length === 1 && r.changedFiles[0].path.endsWith('foo.txt') && r.changedFiles[0].status === 'M',
+      JSON.stringify(r.changedFiles));
+    ok('28. the tool tally counts the edit', r.toolTally.some((t) => t.name === 'editFile' && t.count === 1),
+      JSON.stringify(r.toolTally));
+    ok('28. telemetry describes the turn', r.telemetry.toolCalls === 1 && r.telemetry.elapsedMs >= 0,
+      JSON.stringify(r.telemetry));
+  }
+
+  // ── Scenario 28b: a FAILING verify command drives BOUNDED fix rounds ─────────
+  {
+    const ws = makeWorkspace();
+    const g = globalThis as { __tiermuxTestConfig?: Record<string, unknown> };
+    const prev = g.__tiermuxTestConfig;
+    g.__tiermuxTestConfig = { ...(prev ?? {}), verifyCommand: 'exit 1' };
+    let out: AgentResult;
+    let model!: ReturnType<typeof createMockModel>;
+    try {
+      model = createMockModel([
+        { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'broken' } }] },
+        { text: 'edited' },
+        // Two fix rounds, one model call each. The command keeps failing, so the gate gives up.
+        { text: 'attempted fix 1' },
+        { text: 'attempted fix 2' },
+      ], 's28b');
+      out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+        messages: [{ role: 'user', content: 'edit foo.txt' }],
+        mode: 'agent',
+        autoApprove: true,
+        verifyFixRounds: 2,
+      })));
+    } finally {
+      g.__tiermuxTestConfig = prev;
+    }
+    ok('28b. a persistent failure is reported as failed', out.verifyOutcome === 'failed', `verifyOutcome=${out.verifyOutcome}`);
+    ok('28b. the fix rounds are BOUNDED by the setting', out.workReport?.fixRounds === 2, String(out.workReport?.fixRounds));
+    ok('28b. the agent owned the recheck (2 + 2 fix rounds = 4 model calls)',
+      model.calls.length === 4, `calls=${model.calls.length}`);
+    ok('28b. the edit still stands — a failed verify never reverts work',
+      ws.read('foo.txt') === 'broken world', ws.read('foo.txt'));
+  }
+
+  // ── Scenario 28c: no mutation ⇒ no gate, no card ─────────────────────────────
+  {
+    const ws = makeWorkspace();
+    const model = createMockModel([
+      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
+      { text: 'it says hello world' },
+    ], 's28c');
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'what does foo.txt say?' }],
+      mode: 'agent',
+    })));
+    ok('28c. a read-only turn runs no verify command', out.verifyOutcome === undefined, String(out.verifyOutcome));
+    ok('28c. and produces no work report (an empty card is worse than none)',
+      out.workReport === undefined, JSON.stringify(out.workReport));
+  }
+
+  // ── Scenario 29: `commandApproval: "never"` DISABLES the shell ───────────────
+  // It reads "Disable terminal command execution entirely" in package.json, and CommandGate has
+  // always refused to spawn under it. policyFromSettings folded it into `full-auto` instead —
+  // and the v3 runCommand tool spawns DIRECTLY, never through CommandGate. So the one setting a
+  // user picks to switch the shell OFF auto-approved every command with no prompt at all.
+  // Found 2026-09-05 while wiring the verify gate.
+  {
+    const off = { ...prodDefaultPolicy, mode: 'full-auto' as const, shellDisabled: true };
+    const v = await resolvePolicy({ toolName: 'runCommand', input: { command: 'rm -rf build' } }, off);
+    ok('29. shell is DENIED under commandApproval "never", even in full-auto',
+      (v as { type: string }).type === 'denied', JSON.stringify(v));
+    const stillEdits = await resolvePolicy({ toolName: 'editFile', input: { path: 'a.ts' } }, off);
+    ok('29. and only the SHELL is disabled — file tools are unaffected',
+      (stillEdits as { type: string }).type === 'approved', JSON.stringify(stillEdits));
+    const onPolicy = policyFromSettings(false, 'agent', 's29');
+    ok('29. policyFromSettings leaves the shell enabled by default', onPolicy.shellDisabled === false,
+      String(onPolicy.shellDisabled));
+  }
+
+  // ── Scenario 30: MCP server tools actually reach the model ──────────────────
+  // `createMcpTools` shipped with NO caller for the whole v3 era: servers connected,
+  // "Reconnect MCP Servers" worked, `tiermux.mcpServers` was documented — and buildV3ToolSet
+  // had no MCP branch, so the model was never shown one of their tools. Found by a
+  // reachability sweep, 2026-09-05.
+  {
+    const fakeMcp = {
+      listToolSpecs: () => ([{
+        type: 'function' as const,
+        function: {
+          name: 'mcp__docs__search',
+          description: '[MCP:docs] Search the docs',
+          parameters: { type: 'object', properties: { q: { type: 'string' } } },
+        },
+      }]),
+      callTool: async (name: string, argsJson: string) => `called ${name} with ${argsJson}`,
+      isMcpTool: (n: string) => n === 'mcp__docs__search',
+    };
+    setMcpManager(fakeMcp as never);
+    try {
+      const agentTools = Object.keys(buildV3ToolSet('agent'));
+      ok('30. an MCP tool is offered in agent mode', agentTools.includes('mcp__docs__search'), agentTools.join(','));
+      ok('30. the built-ins are still all there', agentTools.includes('readFile') && agentTools.includes('editFile'));
+
+      // The two read-only modes deliberately do NOT get them: an MCP tool's capability is
+      // unknowable, plan mode's policy would deny it anyway, and ask mode would AUTO-APPROVE
+      // it under full-auto — quietly breaking the read-only promise.
+      ok('30. plan mode does not offer MCP tools', !Object.keys(buildV3ToolSet('plan')).includes('mcp__docs__search'));
+      ok('30. ask mode does not offer MCP tools', !Object.keys(buildV3ToolSet('ask')).includes('mcp__docs__search'));
+
+      // Not read-only ⇒ the normal approval chain asks first. Right default for a tool whose
+      // code lives outside this repo.
+      const verdict = await resolvePolicy({ toolName: 'mcp__docs__search' },
+        { ...prodDefaultPolicy, mode: 'ask' as const },
+        async () => 'allow');
+      ok('30. an MCP tool is gated by approval, not auto-run',
+        (verdict as { type: string }).type === 'approved', JSON.stringify(verdict));
+      const denied = await resolvePolicy({ toolName: 'mcp__docs__search' },
+        { ...prodDefaultPolicy, mode: 'ask' as const }, async () => 'deny');
+      ok('30. and a refusal blocks it', (denied as { type: string }).type === 'denied', JSON.stringify(denied));
+    } finally {
+      setMcpManager(undefined as never);
+    }
+    ok('30. no MCP manager ⇒ no MCP tools, no crash',
+      !Object.keys(buildV3ToolSet('agent')).some((k) => k.startsWith('mcp__')));
+  }
+
+  console.log(failures === 0 ? '\nALL 32 FOUNDATION SCENARIOS PASS — gate open for steps 9-10' : `\n${failures} FAILURE(S) — FOUNDATION GATE BLOCKED, adapt the plan before deleting`);
   process.exit(failures === 0 ? 0 : 1);
 }
 

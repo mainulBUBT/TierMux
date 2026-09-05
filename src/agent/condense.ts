@@ -1,9 +1,8 @@
 
 
 import type { ChatMessage } from '../shared/types';
-import type { Router } from '../router/router';
+import { routeOnce, utilityModelPreference } from './core/routeOnce';
 import { SUMMARY_SYSTEM, HANDOFF_SYSTEM } from './prompts';
-import { contentToString } from './content';
 import { capToolOutput } from './core/tools/capOutput';
 
 import { diagLog } from '../util/diag';
@@ -158,9 +157,34 @@ export function shouldCondense(history: ChatMessage[]): boolean {
  * prior model — cheap cross-model context continuity on free tiers where failover / auto-route
  * can swap models mid-task.
  */
+
+/** One utility completion with ONE retry when the model returns BLANK.
+ *
+ *  routeOnce already walks the picker's chain, rotates keys and drops account-dead platforms,
+ *  so errors need no ladder here. What it cannot see is an HTTP-200 with whitespace-only
+ *  content — not an error, so no failover fires — which is exactly how "Compaction produced no
+ *  summary" used to reach the user. That one case is what this retries, excluding the model
+ *  that just went blank.
+ *
+ *  Replaces two near-identical 25-line ladders (condenseHistory and generateHandoff) that
+ *  existed only because Router.route() refused to fail over on a forced pick. */
+async function completeOnce(
+  request: ChatMessage[],
+  label: string,
+): Promise<{ text: string; key: string } | null> {
+  const first = await routeOnce(request, {
+    taskKind: 'chat', temperature: 0.2, maxTokens: 1024, model: utilityModelPreference(), label,
+  });
+  if (first.text.trim()) return { text: first.text.trim(), key: first.key };
+  diagLog(`${label}.retry`, `empty output from ${first.key} — retrying with a different model`);
+  const second = await routeOnce(request, {
+    taskKind: 'chat', temperature: 0.2, maxTokens: 1024, exclude: [first.key], label,
+  });
+  return second.text.trim() ? { text: second.text.trim(), key: second.key } : { text: '', key: second.key };
+}
+
 export async function condenseHistory(
   history: ChatMessage[],
-  router: Router,
   previousModel?: string,
 ): Promise<{ messages: ChatMessage[]; summary: string } | null> {
   if (!shouldCondense(history)) return null;
@@ -198,48 +222,25 @@ export async function condenseHistory(
     { role: 'user' as const, content: 'Summarize the conversation above so it can continue with minimal context. Keep file names, decisions, and unresolved next steps.' },
   ];
 
-  // One retry on an empty/whitespace-only summary, EXCLUDING the model that just produced it. A
-  // weak/free utility model can return HTTP-200 with blank or near-blank content (not a thrown
-  // error — router.ts's own empty-content check only catches a fully-falsy string, not whitespace),
-  // which used to surface as "Compaction produced no summary" with no recourse but to try again by
-  // hand. Mirrors the same weak-answer-retry pattern loop.ts already uses for the main turn.
-  const model = await router.pickUtilityModel();
-  // Same forced-model caveat as generateHandoff below: a bad/rejected key on the picked utility
-  // model throws (router.ts never fails over on a forced pick), so catch it and retry unforced.
-  let result;
-  try {
-    result = await router.route(summaryRequest, { temperature: 0.2, max_tokens: 1024, model, taskKind: 'chat' });
-  } catch (e) {
-    if (!model) throw e;
-    diagLog('condense.retry', `${model} failed (${e instanceof Error ? e.message : String(e)}) — retrying with a different model`);
-    result = await router.route(summaryRequest, { temperature: 0.2, max_tokens: 1024, taskKind: 'chat', exclude: [model] });
-  }
-  let summary = contentToString(result.response.choices[0]?.message.content).trim();
-  if (!summary) {
-    const excludeKey = `${result.platform}::${result.model}`;
-    diagLog('condense.retry', `empty summary from ${excludeKey} — retrying with a different model`);
-    result = await router.route(summaryRequest, { temperature: 0.2, max_tokens: 1024, taskKind: 'chat', exclude: [excludeKey] });
-    summary = contentToString(result.response.choices[0]?.message.content).trim();
-  }
+  const attempt = await completeOnce(summaryRequest, 'condense');
+  let summary = attempt?.text ?? '';
   if (!summary) {
     // Two different models both came back blank. On a small-context model this is often the
     // provider silently rejecting/truncating an over-budget prompt (our token estimate is an
     // approximation, not exact) rather than a genuinely broken model — so before giving up,
     // try once more with only the newer half of the prefix. A smaller request either fits
     // where the full one didn't, or fails the same way for an unrelated reason either way.
-    const excludeKey2 = `${result.platform}::${result.model}`;
-    diagLog('condense.retry', `empty summary again from ${excludeKey2} — retrying with a shorter prefix`);
+    diagLog('condense.retry', `empty summary again from ${attempt?.key ?? 'auto'} — retrying with a shorter prefix`);
     const shortPrefix = summaryPrefix.slice(Math.ceil(summaryPrefix.length / 2));
     const shortRequest = [
       { role: 'system' as const, content: SUMMARY_SYSTEM },
       ...shortPrefix,
       { role: 'user' as const, content: 'Summarize the conversation above so it can continue with minimal context. Keep file names, decisions, and unresolved next steps.' },
     ];
-    result = await router.route(shortRequest, { temperature: 0.2, max_tokens: 1024, taskKind: 'chat' });
-    summary = contentToString(result.response.choices[0]?.message.content).trim();
+    summary = (await completeOnce(shortRequest, 'condense'))?.text ?? '';
   }
   if (!summary) {
-    diagLog('condense.fail', `empty summary from ${model ?? 'auto'} and two fallbacks — giving up`);
+    diagLog('condense.fail', 'empty summary after two models and a shortened prefix — giving up');
     return null;
   }
 
@@ -269,7 +270,7 @@ const MIN_HANDOFF_HISTORY = 2;
  * (a fresh session, a teammate, a written note) when the current one is ending or hitting limits.
  * Returns null when there's too little conversation yet, or the summarizer produced nothing.
  */
-export async function generateHandoff(history: ChatMessage[], router: Router): Promise<string | null> {
+export async function generateHandoff(history: ChatMessage[]): Promise<string | null> {
   if (history.length < MIN_HANDOFF_HISTORY) return null;
 
   const request = [
@@ -278,27 +279,7 @@ export async function generateHandoff(history: ChatMessage[], router: Router): P
     { role: 'user' as const, content: 'Write the handoff note for the conversation above.' },
   ];
 
-  const model = await router.pickUtilityModel();
-  // The picked utility model can be forced (an explicit `tiermux.utilityModel` setting, not
-  // "auto") — router.ts never fails over on a forced pick, so a rejected/expired key on THAT
-  // model throws straight out of route() instead of trying another already-configured model.
-  // Catch it here and retry unforced (excluding the failed model) exactly like the empty-note
-  // case below, so a bad key on one model doesn't kill the whole handoff.
-  let result;
-  try {
-    result = await router.route(request, { temperature: 0.2, max_tokens: 1024, model, taskKind: 'chat' });
-  } catch (e) {
-    if (!model) throw e;
-    diagLog('handoff.retry', `${model} failed (${e instanceof Error ? e.message : String(e)}) — retrying with a different model`);
-    result = await router.route(request, { temperature: 0.2, max_tokens: 1024, taskKind: 'chat', exclude: [model] });
-  }
-  let note = contentToString(result.response.choices[0]?.message.content).trim();
-  if (!note) {
-    const excludeKey = `${result.platform}::${result.model}`;
-    result = await router.route(request, { temperature: 0.2, max_tokens: 1024, taskKind: 'chat', exclude: [excludeKey] });
-    note = contentToString(result.response.choices[0]?.message.content).trim();
-  }
-  return note || null;
+  return (await completeOnce(request, 'handoff'))?.text || null;
 }
 
 /** Re-cap `tool`-role message content in the kept tail down to TAIL_TOOL_RESULT_CAP. A large

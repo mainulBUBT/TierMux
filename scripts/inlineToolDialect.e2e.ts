@@ -15,11 +15,6 @@
  * Run: npm run test:e2e:inline-tool-dialect
  */
 import { rescueInlineToolCalls, findInlineToolOpener } from '../src/agent/toolArgs';
-import { Router } from '../src/router/router';
-import type { ChatMessage } from '../src/shared/types';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 
 let bad = 0;
 const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? `   (${d})` : ''}`); if (!c) bad++; };
@@ -70,36 +65,13 @@ ok('opener found at the markup, not before', findInlineToolOpener(MIXED, TOOLS) 
   String(findInlineToolOpener(MIXED, TOOLS)));
 ok('bare tool-name tag is held too', findInlineToolOpener('<readFile><path>a</path></readFile>', TOOLS) === 0);
 
-// ── 6. End to end: Router.route turns the text into a real tool_call ─────────────────────────
-// This is the wiring that was missing. The fixture replays a model whose reply is nothing but
-// dialect text; route() must hand back tool_calls, not content.
-async function routeAdopts(): Promise<void> {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiermux-dialect-'));
-  const fixture = path.join(dir, 'fixture.json');
-  fs.writeFileSync(fixture, JSON.stringify({ version: 1, steps: [{ taskKind: 'agent', dialect: XKIRO }] }));
-  process.env.TIERMUX_FAKE_MODEL = '1';
-  process.env.TIERMUX_MOCK_FIXTURE = fixture;
+// ── 6. End to end ────────────────────────────────────────────────────────────────────────────
+// This section used to drive Router.route() with a mock fixture and assert that the ROUTE layer
+// adopted the dialect text as tool_calls. Both the Router and its fixture replay were retired on
+// 2026-09-05 (docs/AGENT_RELIABILITY_PLAN_2026-09-05.md §4.2), and the adoption they wrapped was
+// a SECOND pass over a rescue that already happens one layer down: openai-compat.ts:143 calls
+// rescueInlineToolCalls on every provider response, so the picker path gets the same behaviour
+// the Router did. Sections 1-5 above pin the helpers that pass does the work with.
 
-  const router = new Router({} as never, {} as never, {} as never, {} as never);
-  const messages: ChatMessage[] = [{ role: 'user', content: 'read the scanner' }];
-  const result = await router.route(messages, {
-    taskKind: 'agent',
-    tools: [...TOOLS].map((name) => ({ type: 'function' as const, function: { name, parameters: { type: 'object', properties: {} } } })),
-  } as never);
-
-  const msg = result.response.choices?.[0]?.message;
-  ok('route() adopted the text call', msg?.tool_calls?.length === 1, `tool_calls=${msg?.tool_calls?.length ?? 0}`);
-  ok('adopted call names the right tool', msg?.tool_calls?.[0]?.function.name === 'readFile', msg?.tool_calls?.[0]?.function.name);
-  ok('adopted call carries the arguments',
-    JSON.parse(msg?.tool_calls?.[0]?.function.arguments ?? '{}').path === 'src/lib/finderScan.js',
-    msg?.tool_calls?.[0]?.function.arguments);
-  ok('markup is not also shown as the answer', !msg?.content, JSON.stringify(msg?.content));
-  ok('finish_reason says tool_calls', result.response.choices?.[0]?.finish_reason === 'tool_calls',
-    result.response.choices?.[0]?.finish_reason);
-  fs.rmSync(dir, { recursive: true, force: true });
-}
-
-routeAdopts().then(() => {
-  console.log(bad === 0 ? '\nAll inline-dialect checks passed.' : `\n${bad} check(s) FAILED.`);
-  process.exit(bad === 0 ? 0 : 1);
-});
+console.log(bad === 0 ? '\nAll inline-dialect checks passed.' : `\n${bad} check(s) FAILED.`);
+process.exit(bad === 0 ? 0 : 1);

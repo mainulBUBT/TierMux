@@ -202,7 +202,7 @@ async function main(): Promise<void> {
     __setEngineModelForTests(model);
     let result;
     try {
-      result = await runPlanStream(undefined as never, engineOpts({
+      result = await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'add dark mode' }],
       }));
     } finally {
@@ -235,7 +235,7 @@ async function main(): Promise<void> {
     __setEngineModelForTests(model);
     let retried;
     try {
-      retried = await runPlanStream(undefined as never, engineOpts({
+      retried = await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'add dark mode' }],
       }));
     } finally {
@@ -253,7 +253,7 @@ async function main(): Promise<void> {
     const answerModel = createMockModel([{ text: 'Stock IS checked on order edit — see src/orders.ts:412.' }], 'answer');
     __setEngineModelForTests(answerModel);
     try {
-      const answer = await runPlanStream(undefined as never, engineOpts({
+      const answer = await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'is stock checked on order edit?' }],
       }));
       ok('a plan-mode ANSWER leaves result.plan undefined', answer.plan === undefined, JSON.stringify(answer.plan));
@@ -288,7 +288,7 @@ async function main(): Promise<void> {
     const asked: string[] = [];
     __setEngineModelForTests(model);
     try {
-      const out = await runPlanStream(undefined as never, engineOpts({
+      const out = await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'make the edit-mode grid filter like the admin one' }],
         onAskUser: async (q) => { asked.push(q); return 'Only the vendor order view'; },
       }));
@@ -311,7 +311,7 @@ async function main(): Promise<void> {
     const retracted: number[] = [];
     __setEngineModelForTests(model);
     try {
-      const nudged = await runPlanStream(undefined as never, engineOpts({
+      const nudged = await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'add a dark mode toggle to setting' }],
         onRetractDraft: () => retracted.push(1),
       }));
@@ -356,7 +356,7 @@ async function main(): Promise<void> {
     ], 'plan-answer');
     __setEngineModelForTests(model);
     try {
-      const out = await runPlanStream(undefined as never, engineOpts({
+      const out = await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'add a dark mode toggle to setting' }],
       }));
       ok('a prose "nothing to change" answer is nudged into declaring outcome no-change',
@@ -383,7 +383,7 @@ async function main(): Promise<void> {
     ], 'plan-gap-unnarrated');
     __setEngineModelForTests(model);
     try {
-      const out = await runPlanStream(undefined as never, engineOpts({
+      const out = await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'check the edit-mode product filtering and make a plan first.' }],
       }));
       ok('an unclosed turn is nudged even when the reply is not narration-shaped',
@@ -402,7 +402,7 @@ async function main(): Promise<void> {
     ], 'plan-question');
     __setEngineModelForTests(model);
     try {
-      await runPlanStream(undefined as never, engineOpts({
+      await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'how does the settings panel pick its theme?' }],
       }));
       ok('a QUESTION is not nudged toward a plan', model.calls.length === 1, `calls=${model.calls.length}`);
@@ -420,7 +420,7 @@ async function main(): Promise<void> {
     ], 'plan-meta-question');
     __setEngineModelForTests(model);
     try {
-      const out = await runPlanStream(undefined as never, engineOpts({
+      const out = await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'give me an example of plan mode' }],
       }));
       ok('an imperative INFORMATION request is not nudged into a plan',

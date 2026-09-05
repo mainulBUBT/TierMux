@@ -32,7 +32,7 @@ for (const cmd of [
   'git log -1',
   'git log --oneline -20',
   'git show abc1234 --stat',
-  'git blame -L 40,60 src/router/router.ts',
+  'git blame -L 40,60 src/agent/core/engine.ts',
   'git diff',
   'git branch --show-current',
   'git status',

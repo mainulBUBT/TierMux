@@ -14,27 +14,26 @@
  * Run: npm run test:e2e:condense-split
  */
 import { condenseHistory, shouldCondense } from '../src/agent/condense';
-import type { Router } from '../src/router/router';
+import { __setRouteOnceForTests } from '../src/agent/core/routeOnce';
 import type { ChatMessage } from '../src/shared/types';
 
 let bad = 0;
 const ok = (n: string, c: boolean) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}`); if (!c) bad++; };
 
-function fakeRouter(summary: string): Router {
-  return {
-    async pickUtilityModel() { return 'utility-fake'; },
-    async route() {
-      return {
-        platform: 'custom' as const,
-        model: 'utility',
-        response: {
-          id: 'r', object: 'chat.completion' as const, created: 0, model: 'fake',
-          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-          choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant' as const, content: summary } }],
-        },
-      };
-    },
-  } as unknown as Router;
+/** condenseHistory routes through routeOnce (v3) instead of taking a Router — the seam is the
+ *  module override, so the test scripts the ANSWER rather than a whole router. */
+function scriptSummary(summary: string): void {
+  __setRouteOnceForTests(async () => ({ text: summary, platform: 'custom' as const, model: 'utility', key: 'custom::utility' }));
+}
+
+/** Same, plus a capture of every request the summarizer actually sent. */
+function captureRequests(summary: string): ChatMessage[][] {
+  const seen: ChatMessage[][] = [];
+  __setRouteOnceForTests(async (messages) => {
+    seen.push(messages);
+    return { text: summary, platform: 'custom' as const, model: 'utility', key: 'custom::utility' };
+  });
+  return seen;
 }
 
 /** The shape that regressed: a real multi-turn conversation whose LATEST turn is tool-heavy. */
@@ -57,7 +56,7 @@ for (let i = 0; i < 40; i++) plainChat.push({ role: i % 2 === 0 ? 'user' : 'assi
 async function main(): Promise<void> {
   ok('tool-heavy session is long enough to warrant condensing', shouldCondense(toolHeavy));
 
-  const heavy = await condenseHistory(toolHeavy, fakeRouter('SUMMARY OF EARLIER WORK'));
+  const heavy = (scriptSummary('SUMMARY OF EARLIER WORK'), await condenseHistory(toolHeavy));
   ok('tool-heavy session now compacts at all (was null before the fix)', heavy !== null);
   if (heavy) {
     ok('result leads with the summary', String(heavy.messages[0]?.content).includes('SUMMARY OF EARLIER WORK'));
@@ -69,13 +68,13 @@ async function main(): Promise<void> {
       heavy.messages.some((m) => String(m.content).includes('refactor the affiliate controller')));
   }
 
-  const chat = await condenseHistory(plainChat, fakeRouter('CHAT SUMMARY'));
+  const chat = (scriptSummary('CHAT SUMMARY'), await condenseHistory(plainChat));
   ok('plain chat still compacts (no regression)', chat !== null);
   if (chat) {
     ok('plain chat tail also starts on a user turn', chat.messages[1]?.role === 'user');
   }
 
-  const tooShort = await condenseHistory(plainChat.slice(0, 4), fakeRouter('X'));
+  const tooShort = (scriptSummary('X'), await condenseHistory(plainChat.slice(0, 4)));
   ok('a short session is left alone', tooShort === null);
 
   /* The file list is the load-bearing part of a summary on a multi-file task: it is what stops the
@@ -100,16 +99,15 @@ async function main(): Promise<void> {
     for (let i = 0; i < 20; i++) withFiles.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `follow-up ${i}` });
 
     // The failure mode this exists to catch: a model that ignores the mandated section entirely.
-    const omitted = await condenseHistory(withFiles, fakeRouter('## Goal\nrefactor\n\n## Done\nsome work'));
+    scriptSummary('## Goal\nrefactor\n\n## Done\nsome work');
+    const omitted = await condenseHistory(withFiles);
     ok('a summary with NO files section gets one appended', !!omitted?.summary.includes('## Files & symbols touched'));
     ok('the appended section names a file that was read', !!omitted?.summary.includes('src/checkout/cart.ts'));
     ok('the appended section names a file that was edited', !!omitted?.summary.includes('src/checkout/pay.ts'));
 
     // A model that wrote the section, but incompletely — the union must keep BOTH.
-    const partial = await condenseHistory(
-      withFiles,
-      fakeRouter('## Goal\nrefactor\n\n## Files & symbols touched\n- src/checkout/cart.ts — the Cart type\n\n## Next steps\nfinish'),
-    );
+    scriptSummary('## Goal\nrefactor\n\n## Files & symbols touched\n- src/checkout/cart.ts — the Cart type\n\n## Next steps\nfinish');
+    const partial = await condenseHistory(withFiles);
     ok('the model\'s own annotated entry is preserved', !!partial?.summary.includes('cart.ts — the Cart type'));
     ok('a file the model omitted is merged in', !!partial?.summary.includes('src/checkout/pay.ts'));
     ok('the annotated entry is not duplicated as a bare path', (partial?.summary.match(/src\/checkout\/cart\.ts/g) ?? []).length === 1);
@@ -125,7 +123,7 @@ async function main(): Promise<void> {
       { role: 'tool', tool_call_id: 't9', content: 'contents' },
     ];
     for (let i = 0; i < 20; i++) secondRound.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `later ${i}` });
-    const merged = await condenseHistory(secondRound, fakeRouter('## Goal\nrefactor\n\n## Done\nmore work'));
+    const merged = (scriptSummary('## Goal\nrefactor\n\n## Done\nmore work'), await condenseHistory(secondRound));
     ok('a path from the PREVIOUS summary survives the next compaction', !!merged?.summary.includes('src/legacy/old.ts'));
     ok('the newly touched file is there too', !!merged?.summary.includes('src/brand/new.ts'));
   }
@@ -154,24 +152,8 @@ async function main(): Promise<void> {
       looped.push({ role: 'assistant', content: `reply ${i}` });
     }
 
-    const seen: ChatMessage[][] = [];
-    const capturing = {
-      async pickUtilityModel() { return 'utility-fake'; },
-      async route(req: ChatMessage[]) {
-        seen.push(req);
-        return {
-          platform: 'custom' as const,
-          model: 'utility',
-          response: {
-            id: 'r', object: 'chat.completion' as const, created: 0, model: 'fake',
-            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-            choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant' as const, content: 'LOOP SUMMARY' } }],
-          },
-        };
-      },
-    } as unknown as Router;
-
-    const loopCondensed = await condenseHistory(looped, capturing);
+    const seen = captureRequests('LOOP SUMMARY');
+    const loopCondensed = await condenseHistory(looped);
     ok('degenerate-loop session still compacts', loopCondensed !== null);
     const sent = seen[0] ?? [];
     // v3: the pre-summarizer collapse of repeated step records was removed with

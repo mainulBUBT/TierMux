@@ -37,8 +37,8 @@ export type {
 } from './agent/agent';
 
 // ── AI SDK adapter — turn the v3 picker into a model the AI SDK can stream ──────
-export { createRouterProvider, setModelSources } from './agent/core/routerProvider';
-export type { RouterProviderOptions, ModelSources } from './agent/core/routerProvider';
+export { createRouterProvider } from './agent/core/routerProvider';
+export type { RouterProviderOptions } from './agent/core/routerProvider';
 
 // ── Task classification (router input) ────────────────────────────────────────
 export {
@@ -49,31 +49,28 @@ export {
 } from './agent/routing';
 export type { TaskKind, ClassifySignals } from './agent/routing';
 
-// ── Router (the heart of TierMux) ─────────────────────────────────────────────
+// ── Model selection (picker) ──────────────────────────────────────────────────
+// The Router class and its scoring stack were retired 2026-09-05 (plan §4.2). `selectModel`
+// is the whole selection surface now; `Router`, `ScoringEngine`, `RouteOptions` and the
+// scoring types are gone from the public API with it.
 export {
-  Router,
-  AllModelsFailedError,
-  NoVisionModelError,
-  setSmartScoring,
-  ThinkStripper,
-  stripThinkTags,
-  clampOutputToContext,
-} from './router/router';
-export type { RouteOptions } from './router/router';
+  selectModel,
+  setModelSources,
+  peekTopModel,
+  findCatalogModel,
+  recordOutcome,
+  recordRequest,
+  isInCooldown,
+  setQuotaStore,
+  TASK_ROUTING,
+} from './router/picker';
+export type { ModelSelection, ModelSources, SelectionRationale } from './router/picker';
+export { AllModelsFailedError, NoVisionModelError } from './router/errors';
+export { ThinkStripper, stripThinkTags, clampOutputToContext } from './util/thinkTags';
 export type { FallbackEntry } from './shared/types';
 export type { CompletionOptions } from './providers/options';
 
-// ── Smart Auto scoring + capability classification ────────────────────────────
-export { ScoringEngine } from './router/scoring';
-export type {
-  SelectionContext,
-  CandidateRuntime,
-  RationaleEntry,
-  RankResult,
-  SignalBreakdown,
-  SkipReason,
-  HealthState,
-} from './router/scoring';
+// ── Capability classification ─────────────────────────────────────────────────
 export {
   profileForTask,
   tagComparator,

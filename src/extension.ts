@@ -6,13 +6,10 @@ import { SecretStore } from './config/secrets';
 import { SettingsStore } from './config/settingsStore';
 import { UsageTracker } from './config/usage';
 import { UsageStore } from './config/usageStore';
-import { QuotaStore } from './config/quotaStore';
 import { ModelStatsStore } from './config/modelStats';
+import { QuotaStore } from './config/quotaStore';
 import { SlowModelStore } from './config/slowModel';
-import { Router, setSmartScoring } from './router/router';
-import { setModelSources } from './router/picker';
-import { MetricsStore } from './router/metricsStore';
-import { ScoringEngine } from './router/scoring';
+import { setModelSources, setQuotaStore } from './router/picker';
 import { verifyGrounding, renderVerifyReport } from './backend/groundingVerify';
 import { EditGate } from './edits/applyEdit';
 import { CommandGate, type CommandApproval } from './edits/commandGate';
@@ -43,7 +40,6 @@ import { render as renderProfilerReport } from './profiler/outputRenderer';
 import { toExportData as exportProfilerData } from './profiler/export';
 
 let chatProviderRef: ChatViewProvider | undefined;
-const ts = () => new Date().toISOString().slice(11, 23);
 
 /** Shows a one-time notification for newly-discovered catalog models, grouped by
  *  provider, with a button that jumps straight to the model-enable settings panel. */
@@ -129,17 +125,15 @@ export function activate(context: vscode.ExtensionContext): void {
     void backgroundCatalogSync();
     const usage = new UsageTracker();
     const usageStore = new UsageStore(context.globalState);
-    const quotaStore = new QuotaStore(context.globalState);
     const modelStats = new ModelStatsStore(context.globalState);
     const slowModels = new SlowModelStore(context.globalState);
-    const metrics = new MetricsStore(context.globalState);
-    const scoring = new ScoringEngine(catalog, metrics, modelStats);
-    const router = new Router(secrets, settings, catalog, usage, modelStats, usageStore, slowModels, metrics, scoring, quotaStore);
 
     // v3: the agent engine selects models through the thin picker (router/picker.ts), not the
     // scoring Router. The Router instance above stays alive for utility one-shot calls
     // (titles, commit messages, inline completions) until those migrate in v3.1.
     setModelSources({ catalog, settings, secrets });
+    // Declared rpm/rpd windows survive a reload (see picker.setQuotaStore).
+    setQuotaStore(new QuotaStore(context.globalState));
 
     let profiler: IProfilerService = createProfiler(
       vscode.workspace.getConfiguration('tiermux.profiler').get<boolean>('enabled', false),
@@ -162,27 +156,10 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(editGate.register());
 
 
-    setSmartScoring(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('smartScoring', true));
-    let scoringTraceOn = vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('scoringTrace', false);
-    let routerLog: vscode.OutputChannel | undefined;
-    /** Dev-facing trace channel for the Smart Auto scoring rationale (the engineLog pattern). */
-    function getRouterLog(): vscode.OutputChannel {
-      if (!routerLog) routerLog = vscode.window.createOutputChannel('TierMux Router');
-      return routerLog;
-    }
-    function logRationale(taskKind: string, rationale: import('./router/scoring').RationaleEntry[]): void {
-      if (!scoringTraceOn) return;
-      const ch = getRouterLog();
-      const win = rationale.find((r) => r.selected);
-      ch.appendLine(`[${ts()}] Smart Auto · ${taskKind} → ${win ? `${win.platform}/${win.modelId}` : 'none'}`);
-      for (const r of rationale) {
-        const tag = r.selected ? '✓' : '·';
-        const sig = `cap ${r.capability.toFixed(2)} · runtime ×${r.runtimeMultiplier.toFixed(2)} · pref ${r.userPreference.toFixed(2)} = ${r.score.toFixed(3)}`;
-        ch.appendLine(`  ${tag} ${r.platform}/${r.modelId} — ${sig} — ${r.reason}`);
-      }
-    }
-    router.setRationaleSink((info) => logRationale(info.taskKind, info.rationale));
-
+    // The Smart Auto scoring trace lived here (a "TierMux Router" output channel fed by
+    // Router.setRationaleSink). It went with the scoring engine on 2026-09-05 — the v3 picker
+    // publishes its own selection rationale to the "Why this model?" popover instead, which is
+    // the same information in front of the user rather than in a dev channel.
     context.subscriptions.push(registerCheckpointContentProvider());
 
     const commandGate = new CommandGate(
@@ -216,13 +193,12 @@ export function activate(context: vscode.ExtensionContext): void {
       catalog,
       usage,
       usageStore,
-      router,
       mcp,
       modelStats,
       slowModels,
       workspaceState: context.workspaceState,
       globalState: context.globalState,
-      generateCommitMessage: () => generateCommitMessage(router),
+      generateCommitMessage: () => generateCommitMessage(),
       profiler,
     });
     chatProviderRef = chat;
@@ -265,13 +241,6 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration('tiermux.mcpServers')) void mcp.reconnect().then(() => chat.refresh());
-        if (e.affectsConfiguration('tiermux.agent.smartScoring')) {
-          setSmartScoring(vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('smartScoring', true));
-        }
-        if (e.affectsConfiguration('tiermux.agent.scoringTrace')) {
-          scoringTraceOn = vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('scoringTrace', false);
-          if (scoringTraceOn) getRouterLog().show(true);
-        }
         if (e.affectsConfiguration('tiermux.catalog')) {
           void backgroundCatalogSync();
         }
@@ -400,7 +369,7 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.commands.registerCommand('tiermux.verifyGrounding', async () => {
         const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (!wsRoot) { void vscode.window.showErrorMessage('No workspace folder open.'); return; }
-        const report = await verifyGrounding(router, wsRoot);
+        const report = await verifyGrounding(wsRoot);
         const channel = vscode.window.createOutputChannel('TierMux Grounding Verify');
         channel.show(true);
         channel.appendLine(`Workspace: ${wsRoot}`);
@@ -446,9 +415,9 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
       ...registerEditorCommands(chat),
       ...registerCodeActions(chat),
-      registerInlineChat(router, editGate),
-      ...registerInlineCompletions(router, catalog, settings),
-      registerCommitMessage(router),
+      registerInlineChat(editGate),
+      ...registerInlineCompletions(catalog, settings),
+      registerCommitMessage(),
     );
   } catch (error) {
     console.error('[tiermux] Extension activation failed:', error);

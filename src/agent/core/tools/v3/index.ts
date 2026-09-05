@@ -3,7 +3,8 @@
 // approval — the streamText `toolApproval` policy decides IF a mutating tool runs.
 //
 // Kept tool inventory (v3.0): readFile, editFile, writeFile, deleteFile, listDir, glob, grep,
-// runCommand. The legacy fleet/MCP/delegate/planRunner tools defer to v3.1 (plan §11).
+// runCommand, plus every connected MCP server's tools in agent mode (wired 2026-09-05 —
+// the bridge had shipped uncalled). The legacy fleet/planRunner tools defer to v3.1.
 
 export { createReadFileTool } from './readFile';
 export { createEditFileTool } from './editFile';
@@ -31,6 +32,8 @@ import { createDelegateTaskTool } from './delegateTask';
 import { createExitPlanModeTool } from './exitPlanMode';
 import { createWebSearchTool } from '../network/webSearch';
 import { createFetchUrlTool } from '../network/fetchUrl';
+import { createMcpTools } from '../mcp/mcp';
+import { getMcpManager } from '../mcp/manager';
 
 /** Tools that never mutate anything — the permission policy auto-approves these (plan §3).
  *  `showTodo` is a legacy name kept for the set's historical shape; the live tool is `todoWrite`. */
@@ -132,6 +135,22 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
   }
 
   return {
+    // MCP tools of every connected server (2026-09-05). `createMcpTools` existed and was called
+    // by NOTHING for the whole v3 era: servers connected, "Reconnect MCP Servers" worked,
+    // `tiermux.mcpServers` was documented, and the model was never shown one of their tools.
+    //
+    // AGENT MODE ONLY, deliberately. An MCP tool's capability is unknowable from here — it may
+    // write anything — and the two read-only modes cannot gate what they cannot classify:
+    // plan mode's policy denies every non-READ_ONLY tool (offering one that is always denied is
+    // worse than not offering it), and ask mode would fall through to the normal chain and
+    // AUTO-APPROVE it under full-auto, quietly breaking the read-only promise.
+    //
+    // Spread FIRST so a built-in always wins a name clash. Names are `mcp__<server>__<tool>`
+    // (mcpManager's PREFIX), so a clash should be impossible — this is belt-and-braces, not a
+    // known case. Nothing else is special-cased: an MCP tool is not in READ_ONLY_TOOLS, so the
+    // normal approval chain asks before running it, which is the right default for a tool whose
+    // code lives outside this repo.
+    ...createMcpTools(getMcpManager()),
     readFile,
     listDir,
     glob,

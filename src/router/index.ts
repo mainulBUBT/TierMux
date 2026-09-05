@@ -1,34 +1,18 @@
-// Public router surface — the heart of TierMux.
+// Public router surface.
 //
-// Re-exports the multi-provider failover engine plus Smart Auto scoring and the
-// canonical task-kind → tag-preference capability matrix. The VS Code extension
-// uses this through chatViewProvider.ts; library consumers reach it as
-// `import { Router, ScoringEngine, profileForTask } from 'tiermux/router'`.
+// The Router class and the whole scoring stack (scoring, scoringConfig, wilson, metricsStore,
+// latencyTracker, mockFixture) were retired on 2026-09-05 — see
+// docs/AGENT_RELIABILITY_PLAN_2026-09-05.md §4.2. Selection is `picker.ts`: a task table plus a
+// per-model cooldown and the declared rpm/rpd windows, ~500 LOC where the Router was ~4,300.
+// Library consumers reach it as `import { selectModel } from 'tiermux/router'`.
 
-export {
-  Router,
-  AllModelsFailedError,
-  NoVisionModelError,
-  setSmartScoring,
-  ThinkStripper,
-  stripThinkTags,
-  clampOutputToContext,
-} from './router';
-export type { RouteOptions } from './router';
+export { selectModel, setModelSources, peekTopModel, findCatalogModel, recordOutcome, recordRequest, isInCooldown, setQuotaStore, TASK_ROUTING } from './picker';
+export type { ModelSelection, ModelSources, SelectionRationale } from './picker';
+export { AllModelsFailedError, NoVisionModelError } from './errors';
+export { RateTracker } from './rateTracker';
+export { ThinkStripper, stripThinkTags, clampOutputToContext } from '../util/thinkTags';
 export type { FallbackEntry } from '../shared/types';
 export type { CompletionOptions } from '../providers/options';
-
-export { ScoringEngine } from './scoring';
-export type {
-  SelectionContext,
-  CandidateRuntime,
-  RationaleEntry,
-  RankResult,
-  SignalBreakdown,
-  SkipReason,
-  HealthState,
-} from './scoring';
-export type { FailureType } from './scoringConfig';
 
 export {
   profileForTask,

@@ -1,10 +1,9 @@
 
 
 import * as vscode from 'vscode';
-import type { Router } from '../router/router';
+import { routeOnceOrUndefined } from '../agent/core/routeOnce';
 import type { Catalog } from '../catalog/catalog';
 import type { SettingsStore } from '../config/settingsStore';
-import { contentToString } from '../agent/content';
 import { PRODUCT_NAME } from '../shared/branding';
 
 const SYSTEM = `You are an inline code completion engine. Continue the code at the cursor.
@@ -15,7 +14,6 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
   private timer?: ReturnType<typeof setTimeout>;
 
   constructor(
-    private readonly router: Router,
     private readonly catalog: Catalog,
     private readonly settings: SettingsStore,
   ) {}
@@ -50,15 +48,15 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
     if (!prefix.trim()) return undefined;
 
     try {
-      const result = await this.router.route(
+      const result = await routeOnceOrUndefined(
         [
           { role: 'system', content: SYSTEM },
           { role: 'user', content: `Language: ${document.languageId}\n\n<prefix>\n${prefix}\n</prefix>\n<suffix>\n${suffix}\n</suffix>\n\nInsert at the cursor (between prefix and suffix):` },
         ],
-        { model: this.modelChoice(), max_tokens: 128, temperature: 0.1 },
+        { taskKind: 'trivial', model: this.modelChoice(), maxTokens: 128, temperature: 0.1, label: 'inlineCompletion' },
       );
-      if (token.isCancellationRequested) return undefined;
-      let text = contentToString(result.response.choices[0]?.message.content);
+      if (token.isCancellationRequested || !result) return undefined;
+      let text = result.text;
       text = text.replace(/^```[a-zA-Z0-9]*\n?/, '').replace(/\n?```\s*$/, '');
       if (!text) return undefined;
       return [new vscode.InlineCompletionItem(text, new vscode.Range(position, position))];
@@ -68,10 +66,10 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
   }
 }
 
-export function registerInlineCompletions(router: Router, catalog: Catalog, settings: SettingsStore): vscode.Disposable[] {
+export function registerInlineCompletions(catalog: Catalog, settings: SettingsStore): vscode.Disposable[] {
   const provider = vscode.languages.registerInlineCompletionItemProvider(
     { pattern: '**' },
-    new InlineCompletionProvider(router, catalog, settings),
+    new InlineCompletionProvider(catalog, settings),
   );
   const toggle = vscode.commands.registerCommand('tiermux.toggleCompletions', async () => {
     const cfg = vscode.workspace.getConfiguration('tiermux.completions');

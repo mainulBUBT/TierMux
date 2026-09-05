@@ -267,17 +267,6 @@
         "category": "TierMux"
       },
       {
-        "command": "tiermux.generateOnboardingTour",
-        "title": "Generate Onboarding Tour",
-        "category": "TierMux",
-        "icon": "$(compass)"
-      },
-      {
-        "command": "tiermux.bench",
-        "title": "Run Benchmark",
-        "category": "TierMux"
-      },
-      {
         "command": "tiermux.showProfiler",
         "title": "Show Profiler",
         "category": "TierMux",
@@ -397,11 +386,6 @@
     "configuration": {
       "title": "TierMux",
       "properties": {
-        "tiermux.agent.pruneAtTokens": {
-          "type": "number",
-          "default": 12000,
-          "description": "During a long agent turn, once the running context passes this many tokens, older tool outputs and reasoning are pruned before each step so the model stops re-sending stale grep/read dumps. Lower = leaner context (cheaper, better for small free-tier windows); 0 disables pruning. When left at the default (not explicitly set), this scales automatically with the routed model's context window (40% of the window, clamped 12k–60k) — set a value here to override the adaptive behavior."
-        },
         "tiermux.agent.maxStepsPerTurn": {
           "type": "number",
           "default": 50,
@@ -418,11 +402,6 @@
           "default": true,
           "description": "Show a diff and ask for confirmation before the agent writes/creates/deletes a file."
         },
-        "tiermux.agent.smartScoring": {
-          "type": "boolean",
-          "default": true,
-          "description": "Route Auto requests by learned, per-model runtime metrics (success rate, TTFT vs the model's own baseline, provider health, confidence-weighted) instead of fixed priority. Adapts within minutes when a model or gateway degrades. Turn off to restore priority-only routing."
-        },
         "tiermux.agent.verifyCommand": {
           "type": "string",
           "default": "auto",
@@ -431,12 +410,9 @@
         "tiermux.agent.verifyFixRounds": {
           "type": "number",
           "default": 2,
-          "description": "When the verify command fails after a turn edits files, the failure output is fed back to the agent for up to this many fix-and-recheck rounds before the turn reports failure. The agent owns the recheck — no manual re-run needed. 0 disables (the failure is reported as-is)."
-        },
-        "tiermux.agent.reanchorChars": {
-          "type": "number",
-          "default": 6000,
-          "description": "Late re-anchoring: after stale read results are pruned from a long turn, re-show up to this many characters of the files the model actually read, so it answers about code it can still see rather than from memory. 0 disables. Weak models benefit most — reasoning errors concentrate late in a turn, which is exactly when pruning has removed the evidence."
+          "minimum": 0,
+          "maximum": 5,
+          "description": "When the verify command fails after a turn edits files, the failure output is fed back to the agent for up to this many fix-and-recheck rounds before the turn reports failure. The agent owns the recheck — no manual re-run needed. 0 reports the failure without retrying (it does not disable the check; set tiermux.agent.verifyCommand to 'off' for that)."
         },
         "tiermux.agent.toolCompaction": {
           "type": "string",
@@ -470,16 +446,6 @@
           "default": 32000,
           "minimum": 0,
           "description": "Absolute token ceiling for auto-compact targeting, even when the routed model advertises a larger context window. 0 disables the cap (window-only sizing)."
-        },
-        "tiermux.agent.sessionModelLock": {
-          "type": "boolean",
-          "default": true,
-          "description": "Keep one conversation on the model that has been serving it successfully (continuity), instead of letting Auto re-pick every turn. The lock releases automatically on real failure — rate limits, errors, or the model being flagged slow — so failover is never blocked."
-        },
-        "tiermux.agent.scoringTrace": {
-          "type": "boolean",
-          "default": false,
-          "description": "Log the per-turn Smart Auto scoring rationale (why each model was selected or skipped, with per-signal scores) to the \"TierMux Router\" output channel."
         },
         "tiermux.agent.diagTrace": {
           "type": "boolean",
@@ -517,7 +483,7 @@
         "tiermux.agent.autoCompactThreshold": {
           "type": "number",
           "default": 0.8,
-          "description": "Automatically summarize (compact) the conversation when it exceeds this fraction of the model's context window. 0 disables auto-compact."
+          "description": "Fraction of the routed model's context window at which the conversation is automatically compacted (older turns summarized, recent ones kept verbatim). Checked before a send and after a turn settles. tiermux.agent.autoCondenseTokenCap can lower the trigger further; tiermux.agent.autoCondense turns the whole thing off."
         },
         "tiermux.index.enabled": {
           "type": "boolean",
@@ -559,11 +525,6 @@
           "default": "auto",
           "description": "Model used for short utility tasks (chat titles, commit messages). 'auto' prefers a strong keyless model so it works without an API key; or pick a specific model in Settings → Others."
         },
-        "tiermux.classifierModel": {
-          "type": "string",
-          "default": "auto",
-          "description": "Model the task classifier (Auto routing) uses to decide what kind of request each message is. 'auto' prefers keyless models in order: OpenCode, Kilo Code, OVH. Or pin a specific model as platform::modelId (e.g. opencode::deepseek-v4-flash-free). If unavailable, the built-in regex classifier is used instead."
-        },
         "tiermux.plan.saveToFile": {
           "type": "boolean",
           "default": true,
@@ -573,31 +534,6 @@
           "type": "string",
           "default": ".tiermux/plans",
           "description": "Workspace-relative folder where plan files are written (one markdown file per plan)."
-        },
-        "tiermux.requestTimeoutMs": {
-          "type": "number",
-          "default": 30000,
-          "description": "Per-provider request timeout (ms) before failing over to the next model. Custom OpenAI-compatible endpoints and pinned (non-Auto) models run uncapped — you chose to wait for that model, and the Stop button is the brake."
-        },
-        "tiermux.ttftTimeoutMs": {
-          "type": "number",
-          "default": 8000,
-          "description": "Time-to-first-token fast failover (lightweight hedging) for streaming requests. If a model accepts the connection but emits no chunk within this many ms, abort it and fail over to the next candidate instead of waiting the full requestTimeoutMs. Catches models that pass preflight then hang mid-stream — the case the ping can't detect. Any first chunk (content, reasoning, or keepalive) clears the timer. 0 disables. Clamped to requestTimeoutMs. Custom OpenAI-compatible endpoints have the gate disabled entirely (local models need their load + prefill time before the first token, and no cloud pool can serve that model faster). Pinned (non-Auto) models also skip the gate — there is nothing to fail over to, so waiting is the only honest option."
-        },
-        "tiermux.rateLimitCooldownMs": {
-          "type": "number",
-          "default": 60000,
-          "description": "How long (ms) to skip a rate-limited provider before trying it again. Honors a provider's Retry-After header when present."
-        },
-        "tiermux.hedging": {
-          "type": "boolean",
-          "default": true,
-          "description": "Delayed request hedging for streaming turns: if the chosen model produces no chunk at all within tiermux.hedgeDelayMs, start the next candidate concurrently and keep whichever responds first (the other is aborted). The hedge never fires when the primary is healthy, so token cost is unchanged in the common case — it only converts 'waited out a slow model' into 'waited ~2.5s'."
-        },
-        "tiermux.hedgeDelayMs": {
-          "type": "number",
-          "default": 2500,
-          "description": "How long (ms) to wait for the first provider chunk before starting a hedge request alongside the primary. 0 disables hedging (same as tiermux.hedging: false). Clamped below tiermux.ttftTimeoutMs."
         },
         "tiermux.completions.enabled": {
           "type": "boolean",
@@ -692,42 +628,6 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically enable models newly discovered in the catalog. Models on providers you haven't enabled stay inactive regardless. Turn off to review each new model manually."
-        },
-        "tiermux.fleet.maxWorkers": {
-          "type": "number",
-          "default": 4,
-          "minimum": 1,
-          "maximum": 8,
-          "description": "Maximum number of worker sub-agents the parallel pipeline (implementPipeline) runs at once. Each worker is a full router-routed loop, so raising this increases token cost (~N×) and rate-limit contention on shared providers."
-        },
-        "tiermux.fleet.workerMaxSteps": {
-          "type": "number",
-          "default": 16,
-          "minimum": 1,
-          "description": "Hard ceiling on the tool-loop step count for a single pipeline worker (the explore sub-agent uses 6; workers need more because they actually edit files)."
-        },
-        "tiermux.fleet.workerTimeoutMs": {
-          "type": "number",
-          "default": 300000,
-          "minimum": 10000,
-          "description": "Wall-clock timeout (ms) for a single pipeline worker. On timeout the worker aborts and its branch is left for inspection; the parent turn's Stop button also aborts all workers."
-        },
-        "tiermux.fleet.researchMaxSteps": {
-          "type": "number",
-          "default": 20,
-          "minimum": 1,
-          "description": "Hard ceiling on the tool-loop step count for the research sub-agent (delegate mode \"research\"). Bigger than explore's quick lookup (6) but still cheap — it runs on a utility model with read-only tools."
-        },
-        "tiermux.fleet.researchTimeoutMs": {
-          "type": "number",
-          "default": 180000,
-          "minimum": 5000,
-          "description": "Wall-clock timeout (ms) for the research sub-agent. Also network-hang protection for slow or stuck free-tier providers, so prefer raising it over disabling it."
-        },
-        "tiermux.fleet.stagingBranchPrefix": {
-          "type": "string",
-          "default": "tiermux/pipeline",
-          "description": "Prefix for the staging branch the pipeline merges worker branches into (e.g. tiermux/pipeline-<runId>). The user's working tree is never modified; you merge the staging branch into your own branch manually."
         }
       }
     }

@@ -44,7 +44,7 @@ function opts(over: Partial<AgentOpts>): AgentOpts {
 async function turn(model: ReturnType<typeof createMockModel>, over: Partial<AgentOpts> = {},
   entry = runAskStream): Promise<AgentResult> {
   __setEngineModelForTests(model);
-  try { return await runWithWorkspaceRoot(root, () => entry(undefined as never, opts(over))); }
+  try { return await runWithWorkspaceRoot(root, () => entry(opts(over))); }
   finally { __setEngineModelForTests(undefined); }
 }
 

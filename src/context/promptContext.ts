@@ -9,8 +9,7 @@ import * as vscode from 'vscode';
 import * as nodeOs from 'os';
 import { loadProjectRules } from './projectRules';
 import { loadUserMemory } from './userMemory';
-import { currentBranch } from '../edits/worktree';
-import { statusLines } from '../edits/gitSnapshot';
+import { currentBranch, statusLines } from '../edits/gitSnapshot';
 
 /** Injection cap for project rules — loadProjectRules already caps at 8K, but a full 8K of
  *  rules on top of memory+env crowds small free-model context windows; 4K is the sane slice. */

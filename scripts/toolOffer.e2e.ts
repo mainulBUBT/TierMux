@@ -41,7 +41,7 @@ async function offeredFor(platform: string): Promise<string[]> {
   const model = createMockModel([{ text: 'done' }], `offer-${platform}`);
   __setEngineModelForTests(model);
   try {
-    await runAgentStream(undefined as never, {
+    await runAgentStream({
       messages: [{ role: 'user', content: 'hello' }],
       mode: 'agent',
       effort: 'medium',

@@ -11,12 +11,12 @@ import { runAgentStream, runPlanStream, runAskStream, type AgentResult, type Age
 import { findTextInWorkspace } from './context/textSearch';
 import { classifyTask } from './agent/routing';
 
-import { clearFindings } from './agent/sessionFindings';
 import { getCommandGate } from './agent/core/tools/gates';
 import { PRODUCT_NAME } from './shared/branding';
 import { SETTINGS_META, defaultForSetting } from './settingsMeta';
-import type { Router } from './router/router';
-import { AllModelsFailedError } from './router/router';
+import { AllModelsFailedError } from './router/errors';
+import { routeOnceOrUndefined, utilityModelPreference } from './agent/core/routeOnce';
+import { peekTopModel } from './router/picker';
 import type { McpManager } from './mcp/mcpManager';
 import { CheckpointManager, type SerializedCheckpoint } from './edits/checkpoints';
 import { isDangerous } from './edits/commandGate';
@@ -53,7 +53,6 @@ interface ChatDeps {
   catalog: Catalog;
   usage: UsageTracker;
   usageStore: UsageStore;
-  router: Router;
   mcp: McpManager;
   modelStats: ModelStatsStore;
   slowModels: SlowModelStore;
@@ -112,6 +111,27 @@ function incompleteTodosNote(allTodos: TodoItem[], remainingTodos: TodoItem[]): 
     .map((t) => `- ${t.content}${t.status === 'in_progress' ? ' (in progress)' : ''}`)
     .join('\n');
   return `\n\n---\n**Stopped with unfinished work — ${doneCount}/${allTodos.length} steps done.** Remaining:\n${list}`;
+}
+
+/** Why a turn stopped when it stopped ITSELF instead of finishing — the step cap, or the
+ *  no-progress guard (see `AgentResult.stopReason`). Both leave real work on the table, and
+ *  until 2026-09-05 both ended the turn looking exactly like completion. The host knows the
+ *  reason from the wire, so this text is deterministic — the model is never asked to explain
+ *  its own stop. The Continue button is live in both cases (`resumable` keys on `paused`). */
+function stopReasonNote(stopReason: NonNullable<AgentResult['stopReason']>, remaining: TodoItem[]): string {
+  const list = remaining.length
+    ? `\n\nRemaining:\n${remaining.map((t) => `- ${t.content}`).join('\n')}`
+    : '';
+  if (stopReason === 'budget') {
+    return '\n\n---\n**Stopped at the step limit — this task is not finished.** Continue picks up from here '
+      + 'with the full transcript, so nothing is repeated. For long unattended tasks, raise '
+      + '`tiermux.agent.maxStepsPerTurn`.' + list;
+  }
+  if (stopReason === 'stuck') {
+    return '\n\n---\n**Stopped: no progress — the same tool call failed three times in a row.** '
+      + 'Continue to let it try again, or say what to do differently.' + list;
+  }
+  return '';
 }
 
 /** Companion to {@link incompleteTodosNote}: a short deterministic brief for the success case,
@@ -1122,8 +1142,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.stopRun(id); // cancel only this session's run — it's about to be deleted
     this.sessions.delete(id);
     this.statusOf.delete(id);
-    this.deps.router.clearSessionPin(id); // don't leave the sticky-Auto pin behind
-    clearFindings(id); // the findings note must not outlive the conversation it describes
     void this.deps.workspaceState.update(SESSIONS_KEY, this.loadSessions().filter((s) => s.id !== id));
     if (wasViewed) {
 
@@ -1885,39 +1903,62 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private static readonly AUTO_CONDENSE_TOKEN_CAP_DEFAULT = 32_000;
 
   /**
-   * Automatic between-turn compaction. When the session history exceeds ~80% of the routed
-   * model's context window OR the working-context cap (and is long enough for
-   * condenseHistory to act on), summarize the older turns in place — same mechanism as
-   * /compact, just triggered by pressure instead of the user noticing slowness. Runs before
-   * the turn starts so the model begins with headroom rather than discovering the wall
-   * mid-turn.
+   * THE automatic compaction path (2026-09-05: there used to be two).
+   *
+   * When the session history exceeds the context-window ratio OR the working-context cap — and
+   * is long enough for condenseHistory to act on — summarize the older turns in place. Same
+   * mechanism as /compact, triggered by pressure instead of by the user noticing slowness.
+   *
+   * Called before a send AND after a turn settles. `maybeAutoCompact` used to own the second
+   * position with its own threshold, no cooldown, and no knowledge of the working-context cap,
+   * so it could immediately regrow history past the bound the pre-send path had just enforced —
+   * and it reached the user through handleCompact, which posts /compact's own notices ("Not
+   * enough conversation to compact yet") as if they had asked for it. One mechanism now; the
+   * ratio setting it owned (`tiermux.agent.autoCompactThreshold`) is read here.
    */
   private async maybeAutoCondense(s: Session): Promise<void> {
     try {
-      if (!vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('autoCondense', true)) return;
+      const cfg = vscode.workspace.getConfiguration('tiermux.agent');
+      if (!cfg.get<boolean>('autoCondense', true)) return;
+      // FAILURE cooldown, not an attempt cooldown. A SUCCESSFUL compaction needs no timer: it
+      // shrinks history below the threshold, so the check below is self-limiting until the
+      // session regrows. Timing every attempt meant a heavy turn that blew past the cap had to
+      // wait out ten minutes before the cap could be enforced again — the cap's whole promise.
       const last = this.autoCondenseAt.get(s.id) ?? 0;
       if (Date.now() - last < ChatViewProvider.AUTO_CONDENSE_COOLDOWN_MS) return;
       if (!shouldCondense(s.history)) return;
-      const profile = resolveExecutionProfile(this.deps.router.peekTopSelection('chat')?.model);
+      const profile = resolveExecutionProfile(await peekTopModel('chat'));
       const tokens = estimateMessagesTokens(s.history);
-      const cap = vscode.workspace.getConfiguration('tiermux.agent').get<number>('autoCondenseTokenCap', ChatViewProvider.AUTO_CONDENSE_TOKEN_CAP_DEFAULT);
-      const threshold = cap > 0 ? Math.min(profile.contextWindow * 0.8, cap) : profile.contextWindow * 0.8;
+      const cap = cfg.get<number>('autoCondenseTokenCap', ChatViewProvider.AUTO_CONDENSE_TOKEN_CAP_DEFAULT);
+      const ratio = cfg.get<number>('autoCompactThreshold', 0.8);
+      const byWindow = profile.contextWindow * (ratio > 0 ? ratio : 0.8);
+      const threshold = cap > 0 ? Math.min(byWindow, cap) : byWindow;
       if (tokens <= threshold) return;
-      this.autoCondenseAt.set(s.id, Date.now());
       const r = await condenseHistory(
         s.history,
-        this.deps.router,
         s.livePlatform && s.liveModel ? `${s.livePlatform}/${s.liveModel}` : undefined,
       );
-      if (!r) return; // condense.ts already retried with a different model before giving up
+      if (!r) {
+        // Two models in a row returned nothing (condense.ts already retried). THIS is what the
+        // cooldown is for — every attempt is a real call against a rate-limited free tier.
+        this.autoCondenseAt.set(s.id, Date.now());
+        return;
+      }
       const after = estimateMessagesTokens(r.messages);
       s.history = r.messages;
       this.persist(s.id);
+      // Name whichever bound ACTUALLY fired. The notice used to always blame the model's
+      // window, so a 200k-window model produced "~33k → ~8k (was approaching the model's ~200k
+      // window)" — 33k is nowhere near 200k, and the real trigger was the working-context cap.
+      // A user reading that has no way to find the setting that caused it.
+      const byCap = cap > 0 && cap < byWindow;
+      const why = byCap
+        ? `(passed the ~${Math.round(cap / 1000)}k working-context cap — \`tiermux.agent.autoCondenseTokenCap\`)`
+        : `(was approaching the model's ~${Math.round(profile.contextWindow / 1000)}k window)`;
       this.post({
         type: 'notice', sessionId: s.id, icon: 'compress',
         text: `Context auto-compacted — ~${Math.round(tokens / 1000)}k → ~${Math.round(after / 1000)}k tokens `
-          + `(was approaching the model's ~${Math.round(profile.contextWindow / 1000)}k window). `
-          + 'Earlier turns summarized; recent turns kept verbatim.',
+          + `${why}. Earlier turns summarized; recent turns kept verbatim.`,
       });
     } catch {
       // Best-effort: a failed auto-condense must never block or fail the user's turn.
@@ -1936,7 +1977,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // condensing is the only compaction mechanism needed.
       const r = await condenseHistory(
         s.history,
-        this.deps.router,
         s.livePlatform && s.liveModel ? `${s.livePlatform}/${s.liveModel}` : undefined,
       );
       if (!r) {
@@ -1972,7 +2012,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     this.post({ type: 'busy', sessionId: s.id, busy: true });
     try {
-      const note = await generateHandoff(s.history, this.deps.router);
+      const note = await generateHandoff(s.history);
       if (!note) {
         this.post({ type: 'notice', sessionId: s.id, text: 'Handoff note generation failed after retrying with a different model; try again in a moment.' });
         return;
@@ -2206,7 +2246,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const sdkMode = m.mode as AgentMode;
       const runner = sdkMode === 'plan' ? runPlanStream : sdkMode === 'ask' ? runAskStream : runAgentStream;
       diagLog('send.gate', `requestId=${m.requestId} · invoking ${sdkMode} runner`);
-      let result = await runner(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
+      let result = await runner(this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
       diagLog('send.gate', `requestId=${m.requestId} · runner returned paused=${result.paused} textLen=${result.text?.length ?? 0}`);
 
       // Watchdog "Restart Request" / "Switch Model": the button handler aborted the run above
@@ -2219,7 +2259,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.cancel?.dispose();
         s.cancel = new vscode.CancellationTokenSource();
         const retryModel = retryKind === 'switch' ? 'auto' : m.model;
-        result = await runner(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, retryModel), {});
+        result = await runner(this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, retryModel), {});
       }
 
       if (!this.isActiveRun(s, m.requestId)) return;
@@ -2245,7 +2285,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!looksLikeGroundedAnswer(result.text, subjectTerms)) {
           s.history.push({ role: 'user', content: offTopicCorrection(subjectTerms) });
           extraHistoryPushed = 1;
-          result = await runner(this.deps.router, this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
+          result = await runner(this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
           if (!this.isActiveRun(s, m.requestId)) return;
         }
       }
@@ -2341,10 +2381,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const wroteTodosThisSend = s.lastTodos !== todosAtSendStart;
       const finalTodos = wroteTodosThisSend ? (s.lastTodos ?? []) : [];
       const finalRemainingTodos = finalTodos.filter((t) => t.status !== 'completed');
+      // A self-stop (step cap / no progress) OUTRANKS the todo notes: it explains the stop
+      // itself, which the todo list cannot, and it carries the remaining items anyway. Without
+      // this branch a capped turn fell into the `result.paused ? ''` case below and shipped no
+      // footer at all — the turn ended silently, which is the whole failure being fixed here.
+      const stopNote = result.stopReason ? stopReasonNote(result.stopReason, finalRemainingTodos) : '';
       const todoNote = agentClar.questions ? ''
-        : finalRemainingTodos.length > 0 ? (!result.paused ? incompleteTodosNote(finalTodos, finalRemainingTodos) : '')
-        : finalTodos.length > 0 ? completedTodosNote(finalTodos)
-        : '';
+        : stopNote || (finalRemainingTodos.length > 0
+          ? (!result.paused ? incompleteTodosNote(finalTodos, finalRemainingTodos) : '')
+          : finalTodos.length > 0 ? completedTodosNote(finalTodos)
+          : '');
 
       const displayText = todoNote ? `${agentClar.text}${todoNote}` : agentClar.text;
 
@@ -2392,7 +2438,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.persist(s.id);
         this.post({ type: 'busy', sessionId: s.id, busy: false });
         this.setStatus(s.id, 'finished');
-        await this.maybeAutoCompact(s);
+        await this.maybeAutoCondense(s);
         void this.maybeGenerateTitle(s);
       }
     }
@@ -2540,7 +2586,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  on any failure/timeout (structurePlanSteps never throws, returns null instead). */
   private upgradePlanSteps(s: Session, requestId: string, rawText: string): void {
     const pendingAtStart = s.pendingPlanUser;
-    void structurePlanSteps(this.deps.router, rawText).then((steps) => {
+    void structurePlanSteps(rawText).then((steps) => {
       if (!steps || !steps.length) return;
       if (!this.isActiveRun(s, requestId)) return;
       if (s.pendingPlanUser !== pendingAtStart) return; // already approved/deferred/discarded
@@ -2664,7 +2710,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const regexSteps = planStepsToTodos(m.steps).map((t) => t.content);
     const structuredSteps = isCleanNumberedList(m.steps)
       ? regexSteps
-      : (await structurePlanSteps(this.deps.router, m.steps) ?? regexSteps);
+      : (await structurePlanSteps(m.steps) ?? regexSteps);
     if (structuredSteps.length >= 2) {
       const originalTask = (original ? contentToString(original) : 'the approved plan').replace(/\n\{\s*"type":\s*"(image_url|file)"/g, '').trim().slice(0, 200);
       s.executingPlan = true;
@@ -2731,9 +2777,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       s.history.push({ role: 'user', content: planPrompt });
       s.transcript.push({ role: 'user', text: planPrompt, requestId, ts: Date.now(), historyLen: s.history.length - 1 });
       this.post({ type: 'userEcho', sessionId: s.id, requestId, text: planPrompt });
-      const result = await runAgentStream(
-        this.deps.router,
-        this.makeAgentOpts(s, requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model),
+      const result = await runAgentStream(this.makeAgentOpts(s, requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model),
       );
 
       if (!this.isActiveRun(s, requestId)) return;
@@ -2760,7 +2804,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.persist(s.id);
         this.post({ type: 'busy', sessionId: s.id, busy: false });
         this.setStatus(s.id, 'finished');
-        await this.maybeAutoCompact(s);
+        await this.maybeAutoCondense(s);
       }
     }
   }
@@ -2918,6 +2962,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const v = vscode.workspace.getConfiguration('tiermux.agent').get<string>('toolCompaction', 'light');
         return v === 'off' || v === 'aggressive' ? v : 'light';
       })(),
+      // Declared and documented since v3, read by nothing until 2026-09-05 — the engine
+      // hardcoded the same 50, so raising it in settings silently did nothing.
+      maxStepsPerTurn: vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxStepsPerTurn', 50),
+      verifyFixRounds: vscode.workspace.getConfiguration('tiermux.agent').get<number>('verifyFixRounds', 2),
       ...callbacks,
     };
   }
@@ -3244,7 +3292,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const sentAt = Date.now();
       this.beginInProgressTurn(s, m.requestId);
       const cbk4 = this.agentCallbacks(s, m.requestId, 'agent');
-      const result = await runAgentStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk4, s.model), {});
+      const result = await runAgentStream(this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk4, s.model), {});
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       // See the `result.failed` guard in the main send handler — show a real reply bubble with
       // the failure reason instead of a phantom blank "successful" turn.
@@ -3289,7 +3337,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.persist(s.id);
         this.post({ type: 'busy', sessionId: s.id, busy: false });
         this.setStatus(s.id, 'finished');
-        await this.maybeAutoCompact(s);
+        await this.maybeAutoCondense(s);
       }
     }
   }
@@ -3339,7 +3387,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await s.checkpoints.begin(m.requestId, 'Plan (clarified)');
       this.beginInProgressTurn(s, m.requestId);
       const cbk5 = this.agentCallbacks(s, m.requestId, 'plan');
-      let result = await runPlanStream(this.deps.router, this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});
+      let result = await runPlanStream(this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});
       if (!this.isActiveRun(s, m.requestId)) return;
       // No groundedness re-run here either (removed with the send path's): plan mode's signal
       // that the model actually engaged is whether it called `exitPlanMode`, not whether a
@@ -3408,7 +3456,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.persist(s.id);
         this.post({ type: 'busy', sessionId: s.id, busy: false });
         this.setStatus(s.id, 'finished');
-        await this.maybeAutoCompact(s);
+        await this.maybeAutoCondense(s);
         void this.maybeGenerateTitle(s);
       }
     }
@@ -3522,13 +3570,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Auto-summarize when the conversation passes the configured fraction of the window. */
-  private async maybeAutoCompact(s: Session): Promise<void> {
-    const threshold = vscode.workspace.getConfiguration('tiermux.agent').get<number>('autoCompactThreshold', 0.8);
-    if (!threshold || threshold <= 0 || s.history.length < 6) return;
-    const { tokens, window } = this.computeContext(s);
-    if (window && tokens > window * threshold) await this.handleCompact(s);
-  }
-
   /** Best-effort: ask a free LLM for a short title from the user's first message. */
   /**
    * Pick this session's title ONCE.
@@ -3572,44 +3613,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.titleGenerated = true; // guard before the call to avoid duplicate runs
 
     const snippet = messageText.slice(0, 800);
-    const router = this.deps.router;
-    const primary = await router.pickUtilityModel();
-    // Same free-model fallback chain as generateCommitMessage: a single free model
-    // routinely 429s or times out, so one shot at `primary` silently degrades every
-    // failed session to the raw-derived placeholder title instead of a real one.
-    const fallbacks = [
-      'google::gemini-2.5-flash',
-      'groq::llama-3.3-70b-versatile',
-      'openrouter::deepseek/deepseek-chat-v3.1:free',
-    ];
-    const candidates = [primary, ...fallbacks].filter((m): m is string => !!m);
-    const seen = new Set<string>();
-    const attempts: string[] = [];
-    for (const m of candidates) {
-      if (seen.has(m)) continue;
-      seen.add(m);
-      if (!(await router.isReady(m))) continue;
-      attempts.push(m);
-      if (attempts.length >= 3) break;
-    }
-
+    // Up to three models, skipping any whose title is empty or a generic placeholder. The
+    // hardcoded free-model list and the isReady pre-filter are gone with the Router: routeOnce
+    // walks the picker's `trivial` chain, which is already "enabled, keyed, not rate-limited,
+    // small and fast" — the properties that list was naming by hand. A well-formed but useless
+    // title is not an error, so it is the only reason left to loop.
     let title = '';
-    for (const model of attempts) {
-      try {
-        const result = await router.route(
-          [
-            { role: 'system', content: TITLE_SYSTEM },
-            { role: 'user', content: `User's message: ${snippet}` },
-          ],
-          { temperature: 0.3, max_tokens: 48, model, taskKind: 'trivial', reasoningEffort: 'off' },
-        );
-        const raw = contentToString(result.response.choices[0]?.message.content);
-        const cleaned = sanitizeTitle(raw);
-        if (cleaned && !/^(starting conversation|new chat|untitled|chat)$/i.test(cleaned)) {
-          title = cleaned;
-          break;
-        }
-      } catch { /* try the next model */ }
+    const tried: string[] = [];
+    for (let attempt = 0; attempt < 3 && !title; attempt++) {
+      const r = await routeOnceOrUndefined(
+        [
+          { role: 'system', content: TITLE_SYSTEM },
+          { role: 'user', content: `User's message: ${snippet}` },
+        ],
+        {
+          taskKind: 'trivial', temperature: 0.3, maxTokens: 48, effort: 'off',
+          ...(attempt === 0 ? { model: utilityModelPreference() } : {}),
+          exclude: tried, label: 'sessionTitle',
+        },
+      );
+      if (!r) break;
+      tried.push(r.key);
+      const cleaned = sanitizeTitle(r.text);
+      if (cleaned && !/^(starting conversation|new chat|untitled|chat)$/i.test(cleaned)) title = cleaned;
     }
 
     // Always commits: every model can fail, and an untitled session forever is worse than the

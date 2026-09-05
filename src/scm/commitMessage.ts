@@ -1,8 +1,7 @@
 
 
 import * as vscode from 'vscode';
-import type { Router } from '../router/router';
-import { contentToString } from '../agent/content';
+import { routeOnceOrUndefined, utilityModelPreference } from '../agent/core/routeOnce';
 import { cleanCommitMessage, looksLikeGarbage, buildTemplateFallback } from './commitMessageClean';
 
 const SYSTEM = `You write concise commit messages. Output ONLY the commit message text.
@@ -63,11 +62,11 @@ function getGitApi(): GitApi | undefined {
   return ext?.isActive ? ext.exports.getAPI(1) : ext?.exports?.getAPI?.(1);
 }
 
-export function registerCommitMessage(router: Router): vscode.Disposable {
-  return vscode.commands.registerCommand('tiermux.generateCommitMessage', () => generateCommitMessage(router));
+export function registerCommitMessage(): vscode.Disposable {
+  return vscode.commands.registerCommand('tiermux.generateCommitMessage', () => generateCommitMessage());
 }
 
-export async function generateCommitMessage(router: Router): Promise<void> {
+export async function generateCommitMessage(): Promise<void> {
   const git = getGitApi();
   if (!git || git.repositories.length === 0) {
     void vscode.window.showInformationMessage('No Git repository found.');
@@ -111,33 +110,26 @@ export async function generateCommitMessage(router: Router): Promise<void> {
 
     try {
 
-      const primary = await router.pickUtilityModel();
-      const fallbacks = [
-        'google::gemini-2.5-flash',
-        'groq::llama-3.3-70b-versatile',
-        'openrouter::deepseek/deepseek-chat-v3.1:free',
-      ];
-      const candidates = [primary, ...fallbacks].filter((m): m is string => !!m);
-      const seen = new Set<string>();
-      const attempts: string[] = [];
-      for (const m of candidates) {
-        if (seen.has(m)) continue;
-        seen.add(m);
-        if (!(await router.isReady(m))) continue;
-        attempts.push(m);
-        if (attempts.length >= 3) break;
-      }
-
+      // Up to three models, skipping any whose output is garbage. The hardcoded fallback list
+      // and the isReady pre-filter are gone: routeOnce walks the picker's `trivial` chain,
+      // which is already "enabled, keyed, not rate-limited, small and fast" — the properties
+      // that list was approximating by name. What routeOnce CANNOT see is a well-formed
+      // response that happens to be junk, so that is the only reason left to loop.
       let msg = '';
-      for (const model of attempts) {
-        try {
-          const result = await router.route(messages, { temperature: 0.2, max_tokens: 256, model });
-          const cleaned = cleanCommitMessage(contentToString(result.response.choices[0]?.message.content));
-          if (!looksLikeGarbage(cleaned)) {
-            msg = cleaned;
-            break;
-          }
-        } catch { /* try the next model */ }
+      const tried: string[] = [];
+      for (let attempt = 0; attempt < 3 && !msg; attempt++) {
+        const r = await routeOnceOrUndefined(messages, {
+          taskKind: 'trivial',
+          temperature: 0.2,
+          maxTokens: 256,
+          ...(attempt === 0 ? { model: utilityModelPreference() } : {}),
+          exclude: tried,
+          label: 'commitMessage',
+        });
+        if (!r) break;
+        tried.push(r.key);
+        const cleaned = cleanCommitMessage(r.text);
+        if (!looksLikeGarbage(cleaned)) msg = cleaned;
       }
 
       if (!msg || looksLikeGarbage(msg)) {
