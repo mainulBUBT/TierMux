@@ -60,9 +60,11 @@ console.log('— the provider switch gates Auto/Smart selection even with a key 
   const chain = [sel.model, ...sel.fallbackChain];
   ok('no model of a switched-off provider is selected', !platformsOf(chain).includes('ollama'), chain.join(', '));
   ok('the enabled provider still serves', sel.model === 'groq::openai/gpt-oss-120b', sel.model);
-  const skipped = sel.rationale?.entries.find((e) => e.model.startsWith('ollama::'));
-  ok('"Why this model?" blames the switch, not a missing key',
-    !!skipped?.skip?.includes('provider switched off'), skipped?.skip ?? '<no entry>');
+  // Switched-off models are not candidates: absent from the report (the user turned them off),
+  // and — the original bug — never blamed on a missing key in their place.
+  const offEntries = sel.rationale?.entries.filter((e) => e.model.startsWith('ollama::')) ?? [];
+  ok('"Why this model?" does not list a switched-off provider\'s models', offEntries.length === 0, offEntries.map((e) => e.skip ?? e.reason).join(' | ') || '<none>');
+  ok('…and nothing blames them on a missing key', !sel.rationale?.entries.some((e) => e.model.startsWith('ollama::') && /API key/.test(e.skip ?? '')));
 }
 
 console.log('\n— re-enabling the provider brings its models straight back —');

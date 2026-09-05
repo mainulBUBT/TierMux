@@ -12,6 +12,16 @@ interface ModelUsage {
   requests: number;
 }
 
+/** One row of the per-model breakdown the Usage card lists — priced at that model's own
+ *  catalog rate, $0 when it has no published price. */
+export interface LifetimeModelUsage {
+  platform: string;
+  modelId: string;
+  totalTokens: number;
+  requests: number;
+  estimatedSavingsUsd: number;
+}
+
 interface LifetimeUsage {
   totalPromptTokens: number;
   totalCompletionTokens: number;
@@ -21,6 +31,9 @@ interface LifetimeUsage {
   estimatedSavingsUsd: number;
   /** Epoch-ms when this user first recorded a request. */
   firstRecordedAt: number;
+  /** Per-model rows, most tokens first. The legacy migration bucket (no attribution) is
+   *  excluded — it would be one anonymous "unknown" row. */
+  byModel: LifetimeModelUsage[];
 }
 
 /** Current on-disk shape: per-model token/request breakdown. */
@@ -118,7 +131,8 @@ export class UsageStore {
    *  at $0 for that slice of usage — never a flat/blended fallback. */
   getLifetime(catalog: Catalog): LifetimeUsage {
     let p = 0, c = 0, r = 0, requests = 0, savings = 0;
-    for (const usage of Object.values(this.data.byModel)) {
+    const byModel: LifetimeModelUsage[] = [];
+    for (const [key, usage] of Object.entries(this.data.byModel)) {
       p += usage.promptTokens;
       c += usage.completionTokens;
       r += usage.reasoningTokens;
@@ -126,8 +140,13 @@ export class UsageStore {
       const model = catalog.find(usage.platform, usage.modelId);
       const inPrice = model?.origInputPricePer1M ?? 0;
       const outPrice = model?.origOutputPricePer1M ?? 0;
-      savings += (usage.promptTokens / 1_000_000) * inPrice + (usage.completionTokens / 1_000_000) * outPrice;
+      const saved = (usage.promptTokens / 1_000_000) * inPrice + (usage.completionTokens / 1_000_000) * outPrice;
+      savings += saved;
+      if (key !== LEGACY_KEY) {
+        byModel.push({ platform: usage.platform, modelId: usage.modelId, totalTokens: usage.promptTokens + usage.completionTokens, requests: usage.requests, estimatedSavingsUsd: saved });
+      }
     }
+    byModel.sort((a, b) => b.totalTokens - a.totalTokens);
     return {
       totalPromptTokens: p,
       totalCompletionTokens: c,
@@ -136,6 +155,7 @@ export class UsageStore {
       totalRequests: requests,
       estimatedSavingsUsd: savings,
       firstRecordedAt: this.data.firstRecordedAt || 0,
+      byModel,
     };
   }
 }

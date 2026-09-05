@@ -215,6 +215,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let usageOut = 0;
   let lastContextTokens = 0;
   let failovers = 0;
+  /** 1 for the initial pass, 2 for the one continuation — forwarded with each usage event so the
+   *  host can label which pass a model answered in. Mechanical: set in runPass, never judged. */
+  let turnPass = 0;
   const modelMessages = toModelMessages(opts.messages);
   // exitPlanMode's validated structure; the host renders the plan card from it. Last call wins.
   let proposedPlan: ProposedPlan | undefined;
@@ -253,7 +256,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       usageIn += info.inputTokens || 0;
       usageOut += info.outputTokens || 0;
       lastContextTokens = info.inputTokens || lastContextTokens;
-      opts.usageSink?.({ inputTokens: info.inputTokens, outputTokens: info.outputTokens, contextTokens: info.inputTokens, model: info.model });
+      opts.usageSink?.({ inputTokens: info.inputTokens, outputTokens: info.outputTokens, contextTokens: info.inputTokens, model: info.model, pass: turnPass });
     },
   });
 
@@ -315,6 +318,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // (provider prompt-cache friendly) and the async reads never happen per-pass.
   const system = composeSystemPrompt(opts.mode, await gatherPromptContext());
   const runPass = (messages: ModelMessage[]) => {
+    turnPass++;
     // Per-PASS state, reset here so onChunk can close over it. Leaking it across passes fired
     // a second onRetractDraft for an already-retracted draft (exitPlanMode.e2e plan-gap case).
     narrationSinceToolCall = false;

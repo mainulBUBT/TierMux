@@ -47,6 +47,9 @@ export type UsageTotals = UsagePayload & {
     estimatedSavingsUsd: number;
     firstRecordedAt: number;
     totalReasoningTokens?: number;
+    /** Per-model rows, most tokens first — the "Per model" list under the Usage card's donut.
+     *  `model` is the "Provider/model-id" display string. Optional: older senders omit it. */
+    byModel?: Array<{ model: string; totalTokens: number; requests: number; estimatedSavingsUsd: number }>;
   };
 };
 
@@ -304,10 +307,24 @@ export interface SelectionRationaleEntry {
   skip?: string;
 }
 
-/** The scoring rationale for one turn — what the (?) popover renders. */
+/** One model that actually produced tokens this turn, aggregated across its steps. `model` is
+ *  the same display string the entries use. `pass` is 1 for the initial pass, 2 for the one
+ *  continuation — the popover labels the row from it. */
+export interface AnsweredModel {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  pass: number;
+}
+
+/** The scoring rationale for one turn — what the (?) popover renders. `entries` is the candidate
+ *  list from the LAST selection (who was in line and why); `answered` accumulates across every
+ *  selection in the turn (who actually wrote tokens), so a failover or continuation that landed on
+ *  a second model is visible instead of overwritten. */
 export interface SelectionRationale {
   picked?: string;
   entries: SelectionRationaleEntry[];
+  answered?: AnsweredModel[];
 }
 
 /** Live status of a session, shown as a dot on its tab. */
@@ -356,7 +373,7 @@ export type OutMessage =
    *  two stay in sync; the webview picks Plan vs legacy todo-list by current mode. */
   | { type: 'planData'; sessionId: string; requestId: string; data: PlanDataPayload }
   | { type: 'failoverNotice'; sessionId: string; requestId: string; from: string; reason: string }
-  | { type: 'selectionRationale'; sessionId: string; requestId: string; taskKind: string; picked?: string; entries: SelectionRationaleEntry[] }
+  | { type: 'selectionRationale'; sessionId: string; requestId: string; taskKind: string; picked?: string; entries: SelectionRationaleEntry[]; answered?: AnsweredModel[] }
   | { type: 'keyRotated'; sessionId: string; requestId: string; platform: string; platformName: string; keyIndex: number; keyTotal: number }
   | { type: 'attachmentAdded'; attachment: Attachment }
   | { type: 'insertMention'; text: string }

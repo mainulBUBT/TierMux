@@ -119,7 +119,7 @@ export interface AgentOpts {
   /** Turn telemetry sink — set by runTurn itself (not callers); every model call the turn
    *  makes (planner, executor, judges, recap) reports its provider-measured usage here so
    *  WorkReportData.telemetry reflects the WHOLE turn. See src/shared/workReport.ts. */
-  usageSink?: (info: { inputTokens: number; outputTokens: number; contextTokens: number; contextWindow?: number; model: string }) => void;
+  usageSink?: (info: { inputTokens: number; outputTokens: number; contextTokens: number; contextWindow?: number; model: string; pass?: number }) => void;
 }
 
 // Lazy/dynamic on purpose: everything under `./core/` imports `vscode` (workspace.fs, the

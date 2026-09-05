@@ -13,6 +13,10 @@ import { RateTracker } from './rateTracker';
 import type { QuotaStore } from '../config/quotaStore';
 import { diagLog } from '../util/diag';
 
+/** Skip reason for a model whose provider the user switched off — recorded so no other reason
+ *  can claim it, never reported (see the skipList filter). */
+const PROVIDER_OFF = 'provider switched off in Manage Models & Keys';
+
 /** platform::modelId → candidate chain per task kind. Ordered: best first. */
 export const TASK_ROUTING: Record<TaskKind, string[]> = {
   // Every id here MUST exist in media/catalog.json; a renamed gateway id goes dead silently
@@ -295,12 +299,13 @@ export async function selectModel(
   const skipReasons = new Map<string, string>();
   const pickLabels = new Map<string, string>();
   const skip = (key: string, reason: string) => { if (!skipReasons.has(key)) skipReasons.set(key, reason); };
-  // Models the provider switch removed never reach pick(), so without this they vanish from
-  // the report entirely — and "it silently stopped using my models" is the same confusion,
-  // inverted, as the bug the switch fix closed. Seed them so the popover SAYS why.
+  // Seeded FIRST so a switched-off provider's model can never be blamed on a missing key
+  // (skip() keeps the first reason). They are then dropped from the report below: the user
+  // switched them off, so they are not candidates, and listing ten of them ate the skip cap
+  // that cooldown / no-key entries actually need (2026-09-05).
   for (const e of sources.settings.getFallback()) {
     if (e.enabled && disabledProviders.has(e.platform)) {
-      skip(`${e.platform}::${e.modelId}`, 'provider switched off in Manage Models & Keys');
+      skip(`${e.platform}::${e.modelId}`, PROVIDER_OFF);
     }
   }
   const pick = async (key: string, label: string): Promise<string | undefined> => {
@@ -311,7 +316,7 @@ export async function selectModel(
     // rationale says "provider off" rather than blaming a key that is actually stored. The
     // pinned model is exempt for the same reason it is exempt from the enabled filter below:
     // explicit user choice for this one turn.
-    if (disabledProviders.has(platform) && key !== opts.pinnedModel) { skip(key, 'provider switched off in Manage Models & Keys'); return undefined; }
+    if (disabledProviders.has(platform) && key !== opts.pinnedModel) { skip(key, PROVIDER_OFF); return undefined; }
     if (!(await platformUsable(platform))) { skip(key, 'no API key stored for this platform'); return undefined; }
     // Per-model cooldown: skip a model still inside its failure cooldown (429/5xx/timeout) so
     // the chain prefers healthy models. The pinned model is exempt — explicit user choice,
@@ -473,7 +478,7 @@ export async function selectModel(
   };
   const MAX_SKIP_SHOWN = 15;
   const skipList = [...skipReasons.entries()]
-    .filter(([key]) => !chain.includes(key))
+    .filter(([key, reason]) => !chain.includes(key) && reason !== PROVIDER_OFF)
     .slice(0, MAX_SKIP_SHOWN);
   const rationale: SelectionRationale = {
     taskKind,

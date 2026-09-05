@@ -884,49 +884,96 @@ import { handleToolStatus } from './handlers/toolStatus';
   function onRationaleOutside(e) {
     if (openRationalePop && !openRationalePop.contains(e.target) && !e.target.closest?.('.why-ic')) closeRationalePop();
   }
+  /** Score/Cap/Run/Conf for one candidate as a hover tooltip — the numbers describe the model,
+   *  not the decision (the picker orders by pin → task table → rank), so they belong one level
+   *  down, on hover, not on every row: a 10-candidate turn stays 10 lines. */
+  function rationaleMetricsTitle(e) {
+    return `Score ${e.score.toFixed(2)} · Cap ${e.capability.toFixed(2)} · Run ×${e.runtime.toFixed(2)} · Conf ${Math.round(e.confidence * 100)}%\n${e.reason}`;
+  }
+  // Two sections, each model exactly once: "Answered this turn" (who wrote tokens, how many,
+  // which pass) and "Didn't answer" (who was in line and why they never ran). `answered` is
+  // absent on transcripts persisted before it existed — those fall back to the flat candidate
+  // list, so an old session still opens a popover instead of an empty one.
   function showRationalePopover(anchor, data) {
     if (openRationalePop) { closeRationalePop(); return; } // toggle off
     const pop = document.createElement('div');
     pop.className = 'rationale-pop';
+    const answered = (data.answered || []).filter((a) => a && (a.inputTokens || a.outputTokens));
+    const answeredNames = new Set(answered.map((a) => a.model));
+    const byName = new Map((data.entries || []).map((e) => [e.model, e]));
+
     const head = document.createElement('div');
     head.className = 'rationale-pop-head';
-    head.textContent = data.picked ? `Why ${data.picked}?` : 'Why this model?';
+    const title = document.createElement('span');
+    // One title regardless of count: a turn is not always one model, and the model that answered
+    // is already the first row below — naming it here too said the same thing twice.
+    title.textContent = 'Why these models?';
+    head.appendChild(title);
+    if (data.taskKind) {
+      const meta = document.createElement('span');
+      meta.className = 'rationale-pop-meta';
+      meta.textContent = data.taskKind;
+      head.appendChild(meta);
+    }
     pop.appendChild(head);
-    for (const e of (data.entries || [])) {
-      const row = document.createElement('div');
-      row.className = 'rationale-row' + (e.selected ? ' selected' : '');
-      const line = document.createElement('div');
-      const name = document.createElement('span');
-      name.className = 'rationale-model';
-      name.textContent = `${e.selected ? '✓' : '·'} ${e.model}`;
-      line.appendChild(name);
-      const meta = document.createElement('div');
-      meta.className = 'rationale-meta';
-      const metric = (label, val, tip) => {
-        const s = document.createElement('span');
-        s.className = 'rationale-metric';
-        s.title = tip; // hover explains what the number means
-        bindHoverTip(s);
-        const b = document.createElement('b'); b.textContent = label + ' ';
-        s.appendChild(b); s.appendChild(document.createTextNode(val));
-        return s;
-      };
-      const metrics = [
-        // NOT "highest score wins" — the picker orders by pin → task table → catalog rank, so
-        // the chosen model routinely scores below a candidate it outranks. The reason line under
-        // each row is the real explanation; these numbers describe the model, not the decision.
-        metric('Score', e.score.toFixed(2), 'Catalog strength for this turn. It does NOT decide the winner — order is: the model you pinned, then this task kind\u2019s preferred model, then the strongest remaining one. The line below each model says which rule applied.'),
-        metric('Cap', e.capability.toFixed(2), 'Capability — how well this model fits the task by catalog: intelligence, speed, tool/vision support, context window. Static: it does not change with latency or health.'),
-        metric('Run', '×' + e.runtime.toFixed(2), 'Runtime — live health multiplier learned from real requests: success rate, latency vs the model’s own baseline, rate-limit/key availability, and provider health. ~1.0 = healthy, lower = currently degraded.'),
-        metric('Conf', Math.round(e.confidence * 100) + '%', 'Confidence — how much real data backs the Runtime score. Low % = little history yet, so Runtime leans toward a neutral default instead of over-reacting.'),
-      ];
-      metrics.forEach((m, i) => { if (i) meta.appendChild(document.createTextNode(' · ')); meta.appendChild(m); });
-      line.appendChild(meta);
-      const why = document.createElement('div');
-      why.className = 'rationale-why';
-      why.textContent = e.reason;
-      row.appendChild(line); row.appendChild(why);
-      pop.appendChild(row);
+
+    const section = (label, right) => {
+      const h = document.createElement('div');
+      h.className = 'rationale-sec-head';
+      const l = document.createElement('span'); l.textContent = label; h.appendChild(l);
+      if (right) { const r = document.createElement('span'); r.className = 'rationale-sec-right'; r.textContent = right; h.appendChild(r); }
+      return h;
+    };
+
+    if (answered.length) {
+      const total = answered.reduce((n, a) => n + a.inputTokens + a.outputTokens, 0);
+      const sec = document.createElement('div');
+      sec.className = 'rationale-sec' + (answered.length > 1 ? '' : ' single');
+      sec.appendChild(section('Answered this turn', `${answered.length} · ${fmtTokens(total)} tok`));
+      answered.forEach((a, i) => {
+        const row = document.createElement('div');
+        row.className = 'rationale-ans';
+        const e = byName.get(a.model);
+        if (e) { row.title = rationaleMetricsTitle(e); bindHoverTip(row); }
+        const tok = a.inputTokens + a.outputTokens;
+        const share = total > 0 ? Math.max(2, Math.round((tok / total) * 100)) : 0;
+        // The share bar compares models; with one answerer it is a 100% bar that only steals
+        // room from the name, so it is dropped and the name column widens.
+        row.innerHTML =
+          `<span class="ra-no">${i + 1}</span>` +
+          `<span class="ra-name">${escapeHtml(a.model)}</span>` +
+          (answered.length > 1 ? `<span class="ra-bar"><span class="ra-fill" style="width:${share}%"></span></span>` : '') +
+          `<span class="ra-tok">${escapeHtml(fmtTokens(a.inputTokens))} in · ${escapeHtml(fmtTokens(a.outputTokens))} out</span>` +
+          `<span class="ra-role">${a.pass > 1 ? 'continuation' : 'first pass'}</span>`;
+        sec.appendChild(row);
+      });
+      pop.appendChild(sec);
+    }
+
+    const rest = (data.entries || []).filter((e) => !answeredNames.has(e.model));
+    if (rest.length) {
+      const sec = document.createElement('div');
+      sec.className = 'rationale-sec' + (answered.length ? ' recede' : '');
+      sec.appendChild(section(answered.length ? 'Other candidates' : 'Candidates', `${rest.length} of ${(data.entries || []).length}`));
+      for (const e of rest) {
+        const row = document.createElement('div');
+        row.className = 'rationale-skip' + (e.selected ? ' selected' : '');
+        row.title = rationaleMetricsTitle(e); bindHoverTip(row);
+        // ✗ = dialled and failed; · = never dialled. The picker's "failover #N" means "Nth in line
+        // had the first failed" — it never ran, so say that, not a word that sounds like it did.
+        const failed = /failed over/i.test(e.reason || '');
+        const why = e.skip
+          ? e.skip
+          : failed ? 'tried, failed over'
+          : /failover #\d+/i.test(e.reason || '') ? 'next in line, not needed'
+          : (e.reason || '').replace(/^.*?— /, '');
+        row.innerHTML =
+          `<span class="rs-g ${failed ? 'no' : e.selected ? 'ok' : 'dim'}">${failed ? '✗' : e.selected ? '✓' : '·'}</span>` +
+          `<span class="rs-name">${escapeHtml(e.model)}</span>` +
+          `<span class="rs-why">${escapeHtml(why)}</span>`;
+        sec.appendChild(row);
+      }
+      pop.appendChild(sec);
     }
     document.body.appendChild(pop);
     openRationalePop = pop;
@@ -1064,7 +1111,21 @@ import { handleToolStatus } from './handlers/toolStatus';
     const left = document.createElement('span'); left.className = 'foot-left';
     // Model name only — the time is already shown on the user bubble of this turn, and
     // stamping it here too made a sub-minute Q+A read "1:02 AM" twice in one bubble.
-    left.textContent = model ? model : '';
+    // "+N": more than one model wrote this reply (failover or continuation landed elsewhere).
+    // Sits right after the model NAME — `model` arrives as "name  ·  usage  ·  secs", so split
+    // at the first separator and put the badge between. Opens the same popover the (?) does.
+    const extra = rationale && rationale.answered ? rationale.answered.filter((a) => a && (a.inputTokens || a.outputTokens)).length - 1 : 0;
+    const text = model ? model : '';
+    const cut = extra > 0 ? text.indexOf('  ·  ') : -1;
+    left.appendChild(document.createTextNode(cut >= 0 ? text.slice(0, cut) : text));
+    if (extra > 0) {
+      const badge = document.createElement('button');
+      badge.type = 'button'; badge.className = 'foot-more'; badge.textContent = `+${extra}`;
+      badge.title = `${extra + 1} models answered this turn — see which`;
+      badge.addEventListener('click', (ev) => { ev.stopPropagation(); showRationalePopover(ev.currentTarget, rationale); });
+      left.appendChild(badge);
+      if (cut >= 0) left.appendChild(document.createTextNode(text.slice(cut)));
+    }
     const acts = document.createElement('span'); acts.className = 'foot-acts';
     acts.appendChild(copyBtn(el));
     acts.appendChild(feedbackBtns(requestId));
@@ -4323,7 +4384,7 @@ import { handleToolStatus } from './handlers/toolStatus';
         // keep the most recent selection. It surfaces as a (?) on the message footer,
         // which is built later at assistantDone. If the footer already exists (rationale
         // arrived late), refresh its (?) in place.
-        t.rationale = { picked: msg.picked, entries: msg.entries };
+        t.rationale = { picked: msg.picked, entries: msg.entries, answered: msg.answered, taskKind: msg.taskKind };
         if (t.footActs) attachWhyBtn(t.footActs, t.rationale);
         break;
       }
@@ -5473,6 +5534,29 @@ import { handleToolStatus } from './handlers/toolStatus';
       const since = document.createElement('div'); since.className = 'usage-since';
       since.textContent = `Tracking since ${new Date(lt.firstRecordedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`;
       el.appendChild(since);
+    }
+
+    // Per model — one line per model, most tokens first, share bar against the top row. A bar
+    // list rather than more donut wedges: five or six models are already unreadable as a pie,
+    // and one more model here is one more line. Rows arrive only once addRequest has recorded
+    // something, so a fresh install shows nothing here instead of an empty header.
+    const models = (lt.byModel || []).filter((m) => m && m.totalTokens > 0);
+    if (models.length) {
+      const hdr = document.createElement('div'); hdr.className = 'usage-stat-hdr'; hdr.textContent = 'Per model'; el.appendChild(hdr);
+      const top = models[0].totalTokens;
+      const list = document.createElement('div'); list.className = 'usage-models';
+      for (const m of models) {
+        const row = document.createElement('div'); row.className = 'usage-model-row';
+        row.title = `${m.model} — ${fmtTokens(m.totalTokens)} tokens over ${m.requests} request${m.requests === 1 ? '' : 's'}`;
+        const share = top > 0 ? Math.max(2, Math.round((m.totalTokens / top) * 100)) : 0;
+        row.innerHTML =
+          `<span class="um-name">${escapeHtml(m.model)}</span>` +
+          `<span class="usage-bar-track um-bar"><span class="usage-bar-fill neutral" style="width:${share}%"></span></span>` +
+          `<span class="um-tok">${escapeHtml(fmtTokens(m.totalTokens))}</span>` +
+          `<span class="um-usd">${m.estimatedSavingsUsd > 0 ? escapeHtml(fmtUsd(m.estimatedSavingsUsd)) : '—'}</span>`;
+        list.appendChild(row);
+      }
+      el.appendChild(list);
     }
 
     // Retrieval quality — horizontal bars read at a glance; the old plain number rows made

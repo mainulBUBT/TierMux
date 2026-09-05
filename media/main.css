@@ -572,7 +572,7 @@ details[open].tool-more summary { opacity: .6; }
    labels, meta) were still the old hand-rolled look, so it read as a different widget system
    opening from the same transcript despite the matching outline. */
 .rationale-pop {
-  position: fixed; z-index: 40; max-width: min(300px, 90vw); max-height: 46vh; overflow-y: auto;
+  position: fixed; z-index: 40; max-width: min(490px, 94vw); max-height: 52vh; overflow-y: auto;
   padding: var(--tm-gap-sm); font-size: var(--tm-text-xs); line-height: 1.4;
   background: var(--tm-surface-dropdown); color: var(--tm-fg);
   /* border-dropdown, not -soft — same floating-overlay reasoning as .tm-popover
@@ -597,6 +597,51 @@ details[open].tool-more summary { opacity: .6; }
 .rationale-metric { cursor: help; white-space: nowrap; }
 .rationale-metric b { font-weight: 600; opacity: .8; border-bottom: 1px dotted currentColor; }
 .rationale-why { color: var(--tm-fg-muted); opacity: .85; margin-top: 2px; line-height: 1.35; }
+
+/* Two-section popover: "Answered this turn" (who wrote tokens) over "Didn't answer" (who was in
+   line and why not). Each model appears exactly once. Per-row metrics live in the hover tooltip
+   so a long candidate list stays one line per model. */
+.rationale-pop-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.rationale-pop-meta { font-weight: 400; font-size: var(--tm-text-xs); color: var(--tm-fg-muted); font-variant-numeric: tabular-nums; }
+.rationale-sec { padding: 8px var(--tm-gap-sm) 9px; }
+.rationale-sec + .rationale-sec { border-top: 1px solid var(--tm-border-soft); margin-top: 6px; }
+.rationale-sec.recede { background: color-mix(in srgb, var(--tm-fg) 4%, transparent); border-radius: var(--tm-radius-md); }
+.rationale-sec-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin: 0 0 7px;
+  font-size: 9.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--tm-fg-muted);
+}
+.rationale-sec-right { font-weight: 400; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
+.rationale-ans {
+  display: grid; grid-template-columns: 12px minmax(0, 1fr) 44px 104px 72px; align-items: center; gap: 10px;
+  padding: 7px 0; cursor: help;
+}
+.rationale-ans + .rationale-ans { border-top: 1px solid var(--tm-border-soft); }
+.rationale-sec.single .rationale-ans { grid-template-columns: 12px minmax(0, 1fr) 104px 72px; }
+.ra-no { font-size: 10px; font-weight: 700; color: var(--tm-accent); }
+.ra-name { font-weight: 600; color: var(--tm-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ra-bar { height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--tm-fg) 10%, transparent); overflow: hidden; }
+.ra-fill { display: block; height: 100%; background: var(--tm-accent); border-radius: 3px; }
+.ra-tok { text-align: right; font-variant-numeric: tabular-nums; color: var(--tm-fg); white-space: nowrap; }
+.ra-role { text-align: right; font-size: 10px; color: var(--tm-fg-muted); }
+/* Reason column: one line, ellipsis — the picker's full wording stays in the row's tooltip. The
+   name keeps priority; a long "no API key stored for this platform" must not shrink it. */
+.rationale-skip { display: grid; grid-template-columns: 10px minmax(0, 1fr) minmax(0, 46%); align-items: baseline; gap: 10px; padding: 5px 0; cursor: help; }
+.rs-g { font-size: 10px; line-height: 1; }
+.rs-g.no { color: var(--tm-error); }
+.rs-g.ok { color: var(--tm-success); }
+.rs-g.dim { color: var(--tm-fg-muted); }
+.rs-name { color: var(--tm-fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rationale-skip.selected .rs-name { color: var(--tm-fg); font-weight: 600; }
+.rs-why { font-size: 10px; color: var(--tm-fg-muted); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Footer "+N" — more than one model wrote this reply. Same popover as the (?) icon. */
+.foot-more {
+  display: inline-flex; align-items: center; margin-left: 6px; padding: 0 6px; height: 15px;
+  font: inherit; font-size: 10px; font-weight: 700; line-height: 1; letter-spacing: .02em;
+  color: var(--tm-accent); background: color-mix(in srgb, var(--tm-accent) 14%, transparent);
+  border: 0; border-radius: 20px; cursor: pointer; vertical-align: 1px;
+}
+.foot-more:hover, .foot-more:focus-visible { background: color-mix(in srgb, var(--tm-accent) 24%, transparent); outline: none; }
 
 /* Final-answer reasoning disclosure */
 details.reasoning {
@@ -1354,6 +1399,17 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .usage-bar-fill.poor { background: var(--tm-status-error); }
 
 .usage-stat-row { display: flex; align-items: center; gap: 8px; padding: 8px 0 0; font-size: 12px; }
+/* Per-model list under the donut: name · share bar · tokens · est. $ — one line per model. */
+.usage-models { display: flex; flex-direction: column; }
+.usage-model-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 84px 56px 52px; align-items: center; gap: 10px;
+  padding: 6px 0; font-size: 12px; border-top: 1px solid var(--tm-border-soft);
+}
+.usage-model-row:first-child { border-top: none; }
+.um-name { font-weight: 600; color: var(--tm-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.um-bar { display: block; }
+.um-tok { text-align: right; font-variant-numeric: tabular-nums; color: var(--tm-fg-muted); }
+.um-usd { text-align: right; font-variant-numeric: tabular-nums; color: var(--tm-fg); }
 .usage-stat-row .lbl { flex: 1 1 auto; color: var(--vscode-descriptionForeground); }
 .usage-stat-row .val { flex: 0 0 auto; color: var(--vscode-foreground); font-variant-numeric: tabular-nums; font-weight: 600; }
 .usage-stat-hdr { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--tm-fg-dim); margin: 10px 0 5px; }

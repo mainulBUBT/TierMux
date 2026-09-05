@@ -23,7 +23,7 @@ import { statusLines } from './edits/gitSnapshot';
 import type { ModelStatsStore, Vote } from './config/modelStats';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem, McpServerConfig } from './messages';
-import type { AnnouncementItem, Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, PlanDataPayload, SelectionRationale, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
+import type { AnnouncementItem, Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, PlanDataPayload, SelectionRationale, AnsweredModel, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
 import { renderLegacyMarkdown } from './shared/workReport';
 import { fetchAnnouncements as fetchWorkerAnnouncements, markAnnouncementsSeen, unseenAnnouncementIds } from './catalog/announcements';
 import { normalizeMcpServerConfig } from './mcp/mcpClient';
@@ -296,6 +296,13 @@ interface Session {
    *  persist it on the transcript entry (the (?) popover must survive a reload). Same
    *  keyed-by-requestId lifecycle as liveSteps: set while running, drained at turn end. */
   liveRationale: Map<string, SelectionRationale>;
+  /** Models that actually produced tokens for each in-flight requestId, aggregated per model in
+   *  first-seen order (an agent turn fires one usage event per STEP, mostly the same model, so
+   *  the events are summed rather than listed). Merged into liveRationale.answered on every
+   *  change and drained with it at turn end. */
+  liveAnswered: Map<string, AnsweredModel[]>;
+  /** Task kind of the most recent selection — the re-posted rationale needs it on the wire. */
+  liveTaskKind?: string;
   /** git-status snapshot (porcelain lines) captured just BEFORE each agent shell command runs,
    *  keyed by toolCallId — diffed against a just-after snapshot to attribute workspace edits to
    *  the agent's commands (see onTool in agentCallbacks). Edit-tool writes don't need this;
@@ -521,6 +528,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       lastWindow: 0,
       liveSteps: new Map(),
       liveRationale: new Map(),
+      liveAnswered: new Map(),
       commandBaselines: new Map(),
       toolStartTimes: new Map(),
       model: undefined,
@@ -566,6 +574,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       lastWindow: 0,
       liveSteps: new Map(),
       liveRationale: new Map(),
+      liveAnswered: new Map(),
       commandBaselines: new Map(),
       toolStartTimes: new Map(),
       createdAt: s.ts ?? Date.now(),
@@ -2524,6 +2533,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.liveSteps.delete(requestId);
     const rationale = s.liveRationale.get(requestId);
     s.liveRationale.delete(requestId);
+    // `answered` already points at the live list; drop the accumulator now that the entry owns it.
+    s.liveAnswered.delete(requestId);
     // WorkReportData is persisted ON the entry (canonical) and posted live; `.text` also carries
     // the legacy markdown so older transcripts keep rendering — it is never parsed back.
     let text = result.text;
@@ -2631,6 +2642,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // reasoning toolStatus cards, onTool → toolStatus running/done/error, onError → `error`;
     // assistantStart is posted at ENTER and assistantMessage + busy:false at finish.
     const live = (): boolean => this.isActiveRun(s, requestId);
+    /** "platform::modelId" → the "Provider/model-id" display string the popover and footer use. */
+    const displayModelName = (key: string): string => {
+      const sep = key.indexOf('::');
+      const platformId = sep >= 0 ? key.slice(0, sep) : key;
+      const modelId = sep >= 0 ? key.slice(sep + 2) : '';
+      return `${displayNameForEntry({ platform: platformId, modelId }, this.deps)}/${modelId}`;
+    };
 
     // Reasoning stream: ONE block per thinking burst (think→tool→think timeline). A tool call
     // settles the current burst with its duration and advances the segment id so the next delta
@@ -2674,6 +2692,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           completion_tokens: info.outputTokens,
           total_tokens: info.inputTokens + info.outputTokens,
         });
+        // Attribute this call to the model that actually made it (info.model is
+        // "platform::modelId", the same shape reportServed uses) — addRequest is the only
+        // writer of the lifetime byModel store the "Est. saved" tile reads, and until now
+        // nothing ever called it, so that stat was stuck at 0 (or a frozen v1 migration).
+        const sep = info.model.indexOf('::');
+        if (sep > 0) {
+          this.deps.usageStore.addRequest(info.model.slice(0, sep), info.model.slice(sep + 2), info.inputTokens, info.outputTokens);
+        }
+        // "Answered this turn": sum this call into its model's row (one event per STEP, so a
+        // 15-step turn on one model is one row, not fifteen) and re-post the rationale so the
+        // footer's (?) sees every model that wrote tokens — not just the last one selected.
+        if (live() && sep > 0) {
+          const name = displayModelName(info.model);
+          const list = s.liveAnswered.get(requestId) ?? [];
+          const row = list.find((a) => a.model === name);
+          if (row) { row.inputTokens += info.inputTokens; row.outputTokens += info.outputTokens; }
+          else list.push({ model: name, inputTokens: info.inputTokens, outputTokens: info.outputTokens, pass: info.pass ?? 1 });
+          s.liveAnswered.set(requestId, list);
+          const rationale = s.liveRationale.get(requestId);
+          if (rationale) {
+            rationale.answered = list;
+            this.post({ type: 'selectionRationale', sessionId: s.id, requestId, taskKind: s.liveTaskKind ?? 'chat', ...rationale });
+          }
+        }
       },
       // Checkpoint baseline: the write tools call this AFTER reading the pre-write content and
       // BEFORE mutating — the accurate capture point (the old onTool hook below ran from the
@@ -2821,18 +2863,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       onSelectionRationale: (info) => {
         if (!live()) { diagLog('chat.rationale', `requestId=${requestId} DROPPED — run no longer active`); return; }
-        const toName = (key: string): string => {
-          const sep = key.indexOf('::');
-          const platformId = sep >= 0 ? key.slice(0, sep) : key;
-          const modelId = sep >= 0 ? key.slice(sep + 2) : '';
-          return `${displayNameForEntry({ platform: platformId, modelId }, this.deps)}/${modelId}`;
-        };
         const rationale: SelectionRationale = {
-          picked: info.picked ? toName(info.picked) : undefined,
-          entries: info.entries.map((e) => ({ ...e, model: toName(e.model) })),
+          picked: info.picked ? displayModelName(info.picked) : undefined,
+          entries: info.entries.map((e) => ({ ...e, model: displayModelName(e.model) })),
+          // Carried across selections: `entries` is the LAST chain (who was in line), `answered`
+          // is every model that has written tokens so far (who actually ran) — the popover
+          // renders the two as separate sections.
+          answered: s.liveAnswered.get(requestId),
         };
-        // Keep the latest for this turn — an agent turn routes many times, and the last report
-        // describes the model that produced the final answer (the one the footer names).
+        s.liveTaskKind = info.taskKind;
         s.liveRationale.set(requestId, rationale);
         diagLog('chat.rationale', `requestId=${requestId} entries=${rationale.entries.length} picked=${rationale.picked ?? '<none>'} → posted`);
         this.post({ type: 'selectionRationale', sessionId: s.id, requestId, taskKind: info.taskKind, ...rationale });
@@ -3043,6 +3082,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         estimatedSavingsUsd: lifetime.estimatedSavingsUsd,
         firstRecordedAt: lifetime.firstRecordedAt,
         totalReasoningTokens: lifetime.totalReasoningTokens,
+        byModel: lifetime.byModel.map((m) => ({
+          model: `${displayNameForEntry({ platform: m.platform, modelId: m.modelId }, this.deps)}/${m.modelId}`,
+          totalTokens: m.totalTokens,
+          requests: m.requests,
+          estimatedSavingsUsd: m.estimatedSavingsUsd,
+        })),
       },
     };
   }
