@@ -1,4 +1,6 @@
-
+// Repairs for tool calls that arrive as TEXT instead of native tool_calls. Live caller:
+// openai-compat.ts rescues Groq-style `failed_generation` bodies through rescueInlineToolCalls,
+// then repairToolArguments coerces the args against the tool's JSON schema.
 
 interface JsonSchemaish {
   type?: string;
@@ -38,12 +40,9 @@ function leadingBalancedJsonValue(text: string): unknown | undefined {
   return undefined;
 }
 
-/** Un-stringify `value` against `schema` if it should be an array/object per the schema but
- *  arrived as a JSON-encoded string, then recurse into array items / object properties so a
- *  NESTED field stringified inside an already-correctly-typed parent (e.g. `askQuestions`'
- *  `questions[i].options`, one level inside the outer `questions` array) gets the same treatment
- *  — not just the top-level args object's own immediate fields. Mutates array/object values in
- *  place and returns the (possibly replaced) value; sets `state.changed` on any repair. */
+/** Un-stringify `value` against `schema` if it should be an array/object but arrived as a
+ *  JSON-encoded string, recursing into items/properties so a nested stringified field is
+ *  repaired too. Mutates in place; sets `state.changed` on any repair. */
 function repairValueAgainstSchema(value: unknown, schema: JsonSchemaish | undefined, state: { changed: boolean }): unknown {
   if (!schema) return value;
 
@@ -189,13 +188,8 @@ interface RescuedCall {
   arguments: string;
 }
 
-/** Imagined tool names weak models use in TEXT dialects, mapped to the real registry names.
- *  Mirrors loop.ts's TOOL_NAME_ALIASES role for NATIVE calls: the native path resolves a
- *  scrambled name and retries, but the text-dialect path dropped the call outright — captured
- *  live 2026-08-23 (complex-task harness): dots-studio emitted
- *  `<invoke name="read"><parameter name="file">src/agent/core/loop.ts</parameter>…`, shape 9
- *  parsed it fine, `toolNames.has('read')` failed, and the raw dialect streamed to the user as
- *  the final answer with zero tools run — the exact "garbage text, nothing happened" symptom. */
+/** Imagined tool names weak models use in text dialects (`<invoke name="read">`), mapped to
+ *  registry names. Without this a rescued call with an unknown name was dropped outright. */
 const DIALECT_NAME_ALIASES: Record<string, string> = {
   read: 'readFile', open: 'readFile', view: 'readFile',
   write: 'writeFile', create: 'createFile', create_file: 'createFile', new_file: 'createFile',
@@ -204,13 +198,12 @@ const DIALECT_NAME_ALIASES: Record<string, string> = {
   search: 'grep', find: 'grep', grep_search: 'grep',
   list: 'listDir', ls: 'listDir', list_files: 'listDir', glob_search: 'glob',
   bash: 'runCommand', shell: 'runCommand', exec: 'runCommand', execute: 'runCommand', terminal: 'runCommand',
-  todo: 'todowrite', update_plan: 'todowrite', set_todos: 'todowrite',
+  todo: 'todoWrite', update_plan: 'todoWrite', set_todos: 'todoWrite',
 };
 
 /** Resolve a dialect-emitted tool name to a REGISTERED name: exact, then case/underscore-
  *  insensitive (`read_file` → `readFile`), then the alias table above. Never returns a tool
- *  the caller didn't register — same rule as loop.ts's resolveToolName, so a mode-withheld
- *  tool (e.g. edits in plan mode) can't be smuggled in by a dialect alias. */
+ *  the caller didn't register, so a mode-withheld tool can't be smuggled in by an alias. */
 export function resolveDialectToolName(name: string, toolNames: Set<string>, allowAliases = true): string | undefined {
   if (!name) return undefined;
   if (toolNames.has(name)) return name;
@@ -224,7 +217,7 @@ export function resolveDialectToolName(name: string, toolNames: Set<string>, all
   // markup quoted in a chat answer into tool calls.
   if (!allowAliases) return undefined;
   const alias = DIALECT_NAME_ALIASES[key];
-  return alias && toolNames.has(alias) ? alias : undefined;
+  return alias ? resolveDialectToolName(alias, toolNames, false) : undefined;
 }
 
 /** Strip the wrapper a dialect puts AROUND its tag word, leaving the word: an XML namespace
@@ -242,32 +235,6 @@ function escapeRegExp(s: string): string {
 /** Any opening tag, tolerating an unterminated one so a chunk split mid-tag still detects.
  *  Group 1 is the tag word (which may carry a `=NAME` suffix), group 2 its attributes. */
 const ANY_OPEN_TAG = /<(?![/!?])([^\s></]{1,120})((?:\s[^>]*)?)>/g;
-
-/** Tag words that exist only as a tool-call wrapper — never as prose or markup. */
-const INLINE_WRAPPER_TAG = /^(?:tool_call|tool_calls|tool_call_start|invoke)$/i;
-
-/**
- * Index of the earliest point in `text` that opens an inline tool-call dialect, or -1.
- *
- * The STREAMING counterpart to rescueInlineToolCalls: router.ts holds text back from the live
- * chat bubble from this index onward, so dialect markup is never rendered and then un-rendered.
- * It answers the same open question the rescue does rather than listing vendors — a wrapper word,
- * a `<function=…>` opener, or a tag that IS a registered tool name (`<readFile>`). A tag that
- * resolves to no registered tool is prose or markup and is left to stream.
- */
-export function findInlineToolOpener(text: string, toolNames: Set<string>): number {
-  // Unterminated form on purpose: the opener may be the last thing in this chunk.
-  const tag = /<(?![/!?])([^\s></]{1,120})/g;
-  let m: RegExpExecArray | null;
-  while ((m = tag.exec(text)) !== null) {
-    const token = stripDialectSleeve(m[1]);
-    const base = token.split('=')[0];
-    if (INLINE_WRAPPER_TAG.test(base)) return m.index;
-    if (base.toLowerCase() === 'function' && token.includes('=')) return m.index;
-    if (resolveDialectToolName(base, toolNames, false)) return m.index;
-  }
-  return -1;
-}
 
 /**
  * Arguments out of a dialect call's BODY, without knowing which dialect wrote it. Tries, in

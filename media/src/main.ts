@@ -3128,13 +3128,9 @@ import { handleToolStatus } from './handlers/toolStatus';
         });
       }
 
-      // Base-URL override — NOT shown by default. A built-in provider's URL is resolved
-      // remotely (upsertCompatFromCatalog refreshes it from the catalog's /providers payload,
-      // cached for offline), and Cloudflare builds its own from the Account ID below, so
-      // typing one is never part of normal setup — it was pure chrome on every row.
-      // It still renders when an override IS stored, because router.ts keeps applying it
-      // (baseUrlOverride) — hiding it outright would leave a saved URL silently in force with
-      // no way to see or clear it.
+      // Base-URL override — shown only when one is stored (a built-in provider's URL comes
+      // from the catalog; Cloudflare builds its own from the Account ID). A saved override
+      // stays in force, so it must stay visible and clearable.
       if (p.endpoint) {
         const epLabel = el('div', 'muted');
         epLabel.textContent = 'Base URL override (custom — remote default is not in use)';
@@ -4201,7 +4197,7 @@ import { handleToolStatus } from './handlers/toolStatus';
   // (otherwise unchanged) render logic below writes into the right session's DOM regardless of
   // which session is currently being viewed. 'switchSession' is included so its case body can
   // use the returned `existed` flag to tell a brand-new pane from an already-live one.
-  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'planData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'workReport', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
+  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'planData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'workReport', 'planProposed', 'planDiscarded', 'editApproval', 'permissionAsk', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
 
   // ---------- inbound messages ----------
   // Diagnostic ring: the last 150 host messages with payload sizes. When a turn renders
@@ -4490,37 +4486,6 @@ import { handleToolStatus } from './handlers/toolStatus';
         if (document.activeElement !== titleInput) titleInput.value = v;
         break;
       }
-      case 'commandApproval': {
-        const t = ensureTarget(msg.requestId);
-        const card = document.createElement('div'); card.className = 'tm-approval-card'; card.dataset.id = msg.id;
-        const text = document.createElement('p'); text.className = 'tm-approval-text';
-        text.appendChild(document.createTextNode('This tool wants to run the command '));
-        const code = document.createElement('code'); code.className = 'tm-approval-inline-code'; code.textContent = msg.command;
-        text.appendChild(code);
-        text.appendChild(document.createTextNode('. Do you approve this action?'));
-        card.appendChild(text);
-        if (msg.cwd) { const cwd = document.createElement('div'); cwd.className = 'tm-approval-hint'; cwd.textContent = 'in ' + msg.cwd; card.appendChild(cwd); }
-        const actions = document.createElement('div'); actions.className = 'tm-approval-actions';
-        const skip = document.createElement('button'); skip.className = 'secondary'; skip.textContent = 'Reject';
-        const run = document.createElement('button'); run.className = 'primary'; run.textContent = 'Approve';
-        const decide = (approved) => {
-          run.disabled = skip.disabled = true;
-          actions.remove();
-          card.classList.add(approved ? 'approved' : 'rejected');
-          const note = document.createElement('div');
-          note.className = 'tm-approval-note';
-          note.textContent = approved ? '✓ Approved' : '✗ Rejected';
-          card.appendChild(note);
-          send({ type: 'commandApprovalResponse', id: msg.id, approved, sessionId: msg.sessionId });
-        };
-        run.addEventListener('click', () => decide(true));
-        skip.addEventListener('click', () => decide(false));
-        actions.appendChild(skip); actions.appendChild(run);
-        card.appendChild(actions);
-        t.tools.appendChild(card);
-        scrollDown();
-        break;
-      }
       case 'editApproval': {
         const t = ensureTarget(msg.requestId);
         const del = msg.kind === 'delete';
@@ -4556,10 +4521,8 @@ import { handleToolStatus } from './handlers/toolStatus';
       case 'permissionAsk': {
         const t = ensureTarget(msg.requestId);
         const card = document.createElement('div'); card.className = 'tm-approval-card'; card.dataset.id = msg.id;
-        // permission.ts sends a lead-in sentence ("This tool wants to delete the file") plus
-        // the path/command as `pattern` — inlined here as a code chip, matching the AI Elements
-        // Confirmation reference ("This tool wants to delete the file `/tmp/example.txt`. Do you
-        // approve this action?") so the user always sees WHICH file/command is affected.
+        // The host sends a lead-in sentence plus the path/command as `pattern`, rendered as a
+        // code chip so the user always sees WHICH file/command is affected.
         const text = document.createElement('p'); text.className = 'tm-approval-text';
         text.appendChild(document.createTextNode((msg.title || 'This tool wants to run') + ' '));
         if (msg.pattern) {
@@ -4676,7 +4639,7 @@ import { handleToolStatus } from './handlers/toolStatus';
         break;
       }
       case 'approvalDismissed': {
-        // The host force-settled a commandApproval/editApproval/permissionAsk card without a
+        // The host force-settled an editApproval/permissionAsk card without a
         // click (e.g. the run already ended) — disable it so a stale click is visibly a no-op
         // instead of silently doing nothing.
         activeThreadEl.querySelectorAll('.tm-approval-card').forEach((card) => {

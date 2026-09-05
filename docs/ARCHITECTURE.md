@@ -290,9 +290,8 @@ failover cascade. The future design is a single `AdaptiveOrchestrator.execute()`
 ### A pure capability resolver
 
 A public API that answers "which models can do this task?" without ordering
-or failover. `src/router/capabilityProfile.ts` is the seed: it already reads
-tools/vision/reasoning off `CatalogModel`, but the picker still uses
-`supportsTools !== false` as its only hard capability filter.
+or failover. The picker uses `supportsTools !== false` as its only hard
+capability filter today; catalog tags are display-only.
 
 ### Performance Knowledge Base (SQLite) — Phase 4+
 

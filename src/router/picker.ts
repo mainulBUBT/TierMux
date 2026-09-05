@@ -1,19 +1,10 @@
-// v3 model picker (plan step 8) — replaces src/router/router.ts's 2,235-LOC selection logic
-// and the whole scoring stack (scoring.ts, wilson.ts, metricsStore, rateTracker,
-// latencyTracker, capabilityProfile). Query-type → candidate chain + a MINIMAL per-model
-// cooldown. No learning, no hedging, no session pin, no circuit-breaker: a user can read
-// this table and know exactly which model answers what. The cooldown re-adds only the
-// lightweight "skip a model that just failed" behavior the delete-the-Router pass dropped;
-// the rest of the Router's resilience machinery stays deleted.
+// Model picker: task kind → candidate chain, plus a per-model cooldown and the declared
+// rpm/rpd windows. No learned scoring, no hedging, no session pin — a user can read the table
+// and know which model answers what. (A learned TTFT/slow-model demotion was tried for one day
+// in 2026-09 and removed; the static speedRank tail sort covers the same case. Do not re-add.)
 //
-// A learned TTFT EWMA + slow-model demotion lived here for one day (2026-09-04 → 09-05).
-// It was the deleted scoring Router in miniature — EWMA, staleness window, minSamples, a
-// pool-relative 3× speedFloorRatio — and the static speedRank grouping in the tail sort
-// covers the same repro with catalog data and no state. Do not bring it back.
-//
-// Sources (catalog/settings/secrets) are injected once at activation via setModelSources —
-// same module-level wiring pattern the old setGates used. Headless callers that never set
-// them still get a working default: keyless platforms from the static registry.
+// Sources (catalog/settings/secrets) are injected once at activation via setModelSources;
+// headless callers that never set them get keyless platforms from the static registry.
 
 import type { Catalog } from '../catalog/catalog';
 import type { SettingsStore } from '../config/settingsStore';
@@ -123,7 +114,7 @@ export interface ModelSources {
 
 let sources: ModelSources | undefined;
 
-/** Wired once by extension.ts at activation (mirrors the old setGates pattern). */
+/** Wired once by extension.ts at activation. */
 export function setModelSources(s: ModelSources): void {
   sources = s;
 }
@@ -332,10 +323,8 @@ export async function selectModel(
       return hit;
     }
     if (enabled.size > 0 && !enabled.has(key) && opts.pinnedModel !== key) { skip(key, 'not enabled in Manage Models & Keys'); return undefined; }
-    // Tool-capability filter — the OLD Router's requireTools rule (router.ts:779/867): an
-    // agent turn offers tools, so a model the catalog marks supportsTools=false can never
-    // call them and deflects instead ("I don't have access to…"). Without this, Auto picks
-    // non-tool models and every tool — webSearch/fetchUrl included — silently "doesn't work".
+    // An agent turn offers tools, so a model the catalog marks supportsTools=false would
+    // deflect ("I don't have access to…") and every tool would silently "not work".
     // Declared rpm/rpd quota — the ONE piece of the deleted Router the picker had to inherit
     // (2026-09-05, plan §4.2). TierMux exists to multiplex free tiers, and free tiers publish
     // hard per-minute/per-day limits; without this the picker would only learn a limit by

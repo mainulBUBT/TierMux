@@ -32,7 +32,7 @@ function stripWorkspacePrefix(input: string, root: vscode.Uri): string {
 }
 
 /** Resolves a workspace-relative path to a Uri, confined to the workspace root — same
- *  escape check CommandGate.resolveCwd already applies to `cwd`. */
+ *  containment every path-taking tool (including runCommand's `cwd`) uses. */
 export function resolveWorkspacePath(relPath: string): vscode.Uri {
   // Goes through `effectiveRootUri` so a fleet-pipeline worker (wrapped in
   // `runWithWorkspaceRoot`) resolves paths against its OWN worktree, while the main-agent path —

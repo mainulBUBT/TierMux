@@ -1,13 +1,7 @@
 /**
- * unifiedDiff — a pure, UI-independent line diff producing standard unified-format output.
- *
- * Consumed by the webview's ToolCard (diff2html rendering of edit previews) but deliberately
- * DOM-free and vscode-free so it is unit-testable under plain Node (scripts/unifiedDiff.e2e.ts).
- *
- * Algorithm: common prefix/suffix trim, then an LCS table over the remaining middle. Moved
- * blocks are NOT semantically detected — they fall out deterministically as delete+add hunks,
- * which is exactly what git shows for a pure move. Inputs are CRLF/CR-normalized to LF before
- * comparing so a line-ending change never masquerades as a content change.
+ * unifiedDiff — a pure line diff producing unified-format output for ToolCard's edit previews.
+ * DOM-free and vscode-free. Common prefix/suffix trim, then an LCS table over the middle; moved
+ * blocks fall out as delete+add hunks, as in git. Inputs are CRLF/CR-normalized first.
  */
 
 /** Above this many DP cells (rows×cols of the middle sections) the LCS is skipped and the

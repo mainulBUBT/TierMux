@@ -1,12 +1,4 @@
-/* Tool card and status rendering utilities.
- *
- * Moved from media/src/toolRendering.ts as the first component to move into ui/** —
- * "already partially separated," now built on the ui/primitives/Collapse factory for
- * its two <details><summary>…</summary>…</details> blocks instead of hand-rolling that
- * structure twice. Output markup/classes are unchanged from before this move.
- * 
- * Enhanced with AI Elements design patterns for better UX and visual hierarchy.
- */
+/* Tool card and status rendering. */
 
 import { renderMarkdown } from '../../markdown';
 import { fmtDuration, fmtToolDuration } from '../../format';
@@ -42,7 +34,7 @@ export function toolStateGlyph(state?: 'running' | 'done' | 'error' | 'queued'):
   return buildSpinGlyph(false, '✓', 'success');
 }
 
-// ── Edit-diff preview thresholds (Chat-UX-parity plan; boundary-tested in scripts/toolDiff.e2e.ts).
+// ── Edit-diff preview thresholds.
 // A change under BOTH inline caps renders as a rich diff2html view directly in the card body;
 // between the inline caps and the preview ceiling it renders collapsed behind a <details>;
 // at/over the ceiling only a summary line is shown (the saved file itself is always the
@@ -393,12 +385,9 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
   return card;
 }
 
-/** Mutating tools whose title must NOT say the past-tense verb while `state` is still
- *  'running' — unlike read tools (readFile/grep/…), these can sit in 'running' for an
- *  indefinite, user-controlled time while awaiting approval (see permission.ts's
- *  toolApproval), so "Edited path"/"Deleted path" while nothing has happened yet reads as a
- *  bug (the card claiming the action already completed). Read tools keep the existing
- *  always-past-tense wording — they finish in milliseconds and never wait on a human. */
+/** Mutating tools can sit in 'running' indefinitely while awaiting approval, so their title
+ *  must not claim "Edited path" before anything happened. Read tools finish in milliseconds
+ *  and keep the past tense. */
 const PRESENT_TENSE_WHILE_RUNNING: Record<string, string> = {
   writeFile: 'Writing', createFile: 'Creating', editFile: 'Editing', deleteFile: 'Deleting', runCommand: 'Running',
 };

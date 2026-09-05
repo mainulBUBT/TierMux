@@ -1,6 +1,4 @@
-// Text/stream utilities that have nothing to do with routing — extracted from
-// src/router/router.ts on 2026-09-05 (plan §4.2) so the v3 path stops importing the Router it
-// replaced. Pure functions and one state machine: no vscode, no providers, no selection logic.
+// Text/stream utilities — pure functions and one state machine, no vscode, no providers.
 //
 //   · clampOutputToContext — cap a requested max_tokens against the model's window
 //   · ThinkStripper        — split-tag-safe <think> separation (chat text vs reasoning)

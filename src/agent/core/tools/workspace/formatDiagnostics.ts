@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 
-/** Shared with diagnostics.ts's own tool output so a post-edit verify line and an explicit
- *  `getDiagnostics` call always read identically to the model. */
+/** Shared by editFile's post-edit note and the `getDiagnostics` tool so both read identically. */
 export function formatDiagnosticEntries(entries: [vscode.Uri, vscode.Diagnostic[]][], severity: 'error' | 'warning' | 'all'): string[] {
   const results: string[] = [];
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
@@ -46,8 +45,7 @@ export function waitForDiagnosticsSettled(uri: vscode.Uri, timeoutMs = 1200): Pr
   });
 }
 
-/** Marker prefixing verifyNoteFor's output — a stable sentinel so callers (loop.ts's self-correct
- *  retry) can detect a post-edit diagnostic warning in a tool result without re-parsing prose. */
+/** Prefix of editFile's post-edit diagnostics note — a stable sentinel for callers. */
 export const NEW_DIAGNOSTICS_MARKER = '⚠ New diagnostics after this edit:';
 
 /** Wait briefly for language servers to finish re-linting after a batch of edits, then read the

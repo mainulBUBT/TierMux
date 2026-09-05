@@ -1,6 +1,4 @@
-// Routing failure types. Extracted from src/router/router.ts on 2026-09-05 (plan §4.2) when the
-// Router was retired — the errors outlived it because the host renders them, and a thrown type
-// is part of the contract between the model layer and the UI.
+// Routing failure types — thrown by the model layer, rendered by the host.
 
 import type { Platform } from '../shared/types';
 

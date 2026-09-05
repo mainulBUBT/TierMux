@@ -1,7 +1,6 @@
-// Unit-style regression test for isReadOnlyCommand() (src/edits/commandClassify.ts) — the
-// classifier that lets CommandGate skip the approval ask-flow for confidently read-only shell
-// commands (ls, git status, grep, ...), added per Pochi's (github.com/TabbyML/pochi) equivalent
-// runCommand permission gating. This is security-relevant: a FALSE POSITIVE (classifying a
+// Regression test for isReadOnlyCommand() (src/edits/commandClassify.ts) — the classifier
+// that lets the permission policy skip the approval prompt for confidently read-only shell
+// commands (ls, git status, grep, ...). Security-relevant: a FALSE POSITIVE (classifying a
 // mutating command as read-only) would let it run without approval, so this test leans heavily
 // on cases that must NOT be misclassified, not just the happy path.
 //
@@ -23,10 +22,9 @@ ok('git diff', isReadOnlyCommand('git diff HEAD~1'));
 ok('git log', isReadOnlyCommand('git log --oneline -5'));
 ok('grep pattern file', isReadOnlyCommand('grep -rn "pattern" src/'));
 
-// Every git command `.tiermux/agent/research.md` tells the model to reach for on a history
-// question must actually clear this gate — the prompt promises they run in Ask and Plan mode,
-// and that promise is only true if the classifier agrees. A model told to run `git blame` that
-// then gets denied would fall back to the code search that produced the original bad answer
+// Every git command the ask-mode prompt (context/system.ts) tells the model to run on a
+// history question must clear this gate — the promise is only true if the classifier agrees.
+// A model told to run `git blame` that then gets denied would fall back to a code search
 // ("no symbol named 'last commit' exists in this codebase").
 for (const cmd of [
   'git log -1',
@@ -36,7 +34,7 @@ for (const cmd of [
   'git diff',
   'git branch --show-current',
   'git status',
-]) ok(`research.md promises: ${cmd}`, isReadOnlyCommand(cmd));
+]) ok(`ask-mode prompt promises: ${cmd}`, isReadOnlyCommand(cmd));
 ok('pwd', isReadOnlyCommand('pwd'));
 ok('find without -delete/-exec', isReadOnlyCommand('find . -name "*.ts"'));
 ok('chained read-only (&&)', isReadOnlyCommand('ls && git status'));

@@ -41,11 +41,8 @@ import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
 import { runAgentStream as engineRun, runPlanStream as engineRunPlan, runAskStream as engineRunAsk } from '../src/agent/agent';
 import { __setEngineModelForTests } from '../src/agent/core/engine';
 import { resolvePolicy, defaultPolicy as prodDefaultPolicy, policyFromSettings, clearSessionGrants } from '../src/permissions/policy';
-import { setGates } from '../src/agent/core/tools/gates';
 import { setMcpManager } from '../src/agent/core/tools/mcp/manager';
 import { buildV3ToolSet } from '../src/agent/core/tools/v3';
-import { CommandGate } from '../src/edits/commandGate';
-import { EditGate } from '../src/edits/applyEdit';
 import { createStreamTextSplitter } from '../src/agent/core/routerProvider';
 import { composeSystemPrompt } from '../src/context/system';
 import { gatherPromptContext, invalidatePromptContext } from '../src/context/promptContext';
@@ -83,11 +80,7 @@ function tracker() {
 }
 
 
-// ── The REAL engine harness (src/agent/agent.ts → core/engine.ts) ─────────────────────────
-// Module-scope because EVERY scenario uses it. Until 2026-09-05 scenarios 1-10 ran
-// src/agent/poc/runAgent.ts instead — a parallel loop written as step-4 scaffolding — so the
-// gate CLAUDE.md calls "THE contract" left production's repair, abort and permission paths
-// covered by nothing. See docs/AGENT_RELIABILITY_PLAN_2026-09-05.md §4.1.
+// ── The REAL engine harness (src/agent/agent.ts → core/engine.ts), used by every scenario ──
 
 /** Minimal AgentOpts for engine turns; scenarios override what they care about. */
 function engineOpts(over: Partial<AgentOpts> & { messages: ChatMessage[]; mode: AgentOpts['mode'] }): AgentOpts {
@@ -150,14 +143,6 @@ function withCommandApproval<T>(value: 'always' | 'allowlist' | 'never', fn: () 
 }
 
 async function main() {
-  // extension.ts wires these at activation; without them every shell path (the verify gate
-  // included) returns "could not run" and silently proves nothing.
-  setGates(new EditGate(() => false), new CommandGate(
-    () => (globalThis as { __tiermuxTestConfig?: Record<string, unknown> }).__tiermuxTestConfig?.commandApproval as 'always' | 'allowlist' | 'never' ?? 'always',
-    () => 120_000,
-    () => [],
-  ));
-
   // ── Scenario 1: read ─────────────────────────────────────────────────────────
   {
     const ws = makeWorkspace();
@@ -731,6 +716,24 @@ async function main() {
     ok('19b. on (default): writeFile asks', w2.type === 'denied' && asked === 1, `asked=${asked}`);
   }
 
+  // ── Scenario 19c: commandApproval='allowlist' auto-runs allowlisted SHELL commands ──
+  // Until 2026-09-05 the 'auto' branch compared the user's command prefixes against the TOOL
+  // NAME, so the mode never auto-ran anything and the built-in safe defaults never applied.
+  {
+    const base = { alwaysAllow: new Set<string>(), alwaysDeny: new Set<string>(), mode: 'auto' as const, sessionMode: 'agent' as const };
+    let asked = 0;
+    const ask = async () => { asked++; return 'reject' as const; };
+    const cfg = { ...base, autoModeAllowlist: new Set(['php artisan migrate']) };
+    const run = (command: string) => resolvePolicy({ toolName: 'runCommand', input: { command } }, cfg, ask);
+    ok('19c. built-in default (npm test) runs without a prompt', (await run('npm test')).type === 'approved' && asked === 0);
+    ok('19c. user prefix (php artisan migrate --seed) runs', (await run('php artisan migrate --seed')).type === 'approved' && asked === 0);
+    ok('19c. read-only (git status) runs', (await run('git status')).type === 'approved' && asked === 0);
+    ok('19c. unlisted (docker compose up) asks', (await run('docker compose up')).type === 'denied' && asked === 1);
+    ok('19c. dangerous (rm -rf dist) asks even though rm is not listed', (await run('rm -rf dist')).type === 'denied' && asked === 2);
+    const w = await resolvePolicy({ toolName: 'writeFile' }, cfg, ask);
+    ok('19c. file tools still ask in allowlist mode', w.type === 'denied' && asked === 3);
+  }
+
   // ── Scenario 20: always-allow persists across turns (session grants) ────────
   {
     clearSessionGrants('s20');
@@ -915,7 +918,7 @@ async function main() {
     const store = new Map<string, string[]>();
     setModelSources({
       // kimi-k2 is deliberately marked tool-incapable — the requireTools assertion below
-      // proves the picker skips it (the old Router's router.ts:779 rule).
+      // proves the picker skips it.
       catalog: { find: (_p: string, m: string) => ({ supportsTools: m !== 'kimi-k2' }) } as never,
       settings: {
         getFallback: () => [
@@ -974,8 +977,8 @@ async function main() {
     ok('F. unpinned selection also has depth', sel2.model.length > 0 && sel2.fallbackChain.length >= 2,
       JSON.stringify(sel2));
 
-    // requireTools (the old Router's rule, router.ts:779): catalog models marked
-    // supportsTools=false must be skipped — they deflect instead of calling tools.
+    // requireTools: catalog models marked supportsTools=false must be skipped — they deflect
+    // instead of calling tools.
     const toolSel = await selectModel([], { requireTools: true });
     ok('F. requireTools skips non-tool models',
       toolSel.model !== 'kilo::kimi-k2' && !toolSel.fallbackChain.includes('kilo::kimi-k2'),
@@ -1301,11 +1304,9 @@ async function main() {
   }
 
   // ── Scenario 29: `commandApproval: "never"` DISABLES the shell ───────────────
-  // It reads "Disable terminal command execution entirely" in package.json, and CommandGate has
-  // always refused to spawn under it. policyFromSettings folded it into `full-auto` instead —
-  // and the v3 runCommand tool spawns DIRECTLY, never through CommandGate. So the one setting a
-  // user picks to switch the shell OFF auto-approved every command with no prompt at all.
-  // Found 2026-09-05 while wiring the verify gate.
+  // package.json says "Disable terminal command execution entirely"; policyFromSettings used to
+  // fold it into full-auto, so the setting that switches the shell OFF auto-approved every
+  // command with no prompt. Found 2026-09-05 while wiring the verify gate.
   {
     const off = { ...prodDefaultPolicy, mode: 'full-auto' as const, shellDisabled: true };
     const v = await resolvePolicy({ toolName: 'runCommand', input: { command: 'rm -rf build' } }, off);

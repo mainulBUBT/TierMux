@@ -218,15 +218,8 @@ export class Catalog {
   }
 }
 
-/**
- * Worker tag vocabulary → internal tag vocabulary. The router/scorer read a small set of
- * canonical tags (`coding`, `planner`, `reasoner`, `general`, `router`, `vision`); the worker
- * uses `coder`/`planner`/etc. Map them so the catalog actually feeds routing. `vision` is a
- * first-class quality tag (dedicated VLM) kept DISTINCT from the `supportsVision` capability
- * boolean — the boolean gates "can it see at all", the tag signals "is it best at seeing".
- * Aggregator endpoints whose display name says "Router" get tagged `router` so vision turns
- * can demote them (they claim vision but delegate to arbitrary backends).
- */
+/** Worker tag vocabulary → canonical tags (`coding`, `planner`, `reasoner`, `general`,
+ *  `router`, `vision`). Display-only since the scoring Router was retired. */
 const WORKER_TAG_MAP: Record<string, string> = {
   coder: 'coding', coding: 'coding',
   planner: 'planner', plan: 'planner',
@@ -371,10 +364,8 @@ function modelRowToCatalog(platform: string, raw: unknown): CatalogModel | null 
     : [];
   const tags: string[] = [];
   for (const t of rawTags) {
-    // `free` is dropped here and re-derived from pricing below. `vision` is KEPT as a quality
-    // tag (dedicated VLM) distinct from the `supportsVision` capability boolean (can see at all):
-    // the boolean is the hard routing gate, the tag is a strong preference signal among capable
-    // models. See src/router/capabilityProfile.ts.
+    // `free` is dropped here and re-derived from pricing below. Other tags are display-only;
+    // routing reads the capability booleans (supportsTools/supportsVision), not tags.
     if (t === 'free') continue;
     const mapped = WORKER_TAG_MAP[t] ?? t;
     if (!tags.includes(mapped)) tags.push(mapped);

@@ -185,8 +185,7 @@ export interface CatalogModel {
   released?: string;
   sizeLabel: string;
   contextWindow: number | null;
-  /** Declared max OUTPUT tokens (models.dev-style limit.output). Null/undefined = unknown —
-   *  the router then applies its own floor without a cap (see defaultMaxOutputTokens). */
+  /** Declared max OUTPUT tokens (models.dev-style limit.output). Null/undefined = unknown. */
   outputTokenLimit?: number | null;
   rpmLimit: number | null;
   rpdLimit: number | null;
@@ -274,11 +273,8 @@ export interface CustomModel {
   supportsVision?: boolean;
   supportsReasoning?: boolean;
   /**
-   * Routing tags, same vocabulary as CatalogModel.tags ('coding' / 'planner' / 'reasoner' /
-   * 'vision' / 'general'). A fetched custom model is just an id string — nothing in a /models
-   * response says what it is good at — so these are the user's own answer to that, ticked in
-   * the add-endpoint form. Read by the router exactly like a catalog model's tags: a STRONG
-   * quality signal ("best at it"), never a hard gate — see router/capabilityProfile.ts.
+   * Tags, same vocabulary as CatalogModel.tags — the user's own labels for a custom model,
+   * ticked in the add-endpoint form. Display-only; routing reads the capability booleans.
    */
   tags?: string[];
 }

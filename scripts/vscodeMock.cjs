@@ -1,9 +1,7 @@
-// Minimal 'vscode' shim for scripts/nativeLoop.e2e.ts, loaded via `node -r` BEFORE the
-// bundled test file's own `require("vscode")` calls execute (esbuild's --external:vscode
-// leaves those as real requires — they'd otherwise throw "Cannot find module 'vscode'"
-// outside the extension host). Only implements the handful of APIs the native engine's
-// CommandGate/EditGate-construction and loop.ts code paths actually touch when the test
-// exercises just the bash/runCommand tool — NOT a general-purpose vscode mock.
+// Minimal 'vscode' shim for the e2e harnesses, loaded via `node -r` BEFORE the bundled test
+// file's own `require("vscode")` calls execute (esbuild's --external:vscode leaves those as
+// real requires). Only the APIs the engine, tools and EditGate actually touch — NOT a
+// general-purpose vscode mock. Settings come from globalThis.__tiermuxTestConfig.
 const Module = require('module');
 const originalLoad = Module._load;
 

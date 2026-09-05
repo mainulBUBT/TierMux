@@ -1,8 +1,5 @@
-// v3 editFile (plan step 3) — the real tool in tool({inputSchema, execute}) form.
-//
-// Differences from the legacy src/agent/core/tools/filesystem/edit.ts:
-//   - NO EditGate: approval moved out of the tool into the streamText `toolApproval` policy
-//     (v3's division of labor). The tool applies or explains — the policy decides IF.
+// editFile — search/replace edits.
+//   - No approval inside the tool: the streamText `toolApproval` policy decides IF it runs.
 //   - Exception-safe: every failure returns { error } instead of throwing, so the model sees
 //     the reason and self-corrects (a throw would end as a tool-error part — also survivable,
 //     but a structured result is the v3 contract for EXPECTED failures).

@@ -111,8 +111,7 @@ function benchIntel(id: string): number | undefined {
 const KNOWN_VISION_FAMILIES =
   /llava|moondream|pixtral|cogvlm|cogagent|minicpm-v|idefics|fuyu|florence-?2|glm-?4\.?\d*v\b/;
 
-/** Name-based vision heuristic, shared with router.ts for custom/local endpoints that have
- *  no catalog entry (and thus no measured `supportsVision`) to fall back on. */
+/** Name-based vision heuristic for custom/local endpoints with no catalog `supportsVision`. */
 export function isLikelyVisionModelId(modelId: string): boolean {
   const id = modelId.toLowerCase();
   return /vision|vl\b|multimodal|omni/.test(id) || KNOWN_VISION_FAMILIES.test(id);

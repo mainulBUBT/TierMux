@@ -108,8 +108,8 @@ src/
                         #   cloudflare (+ remote-catalog upsert of new platforms)
   catalog/              # loads media/catalog.json into the model catalog
   config/               # secrets (keys), settingsStore, usage, modelStats
-  context/              # project rules, ambient editor context, @-mentions, embeddings
-  edits/                # applyEdit (diff-approval gate), commandGate, checkpoints,
+  context/              # project rules, ambient editor context, @-mentions, skills, memory
+  edits/                # applyEdit (inline-chat diff gate), commandClassify, checkpoints,
                         #   gitSnapshot
   completions/ editor/ scm/ mcp/   # inline completion, inline chat, commit msgs, MCP
   shared/               # types + branding.ts (PRODUCT_NAME) + workReport.ts

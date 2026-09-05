@@ -11,7 +11,6 @@ import { runAgentStream, runPlanStream, runAskStream, type AgentResult, type Age
 import { findTextInWorkspace } from './context/textSearch';
 import { classifyTask } from './agent/routing';
 
-import { getCommandGate } from './agent/core/tools/gates';
 import { PRODUCT_NAME } from './shared/branding';
 import { SETTINGS_META, defaultForSetting } from './settingsMeta';
 import { AllModelsFailedError } from './router/errors';
@@ -19,7 +18,7 @@ import { routeOnceOrUndefined, utilityModelPreference } from './agent/core/route
 import { peekTopModel } from './router/picker';
 import type { McpManager } from './mcp/mcpManager';
 import { CheckpointManager, type SerializedCheckpoint } from './edits/checkpoints';
-import { isDangerous } from './edits/commandGate';
+import { isDangerous } from './edits/commandClassify';
 import { statusLines } from './edits/gitSnapshot';
 import type { ModelStatsStore, Vote } from './config/modelStats';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
@@ -293,8 +292,8 @@ interface Session {
   pendingAskUser: Map<string, (answer: string) => void>;
   /** True while an approved plan is being executed in Agent mode — drives the "Following the approved plan" header. */
   executingPlan?: boolean;
-  /** First-class plan execution state (see core/planRunner.ts). Present while an approved plan
-   *  is running or paused; persisted with the session so a reload can resume from currentStep. */
+  /** Plan execution state — present while an approved plan is running or paused; persisted
+   *  with the session so a reload can resume. */
   planRun?: PlanRunState;
   checkpoints: CheckpointManager;
   lastWindow: number;
@@ -784,29 +783,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.cards = s.cards.filter((m) => !pred(m));
   }
 
-  /**
-   * Ask the user to approve a `runCommand` call inline in the chat view, in the run's OWN
-   * session. If that session isn't viewed, the card still renders in its (hidden) container
-   * and we fire a one-time notification + flip its tab to "needs approval". Wired into the
-   * CommandGate via the per-run RunContext (see runContext).
-   */
-  requestCommandApproval(sessionId: string, requestId: string, command: string, cwd?: string): Promise<boolean> {
-    const s = this.sessions.get(sessionId);
-    if (!this.view || !s) return Promise.resolve(false); // nowhere to ask → deny rather than hang
-    try { this.view.show?.(true); } catch { /* reveal is best-effort */ }
-    const id = `cmd-${++this.approvalSeqGlobal}`;
-    return new Promise<boolean>((resolve) => {
-      s.pendingApprovals.set(id, resolve);
-      this.postCard(s, { type: 'commandApproval', sessionId, requestId, id, command, cwd });
-      this.maybeNotifyApproval(sessionId, requestId, s);
-    });
-  }
-
-  /**
-   * Ask the user to approve a file edit/deletion inline in the chat view (the diff editor
-   * still opens for review), in the run's OWN session. `undefined` (no-session overload) defers
-   * to the native modal — used by the inline editor chat which has no chat thread.
-   */
   requestEditApproval(req: { path: string; title: string; kind: 'write' | 'delete' }): Promise<boolean | undefined>;
   requestEditApproval(sessionId: string, requestId: string, req: { path: string; title: string; kind: 'write' | 'delete' }): Promise<boolean | undefined>;
   requestEditApproval(sessionIdOrReq: string | { path: string; title: string; kind: 'write' | 'delete' }, requestId?: string, req?: { path: string; title: string; kind: 'write' | 'delete' }): Promise<boolean | undefined> {
@@ -824,12 +800,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  /**
-   * Ask the user to approve/deny an OC tool call paused on an `ask` permission rule
-   * (e.g. `bash: 'ask'` in ocConfig.ts) inline in the chat view, in the run's OWN session.
-   * Mirrors requestCommandApproval/requestEditApproval's map+card+resolve pattern, but
-   * carries OC's own three-way response (`once`/`always`/`reject`) instead of a boolean.
-   */
+  /** Ask the user to approve/deny a tool call the permission policy paused, inline in the
+   *  run's own session. Three-way response: once / always / reject. */
   requestPermissionAsk(sessionId: string, requestId: string, title: string, pattern?: string | string[]): Promise<'once' | 'always' | 'reject'> {
     const s = this.sessions.get(sessionId);
     if (!this.view || !s) return Promise.resolve('reject'); // nowhere to ask → deny rather than hang
@@ -870,7 +842,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     for (const resolve of s.pendingPermissions.values()) resolve('reject');
     s.pendingPermissions.clear();
     if (approvalIds.size) {
-      this.removeCards(s, (c) => (c.type === 'commandApproval' || c.type === 'editApproval') && approvalIds.has(c.id));
+      this.removeCards(s, (c) => c.type === 'editApproval' && approvalIds.has(c.id));
     }
     if (permissionIds.size) {
       this.removeCards(s, (c) => c.type === 'permissionAsk' && permissionIds.has(c.id));
@@ -1216,13 +1188,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'cancel':
         this.stopRun(m.sessionId ?? this.viewedSessionId);
         break;
-      case 'commandApprovalResponse':
       case 'editApprovalResponse': {
         const s = this.sessions.get(m.sessionId ?? this.viewedSessionId);
         const resolve = s?.pendingApprovals.get(m.id);
         if (s && resolve) {
           s.pendingApprovals.delete(m.id);
-          this.removeCards(s, (c) => (c.type === 'commandApproval' || c.type === 'editApproval') && c.id === m.id);
+          this.removeCards(s, (c) => c.type === 'editApproval' && c.id === m.id);
           resolve(m.approved);
           this.approvalNotified.delete(`${s.id}:${s.activeRequestId ?? ''}`);
           if (s.activeRequestId) this.setStatus(s.id, 'running');
@@ -2634,13 +2605,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  /**
-   * Drive a session's planRun state through the first-class plan runner (core/planRunner.ts).
-   * Owns the UI lifecycle around the run the same way handleSend does for a single send:
-   * run slot, busy state, checkpoints, streaming callbacks, transcript/history persistence,
-   * and the finish/cleanup path. Resume-safe: called both from handleExecutePlan and from the
-   * webview's Resume button after a reload (state.currentStep picks up where it stopped).
-   */
+  /** Execute an approved plan as ONE agent turn with the steps enumerated in the prompt. Owns
+   *  the same UI lifecycle as handleSend (run slot, busy, checkpoints, persistence). Called from
+   *  handleExecutePlan and from the webview's Resume button after a reload. */
   private async executePlanRun(s: Session, requestId: string): Promise<void> {
     if (!s.planRun) return;
     s.cancel?.cancel();
@@ -2802,14 +2769,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const executingRequestId = s.activeRequestId;
     s.cancel?.cancel();
     s.activeRequestId = undefined; // invalidates the run's liveness guard (isActiveRun)
-    // Tree-kill any in-flight shell the agent loop hasn't noticed was abandoned yet. Without
-    // this, `npm test` / `php artisan test` / `composer install` survive the Stop press, hold
-    // the workspace hostage, and feed stale output to the next turn (live repro: a `php --version`
-    // finished seconds after Stop; the next `hola` then answered against the *previous* project
-    // because the abandoned shell still owned the workspace root).
-    if (executingRequestId) {
-      try { getCommandGate().cancel({ sessionId: sessionId, requestId: executingRequestId }); } catch { /* gate not wired in tests */ }
-    }
     this.settlePendingApprovals(s, false); // unblock any command/edit awaiting a click
     this.settlePendingAskUser(s); // unblock any in-chat askUser card
     s.pendingPlanUser = undefined;
@@ -2845,8 +2804,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       requestId,
       mentionCount: s.lastMentionCount,
       abortSignal: s.cancel ? tokenToAbortSignal(s.cancel.token) : undefined,
-      // The engine's toolApproval policy reads this (policyFromSettings): without it the
-      // composer toggle only gated CommandGate/EditGate while the v3 tool path kept asking.
+      // Read by the engine's toolApproval policy (policyFromSettings).
       autoApprove: this.autoApprove,
       toolCompaction: (() => {
         const v = vscode.workspace.getConfiguration('tiermux.agent').get<string>('toolCompaction', 'light');
@@ -3025,11 +2983,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!live()) return;
         if (!text) return;
         if (!reasoningStart) reasoningStart = Date.now();
-        // Append the raw delta — do NOT trim each fragment and join with '\n'. The old join inserted
-        // a newline between EVERY streamed fragment, and since the reasoning body renders markdown
-        // with breaks:true (\n → <br>), that turned each fragment into its own line and produced huge
-        // vertical gaps. Concatenating raw reconstructs the model's own text exactly (mirrors loop.ts's
-        // `reasoning += d`). trimStart only so a leading newline doesn't render as a blank first line.
+        // Append the raw delta — joining trimmed fragments with '\n' rendered each one as its own
+        // line (breaks:true) and produced huge gaps. trimStart only so a leading newline doesn't
+        // render as a blank first line.
         reasoningText = (reasoningText + text).replace(/^\s+/, '');
         // Always 'running' while the reasoning stream is live; the webview auto-opens the block
         // and shows "Thinking…". Settled to 'done' (with duration) at turn finalize below.
@@ -3051,10 +3007,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       onRetractDraft: () => {
         if (!live()) return;
-        // Hand the webview the CoT segment this text is about to become. The reasoning post that
-        // follows (from loop.ts's finish-step retro-route) carries the same toolCallId, so it
-        // updates the converted block in place — the user sees one continuously-streamed thought,
-        // not a draft that disappears and re-materializes as a finished paragraph.
+        // Hand the webview the reasoning segment this draft is about to become; the reasoning post
+        // that follows carries the same toolCallId, so it updates the block in place.
         if (!reasoningStart) reasoningStart = Date.now();
         this.post({ type: 'clearDraft', sessionId: s.id, requestId, reasoningId: reasoningId() });
       },

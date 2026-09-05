@@ -14,7 +14,7 @@
  *
  * Run: npm run test:e2e:inline-tool-dialect
  */
-import { rescueInlineToolCalls, findInlineToolOpener } from '../src/agent/toolArgs';
+import { rescueInlineToolCalls } from '../src/agent/toolArgs';
 
 let bad = 0;
 const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? `   (${d})` : ''}`); if (!c) bad++; };
@@ -56,14 +56,6 @@ ok('edit replace keeps its braces byte for byte', edited.replace === 'function f
 // The registered-tool-set lookup is the only false-positive guard, so this is the guard's test.
 const HTML = 'Here is the page:\n<div class="wrap"><h1>Hi</h1><p>Body</p><search><input name="q"></search></div>';
 ok('html answer yields no calls', parse(HTML).length === 0, parse(HTML).join(' | '));
-ok('html answer is not held from the live stream', findInlineToolOpener(HTML, TOOLS) === -1);
-ok('prose alone is not held', findInlineToolOpener('Let me check the scanner first.', TOOLS) === -1);
-
-// ── 5. The streaming hold starts AT the markup, so prose ahead of it still streams ───────────
-const MIXED = 'Let me read that file.\n' + XKIRO;
-ok('opener found at the markup, not before', findInlineToolOpener(MIXED, TOOLS) === MIXED.indexOf('<invoke'),
-  String(findInlineToolOpener(MIXED, TOOLS)));
-ok('bare tool-name tag is held too', findInlineToolOpener('<readFile><path>a</path></readFile>', TOOLS) === 0);
 
 // ── 6. End to end ────────────────────────────────────────────────────────────────────────────
 // This section used to drive Router.route() with a mock fixture and assert that the ROUTE layer

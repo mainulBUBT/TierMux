@@ -1,22 +1,16 @@
 
-// Verify-command resolution + execution for the end-of-turn command gate (loop.ts). The LSP
-// diagnostics checks (formatDiagnostics.ts) prove the edited FILES parse; this proves the
-// PROJECT still works — the auto-detected test/build command actually runs, and a non-zero
-// exit feeds the failure output back for one self-correct retry. The fleet pipeline already
-// gated worker merges this way (implementPipeline.ts verifyCommand); this is the same idea
-// for the single-agent path, with the command auto-detected from the project manifest so the
-// model can't skip verification by never passing one.
+// Verify command: detection + execution for the end-of-turn verify gate (engine.ts). LSP
+// diagnostics prove the edited FILES parse; this proves the PROJECT still works, and a
+// non-zero exit feeds the output back for `agent.verifyFixRounds` fix rounds.
 //
-// Detection is STACK-WISE, not Node-first: a Laravel app that happens to carry a package.json
-// for its Vite assets must verify with `php artisan test`, not `npm run build`. Every stack
-// contributes candidates with a STRENGTH (a real test suite beats a typecheck beats a build),
-// and the strongest candidate wins regardless of which ecosystem produced it. When a stack's
-// dependencies are not installed (no vendor/, no node_modules/) its candidates are withheld —
-// a command that can only fail for environmental reasons is worse than no command at all.
+// Detection is stack-wise, not Node-first: a Laravel app with a package.json for its Vite
+// assets verifies with `php artisan test`, not `npm run build`. Each stack contributes
+// candidates with a strength (test suite > typecheck > build) and the strongest wins. A
+// stack whose dependencies are not installed (no vendor/, no node_modules/) is withheld.
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { getCommandGate } from '../gates';
+import { runShell } from '../shell';
 import { effectiveRootUri } from '../workspaceRoot';
 
 /** npm's scaffold placeholder — running it "fails" (exit 1) or "passes" (exit 0) while proving
@@ -277,16 +271,16 @@ export interface VerifyRun {
   output: string;
 }
 
-/** Runs the verify command through the same CommandGate the agent's shell tool uses. Uses
- *  runApproved with no RunContext (same as the fleet pipeline's worker gate): a fresh one-shot
- *  spawn rather than the session's persistent shell, so the gate can't be poisoned by or poison
- *  any leftover shell state (cwd, env vars) from the agent's own commands. The gate fires only
- *  after the agent already mutated the workspace under the session's own approval policy, and
- *  the command comes from the user's own project manifest/settings — but the
- *  `commandApproval: 'never'` off-switch still applies inside runApproved as a hard safety net. */
+/** Runs the verify command as a fresh one-shot spawn at the workspace root. Not gated by the
+ *  approval policy — it fires only after the agent already mutated the workspace under that
+ *  policy, and the command comes from the project manifest or the user's setting — but
+ *  `commandApproval: 'never'` still switches it off. */
 export async function runVerifyCommand(command: string): Promise<VerifyRun> {
   try {
-    const res = await getCommandGate().runApproved(command, undefined, undefined, 120_000);
+    if (vscode.workspace.getConfiguration('tiermux.agent').get<string>('commandApproval', 'always') === 'never') {
+      return { ok: null, output: 'Command execution is disabled (tiermux.agent.commandApproval = "never").' };
+    }
+    const res = await runShell(command, { cwd: effectiveRootUri().fsPath, timeoutMs: 120_000 });
     const output = ((res.error ? res.error + '\n' : '') + res.stdout + (res.stderr ? '\n' + res.stderr : '')).trim();
     if (res.exitCode === null) return { ok: null, output };
     return { ok: res.exitCode === 0, output };

@@ -37,19 +37,11 @@ export abstract class BaseProvider {
   runtimeName?: string;
   /** Providers whose free tier needs no API key (Kilo/Pollinations/OVH anon). */
   keyless = false;
-  /**
-   * Optional provider-specific preflight timeout (ms). If set, the router uses
-   * this instead of the default 5s for health checks. Useful for models that
-   * are slow to start (e.g., reasoning models with cold starts).
-   */
+  /** Registry metadata from the retired scoring Router's preflight/TTFT machinery. Nothing
+   *  reads these any more; kept because the auto-synced registry (scripts/sync-providers.mjs)
+   *  still emits `skipPreflight: true`. */
   preflightTimeoutMs?: number;
-  /** Skip the preflight ping entirely for this provider (e.g. slow platforms where ping costs real time). */
   skipPreflight = false;
-  /** Per-provider TTFT fast-failover policy: undefined = the global tiermux.ttftTimeoutMs rules
-   *  unchanged; a positive number = a FLOOR on the global gate (cloud-tuned 8s would otherwise
-   *  abort a slow-to-start provider before its first token); 0 = NO gate for this provider —
-   *  custom endpoints (local models on the user's hardware) run uncapped, waiting as long as
-   *  the model needs for load + prefill, with only the user's Stop button as the brake. */
   ttftTimeoutMs?: number;
   /**
    * Whether this provider actually forwards a `type:'file'` content block (raw PDF bytes) to the

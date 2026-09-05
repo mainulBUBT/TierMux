@@ -1,9 +1,6 @@
-// v3 readFile (plan step 3) — the real tool in tool({inputSchema, execute}) form.
-//
-// Same behavior as the legacy src/agent/core/tools/filesystem/read.ts (line-numbered
-// `<file path>` output, offset/limit paging, batch reads, per-result cap), with the v3
-// contract applied: execute() NEVER throws — expected failures come back as `{ error }`
-// so the model sees them and self-corrects on the next turn (Path A defense).
+// readFile — line-numbered `<file path>` output, offset/limit paging, batch reads, per-result
+// cap. execute() never throws: expected failures come back as `{ error }` so the model sees
+// them and self-corrects on the next step.
 //
 // Approval: none — readFile is in READ_ONLY_TOOLS; the toolApproval policy auto-approves it.
 

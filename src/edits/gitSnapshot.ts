@@ -23,10 +23,7 @@ async function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promis
   }
 }
 
-/** Current branch name, or '' when git cannot say (detached HEAD, not a repo, git missing).
- *  Moved here from src/edits/worktree.ts on 2026-09-05: it was the only export anything used
- *  out of that 208-line file, the rest of which drove the fleet worktree pipeline — deferred,
- *  unwired, and deleted with its settings the same day. */
+/** Current branch name, or '' when git cannot say (detached HEAD, not a repo, git missing). */
 export async function currentBranch(cwd: string): Promise<string> {
   return (await git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
 }

@@ -183,7 +183,6 @@ export type InMessage =
   | { type: 'deleteSessionById'; sessionId: string }
   | { type: 'vote'; requestId: string; vote: 'up' | 'down' | 'none' }
   | { type: 'cancel'; requestId: string; sessionId?: string }
-  | { type: 'commandApprovalResponse'; id: string; approved: boolean; sessionId?: string }
   | { type: 'editApprovalResponse'; id: string; approved: boolean; sessionId?: string }
   | { type: 'permissionAskResponse'; id: string; response: 'once' | 'always' | 'reject'; sessionId?: string }
   | { type: 'openPlanFile'; uri: string }
@@ -328,7 +327,6 @@ export type OutMessage =
   | { type: 'assistantStart'; sessionId: string; requestId: string; platform: string; model: string }
   | { type: 'planProposed'; sessionId: string; requestId: string; steps: string; discarded?: boolean; deferred?: boolean }
   | { type: 'planDiscarded'; sessionId: string; requestId: string }
-  | { type: 'commandApproval'; sessionId: string; requestId: string; id: string; command: string; cwd?: string }
   | { type: 'editApproval'; sessionId: string; requestId: string; id: string; path: string; title: string; kind: 'write' | 'delete' }
   | { type: 'permissionAsk'; sessionId: string; requestId: string; id: string; title: string; pattern?: string | string[] }
   | { type: 'sessionTitle'; sessionId: string; title: string }
@@ -355,7 +353,7 @@ export type OutMessage =
   | { type: 'customEndpointModels'; id: string; models: string[]; error?: string }
   | { type: 'askUserPrompt'; sessionId: string; requestId: string; callId: string; question: string; options?: string[] }
   | { type: 'askUserDismissed'; sessionId: string; requestId: string; callId: string }
-  // The host force-settled a commandApproval/editApproval/permissionAsk card without a user
+  // The host force-settled an editApproval/permissionAsk card without a user
   // click (e.g. the run ended/was cancelled first) — `id` is globally unique across all three
   // card kinds (cmd-/edit-/perm- prefixes), so the webview can match it against whichever kind
   // is actually rendered without needing to know which.

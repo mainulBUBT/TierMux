@@ -19,11 +19,7 @@ const GIT_READ_ONLY_SUBCOMMANDS = new Set([
   'status', 'diff', 'log', 'show', 'branch', 'remote', 'ls-files', 'blame', 'rev-parse', 'describe', 'shortlog',
 ]);
 
-/**
- * Destructive patterns that always prompt for confirmation, even when Auto-approve
- * is on — a safety net so unattended runs can't silently wipe data or rewrite history.
- * Lives here (not commandGate.ts) so the vscode-free permission policy can share it.
- */
+/** Destructive patterns that always prompt, even under Auto-approve. */
 const DANGEROUS = [
   /\brm\s+(-[a-z]*\s+)*-[a-z]*[rf]/i, // rm -rf / rm -fr / rm -r -f …
   /\bgit\s+push\b.*(--force|-f\b)/i,
@@ -39,6 +35,26 @@ const DANGEROUS = [
 /** True for commands too destructive to run unattended; these always ask, even in Auto-approve. */
 export function isDangerous(command: string): boolean {
   return DANGEROUS.some((re) => re.test(command));
+}
+
+/** Safe-by-default inspection/test/build commands that `commandApproval: 'allowlist'` runs
+ *  without a prompt; `agent.commandAllowlist` adds the user's own prefixes. */
+export const DEFAULT_COMMAND_ALLOWLIST = [
+  'npm test', 'npm run', 'yarn test', 'pnpm test',
+  'git status', 'git diff', 'git log', 'git branch', 'git show',
+  'ls', 'pwd', 'cat', 'echo', 'tsc', 'node -v', 'npm -v',
+  'pytest', 'go test', 'go build', 'cargo test', 'cargo check', 'cargo build',
+  'php artisan test', 'composer test', 'make',
+];
+
+/** True when `command` equals or starts with one of `prefixes` (prefix + space). */
+export function matchesAllowlist(command: string, prefixes: Iterable<string>): boolean {
+  const cmd = command.trim();
+  for (const p of prefixes) {
+    const pre = p.trim();
+    if (pre && (cmd === pre || cmd.startsWith(pre + ' '))) return true;
+  }
+  return false;
 }
 
 /** The `command` argument of a runCommand tool call, or undefined when absent/not a string. */
@@ -66,17 +82,11 @@ function isSegmentReadOnly(tokens: string[]): boolean {
 }
 
 /**
- * Conservative shell-command classifier for CommandGate's live approval gate — a benign `ls`
- * or `git status` doesn't need the same approval friction as `rm -rf`, so a confidently
- * read-only command can skip the ask-flow even under `commandApproval: 'always'`. Modeled on
- * the same idea Pochi (github.com/TabbyML/pochi) uses for its runCommand tool.
- *
- * Deliberately fails closed: any command this can't confidently classify — parse failure,
- * command substitution (`` ` `` / `$(...)`), an unrecognized shell operator, output redirection,
- * or a binary/subcommand not on the curated allowlist — returns `false` (normal gating applies).
- * A false negative here just means one extra approval prompt for something that was actually
- * safe; a false positive would mean a mutating command silently skipping approval, which this
- * function must never produce.
+ * Conservative read-only classifier: a confidently read-only command (`ls`, `git status`) can
+ * skip the approval prompt. Fails closed — a parse failure, command substitution, an unknown
+ * operator, redirection, or an unlisted binary/subcommand returns false and normal gating
+ * applies. A false negative costs one prompt; a false positive would skip approval for a
+ * mutating command, which this must never do.
  */
 export function isReadOnlyCommand(command: string): boolean {
   const cmd = command.trim();

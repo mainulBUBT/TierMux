@@ -99,34 +99,25 @@ export interface AgentOpts {
   effort: ReasoningEffort;
   abortSignal?: AbortSignal;
   pinnedModel?: string;
-  /** Host auto-approve toggle for this session — forwarded to the toolApproval policy so
-   *  non-dangerous commands skip the inline prompt, like CommandGate/EditGate already do. */
+  /** Host auto-approve toggle for this session — forwarded to the toolApproval policy. */
   autoApprove?: boolean;
   /** Tool-result aging level for this turn — mirrors the tiermux.agent.toolCompaction
    *  setting ('off' | 'light' | 'aggressive'). Threaded from host settings. */
   toolCompaction?: 'off' | 'light' | 'aggressive';
-  /** Hard cap on model round-trips in one turn — mirrors `tiermux.agent.maxStepsPerTurn`,
-   *  threaded from host settings like toolCompaction (core/ stays vscode-free so the e2e
-   *  gate can run it headless). The setting shipped documented since v3 while the engine
-   *  hardcoded 50, so changing it did nothing. Omitted ⇒ the engine's own default. */
+  /** Hard cap on model round-trips in one turn — mirrors `tiermux.agent.maxStepsPerTurn`.
+   *  Omitted ⇒ the engine's default. */
   maxStepsPerTurn?: number;
   /** Fix-and-recheck rounds after the end-of-turn verify command fails — mirrors
    *  `tiermux.agent.verifyFixRounds`, threaded from host settings. 0 reports the failure
    *  without retrying; it never disables the gate itself (that is `verifyCommand: 'off'`). */
   verifyFixRounds?: number;
-  /** `platform::modelId` keys to skip during Auto selection for this call only — e.g. the
-   *  auto-continue loop excluding the model that just got stuck, so the retry genuinely tries a
-   *  different model rather than very likely re-picking the same one. Ignored when
-   *  `pinnedModel` names a specific model (the user's explicit choice always wins) — only affects
-   *  Auto selection. */
+  /** `platform::modelId` keys to skip during Auto selection for this call only. Ignored when
+   *  `pinnedModel` is set. */
   excludeModels?: string[];
   taskKind?: string;
   /** TierMux chat session id. */
   sessionId?: string;
-  /** Per-turn request id. Forwarded to CommandGate as a tracking key so the host's
-   *  `commandGate.cancel({ sessionId, requestId })` can tree-kill the in-flight shell
-   *  AND its descendants on Stop — without a requestId the gate can only kill the next
-   *  process it happens to spawn, not the one the user actually wanted stopped. */
+  /** Per-turn request id. */
   requestId?: string;
   /** Step routing (Phase 2): difficulty of the plan step this turn is executing — derived by the
    *  caller (chatViewProvider's auto-continue loop) from the current todo item. `easy` routes
@@ -159,8 +150,7 @@ export interface AgentOpts {
    *  stays vscode-free). */
   onBeforeWrite?: (uri: import('vscode').Uri, before: string | null) => void;
   onAskUser: (question: string, options?: string[]) => Promise<string>;
-  /** A tool call is paused pending approval — resolved via the `toolApproval` policy
-   *  (see core/policies/permission.ts), not by this file. */
+  /** A tool call is paused pending approval — resolved by src/permissions/policy.ts. */
   onPermissionAsk?: (info: { title: string; pattern?: string | string[]; command?: string; toolName?: string }) => Promise<'once' | 'always' | 'reject'>;
   onError: (message: string) => void;
   onWarning?: (message: string) => void;

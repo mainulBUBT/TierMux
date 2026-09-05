@@ -34,9 +34,9 @@ const SUMMARY_PREFIX = 'Summary of the earlier conversation:';
  *  summary — the thing that exists to be SMALL — into a file listing. */
 const MAX_SUMMARY_PATHS = 60;
 
-/** Tool calls whose arguments name a specific file. Mirrors PATH_ARG_TOOLS in core/loop.ts, but
- *  reads the persisted ChatMessage shape (JSON-string arguments) rather than live stream parts. */
-const PATH_ARG_TOOLS = new Set(['readFile', 'writeFile', 'createFile', 'editFile', 'getSymbolGraph', 'getDependencyTree']);
+/** Tool calls whose arguments name a specific file (persisted ChatMessage shape, JSON-string
+ *  arguments). */
+const PATH_ARG_TOOLS = new Set(['readFile', 'writeFile', 'editFile', 'deleteFile']);
 
 /** The `path`-ish argument of a persisted tool call. Arguments are a JSON string per the OpenAI
  *  shape, and a weak model sometimes double-encodes it — hence the second parse attempt. */

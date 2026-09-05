@@ -1,20 +1,19 @@
-// v3 permission policy (plan step 6) — production. Replaces src/edits/commandGate.ts +
-// src/edits/applyEdit.ts's confirmation flow + agent/core/policies/permission.ts.
+// Tool-approval policy, passed to streamText as `toolApproval`.
 //
-// Priority chain, ALWAYS in this order (user's correction #2):
+// Priority chain, ALWAYS in this order:
 //   1. alwaysDeny  — hard block; even full-auto cannot bypass it.
 //   2. alwaysAllow — user-pinned allow; beats everything except deny.
 //   3. READ_ONLY   — non-mutating tools are always safe.
-//   4. mode        — 'full-auto' approves the rest; 'auto' approves its allowlist.
+//   4. mode        — 'full-auto' approves the rest; 'auto' approves allowlisted shell commands;
+//                    `autoApproveWrites` approves file mutation.
 //   5. ask         — prompt the user via the approval channel.
 //
-// Mode/allowlists read from vscode config (tiermux.agent.commandApproval-style); the
-// resolvePolicy core is pure and vscode-free so e2e drives it directly.
+// policyFromSettings reads vscode config; resolvePolicy is pure so e2e drives it directly.
 
 import * as vscode from 'vscode';
 import type { ToolApprovalStatus } from 'ai';
 import { READ_ONLY_TOOLS } from '../agent/core/tools/v3';
-import { commandFromInput, isDangerous, isReadOnlyCommand } from '../edits/commandClassify';
+import { commandFromInput, isDangerous, isReadOnlyCommand, matchesAllowlist, DEFAULT_COMMAND_ALLOWLIST } from '../edits/commandClassify';
 
 export type PermissionMode = 'ask' | 'auto' | 'full-auto';
 
@@ -28,6 +27,9 @@ export interface PolicyConfig {
   sessionMode?: 'plan' | 'agent' | 'ask';
   alwaysAllow: Set<string>;
   alwaysDeny: Set<string>;
+  /** Command PREFIXES `commandApproval: 'allowlist'` auto-runs (on top of the built-in safe
+   *  defaults). Until 2026-09-05 this set was compared against TOOL NAMES, so 'allowlist'
+   *  mode never auto-ran anything. */
   autoModeAllowlist: Set<string>;
   /** `commandApproval: 'never'` — the shell is OFF, not auto-approved. Kept separate from
    *  `mode` because 'never' means both "never ask" AND "never run", and folding it into
@@ -116,16 +118,10 @@ export function resolvePolicy(
   if (READ_ONLY_TOOLS.has(call.toolName)) {
     return Promise.resolve({ type: 'approved' });
   }
-  // `commandApproval: 'never'` means "Disable terminal command execution entirely" — that is
-  // its enumDescription in package.json, and CommandGate.run/runApproved have always honoured
-  // it by refusing to spawn. policyFromSettings, however, folded 'never' into `full-auto`, and
-  // the v3 runCommand tool spawns DIRECTLY (tools/v3/runCommand.ts) rather than through
-  // CommandGate — so the one setting a user picks to switch the shell OFF auto-approved every
-  // command with no prompt at all. Exactly inverted, and silent.
-  //
-  // The flag below preserves the "don't ask" half (that is what full-auto is for) while
-  // restoring the "don't run" half for shell specifically. Found 2026-09-05 while wiring the
-  // verify gate, which hit the CommandGate side of the same contradiction.
+  // `commandApproval: 'never'` = "disable terminal command execution entirely". Until
+  // 2026-09-05 policyFromSettings folded it into full-auto, so the one setting that switches the
+  // shell OFF auto-approved every command. `shellDisabled` keeps the "don't ask" half and
+  // restores the "don't run" half.
   if (config.shellDisabled === true && call.toolName === 'runCommand') {
     return Promise.resolve({
       type: 'denied',
@@ -138,8 +134,12 @@ export function resolvePolicy(
   if (config.autoApproveWrites === true && MUTATING_FILE_TOOLS.has(call.toolName)) {
     return Promise.resolve({ type: 'approved' });
   }
-  if (config.mode === 'auto' && config.autoModeAllowlist.has(call.toolName)) {
-    return Promise.resolve({ type: 'approved' });
+  if (config.mode === 'auto' && call.toolName === 'runCommand') {
+    const cmd = commandFromInput(call.input);
+    if (cmd && !isDangerous(cmd)
+      && (matchesAllowlist(cmd, DEFAULT_COMMAND_ALLOWLIST) || matchesAllowlist(cmd, config.autoModeAllowlist) || isReadOnlyCommand(cmd))) {
+      return Promise.resolve({ type: 'approved' });
+    }
   }
   if (!requestApproval) {
     return Promise.resolve({ type: 'denied', reason: 'no approval channel configured' });
@@ -189,7 +189,7 @@ export function policyFromSettings(
     sessionMode,
     alwaysAllow: grants.allow,
     alwaysDeny: grants.deny,
-    autoModeAllowlist: new Set(cfg.get<string[]>('commandAllowlist', []).flatMap((s) => s.split(/\s+/))),
+    autoModeAllowlist: new Set(cfg.get<string[]>('commandAllowlist', [])),
     // 'never' disables the shell. The session auto-approve toggle does NOT re-enable it — that
     // toggle is about skipping prompts, and a user who switched the terminal off did not ask
     // for it back.

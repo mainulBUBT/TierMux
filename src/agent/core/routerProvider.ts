@@ -1,17 +1,8 @@
-// v3 routerProvider (plan step 8) — the AI SDK seam, rewritten from Router.route() to the
-// thin picker. Owns: candidate loop (model + fallbackChain), API-key lookup, streaming
-// translation between the V4 part protocol and the OpenAI wire the providers speak, and
-// TWO failover rules, both reported back to the picker's per-model cooldown via recordOutcome:
-//   (1) availability — a candidate that answers 429/5xx/401/network/timeout is retried on the
-//       next candidate in the chain;
-//   (2) quality — a candidate that returns nothing usable (no text, no tool call, no foldable
-//       reasoning) is also skipped in favor of the next candidate.
-// No scoring, no hedging, no session pin, no circuit-breaker beyond the minimal cooldown the
-// picker keeps — those lived in the deleted Router and stay deleted.
-//
-// Kept from the previous version (battle-tested translation): toRouterMessages,
-// toRouterTools, filePartToDataUrl, hasRawPdfPart, toV4Usage, and the stream-part emission
-// order (text-start/-delta/-end, tool-input-*, tool-call, finish).
+// The AI SDK seam: a LanguageModelV4 over the picker. Owns the candidate loop (model +
+// fallbackChain), API-key lookup, translation between the V4 part protocol and the OpenAI wire
+// the providers speak, and two failover rules, both reported to the picker's cooldown via
+// recordOutcome: (1) availability — 429/5xx/401/network/timeout → next candidate; (2) quality —
+// nothing usable (no text, no tool call, no foldable reasoning) → next candidate.
 
 import type {
   LanguageModelV4,
@@ -31,18 +22,10 @@ import { ThinkStripper, stripThinkTags, reasoningFromDelta } from '../../util/th
 import { diagLog } from '../../util/diag';
 
 /** Post-headers STALL bound: how long a stream that has produced no chunk at all may hang
- *  before the candidate is abandoned. It covers the one hole `timeoutMs` cannot — a provider
- *  that answers with headers in a second and then never sends a body, which no header timeout
- *  can ever fire on.
- *
- *  It is deliberately NOT `tiermux.ttftTimeoutMs` (2026-09-05). That knob is the old Router's
- *  HEDGE trigger — 8s, the point at which starting a second request alongside the first is
- *  worth the quota — and reusing it as an abort threshold quietly cancelled the same commit's
- *  own 25s→60s raise of FAILOVER_CONNECT_TIMEOUT_MS: no chunk can arrive before headers, so an
- *  8s no-chunk abort fires strictly before any header timeout and the 60s tolerance became
- *  unreachable. The two changes were aimed at the identical event (kilo, 10.4s to headers +3s
- *  of keepalive) with opposite conclusions; the 60s tolerance is the deliberate one, so the
- *  stall bound tracks it rather than fighting it.
+ *  before the candidate is abandoned — a provider that answers with headers and then never
+ *  sends a body, which no header timeout can fire on. Tracks FAILOVER_CONNECT_TIMEOUT_MS
+ *  rather than the old 8s hedge trigger, which fired before any header timeout could and made
+ *  the 60s tolerance unreachable (kilo, 10.4s to headers + keepalives).
  *
  *  Disabled (0) for pinned models (nothing to fail over to) and custom/local endpoints, whose
  *  cold load may legally run minutes — the Stop button is the brake there, as elsewhere. */

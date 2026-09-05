@@ -1,6 +1,6 @@
 /* fitMessages must never drop the task the model is being asked to do.
  *
- * From a 2026-08-13 audit: fitMessages runs on EVERY model call (router.ts, via routerProvider),
+ * From a 2026-08-13 audit: fitMessages runs on EVERY model call (routerProvider),
  * and filled the window newest-first. An agent turn is
  * `[system, user(task), assistant(tool_calls), tool, …]`, so the backward walk spent the whole
  * budget on recent tool output — a single capped readFile result is ~7.5k tokens — and the user's

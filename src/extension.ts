@@ -11,11 +11,8 @@ import { QuotaStore } from './config/quotaStore';
 import { setModelSources, setQuotaStore } from './router/picker';
 import { verifyGrounding, renderVerifyReport } from './backend/groundingVerify';
 import { EditGate } from './edits/applyEdit';
-import { CommandGate, type CommandApproval } from './edits/commandGate';
-import { PersistentShellManager } from './edits/persistentShell';
 import { registerCheckpointContentProvider } from './edits/checkpoints';
 
-import { setGates } from './agent/core/tools/gates';
 import { setMcpManager } from './agent/core/tools/mcp/manager';
 
 import { McpManager } from './mcp/mcpManager';
@@ -134,18 +131,9 @@ export function activate(context: vscode.ExtensionContext): void {
     // the same information in front of the user rather than in a dev channel.
     context.subscriptions.push(registerCheckpointContentProvider());
 
-    const commandGate = new CommandGate(
-      () => vscode.workspace.getConfiguration('tiermux.agent').get<CommandApproval>('commandApproval', 'always'),
-      () => vscode.workspace.getConfiguration('tiermux.agent').get<number>('commandTimeoutMs', 120000),
-      () => vscode.workspace.getConfiguration('tiermux.agent').get<string[]>('commandAllowlist', []),
-    );
-    const shellManager = new PersistentShellManager();
-    context.subscriptions.push({ dispose: () => shellManager.dispose() });
-    commandGate.setShellManager(shellManager);
     const mcp = new McpManager();
     context.subscriptions.push({ dispose: () => mcp.dispose() });
 
-    setGates(editGate, commandGate);
     setMcpManager(mcp);
 
     const chat = new ChatViewProvider(context.extensionUri, {
@@ -164,7 +152,6 @@ export function activate(context: vscode.ExtensionContext): void {
 
     editGate.setConfirmHandler((req) => chat.requestEditApproval(req));
 
-    commandGate.setAutoApprove(() => chat.autoApprove);
     editGate.setAutoApprove(() => chat.autoApprove);
 
     context.subscriptions.push(watchGitCommits(() => { void chat.clearAllCheckpoints(); }));
