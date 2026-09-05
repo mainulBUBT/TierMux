@@ -45,9 +45,15 @@ export class SessionStore<T extends { id: string }> {
       void this.memento.update(SessionStore.LEGACY_KEY, undefined);
     }
     const out: T[] = [];
+    const kept = new Set<string>();
     for (const id of this.ids()) {
-      try { out.push(JSON.parse(fs.readFileSync(this.file(id), 'utf8')) as T); } catch { /* missing or corrupt file: drop from the list */ }
+      try { out.push(JSON.parse(fs.readFileSync(this.file(id), 'utf8')) as T); kept.add(path.basename(this.file(id))); } catch { /* missing or corrupt file: drop from the list */ }
     }
+    void this.memento.update(SessionStore.INDEX_KEY, out.map((s) => s.id));
+    // Files the index no longer names (deleted chats, a crashed save's .tmp) go too.
+    try {
+      for (const f of fs.readdirSync(this.dir)) if (!kept.has(f)) fs.rmSync(path.join(this.dir, f), { force: true });
+    } catch { /* best effort */ }
     return out;
   }
 

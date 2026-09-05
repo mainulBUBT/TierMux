@@ -72,6 +72,9 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-sessions-'));
   fs.writeFileSync(path.join(dir, 'a.json'), '{not json');
   const reloaded = new SessionStore<S>(dir, mem, 50).load();
   ok('corrupt file skipped', reloaded.map((s) => s.id).join() === 'd');
+  fs.writeFileSync(path.join(dir, 'orphan.json'), '{}'); fs.writeFileSync(path.join(dir, 'd.json.tmp'), '');
+  new SessionStore<S>(dir, mem, 50).load();
+  ok('load removes files the index does not name', fs.readdirSync(dir).join() === 'd.json' && mem.get<string[]>(SessionStore.INDEX_KEY)!.join() === 'd');
 
   fs.rmSync(dir, { recursive: true, force: true });
   console.log(bad ? `\n${bad} FAILED` : '\nALL PASS');
