@@ -727,11 +727,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.updateViewTitle();
   }
 
-  /** Global (per-user) state handle — used by deactivate() to persist picker health. */
-  depsGlobalState(): vscode.Memento | undefined {
-    return this.deps.globalState;
-  }
-
   /** First-run engine onboarding progress (download %, verify, ready/error) — see
    *  the 'engineStatus' OutMessage variant. Queues like any other post() if the
    *  webview isn't open yet. */
@@ -1880,11 +1875,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  every send (each attempt is a real LLM call against rate-limited free tiers). */
   private autoCondenseAt = new Map<string, number>();
   private static readonly AUTO_CONDENSE_COOLDOWN_MS = 10 * 60_000;
-  /** Auto-continue bound: when an agent turn ends with unfinished todos, the host resumes it
-   *  this many times on its own (Cline/Claude-Code-style "keep going" without the click) before
-   *  leaving the Continue button. Bounded so a stuck loop can't burn quota forever — each
-   *  round is a fresh model call against the free tier. */
-  private static readonly MAX_AUTO_CONTINUES = 3;
   /** Default working-context ceiling, INDEPENDENT of the served model's window. Thresholding at
    *  80% of the window let big-window models (e.g. 200k) grow history to 160k tokens — so a
    *  trivial "what is this project?" shipped 65k input tokens and took 20-30s to first token on
@@ -2336,23 +2326,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         totalTokens: after.totalTokens - before.totalTokens,
       };
 
-      // Auto-continue chain (agent mode only): if this turn ended with UNFINISHED todos,
-      // keep running bounded extra rounds so the user doesn't have to keep clicking Continue.
-      // The single requestId means the webview shows one continuous assistant turn; the last
-      // round's result replaces `result`, so the final persist/push below captures EVERY
-      // round's tool work and text. Skips plan/ask (a plan ends on approval, a question on
-      // the answer) and any turn that paused on a question or was aborted.
-      if (sdkMode === 'agent' && !result.paused && !result.failed && this.isActiveRun(s, m.requestId)) {
-        result = await this.autoContinueChain(s, m.requestId, result, { pinnedModel: m.model, effort: m.reasoningEffort ?? 'medium' });
-        const afterChain = this.deps.usage.get();
-        usage = {
-          promptTokens: afterChain.promptTokens - before.promptTokens,
-          completionTokens: afterChain.completionTokens - before.completionTokens,
-          reasoningTokens: afterChain.reasoningTokens - before.reasoningTokens,
-          totalTokens: afterChain.totalTokens - before.totalTokens,
-        };
-        if (!this.isActiveRun(s, m.requestId)) return; // user hit Stop during a chain round
-      }
+      // A turn that ended with unfinished todos surfaces the Continue button below (see
+      // `resumable`) — the host does NOT resume it on its own. Auto-resuming up to 3 rounds
+      // lived here for a day (2026-09-04 → 09-05): it spent triple the free-tier quota on a
+      // decision the user was already one click away from making, and its history bookkeeping
+      // wrote every agent turn's reply twice while bypassing persistAgentTurn's Stop
+      // invariant. One click beats a quota-burning guess.
 
       const agentClar = planClar ?? (!result.paused ? resolveClarifying(result.text, result.askQuestions) : { questions: null, text: result.text });
 
@@ -2919,7 +2898,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     pinnedModel?: string,
     excludeModels?: string[],
     stepDifficulty?: 'easy' | 'medium' | 'hard',
-    extra?: Partial<AgentOpts>,
   ): AgentOpts {
     return {
       messages: s.history,
@@ -2941,7 +2919,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return v === 'off' || v === 'aggressive' ? v : 'light';
       })(),
       ...callbacks,
-      ...extra,
     };
   }
 
@@ -3235,85 +3212,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       'Manage Models',
     );
     if (choice === 'Manage Models') void vscode.commands.executeCommand('tiermux.openModelSettings');
-  }
-
-  /** Whether a fresh send/continue should keep chaining: only an AGENT turn with unfinished
-   *  todos that was NOT explicitly aborted, and that did not itself pause on a question. */
-  private shouldAutoContinue(s: Session, mode: string, result: AgentResult, active: boolean): boolean {
-    if (!active || mode !== 'agent' || result.failed || result.paused) return false;
-    const todos = (s.lastTodos ?? []).filter((t) => t.status !== 'completed');
-    if (!todos.length) return false;
-    // A reply that itself ended with a clarifying question is a pause, not a stop — the user
-    // must answer before any more work.
-    if (result.askQuestions?.length) return false;
-    return true;
-  }
-
-  /**
-   * Auto-continue chain: after an agent turn ends with UNFINISHED todos, keep running
-   * (Cline/Claude-Code-style) up to {@link MAX_AUTO_CONTINUES} extra rounds so the user
-   * doesn't have to keep clicking Continue. Each round pushes a terse "keep going" that
-   * names the remaining items, so the model resumes the plan instead of re-planning.
-   *
-   * Abort (Stop), a fresh send superseding this requestId, a question pause, a failure, or
-   * reaching the round bound all stop the chain. The single `requestId` stays the same, so
-   * the webview shows one continuous assistant turn across every round.
-   *
-   * Returns the LAST round's result (the caller persists it), so tool work lands in history
-   * exactly once via the normal persistAgentTurn path.
-   */
-  private async autoContinueChain(
-    s: Session,
-    requestId: string,
-    result: AgentResult,
-    opts: { pinnedModel?: string; effort: string },
-  ): Promise<AgentResult> {
-    let current = result;
-    let rounds = 0;
-    const model = opts.pinnedModel ?? s.model;
-    const effort = opts.effort as ReasoningEffort;
-    const cbk = this.agentCallbacks(s, requestId, 'agent');
-    // Seed history with the completed round's tool work so the NEXT round's model call sees
-    // its own earlier tool transcript. persistAgentTurn is NOT called between rounds — the
-    // final caller persists once — so push here and return workMessages: [] to avoid doubles.
-    const seedWork = [...(result.workMessages ?? [])];
-    if (seedWork.length) s.history.push(...seedWork);
-    const allText: string[] = [];
-    if (result.text) allText.push(result.text);
-    while (this.shouldAutoContinue(s, 'agent', current, this.isActiveRun(s, requestId))
-      && rounds < ChatViewProvider.MAX_AUTO_CONTINUES) {
-      rounds++;
-      const remaining = (s.lastTodos ?? []).filter((t) => t.status !== 'completed');
-      const list = remaining.map((t) => `- ${t.content}`).join('\n');
-      s.history.push({
-        role: 'user',
-        content: '[auto-continue] Keep going — finish the remaining steps below using the work '
-          + 'already done. Do not restart or repeat completed steps; update todos as you go.\n\n'
-          + `Remaining (${remaining.length}):\n${list}`,
-      });
-      this.post({ type: 'busy', sessionId: s.id, busy: true });
-      diagLog('send.autoContinue', `requestId=${requestId} round=${rounds} remaining=${remaining.length}`);
-      try {
-        // forceRealToolOnStart: this round's first step MUST call a tool (engine prepares step 0
-        // with toolChoice 'required'). A narration-only model can no longer burn the whole chain
-        // round after round without touching a tool — the root cause of the "0/N steps done" dead
-        // turn. Any offered tool is legal, so the model may investigate, act, or fix its own todo
-        // bookkeeping; it just cannot close the round prose-only.
-        const next = await runAgentStream(this.deps.router, this.makeAgentOpts(s, requestId, 'agent', effort, cbk, model, undefined, undefined, { forceRealToolOnStart: true }), {});
-        if (!this.isActiveRun(s, requestId)) return { ...current, text: allText.join('\n\n'), workMessages: [] };
-        if (next.workMessages?.length) s.history.push(...next.workMessages);
-        if (next.text) allText.push(next.text);
-        current = next;
-      } catch (e) {
-        if (!this.isActiveRun(s, requestId)) return { ...current, text: allText.join('\n\n'), workMessages: [] };
-        this.post({ type: 'error', sessionId: s.id, requestId, message: e instanceof Error ? e.message : String(e) });
-        return { ...current, text: allText.join('\n\n'), workMessages: [] };
-      }
-    }
-    // Final result: every round's text stitched (so the bubble shows the FULL run, not just
-    // the last round), and workMessages emptied — every round's tool work is ALREADY in
-    // s.history via the pushes above, and persistAgentTurn would otherwise double it.
-    return { ...current, text: allText.join('\n\n') || current.text, workMessages: [] };
   }
 
   /**

@@ -4,7 +4,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { createMockModel } from '../src/agent/poc/mockModel';
+import { createMockModel } from './mockModel';
 import { runSubagent } from '../src/agent/core/subagent';
 import { buildV3ToolSet, READ_ONLY_TOOLS } from '../src/agent/core/tools/v3/index';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';

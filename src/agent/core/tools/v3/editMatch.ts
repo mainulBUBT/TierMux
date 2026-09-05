@@ -5,6 +5,31 @@
 //   1. exact indexOf, required UNIQUE
 //   2. whitespace-tolerant line-based fallback (CRLF/indent drift), still unique-only
 //   3. re-indent of the replacement to the matched text's real indentation
+//
+// ── Failure DIAGNOSTICS (2026-09-05) ────────────────────────────────────────────────────
+// The two failure strings used to be "Search text not found in file." and "…matches multiple
+// locations…" and nothing else. For an autonomous agent that is a dead end: a failed edit is
+// the most frequent tool failure there is, and a model told only "not found" has nothing to
+// correct toward, so it re-issues a near-identical call until the step cap eats the turn.
+//
+// Every message below is derived deterministically from the two strings already in hand — no
+// fuzzy scoring, no model call, no guessing at intent. Three facts are worth reporting:
+//   · WHERE the near-misses are (line numbers), so a re-read can be narrow.
+//   · WHICH line first diverged, and what the file actually holds there — this is the single
+//     most actionable sentence, because stale context by one line is the usual cause.
+//   · WHETHER the search lines exist at all but not consecutively — the signature of context
+//     assembled from memory or from a since-edited read.
+
+/** Longest quoted file/search fragment in a diagnostic — long enough to identify a line,
+ *  short enough that a failing multi-hunk edit cannot flood the transcript. */
+const QUOTE_MAX = 100;
+/** Near-miss locations reported per failure. Two is enough to disambiguate; more is noise. */
+const MAX_CANDIDATES = 2;
+
+function quote(line: string): string {
+  const t = line.trim();
+  return t.length > QUOTE_MAX ? `${t.slice(0, QUOTE_MAX)}…` : t;
+}
 
 /** Leading whitespace of a line ('' when there is none). */
 function leadingWs(line: string): string {
@@ -37,11 +62,21 @@ function locateUnique(text: string, search: string): { idx: number; len: number 
   const idx = text.indexOf(search);
   if (idx !== -1) {
     if (text.indexOf(search, idx + 1) !== -1) {
-      return { error: 'Search text matches multiple locations in file — include more surrounding context to make it unique.' };
+      // Collect every occurrence so the error can name the lines — see ambiguousError.
+      const at: number[] = [];
+      for (let k = idx; k !== -1; k = text.indexOf(search, k + 1)) at.push(lineOf(text, k));
+      return { error: ambiguousError(at) };
     }
     return { idx, len: search.length };
   }
   return locateFlexible(text, search);
+}
+
+/** 1-based line number of a character offset. */
+function lineOf(text: string, offset: number): number {
+  let line = 1;
+  for (let i = 0; i < offset; i++) if (text.charCodeAt(i) === 10) line++;
+  return line;
 }
 
 /** Whitespace-tolerant, line-based fallback for when exact `indexOf` fails. Conservative:
@@ -49,21 +84,20 @@ function locateUnique(text: string, search: string): { idx: number; len: number 
  *  match must still be UNIQUE. Offsets address the ORIGINAL text (never a normalised copy) so
  *  the returned index is never off by one byte per CRLF. */
 function locateFlexible(text: string, search: string): { idx: number; len: number } | { error: string } {
-  const notFound = { error: 'Search text not found in file.' };
   const pattern = search.split('\n').map((l) => l.trim());
   let a = 0;
   let b = pattern.length;
   while (a < b && pattern[a] === '') a++;
   while (b > a && pattern[b - 1] === '') b--;
   const pat = pattern.slice(a, b);
-  if (pat.length === 0) return notFound;
-
   const lines = text.split('\n');
+  if (pat.length === 0) return { error: 'Search text is empty — nothing to find.' };
+
   const offsets: number[] = [];
   let acc = 0;
   for (const line of lines) { offsets.push(acc); acc += line.length + 1; }
 
-  const found: Array<{ idx: number; len: number }> = [];
+  const found: Array<{ idx: number; len: number; line: number }> = [];
   for (let i = 0; i + pat.length <= lines.length; i++) {
     let hit = true;
     for (let j = 0; j < pat.length; j++) {
@@ -71,12 +105,62 @@ function locateFlexible(text: string, search: string): { idx: number; len: numbe
     }
     if (!hit) continue;
     const last = i + pat.length - 1;
-    found.push({ idx: offsets[i], len: offsets[last] + lines[last].length - offsets[i] });
-    if (found.length > 1) {
-      return { error: 'Search text matches multiple locations in file — include more surrounding context to make it unique.' };
-    }
+    found.push({ idx: offsets[i], len: offsets[last] + lines[last].length - offsets[i], line: i + 1 });
   }
-  return found.length === 1 ? found[0] : notFound;
+  if (found.length === 1) return found[0];
+  if (found.length > 1) return { error: ambiguousError(found.map((f) => f.line)) };
+  return { error: notFoundError(lines, pat) };
+}
+
+/** Non-unique match: name the LINES. "Add more context" is only actionable once the model can
+ *  see which occurrences it has to tell apart. */
+function ambiguousError(matchLines: number[]): string {
+  const shown = matchLines.slice(0, 5).join(', ');
+  const more = matchLines.length > 5 ? `, +${matchLines.length - 5} more` : '';
+  return `Search text matches ${matchLines.length} locations in the file (lines ${shown}${more}). `
+    + 'Include more surrounding context so exactly one matches, or use the "edits" array to change each one deliberately.';
+}
+
+/** No match: report the closest thing the file DOES contain. Three ranked cases, cheapest
+ *  first, each derived from the pattern lines already computed. */
+function notFoundError(lines: string[], pat: string[]): string {
+  const trimmed = lines.map((l) => l.trim());
+  // `"a\nb\n".split('\n')` ends in a phantom '' — real content stops before it. Without this
+  // a search running one line past the end reported `file has ``` (an empty quote), which
+  // reads as "the line is blank" instead of "there is no such line".
+  const contentLen = lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
+
+  // Case A — the first search line lands somewhere: the block diverges further down, which is
+  // the classic "context is one line stale". Name the exact line that differs and what is
+  // really there; the model can fix the hunk without re-reading the whole file.
+  const starts: number[] = [];
+  for (let i = 0; i < trimmed.length; i++) if (trimmed[i] === pat[0]) starts.push(i);
+  if (starts.length > 0) {
+    const reports = starts.slice(0, MAX_CANDIDATES).map((i) => {
+      let j = 1;
+      while (j < pat.length && i + j < contentLen && trimmed[i + j] === pat[j]) j++;
+      if (i + j >= contentLen) {
+        return `line ${i + 1}: your search runs ${pat.length - j} line(s) past the end of the file`;
+      }
+      return `line ${i + j + 1}: file has \`${quote(lines[i + j])}\` but your search line ${j + 1} is \`${quote(pat[j])}\``;
+    });
+    const more = starts.length > MAX_CANDIDATES ? ` (+${starts.length - MAX_CANDIDATES} more starting points)` : '';
+    return `Search text not found. Your FIRST line matches at line ${starts.map((i) => i + 1).join(', ')}${more}, `
+      + `but the block then diverges — ${reports.join('; ')}. `
+      + 'Re-read that range and copy the current text exactly.';
+  }
+
+  // Case B — the lines exist, just not together: context assembled from memory, or from a read
+  // taken before an earlier edit in this same turn.
+  const present = pat.filter((p) => p !== '' && trimmed.includes(p));
+  if (present.length > 0) {
+    return `Search text not found. ${present.length} of your ${pat.length} search lines exist in the file but not as one consecutive block — `
+      + `the first that does is \`${quote(present[0])}\`. Your context is probably stale; re-read the file and copy the current text exactly.`;
+  }
+
+  // Case C — nothing of the search is in the file at all: wrong file, or fully rewritten text.
+  return `Search text not found — no line of it appears anywhere in the file (first line looked for: \`${quote(pat[0])}\`). `
+    + 'Check the path, then read the file to see what it actually contains.';
 }
 
 /** Apply one {search, replace} hunk to `text`, or explain why it could not be applied. */

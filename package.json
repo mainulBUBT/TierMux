@@ -446,7 +446,7 @@
             "aggressive"
           ],
           "default": "light",
-          "description": "Compact bulky tool results before they enter the model's context: 'light' keeps only the head and tail of large runCommand outputs (the model keeps the outcome and final status); 'aggressive' additionally line-caps search-shaped results (grep/glob/listDir/webSearch). File reads, edit results, and diagnostics are never compacted. 'off' keeps every result verbatim."
+          "description": "Compact bulky tool results before they enter the model's context. On every step, tool outputs from EARLIER steps are replaced by a one-line stub naming the tool and its arguments, so the model can re-run it if it truly needs the content again; 'light' stubs outputs over ~2,000 characters, 'aggressive' over ~800. The most recent step's results, short outputs, and error payloads always stay verbatim. File reads ARE included — they are the largest outputs and the reason this exists. 'off' keeps every result verbatim."
         },
         "tiermux.profiler.enabled": {
           "type": "boolean",

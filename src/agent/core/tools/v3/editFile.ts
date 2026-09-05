@@ -81,9 +81,18 @@ export function createEditFileTool(bindings: ToolsetBindings = {}) {
         let before = new Set<string>();
         try { before = workspaceErrorSignatures(vscode.languages.getDiagnostics()); } catch { /* unavailable */ }
 
-        for (const hunk of hunks) {
-          const next = applyHunk(text, hunk.search, hunk.replace);
-          if ('error' in next) return { error: next.error };
+        for (let i = 0; i < hunks.length; i++) {
+          const next = applyHunk(text, hunks[i].search, hunks[i].replace);
+          if ('error' in next) {
+            // WHICH hunk failed, and that none were written. Without the index a model holding
+            // five hunks got one bare "not found" and had to guess which to fix; without the
+            // "no changes written" half it could not tell whether to re-send all five or the
+            // remainder (hunks apply to an in-memory copy and the file is written once, below,
+            // so a mid-list failure leaves the file untouched).
+            const where = hunks.length > 1 ? `Hunk ${i + 1} of ${hunks.length} failed: ` : '';
+            const rollback = hunks.length > 1 ? ' No changes were written — re-send all hunks once this one is fixed.' : '';
+            return { error: `${where}${next.error}${rollback}` };
+          }
           text = next.text;
         }
 

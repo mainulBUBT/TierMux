@@ -21,7 +21,7 @@ import { createExitPlanModeTool } from '../src/agent/core/tools/v3/exitPlanMode'
 import { buildV3ToolSet } from '../src/agent/core/tools/v3/index';
 import { formatPlanForCard, isCleanNumberedList, parsePlanStepLine, renderPlanMarkdown } from '../src/agent/planStructurer';
 import { resolvePolicy, defaultPolicy } from '../src/permissions/policy';
-import { createMockModel } from '../src/agent/poc/mockModel';
+import { createMockModel } from './mockModel';
 import { runPlanStream } from '../src/agent/agent';
 import { __setEngineModelForTests } from '../src/agent/core/engine';
 import type { AgentOpts } from '../src/agent/agent';

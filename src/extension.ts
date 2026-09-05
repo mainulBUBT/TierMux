@@ -10,7 +10,7 @@ import { QuotaStore } from './config/quotaStore';
 import { ModelStatsStore } from './config/modelStats';
 import { SlowModelStore } from './config/slowModel';
 import { Router, setSmartScoring } from './router/router';
-import { setModelSources, restoreHealth, snapshotHealth } from './router/picker';
+import { setModelSources } from './router/picker';
 import { MetricsStore } from './router/metricsStore';
 import { ScoringEngine } from './router/scoring';
 import { verifyGrounding, renderVerifyReport } from './backend/groundingVerify';
@@ -140,11 +140,6 @@ export function activate(context: vscode.ExtensionContext): void {
     // scoring Router. The Router instance above stays alive for utility one-shot calls
     // (titles, commit messages, inline completions) until those migrate in v3.1.
     setModelSources({ catalog, settings, secrets });
-    // Cooldowns learned last session (flapping free-tier providers) survive a reload —
-    // restoreHealth drops anything already expired, so only live cooldowns carry over.
-    try {
-      restoreHealth(context.globalState.get<Array<{ key: string; failures: number; cooldownUntil: number }>>('tiermux.modelHealth', []));
-    } catch { /* corrupted snapshot — start fresh */ }
 
     let profiler: IProfilerService = createProfiler(
       vscode.workspace.getConfiguration('tiermux.profiler').get<boolean>('enabled', false),
@@ -464,13 +459,9 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  // Persist live model cooldowns so the next window doesn't re-learn every flapping
-  // free-tier provider from scratch. Best-effort — deactivate has no context handle,
-  // so this uses the module ref kept at activation.
-  try {
-    const mem = chatProviderRef?.depsGlobalState();
-    if (mem) void mem.update('tiermux.modelHealth', snapshotHealth());
-  } catch { /* shutdown path — never throw */ }
+  // No external engine process or router-proxy server to tear down anymore — the engine calls
+  // Router.route() directly, in-process. Model cooldowns are deliberately NOT persisted here
+  // (see picker.ts): a stale cooldown outliving the reload shadows a model that recovered.
 }
 
 async function setApiKey(secrets: SecretStore, platformArg?: Platform): Promise<void> {

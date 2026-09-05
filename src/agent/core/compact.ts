@@ -84,6 +84,25 @@ export function compactIfNeeded(
 
 const AGE_MIN_CHARS = 2_000;
 
+/** toolCallId → the ARGUMENTS that produced the result. `ToolResultPart` carries only
+ *  toolCallId/toolName/output — the args live on the ASSISTANT message's `tool-call` part
+ *  (ToolCallPart.input), so a stub that wants to name what it elided has to look them up
+ *  there. Reading `input` off the tool-result part instead silently yields undefined, which
+ *  is what shipped 2026-09-04: every stub read "[readFile — 30,000 chars…]" with no path,
+ *  so the model could not act on the "re-run the tool" hint the stub gave it. */
+function toolCallInputs(messages: ModelMessage[]): Map<string, unknown> {
+  const byId = new Map<string, unknown>();
+  for (const m of messages) {
+    if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
+    for (const part of m.content as Array<Record<string, unknown>>) {
+      if (part.type === 'tool-call' && typeof part.toolCallId === 'string') {
+        byId.set(part.toolCallId, part.input);
+      }
+    }
+  }
+  return byId;
+}
+
 /** One-line summary of a tool call for the stub header: "readFile src/x.ts". */
 function ageInputSummary(toolName: string, input: unknown): string {
   const o = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
@@ -94,7 +113,10 @@ function ageInputSummary(toolName: string, input: unknown): string {
   return clipped ? `${toolName} ${clipped}` : toolName;
 }
 
-/** Text of a tool-result output when it is plain text (string return / {type:'text'}). */
+/** Text of a tool-result output when it is plain text (string return / {type:'text'}).
+ *  `{type:'json'}` outputs are deliberately NOT aged: every v3 tool returns
+ *  `string | { error }`, so a json output IS an error payload — the recovery path, which
+ *  the module contract above keeps verbatim. */
 function ageOutputText(output: unknown): string | undefined {
   if (typeof output === 'string') return output;
   if (output && typeof output === 'object'
@@ -120,6 +142,7 @@ export function ageToolOutputs(messages: ModelMessage[], minChars = AGE_MIN_CHAR
   }
   if (lastToolIdx <= 0) return { stubbedChars: 0 };
 
+  const inputById = toolCallInputs(messages);
   let stubbedChars = 0;
   let changed = false;
   const out = messages.map((m, i) => {
@@ -136,7 +159,7 @@ export function ageToolOutputs(messages: ModelMessage[], minChars = AGE_MIN_CHAR
         ...part,
         output: {
           type: 'text',
-          value: `[${ageInputSummary(String(part.toolName ?? 'tool'), part.input)} — ${(text.length).toLocaleString()} chars returned in an earlier step; output elided to keep the prompt small. Re-run the tool (narrower, if needed) to see it again.]`,
+          value: `[${ageInputSummary(String(part.toolName ?? 'tool'), inputById.get(String(part.toolCallId ?? '')))} — ${(text.length).toLocaleString()} chars returned in an earlier step; output elided to keep the prompt small. Re-run the tool (narrower, if needed) to see it again.]`,
         },
       };
     });

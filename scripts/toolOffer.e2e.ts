@@ -14,7 +14,7 @@
  *
  * Run: npm run test:e2e:tool-offer
  */
-import { createMockModel } from '../src/agent/poc/mockModel';
+import { createMockModel } from './mockModel';
 import { runAgentStream } from '../src/agent/agent';
 import { __setEngineModelForTests } from '../src/agent/core/engine';
 import { setModelSources } from '../src/router/picker';

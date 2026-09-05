@@ -18,7 +18,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { createMockModel } from '../src/agent/poc/mockModel';
+import { createMockModel } from './mockModel';
 import { runAgentStream, runAskStream } from '../src/agent/agent';
 import { __setEngineModelForTests } from '../src/agent/core/engine';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';

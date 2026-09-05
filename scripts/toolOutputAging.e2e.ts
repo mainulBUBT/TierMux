@@ -23,15 +23,13 @@ import { ageToolOutputs } from '../src/agent/core/compact';
 let bad = 0;
 const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? `   (${d})` : ''}`); if (!c) bad++; };
 
-const FAT = (id: string, n = 30_000) => ({
-  role: 'assistant',
-  content: [{ type: 'tool-call', toolCallId: id, toolName: 'readFile', input: { path: `src/f${id}.ts` } }],
-  ...({}),
-}) as unknown as ModelMessage;
-
+// FIXTURE SHAPE IS THE POINT: the SDK's ToolResultPart carries ONLY toolCallId/toolName/
+// output — the arguments live on the ASSISTANT message's tool-call part. Fixtures that also
+// put `input` on the result part are why the "stub names the path" assertion passed while
+// production stubs shipped pathless for a day. Never re-add it here.
 const result = (id: string, value: string): ModelMessage => ({
   role: 'tool',
-  content: [{ type: 'tool-result', toolCallId: id, toolName: 'readFile', input: { path: `src/f${id}.ts` }, output: { type: 'text', value } }],
+  content: [{ type: 'tool-result', toolCallId: id, toolName: 'readFile', output: { type: 'text', value } }],
 } as unknown as ModelMessage);
 
 const call = (id: string, input: Record<string, unknown> = { path: `src/f${id}.ts` }): ModelMessage => ({
@@ -65,8 +63,8 @@ const call = (id: string, input: Record<string, unknown> = { path: `src/f${id}.t
   const messages: ModelMessage[] = [
     call('s1', { path: 'small.ts' }),
     { role: 'tool', content: [
-      { type: 'tool-result', toolCallId: 's1', toolName: 'readFile', input: { path: 'small.ts' }, output: { type: 'text', value: 'tiny' } },
-      { type: 'tool-result', toolCallId: 's2', toolName: 'readFile', input: { path: 'boom.ts' }, output: { type: 'json', value: { error: 'EACCES' } } },
+      { type: 'tool-result', toolCallId: 's1', toolName: 'readFile', output: { type: 'text', value: 'tiny' } },
+      { type: 'tool-result', toolCallId: 's2', toolName: 'readFile', output: { type: 'json', value: { error: 'EACCES' } } },
     ] },
   ] as unknown as ModelMessage[];
   const r = ageToolOutputs(messages);
@@ -81,6 +79,27 @@ const call = (id: string, input: Record<string, unknown> = { path: `src/f${id}.t
   const twice = ageToolOutputs(once.messages!);
   ok('idempotent on second pass', twice.stubbedChars === 0 && twice.messages === undefined);
   ok('aged transcript keeps structure', (once.messages!.length) === messages.length && (once.messages![3] as any).content[0].output.value === 'y'.repeat(28_000));
+}
+
+// ── 6: json outputs are error payloads (every v3 tool returns `string | {error}`) and are
+//       never aged, however fat ──
+{
+  const messages: ModelMessage[] = [
+    call('j1'), { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'j1', toolName: 'runCommand', output: { type: 'json', value: { error: 'x'.repeat(30_000) } } }] },
+    call('j2'), result('j2', 'y'.repeat(28_000)),
+  ] as unknown as ModelMessage[];
+  const r = ageToolOutputs(messages);
+  ok('fat error payload never aged', r.stubbedChars === 0 && r.messages === undefined);
+}
+
+// ── 7: the stub's path comes from the ASSISTANT tool-call part, the only place it lives ──
+{
+  const messages: ModelMessage[] = [
+    call('p1', { path: 'src/deep/target.ts' }), result('p1', 'x'.repeat(30_000)),
+    call('p2', { pattern: 'TODO' }), result('p2', 'y'.repeat(28_000)),
+  ] as unknown as ModelMessage[];
+  const stub = (ageToolOutputs(messages).messages![1] as any).content[0].output.value as string;
+  ok('stub names the path with no input on the result part', stub.includes('readFile src/deep/target.ts'), stub.slice(0, 80));
 }
 
 // ── 5: no tool messages at all → no-op ──

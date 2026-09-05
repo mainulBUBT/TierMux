@@ -339,16 +339,13 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           ? Object.keys(tools).filter((t) => !COORDINATION_TOOLS.includes(t))
           : undefined;
         const forcePlan = forcePlanToolOnNextStep && stepNumber === 0;
-        // Agent-mode auto-continue rounds (host chain): the round must ACT, not narrate. Same
-        // wire-level guarantee plan-gap gets — any offered tool is a legitimate close, prose
-        // alone is not. See AgentOpts.forceRealToolOnStart.
-        const forceReal = !!opts.forceRealToolOnStart && stepNumber === 0;
         // Age FIRST, compact second: aging elides consumed tool output on EVERY step (no
         // budget needed), and compaction then estimates on the aged transcript — a shrunken
         // history crossing its 80% trigger later, or never. The tiermux.agent.toolCompaction
-        // setting drives the aging threshold: 'off' skips aging entirely, 'light' elides
-        // only large command outputs, 'aggressive' also line-caps search-shaped results via
-        // the lower threshold. Unknown values fall back to light.
+        // setting drives the aging THRESHOLD and nothing else: 'off' skips aging entirely,
+        // 'light' stubs earlier outputs over 2,000 chars, 'aggressive' over 800. Both modes
+        // treat every tool the same — there is no per-tool head/tail or line-capping here,
+        // whatever older copies of the setting's description claimed. Unknown values → light.
         const compactionMode = opts.toolCompaction ?? 'light';
         const aging = compactionMode === 'off'
           ? { stubbedChars: 0 as number, messages: undefined as ModelMessage[] | undefined }
@@ -362,13 +359,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           ...(stepMessages ? { messages: stepMessages } : {}),
           // forcePlan's activeTools deliberately WINS over the small-window offer: on this one
           // step the turn has to close, and every tool outside PLAN_CLOSERS is a way not to.
-          // forceReal mirrors that for agent auto-continue: toolChoice 'required' means step 0
-          // MUST emit a tool call; activeTools is left unset so every offered tool stays legal.
+          // It is the ONLY toolChoice override here: forcing a tool call to stop a model from
+          // narrating is judging output shape, which is what NARRATION_RE was deleted for.
           ...(forcePlan
             ? { activeTools: PLAN_CLOSERS, toolChoice: 'required' as const }
-            : forceReal
-              ? { toolChoice: 'required' as const }
-              : offer ? { activeTools: offer } : {}),
+            : offer ? { activeTools: offer } : {}),
         };
       },
       // exitPlanMode IS the end of a plan-mode turn (Claude Code's ExitPlanMode has the same
@@ -498,11 +493,36 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     };
   }
 
+  // Dead-at-start abort, RESOLVED path (2026-09-05). The catch block above has this exact
+  // guard, but an abort almost never reaches it: `consumeStream` RESOLVES rather than
+  // rejecting — the same ai v7 behaviour this file already documents for stream errors twice
+  // — so Stop within the first second fell straight through to the normal return as a
+  // "successful" turn with text: '' and paused: undefined. That is the 0-token mystery
+  // placeholder the catch-block guard was written to prevent: a blank assistant bubble, no
+  // Continue button, no way to tell "stopped" from "answered with nothing".
+  //
+  // Caught by scripts/foundation.e2e.ts scenario 7 the moment it moved off the POC loop
+  // (docs/AGENT_RELIABILITY_PLAN_2026-09-05.md §4.1) — the POC's runAgent rejected on abort,
+  // so the resolved path had never been exercised.
+  if (opts.abortSignal?.aborted && !outcome.text.trim() && !reasoningText.trim() && toolEvents.length === 0) {
+    diagLog('engine.abortEmpty', 'abort before any output (resolved path) — returning paused:true so the turn stays resumable');
+    return {
+      text: '',
+      finishReason: 'unknown',
+      paused: true,
+      platform: served.platform,
+      model: served.model,
+      runtimeName: served.runtimeName,
+      workMessages: [],
+      changedFiles: [],
+    };
+  }
+
   // Stream-error guard: a provider failure consumeStream resolved used to fall through as a
   // "successful" empty turn (0 in/0 out) with the real reason (401/403/429/credit, or "all
   // candidates failed") swallowed — repro 1:18 AM, dead in 1s. Surface it, but only when the
   // turn produced NOTHING; partial output from a later-step failure still ships. A
-  // dead-at-start abort returns paused instead.
+  // dead-at-start abort returns paused instead (guard above).
   if (
     streamError
     && !opts.abortSignal?.aborted

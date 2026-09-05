@@ -34,10 +34,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { ToolSet } from 'ai';
-import { createMockModel, type MockResponse } from '../src/agent/poc/mockModel';
-import { buildStubTools } from '../src/agent/poc/tools';
-import { runAgentStream } from '../src/agent/poc/runAgent';
-import { defaultPolicy } from '../src/agent/poc/policy';
+import { createMockModel, type MockResponse } from './mockModel';
 import { createReadFileTool } from '../src/agent/core/tools/v3/readFile';
 import { createEditFileTool } from '../src/agent/core/tools/v3/editFile';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
@@ -64,17 +61,6 @@ function makeWorkspace(): { root: string; read: (f: string) => string } {
   return { root, read: (f) => fs.readFileSync(path.join(root, f), 'utf8') };
 }
 
-/** The REAL v3 tools (plan step 3) + the POC-only stubs scenarios 5/10 still need. The real
- *  ones run through vscode.workspace.fs, scoped to the temp workspace via runWithWorkspaceRoot. */
-function realToolSet(stubs: ReturnType<typeof buildStubTools>): ToolSet {
-  return {
-    readFile: createReadFileTool(),
-    editFile: createEditFileTool(),
-    writeFile: stubs.writeFile,
-    throwingTool: stubs.throwingTool,
-  };
-}
-
 /** Collects events so scenarios can assert what actually happened. */
 function tracker() {
   const toolEvents: Array<{ toolName: string; status: string; input?: unknown }> = [];
@@ -91,79 +77,131 @@ function tracker() {
   };
 }
 
-async function run(opts: Parameters<typeof runAgentStream>[0]) {
-  return runAgentStream(opts);
+
+// ── The REAL engine harness (src/agent/agent.ts → core/engine.ts) ─────────────────────────
+// Module-scope because EVERY scenario uses it. Until 2026-09-05 scenarios 1-10 ran
+// src/agent/poc/runAgent.ts instead — a parallel loop written as step-4 scaffolding — so the
+// gate CLAUDE.md calls "THE contract" left production's repair, abort and permission paths
+// covered by nothing. See docs/AGENT_RELIABILITY_PLAN_2026-09-05.md §4.1.
+
+/** Minimal AgentOpts for engine turns; scenarios override what they care about. */
+function engineOpts(over: Partial<AgentOpts> & { messages: ChatMessage[]; mode: AgentOpts['mode'] }): AgentOpts {
+  return {
+    effort: 'medium',
+    onChunk: () => {},
+    onTool: () => {},
+    onReasoning: () => {},
+    onModel: () => {},
+    onFailover: () => {},
+    onStep: () => {},
+    onTodos: () => {},
+    onAskUser: async () => 'yes',
+    onError: () => {},
+    ...over,
+  };
 }
 
-/** Real-tool runs are scoped to the temp workspace via ALS (same mechanism the fleet uses). */
-async function runScoped(root: string, opts: Parameters<typeof runAgentStream>[0]) {
-  return runWithWorkspaceRoot(root, () => runAgentStream(opts));
+async function engineTurn(model: ReturnType<typeof createMockModel>, opts: AgentOpts): Promise<AgentResult> {
+  __setEngineModelForTests(model);
+  // The public entries force their mode (same as production callers) — pick by requested mode.
+  const entry = opts.mode === 'plan' ? engineRunPlan : opts.mode === 'ask' ? engineRunAsk : engineRun;
+  try {
+    return await entry(undefined as never, opts);
+  } finally {
+    __setEngineModelForTests(undefined);
+  }
+}
+
+/** Engine tool events are `{name, state}` (ToolEvent), not the POC's `{toolName, status}`. */
+function engineTracker() {
+  const tools: Array<{ name: string; state: string; args?: unknown }> = [];
+  const chunks: string[] = [];
+  const asks: Array<{ toolName?: string; pattern?: string | string[]; command?: string }> = [];
+  return {
+    tools, chunks, asks,
+    ran: (name: string) => tools.some((e) => e.name === name && e.state === 'done'),
+    wire: (verdict: 'once' | 'always' | 'reject' = 'once') => ({
+      onTool: (e: unknown) => { tools.push(e as { name: string; state: string; args?: unknown }); },
+      onChunk: (t: string) => { chunks.push(t); },
+      onPermissionAsk: async (info: { toolName?: string; pattern?: string | string[]; command?: string }) => {
+        asks.push(info);
+        return verdict;
+      },
+    }),
+  };
+}
+
+/** Drives the engine's permission mode, which comes from settings (policyFromSettings), not
+ *  from a policy object a caller can hand in — production has no such seam and neither should
+ *  the gate. 'always' → ask, 'allowlist' → auto, 'never' → full-auto. */
+function withCommandApproval<T>(value: 'always' | 'allowlist' | 'never', fn: () => Promise<T>): Promise<T> {
+  const g = globalThis as { __tiermuxTestConfig?: Record<string, unknown> };
+  const prev = g.__tiermuxTestConfig;
+  g.__tiermuxTestConfig = { ...(prev ?? {}), commandApproval: value };
+  return fn().finally(() => { g.__tiermuxTestConfig = prev; });
 }
 
 async function main() {
-  // ── Scenario 1: read (REAL v3 tool) ──────────────────────────────────────────
+  // ── Scenario 1: read ─────────────────────────────────────────────────────────
   {
     const ws = makeWorkspace();
-    const stubs = buildStubTools(ws.root);
-    const tools: ToolSet = realToolSet(stubs);
     const model = createMockModel([
       { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
       { text: 'The file says: hello world' },
     ], 's1');
-    const tr = tracker();
-    const out = await runScoped(ws.root, {
-      prompt: 'read foo.txt', model, tools,
-      system: 'You are a test agent.',
-      ...tr.wire({}),
-    });
-    ok('1. tool executed and succeeded', tr.toolEvents.some((e) => e.toolName === 'readFile' && e.status === 'succeeded'));
+    const tr = engineTracker();
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'read foo.txt' }],
+      mode: 'agent',
+      ...tr.wire(),
+    })));
+    ok('1. tool executed and succeeded', tr.ran('readFile'), JSON.stringify(tr.tools));
     ok('1. model saw the file content in step 2',
       model.calls.length === 2 && JSON.stringify(model.calls[1].messages).includes('hello world'),
       `call2=${JSON.stringify(model.calls[1]?.messages).slice(0, 200)}`);
     ok('1. read output is line-numbered file format',
       JSON.stringify(model.calls[1].messages).includes('<file path='),
       'real tool contract: cat -n style <file> wrapper');
-    ok('1. streamed text arrived', tr.chunks.join('').includes('hello world') || out.text.includes('hello world'), `chunks=${JSON.stringify(tr.chunks)} text=${out.text}`);
+    ok('1. streamed text arrived', tr.chunks.join('').includes('hello world') || out.text.includes('hello world'),
+      `chunks=${JSON.stringify(tr.chunks)} text=${out.text}`);
     ok('1. natural finish', out.finishReason === 'stop', `finishReason=${out.finishReason}`);
-    ok('1. two steps', out.steps === 2, `steps=${out.steps}`);
+    ok('1. two model calls (tool step + synthesis)', model.calls.length === 2, `calls=${model.calls.length}`);
   }
 
-  // ── Scenario 2: edit (REAL v3 tool) ──────────────────────────────────────────
+  // ── Scenario 2: edit ─────────────────────────────────────────────────────────
   {
     const ws = makeWorkspace();
-    const stubs = buildStubTools(ws.root);
     const model = createMockModel([
       { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'goodbye' } }] },
       { text: 'edited' },
     ], 's2');
-    const out = await runScoped(ws.root, {
-      prompt: 'change hello to goodbye in foo.txt', model,
-      tools: realToolSet(stubs),
-      policy: { ...defaultPolicy, mode: 'full-auto' },
-    });
+    await withCommandApproval('never', () => runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'change hello to goodbye in foo.txt' }],
+      mode: 'agent',
+    }))));
     ok('2. edit applied on disk', ws.read('foo.txt') === 'goodbye world', `content=${ws.read('foo.txt')}`);
-    ok('2. no repairs needed', out.repairs === 0, `repairs=${out.repairs}`);
+    ok('2. no repair round was needed', model.calls.length === 2, `calls=${model.calls.length}`);
+  }
 
-    // 2b. whitespace-tolerant tier: flush-left search against indented code still applies,
-    // and the replacement is RE-INDENTED to the matched text's real indentation.
+  // ── Scenario 2b: whitespace-tolerant match + re-indent ───────────────────────
+  {
+    const ws = makeWorkspace();
     fs.writeFileSync(path.join(ws.root, 'indented.ts'), 'function f() {\n  return 1;\n}\n', 'utf8');
-    const model2 = createMockModel([
+    const model = createMockModel([
       { toolCalls: [{ toolName: 'editFile', input: { path: 'indented.ts', search: 'return 1;', replace: 'return 2;' } }] },
       { text: 'done' },
     ], 's2b');
-    await runScoped(ws.root, {
-      prompt: 'bump the return', model: model2,
-      tools: realToolSet(stubs),
-      policy: { ...defaultPolicy, mode: 'full-auto' },
-    });
+    await withCommandApproval('never', () => runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'return 2 instead' }],
+      mode: 'agent',
+    }))));
     ok('2b. flexible match + reindent', ws.read('indented.ts') === 'function f() {\n  return 2;\n}\n',
       `content=${JSON.stringify(ws.read('indented.ts'))}`);
   }
 
-  // ── Scenario 3: malformed args → self-correct (REAL tool schema) ─────────────
+  // ── Scenario 3: malformed args → self-correct (repairToolCall) ───────────────
   {
     const ws = makeWorkspace();
-    const stubs = buildStubTools(ws.root);
     // Call 1 (outer): bad input — path is a number; the real zod union(string, array) rejects it.
     // Call 2 (repair-inner): corrected call. Call 3 (outer step 2): final answer.
     const model = createMockModel([
@@ -171,98 +209,113 @@ async function main() {
       { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
       { text: 'recovered: the file says hello world' },
     ], 's3');
-    const tr = tracker();
-    const out = await runScoped(ws.root, {
-      prompt: 'read foo.txt', model,
-      tools: realToolSet(stubs),
-      ...tr.wire({}),
-    });
-    ok('3. repair consumed exactly once', out.repairs === 1, `repairs=${out.repairs}`);
+    const tr = engineTracker();
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'read foo.txt' }],
+      mode: 'agent',
+      ...tr.wire(),
+    })));
+    ok('3. repair consumed exactly one extra model call', model.calls.length === 3, `calls=${model.calls.length}`);
     ok('3. corrected call executed with valid input',
-      tr.toolEvents.some((e) => e.toolName === 'readFile' && e.status === 'succeeded' && (e.input as { path?: string })?.path === 'foo.txt'),
-      `events=${JSON.stringify(tr.toolEvents)}`);
-    ok('3. turn still completed', out.finishReason === 'stop' && out.steps === 2, `finish=${out.finishReason} steps=${out.steps}`);
+      tr.tools.some((e) => e.name === 'readFile' && e.state === 'done' && (e.args as { path?: string })?.path === 'foo.txt'),
+      JSON.stringify(tr.tools));
+    ok('3. turn still completed', out.finishReason === 'stop', `finish=${out.finishReason}`);
   }
 
   // ── Scenario 4: nonexistent tool → self-correct ──────────────────────────────
   {
     const ws = makeWorkspace();
-    const stubs = buildStubTools(ws.root);
     const model = createMockModel([
       { toolCalls: [{ toolName: 'readTheFile', input: { path: 'foo.txt' } }] },
       { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
       { text: 'recovered after name fix' },
     ], 's4');
-    const out = await runScoped(ws.root, {
-      prompt: 'read foo.txt', model,
-      tools: realToolSet(stubs),
-    });
-    ok('4. unknown tool repaired to a real one', out.repairs === 1, `repairs=${out.repairs}`);
+    const tr = engineTracker();
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'read foo.txt' }],
+      mode: 'agent',
+      ...tr.wire(),
+    })));
+    ok('4. unknown tool repaired to a real one', tr.ran('readFile'), JSON.stringify(tr.tools));
     ok('4. turn completed', out.finishReason === 'stop', `finish=${out.finishReason}`);
   }
 
-  // ── Scenario 5: execute() throws → SDK tool-error (Path B) ────────────────────
+  // ── Scenario 5: a tool FAILURE keeps the loop alive and reaches the model ─────
+  // Replaces the old "execute() throws → SDK Path B" case, which needed a synthetic throwing
+  // stub that exists nowhere in production: every v3 tool catches and returns `{ error }`
+  // (readFile.ts's contract note). What production actually depends on is the CONTRACT above
+  // that — a failed tool must not end the turn, and its reason must reach the model so the
+  // next step can self-correct. That is what is asserted here, on the real toolset.
   {
     const ws = makeWorkspace();
-    const stubs = buildStubTools(ws.root);
     const model = createMockModel([
-      { toolCalls: [{ toolName: 'throwingTool', input: {} }] },
-      { text: 'the tool crashed; reporting the failure' },
+      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'this text is not in the file', replace: 'x' } }] },
+      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'recovered' } }] },
+      { text: 'first attempt failed, second worked' },
     ], 's5');
-    const tr = tracker();
+    const tr = engineTracker();
     let crashed = false;
+    let out: AgentResult | undefined;
     try {
-      await run({
-        prompt: 'use the tool', model,
-        tools: { throwingTool: stubs.throwingTool },
-        policy: { ...defaultPolicy, mode: 'full-auto' },   // let it run so the throw actually happens
-        ...tr.wire({}),
-      });
+      out = await withCommandApproval('never', () => runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+        messages: [{ role: 'user', content: 'edit foo.txt' }],
+        mode: 'agent',
+        ...tr.wire(),
+      }))));
     } catch (e) {
       crashed = true;
       console.log('      unexpected throw:', e);
     }
-    ok('5. throw did NOT crash the turn', !crashed);
-    ok('5. failure surfaced to the model',
-      tr.toolEvents.some((e) => e.toolName === 'throwingTool' && e.status === 'failed'),
-      `events=${JSON.stringify(tr.toolEvents)}`);
+    ok('5. a failing tool did NOT crash the turn', !crashed);
+    ok('5. the loop continued to a second attempt', model.calls.length === 3, `calls=${model.calls.length}`);
+    ok('5. the failure reason reached the model verbatim',
+      JSON.stringify(model.calls[1]?.messages ?? '').includes('Search text not found'),
+      `call2=${JSON.stringify(model.calls[1]?.messages).slice(0, 300)}`);
+    ok('5. the diagnostic is actionable, not a bare "not found"',
+      /no line of it appears|diverges|consecutive block/.test(JSON.stringify(model.calls[1]?.messages ?? '')),
+      'editMatch.ts failure diagnostics — see editMatch.e2e.ts');
+    ok('5. the recovery edit applied', ws.read('foo.txt') === 'recovered world', `content=${ws.read('foo.txt')}`);
+    ok('5. turn completed normally', out?.finishReason === 'stop', `finish=${out?.finishReason}`);
   }
 
   // ── Scenario 6: 3-5 consecutive tool calls, natural finish ────────────────────
   {
     const ws = makeWorkspace();
-    const stubs = buildStubTools(ws.root);
     const model = createMockModel([
       { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
       { toolCalls: [{ toolName: 'readFile', input: { path: 'bar.txt' } }] },
       { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
       { text: 'read all three' },
     ], 's6');
-    const out = await runScoped(ws.root, {
-      prompt: 'read foo, bar, foo', model,
-      tools: realToolSet(stubs),
-    });
-    ok('6. four steps ran naturally', out.steps === 4, `steps=${out.steps}`);
+    const tr = engineTracker();
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'read foo, bar, foo' }],
+      mode: 'agent',
+      ...tr.wire(),
+    })));
+    ok('6. four steps ran naturally', model.calls.length === 4, `calls=${model.calls.length}`);
+    ok('6. every read executed', tr.tools.filter((e) => e.name === 'readFile' && e.state === 'done').length === 3,
+      JSON.stringify(tr.tools));
     ok('6. step cap not hit', out.finishReason === 'stop', `finish=${out.finishReason}`);
   }
 
   // ── Scenario 7: abort mid-stream ─────────────────────────────────────────────
   {
     const ws = makeWorkspace();
-    const stubs = buildStubTools(ws.root);
     const model = createMockModel([{ hang: true }], 's7');
-    const tr = tracker();
+    const tr = engineTracker();
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 150);
     let settled = false;
     let rejectReason: unknown = undefined;
+    let out: AgentResult | undefined;
     try {
-      await run({
-        prompt: 'stall forever', model,
-        tools: { readFile: stubs.readFile },
-        signal: controller.signal,
-        ...tr.wire({}),
-      });
+      out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+        messages: [{ role: 'user', content: 'stall forever' }],
+        mode: 'agent',
+        abortSignal: controller.signal,
+        ...tr.wire(),
+      })));
       settled = true;
     } catch (e) {
       rejectReason = e;
@@ -270,104 +323,98 @@ async function main() {
     }
     const isAbort = rejectReason === undefined || (rejectReason as Error)?.name === 'AbortError';
     ok('7. abort settles the turn', settled && isAbort,
-      `reason=${rejectReason ? String((rejectReason as Error).message) : 'resolved'} errors=${tr.errors.length}`);
-    ok('7. no tool ran after abort', !tr.toolEvents.some((e) => e.status === 'succeeded'));
+      `reason=${rejectReason ? String((rejectReason as Error).message) : 'resolved'}`);
+    ok('7. no tool ran after abort', !tr.tools.some((e) => e.state === 'done'), JSON.stringify(tr.tools));
+    ok('7. an abort with nothing streamed stays RESUMABLE (paused, not a blank success)',
+      rejectReason !== undefined || out?.paused === true, `paused=${out?.paused} text=${JSON.stringify(out?.text)}`);
   }
 
   // ── Scenario 8: ask mode → mutating tool prompts ─────────────────────────────
   {
     const ws = makeWorkspace();
-    const stubs = buildStubTools(ws.root);
     const model = createMockModel([
       { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'asked' } }] },
       { text: 'done after approval' },
     ], 's8');
-    const tr = tracker();
-    const out = await runScoped(ws.root, {
-      prompt: 'edit foo.txt', model,
-      tools: realToolSet(stubs),
-      policy: { ...defaultPolicy, mode: 'ask' },
-      requestApproval: async (req) => { tr.approvalRequests.push(req); return 'allow'; },
-    });
-    ok('8. user was asked once', tr.approvalRequests.length === 1 && tr.approvalRequests[0].tool === 'editFile',
-      `requests=${JSON.stringify(tr.approvalRequests)}`);
+    const tr = engineTracker();
+    const out = await withCommandApproval('always', () => runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'edit foo.txt' }],
+      mode: 'agent',
+      sessionId: 's8',
+      ...tr.wire('once'),
+    }))));
+    ok('8. user was asked once', tr.asks.length === 1 && tr.asks[0].toolName === 'editFile',
+      JSON.stringify(tr.asks));
+    ok('8. the ask carried the real path, not a bare tool name', tr.asks[0]?.pattern === 'foo.txt', JSON.stringify(tr.asks));
     ok('8. approved edit applied', ws.read('foo.txt') === 'asked world', `content=${ws.read('foo.txt')}`);
-    ok('8. turn completed', out.finishReason === 'stop');
+    ok('8. turn completed', out.finishReason === 'stop', `finish=${out.finishReason}`);
+  }
+
+  // ── Scenario 8b: a REJECTED approval blocks the write and the turn survives ──
+  {
+    const ws = makeWorkspace();
+    const model = createMockModel([
+      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'nope' } }] },
+      { text: 'the user declined' },
+    ], 's8b');
+    const tr = engineTracker();
+    const out = await withCommandApproval('always', () => runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'edit foo.txt' }],
+      mode: 'agent',
+      sessionId: 's8b',
+      ...tr.wire('reject'),
+    }))));
+    ok('8b. rejection leaves the file untouched', ws.read('foo.txt') === 'hello world', `content=${ws.read('foo.txt')}`);
+    ok('8b. the turn still completed instead of erroring out', out.finishReason === 'stop', `finish=${out.finishReason}`);
   }
 
   // ── Scenario 9: auto mode → read auto, mutating prompts ───────────────────────
   {
     const ws = makeWorkspace();
-    const stubs = buildStubTools(ws.root);
     const model = createMockModel([
       { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
       { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'auto' } }] },
       { text: 'done' },
     ], 's9');
-    const tr = tracker();
-    await runScoped(ws.root, {
-      prompt: 'read then edit', model,
-      tools: realToolSet(stubs),
-      policy: { ...defaultPolicy, mode: 'auto' },       // allowlist empty
-      requestApproval: async (req) => { tr.approvalRequests.push(req); return 'allow'; },
-    });
-    ok('9. read-only ran without asking',
-      tr.approvalRequests.length === 1 && tr.approvalRequests[0].tool === 'editFile',
-      `requests=${JSON.stringify(tr.approvalRequests)}`);
+    const tr = engineTracker();
+    await withCommandApproval('allowlist', () => runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'read then edit' }],
+      mode: 'agent',
+      sessionId: 's9',
+      ...tr.wire('once'),
+    }))));
+    ok('9. read-only ran without asking', tr.asks.length === 1 && tr.asks[0].toolName === 'editFile',
+      JSON.stringify(tr.asks));
     ok('9. mutating edit applied after ask', ws.read('foo.txt') === 'auto world', `content=${ws.read('foo.txt')}`);
   }
 
   // ── Scenario 10: full-auto, alwaysDeny wins ──────────────────────────────────
   {
     const ws = makeWorkspace();
-    const stubs = buildStubTools(ws.root);
+    clearSessionGrants('s10');
+    // A session deny grant, set the way production sets one: policyFromSettings hands back the
+    // STORED set reference, so adding here is what a "deny always" click does.
+    policyFromSettings(false, 'agent', 's10').alwaysDeny.add('editFile');
     const model = createMockModel([
       { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'DENIED' } }] },
       { toolCalls: [{ toolName: 'writeFile', input: { path: 'new.txt', content: 'written in full-auto' } }] },
       { text: 'done' },
     ], 's10');
-    const tr = tracker();
-    const out = await runScoped(ws.root, {
-      prompt: 'edit then write', model,
-      tools: realToolSet(stubs),
-      policy: { ...defaultPolicy, mode: 'full-auto', alwaysDeny: new Set(['editFile']) },
-      requestApproval: async (req) => { tr.approvalRequests.push(req); return 'allow'; },
-    });
+    const tr = engineTracker();
+    const out = await withCommandApproval('never', () => runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'edit then write' }],
+      mode: 'agent',
+      sessionId: 's10',
+      ...tr.wire('once'),
+    }))));
     ok('10. alwaysDeny blocked the edit', ws.read('foo.txt') === 'hello world', `content=${ws.read('foo.txt')}`);
-    ok('10. no approval asked in full-auto', tr.approvalRequests.length === 0, `requests=${JSON.stringify(tr.approvalRequests)}`);
+    ok('10. no approval asked in full-auto', tr.asks.length === 0, JSON.stringify(tr.asks));
     ok('10. non-denied tool auto-ran', ws.read('new.txt') === 'written in full-auto');
     ok('10. turn completed', out.finishReason === 'stop', `finish=${out.finishReason}`);
+    clearSessionGrants('s10');
   }
 
-  // ── Scenarios 11-14: the REAL engine (src/agent/core/engine.ts) via the model seam ──
-
-  /** Minimal AgentOpts for engine turns; scenarios override what they care about. */
-  function engineOpts(over: Partial<AgentOpts> & { messages: ChatMessage[]; mode: AgentOpts['mode'] }): AgentOpts {
-    return {
-      effort: 'medium',
-      onChunk: () => {},
-      onTool: () => {},
-      onReasoning: () => {},
-      onModel: () => {},
-      onFailover: () => {},
-      onStep: () => {},
-      onTodos: () => {},
-      onAskUser: async () => 'yes',
-      onError: () => {},
-      ...over,
-    };
-  }
-
-  async function engineTurn(model: ReturnType<typeof createMockModel>, opts: AgentOpts): Promise<AgentResult> {
-    __setEngineModelForTests(model);
-    // The public entries force their mode (same as production callers) — pick by requested mode.
-    const entry = opts.mode === 'plan' ? engineRunPlan : opts.mode === 'ask' ? engineRunAsk : engineRun;
-    try {
-      return await entry(undefined as never, opts);
-    } finally {
-      __setEngineModelForTests(undefined);
-    }
-  }
+  // ── Scenarios 11-14: the REAL engine, same helpers as 1-10 (hoisted to module scope) ──
 
   // ── Scenario 11: Plan mode flow (§12) ────────────────────────────────────────
   {

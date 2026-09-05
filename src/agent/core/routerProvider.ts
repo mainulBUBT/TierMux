@@ -26,39 +26,29 @@ import type {
 import type { ChatMessage, ChatToolChoice, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
 import { resolveProvider } from '../../providers';
 import { ProviderHttpError } from '../../providers/base';
-import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordTtft, rationaleForServed, type ModelSources, type SelectionRationale } from '../../router/picker';
+import { selectModel, setModelSources, getApiKeysFor, recordOutcome, rationaleForServed, type ModelSources, type SelectionRationale } from '../../router/picker';
 import { ThinkStripper, stripThinkTags, reasoningFromDelta, type Router, type RouteOptions } from '../../router/router';
 import { diagLog } from '../../util/diag';
 
-/** Monotonic counter driving the platform head-seat rotation (see resolveCandidates).
- *  Module-level so consecutive calls (chat turn, watchdog retry, next turn) walk the pool
- *  evenly. Deterministic, no RNG — a test seam reset exists for e2e determinism. */
-let chainRound = 0;
-function nextChainRound(): number {
-  return chainRound++;
-}
-export function __resetChainRound(): void {
-  chainRound = 0;
-}
-
-/** vscode config read that never throws — the picker path runs headless in e2e. */
-function vscodeConfigNumber(key: string, fallback: number): number {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const vscode = require('vscode') as typeof import('vscode');
-    const v = vscode?.workspace?.getConfiguration?.('tiermux')?.get<number>(key, fallback);
-    return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-/** TTFT fast-failover ms for this call — mirrors the old router's tiermux.ttftTimeoutMs
- *  (8s default). Disabled (0) for pinned/forced models (nothing to fail over to) and for
- *  custom/local endpoints, matching BaseProvider's uncapped-local contract. */
+/** Post-headers STALL bound: how long a stream that has produced no chunk at all may hang
+ *  before the candidate is abandoned. It covers the one hole `timeoutMs` cannot — a provider
+ *  that answers with headers in a second and then never sends a body, which no header timeout
+ *  can ever fire on.
+ *
+ *  It is deliberately NOT `tiermux.ttftTimeoutMs` (2026-09-05). That knob is the old Router's
+ *  HEDGE trigger — 8s, the point at which starting a second request alongside the first is
+ *  worth the quota — and reusing it as an abort threshold quietly cancelled the same commit's
+ *  own 25s→60s raise of FAILOVER_CONNECT_TIMEOUT_MS: no chunk can arrive before headers, so an
+ *  8s no-chunk abort fires strictly before any header timeout and the 60s tolerance became
+ *  unreachable. The two changes were aimed at the identical event (kilo, 10.4s to headers +3s
+ *  of keepalive) with opposite conclusions; the 60s tolerance is the deliberate one, so the
+ *  stall bound tracks it rather than fighting it.
+ *
+ *  Disabled (0) for pinned models (nothing to fail over to) and custom/local endpoints, whose
+ *  cold load may legally run minutes — the Stop button is the brake there, as elsewhere. */
 function ttftGateMsFor(platform: Platform, pinned: boolean): number {
   if (pinned || platform === 'custom') return 0;
-  return vscodeConfigNumber('ttftTimeoutMs', 8000);
+  return FAILOVER_CONNECT_TIMEOUT_MS;
 }
 
 export { setModelSources };
@@ -405,11 +395,11 @@ export async function resolveCandidates(
   // most MAX_PER_PLATFORM of the bound to a single platform on the first pass, then top the
   // chain back up from the overflow so a user who genuinely enabled only one provider still
   // gets a full chain.
-  // Quota-spreading rotation (2026-09-04): the same platformOrder every turn hands the head
-  // seats to the same ~12 platforms while the rest of a 33-platform catalog sits untouched.
-  // Rotate the starting platform so each turn the head seats go to a DIFFERENT slice of the
-  // enabled pool — every platform's free quota gets used across turns, not just the top 12.
-  // Deliberately a coarse per-call counter (module-level): cheap, no RNG, deterministic.
+  // Quota spreading is picker.ts's job, not this function's (2026-09-05): its equal-rank
+  // rotation varies WHICH model wins each seat, and it runs upstream of the selection
+  // rationale so the "Why this model?" report stays true. A second rotation here — of the
+  // platform order, AFTER the rationale was already emitted — spread the same quota twice
+  // and made the popover name a model that never ran.
   const MAX_CANDIDATES = 20;
   /** Cap on how deep one platform's bucket goes — only reachable when few platforms are
    *  usable, which is exactly when repeating a platform is the best option left. */
@@ -444,14 +434,7 @@ export async function resolveCandidates(
     }
   }
 
-  // Rotate the platform head-seat order — see the note above MAX_CANDIDATES. A single global
-  // counter means consecutive calls (chat turn, retry, next turn) walk the pool evenly.
-  if (platformOrder.length > 1) {
-    const rot = nextChainRound() % platformOrder.length;
-    if (rot > 0) platformOrder.push(...platformOrder.splice(0, rot));
-  }
-
-  // Interleave: round 0 is every platform's first choice (in the rotated platform order),
+  // Interleave: round 0 is every platform's first choice (in the picker's platform order),
   // round 1 every platform's second, and so on until the bound.
   const chain: Candidate[] = [];
   for (let round = 0; chain.length < MAX_CANDIDATES; round++) {
@@ -694,10 +677,6 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
         // abandoning it for the next candidate.
         for (const apiKey of c.apiKeys) {
           try {
-          // TTFT for a non-streaming call is just the response wall-time (2026-09-04):
-          // recorded so the picker's slow-model demotion sees the same fact the streaming
-          // path measures. Utility callers (titles, condense) ride this path.
-          const t0 = Date.now();
           const data = await provider.chatCompletion(apiKey, messages, c.modelId, {
             temperature: options.temperature,
             max_tokens: options.maxOutputTokens,
@@ -706,7 +685,6 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             abortSignal: options.abortSignal,
             timeoutMs: connectTimeoutFor(c.platform),
           });
-          recordTtft(c.platform, c.modelId, Date.now() - t0);
           reportServed(c.platform, c.modelId, provider.runtimeName);
           if (data.usage) {
             providerOpts.onUsage?.({ inputTokens: data.usage.prompt_tokens, outputTokens: data.usage.completion_tokens, model: `${c.platform}::${c.modelId}` });
@@ -825,13 +803,12 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                 ? [...messages, { role: 'user' as const, content: 'You produced reasoning but no final answer and called no tool. Reply now with your final answer to the user — concise, no meta-commentary, no tool calls.' }]
                 : messages;
 
-              // TTFT fast-failover: a provider that accepted the request but emits NO chunk
-              // within ttftTimeoutMs (default 8s — queue + prefill stall, the classic
-              // free-tier dead-hold) is aborted and the next candidate takes over. Any first
-              // chunk (content, reasoning, tool-call, usage, finish) clears the timer — this
-              // is time-to-FIRST-BYTE, never a cap on generation length. Disabled for pinned
-              // models (nothing to fail over to) and custom/local endpoints (a local model
-              // may legally cold-load past 8s — the Stop button is the brake, as elsewhere).
+              // Stall failover: a provider that accepted the request and then emits NO chunk
+              // at all within ttftGateMsFor is abandoned and the next candidate takes over.
+              // This catches the hole `timeoutMs` cannot — headers in a second, then silence
+              // forever. Any first chunk (content, reasoning, tool-call, usage, finish) clears
+              // the timer; it is never a cap on generation length. See ttftGateMsFor for why
+              // the bound tracks FAILOVER_CONNECT_TIMEOUT_MS instead of the 8s hedge knob.
               const ttftMs = ttftGateMsFor(c.platform, !!providerOpts.pinnedModel);
               const ttftController = new AbortController();
               const ttftTimer = ttftMs > 0
@@ -846,59 +823,55 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                 ? AbortSignal.any([options.abortSignal, ttftController.signal])
                 : ttftController.signal;
 
-              // TTFT: time to the FIRST yielded chunk. This is exactly the "queue + prefill"
-              // wait the turn feels (live repro 2026-09-04: kilo 10.4s to headers, then 3s
-              // of keepalive before the first delta — engine.ttft 17.3s total). Measured per
-              // attempt (the nudge re-request re-measures), recorded for the picker's
-              // slow-model demotion so the NEXT Auto turn prefers faster-answering peers.
-              const t0 = Date.now();
-              let firstChunkAt: number | undefined;
-
-              for await (const chunk of provider.streamChatCompletion(apiKey, attemptMessages, c.modelId, {
-                temperature: options.temperature,
-                max_tokens: options.maxOutputTokens,
-                tools,
-                reasoningEffort: providerOpts.effort,
-                abortSignal: ttftSignal,
-                timeoutMs: connectTimeoutFor(c.platform),
-              })) {
+              // Time-to-first-chunk is NOT measured here any more (2026-09-05). It existed to
+              // feed a learned slow-model demotion in the picker; that is gone, and the engine
+              // already logs the same number for diagnostics (engine.ttft, off turn start).
+              try {
+                for await (const chunk of provider.streamChatCompletion(apiKey, attemptMessages, c.modelId, {
+                  temperature: options.temperature,
+                  max_tokens: options.maxOutputTokens,
+                  tools,
+                  reasoningEffort: providerOpts.effort,
+                  abortSignal: ttftSignal,
+                  timeoutMs: connectTimeoutFor(c.platform),
+                })) {
+                  if (ttftTimer) clearTimeout(ttftTimer);
+                  if (chunk.usage) usage = chunk.usage;
+                  const choice = chunk.choices?.[0];
+                  if (!choice) continue;
+                  if (choice.finish_reason) finish = choice.finish_reason;
+                  const delta = choice.delta ?? {};
+                  // Reasoning models (DeepSeek R1 & friends) stream thinking either as native
+                  // reasoning fields or as `<think>` markup inside content. The splitter routes
+                  // both to the reasoning channel, keeps them OUT of the chat text, is safe for
+                  // tags split across chunks, and never doubles reasoning when a gateway sends
+                  // the same thinking through both channels at once.
+                  const split = splitter.feed(delta.content, reasoningFromDelta(delta as unknown as Record<string, unknown>));
+                  if (split.reasoning) {
+                    reasoningAccum += split.reasoning;
+                    if (!reasoningStarted) { reasoningStarted = true; controller.enqueue({ type: 'reasoning-start', id: reasoningId }); }
+                    controller.enqueue({ type: 'reasoning-delta', id: reasoningId, delta: split.reasoning });
+                  }
+                  if (split.text) {
+                    if (!textStarted) { textStarted = true; controller.enqueue({ type: 'text-start', id: textId }); }
+                    controller.enqueue({ type: 'text-delta', id: textId, delta: split.text });
+                  }
+                  for (const tc of delta.tool_calls ?? []) {
+                    const idx = tc.index ?? 0;
+                    const slot = acc.get(idx) ?? { id: tc.id ?? `call-${idx}`, name: '', args: '' };
+                    if (tc.id) slot.id = tc.id;
+                    if (tc.function?.name) slot.name += tc.function.name;
+                    if (tc.function?.arguments) slot.args += tc.function.arguments;
+                    acc.set(idx, slot);
+                  }
+                }
+              } finally {
+                // ALWAYS clear, including the throw-before-first-chunk path. A candidate
+                // that fails to connect (the common 429/5xx) skipped the old post-loop
+                // clear entirely, leaving an armed timer for the whole gate window that
+                // later fired into an AbortController nobody was listening to any more.
                 if (ttftTimer) clearTimeout(ttftTimer);
-                if (firstChunkAt === undefined) {
-                  firstChunkAt = Date.now();
-                  recordTtft(c.platform, c.modelId, firstChunkAt - t0);
-                }
-                if (chunk.usage) usage = chunk.usage;
-                const choice = chunk.choices?.[0];
-                if (!choice) continue;
-                if (choice.finish_reason) finish = choice.finish_reason;
-                const delta = choice.delta ?? {};
-                // Reasoning models (DeepSeek R1 & friends) stream thinking either as native
-                // reasoning fields or as `<think>` markup inside content. The splitter routes
-                // both to the reasoning channel, keeps them OUT of the chat text, is safe for
-                // tags split across chunks, and never doubles reasoning when a gateway sends
-                // the same thinking through both channels at once.
-                const split = splitter.feed(delta.content, reasoningFromDelta(delta as unknown as Record<string, unknown>));
-                if (split.reasoning) {
-                  reasoningAccum += split.reasoning;
-                  if (!reasoningStarted) { reasoningStarted = true; controller.enqueue({ type: 'reasoning-start', id: reasoningId }); }
-                  controller.enqueue({ type: 'reasoning-delta', id: reasoningId, delta: split.reasoning });
-                }
-                if (split.text) {
-                  if (!textStarted) { textStarted = true; controller.enqueue({ type: 'text-start', id: textId }); }
-                  controller.enqueue({ type: 'text-delta', id: textId, delta: split.text });
-                }
-                for (const tc of delta.tool_calls ?? []) {
-                  const idx = tc.index ?? 0;
-                  const slot = acc.get(idx) ?? { id: tc.id ?? `call-${idx}`, name: '', args: '' };
-                  if (tc.id) slot.id = tc.id;
-                  if (tc.function?.name) slot.name += tc.function.name;
-                  if (tc.function?.arguments) slot.args += tc.function.arguments;
-                  acc.set(idx, slot);
-                }
               }
-              // Stream ended on its own — the TTFT gate is no longer needed. (The abort
-              // controller stays; aborting an already-finished stream is a no-op.)
-              if (ttftTimer) clearTimeout(ttftTimer);
 
               const flushed = splitter.flush();
               if (flushed.reasoning) {

@@ -1,11 +1,15 @@
 // v3 model picker (plan step 8) — replaces src/router/router.ts's 2,235-LOC selection logic
 // and the whole scoring stack (scoring.ts, wilson.ts, metricsStore, rateTracker,
 // latencyTracker, capabilityProfile). Query-type → candidate chain + a MINIMAL per-model
-// cooldown. No hedging, no session pin: a user can read this table and know exactly which
-// model answers what. The cooldown re-adds only the lightweight "skip a model that just
-// failed" behavior the delete-the-Router pass dropped; the TTFT EWMA (recordTtft,
-// 2026-09-04) adds only "prefer the peer that actually answers" inside the enabled tail —
+// cooldown. No learning, no hedging, no session pin, no circuit-breaker: a user can read
+// this table and know exactly which model answers what. The cooldown re-adds only the
+// lightweight "skip a model that just failed" behavior the delete-the-Router pass dropped;
 // the rest of the Router's resilience machinery stays deleted.
+//
+// A learned TTFT EWMA + slow-model demotion lived here for one day (2026-09-04 → 09-05).
+// It was the deleted scoring Router in miniature — EWMA, staleness window, minSamples, a
+// pool-relative 3× speedFloorRatio — and the static speedRank grouping in the tail sort
+// covers the same repro with catalog data and no state. Do not bring it back.
 //
 // Sources (catalog/settings/secrets) are injected once at activation via setModelSources —
 // same module-level wiring pattern the old setGates used. Headless callers that never set
@@ -168,11 +172,10 @@ function keylessFallback(): ModelSelection {
  *  A model that fails (429/5xx/timeout/network) is skipped until its cooldown elapses, so the
  *  fallback chain prefers healthy models; a success resets the streak. Exponential backoff
  *  (30s base → 10m cap) keeps a persistently-broken model from being retried every call
- *  without the full circuit-breaker the deleted Router had.
- *
- *  Persisted to globalState (see persistHealth/restoreHealth wiring in extension.ts) so a
- *  reload doesn't re-learn every flapping free-tier provider from scratch. TTL-bounded on
- *  restore — a stale cooldown from yesterday must not shadow today's healthy model. */
+ *  without the full circuit-breaker the deleted Router had. In-memory only (resets on
+ *  reload) — deliberate: this is "don't hammer a model that just 429'd", not durability.
+ *  Persisting it to globalState (2026-09-04, reverted 09-05) bought a reload's worth of
+ *  head start in exchange for stale cooldowns shadowing models that had since recovered. */
 interface ModelHealth { failures: number; cooldownUntil: number; }
 const modelHealth = new Map<string, ModelHealth>();
 const HEALTH_BASE_MS = 30_000;
@@ -196,71 +199,6 @@ export function recordOutcome(platform: string, modelId: string, ok: boolean): v
 export function isInCooldown(platform: string, modelId: string): boolean {
   const h = modelHealth.get(healthKey(platform, modelId));
   return !!h && h.cooldownUntil > Date.now();
-}
-
-/** Serialize live cooldowns for persistence — only entries still in the future. Bounded so
- *  the memento never grows with dead history. */
-export function snapshotHealth(): Array<{ key: string; failures: number; cooldownUntil: number }> {
-  const now = Date.now();
-  const out: Array<{ key: string; failures: number; cooldownUntil: number }> = [];
-  for (const [key, h] of modelHealth) {
-    if (h.cooldownUntil > now && out.length < 200) out.push({ key, failures: h.failures, cooldownUntil: h.cooldownUntil });
-  }
-  return out;
-}
-
-/** Restore persisted cooldowns — entries already expired (stale reload) are dropped. */
-export function restoreHealth(entries: Array<{ key: string; failures: number; cooldownUntil: number }>): void {
-  const now = Date.now();
-  for (const e of entries ?? []) {
-    if (typeof e?.key !== 'string' || !(e.cooldownUntil > now)) continue;
-    modelHealth.set(e.key, { failures: Math.max(0, e.failures | 0), cooldownUntil: e.cooldownUntil });
-  }
-}
-
-/** Recent time-to-first-chunk EWMA per model — the ONE latency fact the v3 picker keeps,
- *  fed live by routerProvider (recordTtft on every candidate's first stream chunk / response).
- *
- *  Live repro (TierMux Diag, 2026-09-04 6:22 PM): the Auto chain reached
- *  kilo::nemotron-3-ultra after two dead candidates and paid 13.4s of queue+keepalive for
- *  its first byte — while the enabled tail behind it held fast-answering peers the picker
- *  had no way to know about. Failure cooldown only smells BREAKAGE; it is blind to a
- *  healthy model that is merely slow to start, so such a model re-served every turn.
- *
- *  Deliberately narrow: an EWMA + sample count, in-memory, no per-task split, no absolute
- *  ms threshold anywhere (the demotion below is relative to the fastest candidate in the
- *  pool being ranked). In-memory like modelHealth — "prefer the peer that answers" is a
- *  session-scale fact, not durability. */
-const TTFT_EWMA_ALPHA = 0.3;
-/** Fresh measurement window: older than this and the EWMA is discarded rather than blended. */
-const TTFT_STALE_MS = 10 * 60_000;
-/** Samples before a model's TTFT is trusted enough to demote it (mirrors SCORING minSamples). */
-const TTFT_MIN_SAMPLES = 2;
-interface TtftSample { ms: number; samples: number; at: number; }
-const ttftByModel = new Map<string, TtftSample>();
-
-/** Record one first-chunk latency for `platform::modelId` (call on SUCCESS paths only —
- *  failures are modelHealth's job). First sample seeds; then EWMA; a sample after a long
- *  quiet period reseeds instead of blending into a stale average. */
-export function recordTtft(platform: string, modelId: string, ms: number): void {
-  if (!Number.isFinite(ms) || ms < 0) return;
-  const key = healthKey(platform, modelId);
-  const prev = ttftByModel.get(key);
-  if (!prev || Date.now() - prev.at > TTFT_STALE_MS) {
-    ttftByModel.set(key, { ms, samples: 1, at: Date.now() });
-    return;
-  }
-  ttftByModel.set(key, {
-    ms: prev.ms + TTFT_EWMA_ALPHA * (ms - prev.ms),
-    samples: prev.samples + 1,
-    at: Date.now(),
-  });
-}
-
-/** Trusted recent TTFT, or undefined when unmeasured/too few samples. */
-function trustedTtft(platform: string, modelId: string): number | undefined {
-  const s = ttftByModel.get(healthKey(platform, modelId));
-  return s && s.samples >= TTFT_MIN_SAMPLES ? s.ms : undefined;
 }
 
 /** Monotonic per-task-kind counter driving the equal-rank rotation — module-level so it
@@ -455,49 +393,18 @@ export async function selectModel(
     const meta = sources.catalog.find(platform, modelId);
     ranked.push({ key: picked, rank: meta?.intelligenceRank ?? Number.POSITIVE_INFINITY, speed: meta?.speedRank ?? 5 });
   }
-  // TTFT-aware tail order (2026-09-04): a tail sorted by intelligenceRank alone is blind to
-  // which peer actually ANSWERS fast. Two deterministic effects, both relative to THIS
-  // candidate pool (no absolute ms anywhere):
-  //   1. Within one rank, lower recent TTFT first (unmeasured keeps settings order after
-  //      measured ones — measured beats unmeasured so samples get used once earned).
-  //    Within-one-rank only: intelligence stays the primary sort, so a smarter-but-slower
-  //      model still outranks a trivially-fast weak one.
-  //   2. THE SLOW-MODEL DEMOTION — a model whose trusted TTFT is ≥ TTFT_SLOW_RATIO × the
-  //      fastest trusted peer in this pool drops behind EVERY non-slow candidate, crossing
-  //      rank lines. This is the balance-rule analog the deleted scoring Router had
-  //      (speedFloorRatio): serial failover makes a slow-queue model high in the chain tax
-  //      every turn it heads (live repro 2026-09-04: kilo::nemotron 13.4s to first byte —
-  //      while faster peers sat later in the same tail). The pinned model and the task-table
-  //      head (both upstream of this tail) are exempt — explicit/curated choice.
-  // TTFT_SLOW_RATIO 3× mirrors scoringConfig's speedFloorRatio.
-  const ttftOf = (key: string): number | undefined => {
-    const [platform, ...rest] = key.split('::');
-    return trustedTtft(platform, rest.join('::'));
-  };
-  const knownTtfts = ranked.map((r) => ttftOf(r.key)).filter((t): t is number => t !== undefined);
-  const fastestTtft = knownTtfts.length ? Math.min(...knownTtfts) : undefined;
-  const SLOW_RATIO = 3;
-  const isSlow = (key: string): boolean => {
-    const t = ttftOf(key);
-    return t !== undefined && fastestTtft !== undefined && t >= fastestTtft * SLOW_RATIO;
-  };
-  ranked.sort((a, b) => {
-    const slow = (isSlow(a.key) ? 1 : 0) - (isSlow(b.key) ? 1 : 0);
-    if (slow) return slow;
-    // Speed-aware grouping (2026-09-04): catalog speedRank 5 = a 397B-class model whose
-    // prefill alone runs a minute on a free gateway. It can still ANSWER, so it stays in
-    // the pool — but only as a last-resort fallback, never rotated into the head. Without
-    // this, quota rotation lifted ovh::Qwen3.5-397B-A17B (rank-1/speed-5) to the chain head
-    // and a simple chat turn took ~5 minutes ("Calculating… 4m56s").
-    const slowCapable = (e: { speed: number }): number => (e.speed >= 4 ? 1 : 0);
-    const sc = slowCapable(a) - slowCapable(b);
-    if (sc) return sc;
-    if (a.rank !== b.rank) return a.rank - b.rank;
-    const ta = ttftOf(a.key) ?? Infinity;
-    const tb = ttftOf(b.key) ?? Infinity;
-    return ta - tb;
-  });
-  // Quota-spreading within one rank (2026-09-04): a deterministic rank+TTFT sort hands the
+  // Tail order: speed class first, then intelligence rank — stable, so equal/unknown entries
+  // keep settings order. Both keys come from the CATALOG; nothing here is measured or learned.
+  //
+  // Speed-aware grouping (2026-09-04): catalog speedRank 5 = a 397B-class model whose prefill
+  // alone runs a minute on a free gateway. It can still ANSWER, so it stays in the pool — but
+  // only as a last-resort fallback, never rotated into the head. Without this, quota rotation
+  // lifted ovh::Qwen3.5-397B-A17B (rank-1/speed-5) to the chain head and a simple chat turn
+  // took ~5 minutes ("Calculating… 4m56s"). This is the ONE slow-model rule; the learned TTFT
+  // demotion that briefly sat in front of it covered the same repro with a scoring engine.
+  const slowCapable = (e: { speed: number }): number => (e.speed >= 4 ? 1 : 0);
+  ranked.sort((a, b) => slowCapable(a) - slowCapable(b) || a.rank - b.rank);
+  // Quota-spreading within one rank (2026-09-04): a deterministic rank sort hands the
   // SAME best model every turn, so one provider's free quota drains while equally-smart peers
   // (same intelligenceRank) sit unused — "600 models catalog, but it keeps using the same 1-2."
   // Rotate the head of each equal-rank group so the NEXT turn leads with a different peer.

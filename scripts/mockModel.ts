@@ -1,5 +1,6 @@
 // POC ONLY — scripted LanguageModelV4 for the v3 foundation scenarios (step 1 of the plan).
-// This file is deleted with the rest of src/agent/poc/ once the real agent.ts lands (step 4).
+// Test infrastructure: moved out of src/agent/poc/ to scripts/ on 2026-09-05 when the rest of
+// the POC was deleted. Every e2e that needs a scripted LanguageModelV4 imports it from here.
 //
 // The script is a FIFO queue: every doStream/doGenerate call pops the next response.
 // A response can be plain text (final answer), native tool calls (args as an object —

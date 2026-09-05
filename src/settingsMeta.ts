@@ -57,10 +57,12 @@ export const SETTINGS_META: SettingMeta[] = [
   { key: 'hedgeDelayMs', label: 'Hedge delay (ms)', type: 'number', min: 500, max: 30000,
     desc: 'How long to wait for the first provider chunk before starting a hedge request alongside the primary. 0 disables hedging.' },
   { key: 'agent.toolCompaction', label: 'Tool-result compaction', type: 'enum', enum: ['off', 'light', 'aggressive'],
-    desc: 'Compact bulky tool results before they enter the model\'s context: light = head+tail of large command outputs; aggressive = also line-caps search results. File reads and edit results are never compacted.' },
+    desc: 'Replace EARLIER steps\' bulky tool outputs with a one-line stub naming the tool and its arguments, so each step re-sends a small prompt; light stubs over ~2,000 characters, aggressive over ~800. The most recent step\'s results, short outputs and error payloads stay verbatim. File reads are included — they are the largest outputs and the reason this exists.' },
   { key: 'agent.autoCondense', label: 'Auto-compact context', type: 'boolean',
     desc: 'Automatically summarize older turns when the conversation approaches ~80% of the model\'s context window, before a turn starts.' },
-  { key: 'agent.autoCondenseTokenCap', label: 'Auto-compact context cap (tokens)', type: 'number', min: 8000, max: 200000,
+  // min 0, not 8000: 0 is the documented "no cap, window-only" value (package.json declares
+  // minimum 0 too), and an 8k floor made the settings UI unable to express it at all.
+  { key: 'agent.autoCondenseTokenCap', label: 'Auto-compact context cap (tokens)', type: 'number', min: 0, max: 200000,
     desc: 'Fixed working-context ceiling for auto-compact, independent of the served model\'s window — keeps per-turn payload (and first-token latency) bounded. Raise it to compact less often at the cost of slower turns; 0 disables the cap (window-only).' },
   { key: 'agent.sessionModelLock', label: 'Session model lock', type: 'boolean',
     desc: 'Keep one conversation on the model that has been serving it, instead of letting Auto re-pick every turn. Releases automatically on real failure (rate limit, error, slow) — failover is never blocked.' },

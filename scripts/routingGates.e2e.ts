@@ -20,7 +20,7 @@
  * Run: npm run test:e2e:routing-gates
  */
 import { selectModel, setModelSources, __resetTaskRoundCounters } from '../src/router/picker';
-import { resolveCandidates, isFailoverWorthy, __resetChainRound } from '../src/agent/core/routerProvider';
+import { resolveCandidates, isFailoverWorthy } from '../src/agent/core/routerProvider';
 import { ProviderHttpError } from '../src/providers/base';
 import type { FallbackEntry } from '../src/shared/types';
 
@@ -59,7 +59,6 @@ function makeSources(fallback: FallbackEntry[], disabledProviders: string[], key
 const platformsOf = (keys: string[]) => keys.map((k) => k.split('::')[0]);
 
 async function main() {
-  __resetChainRound();
 
 console.log('— the provider switch gates Auto/Smart selection even with a key stored —');
 {
@@ -84,7 +83,7 @@ console.log('— the provider switch gates Auto/Smart selection even with a key 
 
 console.log('\n— re-enabling the provider brings its models straight back —');
 {
-  __resetTaskRoundCounters(); __resetChainRound();
+  __resetTaskRoundCounters();
   const fallback = [entry('ollama', 'glm-5.2', 0), entry('groq', 'openai/gpt-oss-120b', 1)];
   setModelSources(makeSources(fallback, [], ['ollama', 'groq']));
   const sel = await selectModel([{ role: 'user', content: 'hello' } as never], {});
@@ -94,7 +93,7 @@ console.log('\n— re-enabling the provider brings its models straight back —'
 
 console.log('\n— the chain spends its bound on BREADTH, not on one provider —');
 {
-  __resetTaskRoundCounters(); __resetChainRound();
+  __resetTaskRoundCounters();
   // The 3:32 PM repro: the picker's flat order was walked and cut at the bound, so the chain
   // came back opencode → ollama → ollama → cerebras while google/kilo/mistral/kenari sat
   // enabled, keyed, and never looked at.
@@ -137,7 +136,7 @@ console.log('\n— the chain spends its bound on BREADTH, not on one provider �
 
 console.log('\n— one usable provider still gets a full-length chain —');
 {
-  __resetTaskRoundCounters(); __resetChainRound();
+  __resetTaskRoundCounters();
   // The breadth rule must not shorten the chain for a user who enabled only one provider:
   // repeating that platform is the best option left, so the rounds keep drawing from it.
   const fallback = [
