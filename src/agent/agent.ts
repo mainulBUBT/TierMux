@@ -1,10 +1,8 @@
 
 
-// The stable contract chatViewProvider.ts depends on. Exposes only TierMux's own types
-// (AgentOpts/AgentResult/ToolEvent) — no AI SDK type is ever imported here or above. Everything
-// AI-SDK-shaped lives inside ./core/*, loaded lazily (see loadCore below) so this file stays
-// vscode-free and independently testable, and so a future AI SDK version bump only touches
-// ./core/*, not this file or chatViewProvider.ts.
+// The stable contract chatViewProvider.ts depends on — TierMux's own types only, no AI SDK
+// type here or above. Everything AI-SDK-shaped lives in ./core/*, loaded lazily so this file
+// stays vscode-free.
 import type { ChatMessage, TodoItem, ReasoningEffort, ProposedPlan } from '../shared/types';
 
 export interface ToolEvent {
@@ -18,11 +16,8 @@ export interface ToolEvent {
 export interface AgentResult {
   text: string;
   reasoning?: string;
-  /** SDK finish reason for the turn ('stop' | 'length' | 'tool-calls' | 'unknown') — lets the
-   *  webview render an ACCURATE empty-reply placeholder: 'length' = real output-budget
-   *  exhaustion; 'stop' = the model chose to stop without answering (live repro: gpt-oss-120b
-   *  returned a silent empty step 2 after its tool call — 270 out tokens, NOT budget exhaustion,
-   *  yet the old placeholder blamed "token budget"). Undefined = turns persisted pre-plumbing. */
+  /** SDK finish reason ('stop' | 'length' | 'tool-calls' | 'unknown') so the webview's
+   *  empty-reply placeholder can tell budget exhaustion from a model that chose to stop. */
   finishReason?: string;
   platform?: string;
   model?: string;
@@ -30,20 +25,12 @@ export interface AgentResult {
   taskKind?: string;
   workMessages?: ChatMessage[];
   paused?: boolean;
-  /** Set when the turn STOPPED ITSELF rather than finishing: 'budget' — the step cap cut it
-   *  while tool calls were still in flight; 'stuck' — the same tool call failed with identical
-   *  input REPEAT_FAILURE_LIMIT times in a row. Both also set `paused`, so the host shows
-   *  Continue and `stopReasonNote` prints a footer naming the reason. Undefined = the model
-   *  concluded on its own terms (which may still leave pending todos — a different thing).
-   *
-   *  Live since 2026-09-05. It was declared but never assigned for the whole v3 era, described
-   *  in terms of a "continuation loop in chatViewProvider" that no longer exists. */
+  /** Set when the turn STOPPED ITSELF: 'budget' — the step cap cut it mid-tool-calls; 'stuck'
+   *  — the same tool call failed identically REPEAT_FAILURE_LIMIT times. Both also set
+   *  `paused`. Undefined = the model concluded on its own terms. */
   stopReason?: 'budget' | 'stuck';
-  /** Set when the model called plan mode's `exitPlanMode` tool — the explicit
-   *  planning→execution boundary. The plan arrives as VALIDATED STRUCTURE, so the host renders
-   *  its plan card straight from this instead of inferring "was that reply a plan?" from the
-   *  text. The turn also ENDS on this call (engine.ts stopWhen). Undefined = no plan proposed
-   *  this turn, which in plan mode means the reply is an answer/research, not a proposal. */
+  /** The validated structure plan mode's `exitPlanMode` tool produced; the host renders the
+   *  plan card from it. Undefined = no plan proposed this turn. */
   plan?: ProposedPlan;
   /** Set when the turn ended via the genuine-error catch path (not abort) — `onError` already
    *  surfaced a message to the UI. Callers must NOT also render this as a normal completed
@@ -57,34 +44,16 @@ export interface AgentResult {
    *  `workMessages`. Lets the caller render a deterministic "Files changed" recap independent of
    *  the model's prose, so a turn that ended on a bare tool call still surfaces what it changed. */
   changedFiles?: { path: string; status: 'created' | 'modified' | 'deleted' }[];
-  /** NOT PRODUCED BY THE v3 ENGINE (2026-09-05). `src/agent/core/tools/workspace/verifyCommand.ts`
-   *  implements the gate, but nothing calls `runVerifyCommand`, so this is always undefined —
-   *  see docs/AGENT_RELIABILITY_PLAN_2026-09-05.md §2.1, which is the decision to wire it or
-   *  delete it. Contract as designed, for whoever wires it:
-   *  Outcome of the end-of-turn command verify gate: 'passed' — the project's verify
-   *  command ran and exited 0 (possibly after fix rounds); 'failed' — it exited non-zero even
-   *  after the bounded fix rounds (`tiermux.agent.verifyFixRounds` — the agent owns the
-   *  recheck, the user is never asked to re-run it); 'unverified' — the turn mutated files but
-   *  no verify command exists. Undefined — no mutation (nothing to verify). The step engine
-   *  (a pre-v3 step engine, also gone) treated 'failed' as "the step is NOT accepted": a model marking its
-   *  todos completed while the verify command fails gets one focused extra round instead of a
-   *  handshake. */
+  /** End-of-turn verify gate: 'passed' — the verify command exited 0 (possibly after fix
+   *  rounds); 'failed' — non-zero even after `agent.verifyFixRounds`; 'unverified' — files were
+   *  mutated but no verify command produced a signal. Undefined — no mutation. */
   verifyOutcome?: 'passed' | 'failed' | 'unverified';
-  /** NOT PRODUCED BY THE v3 ENGINE (2026-09-05) — the host reads and persists it, and
-   *  media/src/ui/components/ResultCard.ts renders it, but nothing ever sets it. §2.2 of the
-   *  reliability plan is the decision to build it or delete all four layers.
-   *  Structured end-of-turn report (the host persists it in the transcript
-   *  as the canonical representation and posts it to the webview for the ResultCard). The
-   *  legacy markdown block in `text` is compatibility serialization only. */
+  /** Structured end-of-turn report, emitted for turns that changed files; the host persists it
+   *  and the webview renders the ResultCard from it. */
   workReport?: import('../shared/workReport').WorkReportData;
 }
 
-/** Smart Auto scoring rationale for a route() call this run triggered — "why this model?".
- *  Router.route() already exposes this as an onSelectionRationale RouteOptions callback
- *  (same shape as onFailover/onKeyRotated); core/routerProvider.ts forwards it through,
- *  translating scoring.ts's RationaleEntry[] (runtimeMultiplier/userPreference, platform+
- *  modelId) into this flatter shape. Optional because a plain scripted e2e harness has no
- *  UI to feed it to. */
+/** "Why this model?" rationale from the picker, forwarded by routerProvider. */
 export interface SelectionRationaleInfo {
   taskKind: string;
   picked?: string;
@@ -119,13 +88,6 @@ export interface AgentOpts {
   sessionId?: string;
   /** Per-turn request id. */
   requestId?: string;
-  /** Step routing (Phase 2): difficulty of the plan step this turn is executing — derived by the
-   *  caller (chatViewProvider's auto-continue loop) from the current todo item. `easy` routes
-   *  the round to the cheap fast pool (minIntelligenceRank), `hard` to the top tier
-   *  (maxIntelligenceRank), `medium`/undefined to the unconstrained default. Ignored when a
-   *  model is pinned or on an escalation retry (the user's choice / the escalation's own
-   *  top-tier constraint always win). */
-  stepDifficulty?: 'easy' | 'medium' | 'hard';
   /** How many `@mentions` in the latest user message resolved into supplied context — see
    *  routing.ts's classifyTaskCore, which uses this to route "work from what I gave you" turns
    *  (e.g. "reformat this @notes.md") to `chat` instead of an ambiguous default. */

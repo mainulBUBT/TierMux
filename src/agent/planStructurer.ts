@@ -1,20 +1,10 @@
 
 
-// Plan-text helpers for Plan mode.
-//
-// The PRIMARY path no longer lives here: the model declares its plan by calling the
-// `exitPlanMode` tool (core/tools/v3/exitPlanMode.ts), so the plan arrives already structured
-// and validated. `formatPlanForCard` below is the only thing that stands between that structure
-// and the `planProposed` card.
-//
-// What remains is the FALLBACK ladder for models that reply in prose instead of calling the
-// tool: `structurePlanSteps` re-parses confirmed plan prose into a clean string[] via the AI
-// SDK's `output` option, and falls back to titles.ts's regex `planStepsToTodos` on any failure.
-//
-// Deliberately GONE (2026-08-31): `extractPlanFromProse`, the LLM classifier that decided
-// whether a prose reply "was a plan". With an explicit tool boundary there is nothing left for
-// it to disambiguate, and it cost a whole extra model round-trip on every plan-mode turn the
-// regex gate missed.
+// Plan-text helpers. The primary path is the `exitPlanMode` tool: `formatPlanForCard` turns
+// its structure into card text. `structurePlanSteps` is the fallback for models that reply
+// in prose instead of calling the tool, with titles.ts's regex `planStepsToTodos` behind it.
+// There is deliberately NO classifier deciding whether prose "was a plan"
+// (docs/PLAN_MODE_TOOL_BOUNDARY_2026-08-31.md).
 import { generateText, Output, type LanguageModel } from 'ai';
 import { z } from 'zod';
 import type { ProposedPlan } from '../shared/types';
@@ -32,11 +22,8 @@ export function __setPlanModelForTests(m: LanguageModel | undefined): void {
   modelOverrideForTests = m;
 }
 
-/**
- * Re-parses a confirmed plan's prose into a clean step list via schema-validated structured
- * output. Returns null (never throws) on any failure — timeout, provider rejects `output`,
- * malformed result — so the caller falls back to `planStepsToTodos`'s regex parse.
- */
+/** Re-parses a confirmed plan's prose into a clean step list via structured output. Returns
+ *  null (never throws) on any failure so the caller falls back to the regex parse. */
 export async function structurePlanSteps(planText: string): Promise<string[] | null> {
   if (!planText.trim()) return null;
   try {
@@ -68,26 +55,14 @@ export function formatStructuredSteps(steps: string[]): string {
   return steps.map((s, i) => `${i + 1}. ${s}`).join('\n');
 }
 
-/**
- * Serialize a tool-declared {@link ProposedPlan} into the numbered-list text the
- * `planProposed` card already carries (`messages.ts`: `steps: string`), so the webview's
- * Plan.ts needs NO change to render a structured plan.
- *
- * The mapping is chosen to feed Plan.ts's own parsers rather than fight them:
- *  - `description` goes above the first list item — that is exactly where
- *    `extractPlanDescription` looks for the lead-in paragraph.
- *  - each step is ONE line starting `N. ` — what `parsePlanSteps` matches.
- *  - `files` are emitted in backticks, because `detectStepFiles` reads backticked spans to
- *    compute the card's "N steps · N files" summary. With the tool, those paths are the
- *    model's declared targets instead of a regex guess at pathish-looking prose.
- */
-/** Card-text encoding for the plan's header block. Line-prefixed rather than markdown-sectioned
- *  on purpose: the card text is hand-editable and is parsed back by BOTH this file and the
- *  webview, and `Reading:` cannot collide with the step-bullet regex
- *  (`^\s*(?:[-*]|\d+[.)])\s+`) the way a `- [ ]` line would.
- *  The header block is the READING alone since 2026-09-01 — `Approach:` / `Q:` / `A:` lines are
- *  retired (questions are asked before the plan via askUser, not carried on it), but they still
- *  occur in cards persisted by older sessions, so the re-parsers keep skipping them. */
+/** Serialize a tool-declared {@link ProposedPlan} into the numbered-list text the
+ *  `planProposed` card carries, shaped for Plan.ts's own parsers: `description` above the list
+ *  (extractPlanDescription), one `N. ` line per step (parsePlanSteps), files in backticks
+ *  (detectStepFiles). */
+/** Card-text header encoding. Line-prefixed, not markdown-sectioned: the text is hand-editable
+ *  and parsed back by both this file and the webview, and `Reading:` cannot collide with the
+ *  step-bullet regex. Retired `Approach:` / `Q:` / `A:` lines still occur in cards persisted by
+ *  older sessions, so the re-parsers keep skipping them. */
 export const CARD_READING_RE = /^Reading:\s*(.+)$/;
 /** Retired header lines (approach / on-card questions and answers), still skipped when
  *  re-parsing a card saved before 2026-09-01 so they do not leak into a re-saved description. */
@@ -121,15 +96,8 @@ export function formatPlanForCard(plan: ProposedPlan): string {
 
 const NUMBERED_LINE_RE = /^\s*\d+[.)]\s+\S/;
 
-/**
- * True when `text` is already the shape {@link formatPlanForCard} and the plan card's own
- * `collectSteps()` produce: an optional lead-in paragraph, then nothing but `N. <step>` lines,
- * one step per line.
- *
- * The point is to skip {@link structurePlanSteps} — a whole model round-trip — when there is
- * demonstrably nothing left to structure. Deliberately strict: any stray bullet, heading, or
- * wrapped continuation line makes it false, and the structurer runs as before.
- */
+/** True when `text` is already card-shaped (optional lead-in, then only `N. <step>` lines), so
+ *  {@link structurePlanSteps} — a model round-trip — can be skipped. Deliberately strict. */
 export function isCleanNumberedList(text: string): boolean {
   const lines = String(text || '').split('\n');
   const first = lines.findIndex((l) => NUMBERED_LINE_RE.test(l));
@@ -207,20 +175,8 @@ function yamlString(v: string): string {
   return `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ')}"`;
 }
 
-/**
- * Render an approved plan as the saved `.md` document.
- *
- * Replaces a flat `# Plan: <title>` + locale timestamp + one-line-per-step checklist, which
- * threw away everything the plan actually knew. This version keeps:
- *
- *  - **YAML frontmatter** — machine-readable, so the file can be listed, sorted and (later)
- *    read back in; VS Code and every markdown previewer already render it as a properties table.
- *  - **The original request**, quoted. Without it a saved plan cannot explain itself.
- *  - **Per-step files and verify as sub-bullets** instead of crammed into the checkbox line,
- *    with paths kept in backticks so they stay clickable-ish and greppable.
- *  - **`- [ ]` checkboxes**, so the file doubles as a working checklist while implementing —
- *    which is the only reason the old format's one real idea is kept.
- */
+/** Render an approved plan as the saved `.md`: YAML frontmatter, the original request quoted,
+ *  `- [ ]` checkboxes with per-step files/verify as sub-bullets. */
 export function renderPlanMarkdown(steps: string, meta: PlanFileMeta): string {
   const lines = steps.split('\n');
   const firstStep = lines.findIndex((l) => /^\s*(?:[-*]|\d+[.)])\s+\S/.test(l));

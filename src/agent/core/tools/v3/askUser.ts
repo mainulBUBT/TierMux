@@ -1,8 +1,5 @@
-// v3 askUser — interactive user questions and option selection.
-//
-// When requirements are ambiguous, underspecified, or when key design choices
-// require user feedback, the model calls askUser with a question and optional choices.
-// The host renders an in-chat card and awaits the user's input/selection.
+// askUser — the model asks the user a question mid-turn; the host renders a card and the
+// turn resumes with the answer.
 
 import { tool } from 'ai';
 import { z } from 'zod';

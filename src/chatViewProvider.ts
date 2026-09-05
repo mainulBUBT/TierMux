@@ -168,20 +168,10 @@ function withResumeContext(content: ChatContent, remainingTodos: TodoItem[]): Ch
   return withContextBlock(content, resumeContextBlock(remainingTodos));
 }
 
-/**
- * Tag a user turn with the mode that governs it, but only when the mode CHANGED.
- *
- * Mode reaches the model only through the system prompt and the tool set, and both are swapped
- * silently. The transcript, meanwhile, is one shared history: switch Agent → Ask and the model
- * still sees its own `editFile`/`writeFile` calls sitting a few messages back, with nothing
- * saying those powers are gone. It then tries an edit, gets denied, and burns a turn — or worse,
- * narrates as though it had made the change. Cline tags every user message for exactly this
- * reason ("the newest message's mode is what governs right now, regardless of what earlier
- * messages allowed").
- *
- * Only on change, not every message: an unchanged mode is already implied by the system prompt,
- * and repeating a tag on every turn spends context on free-tier models to say nothing new.
- */
+/** Tag a user turn with the mode that governs it, only when the mode CHANGED. The transcript is
+ *  one shared history: after Agent → Ask the model still sees its own editFile calls a few
+ *  messages back and tries another. Only on change, so free-tier context isn't spent saying
+ *  nothing new. */
 function withModeTag(content: ChatContent, mode: AgentMode, previousMode: AgentMode | undefined): ChatContent {
   if (previousMode === undefined || previousMode === mode) return content;
   const can = mode === 'agent'
@@ -473,13 +463,8 @@ function turnPlatformLabel(pinnedModel: string | undefined, reported: { runtimeN
   return getPlatformInfo(pinned as import('./shared/types').Platform)?.name ?? pinned;
 }
 
-/**
- * Bare modelId for a turn's footer. The model that ACTUALLY served wins — pairing the pin's
- * modelId with the served platform's label once produced "Kilo Gateway/z-ai/glm-5.2:free" for
- * an OpenRouter pin (2026-08-31). The pin (stripped of its `platform::` prefix, so the
- * footer's `${platform}/${model}` never double-prefixes) is only the fallback for turns that
- * produced no run metadata (empty or errored turn), keeping the footer from going blank.
- */
+/** Bare modelId for a turn's footer: the model that ACTUALLY served wins; the pin (prefix
+ *  stripped) is only the fallback for turns with no run metadata. */
 function turnModelLabel(pinnedModel: string | undefined, reportedModel: string | undefined): string | undefined {
   if (reportedModel) return reportedModel;
   return (pinnedModel && pinnedModel !== 'auto')
@@ -511,15 +496,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** One background-approval notification per (sessionId, requestId). */
   private approvalNotified = new Set<string>();
   private approvalSeqGlobal = 0;
-  /**
-   * Session Auto-approve: when true, the command/edit gates skip the inline prompt and run
-   * unattended (dangerous commands still confirm). Read live by both gates; persisted per workspace.
-   * Shared across all sessions — a workspace-level preference.
-   *
-   * Defaults to true so the agent runs commands/edits autonomously like other coding agents
-   * (Claude Code, Cursor): only commands matching the DANGEROUS list (rm -rf, git push --force,
-   * sudo...) still prompt. Users who want per-action confirmation can turn it off in the composer.
-   */
+  /** Workspace-level Auto-approve toggle (composer): when true the permission policy runs
+   *  commands/edits without a prompt (dangerous commands still ask). Defaults to true. */
   autoApprove = true;
 
   constructor(private readonly extensionUri: vscode.Uri, private readonly deps: ChatDeps) {
@@ -826,13 +804,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .then((choice) => { if (choice === 'Switch to it') this.openSession(sessionId); });
   }
 
-  /**
-   * Resolve every outstanding approval in a session (e.g. on cancel / stop) so the agent never
-   * hangs. Must also pull the card off the webview here — otherwise
-   * it stays rendered as a live, clickable Allow/Reject button whose backing promise is already
-   * gone, so a later click on it silently does nothing (the id is no longer in the map) and the
-   * user has no idea the run already ended.
-   */
+  /** Resolve every outstanding approval in a session (cancel / stop) so the agent never hangs,
+   *  and pull the cards off the webview so a stale click is visibly a no-op. */
   private settlePendingApprovals(s: Session, approved: boolean): void {
     const approvalIds = new Set(s.pendingApprovals.keys());
     for (const resolve of s.pendingApprovals.values()) resolve(approved);
@@ -1046,14 +1019,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.updateViewTitle();
   }
 
-  /**
-   * Re-send everything needed to reconstruct the currently-viewed session's live UI state: a
-   * still-running turn's assistantStart/step/todos, and any pending interactive cards (plan
-   * proposal, askUser questions, approvals). The extension host's in-memory `Session`
-   * survives both a tab switch (openSession) AND a webview-only reload (the 'ready' handler,
-   * e.g. Cmd+R) — only the *rendered* webview is gone in the latter case — so both paths need
-   * this same resync or a mid-run reload silently drops the plan/clarify card and live status.
-   */
+  /** Re-send the viewed session's live UI state (a running turn's start/step/todos, pending
+   *  cards). Needed on both a tab switch and a webview-only reload (Cmd+R). */
   private postLiveRunState(s: Session): void {
     if (s.activeRequestId) {
       const rid = s.activeRequestId;
@@ -1064,14 +1031,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     for (const card of s.cards) this.post(card);
   }
 
-  /**
-   * Deleting a chat also discards any code it changed that was never committed — same as
-   * Cursor/Claude Code. "Not committed" here means no real git commit has landed since (a
-   * real commit already clears every session's checkpoints via clearAllCheckpoints(), so if
-   * commits happened, `list()` is empty and this is a no-op). Confirms first since this is
-   * destructive; the webview has already optimistically removed the row, so a decline needs
-   * `postSessionList()` to bring it back.
-   */
+  /** Deleting a chat also discards code it changed that was never committed (a real commit
+   *  clears every session's checkpoints, so this is a no-op then). Confirms first; a decline
+   *  re-posts the session list because the webview already removed the row. */
   private async deleteSession(id: string): Promise<void> {
     const wasViewed = id === this.viewedSessionId;
     const s = this.sessions.get(id);
@@ -1633,14 +1595,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'insertMention', text: mention });
   }
 
-  /**
-   * Handle a file the webview captured from paste/drop (it has bytes but no
-   * path). For images we accept the data URL directly; for PDF/DOCX we save
-   * the bytes to a temp file in the workspace's .tiermux/attach/ folder and
-   * run the same extractor the workspace picker would. The temp file is
-   * kept on disk so a follow-up `readImage` / `readDocument` tool call later
-   * in the conversation can re-open it.
-   */
+  /** A file the webview captured from paste/drop (bytes, no path). Images: the data URL
+   *  directly; PDF/DOCX: saved under .tiermux/attach/ and run through the same extractor
+   *  the workspace picker uses. */
   private async attachFromDataUrl(m: Extract<InMessage, { type: 'attachFromDataUrl' }>): Promise<void> {
     if (!m || !m.dataUrl || !m.name) return;
     const dataMatch = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(m.dataUrl);
@@ -1819,29 +1776,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  every send (each attempt is a real LLM call against rate-limited free tiers). */
   private autoCondenseAt = new Map<string, number>();
   private static readonly AUTO_CONDENSE_COOLDOWN_MS = 10 * 60_000;
-  /** Default working-context ceiling, INDEPENDENT of the served model's window. Thresholding at
-   *  80% of the window let big-window models (e.g. 200k) grow history to 160k tokens — so a
-   *  trivial "what is this project?" shipped 65k input tokens and took 20-30s to first token on
-   *  EVERY provider (live repro 2026-09-04). Past the cap, older turns are summarized (not lost)
-   *  by condenseHistory — and the post-condense history is small (tail of 10 messages with
-   *  tool results re-capped), so regrowth to the cap takes many heavy turns, not one. User-
-   *  tunable via `tiermux.agent.autoCondenseTokenCap`; 0 restores window-only behavior. */
+  /** Default working-context ceiling, independent of the model's window: 80% of a 200k window
+   *  let a trivial turn ship 65k input tokens at 20-30s TTFT (2026-09-04). Past the cap, older
+   *  turns are summarized. `tiermux.agent.autoCondenseTokenCap`; 0 = window-only. */
   private static readonly AUTO_CONDENSE_TOKEN_CAP_DEFAULT = 32_000;
 
-  /**
-   * THE automatic compaction path (2026-09-05: there used to be two).
-   *
-   * When the session history exceeds the context-window ratio OR the working-context cap — and
-   * is long enough for condenseHistory to act on — summarize the older turns in place. Same
-   * mechanism as /compact, triggered by pressure instead of by the user noticing slowness.
-   *
-   * Called before a send AND after a turn settles. `maybeAutoCompact` used to own the second
-   * position with its own threshold, no cooldown, and no knowledge of the working-context cap,
-   * so it could immediately regrow history past the bound the pre-send path had just enforced —
-   * and it reached the user through handleCompact, which posts /compact's own notices ("Not
-   * enough conversation to compact yet") as if they had asked for it. One mechanism now; the
-   * ratio setting it owned (`tiermux.agent.autoCompactThreshold`) is read here.
-   */
+  /** THE automatic compaction path: when history exceeds the window ratio
+   *  (`autoCompactThreshold`) OR the working-context cap, summarize older turns in place — the
+   *  /compact mechanism, triggered by pressure. Called before a send and after a turn settles. */
   private async maybeAutoCondense(s: Session): Promise<void> {
     try {
       const cfg = vscode.workspace.getConfiguration('tiermux.agent');
@@ -2044,18 +1986,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.lastMentionCount = mentionResult.count;
     diagLog('send.gate', `requestId=${m.requestId} · resolveMentions done (count=${mentionResult.count})`);
 
-    // Auto-enrich: fold a hidden snapshot of the active editor (file/language/selection or an
-    // ambient slice around the cursor) and its live diagnostics into the MODEL-facing context only.
-    // The displayed transcript (built from `prompt` below) is unaffected, so the user sees exactly
-    // what they typed. Gated by `tiermux.context.includeOpenEditors` (was a dead setting before —
-    // now actually wired); the slice radius comes from `tiermux.context.ambientSliceRadius`. Skip
-    // the editor block if they already @-mentioned the active file (resolveMentions already put its
-    // full contents in contextText) — but keep diagnostics, which a file mention doesn't carry.
-    // A greeting/small-talk turn is never ABOUT what's on screen, and enrichment is invisible in
-    // the transcript, so the user has no way to see why the reply went off-topic: with a SQL dump
-    // (or any large file) open, "Hello" shipped up to 8KB of it and the model answered about the
-    // SQL instead of saying hello. Skipping enrichment here also keeps a greeting from parking
-    // that snippet in `s.history` for the rest of the session.
+    // Auto-enrich the MODEL-facing context (not the displayed transcript) with the active
+    // editor's selection/ambient slice and diagnostics. Gated by `context.includeOpenEditors`;
+    // skipped when the file is already @-mentioned, and on greetings — "Hello" with a SQL dump
+    // open shipped 8KB of it and the model answered about the SQL.
     const ctxCfg = vscode.workspace.getConfiguration('tiermux.context');
     let ctx = contextText;
     if (ctxCfg.get<boolean>('includeOpenEditors', true) && classifyTask(prompt) !== 'trivial') {
@@ -2179,23 +2113,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       let replyText = result.text;
       if (m.mode === 'plan') {
-        // Is the reply a runnable plan? The model ANSWERS that itself now, by calling the
-        // `exitPlanMode` tool — `result.plan` is its validated {title, description, steps[]}.
-        // That is the whole design change (2026-08-31): the boundary between planning and
-        // execution is an explicit tool call, the way Claude Code (ExitPlanMode), opencode
-        // (plan→build) and Copilot ("Start Implementation") all draw it — not something the
-        // host reverse-engineers from prose afterwards.
-        //
-        // The regex gate below stays ONLY as a fallback for models too weak to call the tool
-        // (TierMux routes a lot of free tiers). What is gone is the LLM classifier that used
-        // to sit under it — an extra model round-trip on every turn the regex missed, just to
-        // re-litigate a question the model had already answered by how it replied.
-        // outcome 'no-change' is a FINDING, not a plan: the investigation concluded nothing
-        // needs changing. Rendering it as a plan card would ask the user to approve executing
-        // nothing — which is precisely the shape of the 2026-09-01 repro, where "confirm no
-        // view-side change is needed" shipped as an approvable step. It falls through to the
-        // normal answer bubble instead, using the model's own prose when it wrote any and the
-        // structured finding when it just called the tool and stopped.
+        // The model declares a plan by calling `exitPlanMode` (result.plan); the regex gate
+        // below is only a fallback for models too weak to call the tool. Outcome 'no-change' is
+        // a FINDING, not a plan — rendering it as a card would ask the user to approve executing
+        // nothing (2026-09-01) — so it falls through to the normal answer bubble.
         const noChange = result.plan?.outcome === 'no-change' ? result.plan : undefined;
         if (noChange && !replyText.trim() && noChange.finding?.trim()) replyText = noChange.finding.trim();
         const planStepsText: string | null = noChange
@@ -2341,13 +2262,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.postChangedFilesBar(s);
   }
 
-  /**
-   * Feed the pinned "changed files" bar above the composer. The earliest checkpoint
-   * aggregates every edit made this session (cumulative semantics), so its file set is
-   * the full review list and its id is what "Undo all" restores. Empty set hides the bar.
-   * agentChangedFiles() filters to what TIERMUX itself edited — the user's own concurrent
-   * edits / build output don't belong in the agent's review list.
-   */
+  /** Feed the pinned "changed files" bar: the earliest checkpoint aggregates every edit this
+   *  session, filtered to what TierMux itself edited. Empty set hides the bar. */
   private async postChangedFilesBar(s: Session): Promise<void> {
     const cps = s.checkpoints.list();
     if (!cps.length) { this.post({ type: 'changedFiles', sessionId: s.id, id: '', files: [] }); return; }
@@ -2441,14 +2357,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.pendingPlanFile = { uri: fileUri, title: title || 'Untitled', request };
   }
 
-  /** Fire-and-forget: refine a just-posted plan card's raw-prose steps into a clean, deduplicated
-   *  numbered list via structurePlanSteps' schema-validated structured output, then silently
-   *  re-post the SAME planProposed card to upgrade it in place. Never awaited by the caller — the
-   *  card already shown used Plan.ts's own regex bullet/number parser on the raw text, so the user
-   *  sees a plan instantly with no added latency; this only makes it *nicer* a moment later.
-   *  Skipped entirely if the user has already acted on the plan (approved/deferred/discarded —
-   *  `s.pendingPlanUser` gets cleared by all three) or moved on to a new turn, and does nothing
-   *  on any failure/timeout (structurePlanSteps never throws, returns null instead). */
+  /** Fire-and-forget: refine a prose-fallback plan card's steps via structurePlanSteps and
+   *  re-post the same card. Skipped once the user has acted on the plan or moved on. */
   private upgradePlanSteps(s: Session, requestId: string, rawText: string): void {
     const pendingAtStart = s.pendingPlanUser;
     void structurePlanSteps(rawText).then((steps) => {
@@ -2481,13 +2391,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /**
-   * "Keep discussing": release the plan gate without executing or discarding. The user wants to
-   * refine first — so drop the pending-plan state (the next message is a clean discussion turn),
-   * keep any edits they made to the steps, and mark the card so it replays without re-gating.
-   * Nothing is written to disk here — the plan only touches the filesystem once approved
-   * (handleApprovePlan), so an edited-but-never-run plan never leaves a stray .md behind.
-   */
+  /** "Keep discussing": release the plan gate without executing or discarding. Nothing is
+   *  written to disk — the plan only touches the filesystem once approved. */
   private handleDeferPlan(m: Extract<InMessage, { type: 'deferPlan' }>): void {
     const s = this.current();
     s.pendingPlanUser = undefined;
@@ -2511,17 +2416,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    // Build Plan only commits the plan to disk — it does NOT execute it. Plan mode has no
-    // write/edit/run tools by design, so actually carrying it out always needs a manual switch
-    // to Agent mode; auto-running here used to paper over that with an implicit mode hop the
-    // user never asked for.
-    //
-    // No checkpoint wrapping here on purpose: checkpoints are keyed to a `s.transcript` user-turn
-    // requestId (that's what the per-message revert icon looks up), and this Build click has no
-    // transcript entry of its own — a synthetic checkpoint here would be unreachable from the UI.
-    // The file naturally falls under whichever real turn's checkpoint is still open (the Plan
-    // proposal that led here), which already has a working revert affordance — "Revert to here"
-    // on that message correctly undoes the plan file along with everything after it.
+    // Build Plan commits the plan to disk — it does NOT execute it (that is the explicit Execute
+    // click). No checkpoint of its own: this click has no transcript entry, so the file falls
+    // under the still-open Plan turn's checkpoint, whose "Revert to here" undoes it.
     if (m.steps) await this.writePlanFile(s, m.steps);
     s.pendingPlanFile = undefined;
     this.removeCards(s, (c) => c.type === 'planProposed');
@@ -2534,14 +2431,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle');
   }
 
-  /**
-   * Execute an approved plan: write it to a file (like handleApprovePlan), switch the user's mode
-   * to Agent, and AUTO-LAUNCH an agent turn seeded with the plan. This is the explicit
-   * execute-or-not path the flow was missing — unlike the old implicit mode hop (removed; see the
-   * comment in handleApprovePlan), this only fires on a direct Execute click. The launched turn
-   * flows through the normal handleSend path, so it gets the autonomous loop, the end-of-turn
-   * workspace verify, and the change recap like any agent turn.
-   */
+  /** Execute an approved plan: write it to a file, switch to Agent mode, and launch an agent
+   *  turn seeded with the plan. Only fires on a direct Execute click. */
   private async handleExecutePlan(m: Extract<InMessage, { type: 'executePlan' }>): Promise<void> {
     const s = this.current();
     if (!m.steps?.trim()) return;
@@ -2675,13 +2566,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * work. Tool-less runs (chat/trivial) have no workMessages, so fall back to the final text.
    */
   private persistAgentTurn(s: Session, result: AgentResult): void {
-    // Aborted runs must not bleed their working transcript into the next turn's history. The
-    // loop's `streamErrored && !text.trim()` branch only marks `failed: true` when no text
-    // streamed; with any text already on the wire the run resolves cleanly, and the prior
-    // workMessages (e.g. a tool call against an unrelated project) was the root cause of
-    // "the next hola answered against the previous project" — the model saw the abandoned
-    // transcript and used it as if it had been a real request. Stop leaves an honest
-    // final-reply bubble, NOT a transcript the next turn would inherit.
+    // An aborted run's working transcript must not bleed into the next turn's history — the
+    // model treated an abandoned tool call as a real request ("the next hola answered against
+    // the previous project"). Stop leaves a final-reply bubble, not inherited messages.
     if (s.cancel?.token.isCancellationRequested) {
       s.history.push({ role: 'assistant', content: result.text });
       return;
@@ -2735,25 +2622,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  /**
-   * True while `requestId` is still the active run in `session`. Cancelling (Stop) or
-   * superseding a run within its session clears `activeRequestId`, so a run abandoned
-   * mid-flight fails this check — its streaming and result are then dropped. NOTE: this is
-   * about liveness WITHIN a session, not about whether the session is viewed — background
-   * runs must keep streaming into their hidden container.
-   */
+  /** True while `requestId` is still the active run in `session` (Stop or supersession clears
+   *  it, dropping the abandoned run's output). About liveness, not visibility — background
+   *  runs keep streaming into their hidden pane. */
   private isActiveRun(s: Session, requestId: string): boolean {
     return s.activeRequestId === requestId;
   }
 
-  /** Cancel a session's in-flight run and detach it so its output can't land anywhere. Does NOT
-   *  touch the webview's DOM: the abandoned turn's streamed text/tool cards/reasoning stay exactly
-   *  as shown — cancelling only means no MORE output arrives, not that what already rendered should
-   *  vanish. (It previously forced a `switchSession` rebuild here, which wiped the pane and replayed
-   *  `s.transcript` — but a cancelled turn is never committed to `s.transcript` (see `isActiveRun`),
-   *  so the rebuild replayed a transcript missing the very turn just abandoned: all partial progress
-   *  visibly disappeared. Callers that DO need a rebuild — e.g. "Revert to here" — send their own
-   *  `switchSession` after truncating the transcript; see revertTo below.) */
+  /** Cancel a session's in-flight run and detach it. Does NOT touch the webview DOM: what
+   *  already rendered stays (a `switchSession` rebuild here replayed a transcript missing the
+   *  turn just abandoned, so all partial progress vanished). */
   private stopRun(sessionId: string): void {
     const s = this.sessions.get(sessionId);
     if (!s) return;
@@ -2791,7 +2669,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     callbacks: ReturnType<typeof this.agentCallbacks>,
     pinnedModel?: string,
     excludeModels?: string[],
-    stepDifficulty?: 'easy' | 'medium' | 'hard',
   ): AgentOpts {
     return {
       messages: s.history,
@@ -2799,7 +2676,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       effort,
       pinnedModel,
       excludeModels,
-      stepDifficulty,
       sessionId: s.id,
       requestId,
       mentionCount: s.lastMentionCount,
@@ -2818,24 +2694,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
   }
 
-  /**
-   * Build the streaming callbacks for a run, each gated on the run still being active IN ITS
-   * SESSION. Centralizing the guard means a cancelled run goes quiet immediately instead of
-   * rendering into another session. Not gated on viewed — background runs keep streaming.
-   * The agent's `askUser` tool always surfaces as an in-chat card. Every mode can ask —
-   * including Chat, whose web loop carries askUser to clarify time-sensitive queries.
-   */
+  /** Build the streaming callbacks for a run, each gated on the run still being active IN ITS
+   *  SESSION (a cancelled run goes quiet; background runs keep streaming). */
   private agentCallbacks(s: Session, requestId: string, _mode: Mode): Omit<AgentOpts, 'messages' | 'mode' | 'effort' | 'abortSignal' | 'pinnedModel' | 'taskKind'> & { settleReasoning(): void } {
-    // §14 event adapter — the whole streaming UX is a thin map of engine events onto the
-    // webview protocol. Seven events, nothing more (no phase engine, no custom retry — the
-    // AI SDK owns the loop, `maxRetries` covers transient failures):
-    //   turnStart      → assistantStart posted at ENTER in handleSend (0ms skeleton)
-    //   textDelta      → onChunk → `chunk` (progressive markdown render)
-    //   reasoningDelta → onReasoning → reasoning bursts as toolStatus cards (never chat text)
-    //   toolStart      → onTool(running) → toolStatus "Reading…/Editing…/Running…"
-    //   toolEnd        → onTool(done|error) → toolStatus replaced with the result
-    //   error          → onError → `error` (tool-errors ride to the model via the SDK)
-    //   done           → assistantMessage + busy:false in handleSend's finish path
+    // A thin map of engine events onto the webview protocol: onChunk → `chunk`, onReasoning →
+    // reasoning toolStatus cards, onTool → toolStatus running/done/error, onError → `error`;
+    // assistantStart is posted at ENTER and assistantMessage + busy:false at finish.
     const live = (): boolean => this.isActiveRun(s, requestId);
 
     // Reasoning stream state — ONE block per thinking "burst", not one coalesced block per turn, so
@@ -3278,21 +3142,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (w && w > 0) s.lastWindow = w;
   }
 
-  /** Auto-summarize when the conversation passes the configured fraction of the window. */
-  /** Best-effort: ask a free LLM for a short title from the user's first message. */
-  /**
-   * Pick this session's title ONCE.
-   *
-   * `s.title` is written exactly one time, by {@link commitTitle}, and never rewritten. Until
-   * then the session is untitled and the UI renders the neutral `UNTITLED_SESSION` label —
-   * NOT a lookalike title.
-   *
-   * That last part is the whole fix (2026-08-31): this used to assign a regex-derived
-   * placeholder first and then overwrite it with the LLM title a second later, so the tab
-   * visibly changed from one plausible title to a different plausible title. Going from
-   * "New chat" to the real title reads as filling in; going from "Add Dark Mode Toggle" to
-   * "Dark Mode Settings Toggle" reads as the app changing its mind.
-   */
+  /** Pick this session's title ONCE: `s.title` is written one time by {@link commitTitle}. Until
+   *  then the UI shows the neutral UNTITLED_SESSION label, not a regex placeholder that the LLM
+   *  title then visibly replaces. */
   private async maybeGenerateTitle(s: Session): Promise<void> {
     if (s.titleGenerated || s.userRenamedTitle) return;
     const users = s.transcript.filter((t) => t.role === 'user');

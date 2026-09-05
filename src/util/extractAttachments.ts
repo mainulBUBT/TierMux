@@ -168,21 +168,10 @@ export async function buildAttachmentFromUri(uri: vscode.Uri, source: Attachment
 }
 
 /**
- * Run `fn` with pdf.js able to recognise that it is on Node.
- *
- * pdf.js picks its Node vs browser implementation with:
- *   !(… || process.versions.electron && process.type !== undefined && process.type !== 'browser')
- * The VS Code extension host is an Electron process whose `process.type` is set (e.g.
- * 'utility'), so pdf.js concluded it was in a BROWSER — and then reached for browser-only
- * globals, failing with "Cannot destructure property 'platform' of 'navigator'" and, past
- * that, 'No "GlobalWorkerOptions.workerSrc" specified'. Every PDF therefore came back with
- * no text, which the UI reported as "scanned, no text layer".
- *
- * The host genuinely IS Node (fs, require, … all present) and pdf.js's Node path works
- * perfectly there, so the honest fix is to stop the misdetection: hide `process.type` for
- * the duration of the parse, then restore it exactly as it was. The window is short and
- * confined to PDF work; pdf.js re-checks during worker setup, so it must span the whole
- * operation rather than just the module load.
+ * Run `fn` with pdf.js recognising that it is on Node. The extension host is Electron with
+ * `process.type` set, which pdf.js reads as "browser" and then fails on browser-only globals
+ * — every PDF came back as "scanned, no text layer". Hide `process.type` for the duration of
+ * the parse (pdf.js re-checks during worker setup), then restore it.
  */
 async function withNodeDetection<T>(fn: () => Promise<T>): Promise<T> {
   const proc = process as unknown as { type?: string };
@@ -217,14 +206,9 @@ export function lastPdfFailureReason(): string | undefined {
 }
 
 /**
- * Load pdf-parse's PDFParse class lazily (never a top-level import: pdfjs touches browser
- * globals on load and would crash EXTENSION ACTIVATION — see ensureBrowserGlobals above).
- *
- * Tries CJS `require` first, then a dynamic `import`. pdf-parse is `"type": "module"` but also
- * ships a CJS entry (`exports.require`), and the two module systems fail in different hosts:
- * plain Node handles both, while the VS Code extension host (Electron) is fussier about ESM.
- * Trying both means a host that supports either one works, and the reason each attempt failed
- * is preserved for the user-facing notice rather than being swallowed.
+ * Load pdf-parse lazily (a top-level import would crash extension activation — see
+ * ensureBrowserGlobals). CJS `require` first, then dynamic `import`: the extension host is
+ * fussier about ESM than plain Node. Each failure reason is kept for the user-facing notice.
  */
 async function loadPdfParse(): Promise<any | null> {
   ensureBrowserGlobals();

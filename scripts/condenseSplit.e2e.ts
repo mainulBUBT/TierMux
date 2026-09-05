@@ -5,7 +5,7 @@
  * `assistant`/`tool` run, so the scan walked off the end and `condenseHistory` returned null —
  * meaning the sessions with the LARGEST contexts, exactly the ones compaction exists for, could
  * never compact. The user saw "Compaction produced no summary after retrying with a different
- * model", `maybeAutoCompact` was a silent no-op every turn, and the context grew until
+ * model", auto-compaction was a silent no-op every turn, and the context grew until
  * `fitMessages` began evicting the user's own task (see fitMessages.e2e.ts — same root symptom).
  *
  * Scanning BACKWARD finds a boundary while preserving the invariant that matters: the verbatim

@@ -8,13 +8,8 @@ import { unifiedDiff } from '../../format/unifiedDiff';
 
 // ========== Constants ==========
 
-/** Shared live/settled status glyph: a spinning ring while something is actually running,
- *  swapped for a static mark once it settles. One glyph vocabulary for "something is
- *  running" across the whole transcript — reasoning (buildReasoningBlock) and a grouped
- *  tool row (buildToolGroupRow) both use it, instead of each carrying its own separate
- *  status-indicator identity (a brain icon, a colored dot, ...). CSS lives in tool-card.css
- *  (.tm-spin-glyph / -ring / -mark), loaded before every other component stylesheet that
- *  might use this. */
+/** Shared live/settled status glyph: a spinning ring while running, a static mark once
+ *  settled. One vocabulary for reasoning blocks and tool rows alike (CSS: .tm-spin-glyph). */
 function buildSpinGlyph(live: boolean, mark: string, variant?: 'success' | 'error'): HTMLElement {
   return el('span', { class: `tm-spin-glyph${live ? ' live' : ''}${variant ? ` ${variant}` : ''}`, 'aria-hidden': 'true' },
     el('i', { class: 'tm-spin-glyph-ring' }),
@@ -22,12 +17,8 @@ function buildSpinGlyph(live: boolean, mark: string, variant?: 'success' | 'erro
   );
 }
 
-/** The leading status glyph for ONE tool row: spinner while running, green ✓ once settled,
- *  red ✗ on error — the SAME tick vocabulary the grouped read rows use, extended to every
- *  tool card (webSearch/fetchUrl/delegateTask/edits/…) so the whole timeline reads like the
- *  reference rows ("✓ Read …"). Replaces the per-tool glyph (⊙/◎/⊞) that used to sit here:
- *  state, not tool identity, is what the leading slot should communicate. Used by BOTH the
- *  static card (createToolHeader) and the live upsert (main.ts), so the two can't drift. */
+/** The leading status glyph for ONE tool row: spinner, green ✓, or red ✗ — state, not tool
+ *  identity. Used by both the static card and the live upsert (main.ts). */
 export function toolStateGlyph(state?: 'running' | 'done' | 'error' | 'queued'): HTMLElement {
   if (state === 'running' || state === 'queued') return buildSpinGlyph(true, '');
   if (state === 'error') return buildSpinGlyph(false, '✗', 'error');
@@ -140,13 +131,9 @@ export function buildReasoningBlock(text: string, tc?: string, isStreaming?: boo
   return block;
 }
 
-/** Update an existing reasoning block in place: refresh its text, and on done settle the
- *  streaming state + "Thought for Ns" label. Mirrors how `upsertTool` reconciles tool cards.
- *
- *  Reasoning is split into per-segment blocks (`reason-${requestId}-${seg}` — see chatViewProvider's
- *  onReasoning/endReasoningSegment): a tool call ends the current segment and the next thinking burst
- *  opens a fresh block, giving a think→tool→think timeline. Within a single segment this still updates
- *  one block in place: refresh its text while streaming, then settle to "Thought for Ns" on done. */
+/** Update a reasoning block in place: refresh its text while streaming, settle to "Thought for
+ *  Ns" on done. Blocks are per segment (`reason-${requestId}-${seg}`): a tool call ends the
+ *  segment and the next burst opens a fresh block, giving a think→tool→think timeline. */
 export function updateReasoningBlock(block: HTMLElement, text: string, done?: boolean, durationMs?: number): void {
   const body = block.querySelector<HTMLElement>('.tm-reasoning-body');
   if (body) { body.innerHTML = ''; body.appendChild(renderMarkdown(text || '')); }
@@ -183,19 +170,11 @@ export function settleReasoningBlock(block: HTMLElement, durationMs?: number): v
   }, 1000);
 }
 
-/**
- * Build a tool card from a step object.
- * Handles both reasoning blocks (delegates to buildReasoningBlock) and regular tool calls.
- * Requires currentMode to determine expansion behavior.
- * Enhanced with AI Elements Tool component patterns.
- */
-// ========== Grouped read rows (docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 1) ==========
-// A run of consecutive SAME-TOOL read calls (readFile, readFile, readFile — never a mix of
-// different tools under one verb, which would read as grammatically odd: "Read a.ts, 'foo'"
-// makes no sense if the second call was actually a grep) collapses into one line: bold verb +
-// comma-joined targets, instead of N separate cards. This is the single biggest declutter win
-// from the Codex/OpenCode research — a coding agent's most common action by far is reading a
-// handful of files before doing anything else.
+/** Build a tool card from a step object (reasoning blocks delegate to buildReasoningBlock). */
+// ========== Grouped read rows ==========
+// A run of consecutive SAME-TOOL read calls collapses into one line: bold verb + comma-joined
+// targets. Never a mix of tools under one verb ("Read a.ts, 'foo'" makes no sense if the second
+// was a grep).
 
 /** Tools eligible for grouping — genuinely side-effect-free inspection calls only. Anything
  *  that writes, runs a command, or has meaningfully different per-call output (diagnostics,
@@ -354,16 +333,8 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
   }
   // Only reveal the expand chevron when there's a body to show.
   if (hasBody) card.classList.add('has-body');
-  // Errors open themselves — matching AI Elements' output-error default (see
-  // docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 7). This only changes the DEFAULT open
-  // state, not whether it's a disclosure: the header's toggle handler below still closes it
-  // like any other card, so a retried-and-fixed call collapses away same as a success would.
-  //
-  // An EDIT opens itself for the same reason: it is the one step that changed the user's code,
-  // and a diff hidden behind a click is a change they never actually saw. A read's contents can
-  // stay collapsed — they didn't alter anything — but "what did it do to my file" should never
-  // need a click. buildEditDiff still collapses genuinely huge diffs behind its own summary, so
-  // this reveals a preview, not thousands of lines.
+  // Errors and EDITS open by default (still collapsible): a diff hidden behind a click is a
+  // change the user never saw. buildEditDiff still collapses huge diffs behind its own summary.
   if (hasBody && (state === 'error' || isEditStatic)) card.classList.add('open');
 
   // Add progress bar for running tools
@@ -713,19 +684,9 @@ function renderDiff2Html(diffText: string): HTMLElement | null {
  *  named constants: ≤ both inline caps → expanded rich diff; over an inline cap but under the
  *  preview ceiling → same rich diff collapsed behind a "View diff" disclosure; at/over the
  *  ceiling → summary note only. */
-/**
- * The before/after pair out of an edit tool's arguments, in whichever shape they arrived.
- *
- * v3's `editFile` takes `search`/`replace` — or an `edits: [{search, replace}, …]` array for
- * several hunks in one file — while older/MCP-style edit tools use `old_string`/`new_string`.
- * The card only ever looked for the latter, so every real edit fell through to dumping the raw
- * arguments as JSON instead of rendering a diff (live repro: an `editFile` card showing
- * `{"path": …, "search": …, "replace": …}` under "View output").
- *
- * Multiple hunks are joined into one before/after pair so they read as a single diff of the
- * file, which is what actually happened — they are applied atomically in one read/write.
- * Returns null when the arguments carry no usable pair.
- */
+/** The before/after pair out of an edit tool's arguments: `search`/`replace`, an `edits[]`
+ *  array of hunks (joined into one pair — they apply atomically), or MCP-style
+ *  `old_string`/`new_string`. Null when the arguments carry no usable pair. */
 export function editDiffArgs(args: unknown): { before: string; after: string; path?: string } | null {
   if (!args || typeof args !== 'object') return null;
   const a = args as Record<string, unknown>;

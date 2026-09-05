@@ -1,19 +1,8 @@
-// v3 exitPlanMode — plan mode's planning→execution boundary, as an explicit TOOL CALL.
-//
-// Why a tool and not prose parsing: before this, plan mode inferred whether a reply "was a
-// plan" AFTER the fact — a regex gate (titles.ts looksLikeActionablePlan), then an LLM
-// classifier (planStructurer.extractPlanFromProse), then a THIRD model call to re-structure
-// the prose into steps. Three judgments, up to two extra model round-trips per turn, and the
-// user turn had to be popped off the transcript and re-pushed on approval.
-//
-// Every comparable agent draws this line with an explicit signal instead: Claude Code's
-// ExitPlanMode, opencode's plan agent handing off to build, Copilot's "Start Implementation",
-// Zed's proposed plan-update primitive. The model DECLARES the plan; the host never guesses.
-//
-// The tool mutates nothing (READ_ONLY_TOOLS lists it, so the policy auto-approves) — it only
-// hands the structured plan to the host and ENDS the turn (engine.ts: stopWhen +
-// hasToolCall('exitPlanMode')). Approval happens afterwards on the plan card, through the
-// existing approvePlan / executePlan / deferPlan handlers — unchanged.
+// exitPlanMode — plan mode's planning→execution boundary as an explicit TOOL CALL, the way
+// Claude Code's ExitPlanMode and opencode's plan→build draw it: the model DECLARES the plan;
+// the host never classifies prose (docs/PLAN_MODE_TOOL_BOUNDARY_2026-08-31.md). Mutates
+// nothing; hands the structured plan to the host and ends the turn. Approval happens on the
+// plan card afterwards.
 
 import { tool } from 'ai';
 import { z } from 'zod';
@@ -31,12 +20,8 @@ export function createExitPlanModeTool(onPlanProposed?: (plan: ProposedPlan) => 
       + 'askUser first and wait for the answer — a plan carries no open questions. You cannot '
       + 'edit files in this mode; this tool IS the request for permission to implement, so do '
       + 'not also ask for approval in prose.\n'
-      // A worked example in the description, not the AI SDK's `inputExamples` property: TierMux's
-      // own LanguageModelV4 adapter (core/routerProvider.ts) maps tools to the router's wire
-      // shape and would drop that field, and adopting addToolInputExamplesMiddleware would add
-      // a parallel path rather than replace one (docs/sdk-adoption-policy.md, rule 3). Weak
-      // models copy a concrete shape far more reliably than they infer one from a schema — the
-      // 2026-08-31 nemotron repro narrated instead of calling this tool at all.
+      // A worked example IN the description (routerProvider would drop the SDK's `inputExamples`
+      // field): weak models copy a concrete shape far more reliably than they infer one.
       + 'Example input: {"outcome":"plan","title":"Add a dark mode toggle","interpretation":"the '
       + 'settings panel should offer a light/dark choice that the webview honours",'
       + '"description":"Adds a '
@@ -57,18 +42,10 @@ export function createExitPlanModeTool(onPlanProposed?: (plan: ProposedPlan) => 
       title: z.string().min(1).describe('Short imperative title for the plan, e.g. "Add dark mode to the settings panel".'),
       description: z.string().optional().describe('One or two sentences of context: what changes and why. No preamble about being in plan mode.'),
       finding: z.string().optional().describe('Required when outcome is "no-change": what you checked and why no change is needed, with path:line.'),
-      // The reading, written down. Required for a plan: the 2026-09-01 vendor-order repro shipped
-      // a plan that implemented the OPPOSITE of the request (show ALL products, when the user
-      // wanted inactive ones hidden). Every step was individually defensible and carried real
-      // evidence — the inversion lived in an unstated premise, so the card had nowhere to show
-      // it. Stating the premise costs one line and puts the error where one glance catches it.
-      // Optional in the SCHEMA, required in execute() for outcome 'plan' only. Making it
-      // schema-required broke the other two outcomes: a 'no-change' finding or a
-      // 'needs-decision' bail has no steps and therefore no reading to state, but a required
-      // field fails validation before execute() ever runs — so the call was rejected by the SDK
-      // with no readable reason and the loop just kept going (caught by the plan-answer e2e,
-      // calls=4). Conditional requirements belong in execute(), where the error text can say
-      // which outcome needs what.
+      // The stated premise. A 2026-09-01 plan implemented the OPPOSITE of the request with every
+      // step individually defensible — the inversion lived in an unstated premise. Optional in
+      // the schema, required in execute() for outcome 'plan' only: schema-required broke the
+      // step-less outcomes before execute() could explain.
       interpretation: z.string().optional().describe('Required for outcome "plan": the READING of the request this plan implements, in the user\'s own terms and one sentence — e.g. "in edit mode, products whose category or status is off should be HIDDEN from the grid". Not a summary of your steps.'),
       steps: z.array(z.object({
         what: z.string().min(1).describe('The action, imperative mood, ONE line. A before→after text change is ONE step, never two. NOT a verification-only step ("confirm X is fine") — that is outcome "no-change", not a step.'),
@@ -76,12 +53,9 @@ export function createExitPlanModeTool(onPlanProposed?: (plan: ProposedPlan) => 
         evidence: z.string().min(1).describe('The path:line you actually READ that proves this step is needed, e.g. "app/Models/Item.php:120 checks the parent status only". Not a restatement of `what`.'),
         verify: z.string().optional().describe('How to confirm this step landed — a command to run, or what to re-read.'),
       })).max(20).optional().describe('The concrete, ordered action steps. Required when outcome is "plan".'),
-      // `.passthrough()` — not `.strict()` and not the default strip — so a model that still sends
-      // the RETIRED `questions`/`approach` fields (documented here until 2026-09-01) keeps them in
-      // the parsed input, and execute() below can REJECT them with a message that routes the doubt
-      // to askUser. Strict would fail validation on any stray key before execute could explain;
-      // strip would silently swallow the doubt, which is the exact failure `questions` was added
-      // to fix — removing the outlet must not remove the signal.
+      // `.passthrough()` so a model that still sends the RETIRED `questions`/`approach` fields
+      // keeps them visible for execute() to reject with a message routing the doubt to askUser;
+      // strip would swallow the doubt, strict would fail before execute could explain.
     }).passthrough(),
     execute: async ({ outcome, title, description, finding, interpretation, steps, ...rest }): Promise<string | { error: string }> => {
       try {
@@ -95,11 +69,7 @@ export function createExitPlanModeTool(onPlanProposed?: (plan: ProposedPlan) => 
           // re-submission can conjure a host, so say so and let the step budget end the turn.
           return { error: 'Plan approval is not available in this environment. Do not call this tool again; answer in prose instead.' };
         }
-        // Questions are asked BEFORE the plan, not carried inside it (2026-09-01). Until that
-        // day the tool itself documented a `questions` field, so models trained on TierMux's own
-        // shape still send it — passthrough above keeps it visible here instead of zod stripping
-        // it silently, and the rejection routes the doubt to askUser, the same place the
-        // `needs-decision` outcome sends it.
+        // Questions are asked BEFORE the plan via askUser, never carried inside it (2026-09-01).
         const retired = rest as { questions?: unknown; approach?: unknown };
         const retiredQuestions = Array.isArray(retired.questions) ? retired.questions.length > 0 : !!retired.questions;
         if (retiredQuestions || retired.approach) {

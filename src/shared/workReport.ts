@@ -1,18 +1,10 @@
 /**
- * Structured end-of-turn report — the durable representation of what a turn did.
+ * Structured end-of-turn report — the durable representation of what a turn did. Imported by
+ * BOTH the host and the webview bundle: type-only imports only, no runtime imports.
  *
- * Dependency-neutral by contract: this module is imported by BOTH the host/agent runtime and
- * the webview bundle (which may only import from media/src/** and src/shared/**). The TaskKind
- * import below is TYPE-ONLY — it is erased at bundle time, so no agent-runtime code ever
- * reaches the browser bundle. Do not add runtime imports here.
- *
- * Token semantics (authoritative — do not conflate):
- *  - TurnTelemetry.inputTokens/outputTokens = ACCUMULATED provider-reported tokens across ALL
- *    model calls of the entire turn (planner, executor, judges, continuations, verify-fix
- *    rounds). Turn COST accounting; shown in the footer and the ResultCard stats row.
- *  - ContextTelemetry.contextTokens = context size of the MOST RECENT model request as
- *    actually sent. Window PRESSURE state; only the context chip consumes it, against the
- *    SERVING model's window (failover changes the window — never use the selected model's).
+ * Token semantics: TurnTelemetry.inputTokens/outputTokens accumulate across ALL model calls
+ * of the turn (turn COST); ContextTelemetry.contextTokens is the MOST RECENT request's context
+ * size (window PRESSURE), measured against the SERVING model's window.
  */
 
 import type { TaskKind } from '../agent/routing';
@@ -58,12 +50,8 @@ export interface WorkReportData {
   /** Persisted in transcripts — readers switch on this for forward compatibility. */
   version: 1;
   verifyOutcome: 'verified' | 'failed' | 'unverified' | 'changes-only';
-  /** Whether a verify command existed for this workspace AT ALL (any stack — see
-   *  detectVerifyCommand). false ⇒ "unverified" is a property of the PROJECT, not of the turn:
-   *  there is nothing the user could click and nothing worth telling them, so the UI stays
-   *  silent instead of flagging untested work and asking for a command. Optional for
-   *  forward/backward compat — transcripts written before this field are treated as `true`
-   *  (the old, always-offer behavior). */
+  /** Whether a verify command existed for this workspace at all. false ⇒ "unverified" is a
+   *  property of the PROJECT, so the UI stays silent. Older transcripts are treated as true. */
   verifyAvailable?: boolean;
   verifyCmd?: string;
   fixRounds: number;
@@ -78,11 +66,8 @@ export interface WorkReportData {
   checkpointId?: string;
 }
 
-// ── Legacy markdown serialization ───────────────────────────────────────────────────────
-// The transcript is the durable structured representation; this markdown form exists ONLY so
-// transcripts persisted before WorkReportData keep rendering after the minimum migration
-// window. New code must never PARSE it back — emit and strip share this one implementation
-// precisely so the two sides can never diverge.
+// ── Legacy markdown serialization — only so transcripts persisted before WorkReportData keep
+// rendering. Never PARSE it back; emit and strip share one implementation.
 
 /** Marker phrases here are load-bearing: e2e suites key on them ('Verification failed',
  *  'Unverified'), and the wording is user-facing copy — change with care. */
@@ -106,11 +91,8 @@ export function renderLegacyMarkdown(report: WorkReportData): string {
     // every single turn — pure noise. State what IS true and stop there.
     lines.push('**\u2705 Changes applied** \u2014 your changes are saved to disk.');
   } else {
-    // The honest default: EVERY untested mutating turn says so. Lead with what IS true (the
-    // changes are saved), then why they're untested and one concrete next step — addressed to
-    // the AGENT, never a request for the user to check the work themselves.
-    // A command DOES exist here (verifyAvailable !== false), so "no test command" would be a
-    // lie for anything but a legacy transcript that predates the flag.
+    // Every untested mutating turn says so: what IS true (changes saved), why untested, one
+    // next step addressed to the AGENT. A command DOES exist here (verifyAvailable !== false).
     const reason = report.stopReason
       ? 'the run ended before the final check could run'
       : report.verifyAvailable

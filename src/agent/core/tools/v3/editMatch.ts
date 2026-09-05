@@ -1,24 +1,12 @@
-// v3 edit matcher — extracted VERBATIM from src/edits/applyEdit.ts (locateUnique /
-// locateFlexible / reindentTo / applyHunk) so the v3 editFile tool has zero dependency on
-// src/edits/**, which the v3 plan deletes in step 10. Pure text functions: no vscode, no gate,
-// no approval. The battle-tested matching tiers are the value being kept:
+// Search/replace matcher for editFile. Pure text, no vscode. Matching tiers:
 //   1. exact indexOf, required UNIQUE
 //   2. whitespace-tolerant line-based fallback (CRLF/indent drift), still unique-only
 //   3. re-indent of the replacement to the matched text's real indentation
 //
-// ── Failure DIAGNOSTICS (2026-09-05) ────────────────────────────────────────────────────
-// The two failure strings used to be "Search text not found in file." and "…matches multiple
-// locations…" and nothing else. For an autonomous agent that is a dead end: a failed edit is
-// the most frequent tool failure there is, and a model told only "not found" has nothing to
-// correct toward, so it re-issues a near-identical call until the step cap eats the turn.
-//
-// Every message below is derived deterministically from the two strings already in hand — no
-// fuzzy scoring, no model call, no guessing at intent. Three facts are worth reporting:
-//   · WHERE the near-misses are (line numbers), so a re-read can be narrow.
-//   · WHICH line first diverged, and what the file actually holds there — this is the single
-//     most actionable sentence, because stale context by one line is the usual cause.
-//   · WHETHER the search lines exist at all but not consecutively — the signature of context
-//     assembled from memory or from a since-edited read.
+// Failure diagnostics are derived deterministically from the two strings in hand — no fuzzy
+// scoring, no model call: WHERE the near-misses are (line numbers), WHICH line first diverged
+// and what the file holds there, and WHETHER the search lines exist but not consecutively. A
+// bare "not found" left the model re-issuing near-identical calls until the step cap.
 
 /** Longest quoted file/search fragment in a diagnostic — long enough to identify a line,
  *  short enough that a failing multi-hunk edit cannot flood the transcript. */

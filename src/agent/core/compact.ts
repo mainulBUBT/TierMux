@@ -1,16 +1,9 @@
-// v3 context compaction — the SDK's pruneMessages behind a TierMux budget decision.
+// In-turn context control: the SDK's pruneMessages behind TierMux's budget (the served model's
+// ExecutionProfile), plus tool-output aging that runs every step.
 //
-// The budget (WHEN to compact) stays TierMux's: it comes from the served model's
-// ExecutionProfile, resolved by the caller. The transcript surgery (WHAT to drop) is the
-// SDK's `pruneMessages` — adopting it deleted a hand-rolled pass that stubbed EVERY tool
-// result in the older half of the transcript with "(result omitted — compacted)", which is
-// both blunter and more expensive than dropping the parts outright.
-//
-// Two tiers, because evidence and overflow pull in opposite directions. The
-// SIMPLE_CORE_RESET note that early blanking "was destroying tool evidence the model still
-// needed" is the reason tier 1 only drops the re-derivable searches; the flat 32K budget it
-// replaced is the reason a tier 2 exists at all (a small-window model has to shed file reads
-// too or the provider call overflows regardless).
+// Two prune tiers: tier 1 drops only re-derivable searches (early blanking "was destroying
+// tool evidence the model still needed" — SIMPLE_CORE_RESET); tier 2 sheds file reads too,
+// because a small-window model overflows the provider call otherwise.
 
 import { pruneMessages, type ModelMessage } from 'ai';
 import { estimateTokens as estimateTextTokens } from '../budget';
@@ -66,40 +59,22 @@ export function compactIfNeeded(
   return { messages: pruneAggressive(gentle) };
 }
 
-// ── Tool-output aging (2026-09-04) ──────────────────────────────────────────────────────
-// compactIfNeeded only fires at 80% of the model's window, so a big-window model carries
-// EVERY tool result in full through every remaining step of the turn: one readFile returns
-// up to 30k chars, and an agent turn runs 15–25 round trips, each re-prefilling the whole
-// accumulated history (free gateways don't prompt-cache — full price every time; the same
-// TTFT repros that motivated the picker's TTFT EWMA: 10–17s to first byte). OpenCode/Kilo
-// feel fast on the SAME models because they prune consumed outputs between steps; this is
-// that move, budget-independent: run on every step, keep the most recent few tool messages'
-// results verbatim, and elide the older ones into instructive stubs.
-//
-// Safety: stubs name the tool + input and tell the model how to see the content again
-// (re-run the tool), so elision degrades to a re-read, never to a dead reference. Error
-// outputs and short outputs (messages, diff summaries, {error}) stay verbatim — errors are
-// the recovery path and short ones aren't worth the churn. Idempotent: a stub is itself
-// short, so later passes leave it alone.
+// ── Tool-output aging — runs every step, budget-independent. compactIfNeeded only fires at
+// 80% of the window, so a big-window model otherwise re-sends every 30k readFile result on
+// each of 15–25 round trips (free gateways don't prompt-cache; 10–17s TTFT repros). This is
+// what makes OpenCode/Kilo feel fast on the same models. Stubs name the tool + input and say
+// to re-run it, so elision degrades to a re-read. Errors and short outputs stay verbatim.
 
 const AGE_MIN_CHARS = 2_000;
 
-/** How many of the most recent tool messages stay verbatim (2026-09-05: 1 → 3).
- *
- *  One was too tight for the commonest autonomous pattern there is — read A, read B, edit A.
- *  By the edit step A's content was already a stub, while `editFile.search` has to match it
- *  byte-for-byte, so aging manufactured the exact failure editMatch.ts then had to diagnose.
- *  Three covers read→read→edit and read→search→read→edit without a per-tool exemption list
- *  (which would be the start of a tower). The cost is bounded and small: three steps of
- *  output instead of one, against turns that run 15-25 steps. */
+/** Most recent tool messages kept verbatim. 1 → 3 (2026-09-05): with one, "read A, read B,
+ *  edit A" had already stubbed A's content by the edit step while editFile.search must match it
+ *  byte-for-byte. Three covers read→search→read→edit without a per-tool exemption list. */
 const KEEP_RECENT_TOOL_MESSAGES = 3;
 
-/** toolCallId → the ARGUMENTS that produced the result. `ToolResultPart` carries only
- *  toolCallId/toolName/output — the args live on the ASSISTANT message's `tool-call` part
- *  (ToolCallPart.input), so a stub that wants to name what it elided has to look them up
- *  there. Reading `input` off the tool-result part instead silently yields undefined, which
- *  is what shipped 2026-09-04: every stub read "[readFile — 30,000 chars…]" with no path,
- *  so the model could not act on the "re-run the tool" hint the stub gave it. */
+/** toolCallId → the ARGUMENTS that produced the result. The args live on the assistant
+ *  message's `tool-call` part, not on the tool-result part (reading them there yielded stubs
+ *  with no path, 2026-09-04). */
 function toolCallInputs(messages: ModelMessage[]): Map<string, unknown> {
   const byId = new Map<string, unknown>();
   for (const m of messages) {

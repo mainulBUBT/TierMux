@@ -28,16 +28,9 @@ const EXPLAIN_Q = /^\s*(how (?:do|to|can|could|would|does|is|are)|what (?:kind|s
  *  anchored form) so the leading-question fast path keeps its precedence. */
 const EXPLAIN_VERB = /\b(explain|describe|walk me through|tell me about|bujhiye|bujhao|bojhao|bujhai)\b/i
 
-/**
- * Romanized Bengali ("Banglish") signals. This user writes nearly every message this way, and the
- * English-only regexes above classified 6 of 11 real messages as low-confidence `agent` — the
- * ambiguous default, which hands a plain remark a mutating tool set AND pays for an extra LLM
- * classify call. GitHub's own Copilot docs state routing should be language-invariant: "Routing
- * decisions depend on what you are trying to do, not what language you're asking in."
- *
- * Written with word boundaries and multi-character stems so they can't fire inside English words
- * (`\bkor\b` cannot match "korean"; `\bki\b` cannot match "kind").
- */
+/** Romanized Bengali ("Banglish") signals — routing should be language-invariant, and the
+ *  English-only regexes classified most Banglish messages as the ambiguous `agent` default.
+ *  Word-bounded multi-character stems so they can't fire inside English words. */
 const BN_TASK_VERB = /\b(kor(?:o|un|be|chi|te|ben|te ?hobe)?|kore ?(?:dao|den|dio)|banao|banan|banate|likh(?:o|un|te)?|lekho|thik ?kor\w*|ঠিক|muche ?(?:dao|felo)|poriborton|bodla(?:o|te)|joga(?:o|te)|add ?kor\w*|fix ?kor\w*|update ?kor\w*|delete ?kor\w*)\b/i
 const BN_EXPLAIN_Q = /\b(ki+\b|kiser|kivabe|ki ?vabe|kemne|kemon|keno|kothay|kon\b|kobe|kar\b|kaj ?ki|kaj ?kore|bujhi?ye|bujhte|mane ?ki)\b/i
 const BN_DEBUG_HINT = /\b(kaj ?kor(?:e|che) ?na|hocche ?na|hoy ?na|hoche ?na|dekha(?:y|cche) ?na|ashe ?na|ase ?na|somossa|shomosha|problem ?hocche|vul|bhul|error ?dicche|bhang\w*|nosto)\b/i
@@ -57,14 +50,8 @@ export interface ClassifySignals {
   auto?: boolean;
 }
 
-/**
- * Derive `ClassifySignals.attachmentKinds` straight from a message's content —
- * by MIME, not by block type (`image_url` vs `file`), so adding a non-PDF document
- * kind later (.docx/.csv/...) doesn't silently mis-route as `'pdf'`. Only PDFs
- * genuinely need vision as a last resort (a scanned page with no text layer); other
- * docs always have extracted text and don't force the vision branch on their own,
- * but are still reported here for completeness/future use.
- */
+/** `ClassifySignals.attachmentKinds` from a message's content, by MIME rather than block
+ *  type. Only PDFs need vision as a last resort (a scanned page with no text layer). */
 export function attachmentKindsFromContent(content: ChatContent): NonNullable<ClassifySignals['attachmentKinds']> {
   return normalizeAttachmentBlocks(content).map((a): 'image' | 'pdf' | 'doc' => {
     if (a.mime.startsWith('image/')) return 'image';
@@ -73,16 +60,9 @@ export function attachmentKindsFromContent(content: ChatContent): NonNullable<Cl
   });
 }
 
-/**
- * Classify the latest user message into a task kind from cheap heuristics.
- * Bias: anything that isn't clearly a greeting or a question defaults to `agent`,
- * so an edit request phrased without a textbook verb ("the navbar should be dark")
- * still gets the tool loop instead of a read-only answer.
- *
- * Vision override: any image or PDF attachment upgrades the request to `vision`
- * (or `agent` if tools are likely) so the router prefers a model with
- * `supportsVision: true`. If no vision model is enabled, falls back to text only.
- */
+/** Classify the latest user message into a task kind from cheap heuristics. Bias: anything
+ *  not clearly a greeting or a question defaults to `agent`, so an edit request without a
+ *  textbook verb still gets the tool loop. An image/PDF attachment upgrades to `vision`. */
 /** Same classification as `classifyTask`, but also reports whether a regex actually matched
  *  (`confident`) vs. we fell through to a best-guess default. */
 export function classifyTaskCore(text: string, signals?: ClassifySignals): { kind: TaskKind; confident: boolean } {
@@ -122,22 +102,15 @@ export function classifyTaskCore(text: string, signals?: ClassifySignals): { kin
   return { kind: 'agent', confident: false };         // ambiguous: assume an action so edits aren't dropped
 }
 
-/** Regex-only classification — synchronous, zero extra latency. This is the FIRST word only:
- *  `classifyTaskSmart` (loop.ts) re-decides non-trivial turns with a cheap LLM and falls back
- *  to this result when no classifier model is available or the call fails. Kept for call sites
- *  that need a sync, no-I/O answer (e.g. filtering trivial messages while picking a session title). */
+/** Regex-only classification — synchronous, zero extra latency, no model call. */
 export function classifyTask(text: string, signals?: ClassifySignals): TaskKind {
   return classifyTaskCore(text, signals).kind;
 }
 
-/** True for a turn whose ONLY ask is "describe/explain the attached image itself" — an
- *  explanation request (English or Banglish) with no task/debug intent and no workspace
- *  reference. These turns run WITHOUT workspace tools and WITHOUT the auto-detected project
- *  profile: a weak model handed repo facts/tools alongside an app screenshot will fuse the two
- *  and present repo guesses as facts about the image (observed 2026-08-24/25: a trip-screen
- *  screenshot "explained" via Laravel file paths, and a repo file walkthrough instead of the
- *  image). Debug-screenshot turns ("fix this error") deliberately do NOT match — there the
- *  repo context is exactly what helps. */
+/** True for a turn whose ONLY ask is "describe/explain the attached image itself" — no task/
+ *  debug intent, no workspace reference. A weak model handed repo tools alongside a screenshot
+ *  fuses the two and presents repo guesses as facts about the image (2026-08-24/25). Debug
+ *  screenshots ("fix this error") deliberately do NOT match. */
 export function isPureVisualDescribe(text: string, hasVisual: boolean): boolean {
   if (!hasVisual) return false;
   const t = (text || '').trim();

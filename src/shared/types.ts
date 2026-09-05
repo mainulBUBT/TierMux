@@ -47,13 +47,8 @@ export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
  *  context/system.ts). */
 export type Mode = 'plan' | 'agent' | 'ask';
 
-/** A plan proposed by the model via the `exitPlanMode` tool (plan mode's explicit
- *  planning→execution boundary — Claude Code's ExitPlanMode, opencode's plan agent and
- *  Copilot's "Start Implementation" all draw the same line).
- *
- *  This is the whole point of the tool: the plan arrives as VALIDATED STRUCTURE straight off
- *  the tool call, so nothing downstream has to guess whether a prose reply "was a plan"
- *  (regex + an LLM classifier + a second LLM pass to re-structure it — all three gone). */
+/** A plan proposed by the model via the `exitPlanMode` tool — validated structure straight off
+ *  the tool call, so nothing downstream guesses whether a prose reply "was a plan". */
 export interface ProposedPlanStep {
   /** The action, imperative mood, one line. */
   what: string;
@@ -77,11 +72,9 @@ export interface ProposedPlan {
   description?: string;
   /** Set when outcome is 'no-change': what was checked and why nothing needs changing. */
   finding?: string;
-  /** The reading of the request these steps implement, in one sentence. Rendered at the TOP of
-   *  the card: a plan can be right in every step and still implement the wrong request, and
-   *  that is invisible unless the premise is stated (2026-09-01 vendor-order repro).
-   *  Deliberately NO questions/approach fields (2026-09-01): questions are asked BEFORE the
-   *  plan via askUser, and the plan card carries nothing but the settled premise + steps. */
+  /** The reading of the request these steps implement, in one sentence, rendered at the top of
+   *  the card — a plan can be right in every step and still implement the wrong request.
+   *  Questions are asked BEFORE the plan via askUser, never carried on it. */
   interpretation?: string;
   steps: ProposedPlanStep[];
 }
@@ -176,12 +169,8 @@ export interface CatalogModel {
   intelligenceRank: number;
   /** Lower is "faster" (1 = fastest). Used to pick a completion model. */
   speedRank: number;
-  /**
-   * Release / catalog-add month as "YYYY-MM". Used only as a routing tiebreaker:
-   * among models the task rates equally, the newer one is preferred so freshly
-   * added models surface instead of older equals winning every time. Optional —
-   * models without it sort as oldest.
-   */
+  /** Release / catalog-add month as "YYYY-MM" — a tiebreaker in defaultFallback (newer first
+   *  among equals). Models without it sort as oldest. */
   released?: string;
   sizeLabel: string;
   contextWindow: number | null;
@@ -206,12 +195,8 @@ export interface CatalogModel {
   origInputPricePer1M?: number;
   /** Original (non-free) provider's per-1M-token output price, USD. Undefined if unpublished. */
   origOutputPricePer1M?: number;
-  /**
-   * When false, the model is staged: it does NOT trigger the "new model added"
-   * notification, so you can add/test it in the remote sheet while developing without
-   * alerting users. Flip to true (or omit the column) to publish. Defaults to true
-   * when the source row doesn't carry the column.
-   */
+  /** false = staged: no "new model added" notification and not enabled by default. Defaults
+   *  to true when the source row has no column. */
   ready?: boolean;
 }
 
@@ -219,11 +204,6 @@ export interface CatalogModel {
 export interface TodoItem {
   content: string;
   status: 'pending' | 'in_progress' | 'completed';
-  /** Phase-2 step routing: how hard this step is (`[easy]`/`[medium]`/`[hard]` planner tag or
-   *  inferred). Rounds executing an `easy` step route to the cheap fast pool; `hard` steps to
-   *  the top tier. Optional — model-authored todos without it route unconstrained. Ignored by
-   *  the webview (unknown fields are safe there). */
-  difficulty?: 'easy' | 'medium' | 'hard';
 }
 
 export type KeyStatus = 'healthy' | 'rate_limited' | 'invalid' | 'error' | 'unknown' | 'missing';
@@ -244,12 +224,8 @@ export interface PlatformInfo {
   defaultBaseUrl: string;
   /** True when the free tier needs no API key. */
   keyless: boolean;
-  /**
-   * True when the platform serves a free tier anonymously *and* a paid tier behind a key
-   * (OpenCode Zen: 6 free models answer unauthenticated, its other 49 return 401). Unlike
-   * `keyless` this must not suppress key entry — a stored key is preferred when present
-   * and only falls back to anonymous, so the paid tier stays reachable.
-   */
+  /** The platform serves a free tier anonymously AND a paid tier behind a key (OpenCode Zen).
+   *  Unlike `keyless`, key entry stays available; a stored key is preferred. */
   keyOptional?: boolean;
   /** Help URL for obtaining a key. */
   keyUrl?: string;
@@ -261,14 +237,8 @@ export interface CustomModel {
   modelId: string;
   /** User-visible label. Falls back to modelId when empty. */
   displayName?: string;
-  /**
-   * Explicit capability overrides. A custom endpoint has no catalog entry, so the router
-   * can never learn these from a remote sheet — they were previously always guessed
-   * (tools assumed true, vision/reasoning assumed false, vision sometimes upgraded by
-   * a model-id heuristic). Undefined preserves that exact prior behavior; an explicit
-   * value here always wins over the heuristic. Set from the model's row in the endpoint's
-   * add/edit form (Settings → Providers → Custom Endpoints).
-   */
+  /** Explicit capability overrides for a custom model (no catalog entry to learn them from).
+   *  Undefined = the old guess (tools true, vision/reasoning false, vision by id heuristic). */
   supportsTools?: boolean;
   supportsVision?: boolean;
   supportsReasoning?: boolean;

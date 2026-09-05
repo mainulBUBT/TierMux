@@ -1,8 +1,5 @@
 // readFile — line-numbered `<file path>` output, offset/limit paging, batch reads, per-result
-// cap. execute() never throws: expected failures come back as `{ error }` so the model sees
-// them and self-corrects on the next step.
-//
-// Approval: none — readFile is in READ_ONLY_TOOLS; the toolApproval policy auto-approves it.
+// cap. execute() never throws: expected failures come back as `{ error }`.
 
 import * as vscode from 'vscode';
 import { tool } from 'ai';
@@ -19,17 +16,9 @@ const MAX_PATHS_PER_CALL = 8;
  *  where to resume. */
 const PAGING_MARKER_RESERVE = 240;
 
-/** Read one file, `cat -n`-style line numbers so the model can cite path:line and derive
- *  exact editFile search strings (which must NOT include the numbers).
- *
- *  `charBudget` is enforced HERE, on a line boundary, rather than by char-slicing the result
- *  afterwards. Slicing afterwards was a dead end in two ways at once: it cut mid-line, and —
- *  because the "read again with offset=N" marker is appended at the END — the slice deleted
- *  the very instruction that says how to continue. A model that hit the char cap therefore saw
- *  a file stopping mid-line with no way to resume, which is exactly how it behaved: live repro
- *  2026-08-30 3:47 PM on a 42,864-char PlaceNewOrder.php, where the turn ended on "The file is
- *  very long (42,864 chars). Let me continue reading from where it was cut off" and simply
- *  stopped, having no offset to continue from. */
+/** Read one file with `cat -n`-style line numbers. `charBudget` is enforced HERE on a line
+ *  boundary: slicing the result afterwards cut mid-line AND deleted the trailing "read again
+ *  with offset=N" marker, so the model had no way to resume (2026-08-30, 42,864-char file). */
 async function readOne(
   path: string,
   offset?: number,

@@ -337,12 +337,9 @@ export type OutMessage =
   // carries NO report markdown — the card replaces that legacy serialization.
   | { type: 'workReport'; sessionId: string; requestId: string; report: WorkReportData }
   | { type: 'assistantChunk'; sessionId: string; requestId: string; text: string }
-  // Retract the live text draft: text that streamed as a tentative chat reply turned out to be
-  // narration from a tool-planning step (a tool call just arrived in the same step). That text is
-  // re-routed to the Chain-of-Thought block via reasoning. `reasoningId` is the CoT segment the
-  // text is moving into: the webview CONVERTS the draft node into that reasoning block in place
-  // instead of deleting it, so the narration the user already watched stream stays on screen
-  // rather than vanishing and re-appearing whole when the reasoning post lands.
+  // Retract the live text draft: a tool call arrived in the same step, so the streamed text was
+  // narration, not the reply. The webview converts the draft node into the reasoning block
+  // `reasoningId` in place, so it doesn't vanish and re-appear.
   | { type: 'clearDraft'; sessionId: string; requestId: string; reasoningId?: string }
   | { type: 'usageTotals'; totals: UsageTotals }
   | { type: 'checkpoint'; sessionId: string; requestId: string; id: string; files: CheckpointFile[] }

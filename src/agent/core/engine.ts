@@ -1,7 +1,6 @@
-// v3 engine — TierMux is the policy layer; the AI SDK (streamText) is the execution engine.
-// This file owns: message conversion, the mode-filtered toolset, permission policy
-// (toolApproval), malformed-call self-correction (repairToolCall), compaction (prepareStep),
-// the 50-step cap (stopWhen), and AgentResult assembly. Mechanical recovery only — never
+// The agent loop: streamText is the execution engine, this file is the policy around it —
+// message conversion, the mode-filtered toolset, toolApproval, repairToolCall, prepareStep
+// compaction, stopWhen, and AgentResult assembly. Mechanical recovery only — never
 // answer-quality judgment (docs/SIMPLE_CORE_RESET_2026-08-24.md).
 
 import {
@@ -31,25 +30,16 @@ import type { TaskKind } from '../routing';
 /** Profile used until the serving model is known (see currentProfile() in runTurn). */
 const FALLBACK_PROFILE = resolveExecutionProfile(undefined);
 
-// Coordination tools — dropped on small-window models: the toolset serializes to ~3,570
-// schema tokens on EVERY request (measured 2026-08-30, 14 tools) and these two cost ~740
-// while being withdrawable. Deliberately NOT the web tools — withdrawing a capability makes
-// the model refuse the task instead of doing it smaller (see tools/v3/index.ts).
+// Withdrawn on small-window models: the toolset costs ~3,570 schema tokens per request
+// (measured 2026-08-30) and these two ~740 of it. Never a capability tool — withdrawing one
+// makes the model refuse the task instead of doing it smaller.
 const COORDINATION_TOOLS = ['todoWrite', 'delegateTask'];
 /** At/below this window the schema tax stops being affordable. */
 const SMALL_WINDOW_MAX = 16_384;
 
-/** UI-facing copy of a tool's result. `tr.output` was dropped entirely until 2026-09-01, so
- *  `ToolEvent.detail` was never populated — with two consequences neither side reported:
- *  the webview's `.tm-tool-card-output` branch (main.ts) is keyed on `detail`, so every
- *  non-edit tool card rendered an EMPTY body behind its "View output" disclosure; and
- *  chatViewProvider's crash-recovery snapshot writes `{ role: 'tool', content: e.detail ?? '' }`,
- *  so a mid-turn extension-host crash recovered the tool CALLS with blank RESULTS.
- *
- *  Capped independently of the model's own limit: the tools already cap what the MODEL sees
- *  (runCommand's MAX_CHARS is 30k), but this copy crosses the webview bridge on every tool call
- *  and then lives in the DOM for the rest of the session. 8k is a quarter of the model's view
- *  and still more than the card's 500px body can show without scrolling. */
+/** UI-facing copy of a tool's result (ToolEvent.detail) — the tool card's "View output" body
+ *  and the crash-recovery snapshot both read it. Capped separately from what the model sees:
+ *  this copy crosses the webview bridge on every call and lives in the DOM all session. */
 const UI_DETAIL_CAP = 8_000;
 function toolDetail(output: unknown): string | undefined {
   if (output == null) return undefined;
@@ -175,27 +165,17 @@ function changedFilesFrom(messages: ChatMessage[]): Array<{ path: string; status
 
 // ── The turn ────────────────────────────────────────────────────────────────────
 
-/** Test seam ONLY (foundation-gate scenarios 11-14): when set, the engine uses this model
- *  instead of the picker-backed createRouterProvider — letting the e2e drive the REAL
- *  runTurn (toolset filtering, policy, history round-trip) with a scripted LanguageModelV4.
+/** Test seam: when set, the engine uses this scripted LanguageModelV4 instead of the picker.
  *  Production never sets it. */
 let modelOverride: LanguageModel | undefined;
 export function __setEngineModelForTests(m: LanguageModel | undefined): void {
   modelOverride = m;
 }
 
-/** v3 turn entry. The `router` argument is IGNORED — model selection lives in
- *  router/picker.ts (injected via setModelSources at activation). Kept in the signature so
- *  every existing call site compiles unchanged. */
-/** Plan mode's stop condition. `hasToolCall('exitPlanMode')` stopped the turn on the CALL, so a
- *  plan the tool REJECTED (empty steps, or — once the schema tightened — a missing outcome/
- *  evidence) still ended the turn: the model got no chance to read the error and re-submit, and
- *  the user got a dead turn with no card. Stopping on the accepted RESULT instead keeps the AI
- *  SDK's own repair path open — a `{ error }` output leaves the loop running and the tool error
- *  goes back to the model as the next step's input.
- *
- *  Not answer-quality judgment (SIMPLE_CORE_RESET invariant): this reads the TOOL's own
- *  structural verdict on its input, never the plan's content. */
+/** Plan mode's stop condition: stop on an ACCEPTED exitPlanMode result, not on the call.
+ *  Stopping on the call ended the turn even when the tool rejected the plan, so the model
+ *  never saw the error and the user got a dead turn with no card. Reads the tool's structural
+ *  verdict only, never the plan's content. */
 const planAccepted: StopCondition<ToolSet> = ({ steps }) =>
   (steps.at(-1)?.toolResults ?? []).some(
     (r) => r.toolName === 'exitPlanMode'
@@ -210,15 +190,12 @@ const DEFAULT_MAX_STEPS = 50;
  *  overrides it. 0 disables the retry (the failure is reported as-is), never the gate. */
 const DEFAULT_VERIFY_FIX_ROUNDS = 2;
 
-/** Identical failing tool call this many times in one turn ⇒ the turn is not progressing.
- *  Three, not two: a model that re-reads after a failure and legitimately retries the same
- *  edit once is still making a decision; a third identical failure is not. */
+/** Identical failing tool call this many times IN A ROW ⇒ not progressing. Three, not two: one
+ *  legitimate retry after a re-read is still a decision; a third identical failure is not. */
 const REPEAT_FAILURE_LIMIT = 3;
 
-/** True when a tool RESULT is a failure. Two shapes, because v3 tools never throw: the SDK's
- *  own tool-error state (execute threw — `state: 'error'` upstream), and the v3 contract's
- *  `{ error }` return, which the SDK reports as an ordinary json result. Missing the second
- *  is why "the tool keeps failing" was invisible to everything until now. */
+/** True when a tool RESULT is a failure — either the SDK's tool-error state or the v3
+ *  contract's `{ error }` return, which the SDK reports as an ordinary json result. */
 function isFailureOutput(output: unknown): boolean {
   if (typeof output !== 'object' || output === null) return false;
   const o = output as { type?: unknown; value?: unknown };
@@ -230,21 +207,16 @@ function isFailureOutput(output: unknown): boolean {
 export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentResult> {
   // Turn-start facts: if signalAborted=true here, no model request can ever run this turn.
   diagLog('engine.start', `mode=${opts.mode} msgs=${opts.messages?.length ?? 0} signalAborted=${opts.abortSignal?.aborted ?? 'none'} requestId=${opts.requestId ?? '-'}`);
-  // TTFT instrumentation anchor (tiermux.agent.diagTrace): every stage below logs elapsed
-  // ms from here, so a slow "nothing is happening" turn can be attributed — our routing vs
-  // the provider's queue+prefill — instead of guessed at.
+  // diagTrace anchor: every stage below logs elapsed ms from here.
   const turnT0 = Date.now();
-  // WorkReportData.telemetry inputs — accumulated across EVERY model call this turn makes
-  // (main pass, continuation nudge, length continuation, verify-fix rounds), which is what
-  // "turn cost" means. See src/shared/workReport.ts's token-semantics note.
+  // WorkReportData.telemetry — accumulated across EVERY model call this turn makes
+  // (continuations and verify-fix rounds included).
   let usageIn = 0;
   let usageOut = 0;
   let lastContextTokens = 0;
   let failovers = 0;
   const modelMessages = toModelMessages(opts.messages);
-  // Plan mode's exitPlanMode tool hands its VALIDATED structure here; the turn stops on that
-  // call (stopWhen below) and the host renders the plan card straight from this object — no
-  // prose classification, no extra model round-trip. Last call wins if a model calls it twice.
+  // exitPlanMode's validated structure; the host renders the plan card from it. Last call wins.
   let proposedPlan: ProposedPlan | undefined;
   const tools: ToolSet = buildV3ToolSet(opts.mode, {
     abortSignal: opts.abortSignal,
@@ -272,14 +244,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       served = { platform, model: mdl, runtimeName };
       opts.onModel(platform, mdl, runtimeName);
       // Fires when the candidate's response SETTLES (routerProvider's reportServed), not at
-      // pick time — the pick itself is timed by rp.chain in resolveCandidates. Diag-visible so
-      // a "why does the footer name THIS model" question has a timestamp next to the
-      // failover walk (see rp.failover logs).
+      // pick time.
       diagLog('engine.served', `${Date.now() - turnT0}ms into the turn — ${platform}::${mdl} reported as the serving model`);
     },
-    // Accumulate here as well as forwarding: WorkReportData.telemetry is TURN cost — every
-    // model call the turn made, continuations and verify-fix rounds included — and the host's
-    // sink is a different (session-wide) accounting, so the report cannot be derived from it.
+    // Accumulate here as well as forwarding: the host's sink is session-wide accounting, the
+    // work report needs this turn's.
     onUsage: (info) => {
       usageIn += info.inputTokens || 0;
       usageOut += info.outputTokens || 0;
@@ -292,12 +261,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   const policy = policyFromSettings(opts.autoApprove ?? false, opts.mode, opts.sessionId);
   const toolEvents: ToolEvent[] = [];
   let reasoningText = '';
-  // ── Turn-level stop bookkeeping (2026-09-05, docs/AGENT_RELIABILITY_PLAN_2026-09-05.md §0)
-  // Both facts below are WIRE-LEVEL — a step count, and identical bytes in / error out N times.
-  // Neither judges the answer, so neither is the kind of detector SIMPLE_CORE_RESET forbids.
-  // What they fix is that the turn used to end IDENTICALLY whether the model finished or ran
-  // out of room: no `paused`, so the host showed no Continue button and the user could not
-  // tell "done" from "gave up".
+  // ── Turn-level stop bookkeeping. Both facts are wire-level (a step count; identical bytes
+  // in / error out N times), not answer judgment. Without them a cut turn and a finished turn
+  // looked identical: no `paused`, no Continue button.
   const maxSteps = Math.max(1, opts.maxStepsPerTurn ?? DEFAULT_MAX_STEPS);
   /** Set when the step cap cut the turn while the model was still calling tools. */
   let hitStepCap = false;
@@ -310,29 +276,19 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // try/catch below never sees provider failures; captured here for the post-pass guard.
   let streamError: string | undefined;
   /** consumeStream() RESOLVES on stream errors, so a continuation pass that dies on the wire
-   *  (401/429/credit, "all candidates failed") is invisible unless this option catches it.
-   *  The pass-1 output already stands, so this only has to make the failure diagnosable. */
+   *  is invisible unless this option catches it. */
   const passError = (tag: string) => (error: unknown) =>
     diagLog(`engine.${tag}StreamError`, (error instanceof Error ? error.message : String(error)).slice(0, 160));
   // True while the current step has streamed reply text but no tool call yet (see onChunk).
   let narrationSinceToolCall = false;
-  // Armed for the plan-gap continuation pass only (see the nudge below): its FIRST step must
-  // CLOSE the turn with a tool call, turning "please finish" from a prompt hope into a
-  // wire-level guarantee. Step 0 only — forcing every step would make a prose answer
-  // impossible, and a model that wants one more read afterwards is fine.
-  //
-  // What it does NOT do any more is dictate WHICH close. It used to pin
-  // `toolChoice: {type:'tool', toolName:'exitPlanMode'}`, so a model that had investigated and
-  // then hesitated was forced to emit a plan — the only escape hatch was `looksLikeQuestion`,
-  // which reads the reply TEXT and therefore misses hesitation expressed as narration. That is
-  // exactly the 2026-09-01 repro: "Let me re-read the user's actual words carefully…" is not a
-  // question, so the guess would have been compelled. `toolChoice: 'required'` still forbids a
-  // third round of narration, while `activeTools` narrows the choice to the two legitimate ways
-  // to close a plan-mode turn — present the plan, or ask which plan was wanted.
+  // Armed for the plan-gap continuation pass only: its FIRST step must close the turn with a
+  // tool call (toolChoice 'required' + activeTools = PLAN_CLOSERS). Step 0 only. It does not
+  // pin WHICH closer — pinning exitPlanMode forced a plan out of a hesitating model
+  // (2026-09-01: "Let me re-read the user's actual words carefully…"); askUser is the other
+  // legitimate close.
   let forcePlanToolOnNextStep = false;
-  /** The only two tool calls that close a plan-mode turn. askUser does NOT stop the turn (its
-   *  answer comes back and the loop continues), which is the point: asking is a way forward,
-   *  not a way out. */
+  /** The only two tool calls that close a plan-mode turn. askUser does not stop the turn — its
+   *  answer comes back and the loop continues. */
   const PLAN_CLOSERS = ['exitPlanMode', 'askUser'];
 
   let outcome: { finishReason: string; text: string; responseMessages: ModelMessage[] } = {
@@ -341,14 +297,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // Which model actually served the turn — surfaced in AgentResult so the host's per-bubble
   // footer shows the real model (failover can switch it mid-turn; the LAST server wins).
   let served: { platform?: string; model?: string; runtimeName?: string } = {};
-  /** TTFT instrumentation (tiermux.agent.diagTrace): when the first content delta arrived.
-   *  Turn-start latency splits into OUR routing cost (rp.chain's "ms to resolve") vs the
-   *  provider's queue+prefill (engine.ttft). */
+  /** diagTrace: when the first content delta arrived (TTFT). */
   let firstDeltaAt: number | undefined;
 
-  /** Serving model's ExecutionProfile, resolved per step — drives both the compaction budget
-   *  and the tool-offer size. onModelSelected fires at step END, so step 0 falls back
-   *  (pinned model → explicit lookup; else FALLBACK_PROFILE). */
+  /** Serving model's ExecutionProfile, resolved per step. onModelSelected fires at step END,
+   *  so step 0 falls back (pinned model → explicit lookup; else FALLBACK_PROFILE). */
   const currentProfile = () => {
     let meta = served.platform && served.model
       ? findCatalogModel(served.platform, served.model)
@@ -364,10 +317,8 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // (provider prompt-cache friendly) and the async reads never happen per-pass.
   const system = composeSystemPrompt(opts.mode, await gatherPromptContext());
   const runPass = (messages: ModelMessage[]) => {
-    // Per-PASS state, reset here rather than declared per-pass so onChunk can close over it.
-    // It used to leak: pass 1 ending on text left this true, so the continuation pass's first
-    // tool-call chunk fired a SECOND onRetractDraft for a draft the nudge had already
-    // retracted. Surfaced by scripts/exitPlanMode.e2e.ts's plan-gap case (retracted=2).
+    // Per-PASS state, reset here so onChunk can close over it. Leaking it across passes fired
+    // a second onRetractDraft for an already-retracted draft (exitPlanMode.e2e plan-gap case).
     narrationSinceToolCall = false;
     return streamText({
       model,
@@ -397,13 +348,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           ? Object.keys(tools).filter((t) => !COORDINATION_TOOLS.includes(t))
           : undefined;
         const forcePlan = forcePlanToolOnNextStep && stepNumber === 0;
-        // Age FIRST, compact second: aging elides consumed tool output on EVERY step (no
-        // budget needed), and compaction then estimates on the aged transcript — a shrunken
-        // history crossing its 80% trigger later, or never. The tiermux.agent.toolCompaction
-        // setting drives the aging THRESHOLD and nothing else: 'off' skips aging entirely,
-        // 'light' stubs earlier outputs over 2,000 chars, 'aggressive' over 800. Both modes
-        // treat every tool the same — there is no per-tool head/tail or line-capping here,
-        // whatever older copies of the setting's description claimed. Unknown values → light.
+        // Age FIRST (every step, no budget needed), then compact against the aged transcript.
+        // tiermux.agent.toolCompaction sets only the aging threshold: 'off', 'light' (2,000
+        // chars), 'aggressive' (800). Unknown values → light.
         const compactionMode = opts.toolCompaction ?? 'light';
         const aging = compactionMode === 'off'
           ? { stubbedChars: 0 as number, messages: undefined as ModelMessage[] | undefined }
@@ -415,30 +362,23 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
         const stepMessages = compaction.messages ?? aging.messages;
         return {
           ...(stepMessages ? { messages: stepMessages } : {}),
-          // forcePlan's activeTools deliberately WINS over the small-window offer: on this one
-          // step the turn has to close, and every tool outside PLAN_CLOSERS is a way not to.
-          // It is the ONLY toolChoice override here: forcing a tool call to stop a model from
-          // narrating is judging output shape, which is what NARRATION_RE was deleted for.
+          // forcePlan's activeTools wins over the small-window offer: on this one step the turn
+          // has to close, and every tool outside PLAN_CLOSERS is a way not to.
           ...(forcePlan
             ? { activeTools: PLAN_CLOSERS, toolChoice: 'required' as const }
             : offer ? { activeTools: offer } : {}),
         };
       },
-      // exitPlanMode IS the end of a plan-mode turn (Claude Code's ExitPlanMode has the same
-      // semantics): the plan is now the user's move, so a further step could only narrate the
-      // plan a second time into the chat bubble underneath the card. Harmless in agent/ask mode,
-      // where the tool isn't offered at all.
-      // notMakingProgress reads the counter onStepEnd fills in below. A StopCondition, not an
-      // abort: the SDK finishes the current step cleanly, so the transcript stays intact and
-      // the turn returns paused/resumable exactly like the step cap does.
+      // planAccepted: an accepted plan is the end of a plan-mode turn — a further step could
+      // only narrate it a second time under the card. notMakingProgress reads the counter
+      // onStepEnd fills below. Both are StopConditions, not aborts: the SDK finishes the step
+      // cleanly and the turn returns paused/resumable like the step cap does.
       stopWhen: [stepCountIs(maxSteps), planAccepted, notMakingProgress],
       abortSignal: opts.abortSignal,
       maxRetries: 1,
 
       onChunk: ({ chunk }) => {
-        // First streamed delta of the pass — the TTFT number (tiermux.agent.diagTrace).
-        // rp.chain's "ms to resolve" is OUR routing cost; the remainder to TTFT is the
-        // provider's queue + prompt prefill. Logged once per pass, never per chunk.
+        // First streamed delta of the pass — the TTFT number (diagTrace). Logged once per pass.
         if (firstDeltaAt == null && (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta' || chunk.type === 'tool-call')) {
           firstDeltaAt = Date.now();
           diagLog('engine.ttft', `${firstDeltaAt - turnT0}ms to first delta (${chunk.type})`);
@@ -480,16 +420,12 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           toolEvents.push(ev);
           opts.onTool(ev);
 
-          // No-progress counting: identical bytes in + error out, REPEAT_FAILURE_LIMIT times
-          // IN A ROW. The tool's reason is never read.
-          //
-          // ANY success clears the WHOLE table, not just the matching signature. Deliberately
-          // conservative: a model that failed twice, then got something to work, then fails the
-          // same call again has made progress in between — that is recovery, not thrashing, and
-          // stopping it would be a false positive on a working agent. Clearing only the matching
-          // signature counted those non-consecutive failures as one streak (caught by scenario
-          // 27b). The cost is that a strict fail/succeed/fail alternation never trips this guard;
-          // the step cap is still the backstop for that, and a wrong stop is worse than a late one.
+          // No-progress counting: identical bytes in + error out, REPEAT_FAILURE_LIMIT times IN
+          // A ROW; the tool's reason is never read. ANY success clears the WHOLE table — a model
+          // that failed, got something to work, then failed the same call again has made
+          // progress (foundation 27b caught per-signature clearing counting that as one
+          // streak). A strict fail/succeed/fail alternation never trips this; the step cap is
+          // the backstop, and a wrong stop is worse than a late one.
           const signature = `${tr.toolName}:${JSON.stringify(tr.input ?? null)}`;
           if (!isFailed && !isFailureOutput(tr.output)) {
             failureCounts.clear();
@@ -505,10 +441,8 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       },
 
       onError: ({ error }) => {
-        // NOTE: streamText's onError does NOT fire for model-stream failures in ai v7 (probe:
-        // stream-start → controller.error → neither onError nor onEnd, consumeStream resolves).
-        // The real capture is the onError option on consumeStream() below. Kept for internal
-        // errors that DO route here.
+        // streamText's onError does NOT fire for model-stream failures in ai v7; the real capture
+        // is consumeStream's onError below. Kept for internal errors that DO route here.
         diagLog('engine.error', String(error));
       },
 
@@ -519,12 +453,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           ? finishReason
           : ((finishReason as { unified?: string } | undefined)?.unified ?? 'unknown');
         // Last NON-empty step text, not steps.at(-1): a reasoning model can emit text + a tool
-        // call in step 1 then a silent step 2, erasing the only visible content (repro:
-        // gpt-oss-120b, 270 out tokens discarded at settle). Continuation passes APPEND their
-        // messages and keep the earlier text if the retry ends silent.
-        // Cap hit WHILE the model was still calling tools ⇒ the turn was cut, not finished.
-        // The trailing-tool-calls half matters: a model that lands its final answer exactly on
-        // step `maxSteps` also satisfies stepCountIs, and that turn IS complete.
+        // call, then a silent step (gpt-oss-120b: 270 out tokens discarded at settle).
+        // Cap hit WHILE still calling tools ⇒ cut, not finished. A final answer landing exactly
+        // on step `maxSteps` also satisfies stepCountIs, and that turn IS complete.
         if (steps.length >= maxSteps && (steps.at(-1)?.toolCalls?.length ?? 0) > 0) {
           hitStepCap = true;
           diagLog('engine.stepCap', `stopped at the ${maxSteps}-step cap with tool calls still in flight — turn is resumable`);
@@ -541,9 +472,8 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
 
   try {
     await runPass(modelMessages).consumeStream({
-      // ai v7: consumeStream resolves even when the provider stream errors — the ONLY place
-      // the failure is reported is this option (the top-level onError above never fires for
-      // it, and the try/catch here never sees a rejection).
+      // ai v7: consumeStream resolves even when the provider stream errors — this option is the
+      // ONLY place the failure is reported.
       onError: (error: unknown) => {
         streamError = error instanceof Error ? error.message : String(error);
         diagLog('engine.streamError', streamError.slice(0, 160));
@@ -583,17 +513,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     };
   }
 
-  // Dead-at-start abort, RESOLVED path (2026-09-05). The catch block above has this exact
-  // guard, but an abort almost never reaches it: `consumeStream` RESOLVES rather than
-  // rejecting — the same ai v7 behaviour this file already documents for stream errors twice
-  // — so Stop within the first second fell straight through to the normal return as a
-  // "successful" turn with text: '' and paused: undefined. That is the 0-token mystery
-  // placeholder the catch-block guard was written to prevent: a blank assistant bubble, no
-  // Continue button, no way to tell "stopped" from "answered with nothing".
-  //
-  // Caught by scripts/foundation.e2e.ts scenario 7 the moment it moved off the POC loop
-  // (docs/AGENT_RELIABILITY_PLAN_2026-09-05.md §4.1) — the POC's runAgent rejected on abort,
-  // so the resolved path had never been exercised.
+  // Dead-at-start abort, RESOLVED path: consumeStream resolves on abort (ai v7), so the catch
+  // block's guard never ran and Stop within the first second returned a "successful" blank
+  // turn with no Continue button (foundation scenario 7).
   if (opts.abortSignal?.aborted && !outcome.text.trim() && !reasoningText.trim() && toolEvents.length === 0) {
     diagLog('engine.abortEmpty', 'abort before any output (resolved path) — returning paused:true so the turn stays resumable');
     return {
@@ -632,29 +554,18 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     };
   }
 
-  // CONTINUATION NUDGE — one continuation when the turn ends without CLOSING
-  // (finish 'stop' only). Wire-level signals only, never prose classification:
+  // CONTINUATION NUDGE — ONE continuation when the turn ends (finish 'stop') without closing.
+  // Wire-level signals only, never prose classification:
   //   act-gap    — no tool ran and the reply is empty.
-  //   report-gap — tools ran but the synthesis step came back empty (the SDK always
-  //     runs a next step after tool calls, so this is an empty synthesis, not an
-  //     early loop end).
-  //   plan-gap   — plan mode ended without an exitPlanMode call (see below).
-  // Deliberately NOT narration matching: guessing "announced the next action instead
-  // of taking it" from reply prose is a regex tower — every new phrasing misses it and
-  // every widening swallows a real answer. A non-empty synthesis ships as-is; when the
-  // model wrote todos, unfinished items surface the host's Continue affordance instead
-  // of burning a second model call on a guess.
+  //   report-gap — tools ran but the synthesis step came back empty.
+  //   plan-gap   — plan mode ended without an exitPlanMode call (below).
+  // A non-empty synthesis ships as-is; unfinished todos surface the host's Continue button
+  // instead of a second model call on a guess.
   const lastUser = [...opts.messages].reverse().find((m) => m.role === 'user');
   const lastUserText = typeof lastUser?.content === 'string' ? lastUser.content : '';
-  // The carve-out that keeps plan mode able to ANSWER. It matters more since planGap stopped
-  // testing the reply's shape (see below): it is now the only thing standing between an
-  // information request and a forced plan. The interrogative list alone was too narrow — a
-  // plan-mode "give me an example of plan mode" (2026-09-01 5:09 PM) is plainly a question and
-  // matches neither the leading interrogative nor a trailing "?".
-  //
-  // The additions are deliberately phrases that cannot also be a build request: "give me a dark
-  // mode toggle" IS work, so "give me" alone is not enough — it has to be asking for an
-  // example, a comparison, or a walkthrough.
+  // The carve-out that keeps plan mode able to ANSWER a question instead of being forced into
+  // a plan. Interrogatives, a trailing "?", and phrases that cannot be a build request ("give me
+  // an example of…", 2026-09-01) — "give me" alone IS work ("give me a dark mode toggle").
   const looksLikeQuestion = !!lastUserText
     && (/\?\s*$/m.test(lastUserText)
       || /^(how|what|why|when|who|which|explain|tell me|describe|review)\b/i.test(lastUserText.trim())
@@ -662,40 +573,19 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   const replyEmpty = outcome.text.trim().length === 0;
   diagLog('engine.turnEnd', `finish=${outcome.finishReason} textLen=${outcome.text.length} steps=${outcome.responseMessages.length} tools=${toolEvents.length} reasoningLen=${reasoningText.length} empty=${replyEmpty}`);
   const didWork = toolEvents.length > 0;
-  // Invariant 3 (SIMPLE_CORE_RESET): a turn gets AT MOST ONE continuation pass, whichever
-  // trigger fires first. The nudge and the length-cut guard below both run off outcome, and
-  // onEnd OVERWRITES outcome.finishReason with the continuation's own — so a nudge pass that
-  // is itself cut at the output budget would otherwise fall straight into the length guard
-  // (probe: 4 model calls in one turn). This flag is the gate; no ladder.
+  // SIMPLE_CORE_RESET invariant 3: AT MOST ONE continuation pass per turn, whichever trigger
+  // fires first. Without this flag a nudge pass cut at the output budget fell into the length
+  // guard too (probe: 4 model calls in one turn).
   let continued = false;
   const actGap = !didWork && replyEmpty;
   const reportGap = didWork && replyEmpty;
-  // plan-gap — the SAME unclosed loop, in plan mode: the model investigated and then ended on
-  // narration instead of calling exitPlanMode, so the user gets "Now let me check if there's
-  // any existing theme support…" and no plan card. The wire-level fact is identical to
-  // act/report-gap (finish 'stop', reply empty or narration); what differs is only WHAT
-  // closing the turn means — a plan call, not an edit. Not answer-quality judgment: a turn
-  // that DID call exitPlanMode is closed by definition and never lands here.
-  // Live repro (2026-08-31, 3:06 PM, Ollama/nemotron-3-ultra, "add a dark mode toggle to
-  // setting"): 69.5k in / 236 out / 1m2s, ended on "Now let me check if there's any existing
-  // theme or dark mode support in the application." — no plan, no card.
-  // planGap does NOT test the reply's shape. It used to require `replyEmpty || replyIsNarration`,
-  // which is an agent-mode proxy borrowed into a mode where the wire-level fact is simpler and
-  // stronger: in plan mode there are exactly THREE legitimate ways to close a turn — a plan
-  // (exitPlanMode outcome 'plan'), a finding (outcome 'no-change'), or a prose answer to a
-  // question — and the first two are tool calls. No tool call plus a non-question request means
-  // the turn is unclosed, whatever the prose looks like.
-  //
-  // Live repro 2026-09-01 4:33 PM (Kilo/stepfun/step-3.7-flash:free, vendor order-view): the
-  // reply was "I found the key line. Let me look at OrderController.php:250 where the products
-  // are being loaded…" — unmistakably unclosed, and NARRATION_RE misses it because the stem
-  // regex is anchored at the start and the text opens with "I found". Widening that regex would
-  // be a tower (the very next reply shape would miss again, and "Let me know if…" is a real
-  // ending the close-loop suite guards). Dropping the test is the smaller, truer change.
-  //
-  // Safe to drop only NOW: before outcome 'no-change' existed, a model whose honest conclusion
-  // was "nothing needs changing" had no tool close, so forcing one would have manufactured a
-  // plan. It has one now. Genuine Q&A is still carved out by looksLikeQuestion below.
+  // plan-gap — plan mode ended on narration instead of a tool call ("Now let me check if
+  // there's any existing theme support…" — 2026-08-31, nemotron-3-ultra; "I found the key
+  // line. Let me look at…" — 2026-09-01, step-3.7-flash). In plan mode there are exactly three
+  // legitimate closes — a plan, a 'no-change' finding, or a prose answer to a question — and the
+  // first two are tool calls, so no tool call + a non-question request = unclosed, whatever the
+  // prose looks like. The reply's shape is deliberately NOT tested (a narration regex was a
+  // tower; every new phrasing missed it).
   const planGap = opts.mode === 'plan' && !proposedPlan;
   if (
     (opts.mode === 'agent' || planGap)
@@ -708,12 +598,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     // Pass-1 narration triggered the nudge — retract it (repro: nemotron-3-ultra-free 12:57
     // AM, both passes' narration stacked in one bubble); pass 2's text is the sole draft.
     if (outcome.text.trim()) opts.onRetractDraft?.();
-    // Wire-level guarantee, not a second prompt: the continuation's first step is FORCED to
-    // call one of PLAN_CLOSERS. Pass 1 already gave the model its free chance to answer in
-    // prose, and looksLikeQuestion has already excluded genuine Q&A — so "narrate a third time"
-    // is the only outcome this removes. It does not remove "I am not sure what you meant":
-    // askUser is one of the two allowed calls. Providers that ignore toolChoice fall back to
-    // the prose nudge below, which is why both exist.
+    // The continuation's first step is FORCED to call one of PLAN_CLOSERS — "narrate a third
+    // time" is the only outcome this removes; askUser stays available. Providers that ignore
+    // toolChoice fall back to the prose nudge below.
     forcePlanToolOnNextStep = planGap;
     try {
       await runPass([
@@ -734,26 +621,19 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       forcePlanToolOnNextStep = false;
     }
     continued = true;
-    // Cross-turn health demotion only: act-gap repeated through the continuation means this
-    // model talks instead of acting — recordOutcome(false) feeds the picker's cooldown so the
-    // NEXT Auto turn routes elsewhere (pinned exempt; in-loop answer still ships).
-    // Repro ×3 (2026-08-28 12:57–1:29 AM): nemotron-3-ultra-free narrated on every task.
+    // act-gap repeated through the continuation ⇒ this model talks instead of acting;
+    // recordOutcome(false) feeds the picker's cooldown so the NEXT Auto turn routes elsewhere
+    // (pinned exempt). Repro ×3, 2026-08-28: nemotron-3-ultra-free narrated on every task.
     if (!planGap && actGap && !reportGap && toolEvents.length === 0 && served.platform && served.model) {
       recordOutcome(served.platform, served.model, false);
       diagLog('engine.actGapDemote', `no tool work after continuation — cooldown for ${served.platform}::${served.model}`);
     }
   }
 
-  // LENGTH-CUT CONTINUATION — the reply hit the output budget mid-generation
-  // (`finish_reason: length`, mapped by routerProvider): a wire-level trigger, never quality
-  // judgment. The partial answer STANDS (no retract) and this pass appends to the same draft.
-  // Repro (2026-08-30 ×2 in one session, Cloudflare @cf/deepseek-ai/deepseek-r1-distill-
-  // qwen-32b): reply cut mid-sentence, finish 'length', 2m24s — the distill burned its output
-  // budget on think-narration; AI SDK v7 (unlike v4's `continueSteps`) never continues a
-  // 'length' step. ONE continuation, placed after the act/report-gap nudge (fires only on
-  // 'stop'). `!continued` keeps it to ONE continuation per turn either way — invariant 3: a
-  // nudge pass that is itself length-cut ships truncated with finish 'length', which is what
-  // the webview's Continue affordance is for.
+  // LENGTH-CUT CONTINUATION — finish 'length' (the reply hit the output budget mid-sentence;
+  // 2026-08-30 ×2, deepseek-r1-distill-qwen-32b). The partial answer stands and this pass
+  // appends to the same draft. ai v7 never continues a 'length' step on its own. ONE
+  // continuation per turn (`!continued`); a nudge pass that is itself cut ships truncated.
   if (outcome.finishReason === 'length' && !opts.abortSignal?.aborted && !continued) {
     diagLog('engine.lengthContinue', `finish=length (textLen=${outcome.text.length}) — one continuation pass`);
     // Stitch both halves into the shipped reply: onEnd keeps the earlier text only when the
@@ -786,17 +666,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     outcome.text = reasoningText.trim();
   }
 
-  // ── VERIFY GATE (2026-09-05, plan §2.1) ───────────────────────────────────────────────
-  // verifyCommand.ts shipped complete and uncalled for the whole v3 era while two settings
-  // advertised it, so "I edited 6 files" never became "…and the tests still pass". This is the
-  // wiring. It is mechanical, not a quality judgement: it runs the user's OWN command (from
-  // their manifest or their setting) and reacts to a real exit code — the SIMPLE_CORE_RESET
-  // rule bars detectors that guess at answer quality, not gates that read an exit status.
-  //
-  // Bounded three ways: only when the turn actually MUTATED files, only in agent mode (plan
-  // proposes and ask answers — neither owns a build), and at most `verifyFixRounds` extra
-  // model calls. An abort skips it entirely; a command that cannot run (`ok: null`) is "no
-  // signal", never a failure.
+  // ── VERIFY GATE — runs the user's own verify command (manifest or setting) after a turn
+  // that mutated files, and reacts to a real exit code: mechanical, not answer judgment.
+  // Bounded: agent mode only, at most `verifyFixRounds` extra model calls, skipped on abort;
+  // a command that cannot run (`ok: null`) is "no signal", never a failure.
   let verifyOutcome: AgentResult['verifyOutcome'];
   let verifyCmd: string | undefined;
   let verifyAvailable = false;
@@ -839,27 +712,17 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   }
 
   const workMessages = toChatMessages(outcome.responseMessages);
-  // A turn cut by the step cap or by no-progress is NOT finished — say so, so the host's
-  // Continue affordance appears (`resumable` keys on `paused`) and the work report can name
-  // the real stop. Without this both cases returned looking exactly like a completed turn.
-  // `stuck` outranks `budget`: it is the more specific fact, and it is what stopped the turn.
+  // A turn cut by the step cap or by no-progress is NOT finished: `paused` shows the Continue
+  // button and stopReason names the stop. `stuck` outranks `budget` (the more specific fact).
   const stopReason = stuckSignature ? 'stuck' as const : hitStepCap ? 'budget' as const : undefined;
 
-  // ── WORK REPORT (2026-09-05, plan §2.2) ───────────────────────────────────────────────
-  // Built here for the first time. The type, the host plumbing, the `workReport` message and
-  // media/src/ui/components/ResultCard.ts all existed and had never once had a value to carry
-  // — the engine simply never produced one. Every input below already existed in this
-  // function; nothing new is measured.
-  //
-  // Emitted only for turns that CHANGED something. A pure question has nothing to report and
-  // a card saying "0 files, unverified" is worse than no card.
+  // ── WORK REPORT — emitted only for turns that CHANGED something; a card saying "0 files,
+  // unverified" is worse than no card.
   const changedFiles = changedFilesFrom(workMessages);
   const workReport = changedFiles.length > 0 ? {
     version: 1 as const,
-    // AgentResult and WorkReportData use different vocabularies on purpose: the first is the
-    // GATE's result, the second is what the USER is told. 'unverified' splits in two —
-    // 'changes-only' when the project has no verify command at all (nothing to flag, the UI
-    // stays quiet), 'unverified' when one exists but produced no signal.
+    // 'unverified' splits in two for the user: 'changes-only' when the project has no verify
+    // command at all, 'unverified' when one exists but produced no signal.
     verifyOutcome: verifyOutcome === 'passed' ? 'verified' as const
       : verifyOutcome === 'failed' ? 'failed' as const
       : verifyAvailable ? 'unverified' as const : 'changes-only' as const,

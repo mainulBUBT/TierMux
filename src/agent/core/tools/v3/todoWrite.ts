@@ -1,10 +1,6 @@
-// v3 todoWrite — task tracking (Claude Code's TodoWrite / Kilo's task list). The model writes
-// the full task list up front for multi-step work and updates statuses as it goes; the host's
-// onTodos callback posts the list to the webview's TodoSheet/plan card. Mutates NOTHING in the
-// workspace — UI state only — so the policy treats it as read-only.
-//
-// v3 tool contract (see readFile.ts): tool()-form, zod schema with .describe() on every field,
-// exception-safe execute (expected failures return { error }), no embedded approval.
+// todoWrite — task tracking (Claude Code's TodoWrite). The model writes the full list up front
+// and updates statuses as it goes; onTodos posts it to the webview. Mutates nothing, so the
+// policy treats it as read-only.
 
 import { tool } from 'ai';
 import { z } from 'zod';
@@ -38,8 +34,6 @@ export function createTodoWriteTool(onTodos?: (todos: TodoItem[]) => void) {
         z.object({
           content: z.string().describe('Short imperative task description ("Fix the login redirect loop").'),
           status: z.enum(['pending', 'in_progress', 'completed']).describe('Current state of this item.'),
-          difficulty: z.enum(['easy', 'medium', 'hard']).optional()
-            .describe('Step difficulty for model routing; omit when unsure.'),
         }),
       ).max(MAX_TODOS).describe(`The COMPLETE updated task list (max ${MAX_TODOS}). Full replacement — include unchanged items.`),
     }),
@@ -52,7 +46,6 @@ export function createTodoWriteTool(onTodos?: (todos: TodoItem[]) => void) {
         const items: TodoItem[] = todos.map((t) => ({
           content: t.content.trim(),
           status: t.status,
-          ...(t.difficulty ? { difficulty: t.difficulty } : {}),
         }));
         try {
           onTodos?.(items);

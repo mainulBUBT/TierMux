@@ -1,10 +1,6 @@
-// editFile — search/replace edits.
-//   - No approval inside the tool: the streamText `toolApproval` policy decides IF it runs.
-//   - Exception-safe: every failure returns { error } instead of throwing, so the model sees
-//     the reason and self-corrects (a throw would end as a tool-error part — also survivable,
-//     but a structured result is the v3 contract for EXPECTED failures).
-//   - The matching tiers are kept verbatim in ./editMatch (exact-unique → whitespace-tolerant
-//     → re-indent), extracted from applyEdit.ts so src/edits/** can be deleted in step 10.
+// editFile — search/replace edits. No approval inside the tool (the toolApproval policy
+// decides); expected failures return { error } so the model can self-correct; the matching
+// tiers live in ./editMatch.
 
 import * as vscode from 'vscode';
 import { tool } from 'ai';
@@ -19,11 +15,9 @@ import {
   workspaceErrorSignatures,
 } from '../workspace/formatDiagnostics';
 
-/** Post-edit verify note: errors the language servers report AFTER this edit that weren't there
- *  before it (pre-existing problems are excluded via the before/after diff). Kilo-style in-tool
- *  feedback — the note rides in the tool RESULT; the model decides what to do with it. The whole
- *  check is failure-isolated: a host without a diagnostics API must never turn a successful edit
- *  into an error. */
+/** Post-edit note: NEW language-server errors after this edit (pre-existing ones excluded).
+ *  Rides in the tool result; failure-isolated so a host without diagnostics never turns a
+ *  successful edit into an error. */
 export async function diagnosticsNote(uri: vscode.Uri, before: Set<string>): Promise<string> {
   try {
     await waitForDiagnosticsSettled(uri, 1200);
@@ -81,11 +75,8 @@ export function createEditFileTool(bindings: ToolsetBindings = {}) {
         for (let i = 0; i < hunks.length; i++) {
           const next = applyHunk(text, hunks[i].search, hunks[i].replace);
           if ('error' in next) {
-            // WHICH hunk failed, and that none were written. Without the index a model holding
-            // five hunks got one bare "not found" and had to guess which to fix; without the
-            // "no changes written" half it could not tell whether to re-send all five or the
-            // remainder (hunks apply to an in-memory copy and the file is written once, below,
-            // so a mid-list failure leaves the file untouched).
+            // WHICH hunk failed, and that none were written (hunks apply to an in-memory copy;
+            // the file is written once below), so the model knows to re-send all of them.
             const where = hunks.length > 1 ? `Hunk ${i + 1} of ${hunks.length} failed: ` : '';
             const rollback = hunks.length > 1 ? ' No changes were written — re-send all hunks once this one is fixed.' : '';
             return { error: `${where}${next.error}${rollback}` };

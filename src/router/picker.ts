@@ -18,11 +18,8 @@ import { diagLog } from '../util/diag';
 
 /** platform::modelId → candidate chain per task kind. Ordered: best first. */
 export const TASK_ROUTING: Record<TaskKind, string[]> = {
-  // NOTE: every id here MUST exist in media/catalog.json — 11 of the previous 13 were dead
-  // (groq renamed to namespaced ids, opencode renamed its free tier, cerebras swapped
-  // models), so the table silently contributed NOTHING and every Auto turn fell straight
-  // into the user's settings-order tail. When gateways rename again, these go dead the same
-  // silent way — which is why the tail below is rank-sorted, not table-dependent.
+  // Every id here MUST exist in media/catalog.json; a renamed gateway id goes dead silently
+  // (11 of 13 were once dead), which is why the tail below is rank-sorted, not table-dependent.
   coding: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::muse-spark-1.2-contributor-free', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
   debug: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free'],
   vision: ['google::gemini-2.5-flash'],
@@ -53,20 +50,10 @@ export interface SelectionRationale {
   }>;
 }
 
-/**
- * Re-point a rationale at the model that ACTUALLY served the turn.
- *
- * selectModel() builds the report before a single byte is sent, so `picked` is chain[0] —
- * the candidate we intended to use. When that candidate 429s (or returns an empty body) the
- * turn is served by a failover further down the chain, and the un-updated report then names
- * the wrong model: the footer said "ChatAnywhere/gpt-4.1" while the popover insisted
- * "opencode/muse-spark-1.2-contributor-free — serves this turn" (live repro 2026-08-31,
- * 5:57 PM). Every candidate the chain passed over on the way is relabelled as tried-and-
- * failed, so the popover explains the walk instead of hiding it.
- *
- * Returns the input unchanged when the served model is already the one marked selected, or
- * when it isn't in the report at all (nothing to correct against).
- */
+/** Re-point a rationale at the model that ACTUALLY served the turn. selectModel() builds the
+ *  report before a byte is sent, so after a failover the popover named a model that never ran
+ *  (2026-08-31). Candidates passed over on the way are relabelled tried-and-failed. Unchanged
+ *  when the served model is already selected or not in the report. */
 export function rationaleForServed(
   rationale: SelectionRationale,
   platform: string,
@@ -133,12 +120,8 @@ export async function getApiKeysFor(platform: string): Promise<string[]> {
   // at 18:22/18:44 with cloudflare unticked and no key set in the UI).
   const keys = (await sources.secrets.getKeys(platform as import('../shared/types').Platform)).filter((k) => k.trim());
   if (platform === 'cloudflare') {
-    // Cloudflare stores accountId and token SEPARATELY; the wire format is
-    // `accountId:token` (CloudflareProvider.parseKey throws on a bare token). The legacy
-    // router path assembles this in SecretStore.resolveKey, but the v3 chat path hands the
-    // raw pool straight to the provider — so an enabled cloudflare model passed
-    // platformUsable and then killed the whole turn in parseKey. Mirror resolveKey here and
-    // treat "no accountId stored" as "platform unavailable" so selection skips it.
+    // Cloudflare stores accountId and token separately; the wire format is `accountId:token`
+    // (parseKey throws on a bare token). No accountId ⇒ platform unavailable.
     const accountId = await sources.secrets.getCloudflareAccountId();
     if (!accountId) return [];
     return keys.map((k) => (k.startsWith(accountId + ':') ? k : `${accountId}:${k}`));
@@ -166,13 +149,9 @@ export function findCatalogModel(platform: string, modelId: string): CatalogMode
   return sources?.catalog.find(platform, modelId);
 }
 
-/** The model that WOULD serve this task kind right now, without making a request. Replaces
- *  `Router.peekTopSelection()` (2026-09-05, plan §4.2); the one caller is the auto-compaction
- *  budget, which needs a context window before the turn starts.
- *
- *  Runs the real selection, so it reflects cooldowns, the enabled set and the task table — but
- *  it also ADVANCES the equal-rank rotation counter, which peeking should not do. Hence the
- *  save/restore: a peek must not change which model the next real turn picks. */
+/** The model that WOULD serve this task kind right now, without a request (the auto-compaction
+ *  budget needs its context window before the turn starts). Saves/restores the rotation
+ *  counter so a peek never changes what the next real turn picks. */
 export async function peekTopModel(taskKind: string): Promise<CatalogModel | undefined> {
   if (!sources) return undefined;
   const saved = taskRoundCounters.get(taskKind);
@@ -195,23 +174,15 @@ function keylessFallback(): ModelSelection {
   return { model: chain[0] ?? 'groq::llama-3.3-70b-versatile', fallbackChain: chain.slice(1), taskKind: 'chat' };
 }
 
-/** Minimal per-model health (cooldown) — the ONLY resilience state the v3 picker keeps.
- *  A model that fails (429/5xx/timeout/network) is skipped until its cooldown elapses, so the
- *  fallback chain prefers healthy models; a success resets the streak. Exponential backoff
- *  (30s base → 10m cap) keeps a persistently-broken model from being retried every call
- *  without the full circuit-breaker the deleted Router had. In-memory only (resets on
- *  reload) — deliberate: this is "don't hammer a model that just 429'd", not durability.
- *  Persisting it to globalState (2026-09-04, reverted 09-05) bought a reload's worth of
- *  head start in exchange for stale cooldowns shadowing models that had since recovered. */
+/** Per-model cooldown — the ONLY resilience state the picker keeps. A failing model is skipped
+ *  until its cooldown elapses; a success resets it. Exponential 30s → 10m. In-memory only:
+ *  persisting it (tried 2026-09-04) left stale cooldowns shadowing recovered models. */
 interface ModelHealth { failures: number; cooldownUntil: number; }
 const modelHealth = new Map<string, ModelHealth>();
 const HEALTH_BASE_MS = 30_000;
-/** 2m → 10m (2026-09-04): a free provider that is 429/500-ing stays down for MINUTES, and a
- *  2-minute memory meant the same dead candidate re-headed the chain on almost every turn,
- *  re-paying its failure latency each time. Live repro (TierMux Diag, 6:22 PM): opencode
- *  500 (+1s) then ovh 429 (+3s) burned 4s of a 17s turn — exactly the candidates the
- *  previous turns had already failed on. 30s base doubling still lets a recovered model
- *  back in within a minute of its FIRST failure; only the repeated-failure ceiling moved. */
+/** 2m → 10m (2026-09-04): a 429/500-ing free provider stays down for minutes, and a 2-minute
+ *  memory re-paid its failure latency on almost every turn. The 30s base still lets a
+ *  recovered model back within a minute of its FIRST failure. */
 const HEALTH_MAX_MS = 10 * 60_000;
 function healthKey(platform: string, modelId: string): string { return `${platform}::${modelId}`; }
 function cooldownFor(failures: number): number {
@@ -259,13 +230,9 @@ export async function selectModel(
     .map((m) => m.content as string)
     .join('\n');
   const taskKind = (opts.taskKind as TaskKind | undefined) ?? classifyTask(text);
-  // enabledByPriority(), NOT getFallback(): the provider-level switch in Manage Models & Keys
-  // stores its state in a SEPARATE disabled-providers list and never clears the per-model
-  // `enabled` flags, so a raw getFallback() filter still reports every model of a switched-off
-  // provider as selectable. The deleted Router read enabledByPriority() and honoured the
-  // switch; v3's picker read getFallback() and did not, which made the switch cosmetic for
-  // Auto/Smart routing — a provider toggled off (with a key still stored, so platformUsable
-  // passes) kept serving turns.
+  // enabledByPriority(), NOT getFallback(): the provider-level switch lives in a separate
+  // disabled-providers list and never clears per-model `enabled` flags, so getFallback() still
+  // offered every model of a switched-off provider.
   const enabled = new Set(
     sources.settings.enabledByPriority().map((e) => `${e.platform}::${e.modelId}`),
   );
@@ -285,12 +252,9 @@ export async function selectModel(
     return ok;
   };
 
-  // "Why this model?" data — every candidate considered is recorded with WHY it made the
-  // chain or was skipped. The old scoring Router produced these; v3's table+tail selection
-  // never did, so the footer's (?)/⇄ button had nothing to show (live repro 2026-08-28:
-  // clicking it rendered no popup). Numbers: capability derives from the catalog's
-  // intelligence rank; Runtime is neutral 1.0 with confidence 0 — v3 keeps no learned
-  // health multiplier, and the popover's tooltips present those values as exactly that.
+  // "Why this model?" data — every candidate considered, with WHY it made the chain or was
+  // skipped. Capability derives from intelligence rank; Runtime is a neutral 1.0 with
+  // confidence 0 (no learned health multiplier exists).
   const skipReasons = new Map<string, string>();
   const pickLabels = new Map<string, string>();
   const skip = (key: string, reason: string) => { if (!skipReasons.has(key)) skipReasons.set(key, reason); };
@@ -325,11 +289,8 @@ export async function selectModel(
     if (enabled.size > 0 && !enabled.has(key) && opts.pinnedModel !== key) { skip(key, 'not enabled in Manage Models & Keys'); return undefined; }
     // An agent turn offers tools, so a model the catalog marks supportsTools=false would
     // deflect ("I don't have access to…") and every tool would silently "not work".
-    // Declared rpm/rpd quota — the ONE piece of the deleted Router the picker had to inherit
-    // (2026-09-05, plan §4.2). TierMux exists to multiplex free tiers, and free tiers publish
-    // hard per-minute/per-day limits; without this the picker would only learn a limit by
-    // being 429'd, spending a real request and a failure cooldown to discover a number the
-    // catalog already knows. Not scoring — a declared cap, read from the catalog.
+    // Declared rpm/rpd quota from the catalog: free tiers publish hard limits, and learning one
+    // by being 429'd costs a real request plus a cooldown.
     if (sources) {
       const modelId = key.split('::').slice(1).join('::');
       const meta = sources.catalog.find(platform, modelId);
@@ -349,20 +310,15 @@ export async function selectModel(
   };
 
   const chain: string[] = [];
-  // 'auto' is the webview selector's DEFAULT value (`let currentModel = 'auto'`,
-  // media/src/main.ts) and arrives as pinnedModel on every default Auto send — it means
-  // "no pin", never "a model named auto". Without this guard the pin-runs-alone branches
-  // below treated it as an unroutable pin and killed every Auto turn (repro'd 2026-09-01:
-  // "Pinned model auto could not run: no API key stored for this platform").
+  // 'auto' is the webview selector's default and arrives as pinnedModel on every Auto send —
+  // it means "no pin", never a model named auto (2026-09-01: every Auto turn died as an
+  // unroutable pin).
   if (opts.pinnedModel && opts.pinnedModel !== 'auto') {
     const pinned = await pick(opts.pinnedModel, 'pinned by you');
     if (pinned) {
-      // PIN = EXACT (2026-08-31, user direction): a set model runs ALONE — no task table, no
-      // enabled tail. The old chain padded the pin with every usable model, so a failing pin
-      // was silently answered by a DIFFERENT provider's model while the footer still credited
-      // the pin (live repro: openrouter::z-ai/glm-5.2:free pinned, turn served by
-      // kilo::nvidia/nemotron-3-ultra — footer read "Kilo Gateway/z-ai/glm-5.2:free"). A dead
-      // pin must fail the turn with the real provider error instead of rerouting.
+      // PIN = EXACT (2026-08-31, user direction): a set model runs ALONE. Padding the pin with
+      // the tail let a failing pin be answered by another provider's model while the footer
+      // still credited the pin.
       return {
         model: pinned,
         fallbackChain: [],
@@ -410,13 +366,9 @@ export async function selectModel(
     const picked = await pick(key, `task table (${taskKind})`);
     if (picked && !chain.includes(picked)) chain.push(picked);
   }
-  // ALWAYS pad the chain with the rest of the usable enabled models (dedup), ordered by the
-  // catalog's measured intelligence rank — best first — with unranked models keeping their
-  // settings order after the ranked ones. The old "settings order" tail is how a
-  // paper-strong-but-live-weak model served EVERY task (live repro 2026-08-28, 1:29 AM:
-  // opencode/nemotron-3-ultra-free narrated a plan instead of acting on "@routes/web.php
-  // optimize this" — it sat first in settings order after the task table's dead ids were
-  // all skipped). Pinned models stay exempt (explicit user choice above).
+  // ALWAYS pad the chain with the rest of the usable enabled models, best intelligence rank
+  // first (settings order let whichever model sat first serve every task — 2026-08-28,
+  // nemotron-3-ultra-free). Pinned models are exempt.
   const ranked: Array<{ key: string; rank: number; speed: number }> = [];
   for (const key of enabled) {
     // Already chained (pin/table pick)? Skip BEFORE re-picking: pick() would overwrite the
@@ -431,25 +383,15 @@ export async function selectModel(
     const meta = sources.catalog.find(platform, modelId);
     ranked.push({ key: picked, rank: meta?.intelligenceRank ?? Number.POSITIVE_INFINITY, speed: meta?.speedRank ?? 5 });
   }
-  // Tail order: speed class first, then intelligence rank — stable, so equal/unknown entries
-  // keep settings order. Both keys come from the CATALOG; nothing here is measured or learned.
-  //
-  // Speed-aware grouping (2026-09-04): catalog speedRank 5 = a 397B-class model whose prefill
-  // alone runs a minute on a free gateway. It can still ANSWER, so it stays in the pool — but
-  // only as a last-resort fallback, never rotated into the head. Without this, quota rotation
-  // lifted ovh::Qwen3.5-397B-A17B (rank-1/speed-5) to the chain head and a simple chat turn
-  // took ~5 minutes ("Calculating… 4m56s"). This is the ONE slow-model rule; the learned TTFT
-  // demotion that briefly sat in front of it covered the same repro with a scoring engine.
+  // Tail order: speed class first, then intelligence rank — stable, both from the CATALOG.
+  // A catalog speedRank-5 model (397B-class, a minute of prefill on a free gateway) stays in
+  // the pool as a last resort but is never rotated into the head — quota rotation once put
+  // ovh::Qwen3.5-397B at the head and a chat turn took ~5 minutes (2026-09-04).
   const slowCapable = (e: { speed: number }): number => (e.speed >= 4 ? 1 : 0);
   ranked.sort((a, b) => slowCapable(a) - slowCapable(b) || a.rank - b.rank);
-  // Quota-spreading within one rank (2026-09-04): a deterministic rank sort hands the
-  // SAME best model every turn, so one provider's free quota drains while equally-smart peers
-  // (same intelligenceRank) sit unused — "600 models catalog, but it keeps using the same 1-2."
-  // Rotate the head of each equal-rank group so the NEXT turn leads with a different peer.
-  // Deterministic per taskKind (no RNG): a monotonically increasing counter picks the group's
-  // start index, so repeated turns walk through the peers and quota spreads across providers.
-  // Pinned models, the task-table head, and slow-demoted models (all upstream of this sort,
-  // or flagged slow) are untouched.
+  // Quota-spreading within one rank: rotate the head of each equal-rank group so the NEXT
+  // turn leads with a different peer ("600 models, but it keeps using the same 1-2").
+  // Deterministic per taskKind via a counter — no RNG.
   {
     const counter = nextTaskRound(taskKind);
     let i = 0;
@@ -471,13 +413,8 @@ export async function selectModel(
   }
   if (chain.length === 0) return keylessFallback();
 
-  // Assemble the "Why this model?" report: chain in order (chain[0] = selected), then a
-  // BOUNDED sample of skipped candidates with their reasons. Chain positions after 0 are
-  // failover order. 2026-09-04: the skip list ran to 361 entries (every disabled/cooldowned/
-  // keyless-blocked model in a 600-model catalog), so the report was re-serialized and
-  // re-posted on every agent step — diag showed `chat.rationale entries=373` per step, and
-  // the popover tried to render all of them. The chain carries the real decision; the skip
-  // sample just explains the top of it, capped with a count for the rest.
+  // "Why this model?" report: the chain in order (chain[0] = selected), then a BOUNDED sample
+  // of skipped candidates — an unbounded list hit 361 entries and was re-posted every step.
   const rankOf = (key: string): number | undefined => {
     const platform = key.split('::')[0];
     const modelId = key.split('::').slice(1).join('::');

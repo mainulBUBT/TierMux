@@ -7,17 +7,12 @@ import { capToolOutput } from './core/tools/capOutput';
 
 import { diagLog } from '../util/diag';
 
-/** Number of recent messages kept verbatim (so the active thread of work stays intact). 10, not
- *  6: a tool-heavy turn spends several messages on its own tool round-trips, so 6 could cover as
- *  little as one exchange — putting a correction the user made two turns ago outside the verbatim
- *  tail and at the mercy of the summarizer. Raising it is nearly free because surviving tool
- *  results are re-capped to TAIL_TOOL_RESULT_CAP below; the extra messages are mostly short text. */
+/** Recent messages kept verbatim. 10, not 6: a tool-heavy turn spends several messages on its
+ *  own round-trips, so 6 could cover one exchange. Cheap, since surviving tool results are
+ *  re-capped to TAIL_TOOL_RESULT_CAP. */
 const KEEP_TAIL = 10;
-/** Re-cap ceiling for a tool result surviving in the kept tail. Per-tool caps (capOutput.ts) run
- *  up to 15-30k chars each — fine for the model mid-task, but by compaction time the model has
- *  already acted on that result, so keeping it at full size in the "recent, verbatim" tail can
- *  dwarf the summary and make Ctx barely move even though compaction genuinely ran. Re-capping
- *  tighter here is what actually makes compaction shrink the context, not just the message count. */
+/** Re-cap for a tool result surviving in the kept tail: by compaction time the model has acted
+ *  on it, and a 30k result kept verbatim would dwarf the summary. */
 const TAIL_TOOL_RESULT_CAP = 1500;
 /** Minimum history length before condensing is worth an LLM call. Sessions with several
  *  tool-heavy turns balloon fast (large grep/read results), so compact a little sooner than the
@@ -73,15 +68,8 @@ function pathKeyOf(entry: string): string {
   return entry.split(/[\s—–:(]/)[0].replace(/[`,]/g, '').trim() || entry;
 }
 
-/**
- * Every file path this stretch of conversation demonstrably touched, plus every path the PREVIOUS
- * summary already recorded.
- *
- * The second half is the merge-forward: without it each condensation re-derives its file list
- * from only the messages it can still see, so a file touched before the last compaction is
- * dropped the moment its messages age out — permanently, since nothing ever re-adds it. Cline
- * carries the same list structurally across successive compactions for exactly this reason.
- */
+/** Every file path this stretch touched, plus every path the PREVIOUS summary recorded — the
+ *  merge-forward that keeps a file touched before the last compaction from being dropped. */
 export function collectTouchedPaths(prefix: ChatMessage[]): string[] {
   const seen = new Map<string, string>(); // pathKey → best entry text
   const add = (entry: string): void => {
@@ -104,16 +92,9 @@ export function collectTouchedPaths(prefix: ChatMessage[]): string[] {
   return [...seen.values()];
 }
 
-/**
- * Guarantee the summary's file list is present and complete, in code rather than by asking.
- *
- * SUMMARY_SYSTEM already mandates this section, but a prompt is a request, not a guarantee — and
- * TierMux's target models are exactly the ones that drop a mandated section under load. When the
- * file list is the single most load-bearing part of the summary (it's what stops the agent
- * forgetting which files a multi-file task already touched), "the model was told to" is not
- * enough. So: union what the model wrote with what the conversation provably touched, and write
- * the section back whether or not the model produced one.
- */
+/** Guarantee the summary's file list in code, not by asking: union what the model wrote with
+ *  what the conversation provably touched, and write the section back whether or not the model
+ *  produced one. Weak summarizers drop the mandated section under load. */
 export function ensureFilesSection(summary: string, knownPaths: string[]): string {
   const written = parseFilesSection(summary);
   const merged = new Map<string, string>();
@@ -147,27 +128,14 @@ export function shouldCondense(history: ChatMessage[]): boolean {
   return history.length >= KEEP_TAIL + MIN_PREFIX;
 }
 
-/**
- * Condense `history` into `[summary, ...recentTail]`. Splits on a 'user' boundary so the tail
- * never starts mid-tool-round (which would orphan a tool result / dangle a tool call). Returns
- * null when there's too little to summarize or the summarizer produced nothing.
- *
- * `previousModel` (optional) names the model that produced the prefix. We prepend a short line
- * to the summary so a *different* model picking up the compacted history knows there was a
- * prior model — cheap cross-model context continuity on free tiers where failover / auto-route
- * can swap models mid-task.
- */
+/** Condense `history` into `[summary, ...recentTail]`, splitting on a 'user' boundary so the
+ *  tail never starts mid-tool-round. Returns null when there's too little to summarize or the
+ *  summarizer produced nothing. `previousModel` is named in the summary for a different model
+ *  picking up the compacted history. */
 
-/** One utility completion with ONE retry when the model returns BLANK.
- *
- *  routeOnce already walks the picker's chain, rotates keys and drops account-dead platforms,
- *  so errors need no ladder here. What it cannot see is an HTTP-200 with whitespace-only
- *  content — not an error, so no failover fires — which is exactly how "Compaction produced no
- *  summary" used to reach the user. That one case is what this retries, excluding the model
- *  that just went blank.
- *
- *  Replaces two near-identical 25-line ladders (condenseHistory and generateHandoff) that
- *  existed only because Router.route() refused to fail over on a forced pick. */
+/** One utility completion with ONE retry on a BLANK reply. routeOnce already fails over on
+ *  errors; an HTTP-200 with whitespace-only content is not an error, and that case is how
+ *  "Compaction produced no summary" reached the user. Retries with a different model. */
 async function completeOnce(
   request: ChatMessage[],
   label: string,
@@ -189,14 +157,9 @@ export async function condenseHistory(
 ): Promise<{ messages: ChatMessage[]; summary: string } | null> {
   if (!shouldCondense(history)) return null;
 
-  // Walk BACKWARD from the nominal tail start to the nearest user boundary. Scanning forward
-  // (the previous behavior) never terminates on a tool-heavy session: its last KEEP_TAIL messages
-  // are all assistant/tool, so the scan ran off the end and returned null — meaning the sessions
-  // with the largest contexts, exactly the ones compaction exists for, could NEVER compact. The
-  // user just saw "Compaction produced no summary" while the context grew until fitMessages
-  // started evicting the task itself. Backward keeps the same "tail starts on a user turn"
-  // invariant (no orphaned tool result, no dangling tool call) while always finding a boundary,
-  // and only ever makes the verbatim tail LONGER than requested, never shorter.
+  // Walk BACKWARD to the nearest user boundary. Scanning forward ran off the end on tool-heavy
+  // sessions (the last KEEP_TAIL messages all assistant/tool), so the largest contexts could
+  // never compact. Backward only ever makes the tail LONGER than requested.
   let tailStart = history.length - KEEP_TAIL;
   while (tailStart > 0 && history[tailStart].role !== 'user') tailStart--;
   // No user turn at all before the tail (degenerate) — nothing safe to split on.
@@ -205,33 +168,19 @@ export async function condenseHistory(
   const tail = recapTailToolResults(history.slice(tailStart));
   if (prefix.length < 3) return null;
 
-  // Mechanically collapse runs of identical step records BEFORE the summarizer sees them. A
-  // degenerate model loop (2026-08-25) can leave dozens of byte-identical tool round-trips in
-  // the prefix, and that wall of repetition is exactly what blanks a weak utility summarizer —
-  // all three retry attempts returned empty and the user saw "Compaction produced no summary"
-  // with the context left to grow until fitting evicted the task itself. No-op on normal
-  // histories: collapse only touches 3+ identical consecutive records.
-  const summaryPrefix = prefix;
-  if (false) {
-    diagLog('condense.dedup', `collapsed repeated step records in the prefix (${prefix.length} → ${summaryPrefix.length} messages) before summarizing`);
-  }
-
   const summaryRequest = [
     { role: 'system' as const, content: SUMMARY_SYSTEM },
-    ...summaryPrefix,
+    ...prefix,
     { role: 'user' as const, content: 'Summarize the conversation above so it can continue with minimal context. Keep file names, decisions, and unresolved next steps.' },
   ];
 
   const attempt = await completeOnce(summaryRequest, 'condense');
   let summary = attempt?.text ?? '';
   if (!summary) {
-    // Two different models both came back blank. On a small-context model this is often the
-    // provider silently rejecting/truncating an over-budget prompt (our token estimate is an
-    // approximation, not exact) rather than a genuinely broken model — so before giving up,
-    // try once more with only the newer half of the prefix. A smaller request either fits
-    // where the full one didn't, or fails the same way for an unrelated reason either way.
+    // Two models both came back blank — often a provider silently truncating an over-budget
+    // prompt. Try once more with only the newer half of the prefix.
     diagLog('condense.retry', `empty summary again from ${attempt?.key ?? 'auto'} — retrying with a shorter prefix`);
-    const shortPrefix = summaryPrefix.slice(Math.ceil(summaryPrefix.length / 2));
+    const shortPrefix = prefix.slice(Math.ceil(prefix.length / 2));
     const shortRequest = [
       { role: 'system' as const, content: SUMMARY_SYSTEM },
       ...shortPrefix,
@@ -264,12 +213,8 @@ export async function condenseHistory(
  *  started has nothing to hand off. */
 const MIN_HANDOFF_HISTORY = 2;
 
-/**
- * Produces a standalone handoff note for the *whole* history — unlike `condenseHistory`, this
- * never mutates or truncates the session; it's a read-only summary meant to be copied elsewhere
- * (a fresh session, a teammate, a written note) when the current one is ending or hitting limits.
- * Returns null when there's too little conversation yet, or the summarizer produced nothing.
- */
+/** A standalone handoff note for the whole history — read-only, never mutates the session.
+ *  Returns null when there's too little conversation or the summarizer produced nothing. */
 export async function generateHandoff(history: ChatMessage[]): Promise<string | null> {
   if (history.length < MIN_HANDOFF_HISTORY) return null;
 
@@ -282,12 +227,8 @@ export async function generateHandoff(history: ChatMessage[]): Promise<string | 
   return (await completeOnce(request, 'handoff'))?.text || null;
 }
 
-/** Re-cap `tool`-role message content in the kept tail down to TAIL_TOOL_RESULT_CAP. A large
- *  grep/read/bash dump is capped at 15-30k chars at write-time (capOutput.ts) — appropriate while
- *  the model is actively using it, but by compaction time the model has already acted on it, so
- *  keeping it at full size in the verbatim tail can single-handedly dwarf the summary and make
- *  compaction look like a no-op. Only touches `content` (string content); tool_call_id / role are
- *  untouched, so the call↔result pairing the AI SDK requires stays intact. */
+/** Re-cap `tool`-role content in the kept tail to TAIL_TOOL_RESULT_CAP. Only `content` is
+ *  touched, so the call↔result pairing stays intact. */
 function recapTailToolResults(tail: ChatMessage[]): ChatMessage[] {
   return tail.map((m) => {
     if (m.role !== 'tool' || typeof m.content !== 'string' || m.content.length <= TAIL_TOOL_RESULT_CAP) return m;

@@ -47,13 +47,8 @@ function resolveMime(explicit: unknown, url: unknown): string {
   return mimeFromDataUrl(url) || 'application/octet-stream';
 }
 
-/**
- * Pull `image_url`/`file` blocks out of a message's content, in order, as a common
- * shape. This is the ONLY place in the extension that knows `image_url` and `file`
- * are two different `ChatContentBlock` shapes for the same idea (an attachment) —
- * every other consumer (routing signals, the OC transport mapper) reads the
- * normalized `{mime, filename, url}` instead of branching on block type itself.
- */
+/** Pull `image_url`/`file` blocks out of a message's content as one normalized
+ *  `{mime, filename, url}` shape — the only place that knows they are two block types. */
 export function normalizeAttachmentBlocks(content: ChatContent): AttachmentBlock[] {
   if (!Array.isArray(content)) return [];
   const out: AttachmentBlock[] = [];
@@ -78,21 +73,9 @@ export function normalizeAttachmentBlocks(content: ChatContent): AttachmentBlock
 }
 
 /**
- * Drop `type: 'file'` blocks (PDFs we attached as native file data) and narrow
- * `image_url` blocks to the standard OpenAI wire shape `{ url }` before sending to
- * an OpenAI-compat endpoint. OpenAI-compat providers that DO support vision (Groq
- * Llama Vision, Mistral Pixtral, OpenRouter, etc.) accept `image_url` natively —
- * only our `file` envelope is unknown to them, so strip it and rely on the PDF's
- * extracted text already embedded in the user message.
- *
- * `image_url` blocks internally carry extra `mime`/`filename` fields (see
- * AttachmentBlock/normalizeAttachmentBlocks above) that the rest of the extension
- * needs for routing/session-attachment-memory, but which are NOT part of the
- * OpenAI vision API (`image_url: { url, detail? }`). Some gateways schema-validate
- * the request body and reject unknown properties with an outright 400 — a
- * `supportsVision: true` model then looks broken even though the model itself is
- * fine, because the request carrying its image never arrived. Only `url` (and a
- * `detail` hint if ever added) belongs on the wire.
+ * Wire shape for OpenAI-compat endpoints: drop `type: 'file'` blocks (the PDF's extracted text
+ * is already in the message) and narrow `image_url` to `{ url }` — the internal `mime`/
+ * `filename` fields make schema-validating gateways 400 the whole request.
  */
 export function stripFileBlocks(content: ChatContent): ChatContent {
   if (!Array.isArray(content)) return content;

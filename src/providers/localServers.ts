@@ -1,19 +1,10 @@
 
 /**
- * Local model servers — detection, and the one thing they all get asked: how big is the context
- * window actually loaded right now?
- *
- * Why this exists. A custom endpoint has no catalog entry, so `inputBudget` fell back to its
- * 32768-token default (see agent/budget.ts). LM Studio, Ollama and llama.cpp all load a model with
- * a context length chosen at LOAD time — commonly 4096 — so TierMux would compose a ~6k-token
- * prompt (scaffolding + skills + tool schemas) and post it into a 4k window. The server truncates
- * or returns nothing, the turn comes back empty in a second or two, and nothing anywhere says why.
- * The same bug is well known in other agents (cline#6494: "always defaults to 32.8k with LM
- * Studio"), and it is the single reason a model that chats fine in LM Studio's own UI looks broken
- * through an agent: that UI sends ten tokens, an agent sends thousands.
- *
- * Every one of these servers exposes the real number. None of them put it in the OpenAI-compatible
- * `/v1/models` response, which is why asking costs a second, server-specific request:
+ * Local model servers — detection, and the context window actually loaded right now. A custom
+ * endpoint has no catalog entry, and LM Studio/Ollama/llama.cpp load a model with a context
+ * length chosen at LOAD time (commonly 4096), so a ~6k-token agent prompt into a 4k window came
+ * back empty with nothing saying why (cline#6494 is the same bug). None of them put the number
+ * in `/v1/models`, hence one server-specific request each:
  *
  *   LM Studio   GET  {origin}/api/v0/models              → loaded_context_length ?? max_context_length
  *   Ollama      POST {origin}/api/show {model}           → model_info["<arch>.context_length"]
@@ -21,10 +12,8 @@
  *   KoboldCpp   GET  {origin}/api/v1/config/max_context_length → { value }
  *   vLLM        GET  {origin}/v1/models                  → data[].max_model_len
  *
- * Probing is best-effort by construction: every request is short-timeout, every parse is
- * defensive, and a server that answers nothing simply leaves the window unknown — callers then
- * behave exactly as they did before. A wrong guess here would be worse than no guess, so nothing
- * is inferred from a port number or a URL alone; only a server that actually answers is believed.
+ * Best-effort: short timeouts, defensive parsing, and only a server that actually answers is
+ * believed — nothing is inferred from a port or URL alone.
  */
 
 export type LocalServerKind = 'lmstudio' | 'ollama' | 'llamacpp' | 'koboldcpp' | 'vllm' | 'sglang' | 'tgi' | 'openai-compat';

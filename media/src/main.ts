@@ -1,11 +1,8 @@
-// TODO(Phase D): this file is a verbatim conversion of the legacy media/main.js
-// and is not yet typechecked. It is migrated incrementally — extract a section,
-// remove this directive for that section's errors, fix them, repeat. Until then
-// `@ts-nocheck` keeps the build green while NEW modules (./icons, ./format) are
-// fully strict-checked. Do NOT let this marker spread to other files.
+// Webview controller (vanilla TS, bundled by esbuild). Not yet typechecked — converted from
+// the legacy main.js and migrated section by section into strict modules under ./ui, ./handlers,
+// ./format. Do NOT let @ts-nocheck spread to other files.
 //
 // @ts-nocheck
-/* TierMux — webview controller (vanilla TS, bundled by esbuild). */
 import { ICON } from './icons';
 import { fmtTime, fmtTokens, fmtCompact, fmtUsage, fmtUsd, fmtSessionDate, fmtDuration, fmtToolDuration } from './format';
 import { send } from './bridge';
@@ -935,13 +932,8 @@ import { handleToolStatus } from './handlers/toolStatus';
       };
       const metrics = [
         // NOT "highest score wins" — the picker orders by pin → task table → catalog rank, so
-        // the chosen model routinely scores BELOW a candidate it outranks (a task-table pick at
-        // rank 2 shows 0.80 while the rank-1 tail shows 1.00). The old copy said the top score is
-        // chosen, which read as a bug against the ✓ actually shown. The reason line under each
-        // row is the real explanation; these numbers only describe the model, not the decision.
-        // Short labels — the popover already packs four metrics per candidate row; the
-        // full meaning is still one hover away via `tip`, so shortening the bold label
-        // costs nothing but width.
+        // the chosen model routinely scores below a candidate it outranks. The reason line under
+        // each row is the real explanation; these numbers describe the model, not the decision.
         metric('Score', e.score.toFixed(2), 'Catalog strength for this turn. It does NOT decide the winner — order is: the model you pinned, then this task kind\u2019s preferred model, then the strongest remaining one. The line below each model says which rule applied.'),
         metric('Cap', e.capability.toFixed(2), 'Capability — how well this model fits the task by catalog: intelligence, speed, tool/vision support, context window. Static: it does not change with latency or health.'),
         metric('Run', '×' + e.runtime.toFixed(2), 'Runtime — live health multiplier learned from real requests: success rate, latency vs the model’s own baseline, rate-limit/key availability, and provider health. ~1.0 = healthy, lower = currently degraded.'),
@@ -1127,14 +1119,9 @@ import { handleToolStatus } from './handlers/toolStatus';
       flow.appendChild(reasoningBlock);
     }
 
-    // Tool cards and text segments interleaved in recorded step order.
-    // Each step is either a tool card or (for reasoning-named steps) a think-block.
-    // Every groupable call (readFile/grep/glob/listDir/searchWorkspace) renders as the flat
-    // glyph+verb+targets row — buildToolGroupRow / docs/UI_POLISH_TOOL_REASONING_2026-09-02.md
-    // item 1 — even a run of exactly one: the design artifact's plain "✓ Read x.tsx · 0.1s"
-    // line has no bordered-card variant for these tool types at all, so a lone read must not
-    // fall back to the boxed .tm-tool-card treatment just because it never got a sibling to
-    // group with. Only genuinely different tools (edit, terminal, ...) use the card.
+    // Tool cards and text segments interleaved in recorded step order. Every groupable call
+    // (readFile/grep/glob/listDir) renders as the flat glyph+verb+targets row — even a run of
+    // one; only edit/terminal-type tools use the bordered card.
     let pendingGroup: { name: string; items: typeof steps } | null = null;
     const flushGroup = () => {
       if (!pendingGroup) return;
@@ -1253,16 +1240,9 @@ import { handleToolStatus } from './handlers/toolStatus';
   }
 
   // ---------- live "agent is working" status line ----------
-  // Keep the last two segments of a path so absolute workspace paths stay tidy.
-  // Present-tense "what the agent is doing right now" for the rolling status label.
-  // (The tool CARDS in the feed use the past-tense toolLabel() — "Analyzed/Searched…".
-  //  This is the live verb shown beside the spinner, Claude-Code-style.)
-  // Whimsical rolling verbs for the thinking phase (Claude-Code-style): while the
-  // agent is "working" but no concrete tool verb or streaming response applies, the
-  // spinner cycles through these so the status feels alive instead of a static word.
-  // Whimsical rolling verbs for the thinking phase (Claude-Code-style). Stored as
-  // lowercase bases and capitalized on display so the list is easy to scan/edit.
-  // Mix of "real" thinking words and silly ones to keep it playful.
+  // Rolling verbs for the thinking phase (Claude-Code-style): while no concrete tool verb or
+  // streaming response applies, the spinner cycles through these. Lowercase; capitalized on
+  // display.
   const THINKING_VERBS = [
     'cogitating', 'pondering', 'mulling', 'ruminating', 'deliberating', 'meditating',
     'cerebrating', 'contemplating', 'reflecting',
@@ -1292,14 +1272,9 @@ import { handleToolStatus } from './handlers/toolStatus';
     while (base === prev && guard++ < 8) base = THINKING_VERBS[Math.floor(Math.random() * THINKING_VERBS.length)];
     return base.charAt(0).toUpperCase() + base.slice(1) + '…';
   }
-  // Type a verb out one character at a time with a trailing cursor, so the live label
-  // reads like the assistant is *writing* the word right now. Cancels any in-flight type
-  // on the same target first. Holds the full word (cursor still blinking via CSS) once done.
-  // Takes the Target object directly (not a requestId to look up) — its only two callers
-  // (setStatusLabel, and startStatusTimer's own `update` tick) already have `t` in hand, and a
-  // fresh `targets.get(requestId)` lookup here would read whatever pane's Map the module-level
-  // `targets` binding happens to point at when a background pane's setInterval tick fires,
-  // which drifts to a DIFFERENT session's map as soon as any other message gets processed.
+  // Type a verb out one character at a time with a trailing cursor. Takes the Target object,
+  // not a requestId: a `targets.get()` lookup from a background pane's interval tick reads
+  // whichever session's map the module-level binding points at right then.
   function typeVerb(t, fullVerb) {
     if (!t || !t.statusLabel) return;
     if (t._typeTimer) { clearInterval(t._typeTimer); t._typeTimer = null; }
@@ -1529,19 +1504,9 @@ import { handleToolStatus } from './handlers/toolStatus';
   });
   input.addEventListener('input', () => { autoGrow(); updateAutocomplete(); updateSendEnabled(); updateInputHints(); });
   // ---------- hint row + prompt lint ----------
-  // The one micro-line under the textarea has two states:
-  //   empty draft → the default key hints (/ commands · @ files · Shift+Enter)
-  //   typed draft → a lint nudge, but only while the draft names nothing the agent can locate
-  //
-  // Everything below is pure string work on what the composer already holds (draft text,
-  // @ mentions, / commands, attachment chips) — no model call and no host round-trip, so it
-  // is free to run on every keystroke.
-  //
-  // Why a nudge and not a rewrite: weak/free models fail on missing context, not on wording.
-  // A rewriter would see exactly the text we see here, so it cannot supply the file the draft
-  // is missing — it invents requirements instead. Only the user can name the target.
-  // The wording stays about THIS message ("name a file"), never "the agent has no context":
-  // the host separately auto-enriches the turn with the active editor.
+  // The micro-line under the textarea: key hints on an empty draft, or a nudge while the
+  // draft names nothing the agent can locate. Pure string work, runs on every keystroke. A
+  // nudge, not a rewrite: only the user can name the missing file.
   const inputHints = $('#input-hints');
   const hintDefaults = $('#hint-defaults');
   const hintLint = $('#hint-lint');
@@ -1781,11 +1746,8 @@ import { handleToolStatus } from './handlers/toolStatus';
   }
 
   // ---- shared image downscale (all ingest paths funnel through here) ----
-  // The extension host has no canvas/createImageBitmap, so workspace-picked and
-  // host-forwarded images arrive full-resolution. Downscale them here — the one
-  // place with a canvas — so the small version is what crosses every downstream
-  // hop (prompt assembly, router proxy, provider request, per-turn re-injection). Base64
-  // isn't tokenized, so this is a latency/byte win, not a token-cost one.
+  // The extension host has no canvas, so images arrive full-resolution; downscale here so
+  // the small version crosses every downstream hop. A latency/byte win, not a token one.
   function dataUrlToBlob(dataUrl) {
     const comma = dataUrl.indexOf(',');
     const head = dataUrl.slice(0, comma);
@@ -2626,16 +2588,8 @@ import { handleToolStatus } from './handlers/toolStatus';
     const settings = state.settings || {};
     const settingsMeta = state.settingsMeta || [];
 
-    // Group first, render second — a single linear pass that opens a new header whenever
-    // `key.split('.')[0]` changes breaks two ways: a dot-less key (requestTimeoutMs, hedging,
-    // hedgeDelayMs, rateLimitCooldownMs) IS its own section name, so each got its own ugly
-    // one-row "Hedging"/"HedgeDelayMs" header; and once those ran, the next dotted key (e.g.
-    // agent.toolCompaction) no longer matched `lastSection`, so a SECOND "Agent" header
-    // appeared further down, splitting Agent settings into two non-adjacent groups (live
-    // repro: settingsMeta order interleaves dot-less keys between two runs of `agent.*` keys).
-    // Grouping into a Map first guarantees each section header renders exactly once,
-    // regardless of how the source array orders its entries, and dot-less keys share one
-    // "Advanced" bucket instead of each minting their own section.
+    // Group into a Map first so each section header renders exactly once regardless of the
+    // source order, and dot-less keys share one "Advanced" bucket.
     const groups = new Map();
     for (const meta of settingsMeta) {
       const section = meta.key.includes('.') ? meta.key.split('.')[0] : 'advanced';
@@ -4297,18 +4251,10 @@ import { handleToolStatus } from './handlers/toolStatus';
         addUserBubble(msg.text, msg.requestId);
         break;
       case 'switchSession': {
-        // Pure visibility toggle in the common case — no DOM wipe. A pane that already exists
-        // (this session has been streaming in the background) is just shown as-is: its tool
-        // cards, live text-so-far, and status timer are already there. Only a BRAND NEW pane
-        // needs the persisted transcript replayed into it so it isn't blank.
-        //
-        // Exception: the host also pushes switchSession to the CURRENTLY viewed session (never
-        // requested by the webview itself, see the `sid !== viewedSessionId` guards on send)
-        // to force a clean rebuild after truncating that session's transcript in place — e.g.
-        // "Revert to here". That case must wipe the pane before replaying, or the stale
-        // (now-removed) messages keep showing. Plain Stop/cancel does NOT truncate the transcript
-        // and no longer sends switchSession at all — the abandoned turn's live content stays
-        // exactly as rendered (see stopRun in chatViewProvider.ts).
+        // A pane that already exists (streaming in the background) is just shown — no DOM
+        // wipe. Only a brand-new pane replays the persisted transcript. Exception: the host
+        // pushes switchSession to the CURRENTLY viewed session after truncating its transcript
+        // ("Revert to here"), and that case must wipe before replaying.
         const rebuildInPlace = msg.sessionId === viewedSessionId;
         saveComposer(viewedSessionId); // stash the leaving session's draft/settings
         // First session of the run adopts anything typed before it existed (PENDING_SESSION),
@@ -4739,12 +4685,9 @@ import { handleToolStatus } from './handlers/toolStatus';
           t.currentText.innerHTML = '';
           t.currentText.appendChild(renderMarkdown(t.currentText._buf));
         }
-        // Reconcile draft → canonical reply. The live stream showed every text-delta in ephemeral
-        // `.flow-text` segments — INCLUDING speculative narration the model emitted alongside tool
-        // calls ("Let me search…"). On settle, discard ALL draft text segments and render the
-        // single canonical reply (msg.text — only final-phase text, per the loop's state machine)
-        // as the final bubble. Tool cards, reasoning blocks, and the plan/queue/checkpoint widgets
-        // are not `.flow-text`, so they remain. For non-streamed turns this just appends.
+        // Reconcile draft → canonical reply: discard the ephemeral `.flow-text` segments (which
+        // included narration streamed alongside tool calls) and render msg.text as the final
+        // bubble. Tool cards, reasoning blocks and widgets are not `.flow-text`, so they remain.
         t.flow.querySelectorAll('.flow-text').forEach((el) => el.remove());
         t.currentText = null;
         {
@@ -4941,14 +4884,9 @@ import { handleToolStatus } from './handlers/toolStatus';
       case 'error': {
         const t = msg.requestId ? ensureTarget(msg.requestId) : null;
         if (msg.requestId) stopStatusTimer(msg.requestId, true);
-        // Append into the flow (same layer as response text) so it appears directly
-        // after the work summary — not nested inside the outer t.body bubble. We must
-        // pick a target that is STILL CONNECTED to the document: if the error fires
-        // before any assistant text has streamed (mid-stream provider error), the flow
-        // can be empty and a previous handler may have detached it; the orphan then
-        // swallows the error notice and the user only sees the message after reload,
-        // when the transcript re-renders from persisted state. Fall back to t.body
-        // (the outer bubble) when the flow isn't connected.
+        // Append into the flow so it lands after the work summary — but only if the flow is
+        // still CONNECTED (a mid-stream error can fire before any text, with the flow detached);
+        // otherwise the notice vanished until reload. Fall back to t.body.
         const dest = t ? (t.flow && t.flow.isConnected ? t.flow : t.body) : (currentTurn || activeThreadEl);
         // Replace any prior error notice for this turn so a failed retry (e.g. an
         // escalated takeover that also errors) can't stack two identical red marks.
@@ -5540,16 +5478,9 @@ import { handleToolStatus } from './handlers/toolStatus';
     bar.classList.remove('hidden');
   }
 
-  /** Footer usage summary as quiet stat chips (tokens / requests / saved / context).
-   *
-   *  Every chip carries a WORD, not just a number: a bare row of "73.5M · 4.8K · $7.75 · 13%"
-   *  is unreadable without hovering each one, and an icon alone can't disambiguate them (a
-   *  checkmark beside a dollar amount reads as "paid", when it means "saved"). The label is the
-   *  primary affordance and the tooltip stays as the long form. In a panel too narrow to fit the
-   *  labels, a container query drops them and the chips fall back to today's compact numbers.
-   *
-   *  Context gets a meter rather than a bare percentage — it is the only live, actionable value
-   *  here (the others are lifetime totals), and a filling bar communicates "how full" instantly. */
+  /** Footer usage summary as stat chips (tokens / requests / saved / context). Every chip
+   *  carries a word, not just a number; a container query drops the labels in a narrow panel.
+   *  Context gets a meter — it is the only live, actionable value here. */
   function updateFooter(totals) {
     if (!totals) return;
     const chips = [];

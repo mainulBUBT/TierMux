@@ -290,8 +290,8 @@ export class AnthropicMessagesProvider extends BaseProvider {
    *
    * Tool-call arguments stream as `input_json_delta` fragments (`partial_json`) keyed by block
    * index — emitted here as OpenAI-style incremental `tool_calls[].function.arguments` deltas
-   * (first fragment carries `id`+`name`, later ones omit them), which is exactly the shape
-   * router.ts's own accumulator (see the `toolCallsByIndex` loop) already concatenates.
+   * (first fragment carries `id`+`name`, later ones omit them) — the shape routerProvider's
+   * accumulator already concatenates.
    */
   async *streamChatCompletion(apiKey: string, messages: ChatMessage[], modelId: string, options?: CompletionOptions): AsyncGenerator<ChatCompletionChunk> {
     const res = await this.fetchWithTimeout(`${this.resolveBaseUrl(options)}/messages`, {

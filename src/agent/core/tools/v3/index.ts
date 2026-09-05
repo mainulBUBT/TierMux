@@ -1,10 +1,6 @@
-// v3 toolset (plan step 7) — the production tool registry. Each tool is tool()-form with a
-// Zod schema, exception-safe execute (expected failures return { error }), and NO embedded
-// approval — the streamText `toolApproval` policy decides IF a mutating tool runs.
-//
-// Kept tool inventory (v3.0): readFile, editFile, writeFile, deleteFile, listDir, glob, grep,
-// runCommand, plus every connected MCP server's tools in agent mode (wired 2026-09-05 —
-// the bridge had shipped uncalled). The legacy fleet/planRunner tools defer to v3.1.
+// The tool registry. Each tool is tool()-form with a Zod schema, an exception-safe execute
+// (expected failures return { error }), and NO embedded approval — the streamText
+// `toolApproval` policy (src/permissions/policy.ts) decides IF a mutating tool runs.
 
 export { createReadFileTool } from './readFile';
 export { createEditFileTool } from './editFile';
@@ -56,13 +52,8 @@ export interface ToolsetBindings {
    *  ('' when dismissed). Unset (e2e/sub-agent contexts) → the tool degrades to `{ error }`. */
   onAskUser?: (question: string, options?: string[]) => Promise<string>;
   /** Checkpoint baseline — fires INSIDE a write tool, after the pre-write content is read but
-   *  BEFORE the mutation. `before` is null when the file doesn't exist yet (a create). Host
-   *  wires this to CheckpointManager.record(). This timing is load-bearing: the previous
-   *  capture point (chatViewProvider's onTool, fired from the engine's onStepEnd) ran AFTER
-   *  the tool had already written, so every "before" snapshot stored the post-edit content and
-   *  checkpoint restore rewrote files with the very content it was supposed to undo —
-   *  "Restored N files" with zero visible change (live repro 2026-08-28: "undo not
-   *  restoreing files"). */
+   *  BEFORE the mutation (`before` null = create). Capturing it from onStepEnd instead ran
+   *  after the write, so Undo restored post-edit content (2026-08-28). */
   onBeforeWrite?: (uri: import('vscode').Uri, before: string | null) => void;
   /** Plan-mode boundary — fires when the model calls `exitPlanMode` with its finished plan.
    *  The engine captures it into AgentResult.plan and stops the turn; the host renders the
@@ -70,19 +61,10 @@ export interface ToolsetBindings {
   onPlanProposed?: (plan: ProposedPlan) => void;
 }
 
-/** Build the mode-filtered v3 ToolSet.
- *  `plan` (§12): read/search offered freely; `runCommand` IS offered but the policy gates
- *  every call through an ask; mutating file tools are absent AND policy-denied. `exitPlanMode`
- *  is plan mode's ONLY exit — the model calls it to hand the finished plan to the user, which
- *  also ends the turn (engine.ts stopWhen).
- *  `ask`: read/search plus READ-ONLY shell — runCommand is offered but the policy auto-runs
- *  only confidently read-only commands (ls, git log), denies destructive ones outright, and
- *  asks for the rest; the three file mutators are absent AND policy-denied.
- *  `agent`: the full set. */
-// Return type pinned to ToolSet on purpose. The three branches no longer share a key
-// hierarchy (exitPlanMode exists ONLY in plan mode), so the inferred union stopped satisfying
-// ToolSet's index signature at the engine's cast site — nothing downstream uses the per-tool
-// inference anyway; the engine passes this straight to streamText.
+/** Build the mode-filtered ToolSet. `plan`: read/search + shell (policy asks) + exitPlanMode,
+ *  the ONLY exit; `ask`: read/search + read-only shell; `agent`: everything. File mutators are
+ *  absent AND policy-denied outside agent mode. Return type pinned to ToolSet because the
+ *  branches no longer share a key set. */
 export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): ToolSet {
   const readFile = createReadFileTool();
   const listDir = createListDirTool();
@@ -112,12 +94,8 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
       exitPlanMode: createExitPlanModeTool(bindings.onPlanProposed),
     };
   }
-  // Ask mode is read-only Q&A: file mutation is withheld, shell is offered READ-ONLY.
-  // The policy auto-runs confidently read-only commands (ls, git log/status/diff),
-  // hard-denies destructive ones (rm -rf, push --force), and asks for the ambiguous
-  // rest — so "what did the last commit do?" is answered from real `git log` output,
-  // never from memory, while nothing can be changed. delegateTask stays: the sub-agent
-  // is read-only research, no mutation possible.
+  // Ask mode: read-only Q&A. Shell is offered read-only (the policy auto-runs `git log`,
+  // denies `rm -rf`, asks for the rest) so history questions are answered from real output.
   if (mode === 'ask') {
     return {
       readFile,
@@ -135,21 +113,9 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
   }
 
   return {
-    // MCP tools of every connected server (2026-09-05). `createMcpTools` existed and was called
-    // by NOTHING for the whole v3 era: servers connected, "Reconnect MCP Servers" worked,
-    // `tiermux.mcpServers` was documented, and the model was never shown one of their tools.
-    //
-    // AGENT MODE ONLY, deliberately. An MCP tool's capability is unknowable from here — it may
-    // write anything — and the two read-only modes cannot gate what they cannot classify:
-    // plan mode's policy denies every non-READ_ONLY tool (offering one that is always denied is
-    // worse than not offering it), and ask mode would fall through to the normal chain and
-    // AUTO-APPROVE it under full-auto, quietly breaking the read-only promise.
-    //
-    // Spread FIRST so a built-in always wins a name clash. Names are `mcp__<server>__<tool>`
-    // (mcpManager's PREFIX), so a clash should be impossible — this is belt-and-braces, not a
-    // known case. Nothing else is special-cased: an MCP tool is not in READ_ONLY_TOOLS, so the
-    // normal approval chain asks before running it, which is the right default for a tool whose
-    // code lives outside this repo.
+    // MCP tools of every connected server — AGENT MODE ONLY: an MCP tool may write anything,
+    // and the read-only modes cannot gate what they cannot classify. Spread first so a built-in
+    // wins a name clash. Not in READ_ONLY_TOOLS, so the policy asks before running one.
     ...createMcpTools(getMcpManager()),
     readFile,
     listDir,
