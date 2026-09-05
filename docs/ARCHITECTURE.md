@@ -19,8 +19,8 @@ used to spawn and route through an HTTP proxy — was fully removed 2026-07;
 see "History" below.)
 
 ```
-chatViewProvider.ts → agent.ts → core/loop.ts (streamText) →
-  core/routerProvider.ts → TierMux Router → 30 Built-in Providers (+ custom)
+chatViewProvider.ts → agent.ts → core/engine.ts (streamText) →
+  core/routerProvider.ts → router/picker.ts → 30 Built-in Providers (+ custom)
 ```
 
 ---
@@ -48,22 +48,23 @@ chatViewProvider.ts → agent.ts → core/loop.ts (streamText) →
 │                                   │ above this line)                │
 │  ┌────────────────────────────────▼─────────────────────────────┐  │
 │  │  agent/core/  — the AI-SDK-based agent engine                │  │
-│  │  loop.ts          runTurn(): builds the streamText() call     │  │
-│  │  routerProvider.ts  Router → LanguageModelV4 protocol adapter │  │
-│  │  policies/        the toolApproval permission policy          │  │
-│  │  middleware/       telemetry (wrapLanguageModel)               │  │
-│  │  tools/**          filesystem/shell/workspace/ui/mcp factories│  │
+│  │  engine.ts        runTurn(): builds the streamText() call     │  │
+│  │  routerProvider.ts  picker → LanguageModelV4 protocol adapter │  │
+│  │  routeOnce.ts     one-shot routing for utility callers        │  │
+│  │  compact.ts       prepareStep pruning + tool-output aging     │  │
+│  │  repair.ts        weak-model tool-call dialect rescue         │  │
+│  │  subagent.ts      the read-only delegateTask worker           │  │
+│  │  tools/v3/**      file/search/shell/ui tool factories         │  │
 │  └────────────────────────────────┬─────────────────────────────┘  │
 │                                   │ AI SDK types stop here          │
 │  ┌────────────────────────────────▼─────────────────────────────┐  │
-│  │  TierMux Router (src/router/router.ts) — AI-SDK-agnostic     │  │
-│  │  - multi-provider failover with key rotation                 │  │
+│  │  Model picker (src/router/picker.ts) — AI-SDK-agnostic       │  │
+│  │  - task table → intelligence-rank tail, never a dead end     │  │
+│  │  - multi-provider failover with per-key rotation             │  │
 │  │  - per-platform + per-key rate-limit cooldown                │  │
-│  │  - 1-minute preflight health cache + 1-token ping            │  │
 │  │  - tool-incompatible + 404-deprecated quarantine             │  │
-│  │  - quality-based escalation (exclude list, intel floor)      │  │
-│  │  - complexity-aware latency preference                       │  │
-│  │  - Smart Auto scoring (src/router/scoring.ts)                │  │
+│  │  - round-robin platform diversity across the failover scan   │  │
+│  │  - proactive rate-limit skip (rateTracker.ts)                │  │
 │  └────────────────────────┬─────────────────────────────────────┘  │
 │                           │                                        │
 │  ┌────────────────────────▼─────────────────────────────────────┐  │
@@ -87,25 +88,26 @@ changes its APIs, only `agent/core/` changes.
 
 ## Shipped components
 
-### TierMux Router — `src/router/router.ts` (the heart)
+### Model picker — `src/router/picker.ts` (the heart)
 
 - **Candidates pipeline:** `enabledByPriority()` → pin if specified → drop
   tool-incompatible / quarantined / deprecated → drop `exclude` set
-  (escalation) → `maxIntelligenceRank` floor → `orderForTask()` reorder
-  (user 👍/👎 score is primary) → prefer non-cooled platforms.
-- **Per-candidate loop:** `MAX_RETRIES = 3` → preflight ping (1-min health
-  cache) → proactive rate-limit check via `RateTracker` → `fitMessages` to
-  context window → streaming or buffered completion.
+  (escalation) → drop models a `RateTracker` says are already at their limit →
+  task-table reorder, then the enabled tail by intelligence rank → prefer
+  non-cooled platforms.
+- **Failover walks platforms round-robin**, not the flat chain: round 0 takes
+  every usable platform's best model, later rounds its second and third,
+  bounded at 12 candidates and a 25 s connect timeout for the whole scan. The
+  starting platform rotates deterministically between turns, so one provider is
+  not always first to absorb a burst.
 - **Failure handling:** classify error → 429 cool the key, rotate the pool
-  (or cool the platform); 401/403 → invalid; bad request + tools → 10-min
-  tool-incompatible quarantine; 404 → 24-h deprecated quarantine.
-- **Streaming:** `onChunk` deltas flow through; tool-call turns are buffered
-  and emitted as one chunk.
-- **On `AllModelsFailedError`:** throws with a detailed message naming which
-  providers failed and why (key missing, rate-limited, deprecated, rejected
-  key, etc.) — `chatViewProvider.ts`'s catch handler (`maybeRecommendModels`)
-  turns this into a concrete "enable these free models" prompt instead of a
-  bare error.
+  (or cool the platform); 401/403 → invalid; bad request + tools → quarantine
+  the model as tool-incompatible; 404 → deprecated. Per-model cooldown is
+  exponential from 30 s, capped at 2 min, reset on success, in-memory only.
+- **No learned scoring.** Wilson intervals, EWMA latency tracking, preflight
+  pings, hedging and the persisted metrics store lived in a *second* router
+  (`src/router/router.ts`) that was retired 2026-09-05 — see `docs/ROUTING.md` §B.
+  `routeOnce.ts` now serves the utility callers that used it.
 
 ### Provider adapters — `src/providers/*.ts`
 
@@ -118,73 +120,59 @@ migration — the Router calls them exactly as before.
 
 ### Agent core — `src/agent/core/`
 
-The in-process agent engine, built directly on the AI SDK. Nothing above
-this layer (`agent.ts`, `chatViewProvider.ts`, the webview) ever imports an
-AI SDK type — see the Layering boundary note above.
+The in-process agent engine, built directly on the AI SDK. Nothing above this
+layer (`agent.ts`, `chatViewProvider.ts`, the webview) ever imports an AI SDK
+type — see the Layering boundary note above.
 
-- **`loop.ts`** — `runTurn(router, opts)`, the one place `streamText()` is
-  called. Deliberately a thin, direct function — not wrapped in a
-  `TierMuxAgentRunner`/`ExecutionManager`/`LoopManager` class. Consumes
-  `result.fullStream` directly (text-delta/reasoning-delta/tool-call/
-  tool-result/tool-error parts), mapping each to the existing `AgentOpts`
-  callbacks (`onChunk`, `onReasoning`, `onTool`, …). Also forwards two SDK
-  lifecycle callbacks (`onStart`/`onStepStart`) to `opts.onStep` as a thin
-  projection — no new phase-tracking state of its own.
-- **`routerProvider.ts`** — `createRouterProvider(router, opts)`: a *pure*
-  protocol adapter implementing `LanguageModelV4` (`doGenerate`/`doStream`)
-  by translating to/from `Router.route()`. No routing decisions, no scoring,
-  no failover logic here — that's entirely `Router.route()`'s job. Also
-  forwards `onFailover`/`onKeyRotated`/`onSelectionRationale` (Smart Auto's
-  "why this model?" rationale) straight through from `RouteOptions`.
-- **`policies/permission.ts`** — `createToolApproval(opts)`, passed as
-  `streamText`'s native `toolApproval` option (the AI SDK's own tool-
-  execution gate — a denied verdict means the tool's `execute()` never runs
-  at all, not just that its effect is discarded). Mode gate, live read-only
-  command classification, dangerous-pattern override, then the existing
-  `onPermissionAsk` UI callback.
-- **`middleware/telemetry.ts`** — `createTelemetryMiddleware({profiler,
-  traceId})`, profiler instrumentation via `wrapLanguageModel()` instead of
-  manual timer calls.
-- **`watchdog.ts`** — `TurnWatchdog`, the engine-side activity tracker that
-  finally fires the `onWatchdogWarning`/`onWatchdogActionable`/
-  `onWatchdogDismissed` callbacks (the UI side existed since the SDK port;
-  nothing ever triggered it). Stamps every protocol event as activity; a turn
-  quiet past ~45s warns, past ~90s is actionable, any event dismisses.
-- **`planRunner.ts`** — `runPlan(router, opts, state, cfg)`, the first-class
-  plan executor: approved structured steps run one at a time through
-  `runStepTask`, so every step gets its own rounds/continuations and
-  verify-acceptance. A verify-failed step gets ONE same-model retry (identical
-  routing constraints — verification failure never switches models), then a
-  read-only planner repair may rewrite the remaining steps. State persists on
-  the session (`StoredSession.planRun`) so a window reload can resume from
-  `currentStep`. `chatViewProvider.executePlanRun` owns the UI lifecycle.
-- **`stepEngine.ts`** — `decideStepRound` (the shared continue/stop brain
-  behind auto-continue, headless runs, and the plan runner) and `runStepTask`
-  (the headless multi-round driver).
-- **`tools/**`** — one `create*Tool()` factory per tool
-  (`filesystem/{read,write,edit,delete}`, `shell/bash`, `workspace/
-  {list,glob,grep}`, `ui/{todo,question}`, `mcp/mcp`), assembled by
-  `tools/index.ts`'s `createToolSet(opts, mcp)` into the mode's actual tool
-  set (see "Three modes" below). MCP tools are registered as ordinary
-  `tool()` objects — nothing in the loop/tool-set builder can tell an
-  MCP-backed tool apart from a built-in one.
-  Tools capture session data (session id, `onTodos`, `onAskUser`) via
-  closures rather than the AI SDK's `runtimeContext`/`ToolExecutionOptions.
-  context` — that mechanism was verified empirically **not** to propagate
-  as documented in `ai@7.0.34` (see the comment in `tools/index.ts` and
-  `docs/sdk-upgrade.md`, which also has the full upgrade checklist). What the
-  codebase adopts from the SDK at all is governed by `docs/sdk-adoption-policy.md`.
-- **`tools/delegate.ts`** — the general-purpose sub-agent (Claude Code's
-  Task-tool pattern): `research` mode runs a read-only investigation on the
-  utility model (bigger than `explore`); `code` mode runs a single fleet-style
-  worker in a disposable git worktree, commits, and merges into the user's
-  branch. Research passes the approval policy like a read tool; code is gated
-  exactly like the mutating tools. Only the sub-agent's report returns, so
-  the main context stays small.
+**Read `docs/SIMPLE_CORE_RESET_2026-08-24.md` before changing anything here.**
+The loop is a mechanical execution engine: it runs tools and models, preserves
+the one `CoreMessage[]` transcript, rotates providers, and recovers from
+provider failures with exactly ONE mechanical continuation. It never judges
+answer quality, never detects "narration", never retries on weak-looking output.
+
+- **`engine.ts`** — `runTurn(opts)`, the one place `streamText()` is called.
+  A thin direct function, not wrapped in a runner/manager class. Consumes
+  `result.fullStream` and maps each part to the existing `AgentOpts` callbacks.
+  Owns the turn's `stopWhen` set: the step cap, plan acceptance, and a
+  no-progress guard that stops a turn repeating an identical failing tool call.
+  A turn stopped by any of those returns a `stopReason` and `paused: true` so
+  the UI can offer Continue with the full transcript intact.
+- **`routerProvider.ts`** — a *pure* protocol adapter implementing
+  `LanguageModelV4` (`doGenerate`/`doStream`) over the picker. No routing
+  decisions here. Forwards `onFailover`/`onKeyRotated`/`onSelectionRationale`.
+- **`routeOnce.ts`** — one non-agentic call for the utility callers (titles,
+  commit messages, completions, compaction, plan structuring). Failover, key
+  rotation and account-level platform drop are the default, not options.
+- **`compact.ts`** — two independent context controls: `compactIfNeeded`, a
+  `prepareStep` override that prunes the transcript in two tiers once the model's
+  own window is 80% full, and `ageToolOutputs`, which runs every step and elides
+  earlier bulky tool results into stubs that name the tool and say how to re-run it.
+- **`repair.ts`** — rescues weak models that emit a tool call as text
+  (`<function=readFile>{…}</function>`) instead of a native call.
+- **`subagent.ts`** — the read-only worker behind `delegateTask`. Only its
+  report returns, so the main context stays small.
+- **`../../permissions/policy.ts`** — the verdict function passed as
+  `streamText`'s native `toolApproval` option (a denied verdict means the tool's
+  `execute()` never runs, not that its effect is discarded). Chain:
+  `alwaysDeny → alwaysAllow → READ_ONLY_TOOLS → mode → ask`.
+- **`tools/v3/**`** — one `create*Tool()` factory per tool, assembled by
+  `tools/v3/index.ts`'s `buildV3ToolSet(mode, bindings)` into the mode's actual
+  set (see "Three modes"). Each is `tool()`-form with a Zod schema, an
+  exception-safe `execute` (expected failures return `{ error }`), and NO
+  embedded approval — the policy decides IF a mutating tool runs.
+  `tools/network/` adds the keyless `webSearch`/`fetchUrl` pair, offered in
+  every mode. `tools/mcp/mcp.ts` registers every connected MCP server's tools as
+  ordinary `tool()` objects in **agent mode only** — nothing in the loop or the
+  tool-set builder can tell an MCP-backed tool from a built-in one.
+  Tools capture session data via closures rather than the AI SDK's
+  `runtimeContext`/`ToolExecutionOptions.context` — that mechanism was verified
+  empirically **not** to propagate as documented (see `docs/sdk-upgrade.md`).
+  What the codebase adopts from the SDK at all is governed by
+  `docs/sdk-adoption-policy.md`.
 
 `agent.ts` is the stable contract above `core/`: `AgentOpts`/`AgentResult`/
 `ToolEvent`, and `runAgentStream`/`runPlanStream`/`runAskStream` (each just
-sets `mode` and dynamically imports `core/loop.ts` — dynamic so `agent.ts`
+sets `mode` and dynamically imports `core/engine.ts` — dynamic so `agent.ts`
 itself stays `vscode`-free and independently testable).
 
 ### Settings + secrets — `src/config/`
@@ -205,7 +193,7 @@ itself stays `vscode`-free and independently testable).
 2. webview postMessage → chatViewProvider.handleSend(m).
 3. handleSend builds AgentOpts and dispatches to
    runAgentStream | runPlanStream | runAskStream (agent.ts).
-4. agent.ts dynamically imports core/loop.ts and calls runTurn(router, opts).
+4. agent.ts dynamically imports core/engine.ts and calls runTurn(opts).
 5. runTurn() calls streamText({ model: wrapLanguageModel(createRouterProvider(router, …)),
    tools: createToolSet(opts, mcp), toolApproval: createToolApproval(opts), … }).
 6. Each doGenerate/doStream call inside the provider adapter calls
@@ -315,7 +303,7 @@ Three tables built after real usage patterns emerge:
 | `benchmark_scores` | Offline eval scores | Bench command |
 
 The current in-memory state (`Router.lastGood`, `health` map, `rateTracker`,
-`latencyTracker`) is the Phase 1 stand-in.
+`rateTracker`) is the Phase 1 stand-in.
 
 ### History — three agent execution eras
 
@@ -325,7 +313,7 @@ The current in-memory state (`Router.lastGood`, `health` map, `rateTracker`,
 2. **v7** — that loop was removed in favor of **OpenCode**: a separate,
    external-process agent CLI (bundled/auto-downloaded binary), spawned
    unmodified and routed to TierMux's own free-tier providers via an HTTP
-   bridge (`src/backend/routerProxy.ts`) that exposed the Router as an
+   bridge (since removed) that exposed the Router as an
    OpenAI-compatible `/v1` endpoint. This traded owning the agent loop for
    OpenCode's session/tool management "for free."
 3. **v8 (current)** — OpenCode was fully removed (2026-07). The bet in v7

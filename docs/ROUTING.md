@@ -54,21 +54,20 @@ whole chain and dies in four seconds while two dozen keyed providers sit untried
 is bounded by a 25 s connect timeout per candidate — a candidate already streaming is never
 interrupted, TierMux just declines to open another one once the chain has burned that long.
 
-### B. Utility calls — the scoring Router (`src/router/router.ts`)
+### B. Utility calls — `routeOnce` (`src/agent/core/routeOnce.ts`)
 
-Chat titles, commit messages, inline completions, inline chat, conversation compaction,
-plan structuring and grounding verification go through the older learned-metrics Router,
-which additionally does:
+Chat titles, commit messages, inline completions, inline chat, conversation compaction, plan
+structuring and grounding verification are one-shot, non-agentic calls. They go through
+`routeOnce`, which is the picker's chain executed once: failover across candidates, per-key
+rotation, and dropping a platform for the rest of the call when it answers at the account level
+(401/402/403) are all the default — there are no options to turn them off.
 
-- confidence-weighted **Wilson lower-bound** success scoring,
-- **dual-window EWMA** latency tracking with drift detection,
-- cached **preflight** health pings,
-- **delayed hedging** (start the next candidate if the primary emits nothing within
-  `tiermux.hedgeDelayMs`, keep whichever answers first, cancel the loser),
-- rate-limit cooldowns honouring `Retry-After`,
-- time-boxed **quarantine** for models that are tool-incompatible or deprecated (404).
-
-Toggle its learned scoring with `tiermux.agent.smartScoring` (fixed-priority order when off).
+> Until 2026-09-05 this path was a **second, separate router** (`src/router/router.ts`) carrying
+> learned-metrics machinery the picker never had: Wilson lower-bound success scoring, dual-window
+> EWMA latency tracking with drift detection, cached preflight health pings, delayed hedging, and
+> a persisted metrics store. It was retired whole — two routers meant two failover behaviours, two
+> cooldown stores and two sets of bugs for one product. `tiermux.agent.smartScoring` and
+> `tiermux.hedgeDelayMs`, which configured it, are gone with it.
 
 ### Token budgeting
 
@@ -118,11 +117,11 @@ Why groq::openai/gpt-oss-120b?
 
 Hovering any number shows that same explanation inline.
 
-> **Reading the numbers honestly:** on chat/agent turns (the v3 picker) **Runtime is a
-> neutral 1.0 and Confidence is 0** — that path keeps no learned health multiplier, so
-> ordering comes from the task table and intelligence rank, and the `reason` line is the
-> real signal. Learned Runtime/Confidence values are produced by the scoring Router on the
-> utility path.
+> **Reading the numbers honestly:** **Runtime is always a neutral 1.0 and Confidence always 0.**
+> Nothing keeps a learned health multiplier any more — the scoring Router that produced real
+> values for them was retired (see §B) — so ordering comes from the task table and intelligence
+> rank, and the `reason` line is the only real signal. The two columns are kept in the payload
+> (`src/router/picker.ts`) so the card's layout and the message contract stay stable.
 
 **The reason line** is where the actual answer lives:
 
@@ -156,13 +155,7 @@ All implemented natively — there is no external routing service in the path.
 | Exponential per-model cooldown (30 s → 2 min) | picker | stops hammering a model that just failed; resets on success |
 | Round-robin platform diversity in the failover scan | picker | one provider's twenty models can't consume every retry |
 | Per-key rotation with per-key cooldown | secret store | a dead/limited key rotates inside the provider before the platform is written off |
-| Wilson lower-bound success scoring | scoring Router | ranks reliability without letting a small lucky streak win — 3-for-3 doesn't outrank 194-for-200 |
-| Dual-window EWMA + drift detection | scoring Router | demotes suddenly slow models fast, restores them gradually |
-| Baseline-relative slow marking | scoring Router | “slow” is judged against each model's own history, not one fixed timeout |
-| Half-life decayed counters | metrics store | old behaviour fades; storage stays flat as the catalog grows to hundreds of models |
-| Margin-gated exploration + least-recently-served rotation | scoring Router | statistically-tied models take actual turns, so fresh models earn samples |
-| Delayed request hedging (TTFT race) | scoring Router | if the primary emits nothing in 2.5 s, race the next candidate and keep the winner |
-| Cached preflight health ping | scoring Router | a 1-token probe benches a dead model before a real turn pays for it |
+| Deterministic platform rotation | picker | successive turns start at different platforms, so one provider is not always the first to absorb a burst |
 | Time-boxed tool-incompatible / deprecated quarantine | secret store | models that advertise tools then reject them (or 404) self-heal after the window |
 | Conservative rate-limit floors for unknown quotas | rate tracker | a catalog limit of `0` means “unknown”, not “unlimited” — guessing low is the safe direction |
 | Per-model context fitting with reserved anchors | budget | the task and the conversation anchor can never be evicted by a fat tool result |

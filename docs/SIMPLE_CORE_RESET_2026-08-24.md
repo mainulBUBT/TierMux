@@ -101,8 +101,8 @@ detector, stop and re-read this file.
   small windows — before that, every model below a ~45k window overflowed BEFORE pruning fired
   (the "loses context mid-turn" repro). A user-pinned `tiermux.agent.pruneAtTokens` keeps its
   literal meaning. Below a 40k window the toolset itself is cut to the 10-tool essential set
-  (`tools/index.ts`, ~3.2k vs ~6.3k schema tokens — the small-context-agent pattern: Cline ~10
-  tools, aider none); `npm run test:e2e:toolset-budget` pins it.
+  (~3.2k vs ~6.3k schema tokens — the small-context-agent pattern: Cline ~10 tools, aider
+  none); `npm run test:e2e:tool-offer` pins it.
 - **SDK-native mechanics:** `stopWhen` `[isStepCount(50), askQuestionsStop]`, `toolApproval`
   (createToolApproval), `repairToolCall` (3-tier incl. `tryModelRepair`), tool circuit breaker
 - **UI contract:** `AgentResult` unchanged; `workReport` (ResultCard), `changedFiles`, todos,

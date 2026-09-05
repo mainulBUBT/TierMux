@@ -17,6 +17,10 @@ const LIST_MAX_CHARS = 10_000;
 const GLOB_MAX_RESULTS = 200;
 const GREP_MAX_OUTPUT = 20 * 1024;
 const GREP_TIMEOUT_MS = 15_000;
+/** Ceiling on `context` (2026-09-05). Each context line is re-sent on every remaining step of
+ *  the turn (see capOutput.ts), so an unbounded -C turns one grep into a whole-file read by
+ *  another name — which is the cost this option exists to avoid. */
+const MAX_CONTEXT_LINES = 10;
 
 export function createListDirTool() {
   return tool({
@@ -112,13 +116,23 @@ export function createGrepTool(runAbort?: AbortSignal) {
     description:
       'Search file contents in the workspace for a regex pattern (ripgrep-backed). Results are '
       + '`path:line:text` per match. ALWAYS narrow the scope: pass `glob` (e.g. "*.ts") or `path` '
-      + '(a subdirectory). Caps at 200 matches per file and ~20KB output.',
+      + '(a subdirectory). Use `filesOnly` when you only need WHICH files match, and `context` '
+      + 'when you need the surrounding lines — both avoid a follow-up readFile. '
+      + 'Caps at 200 matches per file and ~20KB output.',
     inputSchema: z.object({
       pattern: z.string().describe('Regex pattern to search for.'),
       path: z.string().optional().describe('Workspace-relative path to search within (defaults to the whole workspace).'),
       glob: z.string().optional().describe('Glob to restrict which files are searched, e.g. "*.ts".'),
+      context: z.number().int().min(0).max(MAX_CONTEXT_LINES).optional()
+        .describe(`Lines of surrounding context to show around each match (0-${MAX_CONTEXT_LINES}). Use this instead of reading the whole file.`),
+      filesOnly: z.boolean().optional()
+        .describe('Return only the paths of files that contain a match, one per line — no line numbers, no matched text. Far smaller output when the question is "where is X used?".'),
+      ignoreCase: z.boolean().optional().describe('Case-insensitive match.'),
     }),
-    execute: async ({ pattern, path: rel, glob }, options: { abortSignal?: AbortSignal } = {}): Promise<string | { error: string }> => {
+    execute: async (
+      { pattern, path: rel, glob, context, filesOnly, ignoreCase },
+      options: { abortSignal?: AbortSignal } = {},
+    ): Promise<string | { error: string }> => {
       try {
         if (!pattern) return { error: 'Missing required "pattern" argument.' };
         const root = peekWorkspaceRoot() ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -127,7 +141,17 @@ export function createGrepTool(runAbort?: AbortSignal) {
           ? AbortSignal.any([runAbort, options.abortSignal].filter((s): s is AbortSignal => !!s))
           : undefined;
 
-        const rgArgs = ['--line-number', '--no-heading', '--color', 'never', '-m', '200'];
+        // `-l` prints paths only, so line numbers/context are meaningless with it — rg would
+        // accept them and silently ignore them, but keeping the argv honest makes the failure
+        // mode (if any) legible in a trace.
+        const rgArgs = ['--no-heading', '--color', 'never'];
+        if (filesOnly) {
+          rgArgs.push('--files-with-matches');
+        } else {
+          rgArgs.push('--line-number', '-m', '200');
+          if (context && context > 0) rgArgs.push('--context', String(Math.min(context, MAX_CONTEXT_LINES)));
+        }
+        if (ignoreCase) rgArgs.push('--ignore-case');
         if (glob) rgArgs.push('--glob', glob);
         rgArgs.push('--', pattern, rel && rel.length ? rel : '.');
 
@@ -149,7 +173,10 @@ export function createGrepTool(runAbort?: AbortSignal) {
             resolve(buf);
           });
         });
-        return capToolOutput(out.trim() || '(no matches)', GREP_MAX_OUTPUT, 'Add a "path" or "glob" filter, or a more specific pattern.');
+        const hint = filesOnly
+          ? 'Add a "path" or "glob" filter, or a more specific pattern.'
+          : 'Add a "path" or "glob" filter, a more specific pattern, or pass filesOnly:true to get just the paths.';
+        return capToolOutput(out.trim() || '(no matches)', GREP_MAX_OUTPUT, hint);
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) };
       }

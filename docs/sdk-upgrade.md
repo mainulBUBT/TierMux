@@ -12,7 +12,7 @@ does and does not adopt from the SDK at the policy level, see
 
 ## 1. Is the `runtimeContext`/`toolsContext` bug fixed?
 
-Documented in [`tools/index.ts`](../src/agent/core/tools/index.ts): as of `ai@7.0.34`,
+Documented in [`tools/v3/index.ts`](../src/agent/core/tools/v3/index.ts): as of `ai@7.0.34`,
 `runtimeContext`/`toolsContext` do not populate a tool's `execute()` via
 `ToolExecutionOptions.context`, contradicting the SDK's own docs. Verified empirically (a real
 `streamText()` spike against a fake `LanguageModelV4`) — `options.context` came back `undefined`
@@ -89,7 +89,7 @@ tool-result/tool-error/error parts) rather than the `onStepStart`/`onToolExecuti
 
 ## 7. Remove obsolete workarounds
 
-Once the above are checked, remove anything this document (or `tools/index.ts`'s inline comment)
+Once the above are checked, remove anything this document (or `tools/v3/index.ts`'s inline comment)
 flagged as "workaround for a bug in `ai@7.0.34`" that no longer applies — don't leave dead
 workaround code once the SDK grows the native equivalent it was standing in for. Update this
 file's "Current pinned versions" line and re-check off the items above that changed.

@@ -33,38 +33,47 @@ npm run watch      # esbuild rebuilds on save
 
 > Editing **`media/`** (webview `main.js` / `main.css`) only needs a dev-window reload — it's served directly, not bundled. Editing **`src/`** needs a rebuild (the watcher handles it), then a reload.
 
-## Testing without tokens (mock model)
+## Testing without tokens
 
-Three ways to run the full agent with **zero API calls** — no keys, no enabled models needed:
+The e2e harnesses under `scripts/` are the no-token path, and they are the only one left. Each
+bundles the real code (`runTurn`, the real toolset, the real picker) and injects a scripted
+`LanguageModelV4` through the test seams — `__setEngineModelForTests`, `__setPlanModelForTests`,
+`__setRouteOnceForTests` — so a scenario is a list of steps the "model" performs, not a recording.
+`scripts/mockModel.ts` builds those models; `scripts/vscodeMock.cjs` stands in for the `vscode`
+module so a harness runs under plain `node`.
 
-1. **Canned fake (quick smoke):** launch config *"Run Extension (Fake Model — no tokens)"* (sets `TIERMUX_FAKE_MODEL=1`). Every turn makes one dummy tool call, then answers with canned text.
-2. **Scripted fixture (scenarios):** launch config *"Run Extension (Mock Fixture — scripted scenario, no tokens)"*. Edit `.tiermux/mock/fixture.json` to script what the "model" does, step by step — native tool calls, plain text, or raw weak-model dialect (`<function=readFile>{…}</function>`) that exercises the rescue/nudge recovery paths. Steps queue **per taskKind** (`agent` = main turn, `coding`/`reasoning` = sub-agents like `delegate`/`implementPipeline`, `*` = any), so a parent turn and its sub-agents each play their own movie. Point `TIERMUX_MOCK_FIXTURE` at any other file to switch scenarios.
-3. **Cassette (record once, replay forever):** run a REAL session with `TIERMUX_RECORD_CASSETTE=/path/cassette.json` set in the launch env. Every successful `Router.route()` response is appended verbatim. Convert it to a replayable fixture with `cassetteToFixture()` (`src/router/mockFixture.ts`), or just study the file to see exactly what a model sent.
+Write a new scenario by copying the closest existing harness — `scripts/foundation.e2e.ts` is the
+broadest — and adding an npm script next to its siblings.
 
-Most loop behavior can be developed this way — only prompt-tuning ("does the model actually listen?") still needs real tokens.
+> Three older no-token routes used to be documented here — a `TIERMUX_FAKE_MODEL` canned fake, a
+> `TIERMUX_MOCK_FIXTURE` scripted fixture, and `TIERMUX_RECORD_CASSETTE` session recording. All
+> three died with `src/router/mockFixture.ts` when the old Router was retired (2026-09-05):
+> nothing in `src/` reads those variables. The two launch configs that set them and
+> `.tiermux/mock/fixture.json` have been removed too, so `.vscode/launch.json` now has one
+> config.
+
+Only prompt-tuning ("does a real model actually listen?") still needs real tokens.
 
 ## Test harnesses
 
-There is no single monolithic test runner — instead there are ~70 focused e2e harnesses in `scripts/*.e2e.ts`, each proving one behavior against the real code paths (real `Router.route()`, real `runTurn()`, fake providers/virtual clocks where needed). Run any of them via its npm script:
+There is no single monolithic test runner — instead there are ~30 focused e2e harnesses in
+`scripts/*.e2e.ts`, each proving one behavior against the real code paths. Run any of them via its
+npm script:
 
 ```bash
-npm run test:e2e:scoring          # Smart Auto scoring engine (7 unit cases)
-npm run test:e2e:smart-routing    # full router: learned metrics demote a slow model
-npm run test:e2e:circuit          # circuit breaker / cooldown behavior
-npm run test:e2e:rotation         # key-pool rotation under 429s
-npm run test:e2e:mock-fixture     # fixture queue semantics + dialect rescue + cassette round-trip
-npm run test:e2e:plan-runner      # plan execution engine end-to-end
-npm run test:e2e:delegate-tool    # research/worktree sub-agents
-npm run test:e2e:secrets-gate     # .env / credential read guards
+npm run test:e2e:foundation       # THE contract: 32 scenarios over the real engine
+npm run test:e2e:exit-plan-mode   # plan mode's tool boundary
+npm run test:e2e:edit-match       # editFile search/replace failure diagnostics
+npm run test:e2e:grep-options     # grep filesOnly / context / ignoreCase output shapes
+npm run test:e2e:read-paging      # a truncated read always says where to resume
+npm run test:e2e:tool-output-aging  # earlier steps' bulky outputs become stubs
+npm run test:e2e:routing-gates    # picker skip filters, quota, rotation
 npm run test:e2e:fit-messages     # per-model context-window fitting
 ```
 
-Browse `package.json` → `"scripts"` for the rest; names map 1:1 to the behavior they cover (`edit-gate`, `verify-gate`, `worktree`, `hedge`, `condense-split`, …). Benchmark suites live separately:
-
-| Command | Measures |
-|---|---|
-| `npm run bench` | routing latency / TTFT / failover on bare `router.route()` calls |
-| `npm run bench:quality` | Retrieval / Reasoning / Answer over the real agent loop (see [BENCHMARK.md](BENCHMARK.md)) |
+Browse `package.json` → `"scripts"` for the rest; names map 1:1 to the behavior they cover
+(`edit-gate`, `verify-detect`, `condense-split`, `delegate-task`, …). Start with `foundation` — the
+core reset note treats it as the contract the loop must not break.
 
 ## Scripts
 
@@ -78,7 +87,6 @@ Browse `package.json` → `"scripts"` for the rest; names map 1:1 to the behavio
 | `npm run package` | Build a `.vsix` with `vsce`. |
 | `npm run package:all` / `publish:all` | Package/publish for all targets. |
 | `npm run publish` | Publish to VS Code Marketplace **and** Open VSX (`ovsx publish`). |
-| `npm run rebrand` | Sync `package.json` display fields from `PRODUCT_NAME` (see below). |
 
 Always run `npm run typecheck` before committing — the bundler does not type-check.
 
@@ -89,12 +97,13 @@ src/
   extension.ts          # activation: constructs everything and wires it together
   chatViewProvider.ts   # hosts the webview chat, handles its messages
   agent/                # agent.ts (stable contract) + core/ (the AI SDK-based agent
-                        #   engine: loop.ts, routerProvider.ts, tools/, policies/,
-                        #   middleware/, planRunner.ts, stepEngine.ts, watchdog.ts —
+                        #   engine: engine.ts (the loop), routerProvider.ts, routeOnce.ts,
+                        #   compact.ts, repair.ts, subagent.ts, tools/ —
                         #   see docs/ARCHITECTURE.md), routing.ts (task classification)
   backend/              # groundingVerify.ts (manual Plan-mode grounding check)
-  router/router.ts      # multi-provider router: failover, cooldown, quarantine,
-                        #   scoring.ts (Smart Auto), wilson.ts, metricsStore.ts
+  permissions/          # the tool-approval policy chain
+  router/               # picker.ts (model selection), capabilityProfile.ts,
+                        #   rateTracker.ts, errors.ts
   providers/            # provider adapters: base, openai-compat, google, cohere,
                         #   cloudflare (+ remote-catalog upsert of new platforms)
   catalog/              # loads media/catalog.json into the model catalog
@@ -108,10 +117,11 @@ media/
   main.js  main.css     # webview UI bundle (vanilla JS entry, built from media/src/)
   src/                  # webview TS sources (ui/components, ui/tool, handlers, format)
   catalog.json          # seed model catalog (auto-synced from remote)
-scripts/                # e2e harnesses (test:e2e:*), bench/, sync & validate tooling
+scripts/                # e2e harnesses (test:e2e:*), mockModel.ts, sync & validate tooling
 .tiermux/
   skills/               # user-editable slash-command prompts (doc, fix, tests, …)
-  mock/fixture.json     # scripted no-token scenario for the mock-fixture launch config
+  agent/                # system-prompt fragments loaded at activation
+  design/               # design-skill references
 ```
 
 **Core vs IDE layer:** `providers/`, `router/`, `catalog/`, and `agent/routing.ts` are largely IDE-agnostic; the rest is VS Code-specific. Keep new core logic free of `vscode` imports where practical.
@@ -120,13 +130,12 @@ scripts/                # e2e harnesses (test:e2e:*), bench/, sync & validate to
 
 The display name lives in **one place**: `src/shared/branding.ts` (`PRODUCT_NAME`). All runtime and webview code references it. `package.json` is a static manifest VS Code reads before any code runs, so a script syncs it:
 
-```bash
-# 1. edit PRODUCT_NAME in src/shared/branding.ts
-# 2. propagate to package.json:
-npm run rebrand
-```
+Edit `PRODUCT_NAME` there, then update `package.json`'s **display** fields (`displayName`,
+`description`, and the `contributes` titles) by hand — the `npm run rebrand` script that used to
+sync them is gone.
 
-`rebrand` only syncs **display** fields. The technical `tiermux.*` prefix (setting/command/view IDs) and the `publisher` are **not** touched by it — renaming those breaks users' saved settings and stored keys.
+Change only display fields. The technical `tiermux.*` prefix (setting/command/view IDs) and the
+`publisher` must stay — renaming those breaks users' saved settings and stored keys.
 
 ## Packaging & publishing
 

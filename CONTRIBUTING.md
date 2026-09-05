@@ -30,7 +30,7 @@ close or lock threads that don't meet that bar.
 npm ci                 # one-time install
 npm run typecheck      # tsc --noEmit (whole repo, must pass)
 npm run build          # produces dist/extension.js + dist/<lib>.cjs + media/main.js
-npm run test:e2e:core  # one e2e example — there are ~50, see scripts in package.json
+npm run test:e2e:foundation  # THE contract — 32 scenarios; ~30 more, see package.json
 ```
 
 `npm run build` is the source of truth for shipping. It runs `sync:catalog`
@@ -40,10 +40,11 @@ and `sync:providers` first (regenerate `media/catalog.json` and
 (`dist/extension.js`), the webview (`media/main.js`), and the library entry
 (`dist/index.cjs` + sub-paths).
 
-A library smoke test exists at `npm run test:e2e:library`. It proves that
-`import { Router, runAgentStream, classifyTask, createRouterProvider }
-from 'tiermux'` resolves under plain Node when a `vscode` shim is supplied
-(using the same `scripts/vscodeMock.cjs` the rest of the e2e suite uses).
+The published library entry is type-checked by `npm run typecheck` against the
+`exports` map in `package.json` (`./router`, `./agent`, `./providers`,
+`./shared`). Anything re-exported there must stay `vscode`-free at import time —
+the e2e harnesses prove this by running under plain Node with
+`scripts/vscodeMock.cjs` supplying the shim.
 
 ## Adding a new provider
 
@@ -60,21 +61,25 @@ from 'tiermux'` resolves under plain Node when a `vscode` shim is supplied
 
 ## Adding a new tool
 
-1. Create `src/agent/core/tools/<name>.ts` exporting a `createXxxTool()`
-   factory. The factory should close over session-scoped data (see the
-   comment block in `src/agent/core/tools/index.ts` for the closure-vs-context
-   rationale — `ToolExecutionOptions.context` is not propagated in AI SDK
-   7.0.34).
-2. Add the factory to the `all` (or `ask`/`plan`) tool set in
-   `src/agent/core/tools/index.ts`.
-3. If the tool is genuinely small-window-essential, add its name to
-   `ESSENTIAL_TOOLS` in the same file. Otherwise it will be elided on
-   small context windows, which is the right default.
-4. Add an e2e test exercising it.
+1. Create `src/agent/core/tools/v3/<name>.ts` exporting a `createXxxTool()`
+   factory. Use `tool()` form with a Zod `inputSchema`, make `execute`
+   exception-safe (expected failures return `{ error }`), and embed NO
+   approval check — the policy decides whether a mutating tool runs. Close
+   over session-scoped data rather than using
+   `ToolExecutionOptions.context`, which is not propagated (see
+   `docs/sdk-upgrade.md`).
+2. Add the factory to the mode branches it belongs in, in
+   `src/agent/core/tools/v3/index.ts`.
+3. If it never mutates anything, add its name to `READ_ONLY_TOOLS` in the
+   same file so the policy auto-approves it. Otherwise the approval chain
+   will ask — the right default.
+4. Cap the output with `capToolOutput` and make the truncation marker
+   instructive, so a cap is never a dead end.
+5. Add an e2e test exercising it.
 
 ## The simple-core rule
 
-`src/agent/core/loop.ts` is **mechanical execution only**. It must never
+`src/agent/core/engine.ts` is **mechanical execution only**. It must never
 judge answer quality, retry on weak-looking output, or synthesize a second
 answer. The full list of what the loop may and must not do lives in
 `docs/SIMPLE_CORE_RESET_2026-08-24.md`. If you find yourself wanting to add
