@@ -29,7 +29,7 @@ The loop MAY:
 - rotate providers (via the Router)
 - recover from provider failures (exactly ONE continuation)
 - enforce approvals and tool safety
-- stop at hard execution limits (`stepCountIs(50)`, `askQuestionsStop`)
+- stop at hard execution limits (`stepCountIs(maxSteps)`, `planAccepted`, `notMakingProgress`)
 - collect results
 
 The loop MUST NOT:
@@ -103,10 +103,9 @@ detector, stop and re-read this file.
   literal meaning. At or below a 16k window (`SMALL_WINDOW_MAX`, engine.ts) the two coordination tools
   (`todoWrite`, `delegateTask`) are withdrawn from the offer via `activeTools`; every
   capability tool survives. `npm run test:e2e:tool-offer` pins it.
-- **SDK-native mechanics:** `stopWhen` `[isStepCount(50), askQuestionsStop]`, `toolApproval`
-  (createToolApproval), `repairToolCall` (3-tier incl. `tryModelRepair`), tool circuit breaker
-- **UI contract:** `AgentResult` unchanged; `workReport` (ResultCard), `changedFiles`, todos,
-  watchdog/telemetry wrapping
+- **SDK-native mechanics:** `stopWhen` `[stepCountIs(maxSteps), planAccepted, notMakingProgress]`,
+  `toolApproval` (permissions/policy.ts), `repairToolCall` (one model self-repair, budgeted)
+- **UI contract:** `AgentResult` unchanged; `workReport` (ResultCard), `changedFiles`, todos
 
 ## What was deleted (do not resurrect without a live repro)
 

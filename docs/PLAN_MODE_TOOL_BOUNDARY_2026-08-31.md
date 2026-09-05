@@ -36,10 +36,10 @@ verify}` arrives typed and validated. Nothing downstream re-derives it.
 - **`extractPlanFromProse`** (the LLM "was that a plan?" classifier). With an explicit boundary
   there is nothing left to disambiguate, and it cost a full model round-trip on every turn the
   regex gate missed.
-- **The plan-mode half of the `looksLikeGroundedAnswer` corrective re-run.** Plan mode's signal
-  that the model engaged is whether it called `exitPlanMode` — not whether a regex found the
-  user's nouns in the prose. (Ask mode keeps it; that check earned its place on the 2026-08-09
-  benchmark's query E1.)
+- **The `looksLikeGroundedAnswer` corrective re-run** — first its plan-mode half (plan mode's
+  signal that the model engaged is whether it called `exitPlanMode`, not whether a regex found
+  the user's nouns), then on 2026-09-05 the ask-mode half too: it was answer-quality judging
+  with a hardcoded marker list, one layer above the engine.
 - **The `## Plan: / ### Step N:` markdown template** in the plan system prompt. The tool schema
   carries what/files/verify now, so the prompt no longer asks the model to choose between two
   markdown shapes depending on whether it was asked a question or given a task.

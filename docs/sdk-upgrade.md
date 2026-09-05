@@ -57,7 +57,7 @@ the time this was built.
       (A compile error here is the expected signal — fix by following the new type.)
 - [ ] Re-verify the core guarantee this whole mechanism exists for: a denied verdict means the
       tool's `execute()` never runs at all (not just that its effect is discarded afterward) — see
-      the "denied toolApproval" test in `scripts/coreLoop.e2e.ts`.
+      the denied-approval scenarios in `scripts/foundation.e2e.ts`.
 - [ ] Confirm the deprecated per-tool `needsApproval` field hasn't become the only supported path
       again (unlikely, but the deprecation notice referenced a "generateText/streamText level"
       replacement — make sure that's still `toolApproval`).
@@ -74,20 +74,9 @@ tool-result/tool-error/error parts) rather than the `onStepStart`/`onToolExecuti
       for pre-7.0.58 shapes were removed.)
 - [ ] Re-verify the ordering guarantee `chatViewProvider.ts`'s checkpoint recorder depends on:
       `onTool` state `'running'` must fire before that tool's own `execute()` mutates anything —
-      see the "ordering" test in `scripts/coreLoop.e2e.ts`.
+      see the ordering scenarios in `scripts/foundation.e2e.ts`.
 
-## 6. Has the middleware signature changed?
-
-`createTelemetryMiddleware()` (`core/middleware/telemetry.ts`) implements
-`LanguageModelV4Middleware`'s `wrapGenerate`/`wrapStream` hooks via `wrapLanguageModel()`.
-
-- [ ] Check whether `LanguageModelV4Middleware`'s shape, or `wrapLanguageModel()`'s signature,
-      changed in the new `@ai-sdk/provider` version.
-- [ ] `createTelemetryMiddleware()` takes an options object (`{ profiler, traceId, logger? }`) —
-      if a second concern (structured logging, tracing) becomes real, extend that object rather
-      than adding a second middleware factory with an overlapping purpose.
-
-## 7. Remove obsolete workarounds
+## 6. Remove obsolete workarounds
 
 Once the above are checked, remove anything this document (or `tools/v3/index.ts`'s inline comment)
 flagged as "workaround for a bug in `ai@7.0.34`" that no longer applies — don't leave dead
