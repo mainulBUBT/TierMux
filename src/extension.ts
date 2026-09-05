@@ -145,6 +145,8 @@ export function activate(context: vscode.ExtensionContext): void {
       mcp,
       modelStats,
       workspaceState: context.workspaceState,
+      // storageUri is undefined with no folder open; those chats go under global storage.
+      sessionDir: vscode.Uri.joinPath(context.storageUri ?? vscode.Uri.joinPath(context.globalStorageUri, 'no-workspace'), 'sessions').fsPath,
       globalState: context.globalState,
       generateCommitMessage: () => generateCommitMessage(),
     });

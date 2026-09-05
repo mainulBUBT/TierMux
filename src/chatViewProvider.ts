@@ -29,6 +29,7 @@ import { fetchAnnouncements as fetchWorkerAnnouncements, markAnnouncementsSeen, 
 import { normalizeMcpServerConfig } from './mcp/mcpClient';
 import { getNonce } from './util/nonce';
 import { diagLog } from './util/diag';
+import { SessionStore } from './sessionStore';
 import { getPlatformInfo } from './providers';
 import { parseSlash, resolveMentions, searchMentions } from './context/mentions';
 import { activeEditorRelPath, buildActiveEditorContext, buildDiagnosticsContext } from './context/activeContext';
@@ -52,6 +53,8 @@ interface ChatDeps {
   mcp: McpManager;
   modelStats: ModelStatsStore;
   workspaceState: vscode.Memento;
+  /** Directory for the per-session JSON files (see SessionStore). */
+  sessionDir: string;
   /** Global (per-user) state — announcement seen/notified tracking lives here, alongside the catalog cache. */
   globalState: vscode.Memento;
   generateCommitMessage: () => Promise<void>;
@@ -64,7 +67,6 @@ function tokenToAbortSignal(token: import('vscode').CancellationToken): AbortSig
   return ctrl.signal;
 }
 
-const SESSIONS_KEY = 'tiermux.sessions';
 const CURRENT_KEY = 'tiermux.currentSession';
 const AUTO_APPROVE_KEY = 'tiermux.autoApprove';
 const MAX_SESSIONS = 50;
@@ -465,6 +467,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private ready = false;
   private outQueue: OutMessage[] = [];
   private mcpRegistry?: McpRegistryItem[];
+  private mcpStartRequested = false;
   /** Concurrency cap state: sessions with a live agent run + the FIFO of waiting starts. */
   private runningSessions = new Set<string>();
   private runQueue: Array<{ sessionId: string; resolve: () => void }> = [];
@@ -477,7 +480,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   constructor(private readonly extensionUri: vscode.Uri, private readonly deps: ChatDeps) {
     this.autoApprove = deps.workspaceState.get<boolean>(AUTO_APPROVE_KEY, true);
-    const stored = this.loadSessions();
+    this.store = new SessionStore<StoredSession>(deps.sessionDir, deps.workspaceState, MAX_SESSIONS);
+    const stored = this.store.load();
 
     for (const s of stored) this.sessions.set(s.id, this.hydrateSession(s));
     this.viewedSessionId = this.createSession().id;
@@ -582,9 +586,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return this.createSession();
   }
 
-  private loadSessions(): StoredSession[] {
-    return this.deps.workspaceState.get<StoredSession[]>(SESSIONS_KEY, []);
-  }
+  private readonly store: SessionStore<StoredSession>;
 
   /** What the UI shows while a session is still untitled. Deliberately NOT derived from the
    *  first message: a derived stand-in looks like a real title, so replacing it later reads as
@@ -604,9 +606,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private persist(sessionId: string): void {
     const s = this.sessions.get(sessionId);
     if (!s) return;
-    const others = this.loadSessions().filter((x) => x.id !== sessionId);
     if (s.transcript.length) {
-      others.unshift({
+      this.store.save({
         id: s.id, title: s.title, titleGenerated: s.titleGenerated, ts: Date.now(), transcript: s.transcript,
         model: s.model, reasoningEffort: s.reasoningEffort, history: s.history, inProgressTurn: s.inProgressTurn,
         userRenamedTitle: s.userRenamedTitle,
@@ -615,7 +616,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         planRun: s.planRun,
       });
     }
-    void this.deps.workspaceState.update(SESSIONS_KEY, others.slice(0, MAX_SESSIONS));
     if (sessionId === this.viewedSessionId) void this.deps.workspaceState.update(CURRENT_KEY, sessionId);
     this.updateViewTitle();
     this.postSessionList();
@@ -952,9 +952,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const stored = this.loadSessions();
-    const x = stored.find((u) => u.id === id);
-    if (x) { x.title = title; void this.deps.workspaceState.update(SESSIONS_KEY, stored); }
+    this.store.patch(id, (x) => { x.title = title; });
   }
 
   /** Inline rename of the current session from the webview header. */
@@ -1021,10 +1019,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.stopRun(id); // cancel only this session's run — it's about to be deleted
     this.sessions.delete(id);
     this.statusOf.delete(id);
-    void this.deps.workspaceState.update(SESSIONS_KEY, this.loadSessions().filter((s) => s.id !== id));
+    this.store.remove(id);
     if (wasViewed) {
-
-      const next = this.loadSessions()[0]?.id;
+      const next = this.store.ids()[0];
       if (next && this.sessions.has(next)) this.openSession(next);
       else this.newChat();
     }
@@ -1033,21 +1030,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async onMessage(m: InMessage): Promise<void> {
     switch (m.type) {
-      case 'ready':
+      case 'ready': {
         this.ready = true;
         this.flushQueue();
-        await this.sendConfig();
+        // Transcript first — it is all in memory. The config (secret reads, MCP) follows; the
+        // webview renders without it and repaints when it lands.
+        const t0 = Date.now();
         this.postSessionList();
-        {
-          const s = this.current();
-          this.post({ type: 'switchSession', sessionId: s.id, messages: s.transcript });
-          this.post({ type: 'busy', sessionId: s.id, busy: !!s.activeRequestId });
-          this.postLiveRunState(s);
-          this.postCheckpoints(s);
-        }
-        // Fire-and-forget: surface operator tips/announcements once the view is up.
+        const s = this.current();
+        this.post({ type: 'switchSession', sessionId: s.id, messages: s.transcript });
+        this.post({ type: 'busy', sessionId: s.id, busy: !!s.activeRequestId });
+        this.postLiveRunState(s);
+        this.postCheckpoints(s);
+        await this.sendConfig();
+        diagLog('view.ready', `transcript=${s.transcript.length} config=${Date.now() - t0}ms`);
         void this.fetchAnnouncements();
         break;
+      }
       case 'switchSession':
         this.openSession(m.sessionId);
         break;
@@ -2959,13 +2958,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async sendConfig(): Promise<void> {
     if (!this.view) return;
-    const snap = await this.deps.secrets.snapshot();
-    const endpoints = this.deps.settings.getEndpoints();
     const catalog = this.deps.catalog.all();
-    const modelKeys = new Set(await this.deps.secrets.modelKeySnapshot(catalog));
+    const [snap, modelKeys] = await Promise.all([this.deps.secrets.snapshot(), this.deps.secrets.modelKeySnapshot(catalog)]);
+    const endpoints = this.deps.settings.getEndpoints();
     const platforms: KeyStatusInfo[] = snap.map((s) => {
       const info = getPlatformInfo(s.platform);
-      const hasModelKey = catalog.some((m) => m.platform === s.platform && modelKeys.has(`${m.platform}::${m.modelId}`));
+      const hasModelKey = modelKeys.some((k) => k.startsWith(`${s.platform}::`));
       return {
         platform: s.platform,
         name: info?.name ?? s.platform,
@@ -2980,16 +2978,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         cloudflareAccountId: s.cloudflareAccountId,
       };
     });
-    if (this.deps.mcp.hasServers()) { try { await this.deps.mcp.ensureStarted(); } catch { /* MCP optional */ } }
+    // MCP servers connect off this path (an `npx` server can take seconds to spawn); the
+    // config is re-sent once they are up so the panel opens with the transcript, not a blank.
+    if (this.deps.mcp.hasServers() && !this.mcpStartRequested) {
+      this.mcpStartRequested = true;
+      void this.deps.mcp.ensureStarted().catch(() => { /* MCP optional */ }).then(() => this.sendConfig());
+    }
     const config: ConfigPayload = {
-      catalog: this.deps.catalog.all(),
+      catalog,
       fallback: this.deps.settings.getFallback(),
       platforms,
       mcp: this.deps.mcp.servers(),
       mcpServers: this.readMcpServersConfig(),
       mcpRegistry: await this.registry(),
       deprecated: this.deps.secrets.deprecatedKeys(),
-      modelKeys: await this.deps.secrets.modelKeySnapshot(this.deps.catalog.all()),
+      modelKeys,
       utilityModel: vscode.workspace.getConfiguration('tiermux').get<string>('utilityModel', 'auto'),
       settingsMeta: SETTINGS_META,
       settings: Object.fromEntries(

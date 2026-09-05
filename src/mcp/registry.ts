@@ -87,7 +87,7 @@ export async function loadMcpRegistry(extensionPath: string): Promise<McpRegistr
   const url = vscode.workspace.getConfiguration('tiermux').get<string>('mcpRegistryUrl', '');
   if (url) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) }); // on the config path — never hang the panel
       if (res.ok) {
         const remote = (await res.json()) as McpRegistryItem[] | { servers?: McpRegistryItem[] };
         const list = Array.isArray(remote) ? remote : remote.servers;

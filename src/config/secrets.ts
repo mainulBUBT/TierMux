@@ -23,49 +23,76 @@ export class SecretStore {
   private readonly _onChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onChange.event;
 
+  /** Read-through cache over SecretStorage. Each `get` is an extension-host→main RPC and the
+   *  config snapshot reads one per catalog row (~400) plus one per platform — sequentially, it
+   *  was the seconds of blank panel on open (2026-09-05). Entries drop on `onDidChange`, which
+   *  fires for every store/delete from any window, so a cached value is never stale. */
+  private cache = new Map<string, Promise<string | undefined>>();
+
   constructor(private readonly secrets: vscode.SecretStorage) {
     secrets.onDidChange((e) => {
+      this.cache.delete(e.key);
       if (e.key.startsWith(PREFIX)) this._onChange.fire();
     });
   }
 
+  private read(key: string): Promise<string | undefined> {
+    const hit = this.cache.get(key);
+    if (hit) return hit;
+    const p = Promise.resolve(this.secrets.get(key)).catch((e: unknown) => { this.cache.delete(key); throw e; });
+    this.cache.set(key, p);
+    return p;
+  }
+
+  private async write(key: string, value: string): Promise<void> {
+    this.cache.delete(key);
+    await this.secrets.store(key, value);
+    this.cache.delete(key); // a read issued mid-store may have cached the old value
+  }
+
+  private async remove(key: string): Promise<void> {
+    this.cache.delete(key);
+    await this.secrets.delete(key);
+    this.cache.delete(key);
+  }
+
   async get(platform: Platform): Promise<string | undefined> {
-    return this.secrets.get(PREFIX + platform);
+    return this.read(PREFIX + platform);
   }
 
   async set(platform: Platform, key: string): Promise<void> {
     const trimmed = key.trim();
-    await this.secrets.store(PREFIX + platform, trimmed);
+    await this.write(PREFIX + platform, trimmed);
 
     const existing = await this.getKeys(platform);
     if (!existing.includes(trimmed)) {
-      await this.secrets.store(KEYS_PREFIX + platform, JSON.stringify([trimmed, ...existing]));
+      await this.write(KEYS_PREFIX + platform, JSON.stringify([trimmed, ...existing]));
     }
     this.statuses.set(platform, 'unknown');
   }
 
   async clear(platform: Platform): Promise<void> {
-    await this.secrets.delete(PREFIX + platform);
-    await this.secrets.delete(KEYS_PREFIX + platform);
+    await this.remove(PREFIX + platform);
+    await this.remove(KEYS_PREFIX + platform);
     this.statuses.delete(platform);
   }
 
   /** All stored keys for a platform (in priority order). Falls back to the single key. */
   async getKeys(platform: Platform): Promise<string[]> {
-    const multiStr = await this.secrets.get(KEYS_PREFIX + platform);
+    const multiStr = await this.read(KEYS_PREFIX + platform);
     if (multiStr) {
       try { return JSON.parse(multiStr) as string[]; } catch { /* fall through */ }
     }
-    const single = await this.secrets.get(PREFIX + platform);
+    const single = await this.read(PREFIX + platform);
     return single ? [single] : [];
   }
 
   /** Replace the key pool for a platform. Syncs the legacy single-key slot to pool[0]. */
   async setKeys(platform: Platform, keys: string[]): Promise<void> {
     const trimmed = keys.map((k) => k.trim()).filter(Boolean);
-    await this.secrets.store(KEYS_PREFIX + platform, JSON.stringify(trimmed));
-    if (trimmed.length > 0) await this.secrets.store(PREFIX + platform, trimmed[0]);
-    else await this.secrets.delete(PREFIX + platform);
+    await this.write(KEYS_PREFIX + platform, JSON.stringify(trimmed));
+    if (trimmed.length > 0) await this.write(PREFIX + platform, trimmed[0]);
+    else await this.remove(PREFIX + platform);
     this.statuses.set(platform, 'unknown');
     this._onChange.fire();
   }
@@ -85,67 +112,67 @@ export class SecretStore {
   }
 
   async getModelKey(platform: Platform, modelId: string): Promise<string | undefined> {
-    return this.secrets.get(MODEL_KEY_PREFIX + modelKeyId(platform, modelId));
+    return this.read(MODEL_KEY_PREFIX + modelKeyId(platform, modelId));
   }
 
   async setModelKey(platform: Platform, modelId: string, key: string): Promise<boolean> {
     const trimmed = key.trim();
     if (!trimmed) return false;
-    await this.secrets.store(MODEL_KEY_PREFIX + modelKeyId(platform, modelId), trimmed);
+    await this.write(MODEL_KEY_PREFIX + modelKeyId(platform, modelId), trimmed);
     return true;
   }
 
   async clearModelKey(platform: Platform, modelId: string): Promise<void> {
-    await this.secrets.delete(MODEL_KEY_PREFIX + modelKeyId(platform, modelId));
+    await this.remove(MODEL_KEY_PREFIX + modelKeyId(platform, modelId));
   }
 
   async getCustomKey(id: string): Promise<string | undefined> {
-    return this.secrets.get(CUSTOM_KEY_PREFIX + id);
+    return this.read(CUSTOM_KEY_PREFIX + id);
   }
 
   async setCustomKey(id: string, key: string): Promise<void> {
     const trimmed = key.trim();
-    await this.secrets.store(CUSTOM_KEY_PREFIX + id, trimmed);
+    await this.write(CUSTOM_KEY_PREFIX + id, trimmed);
     this.statuses.set('custom' as Platform, 'unknown');
   }
 
   async clearCustomKey(id: string): Promise<void> {
-    await this.secrets.delete(CUSTOM_KEY_PREFIX + id);
+    await this.remove(CUSTOM_KEY_PREFIX + id);
   }
 
   async getCustomModelKey(id: string, upstreamModelId: string): Promise<string | undefined> {
-    return this.secrets.get(CUSTOM_MODEL_KEY_PREFIX + id + '::' + upstreamModelId);
+    return this.read(CUSTOM_MODEL_KEY_PREFIX + id + '::' + upstreamModelId);
   }
 
   async setCustomModelKey(id: string, upstreamModelId: string, key: string): Promise<void> {
     const trimmed = key.trim();
     if (!trimmed) return;
-    await this.secrets.store(CUSTOM_MODEL_KEY_PREFIX + id + '::' + upstreamModelId, trimmed);
+    await this.write(CUSTOM_MODEL_KEY_PREFIX + id + '::' + upstreamModelId, trimmed);
   }
 
   async clearCustomModelKey(id: string, upstreamModelId: string): Promise<void> {
-    await this.secrets.delete(CUSTOM_MODEL_KEY_PREFIX + id + '::' + upstreamModelId);
+    await this.remove(CUSTOM_MODEL_KEY_PREFIX + id + '::' + upstreamModelId);
   }
 
   async getCloudflareAccountId(): Promise<string | undefined> {
-    return this.secrets.get(CLOUDFLARE_ACCOUNT_PREFIX);
+    return this.read(CLOUDFLARE_ACCOUNT_PREFIX);
   }
 
   async setCloudflareAccountId(accountId: string): Promise<void> {
     const trimmed = accountId.trim();
     if (!trimmed) return;
-    await this.secrets.store(CLOUDFLARE_ACCOUNT_PREFIX, trimmed);
+    await this.write(CLOUDFLARE_ACCOUNT_PREFIX, trimmed);
     this._onChange.fire();
   }
 
   async clearCloudflareAccountId(): Promise<void> {
-    await this.secrets.delete(CLOUDFLARE_ACCOUNT_PREFIX);
+    await this.remove(CLOUDFLARE_ACCOUNT_PREFIX);
     this._onChange.fire();
   }
 
   /** Masked display hint for the Cloudflare account ID (safe for webview). */
   async getCloudflareAccountIdHint(): Promise<string | undefined> {
-    const id = await this.secrets.get(CLOUDFLARE_ACCOUNT_PREFIX);
+    const id = await this.read(CLOUDFLARE_ACCOUNT_PREFIX);
     if (!id) return undefined;
     if (id.length <= 8) return '••••' + id.slice(-4);
     return id.slice(0, 4) + '••••' + id.slice(-4);
@@ -155,12 +182,8 @@ export class SecretStore {
    *  the supplied catalog. Pass the catalog so we don't scan the secret store
    *  for unknown / removed models. */
   async modelKeySnapshot(catalog: ReadonlyArray<{ platform: Platform; modelId: string }>): Promise<string[]> {
-    const out: string[] = [];
-    for (const m of catalog) {
-      const k = await this.getModelKey(m.platform, m.modelId);
-      if (k) out.push(modelKeyId(m.platform, m.modelId));
-    }
-    return out;
+    const keys = await Promise.all(catalog.map((m) => this.getModelKey(m.platform, m.modelId)));
+    return catalog.filter((_, i) => keys[i]).map((m) => modelKeyId(m.platform, m.modelId));
   }
 
   setStatus(platform: Platform, status: KeyStatus): void {
@@ -204,10 +227,13 @@ export class SecretStore {
   /** A snapshot of which platforms are configured (key present or keyless) + status. */
   async snapshot(): Promise<Array<{ platform: Platform; configured: boolean; keyless: boolean; status: KeyStatus; keyCount: number; keyHints: string[]; cloudflareAccountId?: string }>> {
     const out: Array<{ platform: Platform; configured: boolean; keyless: boolean; status: KeyStatus; keyCount: number; keyHints: string[]; cloudflareAccountId?: string }> = [];
-    const cfAccountId = await this.getCloudflareAccountIdHint();
-    for (const info of allPlatformInfo()) {
-      if (info.platform === 'custom') continue;
-      const keys = await this.getKeys(info.platform);
+    const platforms = allPlatformInfo().filter((info) => info.platform !== 'custom');
+    const [cfAccountId, keyPools] = await Promise.all([
+      this.getCloudflareAccountIdHint(),
+      Promise.all(platforms.map((info) => this.getKeys(info.platform))),
+    ]);
+    for (const [i, info] of platforms.entries()) {
+      const keys = keyPools[i];
       const configured = info.keyless || keys.length > 0 || (info.platform === 'cloudflare' && !!cfAccountId);
       const hints = keys.map((k) => k.length <= 8 ? '••••' + k.slice(-4) : k.slice(0, 4) + '••••' + k.slice(-4));
       out.push({

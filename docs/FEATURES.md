@@ -57,6 +57,10 @@ button). Step-level pause/resume is not implemented — see
 - **Editor-wide** — inline chat (`Cmd/Ctrl+I`), selection explain/fix/refactor/tests/docs,
   commit-message generation, inline completions, searchable history, handoff notes.
 - **Explainable** — [“Why this model?”](ROUTING.md#why-this-model) on every turn.
+- **Chats stay local** — each chat is one JSON file under VS Code's workspace storage for the
+  extension (the last 50 per workspace); the panel opens with its transcript before keys and
+  MCP servers are checked. Enable *Diagnostic trace* to see the open timing in the
+  "TierMux Diag" output.
 
 ## Getting good results from free models
 
