@@ -8,7 +8,6 @@ import { UsageTracker } from './config/usage';
 import { UsageStore } from './config/usageStore';
 import { ModelStatsStore } from './config/modelStats';
 import { QuotaStore } from './config/quotaStore';
-import { SlowModelStore } from './config/slowModel';
 import { setModelSources, setQuotaStore } from './router/picker';
 import { verifyGrounding, renderVerifyReport } from './backend/groundingVerify';
 import { EditGate } from './edits/applyEdit';
@@ -18,8 +17,6 @@ import { registerCheckpointContentProvider } from './edits/checkpoints';
 
 import { setGates } from './agent/core/tools/gates';
 import { setMcpManager } from './agent/core/tools/mcp/manager';
-import { setWorkspaceIndex } from './agent/core/tools/indexAccess';
-import { WorkspaceIndex } from './indexer/WorkspaceIndex';
 
 import { McpManager } from './mcp/mcpManager';
 import { ChatViewProvider } from './chatViewProvider';
@@ -33,11 +30,6 @@ import { watchGitCommits } from './scm/gitWatch';
 import { openMemoryForEdit } from './context/userMemory';
 import { invalidateSkillsCache } from './context/skills';
 import { installSkillPackage, checkNpxAvailable } from './context/skillInstaller';
-
-import { formatTelemetryReport, resetTelemetry, getSnapshot, onTelemetryUpdate } from './context/telemetry';
-import { createProfiler, type IProfilerService } from './profiler/profilerService';
-import { render as renderProfilerReport } from './profiler/outputRenderer';
-import { toExportData as exportProfilerData } from './profiler/export';
 
 let chatProviderRef: ChatViewProvider | undefined;
 
@@ -126,35 +118,15 @@ export function activate(context: vscode.ExtensionContext): void {
     const usage = new UsageTracker();
     const usageStore = new UsageStore(context.globalState);
     const modelStats = new ModelStatsStore(context.globalState);
-    const slowModels = new SlowModelStore(context.globalState);
 
-    // v3: the agent engine selects models through the thin picker (router/picker.ts), not the
-    // scoring Router. The Router instance above stays alive for utility one-shot calls
-    // (titles, commit messages, inline completions) until those migrate in v3.1.
     setModelSources({ catalog, settings, secrets });
     // Declared rpm/rpd windows survive a reload (see picker.setQuotaStore).
     setQuotaStore(new QuotaStore(context.globalState));
-
-    let profiler: IProfilerService = createProfiler(
-      vscode.workspace.getConfiguration('tiermux.profiler').get<boolean>('enabled', false),
-      vscode.workspace.getConfiguration('tiermux.profiler').get<number>('ringSize', 200),
-    );
-
-    context.subscriptions.push(
-      vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration('tiermux.profiler.enabled') || e.affectsConfiguration('tiermux.profiler.ringSize')) {
-          const enabled = vscode.workspace.getConfiguration('tiermux.profiler').get<boolean>('enabled', false);
-          const ring = vscode.workspace.getConfiguration('tiermux.profiler').get<number>('ringSize', 200);
-          profiler = createProfiler(enabled, ring);
-        }
-      }),
-    );
 
     const editGate = new EditGate(() =>
       vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('requireWriteConfirmation', true),
     );
     context.subscriptions.push(editGate.register());
-
 
     // The Smart Auto scoring trace lived here (a "TierMux Router" output channel fed by
     // Router.setRationaleSink). It went with the scoring engine on 2026-09-05 — the v3 picker
@@ -176,17 +148,6 @@ export function activate(context: vscode.ExtensionContext): void {
     setGates(editGate, commandGate);
     setMcpManager(mcp);
 
-    // In-memory workspace symbol + dependency index (lazy, watcher-maintained). Constructed here
-    // like the other singletons; its FileSystemWatcher is disposed via context.subscriptions. Tools
-    // read it through the module-scoped holder set just below. No scan at activation — lazy.
-    const wsIndex = new WorkspaceIndex(() => ({
-      enabled: vscode.workspace.getConfiguration('tiermux.index').get<boolean>('enabled', true),
-      maxFiles: vscode.workspace.getConfiguration('tiermux.index').get<number>('maxFiles', 5000),
-      excludes: vscode.workspace.getConfiguration('tiermux.index').get<string[]>('excludes', []),
-    }));
-    context.subscriptions.push(wsIndex.register());
-    setWorkspaceIndex(wsIndex);
-
     const chat = new ChatViewProvider(context.extensionUri, {
       secrets,
       settings,
@@ -195,11 +156,9 @@ export function activate(context: vscode.ExtensionContext): void {
       usageStore,
       mcp,
       modelStats,
-      slowModels,
       workspaceState: context.workspaceState,
       globalState: context.globalState,
       generateCommitMessage: () => generateCommitMessage(),
-      profiler,
     });
     chatProviderRef = chat;
 
@@ -209,34 +168,6 @@ export function activate(context: vscode.ExtensionContext): void {
     editGate.setAutoApprove(() => chat.autoApprove);
 
     context.subscriptions.push(watchGitCommits(() => { void chat.clearAllCheckpoints(); }));
-
-    const telemetryBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
-    telemetryBar.command = 'tiermux.showTelemetry';
-    context.subscriptions.push(telemetryBar);
-    context.subscriptions.push({ dispose: onTelemetryUpdate(() => {
-      const s = getSnapshot();
-      if (s.totalRequests < 3) return; // not meaningful yet
-      const hitRate = s.symbolHitRate + s.cacheHitRate; // combined: symbol OR cache resolved it
-      const icon = hitRate >= 80 ? '$(zap)' : hitRate >= 60 ? '$(warning)' : '$(error)';
-      const color = hitRate >= 80
-        ? new vscode.ThemeColor('charts.green')
-        : hitRate >= 60
-          ? new vscode.ThemeColor('charts.yellow')
-          : new vscode.ThemeColor('charts.red');
-      telemetryBar.text = `${icon} ${hitRate}%`;
-      telemetryBar.color = color;
-      telemetryBar.tooltip = [
-        `TierMux — Retrieval Quality (${s.totalRequests} requests)`,
-        ``,
-        `Symbol index : ${s.symbolHitRate}%  ${s.symbolHitRate >= 50 ? '✓' : '✗'} (target ≥50%)`,
-        `Cache hits   : ${s.cacheHitRate}%`,
-        `Grep calls   : ${s.grepRate}%  ${s.grepRate <= 20 ? '✓' : '✗'} (target <20%)`,
-        ``,
-        `Combined (no-grep): ${hitRate}%  ${hitRate >= 80 ? '✓ GOOD' : hitRate >= 60 ? '~ OK' : '✗ POOR'}`,
-        `Click to see full report`,
-      ].join('\n');
-      telemetryBar.show();
-    }) });
 
     context.subscriptions.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
@@ -351,21 +282,6 @@ export function activate(context: vscode.ExtensionContext): void {
           void vscode.window.showErrorMessage('TierMux: skill install failed — see "TierMux Skills" output for details.');
         }
       }),
-      vscode.commands.registerCommand('tiermux.showTelemetry', () => {
-        const channel = vscode.window.createOutputChannel('TierMux Telemetry');
-        channel.clear();
-        channel.appendLine(formatTelemetryReport());
-        channel.show(true);
-      }),
-      vscode.commands.registerCommand('tiermux.resetTelemetry', () => {
-        resetTelemetry();
-        void vscode.window.showInformationMessage('TierMux: telemetry counters reset.');
-      }),
-      vscode.commands.registerCommand('tiermux.index.rebuild', () => {
-        wsIndex.rebuild();
-        void vscode.window.showInformationMessage('TierMux: Symbol & Dependency Index rebuilt.');
-      }),
-
       vscode.commands.registerCommand('tiermux.verifyGrounding', async () => {
         const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (!wsRoot) { void vscode.window.showErrorMessage('No workspace folder open.'); return; }
@@ -377,40 +293,7 @@ export function activate(context: vscode.ExtensionContext): void {
         channel.appendLine(renderVerifyReport(report));
         void vscode.window.showInformationMessage(`Grounding verify: ${report.ok ? 'PASS' : 'FAIL'} (${report.passed}/${report.total} questions passed)`);
       }),
-
-      vscode.commands.registerCommand('tiermux.showProfiler', () => {
-        const channel = vscode.window.createOutputChannel('TierMux Profiler');
-        channel.clear();
-        channel.appendLine(renderProfilerReport(profiler.getReportData()));
-        channel.show(true);
-      }),
-      vscode.commands.registerCommand('tiermux.copyProfilerSummary', () => {
-        void vscode.env.clipboard.writeText(profiler.getSummary());
-        void vscode.window.showInformationMessage('TierMux Profiler: summary copied to clipboard.');
-      }),
-      vscode.commands.registerCommand('tiermux.exportProfiler', async () => {
-        const uri = await vscode.window.showSaveDialog({
-          filters: { 'JSON Files': ['json'] },
-          defaultUri: vscode.Uri.file('tiermux-profiler-trace.json'),
-        });
-        if (uri) {
-          const fs = await import('fs');
-          fs.writeFileSync(uri.fsPath, JSON.stringify(exportProfilerData(profiler), null, 2), 'utf8');
-          void vscode.window.showInformationMessage(`TierMux Profiler: exported to ${uri.fsPath}`);
-        }
-      }),
-      vscode.commands.registerCommand('tiermux.resetProfiler', async () => {
-        const confirm = await vscode.window.showWarningMessage(
-          'Reset all profiler traces and statistics?', { modal: true },
-          'Reset',
-        );
-        if (confirm === 'Reset') {
-          profiler.reset();
-          void vscode.window.showInformationMessage('TierMux Profiler: all traces cleared.');
-        }
-      }),
     );
-
 
     context.subscriptions.push(
       ...registerEditorCommands(chat),

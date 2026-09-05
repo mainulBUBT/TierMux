@@ -2,7 +2,7 @@
 // reasoning-effort segmented control (a per-model property, so it lives here rather
 // than in the toolbar), the "Auto — smart routing" entry, and the enabled models
 // grouped by provider with capability chips (T/V/R) and status tags
-// (unavailable / slow / off).
+// (unavailable / off).
 //
 // Model DATA stays owned by main.ts (`getEnabledModelOptions()` reads the host
 // config); the component renders whatever it is given and reports changes through
@@ -37,8 +37,6 @@ export interface ModelPickerSetOptions {
   options: ModelOption[];
   /** `platform::modelId` values the provider reported as gone — tagged "unavailable". */
   deprecated?: string[];
-  /** `platform::modelId` values with recent slow responses — tagged "slow". */
-  slow?: string[];
 }
 
 export interface ModelPickerHandle {
@@ -72,7 +70,6 @@ function displayLabel(value: string, options: ModelOption[]): string {
 export function createModelPicker(init: ModelPickerInit): ModelPickerHandle {
   let options: ModelOption[] = [];
   let deprecated = new Set<string>();
-  let slow = new Set<string>();
   let value = init.value;
   let label = displayLabel(value, []);
   let serving: string | null = null;
@@ -146,9 +143,6 @@ export function createModelPicker(init: ModelPickerInit): ModelPickerHandle {
     if (deprecated.has(v)) {
       return el('span', { class: 'tm-tag tm-tag-deprecated', title: 'The provider returned “not found” for this model — it looks deprecated or removed. Auto skips it.' }, 'unavailable');
     }
-    if (slow.has(v)) {
-      return el('span', { class: 'tm-tag tm-tag-slow', title: 'A recent response took 8s or longer. Auto deprioritizes this model for 30 minutes — you can still select it directly.' }, 'slow');
-    }
     if (off) {
       return el('span', { class: 'tm-tag tm-tag-off', title: 'Not in your enabled chain — Auto will not pick it, but pinning routes to it directly. Enable it in Settings to include it in Auto.' }, 'off');
     }
@@ -160,7 +154,7 @@ export function createModelPicker(init: ModelPickerInit): ModelPickerHandle {
       'div',
       {
         class: 'tm-model-item' + (opt.value === value ? ' selected' : '')
-          + (deprecated.has(opt.value) ? ' deprecated' : '') + (slow.has(opt.value) ? ' slow' : '') + (off ? ' off' : ''),
+          + (deprecated.has(opt.value) ? ' deprecated' : '') + (off ? ' off' : ''),
         role: 'button', tabindex: '0', dataset: { value: opt.value },
         onClick: () => { popover.close(); if (opt.value !== value) { setValue(opt.value, opt.label); init.onChange(opt.value, opt.label); } },
         onKeydown: (e: KeyboardEvent) => {
@@ -266,7 +260,6 @@ export function createModelPicker(init: ModelPickerInit): ModelPickerHandle {
     setOptions(opts: ModelPickerSetOptions) {
       options = opts.options || [];
       deprecated = new Set(opts.deprecated || []);
-      slow = new Set(opts.slow || []);
       renderList();
     },
     setServing(l: string | null) {

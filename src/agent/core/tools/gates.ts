@@ -3,20 +3,12 @@
 import type { EditGate } from '../../../edits/applyEdit';
 import type { CommandGate } from '../../../edits/commandGate';
 
-let editGate: EditGate | undefined;
 let commandGate: CommandGate | undefined;
 
-/** Wires the agent's write/edit/delete/bash tools to the SAME EditGate/CommandGate instances
- *  extension.ts already constructs (with their settings/allowlist/shell-manager wiring intact) —
- *  called once at activation. */
-export function setGates(edit: EditGate, command: CommandGate): void {
-  editGate = edit;
+/** Called once at activation with the CommandGate extension.ts constructs. The EditGate
+ *  parameter is accepted for the existing call sites but no tool reads it any more. */
+export function setGates(_edit: EditGate, command: CommandGate): void {
   commandGate = command;
-}
-
-export function getEditGate(): EditGate {
-  if (!editGate) throw new Error('EditGate not initialized.');
-  return editGate;
 }
 
 export function getCommandGate(): CommandGate {

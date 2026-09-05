@@ -17,7 +17,7 @@ export function defaultForSetting(meta: SettingMeta): boolean | number | string 
 export const SETTINGS_META: SettingMeta[] = [
   // -- Agent --
   { key: 'agent.requireWriteConfirmation', label: 'Require write confirmation', type: 'boolean',
-    desc: 'Show a diff and ask for confirmation before the agent writes/creates/deletes a file.' },
+    desc: 'Ask before the agent writes, creates or deletes a file (and before inline chat applies an edit). Off: file changes run without a prompt; shell commands still follow "Command approval mode".' },
   { key: 'agent.diagTrace', label: 'Diagnostic trace', type: 'boolean',
     desc: 'Log per-turn timing (model selection, first token) and engine events to the "TierMux Diag" output channel — for diagnosing slow turns.' },
   { key: 'agent.commandApproval', label: 'Command approval mode', type: 'enum', enum: ['always', 'allowlist', 'never'],
@@ -42,11 +42,6 @@ export const SETTINGS_META: SettingMeta[] = [
     desc: 'Save actionable plans as markdown checklist files.' },
   { key: 'plan.folder', label: 'Plans folder', type: 'string',
     desc: 'Workspace-relative folder where plan files are written.' },
-  // -- Profiler --
-  { key: 'profiler.enabled', label: 'Profiler', type: 'boolean',
-    desc: 'Collect per-turn performance traces (latency, tokens, fallbacks).' },
-  { key: 'profiler.ringSize', label: 'Profiler ring size', type: 'number', min: 10, max: 10000,
-    desc: 'Maximum number of recent turns to keep in the profiler\'s ring buffer.' },
   // -- Other --
   { key: 'agent.toolCompaction', label: 'Tool-result compaction', type: 'enum', enum: ['off', 'light', 'aggressive'],
     desc: 'Replace EARLIER steps\' bulky tool outputs with a one-line stub naming the tool and its arguments, so each step re-sends a small prompt; light stubs over ~2,000 characters, aggressive over ~800. The most recent step\'s results, short outputs and error payloads stay verbatim. File reads are included — they are the largest outputs and the reason this exists.' },

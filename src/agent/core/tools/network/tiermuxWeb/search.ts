@@ -2,7 +2,6 @@ import type { WebSearchResult, SearchCollection, SearchAttempt, WebSearchMode } 
 import { getWebSearchOrder, normalizeDomainFilter } from "./url";
 import { normalizeEngineResults, mergeSearchResults, formatAttemptSummary } from "./scoring";
 import { formatDateForDisplay } from "./dates";
-import { findLlmsTxt } from "./llms";
 import { getProvider } from "./providers";
 
 function buildEffectiveQuery(query: string, domain?: string): string {
@@ -80,27 +79,4 @@ export function formatWebSearchResults(query: string, results: WebSearchResult[]
   if (attempts.length > 0) header += `\nEngines: ${formatAttemptSummary(attempts)}`;
 
   return `${header}\n\n${formatted}`;
-}
-
-export async function enrichResultsWithLlms(results: WebSearchResult[], probeCount: number): Promise<WebSearchResult[]> {
-  const probeTargets = results.slice(0, Math.max(0, probeCount));
-  if (probeTargets.length === 0) return results;
-
-  const docs = await Promise.all(probeTargets.map(async (result) => ({
-    url: result.url,
-    doc: await findLlmsTxt(result.url),
-  })));
-  const docMap = new Map(docs.map((item) => [item.url, item.doc]));
-
-  return results
-    .map((result) => {
-      const llms = docMap.get(result.url);
-      if (!llms) return result;
-      return {
-        ...result,
-        llms,
-        score: result.score + 6,
-      } satisfies WebSearchResult;
-    })
-    .sort((a, b) => b.score - a.score);
 }

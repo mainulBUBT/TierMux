@@ -272,7 +272,7 @@ body {
 .work-sum-label:hover { color: var(--tm-fg, var(--vscode-foreground)); }
 .work-sum-label::-webkit-details-marker { display: none; }
 /* The native marker above is hidden, so the disclosure affordance is this glyph — same
-   ▸/▾ swap .tool-more, details.reasoning, and .tm-card-collapsible use. */
+   ▸/▾ swap .tool-more and details.reasoning use. */
 .work-sum-label::before { content: '▸'; font-size: var(--tm-text-sm, 12px); margin-right: var(--tm-gap-sm, 4px); }
 details[open].work-summary > .work-sum-label::before { content: '▾'; }
 details[open].work-summary > .work-sum-label { color: var(--tm-fg, var(--vscode-foreground)); }
@@ -612,20 +612,6 @@ details[open].reasoning summary::before { content: '▾ '; }
 }
 .error-notice svg { flex: 0 0 auto; }
 .error-notice-repeat { opacity: .7; font-size: 11px; margin-left: 4px; font-style: italic; }
-
-/* Watchdog — observability only. `.watchdog-notice` (warning: text-only, like .notice) and
- * `.watchdog-card` (actionable: buttons) share one element per request, swapped in place. */
-.watchdog-notice { font-size: 11px; opacity: .7; font-style: italic; padding: 2px 0; }
-.watchdog-card {
-  display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; margin: 4px 0;
-  border-radius: 8px; border: 1px solid var(--vscode-panel-border);
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.12));
-  font-size: 12px;
-}
-.watchdog-card-title { opacity: .9; }
-.watchdog-card-meta { font-size: 11px; opacity: .65; }
-.watchdog-card-note { font-size: 11px; opacity: .7; }
-.watchdog-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
 
 /* Transient toasts for quick actions (copy / like / unlike) — anchored at the click */
 .toast {
@@ -2014,128 +2000,12 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .dlg-field input:focus { border-color: var(--vscode-focusBorder); }
 .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
-/* First-run engine onboarding overlay (binary download → verify → ready/error).
-   Covers the whole panel until the engine is confirmed working; never shown again
-   after that (see ONBOARDED_KEY in extension.ts). */
-.engine-onboard {
-  position: absolute;
-  inset: 0;
-  z-index: 900;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
-  transition: opacity 0.4s ease;
-}
-.engine-onboard.hidden { display: none; }
-.engine-onboard.engine-onboard-done { opacity: 0; pointer-events: none; }
-.engine-onboard-card {
-  width: min(320px, 88%);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  text-align: center;
-}
-.engine-onboard-title { font-size: 13px; font-weight: 600; color: var(--vscode-foreground); }
-.engine-onboard.engine-onboard-error .engine-onboard-title { color: var(--vscode-errorForeground); }
-.engine-onboard-bar-track {
-  width: 100%;
-  height: 6px;
-  border-radius: 3px;
-  background: var(--vscode-input-background);
-  overflow: hidden;
-}
-.engine-onboard-bar-fill {
-  height: 100%;
-  background: var(--tm-progress);
-  transition: width 0.25s ease;
-}
-.engine-onboard.engine-onboard-error .engine-onboard-bar-fill { background: var(--vscode-errorForeground); }
-.engine-onboard-message {
-  font-size: 11px;
-  color: var(--vscode-descriptionForeground);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.engine-onboard-actions { display: flex; align-items: center; justify-content: center; gap: 10px; }
-.engine-onboard-actions.hidden { display: none; }
-.engine-onboard-retry {
-  padding: 4px 14px;
-  border-radius: 4px;
-  border: 1px solid var(--vscode-button-border, transparent);
-  background: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
-  cursor: pointer;
-  font: inherit;
-}
-.engine-onboard-retry:hover { background: var(--vscode-button-hoverBackground); }
-.engine-onboard-skip {
-  padding: 4px 10px;
-  border-radius: 4px;
-  border: none;
-  background: transparent;
-  color: var(--vscode-descriptionForeground);
-  cursor: pointer;
-  font: inherit;
-  text-decoration: underline;
-}
-.engine-onboard-skip:hover { color: var(--vscode-foreground); }
-
-/* ============================================================================
- * ui/primitives/** — TierMux's own framework-free component layer (Layer 2).
- * Styling for the reusable factories in media/src/ui/primitives/. Existing
- * elements (.bubble, .chip, .todo-spin, …) are NOT migrated to these classes
- * yet — that's a later, separate pass; these rules only back new call sites.
- * ============================================================================ */
-
-/* Card — generic bordered panel with an optional title/body/footer split and a
-   collapsible (<details>-backed) variant (see ui/primitives/Card.ts). */
-.tm-card {
-  padding: 8px 10px;
-  border-radius: var(--tm-radius-lg);
-  border: 1px solid var(--tm-border);
-  background: var(--tm-surface-panel);
-}
-.tm-card-title { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
-.tm-card-body { font-size: 12px; }
-.tm-card-footer { display: flex; gap: 8px; margin-top: 8px; font-size: 11px; }
-/* Collapsible variant renders as <details><summary>title</summary>body+footer</details> —
-   the title/body spacing above doesn't apply the same way, so the summary carries its own. */
-.tm-card-collapsible { padding: 2px 0 2px 9px; border: none; border-left: 2px solid var(--tm-border); border-radius: 0; background: none; }
-.tm-card-collapsible > summary { cursor: pointer; list-style: none; opacity: .7; font-size: 12px; }
-.tm-card-collapsible > summary::-webkit-details-marker { display: none; }
-.tm-card-collapsible > summary::before { content: '▸ '; font-size: 9px; }
-details[open].tm-card-collapsible > summary::before { content: '▾ '; }
-.tm-card-collapsible > .tm-card-body { margin-top: 4px; }
-/* Accent variants — boxed cards tint their whole border; the collapsible variant (whose
-   only border is the left accent stripe, .tool-card-style) tints just that. */
-.tm-card-accent { border-color: var(--tm-progress); }
-.tm-card-success { border-color: var(--tm-success); }
-.tm-card-error { border-color: var(--tm-error); }
-.tm-card-collapsible.tm-card-accent { border-left-color: var(--tm-progress); }
-.tm-card-collapsible.tm-card-success { border-left-color: var(--tm-success); }
-.tm-card-collapsible.tm-card-error { border-left-color: var(--tm-error); }
-
-/* Badge — generic small pill/label (see ui/primitives/Badge.ts). */
-.tm-badge {
-  display: inline-flex; align-items: center; gap: 4px;
-  font-size: 10px; padding: 1px 6px; border-radius: var(--tm-radius-pill);
-  background: var(--tm-badge-bg); color: var(--tm-fg-badge);
-}
-.tm-badge-accent { background: var(--tm-accent); color: var(--tm-accent-fg); }
-.tm-badge-success { background: color-mix(in srgb, var(--tm-success) 20%, transparent); color: var(--tm-success); }
-.tm-badge-error { background: color-mix(in srgb, var(--tm-error) 20%, transparent); color: var(--tm-error); }
-
-/* Spinner ring — generic bordered rotating ring (see ui/primitives/Spinner.ts).
-   Reuses the existing `idx-spin` keyframe (defined above under Composer) rather
-   than duplicating it. */
+/* Loading spinner ring — reuses the `idx-spin` keyframe defined under Composer. */
 .tm-spinner-ring {
   display: inline-block; width: 11px; height: 11px; border-radius: 50%;
   border: 2px solid var(--tm-border); border-top-color: var(--tm-progress);
   animation: idx-spin .8s linear infinite;
 }
-
-
 
 /* ── Composer polish pass (modern-agent look) ─────────────────────────────── */
 

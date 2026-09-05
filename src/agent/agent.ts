@@ -6,8 +6,6 @@
 // vscode-free and independently testable, and so a future AI SDK version bump only touches
 // ./core/*, not this file or chatViewProvider.ts.
 import type { ChatMessage, TodoItem, ReasoningEffort, ProposedPlan } from '../shared/types';
-import type { IProfilerService } from '../profiler/profilerService';
-import type { ClarifyingQuestion } from './clarify';
 
 export interface ToolEvent {
   toolCallId: string;
@@ -40,10 +38,7 @@ export interface AgentResult {
    *
    *  Live since 2026-09-05. It was declared but never assigned for the whole v3 era, described
    *  in terms of a "continuation loop in chatViewProvider" that no longer exists. */
-  stopReason?: 'budget' | 'stuck' | 'askQuestions';
-  /** Set when the model called the plan-mode `askQuestions` tool this turn — the caller uses
-   *  this directly instead of parsing `text` for the legacy ???QUESTIONS??? sentinel. */
-  askQuestions?: ClarifyingQuestion[];
+  stopReason?: 'budget' | 'stuck';
   /** Set when the model called plan mode's `exitPlanMode` tool — the explicit
    *  planning→execution boundary. The plan arrives as VALIDATED STRUCTURE, so the host renders
    *  its plan card straight from this instead of inferring "was that reply a plan?" from the
@@ -94,15 +89,6 @@ export interface SelectionRationaleInfo {
   taskKind: string;
   picked?: string;
   entries: Array<{ model: string; selected: boolean; score: number; capability: number; runtime: number; preference: number; confidence: number; reason: string; skip?: string }>;
-}
-
-/** Last activity is protocol-derived (chunks, tool events, reasoning, step labels). The
- *  engine-side tracker lives in core/watchdog.ts (TurnWatchdog): a turn quiet past its
- *  warning/actionable thresholds fires these once each; any protocol event dismisses the
- *  showing card. The callbacks stay optional so headless callers compile unchanged. */
-export interface WatchdogActivity {
-  label: string;
-  atMs: number;
 }
 
 export type AgentMode = 'plan' | 'agent' | 'ask';
@@ -178,17 +164,10 @@ export interface AgentOpts {
   onPermissionAsk?: (info: { title: string; pattern?: string | string[]; command?: string; toolName?: string }) => Promise<'once' | 'always' | 'reject'>;
   onError: (message: string) => void;
   onWarning?: (message: string) => void;
-  /** Watchdog — fired by core/watchdog.ts's TurnWatchdog when a turn goes quiet (warning at
-   *  ~45s without a protocol event, actionable at ~90s). See WatchdogActivity above. */
-  onWatchdogWarning?: (info: { elapsedMs: number; lastActivity?: WatchdogActivity }) => void;
-  onWatchdogActionable?: (info: { elapsedMs: number; lastActivity?: WatchdogActivity; hasPartialOutput: boolean }) => void;
-  onWatchdogDismissed?: () => void;
   /** Turn telemetry sink — set by runTurn itself (not callers); every model call the turn
    *  makes (planner, executor, judges, recap) reports its provider-measured usage here so
    *  WorkReportData.telemetry reflects the WHOLE turn. See src/shared/workReport.ts. */
   usageSink?: (info: { inputTokens: number; outputTokens: number; contextTokens: number; contextWindow?: number; model: string }) => void;
-  /** Profiler service — always called (NoopProfiler when disabled). */
-  profiler?: IProfilerService;
 }
 
 // Lazy/dynamic on purpose: everything under `./core/` imports `vscode` (workspace.fs, the

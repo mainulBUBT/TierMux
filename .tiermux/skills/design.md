@@ -1,15 +1,13 @@
 ---
 description: Build or restyle UI to a modern, consistent design system, reusing the project's existing tokens
-design: true
-triggers: restyle, design system, make it look, looks ugly, looks bad, look better, ui polish, polish the ui, style the, styling, css, dark mode, light mode, responsive, spacing, hover state, focus state, design the
 ---
 UI/design task. Produce real edits that look like a professionally designed product, not a default-styled prototype.
 
-STEP 1 — USE THE DESIGN SYSTEM YOU WERE GIVEN
-- A `DESIGN SYSTEM (in force for this turn)` block is in your instructions. It was read off this project's own files. Those tokens and values are the answer to "what colour / what spacing / what radius" — do not decide those yourself, and do not go looking for a second source.
+STEP 1 — FIND THE PROJECT'S DESIGN SYSTEM FIRST
+- Before writing any styles, grep for the project's existing tokens: CSS custom properties (`--color-`, `--space-`, `--radius-`), a Tailwind config, a theme file, or the main stylesheet's `:root` block. Those values are the answer to "what colour / what spacing / what radius" — do not decide those yourself.
 - Read the file(s) you are about to change before writing any styles. Never style markup you have not read.
 - If tokens exist, reuse and extend them. A second parallel palette is a defect, not a style choice.
-- If the design system block is a preset (it says so), define its token block once in the project's main stylesheet, then reference only tokens below it.`
+- If the project has no tokens at all, define one small token block once in its main stylesheet (one accent, one neutral scale, one spacing scale, one radius) and reference only tokens below it.
 
 STEP 2 — PICK THE RIGHT MODE
 - Restyling working UI → keep the existing structure, class names, and layout. Change values, not architecture. The user wants it to look better, not to be rebuilt.

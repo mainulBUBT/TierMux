@@ -150,7 +150,6 @@ All implemented natively — there is no external routing service in the path.
 | Technique | Where it runs | Role |
 |---|---|---|
 | Regex-first task classification, bilingual (English + romanized Bengali) | every turn | picks the task kind without a model call; routing is language-invariant |
-| Low-confidence LLM re-classification | ambiguous turns | a cheap keyless model double-checks the guess, timeout-bounded, falls back to the regex answer |
 | Task table → intelligence-rank tail | picker | curated first choice per kind, then the whole enabled pool best-first — never a dead end |
 | Availability + quality failover | picker | an empty-but-HTTP-200 answer fails over exactly like a 429 |
 | Exponential per-model cooldown (30 s → 2 min) | picker | stops hammering a model that just failed; resets on success |

@@ -126,17 +126,6 @@ function extractLinksFromHtml(JSDOM: JSDOMConstructor, html: string): { text: st
   }
 }
 
-/**
- * Readable-content extraction for arbitrary HTML (jsdom-backed). Exported so the
- * extraction logic is unit-testable offline with fixture HTML, without going
- * through the network fetcher. Loads jsdom lazily on first call.
- */
-export async function extractMainContentFromHtml(html: string): Promise<{ title: string; text: string } | null> {
-  const JSDOM = await loadJSDOM();
-  const result = extractMainContent(JSDOM, html);
-  return result ? { title: result.title, text: result.text } : null;
-}
-
 export const httpFetcher: Fetcher = {
   name: "http-jsdom",
   priority: 40,

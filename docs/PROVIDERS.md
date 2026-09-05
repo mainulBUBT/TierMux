@@ -177,8 +177,6 @@ The ones worth knowing (`Settings → Extensions → TierMux`, or `tiermux.*` in
 | `tiermux.agent.toolCompaction` | `light` | `light` = head+tail of large command output; `aggressive` reaches further |
 | `tiermux.agent.commandApproval` | `always` | how `runCommand` is gated |
 | `tiermux.agent.commandAllowlist` | `[]` | commands that skip the approval prompt |
-| `tiermux.classifierModel` | `auto` | model the task classifier uses (`auto` prefers keyless: OpenCode → Kilo → OVH) |
 | `tiermux.utilityModel` | `auto` | model for chat titles and commit messages |
-| `tiermux.index.enabled` | — | symbol + dependency index |
 | `tiermux.mcpServers` | `{}` | MCP server definitions |
 | `tiermux.completions.enabled` | — | inline completions |

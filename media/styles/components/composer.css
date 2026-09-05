@@ -227,7 +227,6 @@
   letter-spacing: 0.03em; padding: 1px 5px; border-radius: var(--tm-radius-sm);
   color: #fff; background: var(--tm-error);
 }
-.tm-tag-slow { background: var(--tm-warning); }
 .tm-tag-off {
   color: var(--tm-fg-muted);
   background: var(--tm-badge-bg); border: 1px solid var(--tm-card-border);

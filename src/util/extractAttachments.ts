@@ -281,11 +281,5 @@ export async function extractPdfText(buf: Buffer): Promise<string> {
   });
 }
 
-/** Extract plain text from a DOCX buffer using mammoth. */
-export async function extractDocxText(buf: Buffer): Promise<string> {
-  const { value } = await mammoth.extractRawText({ buffer: buf });
-  return (value ?? '').trim();
-}
-
 /** Cap we apply when an image is sent through the wire (mirrors the provider cap). */
 export const IMAGE_BYTE_LIMIT = MAX_IMAGE_BYTES;

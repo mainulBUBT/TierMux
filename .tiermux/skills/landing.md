@@ -1,7 +1,5 @@
 ---
 description: Build a landing/marketing page that explains the project and converts, grounded in what the project actually does
-design: true
-triggers: landing page, marketing page, marketing site, homepage, home page, hero section, promo page, product page, splash page, website for
 ---
 Landing/marketing page task. The goal is a page a stranger can read in 30 seconds and come away knowing what this project is, who it is for, and what to do next. Work in this order.
 
@@ -33,7 +31,7 @@ STEP 5 — BUILD IT
 - Match the project's existing stack. Plain HTML/CSS is correct when there is no framework — do not introduce React for a static page.
 - Self-contained: no CDN links, no external web fonts, no icon packages. System font stack and inline SVG. Many hosts block third-party requests outright.
 - Mobile-first. One column under 640px, real breakpoints, tap targets ≥ 44px, nothing overflowing horizontally.
-- Design quality: use the `DESIGN SYSTEM (in force for this turn)` block in your instructions for every colour, spacing, radius and type value — it was read off this project's own files, so the page matches the product instead of looking like a stock template. Body contrast ≥ 4.5:1, line-height ≥ 1.5 for paragraphs, max-width ~65ch for reading. Every link and button gets hover and focus-visible styles.
+- Design quality: grep the project for its existing tokens (CSS custom properties, a Tailwind config, the main stylesheet's `:root`) and use them for every colour, spacing, radius and type value, so the page matches the product instead of looking like a stock template. Body contrast ≥ 4.5:1, line-height ≥ 1.5 for paragraphs, max-width ~65ch for reading. Every link and button gets hover and focus-visible styles.
 - Semantic markup: one `<h1>`, real heading order, `<nav>`/`<main>`/`<footer>`, alt text on images, a `<title>` and meta description.
 - Respect `prefers-color-scheme` and `prefers-reduced-motion`.
 

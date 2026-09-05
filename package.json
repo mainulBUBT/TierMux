@@ -169,11 +169,6 @@
         "category": "TierMux"
       },
       {
-        "command": "tiermux.index.rebuild",
-        "title": "Rebuild Symbol & Dependency Index",
-        "category": "TierMux"
-      },
-      {
         "command": "tiermux.explainSelection",
         "title": "Explain Selection",
         "category": "TierMux"
@@ -251,40 +246,8 @@
         "icon": "$(cloud-download)"
       },
       {
-        "command": "tiermux.showTelemetry",
-        "title": "Show Telemetry",
-        "category": "TierMux",
-        "icon": "$(graph-line)"
-      },
-      {
-        "command": "tiermux.resetTelemetry",
-        "title": "Reset Telemetry",
-        "category": "TierMux"
-      },
-      {
         "command": "tiermux.verifyGrounding",
         "title": "Verify Grounding",
-        "category": "TierMux"
-      },
-      {
-        "command": "tiermux.showProfiler",
-        "title": "Show Profiler",
-        "category": "TierMux",
-        "icon": "$(graph)"
-      },
-      {
-        "command": "tiermux.copyProfilerSummary",
-        "title": "Copy Profiler Summary",
-        "category": "TierMux"
-      },
-      {
-        "command": "tiermux.exportProfiler",
-        "title": "Export Profiler Trace",
-        "category": "TierMux"
-      },
-      {
-        "command": "tiermux.resetProfiler",
-        "title": "Reset Profiler",
         "category": "TierMux"
       }
     ],
@@ -400,7 +363,7 @@
         "tiermux.agent.requireWriteConfirmation": {
           "type": "boolean",
           "default": true,
-          "description": "Show a diff and ask for confirmation before the agent writes/creates/deletes a file."
+          "description": "Ask before the agent writes, creates or deletes a file (and before inline chat applies an edit). Off: file changes run without a prompt; shell commands still follow \"Command approval mode\"."
         },
         "tiermux.agent.verifyCommand": {
           "type": "string",
@@ -423,18 +386,6 @@
           ],
           "default": "light",
           "description": "Compact bulky tool results before they enter the model's context. On every step, tool outputs from EARLIER steps are replaced by a one-line stub naming the tool and its arguments, so the model can re-run it if it truly needs the content again; 'light' stubs outputs over ~2,000 characters, 'aggressive' over ~800. The most recent step's results, short outputs, and error payloads always stay verbatim. File reads ARE included — they are the largest outputs and the reason this exists. 'off' keeps every result verbatim."
-        },
-        "tiermux.profiler.enabled": {
-          "type": "boolean",
-          "default": false,
-          "description": "Collect per-turn performance traces (latency, tokens, fallbacks) into an in-memory ring buffer, viewable from the TierMux profiler command."
-        },
-        "tiermux.profiler.ringSize": {
-          "type": "number",
-          "default": 200,
-          "minimum": 10,
-          "maximum": 10000,
-          "description": "Maximum number of recent turns the profiler keeps in its ring buffer."
         },
         "tiermux.agent.autoCondense": {
           "type": "boolean",
@@ -484,29 +435,6 @@
           "type": "number",
           "default": 0.8,
           "description": "Fraction of the routed model's context window at which the conversation is automatically compacted (older turns summarized, recent ones kept verbatim). Checked before a send and after a turn settles. tiermux.agent.autoCondenseTokenCap can lower the trigger further; tiermux.agent.autoCondense turns the whole thing off."
-        },
-        "tiermux.index.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Maintain an in-memory symbol + dependency index so the agent can look up definitions and import graphs directly instead of grepping."
-        },
-        "tiermux.index.maxFiles": {
-          "type": "number",
-          "default": 5000,
-          "description": "Maximum number of files the in-memory index will hold (bounds memory). Files beyond this are not indexed until older ones drop."
-        },
-        "tiermux.index.excludes": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "default": [],
-          "description": "Path segments/globs never indexed (e.g. \"node_modules\", \"vendor\", \"*.min.js\"). Empty uses the built-in defaults (node_modules, .git, dist, build, vendor, .next, out, coverage, .cache)."
-        },
-        "tiermux.graph.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Offer the structural code-graph tools (getSymbolGraph, getDependencyTree) to the agent, giving it cross-file context from imports, exports, and call edges. Turn off to drop both tools from every turn — useful on a very large codebase, where the regex-based graph gets imprecise and the tool descriptions still cost prompt tokens."
         },
         "tiermux.context.includeOpenEditors": {
           "type": "boolean",
@@ -608,18 +536,6 @@
               "disabled": {
                 "type": "boolean",
                 "description": "Skip this server."
-              },
-              "tiermux.profiler.enabled": {
-                "type": "boolean",
-                "default": false,
-                "description": "Collect per-turn performance traces for diagnostics. Shows model latency, tool calls, TTFT, fallback rate, and quality gate triggers. Use 'TierMux: Show Profiler' to view."
-              },
-              "tiermux.profiler.ringSize": {
-                "type": "number",
-                "default": 200,
-                "minimum": 10,
-                "maximum": 2000,
-                "description": "Number of recent turns to keep in the profiler ring buffer."
               }
             }
           }
@@ -645,7 +561,6 @@
     "test:e2e:exit-plan-mode": "esbuild scripts/exitPlanMode.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/exitPlanMode.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/exitPlanMode.e2e.cjs",
     "test:e2e:think-split": "esbuild scripts/thinkSplit.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/thinkSplit.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/thinkSplit.e2e.cjs",
     "test:e2e:verify-detect": "esbuild scripts/verifyDetect.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/verifyDetect.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/verifyDetect.e2e.cjs",
-    "test:e2e:project-profile": "esbuild scripts/projectProfile.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/projectProfile.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/projectProfile.e2e.cjs",
     "test:e2e:checkpoint-persist": "esbuild scripts/checkpointPersist.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/checkpointPersist.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/checkpointPersist.e2e.cjs",
     "test:e2e:plan-structurer": "esbuild scripts/planStructurer.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planStructurer.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planStructurer.e2e.cjs",
     "test:e2e:command-classify": "esbuild scripts/commandClassify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/commandClassify.e2e.cjs && node dist/commandClassify.e2e.cjs",

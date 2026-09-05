@@ -29,22 +29,6 @@ export interface SearchCollection {
   attempts: SearchAttempt[];
 }
 
-export interface BrowsedSearchResult extends WebSearchResult {
-  finalUrl: string;
-  pageTitle: string;
-  excerpt: string;
-  pageDate?: string;
-  browseError?: string;
-  llms?: LlmsDocument | null;
-  markdownUrl?: string;
-  contentSource?: "html" | "markdown" | "github-raw" | "http-jsdom" | "rss" | "archive-cache";
-  fetcherUsed?: string;
-  fetcherMs?: number;
-  routedByLlms?: boolean;
-  routedFromUrl?: string;
-  routedReason?: string;
-}
-
 export interface LlmsRouteDecision {
   requestUrl: string;
   targetUrl: string;

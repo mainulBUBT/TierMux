@@ -72,11 +72,6 @@ export function unseenAnnouncementIds(mem: vscode.Memento, items: AnnouncementIt
   return items.filter((i) => !seen.has(i.id)).map((i) => i.id);
 }
 
-/** How many items the user hasn't read yet — drives the dot on the toolbar icon. */
-export function unseenAnnouncementCount(mem: vscode.Memento, items: AnnouncementItem[]): number {
-  return unseenAnnouncementIds(mem, items).length;
-}
-
 /** Mark every given item as seen. Callers pass either the single tip whose card was just
  *  expanded or the whole feed ("Mark all read") — opening the page alone marks nothing, so
  *  the dot keeps pointing at a tip until it has actually been read. */

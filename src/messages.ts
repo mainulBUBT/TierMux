@@ -1,7 +1,6 @@
 // Wire protocol between the extension host and the chat webview.
 import type { CatalogModel, CustomEndpointType, CustomModel, FallbackEntry, KeyStatus, Mode, Platform, PlanRunState, ReasoningEffort, TodoItem } from './shared/types';
 import type { WorkReportData } from './shared/workReport';
-import type { ClarifyingQuestion } from './agent/clarify';
 import type { McpServerConfig } from './mcp/mcpClient';
 export type { McpServerConfig, McpLocalServerConfig, McpRemoteServerConfig, McpOAuthConfig } from './mcp/mcpClient';
 
@@ -127,8 +126,6 @@ export interface ConfigPayload {
   mcpRegistry: McpRegistryItem[];
   /** `platform::modelId` keys a provider has 404'd this session — flagged as deprecated in the picker. */
   deprecated: string[];
-  /** `platform::modelId` keys currently labeled slow (a recent request was ≥8s) — deprioritized in Auto for 30 min, flagged in the picker. */
-  slow: string[];
   /** `platform::modelId` keys currently set as a per-model override of the platform key. */
   modelKeys: string[];
   /** Selected model for utility tasks (titles, commit messages); 'auto' = keyless-preferred. */
@@ -181,7 +178,6 @@ export type InMessage =
   | { type: 'approvePlan'; requestId: string; approved: boolean; steps: string }
   | { type: 'executePlan'; requestId: string; steps: string }
   | { type: 'deferPlan'; requestId: string; steps: string }
-  | { type: 'answerClarifying'; requestId: string; answers: string[] }
   | { type: 'renameSession'; title: string }
   | { type: 'renameSessionById'; sessionId: string; title: string }
   | { type: 'deleteSessionById'; sessionId: string }
@@ -190,9 +186,6 @@ export type InMessage =
   | { type: 'commandApprovalResponse'; id: string; approved: boolean; sessionId?: string }
   | { type: 'editApprovalResponse'; id: string; approved: boolean; sessionId?: string }
   | { type: 'permissionAskResponse'; id: string; response: 'once' | 'always' | 'reject'; sessionId?: string }
-  /** Watchdog action button click. `continueWaiting` is a client-side dismissal + log only —
-   *  the SDK never receives a decision back (see sdk.ts's watchdog design). */
-  | { type: 'watchdogAction'; requestId: string; action: 'continueWaiting' | 'restartRequest' | 'switchModel' | 'acceptCurrentOutput'; sessionId?: string }
   | { type: 'openPlanFile'; uri: string }
   | { type: 'switchSession'; sessionId: string }
   | { type: 'requestConfig' }
@@ -255,9 +248,7 @@ export type InMessage =
    *  Omitting `ids` marks everything ("Mark all read"). */
   | { type: 'markAnnouncementsSeen'; ids?: number[] }
   /** Resume a paused plan run (see planProgress) from its persisted step state. */
-  | { type: 'resumePlan' }
-  /** Onboarding "Retry" button — re-attempt the OC engine startup. */
-  | { type: 'retryEngine' };
+  | { type: 'resumePlan' };
 
 /** A single tool step shown inside a turn's "Worked for Ns" disclosure. Mirrors the live
  *  `toolStatus` event so a re-rendered (e.g. post-revert) message can rebuild its step list. */
@@ -340,12 +331,8 @@ export type OutMessage =
   | { type: 'commandApproval'; sessionId: string; requestId: string; id: string; command: string; cwd?: string }
   | { type: 'editApproval'; sessionId: string; requestId: string; id: string; path: string; title: string; kind: 'write' | 'delete' }
   | { type: 'permissionAsk'; sessionId: string; requestId: string; id: string; title: string; pattern?: string | string[] }
-  | { type: 'clarifyingQuestions'; sessionId: string; requestId: string; questions: ClarifyingQuestion[] }
   | { type: 'sessionTitle'; sessionId: string; title: string }
-  // `noFooter`: true when a clarifyingQuestions card immediately follows this message for the
-  // SAME requestId — the model/usage footer is deferred to the eventual final answer bubble
-  // (a new requestId, once the user answers) instead of showing on the question-asking turn.
-  | { type: 'assistantMessage'; sessionId: string; requestId: string; text: string; reasoning?: string; finishReason?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean; noFooter?: boolean }
+  | { type: 'assistantMessage'; sessionId: string; requestId: string; text: string; reasoning?: string; finishReason?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean }
   // Structured end-of-turn report — posted right after the assistantMessage it belongs to.
   // The webview mounts a ResultCard on the live turn target AND stores it for replay parity
   // (same component renders both paths). `text` in the paired assistantMessage deliberately
@@ -379,12 +366,6 @@ export type OutMessage =
    *  two stay in sync; the webview picks Plan vs legacy todo-list by current mode. */
   | { type: 'planData'; sessionId: string; requestId: string; data: PlanDataPayload }
   | { type: 'failoverNotice'; sessionId: string; requestId: string; from: string; reason: string }
-  /** Watchdog — observability only. Warning/actionable are non-blocking; `hasPartialOutput`
-   *  gates whether "Accept Current Output" is offered. `dismissed` means real activity resumed
-   *  and any warning/actionable UI for this request should be removed immediately. */
-  | { type: 'watchdogWarning'; sessionId: string; requestId: string; elapsedMs: number; lastActivityLabel?: string; lastActivityAgeMs?: number }
-  | { type: 'watchdogActionable'; sessionId: string; requestId: string; elapsedMs: number; lastActivityLabel?: string; lastActivityAgeMs?: number; hasPartialOutput: boolean }
-  | { type: 'watchdogDismissed'; sessionId: string; requestId: string }
   | { type: 'selectionRationale'; sessionId: string; requestId: string; taskKind: string; picked?: string; entries: SelectionRationaleEntry[] }
   | { type: 'keyRotated'; sessionId: string; requestId: string; platform: string; platformName: string; keyIndex: number; keyTotal: number }
   | { type: 'attachmentAdded'; attachment: Attachment }
@@ -407,10 +388,6 @@ export type OutMessage =
   | { type: 'setMode'; sessionId: string; mode: Mode }
   | { type: 'error'; sessionId?: string; requestId?: string; message: string }
   | { type: 'busy'; sessionId: string; busy: boolean }
-  /** First-run engine onboarding: binary download progress → verify → ready/error.
-   *  Only sent while the engine hasn't been successfully onboarded before (see
-   *  `tiermux.onboardedEngine` global state) — returning users never see this. */
-  | { type: 'engineStatus'; state: 'downloading' | 'starting' | 'verifying' | 'ready' | 'error'; message?: string; percent?: number }
   | { type: 'newModelsAvailable'; message: string }
   /** Dismissible "new providers available" banner above the composer — mirrors the
    *  models banner but fires when a brand-new provider is merged in from the remote catalog. */

@@ -710,6 +710,27 @@ async function main() {
     }
   }
 
+  // ── Scenario 19b: requireWriteConfirmation=false skips the prompt for FILE tools only ──
+  // Until 2026-09-05 the setting reached inline chat's EditGate and nothing else; the agent's
+  // own write tools ignored it while its description promised otherwise.
+  {
+    const base = { alwaysAllow: new Set<string>(), alwaysDeny: new Set<string>(), autoModeAllowlist: new Set<string>() };
+    let asked = 0;
+    const ask = async () => { asked++; return 'reject' as const; };
+    const off = { ...base, mode: 'ask' as const, sessionMode: 'agent' as const, autoApproveWrites: true };
+    const w = await resolvePolicy({ toolName: 'writeFile' }, off, ask);
+    ok('19b. off: writeFile runs without a prompt', w.type === 'approved' && asked === 0, `asked=${asked}`);
+    const sh = await resolvePolicy({ toolName: 'runCommand', input: { command: 'rm -rf build' } }, off, ask);
+    ok('19b. off: runCommand still asks', sh.type === 'denied' && asked === 1, `asked=${asked}`);
+    const plan = { ...off, sessionMode: 'plan' as const };
+    const p = await resolvePolicy({ toolName: 'writeFile' }, plan, ask);
+    ok('19b. off: plan mode still denies writes', p.type === 'denied');
+    const on = { ...off, autoApproveWrites: false };
+    asked = 0;
+    const w2 = await resolvePolicy({ toolName: 'writeFile' }, on, ask);
+    ok('19b. on (default): writeFile asks', w2.type === 'denied' && asked === 1, `asked=${asked}`);
+  }
+
   // ── Scenario 20: always-allow persists across turns (session grants) ────────
   {
     clearSessionGrants('s20');

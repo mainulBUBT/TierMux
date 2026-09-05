@@ -22,7 +22,6 @@ import { createTodoSheet } from './ui/components/TodoSheet';
 import { handleAssistantStart } from './handlers/assistantStart';
 import { handleAgentStep } from './handlers/agentStep';
 import { handleToolStatus } from './handlers/toolStatus';
-import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismissed } from './handlers/watchdog';
 
 (function () {
   let state = { catalog: [], fallback: [], platforms: [] };
@@ -65,19 +64,6 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
   const app = $('#app');
   app.innerHTML = `
     <div class="chat-layout" id="chat-layout">
-      <div class="engine-onboard hidden" id="engine-onboard">
-        <div class="engine-onboard-card">
-          <div class="engine-onboard-title" id="engine-onboard-title">Setting up TierMux…</div>
-          <div class="engine-onboard-bar-track">
-            <div class="engine-onboard-bar-fill" id="engine-onboard-bar" style="width: 0%"></div>
-          </div>
-          <div class="engine-onboard-message" id="engine-onboard-message"></div>
-          <div class="engine-onboard-actions hidden" id="engine-onboard-actions">
-            <button type="button" class="engine-onboard-retry" id="engine-onboard-retry">Retry</button>
-            <button type="button" class="engine-onboard-skip" id="engine-onboard-skip">Skip for now</button>
-          </div>
-        </div>
-      </div>
       <div class="history-dropdown hidden" id="history-dropdown">
         <div class="history-dropdown-header">
           <input type="text" id="history-search" class="history-search" placeholder="Search sessions…" autocomplete="off" />
@@ -179,51 +165,6 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
     panes.forEach((p) => { if (p.id !== id) p.el.classList.add('hidden'); });
     const p = panes.get(id);
     if (p) p.el.classList.remove('hidden');
-  }
-
-  // ---------- first-run engine onboarding overlay ----------
-  const engineOnboard = $('#engine-onboard');
-  const engineOnboardTitle = $('#engine-onboard-title');
-  const engineOnboardBar = $('#engine-onboard-bar');
-  const engineOnboardMessage = $('#engine-onboard-message');
-  const engineOnboardActions = $('#engine-onboard-actions');
-  const engineOnboardRetry = $('#engine-onboard-retry');
-  const engineOnboardSkip = $('#engine-onboard-skip');
-  engineOnboardRetry.addEventListener('click', () => {
-    engineOnboardActions.classList.add('hidden');
-    engineOnboardTitle.textContent = 'Setting up TierMux…';
-    engineOnboardMessage.textContent = '';
-    engineOnboardBar.style.width = '0%';
-    engineOnboard.classList.remove('engine-onboard-error');
-    send({ type: 'retryEngine' });
-  });
-  // Escape hatch: an error (e.g. bad API key) shouldn't trap the user behind an overlay
-  // with no path to Settings — Retry can't fix a config problem. Skip just hides the
-  // overlay for this session; it reappears next reload until the engine actually verifies
-  // (see ONBOARDED_KEY on the host side), so it's a dismiss, not a "never ask again".
-  engineOnboardSkip.addEventListener('click', () => {
-    engineOnboard.classList.add('hidden');
-  });
-  function handleEngineStatus(msg) {
-    if (msg.state === 'ready') {
-      engineOnboard.classList.add('engine-onboard-done');
-      setTimeout(() => engineOnboard.classList.add('hidden'), 600);
-      return;
-    }
-    engineOnboard.classList.remove('hidden');
-    engineOnboard.classList.remove('engine-onboard-done');
-    engineOnboard.classList.toggle('engine-onboard-error', msg.state === 'error');
-    engineOnboardActions.classList.toggle('hidden', msg.state !== 'error');
-    if (msg.state === 'error') {
-      engineOnboardTitle.textContent = 'TierMux engine setup failed';
-      engineOnboardBar.style.width = '100%';
-    } else {
-      engineOnboardTitle.textContent = msg.state === 'downloading' ? 'Downloading TierMux engine…'
-        : msg.state === 'verifying' ? 'Verifying chat works…'
-        : 'Starting TierMux engine…';
-      if (typeof msg.percent === 'number') engineOnboardBar.style.width = `${Math.max(0, Math.min(100, msg.percent))}%`;
-    }
-    engineOnboardMessage.textContent = msg.message || '';
   }
 
   const railEl = null; // replaced by history dropdown
@@ -1282,7 +1223,7 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
     const statusEl = document.createElement('div');
     statusEl.className = 'agent-status';
     statusEl.innerHTML = `<span class="agent-dots"><span></span><span></span><span></span></span><span class="agent-label"></span><span class="agent-caret">▍</span><span class="agent-elapsed"></span>`;
-    // `bubble` stays AFTER the flow for interactive cards (approvals/plans/clarify) and the
+    // `bubble` stays AFTER the flow for interactive cards (approvals/plans/askUser) and the
     // non-streamed final answer — keeping those paths untouched.
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
@@ -1313,33 +1254,6 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
 
   // ---------- live "agent is working" status line ----------
   // Keep the last two segments of a path so absolute workspace paths stay tidy.
-  // Strip the clarifying-questions sentinel block (and any stray sentinels) from text
-  // BEFORE rendering, so `???QUESTIONS???` / `???END???` never flash in the chat while
-  // the plan streams. The parsed questions surface as an interactive card at turn end.
-  // Tolerant of `??? QUESTIONS ???`, wrong case, or missing ? — matches the host parser.
-  // While the block is still streaming (QUESTIONS seen, END not yet), hides everything
-  // from the QUESTIONS sentinel onward so the raw question text doesn't show either.
-  // `final=false` (mid-stream, the default): hide from the start sentinel to the end of the
-  // buffer-so-far even with no closing marker yet — it may still be mid-type, and flashing
-  // raw `???QUESTIONS???` text while it streams in looks broken.
-  // `final=true` (turn complete, no more tokens coming): a start sentinel with no matching
-  // `???END???` by now was never a well-formed block — some incidental/malformed fragment,
-  // not a real clarify attempt (the server's own parseClarifying already reached the same
-  // conclusion and left this text alone). Deleting to end-of-string here would silently
-  // truncate a real answer to nothing, which is exactly what used to happen.
-  function stripClarifyBlock(s, final) {
-    const sm = /\*{0,2}\?{2,}\s*QUESTIONS\s*\?{2,}\*{0,2}/i.exec(s);
-    if (sm) {
-      const rest = s.slice(sm.index + sm[0].length);
-      const em = /\*{0,2}\?{2,}\s*END\s*\?{2,}\*{0,2}/i.exec(rest);
-      if (em) {
-        s = s.slice(0, sm.index) + rest.slice(em.index + em[0].length);
-      } else if (!final) {
-        s = s.slice(0, sm.index);
-      }
-    }
-    return s.replace(/\*{0,2}\?{2,}\s*(?:QUESTIONS|END)\s*\?{2,}\*{0,2}/gi, '');
-  }
   // Present-tense "what the agent is doing right now" for the rolling status label.
   // (The tool CARDS in the feed use the past-tense toolLabel() — "Analyzed/Searched…".
   //  This is the live verb shown beside the spinner, Claude-Code-style.)
@@ -1411,10 +1325,8 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
     if (opts.done) t.toolRunning = false;
     if (text != null) {
       // A real label is being written — force the row visible again in case an earlier
-      // clarifyingQuestions/planProposed/askUserPrompt card hid it via stopStatusTimer(id,
-      // true) and nothing since has un-hidden it (e.g. a plan-mode clarify continuation that
-      // resumes the same requestId inline). Guarded on `text != null` so this never unhides
-      // an empty row on an opts.done-only call.
+      // planProposed/askUserPrompt card hid it via stopStatusTimer(id, true). Guarded on
+      // `text != null` so this never unhides an empty row on an opts.done-only call.
       if (t.statusEl) t.statusEl.classList.remove('hidden');
       if (IDLE_LABELS.has(text)) {
         // Engage the rolling whimsical verb for the thinking phase; startStatusTimer
@@ -4289,7 +4201,7 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
   // (otherwise unchanged) render logic below writes into the right session's DOM regardless of
   // which session is currently being viewed. 'switchSession' is included so its case body can
   // use the returned `existed` flag to tell a brand-new pane from an already-live one.
-  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'watchdogWarning', 'watchdogActionable', 'watchdogDismissed', 'todos', 'planData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'workReport', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'clarifyingQuestions', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
+  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'planData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'workReport', 'planProposed', 'planDiscarded', 'commandApproval', 'editApproval', 'permissionAsk', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
 
   // ---------- inbound messages ----------
   // Diagnostic ring: the last 150 host messages with payload sizes. When a turn renders
@@ -4309,13 +4221,10 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
       model: (msg as any).model,
     });
     if (tmMsgLog.length > 150) tmMsgLog.shift();
-    if (msg.type === 'assistantMessage') console.log('[tm] assistantMessage textLen=', ((msg as any).text || '').length, 'paused=', !!(msg as any).paused, 'noFooter=', !!(msg as any).noFooter, 'requestId=', (msg as any).requestId);
+    if (msg.type === 'assistantMessage') console.log('[tm] assistantMessage textLen=', ((msg as any).text || '').length, 'paused=', !!(msg as any).paused, 'requestId=', (msg as any).requestId);
     let paneCtx = null;
     if (msg.sessionId && PANE_SCOPED.has(msg.type)) paneCtx = activatePane(msg.sessionId);
     switch (msg.type) {
-      case 'engineStatus':
-        handleEngineStatus(msg);
-        break;
       case 'newModelsAvailable':
         renderNewModelsBar(msg.message);
         break;
@@ -4543,21 +4452,6 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         }
         break;
       }
-      case 'watchdogWarning': {
-        const ctx = createHandlerContext();
-        handleWatchdogWarning(ctx, msg);
-        break;
-      }
-      case 'watchdogActionable': {
-        const ctx = createHandlerContext();
-        handleWatchdogActionable(ctx, msg);
-        break;
-      }
-      case 'watchdogDismissed': {
-        const ctx = createHandlerContext();
-        handleWatchdogDismissed(ctx, msg);
-        break;
-      }
       case 'failoverNotice': {
         // Intentionally silent. Retrying and model failover are internal routing mechanics; the
         // user asked not to see "waiting and retrying…" / "routing to another model" chatter in
@@ -4748,11 +4642,9 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         break;
       }
       case 'askUserPrompt': {
-        // The agent's native `question` tool — rendered through the SAME rich card as our own
-        // clarifyingQuestions, so the two are visually identical. Reply path stays distinct:
-        // this resumes the paused turn via `askUserResponse` (callId → pending promise),
-        // NOT a new run. The question tool is single-question, so one entry; its flat
-        // string[] options map to titled rows (or a free-text row when there are none).
+        // The agent's `askUser` tool. Answering resumes the paused turn via `askUserResponse`
+        // (callId → pending promise); it is single-question, so one entry — its flat string[]
+        // options map to titled rows (or a free-text row when there are none).
         const t = ensureTarget(msg.requestId);
         stopStatusTimer(msg.requestId, true);
         finalizeWork(msg.requestId);
@@ -4800,26 +4692,6 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         });
         break;
       }
-      case 'clarifyingQuestions': {
-        const t = ensureTarget(msg.requestId);
-        stopStatusTimer(msg.requestId, true);
-        finalizeWork(msg.requestId);
-        // t.flow (streamed text segments + tool cards) and t.body (the "bubble", where this
-        // card renders) are SEPARATE sibling elements — clearing only t.body left any text the
-        // model streamed before the fenced ???QUESTIONS??? block (a leading "let me ask..."
-        // explanation, or a full prose restatement of the same questions some models add
-        // despite being told not to) sitting there unmodified, duplicating the interactive
-        // card that's about to replace it as this turn's canonical representation.
-        t.flow.innerHTML = '';
-        t.body.innerHTML = '';
-        renderQuestionCard(t, {
-          questions: msg.questions,
-          intro: 'A couple of quick questions before I plan:',
-          onSubmit: (answers) => send({ type: 'answerClarifying', requestId: msg.requestId, answers }),
-          onDismiss: () => send({ type: 'answerClarifying', requestId: msg.requestId, answers: msg.questions.map(() => '(no preference — use your best judgment)') }),
-        });
-        break;
-      }
       case 'assistantChunk': {
         // Live streaming token — append to the buffer and re-render markdown incrementally.
         // We throttle DOM updates to every 40ms (one rAF cycle) so a fast model doesn't
@@ -4849,7 +4721,7 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
           requestAnimationFrame(() => {
             seg._pending = false;
             seg.innerHTML = '';
-            const rendered = renderMarkdown(stripClarifyBlock(seg._buf));
+            const rendered = renderMarkdown(seg._buf);
             seg.appendChild(rendered);
             // One caret on the true final line (nested lists included) — see appendStreamCursor.
             appendStreamCursor(rendered);
@@ -4902,7 +4774,7 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         // Flush any pending streamed text segment immediately (a queued rAF may not have run).
         if (t.currentText && t.currentText._buf != null) {
           t.currentText.innerHTML = '';
-          t.currentText.appendChild(renderMarkdown(stripClarifyBlock(t.currentText._buf, true)));
+          t.currentText.appendChild(renderMarkdown(t.currentText._buf));
         }
         // Reconcile draft → canonical reply. The live stream showed every text-delta in ephemeral
         // `.flow-text` segments — INCLUDING speculative narration the model emitted alongside tool
@@ -4938,7 +4810,7 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
                 ? '_The model didn\'t produce a final reply before the turn paused. Click **Continue** to resume._'
                 : emptyReplyText)
             : rawText;
-          seg.appendChild(renderMarkdown(stripClarifyBlock(placeholderText, true)));
+          seg.appendChild(renderMarkdown(placeholderText));
           t.flow.appendChild(seg);
         }
         // Fold-up 💭 Reasoning disclosure only when no live 🧠 Thinking block already
@@ -4972,10 +4844,7 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
         // the source of truth so the footer never blanks (e.g. when a forced model
         // failed over before assistantStart could set t.model).
         if (msg.model) t.model = `${msg.platform || ''}/${msg.model}`;
-        // A clarifyingQuestions card follows this same message — the task isn't done yet
-        // (still waiting on the user's answer), so defer the footer to the eventual final
-        // answer bubble (a new requestId once they respond) instead of showing it here.
-        if (!msg.noFooter) {
+        {
           let usageStr = '';
           if (msg.usage) usageStr = `  ·  ${fmtUsage(msg.usage)}`;
           const startedAt = t.startedAt ?? startTimes.get(msg.requestId);
@@ -5233,12 +5102,8 @@ import { handleWatchdogWarning, handleWatchdogActionable, handleWatchdogDismisse
     bar.appendChild(head);
   }
 
-  // Shared interactive question card — the single visual component behind BOTH the
-  // `clarifyingQuestions` card (our ???QUESTIONS??? sentinel) and the `askUserPrompt` card
-  // (the agent's native question tool). The two have fundamentally different REPLY mechanisms (one
-  // starts a new run, the other resumes a paused turn), so the reply is injected via
-  // opts.onSubmit/onDismiss rather than hard-coded here — but the look, multi-question tabs,
-  // single/multi-select, "type your own" input, and answered-recap are identical for both.
+  // Interactive question card behind `askUserPrompt`. Supports multi-question tabs,
+  // single/multi-select, a "type your own" input, and an answered recap.
   //   opts: { questions, intro, callId?, submitTitle?, dismissTitle?, onSubmit(answers), onDismiss() }
   function renderQuestionCard(t, opts) {
     const qs = opts.questions;

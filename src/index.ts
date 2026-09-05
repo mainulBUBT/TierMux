@@ -33,7 +33,6 @@ export type {
   ToolEvent,
   AgentMode,
   SelectionRationaleInfo,
-  WatchdogActivity,
 } from './agent/agent';
 
 // ── AI SDK adapter — turn the v3 picker into a model the AI SDK can stream ──────
@@ -110,9 +109,6 @@ export {
   fitMessages,
   inputBudget,
 } from './agent/budget';
-
-// ── Clarifying-question shape (plan/agent pre-flight) ─────────────────────────
-export type { ClarifyingQuestion } from './agent/clarify';
 
 // ── Shared types — the wire format the engine already speaks ──────────────────
 export type {

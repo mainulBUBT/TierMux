@@ -46,39 +46,6 @@ export async function loadUserMemory(): Promise<string> {
   return lineBreakIndex !== -1 ? rawTail.slice(lineBreakIndex + 1) : rawTail;
 }
 
-function normalizeLine(s: string): string {
-  return s.replace(/^[-*]\s*/, '').trim().toLowerCase();
-}
-
-let writeQueue: Promise<void> = Promise.resolve();
-
-/**
- * Append a note to the memory file, for the agent's own `remember` tool.
- * Serialized (parallel tool calls in one turn must not race the same read/write cycle),
- * deduped by whole-line comparison (not substring, to avoid false positives like
- * "use tabs" matching inside "never use tabs"), and returns whether it actually wrote.
- */
-export function appendUserMemory(note: string): Promise<boolean> {
-  const sanitized = note.replace(/[\r\n]+/g, ' ').trim();
-  const result = writeQueue.then(async (): Promise<boolean> => {
-    const uri = memoryUri();
-    const dir = dirUri();
-    if (!uri || !dir || !sanitized) return false;
-    const existing = (await readText(uri)) ?? '';
-    const target = normalizeLine(sanitized);
-    if (existing.split('\n').some((line) => normalizeLine(line) === target)) return false;
-    await vscode.workspace.fs.createDirectory(dir);
-    const next = `${existing.trimEnd()}\n- ${sanitized}\n`.trimStart();
-    await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(next));
-    return true;
-  });
-  writeQueue = result.then(
-    () => undefined,
-    () => undefined, // don't let a rejected write poison the queue for later calls
-  );
-  return result;
-}
-
 /** Ensure the memory file exists (with a template header) and open it for editing. */
 export async function openMemoryForEdit(): Promise<void> {
   const uri = memoryUri();

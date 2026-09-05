@@ -1,7 +1,5 @@
-import type { CatalogModel, FallbackEntry, ChatContent } from '../shared/types';
-import type { Catalog } from '../catalog/catalog';
+import type { ChatContent } from '../shared/types';
 import { normalizeAttachmentBlocks } from './content';
-import { profileForTask, tagComparator } from '../router/capabilityProfile';
 
 export type TaskKind = 'trivial' | 'chat' | 'agent' | 'coding' | 'debug' | 'longContext' | 'plan' | 'vision';
 
@@ -86,10 +84,7 @@ export function attachmentKindsFromContent(content: ChatContent): NonNullable<Cl
  * `supportsVision: true`. If no vision model is enabled, falls back to text only.
  */
 /** Same classification as `classifyTask`, but also reports whether a regex actually matched
- *  (`confident`) vs. we fell through to a best-guess default. The regex answer is only the
- *  FIRST word: `classifyTaskSmart` (loop.ts) re-decides every non-trivial turn with a cheap
- *  LLM (chain: user-set `tiermux.classifierModel` → opencode → kilo → ovh), bounded by a
- *  timeout and falling back to this result on any failure. */
+ *  (`confident`) vs. we fell through to a best-guess default. */
 export function classifyTaskCore(text: string, signals?: ClassifySignals): { kind: TaskKind; confident: boolean } {
   const t = (text || '').trim();
   if (!t) return { kind: 'chat', confident: true };
@@ -120,11 +115,9 @@ export function classifyTaskCore(text: string, signals?: ClassifySignals): { kin
   if (TASK_VERB.test(t) || BN_TASK_VERB.test(t)) return { kind: 'agent', confident: true };    // explicit action → tool loop (can edit)
   if (t.endsWith('?')) return { kind: 'chat', confident: true };       // a bare question → read-only
   // A referenced @mention already resolved its content into the context block (see
-  // mentions.ts) — with no code-edit/debug/question signal detected, this is a "work from
-  // what I gave you" turn (e.g. "reformat this for Google Docs @notes.md"), not a codebase
-  // investigation. Route to chat so research.md's grep-first framing doesn't misdirect a
-  // weak model into searching for unrelated files instead of using the supplied content.
-  // Still a guess (not a real signal), so confident: false — worth an LLM double-check.
+  // mentions.ts) — with no code-edit/debug/question signal, this is a "work from what I gave
+  // you" turn, not a codebase investigation. Route to chat so a weak model uses the supplied
+  // content instead of searching for it.
   if ((signals?.mentions ?? 0) >= 1) return { kind: 'chat', confident: false };
   return { kind: 'agent', confident: false };         // ambiguous: assume an action so edits aren't dropped
 }
@@ -154,68 +147,5 @@ export function isPureVisualDescribe(text: string, hasVisual: boolean): boolean 
   // part of the subject — tools must stay so the model can actually read it.
   if (/@[\w.-]/.test(t) || /(?:^|[\s("'`])((?:[\w.-]+\/)+[\w.-]+\.[a-zA-Z]{1,5})\b/.test(t)) return false;
   return EXPLAIN_Q.test(t) || EXPLAIN_VERB.test(t) || BN_EXPLAIN_Q.test(t);
-}
-
-/**
- * Reorder enabled candidates to favor the model class this task needs. When a
- * `score` fn is given (user 👍/👎 feedback), it is the PRIMARY key — a model the
- * user rated well for this task floats above raw catalog fitness. Unknown models trail.
- */
-export function orderForTask(
-  kind: TaskKind,
-  entries: FallbackEntry[],
-  catalog: Catalog,
-  score?: (platform: string, modelId: string) => number,
-): FallbackEntry[] {
-  const withModel = entries
-    .map((e) => ({ e, m: catalog.find(e.platform, e.modelId) }))
-    .filter((x): x is { e: FallbackEntry; m: CatalogModel } => !!x.m);
-  const unknown = entries.filter((e) => !catalog.find(e.platform, e.modelId));
-
-  const intel = (a: CatalogModel, b: CatalogModel): number => a.intelligenceRank - b.intelligenceRank;
-  const speed = (a: CatalogModel, b: CatalogModel): number => a.speedRank - b.speedRank;
-  const ctx = (a: CatalogModel, b: CatalogModel): number => (b.contextWindow ?? 0) - (a.contextWindow ?? 0);
-  const tools = (a: CatalogModel, b: CatalogModel): number => Number(b.supportsTools) - Number(a.supportsTools);
-  const reason = (a: CatalogModel, b: CatalogModel): number => Number(b.supportsReasoning) - Number(a.supportsReasoning);
-
-  const balanced = (a: CatalogModel, b: CatalogModel): number =>
-    (a.intelligenceRank + a.speedRank) - (b.intelligenceRank + b.speedRank);
-
-  const recency = (a: CatalogModel, b: CatalogModel): number => (b.released ?? '').localeCompare(a.released ?? '');
-
-  // Tag preference is delegated to the canonical CapabilityProfile so this ordinal view and
-  // capabilityRaw's magnitude view read the SAME matrix and can't drift. The profile encodes
-  // which tags each task kind prefers (coding/planner/reasoner/vision/general); tagCmp is the
-  // ordinal projection of the same magnitude tagMagnitude uses. Generic building blocks
-  // (tools/reason/vision/directFirst/balanced/ctx/recency/intel/speed) stay — they're not
-  // duplicated policy, they're shared comparators.
-  const tagCmp = (a: CatalogModel, b: CatalogModel): number => tagComparator(profileForTask(kind), a, b);
-
-  const vision = (a: CatalogModel, b: CatalogModel): number => Number(!!b.supportsVision) - Number(!!a.supportsVision);
-
-  // Aggregator "auto" endpoints (tag: 'router', e.g. kilo-auto/free, openrouter/free)
-  // claim supportsVision but delegate to arbitrary underlying models that may drop the
-  // image — for a vision turn, a direct vision model is strictly more trustworthy.
-  const hasTag = (m: CatalogModel, tag: string): number => Number((m.tags ?? []).includes(tag));
-  const directFirst = (a: CatalogModel, b: CatalogModel): number => hasTag(a, 'router') - hasTag(b, 'router');
-
-  const cmp: Record<TaskKind, (a: CatalogModel, b: CatalogModel) => number> = {
-    trivial: (a, b) => speed(a, b) || recency(a, b) || tagCmp(a, b) || intel(a, b),                 // cheapest/fastest; smarts irrelevant; general tag mild
-    chat: (a, b) => tools(a, b) || balanced(a, b) || recency(a, b) || tagCmp(a, b) || intel(a, b),  // tool-capable, then fast+capable, newest among equals
-    coding: (a, b) => tagCmp(a, b) || tools(a, b) || balanced(a, b) || recency(a, b),               // coder-tagged, then tools, fast+capable
-    agent: (a, b) => tools(a, b) || tagCmp(a, b) || balanced(a, b) || recency(a, b),                // tools, then coder-tagged, fast+capable
-    debug: (a, b) => tools(a, b) || tagCmp(a, b) || balanced(a, b) || reason(a, b) || recency(a, b),
-    plan: (a, b) => balanced(a, b) || tagCmp(a, b) || reason(a, b) || tools(a, b) || recency(a, b), // fast+capable first, then planner/reasoner-tagged
-    longContext: (a, b) => ctx(a, b) || balanced(a, b) || recency(a, b),            // biggest window, then fast+capable, then newest
-    vision: (a, b) => vision(a, b) || directFirst(a, b) || tagCmp(a, b) || tools(a, b) || balanced(a, b) || recency(a, b), // must-see first, direct beats aggregator, vision-tagged, then like agent
-  };
-
-  const sc = score ?? ((): number => 0);
-  const sorted = [...withModel].sort(
-    (a, b) =>
-      sc(b.e.platform, b.e.modelId) - sc(a.e.platform, a.e.modelId) || // user feedback first (0 when none)
-      cmp[kind](a.m, b.m),                                              // then task fitness
-  );
-  return [...sorted.map((x) => x.e), ...unknown];
 }
 

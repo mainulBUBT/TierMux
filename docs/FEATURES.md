@@ -44,17 +44,15 @@ button). Step-level pause/resume is not implemented — see
   Marginalia, with a static-fetch reader) and are offered in **every** mode, so a plain
   factual question is answered instead of deflected.
 - **Safety rails** — diff and command approval gates, a configurable command allowlist,
-  `.env`/key-material read guards, stall watchdog (~45 s warn, ~90 s actionable).
+  `.env`/key-material read guards, a 60 s per-candidate connect timeout with failover.
 - **Checkpoints** — the before-content of every write is captured *before* the mutation, so
   Undo genuinely restores.
-- **Codebase-aware** — lazy in-memory symbol + dependency index built from your language
-  servers (with a regex fallback), ambient open-editor context, project rules and memory in
-  `.tiermux/`.
+- **Codebase-aware** — ripgrep-backed `grep`/`glob` (files-only, context and case options),
+  ambient open-editor context, project rules and memory in `.tiermux/`.
 - **Skills** — Markdown skills from `.tiermux/skills/` and the cross-tool
-  `.agents/skills/<name>/SKILL.md` convention, invoked by `/name` or by declared trigger
-  phrases, sticky across follow-up turns. Install more with `TierMux: Add Skill from GitHub`.
+  `.agents/skills/<name>/SKILL.md` convention, invoked by `/name`. Install more with
+  `TierMux: Add Skill from GitHub`.
 - **MCP servers** — configure in `tiermux.mcpServers`, browse a registry, reconnect on demand.
 - **Editor-wide** — inline chat (`Cmd/Ctrl+I`), selection explain/fix/refactor/tests/docs,
-  commit-message generation, inline completions, searchable history, handoff notes,
-  onboarding tour, benchmark and profiler commands.
+  commit-message generation, inline completions, searchable history, handoff notes.
 - **Explainable** — [“Why this model?”](ROUTING.md#why-this-model) on every turn.

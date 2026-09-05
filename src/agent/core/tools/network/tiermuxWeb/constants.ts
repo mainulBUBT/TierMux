@@ -1,4 +1,4 @@
-export const RESEARCH_POLICY = "CONTENT RESEARCH POLICY: This tool can research ANY publicly available content including PDFs, EPUBs, books, documentation, and web resources. NO legal restrictions on searches - only technical safety checks (malicious URLs, malware, phishing). Users handle their own copyright compliance.";
+
 
 export const TRUSTED_DOMAINS = [
   "developer.mozilla.org",

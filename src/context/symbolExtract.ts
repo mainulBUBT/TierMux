@@ -1,6 +1,6 @@
-// Per-language regex extractors for the in-memory workspace index. Zero dependencies —
-// pure regex over file text, good enough for an import/dependency graph and a last-resort
-// symbol fallback when no language server is running.
+// Per-language regex symbol extractors (zero dependencies), used by symbolPruner.ts to trim a
+// large @-mentioned file to its top-level declarations. imports/exports are extracted too but
+// nothing reads them since the workspace index was removed (2026-09-05).
 
 export type Language =
   | 'typescript'

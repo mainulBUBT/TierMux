@@ -148,5 +148,3 @@ export function renderVerifyReport(r: VerifyResult): string {
 
   return lines.join('\n');
 }
-
-export const VERIFY = { TEST_QUESTIONS, TOOL_BUDGET };

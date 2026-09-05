@@ -797,19 +797,3 @@ function coerceInlineArgValue(raw: string): unknown {
   if (t === '') return t;
   try { return JSON.parse(t); } catch { return t; }
 }
-
-/** Strip GLM-style raw channel-template markers from text bound for DISPLAY. When a response
- *  carries no rescuable call (e.g. only the `final` prose channel), the template's control
- *  markers (`<|start|>assistant`, `<|channel|>final<|message|>`, `<|call|>`, …) would otherwise
- *  render as the user-visible answer. Commentary (tool-call) blocks are removed whole; a
- *  `final` channel's markers are dropped but its message text is kept. */
-export function stripRawChannelMarkers(text: string): string {
-  return text
-    // A commentary block: everything from its channel marker to its <|call|> terminator (or the
-    // next marker / end, tolerating truncation).
-    .replace(/<\|channel\|>\s*commentary\b[\s\S]*?(?=<\|call\|>|<\|start\|>|<\|channel\|>|$)/g, '')
-    .replace(/<\|start\|>\s*assistant\b/g, '')
-    .replace(/<\|channel\|>\s*final\b\s*(?:<\|message\|>)?/gi, '')
-    .replace(/<\|(?:assistant|constrain|call|end|message|start)\|>/g, '')
-    .trim();
-}

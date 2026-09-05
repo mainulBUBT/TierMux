@@ -22,7 +22,6 @@ import { CheckpointManager, type SerializedCheckpoint } from './edits/checkpoint
 import { isDangerous } from './edits/commandGate';
 import { statusLines } from './edits/gitSnapshot';
 import type { ModelStatsStore, Vote } from './config/modelStats';
-import type { SlowModelStore } from './config/slowModel';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem, McpServerConfig } from './messages';
 import type { AnnouncementItem, Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, PlanDataPayload, SelectionRationale, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
@@ -35,15 +34,13 @@ import { getPlatformInfo } from './providers';
 import { parseSlash, resolveMentions, searchMentions } from './context/mentions';
 import { activeEditorRelPath, buildActiveEditorContext, buildDiagnosticsContext } from './context/activeContext';
 import { contentToString } from './agent/content';
-import { getSnapshot as getRetrievalSnapshot } from './context/telemetry';
 import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSupportedAttachmentPath, kindForPath as kindFromName, lastPdfFailureReason, mimeForPath as mimeForName } from './util/extractAttachments';
 import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
 import { condenseHistory, shouldCondense, generateHandoff } from './agent/condense';
 import { resolveExecutionProfile } from './agent/executionProfile';
-import { resolveClarifying, type ClarifyingQuestion } from './agent/clarify';
 import { structurePlanSteps, formatStructuredSteps, formatPlanForCard, isCleanNumberedList, renderPlanMarkdown } from './agent/planStructurer';
-import { deriveTitleFrom, extractSubjectTerms, looksLikeActionablePlan, looksLikeGroundedAnswer, offTopicCorrection, sanitizeTitle, planStepsToTodos } from './session/titles';
+import { deriveTitleFrom, looksLikeActionablePlan, sanitizeTitle, planStepsToTodos } from './session/titles';
 
 import { loadSkills } from './context/skills';
 
@@ -55,15 +52,10 @@ interface ChatDeps {
   usageStore: UsageStore;
   mcp: McpManager;
   modelStats: ModelStatsStore;
-  slowModels: SlowModelStore;
   workspaceState: vscode.Memento;
   /** Global (per-user) state — announcement seen/notified tracking lives here, alongside the catalog cache. */
   globalState: vscode.Memento;
   generateCommitMessage: () => Promise<void>;
-  profiler?: import('./profiler/profilerService').IProfilerService;
-  /** Re-attempt the OC engine startup (binary resolve/download + launch). Wired from
-   *  extension.ts; invoked by the webview's onboarding "Retry" button. */
-  retryEngine?: () => void;
 }
 
 function tokenToAbortSignal(token: import('vscode').CancellationToken): AbortSignal {
@@ -290,14 +282,13 @@ interface Session {
    *  model in the transcript itself — see withModeTag. Undefined until the first turn. */
   lastMode?: AgentMode;
   approvalSeq: number;
-  /** Ephemeral interactive cards (approvals / plan / clarifying) awaiting a click, cached so
+  /** Ephemeral interactive cards (approvals / plan / askUser) awaiting a click, cached so
    *  they re-render when the user switches back to a session whose run is blocked on them. */
   cards: OutMessage[];
   voteCtx: Map<string, { taskKind: string; platform: string; model: string; last: Vote }>;
   pendingPlanUser?: ChatContent;
   /** URI of the plan MD file saved at proposal time — updated if the user edits steps before approving. */
   pendingPlanFile?: { uri: vscode.Uri; title: string; request?: string };
-  pendingClarify?: { requestId: string; userContent: ChatContent; prompt: string; questions: ClarifyingQuestion[]; mode: 'plan' | 'agent' };
   /** In-flight `askUser` tool calls, keyed by OpenAI tool_call_id, awaiting a webview answer. */
   pendingAskUser: Map<string, (answer: string) => void>;
   /** True while an approved plan is being executed in Agent mode — drives the "Following the approved plan" header. */
@@ -343,10 +334,6 @@ interface Session {
    *  turns apart from ambiguous ones without re-parsing the message text. Persists across a
    *  retry of the same turn (only overwritten by the next fresh send). */
   lastMentionCount?: number;
-  /** Set by the `watchdogAction` handler ('restartRequest'/'switchModel'), consumed by the send
-   *  handler's retry loop right after the aborted run settles — reusing the same in-flight
-   *  request instead of pushing a new user turn. Cleared once consumed. */
-  pendingWatchdogRetry?: 'restart' | 'switch';
   /** Incremental snapshot of the CURRENTLY RUNNING turn's tool transcript, updated after every
    *  tool completion (see agentCallbacks' onTool) and persisted immediately so a crash mid-turn
    *  (extension host restart) doesn't lose in-progress work. Cleared by clearInProgressTurn()
@@ -747,13 +734,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.updateViewTitle();
   }
 
-  /** First-run engine onboarding progress (download %, verify, ready/error) — see
-   *  the 'engineStatus' OutMessage variant. Queues like any other post() if the
-   *  webview isn't open yet. */
-  postEngineStatus(status: { state: 'downloading' | 'starting' | 'verifying' | 'ready' | 'error'; message?: string; percent?: number }): void {
-    this.post({ type: 'engineStatus', ...status });
-  }
-
   /** Dismissible "new models added" banner above the composer, mirroring the
    *  native toast in extension.ts's notifyNewModels(). */
   postNewModels(message: string): void {
@@ -792,7 +772,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     void this.view.webview.postMessage(msg);
   }
 
-  /** Post an ephemeral interactive card (approval/plan/clarify) AND cache it on the session,
+  /** Post an ephemeral interactive card (approval/plan/askUser) AND cache it on the session,
    *  so it re-renders if the user switches away and back while it's still pending. */
   private postCard(s: Session, msg: OutMessage): void {
     s.cards.push(msg);
@@ -875,8 +855,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Resolve every outstanding approval in a session (e.g. on cancel / stop / a watchdog-forced
-   * finish) so the agent never hangs. Must also pull the card off the webview here — otherwise
+   * Resolve every outstanding approval in a session (e.g. on cancel / stop) so the agent never
+   * hangs. Must also pull the card off the webview here — otherwise
    * it stays rendered as a live, clickable Allow/Reject button whose backing promise is already
    * gone, so a later click on it silently does nothing (the id is no longer in the map) and the
    * user has no idea the run already ended.
@@ -1097,7 +1077,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * Re-send everything needed to reconstruct the currently-viewed session's live UI state: a
    * still-running turn's assistantStart/step/todos, and any pending interactive cards (plan
-   * proposal, clarifying questions, approvals). The extension host's in-memory `Session`
+   * proposal, askUser questions, approvals). The extension host's in-memory `Session`
    * survives both a tab switch (openSession) AND a webview-only reload (the 'ready' handler,
    * e.g. Cmd+R) — only the *rendered* webview is gone in the latter case — so both paths need
    * this same resync or a mid-run reload silently drops the plan/clarify card and live status.
@@ -1199,9 +1179,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.postAnnouncements(this.lastAnnouncements, this.lastAnnouncementsUpdated);
         break;
       }
-      case 'retryEngine':
-        this.deps.retryEngine?.();
-        break;
       case 'sendMessage':
         await this.handleSend(m);
         break;
@@ -1216,9 +1193,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'resume':
         await this.handleResume(m);
-        break;
-      case 'answerClarifying':
-        await this.handleAnswerClarifying(m);
         break;
       case 'askUserResponse': {
         const s = this.sessions.get(m.sessionId ?? this.viewedSessionId);
@@ -1265,25 +1239,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.approvalNotified.delete(`${s.id}:${s.activeRequestId ?? ''}`);
           if (s.activeRequestId) this.setStatus(s.id, 'running');
         }
-        break;
-      }
-      case 'watchdogAction': {
-        // Watchdog itself is one-way (observability only) — this is where the UI's chosen
-        // action actually happens, reusing existing capabilities rather than new SDK plumbing.
-        const s = this.sessions.get(m.sessionId ?? this.viewedSessionId);
-        if (!s || s.activeRequestId !== m.requestId) break; // stale click — run already moved on
-        console.log(`[tiermux][watchdog] action=${m.action} sessionId=${s.id} requestId=${m.requestId}`);
-        if (m.action === 'continueWaiting') break; // purely informational — nothing to do
-        if (m.action === 'acceptCurrentOutput') {
-          s.cancel?.cancel(); // aborts the in-flight OC call only; finalizes with whatever streamed so far
-          break;
-        }
-        // restartRequest / switchModel: abort the current attempt; the send handler's retry
-        // loop picks `pendingWatchdogRetry` up once the abort settles. The engine holds no
-        // server-side session to drop (opts.messages + workMessages is the sole state), so a
-        // restart just re-runs the turn fresh.
-        s.pendingWatchdogRetry = m.action === 'switchModel' ? 'switch' : 'restart';
-        s.cancel?.cancel();
         break;
       }
       case 'openPlanFile': {
@@ -2249,62 +2204,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       let result = await runner(this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
       diagLog('send.gate', `requestId=${m.requestId} · runner returned paused=${result.paused} textLen=${result.text?.length ?? 0}`);
 
-      // Watchdog "Restart Request" / "Switch Model": the button handler aborted the run above
-      // and left `pendingWatchdogRetry` set — re-invoke the SAME request (same requestId, same
-      // history — no new user turn) instead of finalizing with whatever partial text streamed.
-      while (s.pendingWatchdogRetry && this.isActiveRun(s, m.requestId)) {
-        const retryKind = s.pendingWatchdogRetry;
-        s.pendingWatchdogRetry = undefined;
-        console.log(`[tiermux][watchdog] action=${retryKind === 'switch' ? 'switchModel' : 'restartRequest'} re-invoking requestId=${m.requestId}`);
-        s.cancel?.dispose();
-        s.cancel = new vscode.CancellationTokenSource();
-        const retryModel = retryKind === 'switch' ? 'auto' : m.model;
-        result = await runner(this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, retryModel), {});
-      }
-
       if (!this.isActiveRun(s, m.requestId)) return;
 
-      // Deterministic relevance check, not just a prompt hope: a reply that never engages
-      // with anything the user actually named (e.g. a generic whole-project overview when
-      // a specific feature was asked about) is a known failure mode on weaker/free models
-      // that ignore "answer exactly what was asked" prompt instructions. One bounded
-      // corrective retry — re-run with the miss called out explicitly — before falling
-      // through to whatever the model produces. `extraHistoryPushed` tracks the correction
-      // message so the plan-mode "not committed yet" pop() below removes both, not just one.
-      let extraHistoryPushed = 0;
-      // Ask mode ONLY. "Explain X" is the most common way to use it, and a free model answering
-      // a codebase question from memory with ZERO tool calls was measured doing exactly that in
-      // the 2026-08-09 benchmark (query E1 — 0 tool calls, a plausible but generic answer the
-      // judge scored 0/0). Plan mode used to run this too, which meant a plan-mode turn could cost
-      // a whole extra model call before the plan card even appeared. It no longer needs one: a
-      // plan-mode reply that engages with nothing the user named also fails to call
-      // `exitPlanMode`, so it lands in the normal-answer branch where the user can see and
-      // correct it — instead of the host silently re-running the turn on a regex's say-so.
-      if (sdkMode === 'ask') {
-        const subjectTerms = extractSubjectTerms(prompt);
-        if (!looksLikeGroundedAnswer(result.text, subjectTerms)) {
-          s.history.push({ role: 'user', content: offTopicCorrection(subjectTerms) });
-          extraHistoryPushed = 1;
-          result = await runner(this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
-          if (!this.isActiveRun(s, m.requestId)) return;
-        }
-      }
-
-      // Hoisted so the fallthrough below (plan mode, neither a clarify question nor an
-      // actionable plan) can reuse this instead of re-parsing the identical `result.text`.
-      let planClar: ReturnType<typeof resolveClarifying> | undefined;
+      let replyText = result.text;
       if (m.mode === 'plan') {
-        const clar = resolveClarifying(result.text, result.askQuestions);
-        planClar = clar;
-        if (clar.questions && clar.questions.length) {
-
-          s.history.length -= 1 + extraHistoryPushed;
-          s.pendingPlanUser = userContent;
-          s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: clar.questions, mode: 'plan' };
-          this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: clar.questions });
-          return;
-        }
-
         // Is the reply a runnable plan? The model ANSWERS that itself now, by calling the
         // `exitPlanMode` tool — `result.plan` is its validated {title, description, steps[]}.
         // That is the whole design change (2026-08-31): the boundary between planning and
@@ -2323,23 +2226,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // normal answer bubble instead, using the model's own prose when it wrote any and the
         // structured finding when it just called the tool and stopped.
         const noChange = result.plan?.outcome === 'no-change' ? result.plan : undefined;
-        if (noChange && !clar.text.trim() && noChange.finding?.trim()) clar.text = noChange.finding.trim();
+        if (noChange && !replyText.trim() && noChange.finding?.trim()) replyText = noChange.finding.trim();
         const planStepsText: string | null = noChange
           ? null
           : result.plan
             ? formatPlanForCard(result.plan)
-            : looksLikeActionablePlan(clar.text) ? clar.text : null;
+            : looksLikeActionablePlan(replyText) ? replyText : null;
         if (planStepsText) {
-          s.history.length -= 1 + extraHistoryPushed; // not committed yet — re-added on approval
+          s.history.length -= 1; // not committed yet — re-added on approval
           s.pendingPlanUser = userContent;
           this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: planStepsText });
           this.preparePlanFile(s, result.plan?.title || prompt, prompt);
           // Fire-and-forget re-refine ONLY on the fallback path: a tool-declared plan is already
           // one clean step per line, so re-asking a model to restructure it is pure waste.
-          if (!result.plan) this.upgradePlanSteps(s, m.requestId, clar.text);
+          if (!result.plan) this.upgradePlanSteps(s, m.requestId, replyText);
           return;
         }
-
       }
 
 
@@ -2373,8 +2275,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // wrote every agent turn's reply twice while bypassing persistAgentTurn's Stop
       // invariant. One click beats a quota-burning guess.
 
-      const agentClar = planClar ?? (!result.paused ? resolveClarifying(result.text, result.askQuestions) : { questions: null, text: result.text });
-
       // Final check, independent of WHY the turn ended (guardrail stop, round-cap exhaustion, or
       // plain completion): does the plan written this send still have unfinished items? Computed
       // straight from todo state rather than the model's own text, so it's always accurate.
@@ -2386,13 +2286,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // this branch a capped turn fell into the `result.paused ? ''` case below and shipped no
       // footer at all — the turn ended silently, which is the whole failure being fixed here.
       const stopNote = result.stopReason ? stopReasonNote(result.stopReason, finalRemainingTodos) : '';
-      const todoNote = agentClar.questions ? ''
-        : stopNote || (finalRemainingTodos.length > 0
+      const todoNote = stopNote || (finalRemainingTodos.length > 0
           ? (!result.paused ? incompleteTodosNote(finalTodos, finalRemainingTodos) : '')
           : finalTodos.length > 0 ? completedTodosNote(finalTodos)
           : '');
 
-      const displayText = todoNote ? `${agentClar.text}${todoNote}` : agentClar.text;
+      const displayText = todoNote ? `${replyText}${todoNote}` : replyText;
 
       const persistedResult: AgentResult = displayText !== result.text ? { ...result, text: displayText } : result;
       this.persistAgentTurn(s, persistedResult);
@@ -2403,23 +2302,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
       }
       const modelLabel = turnModelLabel(s.model, result.model);
-      const hasQuestions = !!(agentClar.questions && agentClar.questions.length);
 
       /** One-click Continue affordance: a turn that ended with unfinished plan items — or a
        *  step-cap pause — is resumable exactly like a paused turn (handleResume re-runs with
        *  the full transcript in memory, no work repeated). Surface the webview's existing
        *  Continue button for those stops instead of telling the user to type "continue". */
-      const resumable = !hasQuestions && !result.failed && (result.paused
+      const resumable = !result.failed && (result.paused
         || finalRemainingTodos.length > 0);
 
       cbk.settleReasoning();
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, finishReason: result.finishReason, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: modelLabel, paused: resumable, noFooter: hasQuestions });
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: displayText, reasoning: result.reasoning, finishReason: result.finishReason, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: modelLabel, paused: resumable });
       diagLog('send.postAssistant', `requestId=${m.requestId} · textLen=${(displayText ?? '').length} textHead="${(displayText ?? '').slice(0, 120).replace(/\n/g, '⏎')}" reasoningLen=${(result.reasoning ?? '').length} paused=${resumable}`);
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
-      if (hasQuestions) {
-        s.pendingClarify = { requestId: m.requestId, userContent, prompt, questions: agentClar.questions!, mode: m.mode as 'plan' | 'agent' };
-        this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: agentClar.questions! });
-      }
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned run — don't surface its error
       this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
@@ -2636,7 +2530,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async handleApprovePlan(m: Extract<InMessage, { type: 'approvePlan' }>): Promise<void> {
     const s = this.current();
-    this.removeCards(s, (c) => c.type === 'clarifyingQuestions');
     if (!m.approved) {
       s.pendingPlanUser = undefined;
       s.pendingPlanFile = undefined;
@@ -2680,7 +2573,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async handleExecutePlan(m: Extract<InMessage, { type: 'executePlan' }>): Promise<void> {
     const s = this.current();
-    this.removeCards(s, (c) => c.type === 'clarifyingQuestions');
     if (!m.steps?.trim()) return;
 
     // 1. Persist the plan exactly like Save does (file + history), so an executed plan is also
@@ -2920,7 +2812,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     this.settlePendingApprovals(s, false); // unblock any command/edit awaiting a click
     this.settlePendingAskUser(s); // unblock any in-chat askUser card
-    s.pendingClarify = undefined;
     s.pendingPlanUser = undefined;
     s.executingPlan = false;
     s.cards = [];
@@ -2954,7 +2845,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       requestId,
       mentionCount: s.lastMentionCount,
       abortSignal: s.cancel ? tokenToAbortSignal(s.cancel.token) : undefined,
-      profiler: this.deps.profiler,
       // The engine's toolApproval policy reads this (policyFromSettings): without it the
       // composer toggle only gated CommandGate/EditGate while the v3 tool path kept asking.
       autoApprove: this.autoApprove,
@@ -3229,18 +3119,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!live()) return;
         this.post({ type: 'notice', sessionId: s.id, text: message });
       },
-      onWatchdogWarning: (info) => {
-        if (!live()) return;
-        this.post({ type: 'watchdogWarning', sessionId: s.id, requestId, elapsedMs: info.elapsedMs, lastActivityLabel: info.lastActivity?.label, lastActivityAgeMs: info.lastActivity ? Date.now() - info.lastActivity.atMs : undefined });
-      },
-      onWatchdogActionable: (info) => {
-        if (!live()) return;
-        this.post({ type: 'watchdogActionable', sessionId: s.id, requestId, elapsedMs: info.elapsedMs, lastActivityLabel: info.lastActivity?.label, lastActivityAgeMs: info.lastActivity ? Date.now() - info.lastActivity.atMs : undefined, hasPartialOutput: info.hasPartialOutput });
-      },
-      onWatchdogDismissed: () => {
-        if (!live()) return;
-        this.post({ type: 'watchdogDismissed', sessionId: s.id, requestId });
-      },
     };
   }
 
@@ -3342,126 +3220,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Resume after the user answers a clarifying-questions card (plan pre-flight or agent end-of-turn). */
-  private async handleAnswerClarifying(m: Extract<InMessage, { type: 'answerClarifying' }>): Promise<void> {
-    const s = this.current();
-    const ctx = (s.pendingClarify && s.pendingClarify.requestId === m.requestId) ? s.pendingClarify : undefined;
-    s.pendingClarify = undefined;
-
-    this.removeCards(s, (c) => c.type === 'clarifyingQuestions' && c.requestId === m.requestId);
-    if (!ctx) return;
-
-    const qa = ctx.questions
-      .map((q, i) => `Q: ${q.text}\nA: ${m.answers[i] ?? '(no answer)'}`)
-      .join('\n');
-
-    if (ctx.mode === 'agent') {
-      const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      await this.handleSend({ type: 'sendMessage', requestId, text: qa, mode: ctx.mode, model: s.model ?? 'auto', reasoningEffort: s.reasoningEffort ?? 'medium' });
-      return;
-    }
-
-    const base = s.history.length;
-    s.history.push({ role: 'user', content: ctx.userContent });
-    s.history.push({ role: 'user', content: `Clarifications from the user:\n${qa}\n\nUsing these answers, produce the step-by-step plan now. Do not ask any further questions — through the ???QUESTIONS??? block or any tool — use your best judgment for anything still unspecified.` });
-
-    // Cancel the previous run BEFORE replacing the token. CancellationTokenSource.dispose()
-    // only drops listeners — it does NOT abort — so without cancel() a pre-empted in-flight
-    // run keeps executing its model call in the background, wasting tokens and racing the
-    // new run (a root cause of follow-up sends landing as silent "0 in / 0 out" turns).
-    s.cancel?.cancel();
-    s.cancel?.dispose();
-    s.cancel = new vscode.CancellationTokenSource();
-    s.activeRequestId = m.requestId;
-    const release = await this.acquireRunSlot(s.id);
-    if (s.activeRequestId !== m.requestId) { release(); if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle'); return; }
-    this.post({ type: 'busy', sessionId: s.id, busy: true });
-    // Set true only by the "show as a normal answer" branch below — that reply is real
-    // conversation the model needs to remember next turn, unlike the plan-proposal branches
-    // (not committed until approval) or the empty/error branches (nothing happened). Gates
-    // the blanket `s.history.length = base` reset in `finally` so this one case survives it.
-    let committed = false;
-    try {
-      const sentAt = Date.now();
-      const before = this.deps.usage.get();
-      await s.checkpoints.begin(m.requestId, 'Plan (clarified)');
-      this.beginInProgressTurn(s, m.requestId);
-      const cbk5 = this.agentCallbacks(s, m.requestId, 'plan');
-      let result = await runPlanStream(this.makeAgentOpts(s, m.requestId, 'plan', s.reasoningEffort ?? 'medium', cbk5, s.model), {});
-      if (!this.isActiveRun(s, m.requestId)) return;
-      // No groundedness re-run here either (removed with the send path's): plan mode's signal
-      // that the model actually engaged is whether it called `exitPlanMode`, not whether a
-      // regex found the user's nouns in the prose.
-      const clar = resolveClarifying(result.text, result.askQuestions);
-      if (clar.questions && clar.questions.length) {
-        // The model re-asked despite being told not to (the "do not ask any further
-        // questions" instruction pushed above) — show the follow-up instead of silently
-        // losing it: parseClarifying strips it out of clar.text either way, so ignoring
-        // clar.questions here would otherwise fall through to the generic "didn't return a
-        // plan" error with the actual question content discarded.
-        s.pendingPlanUser = ctx.userContent;
-        s.pendingClarify = { requestId: m.requestId, userContent: ctx.userContent, prompt: ctx.prompt, questions: clar.questions, mode: 'plan' };
-        this.postCard(s, { type: 'clarifyingQuestions', sessionId: s.id, requestId: m.requestId, questions: clar.questions });
-      } else {
-        // Same boundary as the initial propose path: the `exitPlanMode` tool call is the plan,
-        // with the regex gate kept only as the weak-model fallback.
-        const planStepsText: string | null = result.plan
-          ? formatPlanForCard(result.plan)
-          : looksLikeActionablePlan(clar.text) ? clar.text : null;
-        if (planStepsText) {
-          this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: planStepsText });
-          this.preparePlanFile(s, result.plan?.title || ctx.prompt, ctx.prompt);
-          if (!result.plan) this.upgradePlanSteps(s, m.requestId, clar.text);
-          // Not committed: a planProposed card isn't committed to history until approval, same as
-          // the original looksLikeActionablePlan branch.
-        } else if (clar.text.trim()) {
-        // Not actionable steps — the model needs more from the user (a clarification or
-        // discussion reply) rather than a plan to run. Show it as a normal answer instead of
-        // squashing the whole prose into a broken one-item "plan" card (duplicating it visually
-        // alongside the plain text render above).
-        const after = this.deps.usage.get();
-        const usage = {
-          promptTokens: after.promptTokens - before.promptTokens,
-          completionTokens: after.completionTokens - before.completionTokens,
-          reasoningTokens: after.reasoningTokens - before.reasoningTokens,
-          totalTokens: after.totalTokens - before.totalTokens,
-        };
-        this.persistAgentTurn(s, result);
-        this.pushAssistantTurn(s, m.requestId, result, sentAt, usage);
-        cbk5.settleReasoning();
-        this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: clar.text, reasoning: result.reasoning, finishReason: result.finishReason, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: result.model, paused: result.paused });
-        committed = true;
-      } else {
-        // The resumed run returned nothing usable (e.g. all of result.text was consumed by a
-        // stray ???QUESTIONS??? block parseClarifying stripped) — posting an empty planProposed
-        // card renders as a broken "0 steps" card with nothing to run. Surface it as an error
-        // instead so the user knows to retry rather than staring at an empty plan.
-        this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: "The agent didn't return a plan for those answers — try again or rephrase your request." });
-      }
-      }
-
-    } catch (e) {
-      if (!this.isActiveRun(s, m.requestId)) return;
-      this.post({ type: 'error', sessionId: s.id, requestId: m.requestId, message: e instanceof Error ? e.message : String(e) });
-      void this.maybeRecommendModels(e);
-    } finally {
-      release();
-      if (this.isActiveRun(s, m.requestId)) {
-
-        if (!committed) s.history.length = base;
-        s.activeRequestId = undefined;
-        this.clearInProgressTurn(s, m.requestId);
-        this.settlePendingAskUser(s);
-        await this.finishCheckpoint(s, m.requestId);
-        this.persist(s.id);
-        this.post({ type: 'busy', sessionId: s.id, busy: false });
-        this.setStatus(s.id, 'finished');
-        await this.maybeAutoCondense(s);
-        void this.maybeGenerateTitle(s);
-      }
-    }
-  }
-
   /** Reads `tiermux.mcpServers`, upgrading any legacy (pre-native-schema) entries on the fly. */
   private readMcpServersConfig(): Record<string, McpServerConfig> {
     const raw = vscode.workspace.getConfiguration('tiermux').get<Record<string, unknown>>('mcpServers', {}) ?? {};
@@ -3505,7 +3263,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       mcpServers: this.readMcpServersConfig(),
       mcpRegistry: await this.registry(),
       deprecated: this.deps.secrets.deprecatedKeys(),
-      slow: this.deps.slowModels.slowKeys(),
       modelKeys: await this.deps.secrets.modelKeySnapshot(this.deps.catalog.all()),
       utilityModel: vscode.workspace.getConfiguration('tiermux').get<string>('utilityModel', 'auto'),
       settingsMeta: SETTINGS_META,
@@ -3548,7 +3305,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private currentUsageTotals(s: Session) {
     const sessionTotals = this.deps.usage.get();
     const lifetime = this.deps.usageStore.getLifetime(this.deps.catalog);
-    const retrieval = getRetrievalSnapshot();
     return {
       ...sessionTotals,
       context: this.computeContext(s),
@@ -3559,7 +3315,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         firstRecordedAt: lifetime.firstRecordedAt,
         totalReasoningTokens: lifetime.totalReasoningTokens,
       },
-      retrieval: retrieval.totalRequests >= 3 ? retrieval : undefined,
     };
   }
 

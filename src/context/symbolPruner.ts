@@ -1,13 +1,9 @@
 // Shrinks a large @mention'd file down to a symbol skeleton plus the query-relevant symbol
 // bodies, instead of dumping the whole file into a weak model's limited context window.
-//
-// Reuses the same regex symbol extraction the workspace index runs on every file (see
-// src/indexer/importResolvers.ts) rather than adding a second parser. Symbol start lines are
-// already in source order, so consecutive symbols bound each other's chunk — no per-language
-// brace/indent matching needed. SymbolExtract carries only a start line, so the LAST symbol's
-// chunk always runs to end-of-file.
+// Symbol start lines (symbolExtract.ts) are in source order, so consecutive symbols bound each
+// other's chunk; the LAST symbol's chunk runs to end-of-file.
 
-import { extract, type SymbolExtract } from '../indexer/importResolvers';
+import { extract, type SymbolExtract } from './symbolExtract';
 import { estimateTokens } from '../agent/budget';
 
 export const PRUNE_TOKEN_THRESHOLD = 1500;

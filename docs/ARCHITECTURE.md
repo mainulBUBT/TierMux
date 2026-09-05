@@ -255,8 +255,7 @@ authority; this is the shape, not the registry:
   autoCompactThreshold, diagTrace}`.
 - `tiermux.completions.{enabled, model, debounceMs}`, `tiermux.utilityModel`.
 - `tiermux.context.{includeOpenEditors, ambientSliceRadius}`.
-- `tiermux.index.{enabled, excludes, maxFiles}`, `tiermux.graph.enabled`.
-- `tiermux.plan.{saveToFile, folder}`, `tiermux.profiler.{enabled, ringSize}`.
+- `tiermux.plan.{saveToFile, folder}`.
 - `tiermux.catalog.url`, `tiermux.models.autoEnableNew`.
 - `tiermux.{mcpServers, mcpRegistryUrl, mcpRegistrySearchUrl}`.
 

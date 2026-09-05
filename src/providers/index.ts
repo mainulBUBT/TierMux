@@ -89,7 +89,7 @@ for (const c of COMPAT) registerCompat(c);
 // UNCAPPED BY REQUEST (2026-08-23, user direction): a 10-minute cap still executed long local
 // generations mid-answer. Custom endpoints now run with NO request timeout and NO TTFT gate —
 // the model takes as long as it takes (cold VRAM load + prefill + generation), and the only
-// brakes are the user's Stop button and the watchdog notice. Cloud failover math doesn't apply:
+// brake is the user's Stop button. Cloud failover math doesn't apply:
 // there is no faster pool to fail over TO for a model that only exists on the user's machine.
 const CUSTOM_TIMEOUT_MS = 0;
 const CUSTOM_TTFT_MS = 0;

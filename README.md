@@ -45,7 +45,7 @@ account, no config**. Add keys later for more headroom → [Providers & keys](do
 - **Three modes** — Ask (answers with the full toolset, shell included — it never edits files),
   Plan (proposes, you approve), Agent (edits + terminal behind approvals). The model picker is
   separate and defaults to **Auto** — pin a specific model any time.
-- **Codebase-aware** — symbol/dependency index, ambient editor context, project rules and
+- **Codebase-aware** — ripgrep-backed search, ambient editor context, project rules and
   skills in `.tiermux/`, MCP servers.
 - **Explainable** — a **Why this model?** popover on every reply: what was picked, what
   lost, and why.

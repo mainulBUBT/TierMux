@@ -10,8 +10,7 @@
 export type ElChild = Node | string | number | null | undefined | false;
 
 export interface ElProps {
-  /** CSS class name(s) — named `class` (not `className`) to match the `el("div", {class:
-   *  "tm-card"})` hyperscript convention, not the DOM property name. */
+  /** CSS class name(s) — named `class` (hyperscript convention), not `className`. */
   class?: string;
   dataset?: Record<string, string>;
   /** Any other prop is either an event handler (`onClick`, `onInput`, …, matched by a

@@ -33,6 +33,10 @@ export interface PolicyConfig {
    *  `mode` because 'never' means both "never ask" AND "never run", and folding it into
    *  full-auto lost the second half entirely (see resolvePolicy). */
   shellDisabled?: boolean;
+  /** `agent.requireWriteConfirmation: false` — file writes in agent mode run without a prompt.
+   *  Until 2026-09-05 the setting only reached inline chat's EditGate; the agent's own
+   *  editFile/writeFile/deleteFile never read it, so its description was false. */
+  autoApproveWrites?: boolean;
 }
 
 export const defaultPolicy: PolicyConfig = {
@@ -131,6 +135,9 @@ export function resolvePolicy(
   if (config.mode === 'full-auto') {
     return Promise.resolve({ type: 'approved' });
   }
+  if (config.autoApproveWrites === true && MUTATING_FILE_TOOLS.has(call.toolName)) {
+    return Promise.resolve({ type: 'approved' });
+  }
   if (config.mode === 'auto' && config.autoModeAllowlist.has(call.toolName)) {
     return Promise.resolve({ type: 'approved' });
   }
@@ -187,5 +194,6 @@ export function policyFromSettings(
     // toggle is about skipping prompts, and a user who switched the terminal off did not ask
     // for it back.
     shellDisabled: approval === 'never',
+    autoApproveWrites: cfg.get<boolean>('requireWriteConfirmation', true) === false,
   };
 }

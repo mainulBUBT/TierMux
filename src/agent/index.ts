@@ -13,7 +13,6 @@ export type {
   ToolEvent,
   AgentMode,
   SelectionRationaleInfo,
-  WatchdogActivity,
 } from './agent';
 
 export { createRouterProvider, setModelSources } from './core/routerProvider';
