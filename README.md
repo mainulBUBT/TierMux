@@ -94,7 +94,7 @@ More keys = fewer walls. Unused keys just rest → [Providers & keys](docs/PROVI
 
 ## Docs
 
-[Providers & keys](docs/PROVIDERS.md) · [Routing](docs/ROUTING.md) · [Features & modes](docs/FEATURES.md) · [Architecture](docs/ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
+[Providers & keys](docs/PROVIDERS.md) · [Routing](docs/ROUTING.md) · [Features & modes](docs/FEATURES.md) · [Tips for free models](docs/FEATURES.md#getting-good-results-from-free-models) · [Contributing](CONTRIBUTING.md)
 
 ## Use as a library
 

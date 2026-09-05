@@ -34,17 +34,18 @@ button). Step-level pause/resume is not implemented — see
 
 ## What's inside
 
-- **Self-healing routing** — per-key and per-platform cooldowns, tool-incompatible and
-  deprecated quarantine, cached preflight health checks, honest errors naming exactly which
-  providers failed and why.
+- **Self-healing routing** — per-model cooldowns, key rotation, tool-incompatible (400 with
+  tools) and deprecated (404) quarantine, honest errors naming exactly which providers failed
+  and why.
 - **Agent tools** — `readFile` (line-boundary paginated), `editFile`, `writeFile`,
   `deleteFile`, `listDir`, `glob`, `grep`, `runCommand`, `getDiagnostics`, `todoWrite`,
   `askUser`, `delegateTask`, `webSearch`, `fetchUrl`, plus `exitPlanMode` in plan mode.
   `webSearch`/`fetchUrl` run on TierMux's own keyless engine (Yahoo + DuckDuckGo +
   Marginalia, with a static-fetch reader) and are offered in **every** mode, so a plain
   factual question is answered instead of deflected.
-- **Safety rails** — diff and command approval gates, a configurable command allowlist,
-  `.env`/key-material read guards, a 60 s per-candidate connect timeout with failover.
+- **Safety rails** — the tool-approval policy (ask / safe allowlist / shell off; write
+  confirmation), every path argument confined to the workspace, a 60 s per-candidate connect
+  timeout with failover.
 - **Checkpoints** — the before-content of every write is captured *before* the mutation, so
   Undo genuinely restores.
 - **Codebase-aware** — ripgrep-backed `grep`/`glob` (files-only, context and case options),
@@ -56,3 +57,39 @@ button). Step-level pause/resume is not implemented — see
 - **Editor-wide** — inline chat (`Cmd/Ctrl+I`), selection explain/fix/refactor/tests/docs,
   commit-message generation, inline completions, searchable history, handoff notes.
 - **Explainable** — [“Why this model?”](ROUTING.md#why-this-model) on every turn.
+
+## Getting good results from free models
+
+Free tiers are slow to first token and quick to rate-limit, and the models behind them are
+weaker than the paid frontier. TierMux is built around that; these habits get the most out of it.
+
+**Keys.** Add a free key for two or three providers beyond the keyless four, and add a second
+key where a provider allows it. Every key is a separate quota; failover and rotation do the rest.
+
+**Scope each turn.** One feature, one bug, one refactor per message. A weak model given a
+five-part task drops parts; given one part it finishes. Name the files (`@src/foo.ts`) when
+you know them — that is one fewer search for the model.
+
+**Plan first for anything that touches several files.** Plan mode reads before it proposes,
+asks when the request is ambiguous, and hands you a card to edit before anything runs. Execute
+from the card and the agent starts with the plan in front of it.
+
+**Let the verify gate work.** With `agent.verifyCommand: auto` the project's own test /
+typecheck / build runs after every turn that edits files, and a failure goes back to the agent
+for `agent.verifyFixRounds` fixes. Set a specific command if auto-detection picks the wrong one.
+
+**Keep the prompt small.** `agent.toolCompaction: light` (default) stubs old tool output between
+steps; `agent.autoCondenseTokenCap` (default 32 000) summarizes older turns so every request
+stays bounded on gateways that don't cache prompts. Start a new chat when the topic changes.
+
+**Use Continue, not "continue".** A turn that stops at the step cap or gets stuck offers a
+Continue button with the full transcript in memory. Typing "continue" starts a new turn that
+has to re-read.
+
+**Pin a model only when you mean it.** A pinned model runs alone — no failover. Auto walks the
+whole chain and tells you what it picked and why in the *Why this model?* popover.
+
+**Approvals.** `agent.commandApproval: allowlist` runs the safe defaults (`npm test`, `git
+status`, …) plus your own `agent.commandAllowlist` prefixes without a prompt and asks for the
+rest; `never` switches the shell off entirely. `agent.requireWriteConfirmation: false` lets
+file edits land without a prompt in agent mode — checkpoints still make every turn undoable.
