@@ -5,6 +5,21 @@ All notable changes to TierMux are documented here. The format is loosely
 
 ## [3.0.1] — 2026-09-06
 
+### Changed — fewer, faster steps on free tiers
+
+- **Auto keeps its model for the whole turn.** The router used to re-run selection on every
+  step (the SDK calls the provider once per step) and the equal-rank rotation counter advanced
+  each time, so a multi-step Auto turn switched models step after step — every switch a cold
+  provider, the full transcript re-sent, no prompt cache. The candidate that served step 1 now
+  goes first on later steps and the fallback chain is resolved only if it fails; rotation still
+  happens between turns, and 429/cooldown/failover behave as before
+  (`src/agent/core/routerProvider.ts`, locked by `npm run test:e2e:router-sticky`).
+- **System prompt: one search round, then answer.** The search-honesty rules were being applied
+  to every question (workspace-wide bare-term grep, re-reading pasted findings); the bare-term
+  grep is now scoped to negative claims and re-checks to findings the user asks to act on.
+- `tiermux.agent.verifyFixRounds` default 2 → 1; chat-title generation asks one model, not
+  up to three.
+
 ### Changed — model rationale UI
 
 - The model-selection rationale is now a compact footer chip in the chat composer instead

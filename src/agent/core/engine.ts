@@ -187,8 +187,10 @@ const planAccepted: StopCondition<ToolSet> = ({ steps }) =>
 const DEFAULT_MAX_STEPS = 50;
 
 /** Fix-and-recheck rounds after the verify command fails. `tiermux.agent.verifyFixRounds`
- *  overrides it. 0 disables the retry (the failure is reported as-is), never the gate. */
-const DEFAULT_VERIFY_FIX_ROUNDS = 2;
+ *  overrides it. 0 disables the retry (the failure is reported as-is), never the gate.
+ *  2 → 1 on 2026-09-06: each round is a full model call over the whole transcript, and on free
+ *  tiers a second one rarely fixed what the first did not — it just doubled the wait. */
+const DEFAULT_VERIFY_FIX_ROUNDS = 1;
 
 /** Identical failing tool call this many times IN A ROW ⇒ not progressing. Three, not two: one
  *  legitimate retry after a re-read is still a decision; a third identical failure is not. */

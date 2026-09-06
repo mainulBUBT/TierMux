@@ -3135,11 +3135,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.titleGenerated = true; // guard before the call to avoid duplicate runs
 
     const snippet = messageText.slice(0, 800);
-    // Up to three models, skipping empty or placeholder titles. routeOnce's `trivial` chain is
-    // already enabled/keyed/not-rate-limited/small, so a useless title is the only reason to loop.
+    // ONE model (was three, 2026-09-06): routeOnce's `trivial` chain already fails over on
+    // provider errors, so the loop only ever re-asked for a USELESS title — and on free tiers
+    // those extra calls ran alongside the user's turn and competed with it for the same quota.
+    // The derived placeholder is a fine title; two more slow calls to beat it are not.
     let title = '';
     const tried: string[] = [];
-    for (let attempt = 0; attempt < 3 && !title; attempt++) {
+    for (let attempt = 0; attempt < 1 && !title; attempt++) {
       const r = await routeOnceOrUndefined(
         [
           { role: 'system', content: TITLE_SYSTEM },

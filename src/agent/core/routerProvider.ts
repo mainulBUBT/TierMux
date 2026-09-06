@@ -15,7 +15,7 @@ import type {
 import type { ChatMessage, ChatToolChoice, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
 import { resolveProvider } from '../../providers';
 import { ProviderHttpError } from '../../providers/base';
-import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, rationaleForServed, type ModelSources, type SelectionRationale } from '../../router/picker';
+import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, rationaleForServed, isInCooldown, type ModelSources, type SelectionRationale } from '../../router/picker';
 import { ThinkStripper, stripThinkTags, reasoningFromDelta } from '../../util/thinkTags';
 import { diagLog } from '../../util/diag';
 
@@ -383,6 +383,44 @@ export function foldEmptyFinal(textStarted: boolean, toolCallCount: number, reas
 }
 
 function createPickerProvider(providerOpts: RouterProviderOptions): LanguageModelV4 {
+  // ── Turn-level stickiness (2026-09-06) ──────────────────────────────────────────────────
+  // One provider instance = one turn (engine.ts creates it per runTurn). The SDK calls
+  // doStream once per STEP, and selectModel's equal-rank rotation counter post-increments on
+  // every call — so a 12-step Auto turn walked 12 peers, each switch a cold provider, the whole
+  // transcript re-sent and no prompt cache (live: free-tier turns "switch models and get
+  // slower"). The candidate that last served goes first on later steps; the picker chain is
+  // resolved ONLY if it fails, so a healthy sticky costs no selection at all. A cooled-down,
+  // excluded or vanished sticky falls straight through to the normal chain — rotation, 429
+  // handling and cooldowns are untouched, they just stop firing mid-turn for no reason.
+  let sticky: Candidate | undefined;
+  const isSticky = (c: Candidate): boolean => !!sticky && c.platform === sticky.platform && c.modelId === sticky.modelId;
+  const stickyRunnable = (): Candidate | undefined => {
+    const s = sticky;
+    if (!s) return undefined;
+    if (providerOpts.excludeModels?.includes(`${s.platform}::${s.modelId}`)) return undefined;
+    if (isInCooldown(s.platform, s.modelId) || !resolveProvider(s.platform, s.modelId)) return undefined;
+    return s;
+  };
+  /** The step's candidate list: `[sticky]` with the chain deferred, or the full chain. `extend`
+   *  appends the (deduped) picker chain once the sticky head has failed — call it when the loop
+   *  runs off the end; it is a no-op after the first time. */
+  const candidatesForStep = async (sel: { rationale?: SelectionRationale }): Promise<{ candidates: Candidate[]; extend: () => Promise<void> }> => {
+    const s = stickyRunnable();
+    if (!s) return { candidates: await resolveCandidates(providerOpts, sel), extend: async () => {} };
+    diagLog('rp.sticky', `${s.platform}::${s.modelId} served this turn already — going first, chain deferred`);
+    const candidates: Candidate[] = [s];
+    let extended = false;
+    return {
+      candidates,
+      extend: async () => {
+        if (extended) return;
+        extended = true;
+        diagLog('rp.sticky', `${s.platform}::${s.modelId} failed — resolving the fallback chain`);
+        candidates.push(...(await resolveCandidates(providerOpts, sel)).filter((c) => !isSticky(c)));
+      },
+    };
+  };
+
   return {
     specificationVersion: 'v4',
     provider: 'tiermux',
@@ -393,12 +431,14 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
       const messages = toRouterMessages(options.prompt);
       const tools = toRouterTools(options.tools);
       const sel: { rationale?: SelectionRationale } = {};
-      const candidates = await resolveCandidates(providerOpts, sel);
+      const { candidates, extend } = await candidatesForStep(sel);
       /** Report the model that really served — and fix the rationale to name it, so the
-       *  "Why this model?" popover can't credit a candidate that failed over. */
-      const reportServed = (platform: string, modelId: string, runtimeName?: string): void => {
-        providerOpts.onModelSelected?.(platform, modelId, runtimeName);
-        if (sel.rationale) providerOpts.onSelectionRationale?.(rationaleForServed(sel.rationale, platform, modelId));
+       *  "Why this model?" popover can't credit a candidate that failed over. On a sticky hit
+       *  there is no fresh rationale; the one emitted when it first served still names it. */
+      const reportServed = (c: Candidate, runtimeName?: string): void => {
+        sticky = c;
+        providerOpts.onModelSelected?.(c.platform, c.modelId, runtimeName);
+        if (sel.rationale) providerOpts.onSelectionRationale?.(rationaleForServed(sel.rationale, c.platform, c.modelId));
       };
       if (candidates.length === 0) throw new Error('TierMux: no model candidate resolved');
 
@@ -406,7 +446,13 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
       const deadPlatforms = new Set<string>();
       const attempts: string[] = [];
       const startedAt = Date.now();
-      for (let i = 0; i < candidates.length; i++) {
+      // Open-ended on purpose: when the sticky head fails, `extend` appends the picker chain
+      // and the same loop keeps walking it.
+      for (let i = 0; ; i++) {
+        if (i >= candidates.length) {
+          await extend();
+          if (i >= candidates.length) break;
+        }
         const c = candidates[i];
         const provider = resolveProvider(c.platform, c.modelId);
         if (!provider) continue;
@@ -432,7 +478,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             timeoutMs: connectTimeoutFor(c.platform),
           });
           recordRequest(c.platform, c.modelId);
-          reportServed(c.platform, c.modelId, provider.runtimeName);
+          reportServed(c, provider.runtimeName);
           if (data.usage) {
             providerOpts.onUsage?.({ inputTokens: data.usage.prompt_tokens, outputTokens: data.usage.completion_tokens, model: `${c.platform}::${c.modelId}` });
           }
@@ -485,12 +531,14 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
       const messages = toRouterMessages(options.prompt);
       const tools = toRouterTools(options.tools);
       const sel: { rationale?: SelectionRationale } = {};
-      const candidates = await resolveCandidates(providerOpts, sel);
+      const { candidates, extend } = await candidatesForStep(sel);
       /** Report the model that really served — and fix the rationale to name it, so the
-       *  "Why this model?" popover can't credit a candidate that failed over. */
-      const reportServed = (platform: string, modelId: string, runtimeName?: string): void => {
-        providerOpts.onModelSelected?.(platform, modelId, runtimeName);
-        if (sel.rationale) providerOpts.onSelectionRationale?.(rationaleForServed(sel.rationale, platform, modelId));
+       *  "Why this model?" popover can't credit a candidate that failed over. On a sticky hit
+       *  there is no fresh rationale; the one emitted when it first served still names it. */
+      const reportServed = (c: Candidate, runtimeName?: string): void => {
+        sticky = c;
+        providerOpts.onModelSelected?.(c.platform, c.modelId, runtimeName);
+        if (sel.rationale) providerOpts.onSelectionRationale?.(rationaleForServed(sel.rationale, c.platform, c.modelId));
       };
       if (candidates.length === 0) throw new Error('TierMux: no model candidate resolved');
       // Wire visibility: on a tool step the LAST message is the observation the model must
@@ -512,7 +560,13 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
         const deadPlatforms = new Set<string>();
         const attempts: string[] = [];
         const startedAt = Date.now();
-        for (let i = 0; i < candidates.length; i++) {
+        // Open-ended on purpose: when the sticky head fails, `extend` appends the picker chain
+        // and the same loop keeps walking it.
+        for (let i = 0; ; i++) {
+          if (i >= candidates.length) {
+            await extend();
+            if (i >= candidates.length) break;
+          }
           const c = candidates[i];
           const provider = resolveProvider(c.platform, c.modelId);
           if (!provider) continue;
@@ -655,7 +709,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             }
 
             recordRequest(c.platform, c.modelId);
-          reportServed(c.platform, c.modelId, provider.runtimeName);
+          reportServed(c, provider.runtimeName);
             // A FOLDED turn (reasoning only, no content, no tool call) is not a success: reporting
             // it healthy kept Auto re-picking nemotron-3-ultra-free every turn (×3, 2026-08-28).
             // The answer still ships; the cooldown steers the NEXT turn elsewhere.

@@ -77,7 +77,7 @@ detector, stop and re-read this file.
    ⇒ `paused: true` ⇒ the UI's Continue/Resume affordance.
 8. **Verify runs once, then bounded mechanical fix rounds.** After a mutating turn, the
    project's verify command runs; a non-zero exit feeds the failure output back for up to
-   `tiermux.agent.verifyFixRounds` (default 2, 0 = off) same-routing fix rounds, re-verifying
+   `tiermux.agent.verifyFixRounds` (default 1 since 2026-09-06, was 2; 0 = off) same-routing fix rounds, re-verifying
    after each. The AGENT owns the recheck — the user is never handed a manual re-run. This is
    mechanical recovery, not judgment: the trigger is the command's exit code (the same signal
    planRunner's step retry keys on), never answer quality, and the routing constraints never
@@ -133,6 +133,7 @@ npm run test:e2e:length-continue  # finish 'length' → ONE continuation; no cha
 npm run test:e2e:tool-offer       # mode-filtered toolset + the small-window coordination drop
 npm run test:e2e:exit-plan-mode   # plan mode's tool boundary (docs/PLAN_MODE_TOOL_BOUNDARY_2026-08-31.md)
 npm run test:e2e:compact-budget   # per-window prune target (executionProfile), not a flat constant
+npm run test:e2e:router-sticky    # Auto keeps step 1's model for the turn; rotation is per turn, failover intact
 # infra: condense-split, fit-messages, routing-gates, rate-limit-zero, quota-persist,
 #        edit-match, edit-gate, resolve-path, read-paging, checkpoint-persist, …
 ```
