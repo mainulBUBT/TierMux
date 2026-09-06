@@ -13,7 +13,9 @@ import { createListDirTool, createGlobTool, createGrepTool } from './tools/v3/se
 import { createGetDiagnosticsTool } from './tools/v3/getDiagnostics';
 import { createWebSearchTool } from './tools/network/webSearch';
 import { createFetchUrlTool } from './tools/network/fetchUrl';
+import { createRunCommandTool } from './tools/v3/runCommand';
 import { diagLog } from '../../util/diag';
+import { METHOD } from '../../context/system';
 
 export interface SubagentOpts {
   task: string;
@@ -32,13 +34,11 @@ export interface SubagentResult {
   stepsCount: number;
 }
 
-const SUBAGENT_SYSTEM = `You are an autonomous research sub-agent in TierMux.
-Your goal is to thoroughly investigate the workspace and answer the delegated task with precise, factual evidence.
-- Explore the codebase using readFile, listDir, glob, grep, and diagnostics tools.
-- Do NOT modify any files. You are strictly in research and analysis mode.
-- When you have collected all required information, produce a clear, concise, and structured summary.
-- Always include exact file paths, line numbers, and relevant code signatures/snippets where applicable.
-- Keep the final summary focused on the delegated question. Do not pad with unnecessary context.`;
+const SUBAGENT_SYSTEM = `You are a research sub-agent in TierMux. Investigate the delegated task in the workspace and answer it with evidence. You cannot modify files; runCommand accepts read-only commands only.
+
+${METHOD}
+
+When finished, write a complete report as your final message — it is all the caller will see: the answer, exact paths with line numbers, and the code that proves it. Say what you checked and what you could not determine.`;
 
 export async function runSubagent(opts: SubagentOpts): Promise<SubagentResult> {
   const maxSteps = Math.min(Math.max(1, opts.maxSteps ?? 8), 15);
@@ -52,6 +52,8 @@ export async function runSubagent(opts: SubagentOpts): Promise<SubagentResult> {
     getDiagnostics: createGetDiagnosticsTool(),
     webSearch: createWebSearchTool(),
     fetchUrl: createFetchUrlTool(),
+    // No approval flow inside a sub-agent, so the shell is read-only.
+    runCommand: createRunCommandTool({ abortSignal: opts.abortSignal, sessionId: opts.sessionId, requestId: opts.requestId, readOnly: true }),
   } as ToolSet;
 
   const model = opts.model ?? createRouterProvider({
@@ -71,6 +73,7 @@ export async function runSubagent(opts: SubagentOpts): Promise<SubagentResult> {
       system: SUBAGENT_SYSTEM,
       messages: [{ role: 'user', content: promptContent }],
       tools,
+      temperature: 0.2,
       stopWhen: [stepCountIs(maxSteps)],
       abortSignal: opts.abortSignal,
       maxRetries: 1,

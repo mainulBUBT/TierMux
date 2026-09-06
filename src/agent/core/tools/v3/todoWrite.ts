@@ -26,8 +26,9 @@ export function createTodoWriteTool(onTodos?: (todos: TodoItem[]) => void) {
   return tool({
     description:
       'Write the COMPLETE task list for the current task — full replacement, not a delta. '
-      + 'Call this BEFORE starting multi-step work (3+ steps): list every step as pending, mark ONE as in_progress '
+      + 'For multi-phase work (several files, or steps whose order matters): list every step as pending, mark ONE as in_progress '
       + 'while working, set completed as each finishes, and never end the turn with items left in_progress. '
+      + 'Not for a single focused task, a question, or a few tool calls that are really one step — each call is a round-trip. '
       + 'Send an empty array to clear the list.',
     inputSchema: z.object({
       todos: z.array(

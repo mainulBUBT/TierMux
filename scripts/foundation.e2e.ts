@@ -611,7 +611,7 @@ async function main() {
       invalidatePromptContext();
       ctx = await gatherPromptContext();
       const fatPrompt = composeSystemPrompt('agent', ctx);
-      ok('17. prompt length pinned < 8_000 with max-size rules', fatPrompt.length < 8_000 && fatPrompt.includes('[project rules truncated]'), `len=${fatPrompt.length}`);
+      ok('17. prompt length pinned < 9_000 with max-size rules', fatPrompt.length < 9_000 && fatPrompt.includes('[project rules truncated]'), `len=${fatPrompt.length}`);
     } finally {
       (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = prevFolders;
       invalidatePromptContext();

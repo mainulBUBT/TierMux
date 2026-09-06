@@ -71,7 +71,13 @@ export function createReadFileTool() {
       'Read the text content of one or more files in the workspace (pass an array of paths to '
       + 'read several files in a single call). Large files are paged: by default the first '
       + `${DEFAULT_LINE_LIMIT} lines are returned — pass "offset" (1-based line) and "limit" to read `
-      + 'a later section (applies to every path in a batch).',
+      + 'a later section (applies to every path in a batch). Not for finding WHERE something is — '
+      + 'grep or glob first, then read only the file(s) that matter; avoid tiny repeated slices.',
+    inputExamples: [
+      { input: { path: 'src/app.ts' } },
+      { input: { path: ['src/app.ts', 'src/routes.ts', 'package.json'] } },
+      { input: { path: 'src/big.ts', offset: 801, limit: 400 } },
+    ],
     inputSchema: z.object({
       path: z.union([z.string(), z.array(z.string()).max(MAX_PATHS_PER_CALL)])
         .describe(`Workspace-relative file path, or an array of up to ${MAX_PATHS_PER_CALL} paths to read together.`),
