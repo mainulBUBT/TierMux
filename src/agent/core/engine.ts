@@ -25,15 +25,18 @@ import { composeSystemPrompt } from '../../context/system';
 import { gatherPromptContext } from '../../context/promptContext';
 import { diagLog } from '../../util/diag';
 import type { WorkReportData } from '../../shared/workReport';
-import type { TaskKind } from '../routing';
+import { classifyConversation, attachmentKindsFromContent, type TaskKind } from '../routing';
+import { contentToString } from '../content';
+
+/** Near-deterministic tool calls; not 0 — greedy decoding sent a free model into a repetition loop (2026-09-06). */
+const TOOL_CALL_TEMPERATURE = 0.2;
 
 /** Profile used until the serving model is known (see currentProfile() in runTurn). */
 const FALLBACK_PROFILE = resolveExecutionProfile(undefined);
 
-// Withdrawn on small-window models: the toolset costs ~3,570 schema tokens per request
-// (measured 2026-08-30) and these two ~740 of it. Never a capability tool — withdrawing one
-// makes the model refuse the task instead of doing it smaller.
-const COORDINATION_TOOLS = ['todoWrite', 'delegateTask'];
+// Withdrawn on small-window models (schema tax). delegateTask stays — on a small window it is
+// how exploration is kept OUT of the context. Never a capability tool.
+const COORDINATION_TOOLS = ['todoWrite'];
 /** At/below this window the schema tax stops being affordable. */
 const SMALL_WINDOW_MAX = 16_384;
 
@@ -221,6 +224,20 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
    *  host can label which pass a model answered in. Mechanical: set in runPass, never judged. */
   let turnPass = 0;
   const modelMessages = toModelMessages(opts.messages);
+  // Classified here, once per turn — the picker sees no messages and would route everything as chat.
+  const userTurns = opts.messages.filter((m) => m.role === 'user');
+  const latestUserContent = userTurns[userTurns.length - 1]?.content;
+  const latestKinds = latestUserContent !== undefined ? attachmentKindsFromContent(latestUserContent) : [];
+  const taskKind: TaskKind = (opts.taskKind as TaskKind | undefined) ?? classifyConversation(
+    userTurns.map((m) => contentToString(m.content)),
+    {
+      mentions: opts.mentionCount,
+      auto: !opts.pinnedModel || opts.pinnedModel === 'auto',
+      attachmentKinds: latestKinds,
+      attachments: latestKinds.length,
+    },
+  ).kind;
+  diagLog('engine.taskKind', taskKind);
   // exitPlanMode's validated structure; the host renders the plan card from it. Last call wins.
   let proposedPlan: ProposedPlan | undefined;
   const tools: ToolSet = buildV3ToolSet(opts.mode, {
@@ -235,7 +252,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
 
   const model: LanguageModel = modelOverride ?? createRouterProvider({
     effort: opts.effort,
-    taskKind: opts.taskKind,
+    taskKind,
     pinnedModel: opts.pinnedModel,
     sessionId: opts.sessionId,
     excludeModels: opts.excludeModels,
@@ -329,6 +346,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       system,
       messages,
       tools,
+      temperature: TOOL_CALL_TEMPERATURE,
 
       toolApproval: ({ toolCall }) =>
         resolvePolicy({ toolName: toolCall.toolName, input: toolCall.input }, policy, async (req) => {
@@ -695,9 +713,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
             ...outcome.responseMessages,
             {
               role: 'user',
-              content: `The verify command \`${verifyCmd}\` failed after your changes. Fix the cause, then stop — `
-                + 'it is re-run automatically. Do not re-run it yourself and do not explain the failure instead of '
-                + `fixing it.\n\nOutput:\n${run.output.slice(0, 6_000)}`,
+              content: `The verify command \`${verifyCmd}\` failed after your changes. If the failure is caused by your change, fix it, then stop — `
+                + 'it is re-run automatically. If it is unrelated (a missing service, environment, or a test that fails without your change), '
+                + `say so in one line and stop — do not revert your work. Do not re-run the command yourself.\n\nOutput:\n${run.output.slice(0, 6_000)}`,
             },
           ]).consumeStream({ onError: passError('verifyFix') });
         } catch {
@@ -738,7 +756,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     stopReason: stopReason ?? outcome.finishReason,
     telemetry: {
       model: served.platform && served.model ? `${served.platform}/${served.model}` : 'unknown',
-      taskKind: (opts.taskKind ?? 'chat') as TaskKind,
+      taskKind,
       inputTokens: usageIn,
       outputTokens: usageOut,
       toolCalls: toolEvents.filter((e) => e.state === 'done' || e.state === 'error').length,

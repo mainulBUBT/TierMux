@@ -30,6 +30,18 @@ function schemaOnly(tools: ToolSet): ToolSet {
   ) as unknown as ToolSet;
 }
 
+/** Input with top-level null-valued keys removed; undefined when there is nothing to fix. */
+export function withoutNullKeys(input: string): string | undefined {
+  let parsed: unknown;
+  try { parsed = JSON.parse(input); } catch { return undefined; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const obj = parsed as Record<string, unknown>;
+  const keys = Object.keys(obj).filter((k) => obj[k] === null);
+  if (keys.length === 0) return undefined;
+  for (const k of keys) delete obj[k];
+  return JSON.stringify(obj);
+}
+
 export interface RepairWithCount {
   repair: NonNullable<Parameters<typeof streamText>[0]['repairToolCall']>;
   /** How many repairs this turn has consumed (test hook). */
@@ -47,6 +59,12 @@ export function makeRepairViaModelSelfCorrection(ctx: { model: LanguageModel; si
     error: unknown;
   }): Promise<LanguageModelV4ToolCall | null> {
     const { toolCall, tools, inputSchema, error, messages } = args;
+
+    // No-model first pass: weak models send `null` for an unset optional param, which zod rejects.
+    if (InvalidToolInputError.isInstance(error)) {
+      const stripped = withoutNullKeys(toolCall.input);
+      if (stripped !== undefined) return { ...toolCall, input: stripped };
+    }
 
     if (used >= REPAIR_BUDGET_PER_TURN) return null; // give up → SDK invalid-path takes over
     used++;

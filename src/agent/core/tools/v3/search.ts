@@ -87,6 +87,10 @@ export function createGlobTool() {
       'Find files in the workspace matching a glob pattern (e.g. "src/**/*.ts"). Prefer over '
       + '`listDir` or a shell `ls`/`find` when looking for files BY NAME or extension. Caps at '
       + '200 results; make the pattern more specific rather than paging.',
+    inputExamples: [
+      { input: { pattern: 'src/**/*.test.ts' } },
+      { input: { pattern: '**/config/*.{json,yaml,yml}' } },
+    ],
     inputSchema: z.object({ pattern: z.string().describe('Glob pattern, relative to the workspace root.') }),
     execute: async ({ pattern }): Promise<string | { error: string }> => {
       try {
@@ -122,6 +126,11 @@ export function createGrepTool(runAbort?: AbortSignal) {
       + 'or `path` (a subdirectory). Use `filesOnly` when you only need WHICH files match, and '
       + '`context` when you need the surrounding lines — both avoid a follow-up readFile. Caps at '
       + '200 matches per file (line mode) and ~20KB output.',
+    inputExamples: [
+      { input: { pattern: 'session_timeout', filesOnly: true } },
+      { input: { pattern: 'function resetSession', path: 'src', glob: '*.ts', context: 3 } },
+      { input: { pattern: 'wallet', ignoreCase: true, filesOnly: true } },
+    ],
     inputSchema: z.object({
       pattern: z.string().describe('Regex pattern to search for.'),
       path: z.string().optional().describe('Workspace-relative path to search within (defaults to the whole workspace).'),

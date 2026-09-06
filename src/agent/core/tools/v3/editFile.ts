@@ -42,6 +42,10 @@ export function createEditFileTool(bindings: ToolsetBindings = {}) {
       + 'those are annotations, never include them in `search`. For multiple changes in the SAME '
       + 'file, pass `edits: [{search, replace}, ...]` — they apply atomically in one read/write. '
       + 'Use the single `search`/`replace` form for a one-off change.',
+    inputExamples: [
+      { input: { path: 'src/app.ts', search: "const retries = 3;", replace: "const retries = 5;" } },
+      { input: { path: 'src/app.ts', edits: [{ search: "import a from './a';", replace: "import a from './a';\nimport b from './b';" }, { search: "a();", replace: "a();\nb();" }] } },
+    ],
     inputSchema: z.object({
       path: z.string().describe('Workspace-relative file path.'),
       search: z.string().optional().describe('Exact existing text to find (single-hunk form).'),

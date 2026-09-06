@@ -175,12 +175,13 @@ export class OpenAIResponsesProvider extends BaseProvider {
     const { instructions, input } = toResponsesInput(messages);
     const wireModel = this.platform === 'custom' && modelId.includes('::') ? modelId.split('::').slice(1).join('::') : modelId;
     const reasoning = reasoningField(options?.reasoningEffort);
+    // Reasoning models reject temperature/top_p.
+    const fixedSampling = !!reasoning || /^(o[1-9]|gpt-5)/.test(wireModel);
     const body: Record<string, unknown> = {
       model: wireModel,
       input,
       ...(instructions ? { instructions } : {}),
-      temperature: options?.temperature,
-      top_p: options?.top_p,
+      ...(fixedSampling ? {} : { temperature: options?.temperature, top_p: options?.top_p }),
       max_output_tokens: options?.max_tokens,
       tools: toResponsesTools(options?.tools),
       tool_choice: options?.tools?.length ? toResponsesToolChoice(options?.tool_choice) : undefined,

@@ -114,12 +114,13 @@ export class OpenAICompatProvider extends BaseProvider {
     const wireModel = this.platform === 'custom' && modelId.includes('::')
       ? modelId.split('::').slice(1).join('::')
       : modelId;
+    // OpenAI reasoning models reject temperature/top_p.
+    const fixedSampling = /(^|\/)(o[1-9]|gpt-5)/.test(wireModel);
     return JSON.stringify({
       model: wireModel,
       messages: wireMessages,
-      temperature: options?.temperature,
+      ...(fixedSampling ? {} : { temperature: options?.temperature, top_p: options?.top_p }),
       max_tokens: options?.max_tokens ?? this.defaultMaxTokens,
-      top_p: options?.top_p,
       tools: options?.tools,
       tool_choice: options?.tool_choice,
       parallel_tool_calls: this.resolveParallelToolCalls(options),

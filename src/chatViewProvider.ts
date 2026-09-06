@@ -2666,7 +2666,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Declared and documented since v3, read by nothing until 2026-09-05 — the engine
       // hardcoded the same 50, so raising it in settings silently did nothing.
       maxStepsPerTurn: vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxStepsPerTurn', 50),
-      verifyFixRounds: vscode.workspace.getConfiguration('tiermux.agent').get<number>('verifyFixRounds', 2),
+      verifyFixRounds: vscode.workspace.getConfiguration('tiermux.agent').get<number>('verifyFixRounds', 1),
       ...callbacks,
     };
   }

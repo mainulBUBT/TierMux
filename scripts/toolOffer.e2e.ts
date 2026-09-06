@@ -52,7 +52,7 @@ console.log('— a small window sheds the coordination tools —');
 {
   const offered = await offeredFor('small');
   ok('todoWrite withdrawn', !offered.includes('todoWrite'), offered.join(','));
-  ok('delegateTask withdrawn', !offered.includes('delegateTask'), offered.join(','));
+  ok('delegateTask STAYS on a small window (2026-09-06: it is how a small model keeps exploration out of its context)', offered.includes('delegateTask'), offered.join(','));
   ok('every capability tool survives',
     CAPABILITY.every((t) => offered.includes(t)),
     CAPABILITY.filter((t) => !offered.includes(t)).join(',') || 'none missing');

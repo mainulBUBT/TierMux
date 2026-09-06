@@ -51,9 +51,18 @@ async function main(): Promise<void> {
   ok('2d. sub-agent toolset includes readFile', model.calls[0]?.tools.includes('readFile') === true);
 
   // ── 3. Isolation + read-only guarantee ────────────────────────────────────
-  const SUB_MUTATING = ['editFile', 'writeFile', 'deleteFile', 'runCommand', 'delegateTask'];
+  const SUB_MUTATING = ['editFile', 'writeFile', 'deleteFile', 'delegateTask'];
   ok('3a. no mutating tools, no recursive delegateTask',
     !model.calls[0].tools.some((t) => SUB_MUTATING.includes(t)), JSON.stringify(model.calls[0].tools));
+  ok('3b. runCommand offered to the sub-agent', model.calls[0].tools.includes('runCommand'));
+  {
+    const { createRunCommandTool } = await import('../src/agent/core/tools/v3/runCommand');
+    const ro = createRunCommandTool({ readOnly: true }) as unknown as { execute: (i: { command: string }) => Promise<unknown> };
+    const denied = await ro.execute({ command: 'rm -rf build' });
+    ok('3c. read-only runCommand refuses a mutating command', typeof denied === 'object' && denied !== null && 'error' in denied);
+    const redirect = await ro.execute({ command: 'echo hi > out.txt' });
+    ok('3d. …and a write redirection', typeof redirect === 'object' && redirect !== null && 'error' in redirect);
+  }
 
   // ── 4. Step cap: maxSteps=1 → one step, fallback summary ─────────────────
   const cappedModel = createMockModel([

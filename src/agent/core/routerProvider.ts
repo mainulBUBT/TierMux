@@ -242,11 +242,19 @@ function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): ChatMes
   return msgs;
 }
 
+/** `inputExamples` folded into the description — the OpenAI-shaped wire has no field for them. */
+function describeWithExamples(t: LanguageModelV4FunctionTool): string | undefined {
+  const examples = t.inputExamples ?? [];
+  if (examples.length === 0) return t.description;
+  const lines = examples.map((e) => JSON.stringify(e.input)).join('\n');
+  return `${t.description ?? ''}\n\nInput examples:\n${lines}`.trim();
+}
+
 function toRouterTools(tools?: LanguageModelV4CallOptions['tools']): ChatToolDefinition[] | undefined {
   if (!tools?.length) return undefined;
   return tools
     .filter((t): t is LanguageModelV4FunctionTool => t.type === 'function')
-    .map((t) => ({ type: 'function' as const, function: { name: t.name, description: t.description, parameters: t.inputSchema as Record<string, unknown> } }));
+    .map((t) => ({ type: 'function' as const, function: { name: t.name, description: describeWithExamples(t), parameters: t.inputSchema as Record<string, unknown> } }));
 }
 
 /** `toolChoice` → the wire's `tool_choice`. Until 2026-09-01 nothing populated it, so every
@@ -367,6 +375,18 @@ export async function resolveCandidates(
 /** Wraps the picker as an AI-SDK LanguageModelV4 with bounded failover. */
 export function createRouterProvider(providerOpts: RouterProviderOptions = {}): LanguageModelV4 {
   return createPickerProvider(providerOpts);
+}
+
+/** True when the text ends in the same block three times in a row — a decoding loop. Live
+ *  repro 2026-09-06: a free model repeated one paragraph ~30 times to the token cap. */
+export function isDegenerateRepeat(text: string): boolean {
+  if (text.length < 600) return false;
+  const max = Math.min(1500, Math.floor(text.length / 3));
+  for (let period = 40; period <= max; period++) {
+    const tail = text.slice(-period);
+    if (text.endsWith(tail + tail + tail)) return true;
+  }
+  return false;
 }
 
 /** Degenerate stream end: reasoning present, NO text, NO tool calls. ONE continuation is
@@ -590,6 +610,9 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             // Everything the reasoning channel carried — feeds the nudge decision and the
             // last-resort fold below.
             let reasoningAccum = '';
+            let textAccum = '';
+            let nextLoopCheck = 600;
+            let looped = false;
             // Accumulated tool calls, merged by index across chunks (OpenAI wire behavior).
             const acc = new Map<number, { id: string; name: string; args: string }>();
             let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
@@ -620,6 +643,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
               const ttftSignal = options.abortSignal
                 ? AbortSignal.any([options.abortSignal, ttftController.signal])
                 : ttftController.signal;
+              let loopCut = false;
 
               // Time-to-first-chunk is NOT measured here any more (2026-09-05). It existed to
               // feed a learned slow-model demotion in the picker; that is gone, and the engine
@@ -650,6 +674,13 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                   if (split.text) {
                     if (!textStarted) { textStarted = true; controller.enqueue({ type: 'text-start', id: textId }); }
                     controller.enqueue({ type: 'text-delta', id: textId, delta: split.text });
+                    textAccum += split.text;
+                    if (textAccum.length >= nextLoopCheck && (nextLoopCheck += 400, isDegenerateRepeat(textAccum))) {
+                      loopCut = true;
+                      diagLog('rp.loop', `${c.platform}::${c.modelId} repeating itself after ${textAccum.length} chars — cutting the stream`);
+                      ttftController.abort(new Error('degenerate repetition'));
+                      break;
+                    }
                   }
                   for (const tc of delta.tool_calls ?? []) {
                     const idx = tc.index ?? 0;
@@ -660,6 +691,8 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                     acc.set(idx, slot);
                   }
                 }
+              } catch (e) {
+                if (!loopCut) throw e;
               } finally {
                 // ALWAYS clear, including the throw-before-first-chunk path. A candidate
                 // that fails to connect (the common 429/5xx) skipped the old post-loop
@@ -667,6 +700,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                 // later fired into an AbortController nobody was listening to any more.
                 if (ttftTimer) clearTimeout(ttftTimer);
               }
+              if (loopCut) { looped = true; finish = 'stop'; }
 
               const flushed = splitter.flush();
               if (flushed.reasoning) {
@@ -713,7 +747,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             // A FOLDED turn (reasoning only, no content, no tool call) is not a success: reporting
             // it healthy kept Auto re-picking nemotron-3-ultra-free every turn (×3, 2026-08-28).
             // The answer still ships; the cooldown steers the NEXT turn elsewhere.
-            recordOutcome(c.platform, c.modelId, !folded);
+            recordOutcome(c.platform, c.modelId, !folded && !looped);
             if (usage) {
               providerOpts.onUsage?.({ inputTokens: usage.prompt_tokens ?? 0, outputTokens: usage.completion_tokens ?? 0, model: `${c.platform}::${c.modelId}` });
             }

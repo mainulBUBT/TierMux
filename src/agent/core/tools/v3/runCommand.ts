@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { capToolOutput } from '../capOutput';
 import { resolveWorkspacePath } from '../resolvePath';
 import { runShell } from '../shell';
+import { isReadOnlyCommand } from '../../../../edits/commandClassify';
 
 const MAX_CHARS = 30_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -17,6 +18,8 @@ export interface CommandBindings {
   abortSignal?: AbortSignal;
   sessionId?: string;
   requestId?: string;
+  /** Accept only classifier-read-only commands (callers with no approval flow). */
+  readOnly?: boolean;
 }
 
 export function createRunCommandTool(bindings: CommandBindings = {}) {
@@ -24,7 +27,13 @@ export function createRunCommandTool(bindings: CommandBindings = {}) {
     description:
       'Run a shell command in the workspace and return its output (stdout+stderr+exit code). '
       + 'Commands are killed after the default timeout (~2 min) — for installs/builds/test '
-      + 'suites pass `timeoutMs` up front (capped at 10 min).',
+      + 'suites pass `timeoutMs` up front (capped at 10 min). Use it to OBSERVE — run the failing '
+      + 'test, query the data, read a log, check git history — not to read or edit files (readFile/editFile do that).',
+    inputExamples: [
+      { input: { command: 'git log --oneline -10' } },
+      { input: { command: 'git diff --stat' } },
+      { input: { command: 'tail -n 100 logs/app.log' } },
+    ],
     inputSchema: z.object({
       command: z.string().describe('The shell command to run.'),
       cwd: z.string().optional().describe('Workspace-relative working directory (optional).'),
@@ -33,6 +42,9 @@ export function createRunCommandTool(bindings: CommandBindings = {}) {
     execute: async ({ command, cwd, timeoutMs }, options: { abortSignal?: AbortSignal } = {}): Promise<string | { error: string }> => {
       try {
         if (!command) return { error: 'Missing required "command" argument.' };
+        if (bindings.readOnly && !isReadOnlyCommand(command)) {
+          return { error: 'Only read-only commands are allowed here (git log/show/diff/status, ls, cat, grep, version checks). Report what needs to run instead.' };
+        }
         const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (!root) return { error: 'No workspace folder is open.' };
         // Same containment as every other path-taking tool: `cwd: "../"` must not leave the
