@@ -597,6 +597,7 @@
     "check:readme": "node scripts/sync-readme.mjs --check",
     "build:types": "tsc -p tsconfig.lib.json --incremental false",
     "publish:dry": "node scripts/publish-targets.mjs --dry-run",
+    "test:e2e:memory-learned": "esbuild scripts/memoryLearned.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/memoryLearned.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/memoryLearned.e2e.cjs",
     "test:e2e:router-sticky": "esbuild scripts/routerSticky.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/routerSticky.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/routerSticky.e2e.cjs",
     "test:e2e:rationale-served": "esbuild scripts/rationaleServed.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rationaleServed.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/rationaleServed.e2e.cjs",
     "test:e2e:rationale-wiring": "esbuild scripts/rationaleWiring.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rationaleWiring.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/rationaleWiring.e2e.cjs"

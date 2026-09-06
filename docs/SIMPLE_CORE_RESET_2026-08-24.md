@@ -134,6 +134,7 @@ npm run test:e2e:tool-offer       # mode-filtered toolset + the small-window coo
 npm run test:e2e:exit-plan-mode   # plan mode's tool boundary (docs/PLAN_MODE_TOOL_BOUNDARY_2026-08-31.md)
 npm run test:e2e:compact-budget   # per-window prune target (executionProfile), not a flat constant
 npm run test:e2e:router-sticky    # Auto keeps step 1's model for the turn; rotation is per turn, failover intact
+npm run test:e2e:memory-learned   # corrections → .tiermux/memory.md, implicit routing signals
 # infra: condense-split, fit-messages, routing-gates, rate-limit-zero, quota-persist,
 #        edit-match, edit-gate, resolve-path, read-paging, checkpoint-persist, …
 ```

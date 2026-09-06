@@ -10,6 +10,7 @@ import * as nodeOs from 'os';
 import { loadProjectRules } from './projectRules';
 import { loadUserMemory } from './userMemory';
 import { currentBranch, statusLines } from '../edits/gitSnapshot';
+import { resolveVerifyCommand } from '../agent/core/tools/workspace/verifyCommand';
 
 /** Injection cap for project rules — loadProjectRules already caps at 8K, but a full 8K of
  *  rules on top of memory+env crowds small free-model context windows; 4K is the sane slice. */
@@ -25,6 +26,9 @@ export interface EnvFacts {
   branch?: string;
   dirtyCount?: number;
   openFiles?: number;
+  /** The project's verify command (manifest-detected or the setting) — stated up front so the
+   *  model does not spend a search round discovering how the project is tested. */
+  verifyCommand?: string;
 }
 
 export interface PromptContext {
@@ -51,6 +55,7 @@ async function gatherEnv(): Promise<EnvFacts> {
     }
   } catch { /* no workspace folder */ }
   try { env.openFiles = vscode.window.visibleTextEditors?.length; } catch { /* headless */ }
+  try { env.verifyCommand = resolveVerifyCommand(); } catch { /* no workspace */ }
   return env;
 }
 
@@ -83,6 +88,7 @@ export function formatEnvBlock(env: EnvFacts): string {
     ...(env.workspaceName ? [`Workspace: ${env.workspaceName}${env.workspacePath ? ` (${env.workspacePath})` : ''}`] : []),
     ...(env.branch ? [`Git: ${env.branch}${env.dirtyCount !== undefined ? ` · ${env.dirtyCount} dirty file${env.dirtyCount === 1 ? '' : 's'}` : ''}`] : []),
     ...(env.openFiles !== undefined ? [`Open files: ${env.openFiles}`] : []),
+    ...(env.verifyCommand ? [`Verify command (the host runs it after your edits): ${env.verifyCommand}`] : []),
   ];
   return lines.join('\n').slice(0, MAX_ENV_CHARS);
 }

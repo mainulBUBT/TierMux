@@ -19,6 +19,42 @@ All notable changes to TierMux are documented here. The format is loosely
   grep is now scoped to negative claims and re-checks to findings the user asks to act on.
 - `tiermux.agent.verifyFixRounds` default 2 → 1; chat-title generation asks one model, not
   up to three.
+- **System prompt rewritten as sections with reasons** (`src/context/system.ts`): what is
+  already in context (rules, editor, @mentions — never re-read), one search round then answer,
+  todoWrite only for multi-phase work, one-question policy in agent mode, tool-free answers in
+  ask mode when the context already holds the answer, answer size banded by change size.
+
+### Added — TierMux learns across sessions (no extra model calls)
+
+- **Corrections are remembered.** Every compaction already writes a "Corrections & rejected
+  approaches" section; those entries are now appended to `.tiermux/memory.md` under an
+  agent-maintained heading (de-duplicated, newest 20 kept, the user's own text always injected
+  first) and reach every later turn through `<user_memory>` (`src/context/userMemory.ts`,
+  `condenseHistory().corrections`).
+- **Auto routing learns from outcomes.** The verify command's exit code and a stuck stop are
+  recorded as implicit signals on the served model (`ModelStatsStore.recordSignal`, half the
+  weight of a 👍/👎) and persist across reloads. Still only a tie-break among equal-rank peers —
+  never overrides intelligence rank. Pinned models are not scored.
+- **The verify command is stated in `<environment_context>`** so the model does not spend a
+  search round discovering how the project is tested.
+- Locked by `npm run test:e2e:memory-learned`.
+
+### Fixed — long turns no longer lose the conversation
+
+- **Compaction after a 50-step turn forgot the goal.** The summarizer received the raw prefix
+  with no fitting (a 400k-token prefix into a 32k-window utility model — the provider kept the
+  tail, the original ask was the head), the blank-retry dropped the OLDER half, and 95% of the
+  input was tool output. Now (`src/agent/condense.ts`): tool results/arguments are capped before
+  summarizing, the request is fitted to the summarizer's window with the first user message
+  pinned, the summary budget is 2048 tokens, and an earlier summary's Goal/Corrections/Next
+  steps are carried forward explicitly.
+- **An oversized tail is folded into the summary.** A tool-heavy turn's tail was ~100 messages
+  of stubs (26k tokens) re-sent on every later step; the tail is now the turn's user message plus
+  its closing reply. This is also the first time a session that STARTS with a mega-turn can
+  compact at all (tailStart 0 returned null).
+- **Tool results are capped at 2,000 chars when persisted into history** (`capForHistory`) —
+  the aging threshold, so nothing a later step could see changes, while a 1.5M-char history
+  stops being estimated, persisted and summarized every turn.
 
 ### Changed — model rationale UI
 

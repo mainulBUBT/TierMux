@@ -37,7 +37,9 @@ import { contentToString } from './agent/content';
 import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSupportedAttachmentPath, kindForPath as kindFromName, lastPdfFailureReason, mimeForPath as mimeForName } from './util/extractAttachments';
 import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
-import { condenseHistory, shouldCondense, generateHandoff } from './agent/condense';
+import { condenseHistory, shouldCondense, generateHandoff, capForHistory } from './agent/condense';
+import { appendLearned } from './context/userMemory';
+import { invalidatePromptContext } from './context/promptContext';
 import { resolveExecutionProfile } from './agent/executionProfile';
 import { structurePlanSteps, formatStructuredSteps, formatPlanForCard, isCleanNumberedList, renderPlanMarkdown } from './agent/planStructurer';
 import { deriveTitleFrom, looksLikeActionablePlan, sanitizeTitle, planStepsToTodos } from './session/titles';
@@ -1756,6 +1758,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  turns are summarized. `tiermux.agent.autoCondenseTokenCap`; 0 = window-only. */
   private static readonly AUTO_CONDENSE_TOKEN_CAP_DEFAULT = 32_000;
 
+  /** Implicit routing feedback from a finished turn — the verify exit code and the stuck stop.
+   *  Pinned models are skipped (the user chose; nothing to learn for Auto). */
+  private recordTurnSignal(s: Session, result: AgentResult): void {
+    if (!result.taskKind || !result.platform || !result.model) return;
+    if (s.model && s.model !== 'auto') return;
+    const signal = result.stopReason === 'stuck' ? 'stuck'
+      : result.verifyOutcome === 'passed' ? 'verifyPassed'
+      : result.verifyOutcome === 'failed' ? 'verifyFailed'
+      : undefined;
+    if (!signal) return;
+    this.deps.modelStats.recordSignal(result.taskKind, result.platform, result.model, signal);
+    diagLog('routing.signal', `${signal} → ${result.platform}::${result.model} (${result.taskKind})`);
+  }
+
+  /** Carry a compaction's "Corrections & rejected approaches" into .tiermux/memory.md so the
+   *  next session starts knowing them. No model call — the summary already wrote the section. */
+  private async learnFromCompaction(corrections: string[]): Promise<void> {
+    if (!corrections.length) return;
+    try {
+      const added = await appendLearned(corrections);
+      if (added > 0) {
+        invalidatePromptContext();
+        diagLog('memory.learned', `${added} correction(s) added to .tiermux/memory.md`);
+      }
+    } catch { /* memory is best-effort */ }
+  }
+
   /** THE automatic compaction path: when history exceeds the window ratio
    *  (`autoCompactThreshold`) OR the working-context cap, summarize older turns in place — the
    *  /compact mechanism, triggered by pressure. Called before a send and after a turn settles. */
@@ -1790,6 +1819,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const after = estimateMessagesTokens(r.messages);
       s.history = r.messages;
       this.persist(s.id);
+      void this.learnFromCompaction(r.corrections);
       // Name whichever bound ACTUALLY fired. The notice used to always blame the model's
       // window, so a 200k-window model produced "~33k → ~8k (was approaching the model's ~200k
       // window)" — 33k is nowhere near 200k, and the real trigger was the working-context cap.
@@ -1837,6 +1867,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       s.history = r.messages;
       const afterTokens = estimateMessagesTokens(s.history);
       this.persist(s.id);
+      void this.learnFromCompaction(r.corrections);
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
       this.post({ type: 'notice', sessionId: s.id, text: `Context compacted — ~${Math.round(priorTokens / 1000)}k → ~${Math.round(afterTokens / 1000)}k tokens (${priorMessages} → ${r.messages.length} messages). Earlier turns summarized; the last few kept verbatim.`, icon: 'compress' });
     } catch (e) {
@@ -2154,6 +2185,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
+        this.recordTurnSignal(s, result);
       }
       const modelLabel = turnModelLabel(s.model, result.model);
 
@@ -2526,7 +2558,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       s.history.push({ role: 'assistant', content: result.text });
       return;
     }
-    if (result.workMessages && result.workMessages.length) s.history.push(...result.workMessages);
+    if (result.workMessages && result.workMessages.length) s.history.push(...capForHistory(result.workMessages));
     else s.history.push({ role: 'assistant', content: result.text });
   }
 
@@ -2963,6 +2995,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.rememberWindow(s, result.platform, result.model);
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
+        this.recordTurnSignal(s, result);
       }
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: result.text, reasoning: result.reasoning, finishReason: result.finishReason, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: result.model, paused: result.paused });
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });

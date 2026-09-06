@@ -3,7 +3,7 @@
  * run, and returned null — so the largest sessions could never compact and fitMessages began
  * evicting the task. Scanning BACKWARD finds a boundary while keeping the verbatim tail on a
  * `user` turn, so nothing is orphaned. Run: npm run test:e2e:condense-split */
-import { condenseHistory, shouldCondense } from '../src/agent/condense';
+import { condenseHistory, shouldCondense, capForHistory } from '../src/agent/condense';
 import { __setRouteOnceForTests } from '../src/agent/core/routeOnce';
 import type { ChatMessage } from '../src/shared/types';
 
@@ -150,6 +150,45 @@ async function main(): Promise<void> {
     ok('summarizer received the full prefix (no pre-collapse)', sent.filter((m) => m.role === 'tool').length === 12);
     ok('the original question is still in what the summarizer sees',
       sent.some((m) => String(m.content).includes('+971')));
+  }
+
+  console.log('\n— One 50-step turn (2026-09-06): the summarizer is fitted, the tail is folded —');
+  {
+    // A session that STARTS with a mega-turn: 50 tool round-trips of 30k-char results, then a
+    // closing reply. Old code: tailStart 0 ⇒ never compacts; the summarizer got the raw prefix.
+    const mega: ChatMessage[] = [{ role: 'user', content: 'migrate every controller to the new auth guard' }];
+    for (let i = 0; i < 50; i++) {
+      mega.push({ role: 'assistant', content: '', tool_calls: [{ id: `m${i}`, type: 'function', function: { name: 'readFile', arguments: JSON.stringify({ path: `src/c${i}.ts` }) } }] });
+      mega.push({ role: 'tool', tool_call_id: `m${i}`, content: 'Y'.repeat(30_000) });
+    }
+    mega.push({ role: 'assistant', content: 'Done: 50 controllers migrated; c7 and c12 still need the legacy shim removed.' });
+
+    const seen = captureRequests('MEGA SUMMARY\n## Files & symbols touched\n- src/c0.ts');
+    const r = await condenseHistory(mega);
+    ok('a session that starts with one mega-turn now compacts', r !== null);
+    if (r) {
+      ok('tail is the user ask + the closing reply, nothing else', r.messages.length === 3 && r.messages[1].role === 'user' && r.messages[2].role === 'assistant');
+      ok('the closing reply survives verbatim', String(r.messages[2].content).includes('c7 and c12'));
+      const sent = seen[0] ?? [];
+      const sentChars = JSON.stringify(sent).length;
+      ok('summarizer input was shrunk + fitted (not 1.5M chars)', sentChars < 200_000, `${sentChars}`);
+      ok('the goal is the first thing after the system prompt', sent[1]?.role === 'user' && String(sent[1].content).includes('migrate every controller'));
+      ok('tool results reach the summarizer capped, not raw', sent.filter((m) => m.role === 'tool').every((m) => String(m.content).length < 1_000));
+    }
+  }
+
+  console.log('\n— Persisting a turn caps tool results to what aging would show anyway —');
+  {
+    const work: ChatMessage[] = [
+      { role: 'assistant', content: '', tool_calls: [{ id: 'p1', type: 'function', function: { name: 'grep', arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'p1', content: 'Z'.repeat(20_000) },
+      { role: 'tool', tool_call_id: 'p2', content: 'short' },
+      { role: 'assistant', content: 'the reply' },
+    ];
+    const capped = capForHistory(work);
+    ok('fat tool result capped', String(capped[1].content).length < 2_300 && String(capped[1].content).includes('truncated'));
+    ok('short tool result untouched', capped[2].content === 'short');
+    ok('call and reply untouched', capped[0] === work[0] && capped[3] === work[3]);
   }
 
   console.log(bad === 0 ? '\nALL PASS' : `\n${bad} FAILED`);
