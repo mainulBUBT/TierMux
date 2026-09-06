@@ -120,8 +120,8 @@ function stopReasonNote(stopReason: NonNullable<AgentResult['stopReason']>, rema
       + '`tiermux.agent.maxStepsPerTurn`.' + list;
   }
   if (stopReason === 'stuck') {
-    return '\n\n---\n**Stopped: no progress — the same tool call failed three times in a row.** '
-      + 'Continue to let it try again, or say what to do differently.' + list;
+    return '\n\n---\n**Stopped: no progress — the model kept repeating the same tool call.** '
+      + 'Continue to let it try again, say what to do differently, or pin a stronger model.' + list;
   }
   return '';
 }

@@ -48,6 +48,9 @@ All notable changes to TierMux are documented here. The format is loosely
   `task` alone, with when / when-not / "write it for a colleague with no context" guidance.
   The sub-agent gets a classifier-gated read-only shell (git history, listings, data queries).
 - Tool descriptions say when NOT to use them (readFile, runCommand, todoWrite).
+- **An identical read-only call never re-runs.** The second copy returns the earlier result
+  with a note, later copies only the note, and the fourth pauses the turn as stuck
+  (`dedupeReads`, live repro: grep "distance" 15× in one turn).
 - A question ("why…?") is answered before anything is changed (Stance); "why X is not set"
   routes as debug; the verify fix round is told to leave the work alone when the failure is
   unrelated (a missing service) instead of reverting it.

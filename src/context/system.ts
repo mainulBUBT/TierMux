@@ -11,7 +11,7 @@ export const METHOD = [
   '1. Observe first. When the question concerns something that exists or happened — a record, an error, a failing test, a behaviour — look at the thing itself (its data, log, output, state) before the code that produces it, with runCommand when a file will not show it. Code shows what CAN happen; observation shows what DID. Never hand the user a check you could run yourself.',
   '2. Then locate the code path: grep or glob to find WHERE, read only that; several paths in one readFile, independent calls in one step.',
   '3. Name a cause only when it fits every fact. Check it against each observed value; a fact it cannot explain means it is not the cause — keep looking.',
-  '4. After each piece of evidence, state the finding in one line — what you learned and what it rules out — so the trail survives when tool output is pruned.',
+  '4. When evidence changes the picture, add ONE short sentence with the finding and what it rules out — never restate the request or your plan.',
   '5. Gather as much as the task needs, and never repeat a call whose result you already have.',
 ].join('\n');
 

@@ -1185,6 +1185,36 @@ async function main() {
     ok('27b. the successful edit applied', ws.read('foo.txt') === 'fixed world', ws.read('foo.txt'));
   }
 
+  // ── Scenario 27c: an identical READ repeated is served from cache, then stops the turn ──
+  // Live repro 2026-09-06: grep "distance" 15× and the same readFile 8× in one turn, three
+  // minutes, no answer. The second copy gets the earlier result back with a note; the fourth
+  // pauses the turn as stuck. A different read in between is real work and is not counted.
+  {
+    const ws = makeWorkspace();
+    const same = { path: 'foo.txt' };
+    const model = createMockModel([
+      { toolCalls: [{ toolName: 'readFile', input: same }] },
+      { toolCalls: [{ toolName: 'readFile', input: same }] },
+      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt', offset: 1, limit: 1 } }] },
+      { toolCalls: [{ toolName: 'readFile', input: same }] },
+      { toolCalls: [{ toolName: 'readFile', input: same }] },
+      { toolCalls: [{ toolName: 'readFile', input: same }] },
+      { text: 'never reached' },
+    ], 's27c');
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'what is in foo.txt' }],
+      mode: 'agent',
+      autoApprove: true,
+      maxStepsPerTurn: 50,
+    })));
+    const results = out.workMessages?.filter((m) => m.role === 'tool').map((m) => String(m.content)) ?? [];
+    ok('27c. the second identical read is answered from cache with a note',
+      results[1]?.includes('Identical readFile call #2') && results[1]?.includes('hello world'), results[1]?.slice(0, 80));
+    ok('27c. the third+ copies get only the note', !!results[3] && results[3].includes('#3') && !results[3].includes('hello world'));
+    ok('27c. the fourth identical read pauses the turn as stuck',
+      out.stopReason === 'stuck' && out.paused === true && model.calls.length === 5, `calls=${model.calls.length} stopReason=${out.stopReason}`);
+  }
+
   // ── Scenario 28: the VERIFY GATE and the WORK REPORT (§2.1 / §2.2) ───────────
   // Both shipped fully built and never invoked for the whole v3 era: verifyCommand.ts had zero
   // callers while two settings advertised it, and WorkReportData was declared, posted, rendered

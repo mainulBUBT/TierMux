@@ -14,7 +14,7 @@ import {
 import type { ChatMessage, ChatContentBlock, ProposedPlan } from '../../shared/types';
 import type { AgentOpts, AgentResult, ToolEvent } from '../agent';
 import { createRouterProvider } from './routerProvider';
-import { buildV3ToolSet } from './tools/v3';
+import { buildV3ToolSet, READ_ONLY_TOOLS } from './tools/v3';
 import { makeRepairViaModelSelfCorrection } from './repair';
 import { compactIfNeeded, ageToolOutputs } from './compact';
 import { resolveVerifyCommand, runVerifyCommand } from './tools/workspace/verifyCommand';
@@ -198,6 +198,38 @@ const DEFAULT_VERIFY_FIX_ROUNDS = 1;
 /** Identical failing tool call this many times IN A ROW ⇒ not progressing. Three, not two: one
  *  legitimate retry after a re-read is still a decision; a third identical failure is not. */
 const REPEAT_FAILURE_LIMIT = 3;
+/** Identical read-only call this many times in a turn ⇒ a loop; the turn pauses. The second and
+ *  later copies never re-run — the cached result comes back with a note. Live repro 2026-09-06:
+ *  grep "distance" 15×, readFile of the same file 8×, three minutes, no answer. */
+const REPEAT_READ_LIMIT = 4;
+
+/** Read-only tools wrapped so an identical call returns the earlier result instead of re-running.
+ *  Wire-level (same name, same input bytes) — never a judgment about what the model should do. */
+function dedupeReads(tools: ToolSet, onRepeat: (signature: string, count: number) => void): ToolSet {
+  const seen = new Map<string, { result: unknown; count: number }>();
+  const out: ToolSet = {};
+  for (const [name, t] of Object.entries(tools)) {
+    const exec = (t as { execute?: (input: unknown, o: unknown) => Promise<unknown> }).execute;
+    if (!READ_ONLY_TOOLS.has(name) || !exec) { out[name] = t; continue; }
+    out[name] = {
+      ...t,
+      execute: async (input: unknown, o: unknown) => {
+        const sig = `${name}:${JSON.stringify(input ?? null)}`;
+        const prior = seen.get(sig);
+        if (prior) {
+          prior.count++;
+          onRepeat(sig, prior.count);
+          const note = `[Identical ${name} call #${prior.count} this turn — the result is unchanged. Use it; do not run this call again.]`;
+          return prior.count === 2 && typeof prior.result === 'string' ? `${note}\n${prior.result}` : note;
+        }
+        const result = await exec(input, o);
+        seen.set(sig, { result, count: 1 });
+        return result;
+      },
+    } as ToolSet[string];
+  }
+  return out;
+}
 
 /** True when a tool RESULT is a failure — either the SDK's tool-error state or the v3
  *  contract's `{ error }` return, which the SDK reports as an ordinary json result. */
@@ -240,7 +272,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   diagLog('engine.taskKind', taskKind);
   // exitPlanMode's validated structure; the host renders the plan card from it. Last call wins.
   let proposedPlan: ProposedPlan | undefined;
-  const tools: ToolSet = buildV3ToolSet(opts.mode, {
+  /** The signature that tripped REPEAT_FAILURE_LIMIT or REPEAT_READ_LIMIT — the stop condition's trigger. */
+  let stuckSignature: string | undefined;
+  const tools: ToolSet = dedupeReads(buildV3ToolSet(opts.mode, {
     abortSignal: opts.abortSignal,
     sessionId: opts.sessionId,
     requestId: opts.requestId,
@@ -248,7 +282,12 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     onBeforeWrite: opts.onBeforeWrite,
     onAskUser: opts.onAskUser,
     onPlanProposed: (plan) => { proposedPlan = plan; },
-  }) as ToolSet;
+  }) as ToolSet, (sig, count) => {
+    if (count >= REPEAT_READ_LIMIT && !stuckSignature) {
+      stuckSignature = sig;
+      diagLog('engine.stuck', `${sig.slice(0, 80)} repeated ${count}× — stopping the turn (resumable)`);
+    }
+  });
 
   const model: LanguageModel = modelOverride ?? createRouterProvider({
     effort: opts.effort,
@@ -291,8 +330,6 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let hitStepCap = false;
   /** `toolName+input` → consecutive failure count, turn-scoped across continuation passes. */
   const failureCounts = new Map<string, number>();
-  /** The signature that tripped REPEAT_FAILURE_LIMIT — also the stop condition's trigger. */
-  let stuckSignature: string | undefined;
   const notMakingProgress: StopCondition<ToolSet> = () => stuckSignature !== undefined;
   // ai v7 consumeStream() RESOLVES on stream errors (they go to its onError option) — the
   // try/catch below never sees provider failures; captured here for the post-pass guard.
