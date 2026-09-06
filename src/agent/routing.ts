@@ -10,7 +10,7 @@ const TASK_VERB = /\b(add|create|implement|build|write|fix|refactor|rename|move|
 /** `error` is excluded when it heads a UI noun ("error state", "error handling", "error
  *  boundary") — that names something to BUILD, and routing it to `debug` picked a debug-tier
  *  model for a coding task (found via the /design skill body). */
-const DEBUG_HINT = /\b(debug|bug|error(?!\s*(?:state|handling|handled|boundar))|exception|stack ?trace|traceback|failing|fails?|failed|broken|crash(?:es|ed)?|throws?|not working|isn'?t working|won'?t (?:work|run|build|compile)|doesn'?t (?:work|run)|null pointer|segfault)\b|\bnot (?:loading|showing|rendering|displaying|working|saving|submitting|connecting|fetching|appearing|updating|redirecting|running|opening|logging in)\b|\b(?:can'?t|cannot|couldn'?t|won'?t|didn'?t|doesn'?t)\s+(?:log ?in|load|show|work|submit|run|open|save|fetch|connect|find|access|see|get|send|redirect|register|authenticate)\b|\b(?:shows?|returns?|displays?|gives?|outputs?)\s+(?:0|zero|null|undefined|nothing|empty|wrong|incorrect|the wrong)\b|\b(?:something (?:wrong|broken|off)|is (?:wrong|broken|incorrect)|looks (?:wrong|broken)|seems (?:broken|wrong)|does nothing|do nothing|nothing happens)\b/i;
+const DEBUG_HINT = /\b(debug|bug|error(?!\s*(?:state|handling|handled|boundar))|exception|stack ?trace|traceback|failing|fails?|failed|broken|crash(?:es|ed)?|throws?|not working|isn'?t working|won'?t (?:work|run|build|compile)|doesn'?t (?:work|run)|null pointer|segfault)\b|\bnot (?:loading|showing|rendering|displaying|working|saving|submitting|connecting|fetching|appearing|updating|redirecting|running|opening|logging in|set|assigned|saved|stored|populated|created|applied)\b|\b(?:can'?t|cannot|couldn'?t|won'?t|didn'?t|doesn'?t)\s+(?:log ?in|load|show|work|submit|run|open|save|fetch|connect|find|access|see|get|send|redirect|register|authenticate)\b|\b(?:shows?|returns?|displays?|gives?|outputs?)\s+(?:0|zero|null|undefined|nothing|empty|wrong|incorrect|the wrong)\b|\b(?:something (?:wrong|broken|off)|is (?:wrong|broken|incorrect)|looks (?:wrong|broken)|seems (?:broken|wrong)|does nothing|do nothing|nothing happens)\b/i;
 
 // `what (kind|sort|type) of …` is listed explicitly: TASK_VERB contains nouns that double as verbs
 // (`cache`, `test`, `format`, `support`), so "what kind of cache is this?" fell through to `agent`
@@ -98,6 +98,25 @@ export function classifyTaskCore(text: string, signals?: ClassifySignals): { kin
 /** Regex-only classification — synchronous, zero extra latency, no model call. */
 export function classifyTask(text: string, signals?: ClassifySignals): TaskKind {
   return classifyTaskCore(text, signals).kind;
+}
+
+/** Kinds a short follow-up inherits. */
+const WORKING_KINDS: TaskKind[] = ['debug', 'coding', 'agent', 'longContext', 'vision', 'plan'];
+const SHORT_FOLLOW_UP_WORDS = 10;
+
+/** Latest turn's kind; a short follow-up ("is this right?") inherits the previous substantive turn's. */
+export function classifyConversation(userTexts: string[], signals?: ClassifySignals): { kind: TaskKind; confident: boolean } {
+  const last = userTexts[userTexts.length - 1] ?? '';
+  const own = classifyTaskCore(last, signals);
+  if (own.kind !== 'chat' && own.kind !== 'trivial') return own;
+  if (last.trim().split(/\s+/).filter(Boolean).length > SHORT_FOLLOW_UP_WORDS) return own;
+  for (let i = userTexts.length - 2; i >= 0; i--) {
+    const prev = classifyTaskCore(userTexts[i]);
+    if (prev.kind === 'trivial') continue;
+    if (WORKING_KINDS.includes(prev.kind)) return { kind: prev.kind, confident: prev.confident };
+    break; // a previous chat/question turn: the follow-up really is chat
+  }
+  return own;
 }
 
 /** True for a turn whose ONLY ask is "describe/explain the attached image itself" — no task/
