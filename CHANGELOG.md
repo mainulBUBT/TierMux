@@ -24,6 +24,35 @@ All notable changes to TierMux are documented here. The format is loosely
   todoWrite only for multi-phase work, one-question policy in agent mode, tool-free answers in
   ask mode when the context already holds the answer, answer size banded by change size.
 
+### Changed — a universal method, and plumbing for weak models (2026-09-06)
+
+- **System prompt: Stance / Method / Honesty** (`src/context/system.ts`). One investigation
+  method for every task: observe the thing itself before the code that produces it; locate
+  the path; name a cause only when it fits every fact; note each finding in one line so the
+  trail survives pruning; gather as much as the task needs, never the same call twice. The
+  research sub-agent shares `METHOD`. The earlier "one search round" rule is gone — it
+  discouraged evidence, not waste.
+- **Every Auto turn was routed as `chat`.** The host never passed a task kind and the picker
+  classified an empty message list. The engine now classifies once per turn
+  (`classifyConversation`): a short follow-up ("is this correct?", "issue ki?") inherits the
+  previous substantive turn's kind instead of dropping to the chat tier.
+- **AI SDK "Prompts for Tools" tips applied:** tool-offered calls run at `temperature: 0.2`
+  (0 sent a free model into a decoding loop; the Responses and compat adapters omit it for
+  o-series/gpt-5, which reject it); a stream that repeats the same block three times is cut
+  and the model cooled down (`isDegenerateRepeat`, live repro 2026-09-06);
+  `inputExamples` on readFile/grep/glob/editFile/runCommand/delegateTask ride in the wire
+  description; a null-valued optional parameter is stripped mechanically before any model
+  repair round (`withoutNullKeys`).
+- **delegateTask on every window** — a small-window model is exactly the one that needs to keep
+  a 10-file exploration out of its context; only `todoWrite` is withdrawn there. Its schema is
+  `task` alone, with when / when-not / "write it for a colleague with no context" guidance.
+  The sub-agent gets a classifier-gated read-only shell (git history, listings, data queries).
+- Tool descriptions say when NOT to use them (readFile, runCommand, todoWrite).
+- A question ("why…?") is answered before anything is changed (Stance); "why X is not set"
+  routes as debug; the verify fix round is told to leave the work alone when the failure is
+  unrelated (a missing service) instead of reverting it.
+- Locked by `npm run test:e2e:weak-model-plumbing`; `tool-offer` and `delegate-task` updated.
+
 ### Added — TierMux learns across sessions (no extra model calls)
 
 - **Corrections are remembered.** Every compaction already writes a "Corrections & rejected
