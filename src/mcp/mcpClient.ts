@@ -60,6 +60,9 @@ export function normalizeMcpServerConfig(raw: unknown): McpServerConfig | undefi
   return undefined;
 }
 
+/** Per-request bound for both transports. A server that hangs must not hold the turn. */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
 export interface McpTool {
   name: string;
   description?: string;
@@ -70,6 +73,8 @@ export interface McpTool {
 export interface McpClient {
   readonly name: string;
   tools: McpTool[];
+  /** The server's own `instructions` from initialize — how it wants its tools used. */
+  instructions?: string;
   start(timeoutMs?: number): Promise<void>;
   callTool(tool: string, args: unknown): Promise<string>;
   dispose(): void;
@@ -89,6 +94,7 @@ export class McpStdioClient {
   private buffer = '';
   private alive = false;
   tools: McpTool[] = [];
+  instructions?: string;
 
   constructor(readonly name: string, private readonly cfg: McpLocalServerConfig) {}
 
@@ -107,11 +113,12 @@ export class McpStdioClient {
     this.proc.on('exit', () => { this.alive = false; this.failAll(new Error(`${this.name} exited`)); });
     this.proc.on('error', (e) => { this.alive = false; this.failAll(e instanceof Error ? e : new Error(String(e))); });
 
-    await this.request('initialize', {
+    const init = (await this.request('initialize', {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: { name: 'tiermux', version: '0.1.0' },
-    }, timeoutMs);
+    }, timeoutMs)) as { instructions?: unknown } | undefined;
+    if (typeof init?.instructions === 'string' && init.instructions.trim()) this.instructions = init.instructions.trim();
     this.notify('notifications/initialized', {});
 
     const res = (await this.request('tools/list', {}, timeoutMs)) as { tools?: McpTool[] };
@@ -143,7 +150,7 @@ export class McpStdioClient {
   private notify(method: string, params: unknown): void {
     this.send({ jsonrpc: '2.0', method, params });
   }
-  private request(method: string, params: unknown, timeoutMs = 30000): Promise<unknown> {
+  private request(method: string, params: unknown, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<unknown> {
     if (!this.alive) return Promise.reject(new Error(`${this.name} is not running`));
     const id = this.nextId++;
     return new Promise<unknown>((resolve, reject) => {
@@ -179,6 +186,7 @@ export class McpHttpClient implements McpClient {
   private sessionId?: string;
   private nextId = 1;
   tools: McpTool[] = [];
+  instructions?: string;
 
   constructor(readonly name: string, private readonly cfg: Pick<McpRemoteServerConfig, 'url' | 'headers'>) {}
 
@@ -191,9 +199,15 @@ export class McpHttpClient implements McpClient {
     };
   }
 
-  private async rpc(method: string, params: unknown): Promise<unknown> {
+  private async rpc(method: string, params: unknown, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<unknown> {
     const id = this.nextId++;
-    const res = await fetch(this.cfg.url, { method: 'POST', headers: this.headers(), body: JSON.stringify({ jsonrpc: '2.0', id, method, params }) });
+    // An unbounded fetch let one hung remote server hold a whole turn (the stdio client has
+    // always had a timeout; this one had none).
+    const res = await fetch(this.cfg.url, {
+      method: 'POST', headers: this.headers(),
+      body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+      signal: AbortSignal.timeout(timeoutMs),
+    }).catch((e) => { throw new Error(`${this.name}: ${method} ${e instanceof Error && e.name === 'TimeoutError' ? `timed out after ${timeoutMs}ms` : String(e)}`); });
     const sid = res.headers.get('mcp-session-id');
     if (sid) this.sessionId = sid;
     if (!res.ok) throw new Error(`${this.name}: ${method} HTTP ${res.status}`);
@@ -236,7 +250,8 @@ export class McpHttpClient implements McpClient {
   }
 
   async start(): Promise<void> {
-    await this.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'tiermux', version: '0.1.0' } });
+    const init = (await this.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'tiermux', version: '0.1.0' } })) as { instructions?: unknown } | undefined;
+    if (typeof init?.instructions === 'string' && init.instructions.trim()) this.instructions = init.instructions.trim();
 
     await fetch(this.cfg.url, { method: 'POST', headers: this.headers(), body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) }).catch(() => { /* ignore */ });
     const res = (await this.rpc('tools/list', {})) as { tools?: McpTool[] };

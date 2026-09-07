@@ -2968,9 +2968,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async handleResume(m: Extract<InMessage, { type: 'resume' }>): Promise<void> {
     const s = this.current();
 
+    const carried = (s.lastTodos ?? []).filter((t) => t.status !== 'completed');
     s.history.push({
       role: 'user',
-      content: 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.',
+      content: 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.'
+        + (carried.length ? `\n\nStill open:\n${carried.map((t) => `- ${t.content}`).join('\n')}` : ''),
     });
     // Cancel the previous run BEFORE replacing the token. CancellationTokenSource.dispose()
     // only drops listeners — it does NOT abort — so without cancel() a pre-empted in-flight
@@ -2989,7 +2991,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const sentAt = Date.now();
       this.beginInProgressTurn(s, m.requestId);
       const cbk4 = this.agentCallbacks(s, m.requestId, 'agent');
-      const result = await runAgentStream(this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk4, s.model), {});
+      // The list belongs to the TASK, not the turn: re-render it under this requestId (each
+      // turn builds its own card) and hand it to the engine, whose transcript may have pruned
+      // the todoWrite result away.
+      if (s.lastTodos?.length) {
+        this.post({ type: 'todos', sessionId: s.id, requestId: m.requestId, todos: s.lastTodos, followingPlan: !!s.executingPlan });
+      }
+      const result = await runAgentStream({ ...this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk4, s.model), todos: s.lastTodos }, {});
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       // See the `result.failed` guard in the main send handler — show a real reply bubble with
       // the failure reason instead of a phantom blank "successful" turn.

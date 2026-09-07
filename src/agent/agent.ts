@@ -87,6 +87,9 @@ export interface AgentOpts {
   /** Check declared-complete todos against the workspace before the turn ends — mirrors
    *  `tiermux.agent.auditTodos`. */
   auditTodos?: boolean;
+  /** The task list this turn inherits (a Continue after a step-cap pause). Injected into the
+   *  system prompt when anything is unfinished; the engine keeps it current from todoWrite. */
+  todos?: TodoItem[];
   /** `platform::modelId` keys to skip during Auto selection for this call only. Ignored when
    *  `pinnedModel` is set. */
   excludeModels?: string[];

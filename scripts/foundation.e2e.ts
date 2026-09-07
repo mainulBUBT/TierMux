@@ -1215,6 +1215,47 @@ async function main() {
       out.stopReason === 'stuck' && out.paused === true && model.calls.length === 5, `calls=${model.calls.length} stopReason=${out.stopReason}`);
   }
 
+  // ── Scenario 15b: a CONTINUE inherits the task list ─────────────────────────
+  // Repro 2026-09-07: a todo-driven turn hit the 50-step cap; Continue started a fresh turn
+  // whose transcript no longer carried the todoWrite result, so the list was gone from both
+  // the model's context and the UI.
+  {
+    const ws = makeWorkspace();
+    const carried = [
+      { content: 'Add the validation', status: 'completed' as const },
+      { content: 'Update the call sites', status: 'in_progress' as const },
+      { content: 'Add a regression test', status: 'pending' as const },
+    ];
+    const m = createMockModel([{ text: 'picking up where I stopped' }], 's15b');
+    await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
+      messages: [{ role: 'user', content: 'Continue from where you left off.' }],
+      mode: 'agent',
+      todos: carried,
+    })));
+    const sys = String((m.calls[0]?.messages ?? []).find((x: { role?: string }) => x.role === 'system')?.content ?? '');
+    ok('15b. the carried list reaches the resumed turn', sys.includes('<task_list>'), sys.slice(-120));
+    ok('15b. unfinished items are named', sys.includes('Update the call sites') && sys.includes('Add a regression test'));
+    ok('15b. finished ones are marked done, not dropped', sys.includes('[x] Add the validation'));
+    ok('15b. and it says not to restart them', sys.includes('Do not restart finished items'));
+
+    // An all-done list must never leak into unrelated later work.
+    const m2 = createMockModel([{ text: 'new task' }], 's15b-done');
+    await runWithWorkspaceRoot(ws.root, () => engineTurn(m2, engineOpts({
+      messages: [{ role: 'user', content: 'something else entirely' }],
+      mode: 'agent',
+      todos: [{ content: 'Add the validation', status: 'completed' as const }],
+    })));
+    const sys2 = String((m2.calls[0]?.messages ?? []).find((x: { role?: string }) => x.role === 'system')?.content ?? '');
+    ok('15b. a fully completed list is not injected', !sys2.includes('<task_list>'));
+
+    const m3 = createMockModel([{ text: 'plain' }], 's15b-none');
+    await runWithWorkspaceRoot(ws.root, () => engineTurn(m3, engineOpts({
+      messages: [{ role: 'user', content: 'hello' }], mode: 'agent',
+    })));
+    const sys3 = String((m3.calls[0]?.messages ?? []).find((x: { role?: string }) => x.role === 'system')?.content ?? '');
+    ok('15b. no list, no block', !sys3.includes('<task_list>'));
+  }
+
   // ── Scenario 27d: the TODO AUDIT — a declared "done" is checked, not believed ──
   // Pochi's completion audit, in the verify gate's bounded shape: agent mode, only when the
   // turn used todoWrite, one read-only sub-agent, at most one fix pass.

@@ -16,6 +16,7 @@ import type { AgentOpts, AgentResult, ToolEvent } from '../agent';
 import { createRouterProvider } from './routerProvider';
 import { buildV3ToolSet, READ_ONLY_TOOLS } from './tools/v3';
 import { runSubagent } from './subagent';
+import { getMcpManager } from './tools/mcp/manager';
 import { makeRepairViaModelSelfCorrection } from './repair';
 import { compactIfNeeded, ageToolOutputs } from './compact';
 import { resolveVerifyCommand, runVerifyCommand } from './tools/workspace/verifyCommand';
@@ -280,8 +281,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let proposedPlan: ProposedPlan | undefined;
   /** The signature that tripped REPEAT_FAILURE_LIMIT or REPEAT_READ_LIMIT — the stop condition's trigger. */
   let stuckSignature: string | undefined;
-  /** The last todo list this turn wrote — the audit gate's trigger. */
-  let lastTodos: TodoItem[] | undefined;
+  /** The task list as it stands: inherited on a Continue, replaced by each todoWrite. Drives
+   *  the audit gate and the caller's remaining-items note. */
+  let lastTodos: TodoItem[] | undefined = opts.todos;
   const tools: ToolSet = dedupeReads(buildV3ToolSet(opts.mode, {
     abortSignal: opts.abortSignal,
     sessionId: opts.sessionId,
@@ -380,7 +382,8 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
 
   // System prompt + context gathered ONCE per turn: both passes share the identical prefix
   // (provider prompt-cache friendly) and the async reads never happen per-pass.
-  const system = composeSystemPrompt(opts.mode, await gatherPromptContext());
+  const system = composeSystemPrompt(opts.mode, await gatherPromptContext(), opts.todos,
+    opts.mode === 'agent' ? getMcpManager()?.instructions() : undefined);
   const runPass = (messages: ModelMessage[]) => {
     turnPass++;
     // Per-PASS state, reset here so onChunk can close over it. Leaking it across passes fired

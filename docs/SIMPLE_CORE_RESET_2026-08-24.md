@@ -146,6 +146,7 @@ npm run test:e2e:router-sticky    # Auto keeps step 1's model for the turn; rota
 npm run test:e2e:memory-learned   # corrections → .tiermux/memory.md, implicit routing signals
 npm run test:e2e:weak-model-plumbing # null-strip repair, inputExamples on the wire, temperature guards, follow-up routing
 npm run test:e2e:agent-registry   # built-in + .tiermux/agents/*.md sub-agents, tool narrowing, roster in delegateTask
+npm run test:e2e:mcp-wire         # MCP tool-name cap/hash, per-request timeout, server instructions block
 # infra: condense-split, fit-messages, routing-gates, rate-limit-zero, quota-persist,
 #        edit-match, edit-gate, resolve-path, read-paging, checkpoint-persist, …
 ```

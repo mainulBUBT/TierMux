@@ -1,12 +1,26 @@
 
 
 import * as vscode from 'vscode';
+import { createHash } from 'crypto';
 import type { ChatToolDefinition } from '../shared/types';
 import type { McpServerInfo } from '../messages';
 import { McpStdioClient, McpHttpClient, normalizeMcpServerConfig, type McpClient, type McpServerConfig } from './mcpClient';
 
 const PREFIX = 'mcp__';
 const sanitize = (s: string): string => s.replace(/[^a-zA-Z0-9_-]/g, '_');
+/** OpenAI's function-name limit; Anthropic allows 128. Cap at the lower bound — our wire is
+ *  OpenAI-shaped for ~18 providers, and an over-long name is rejected with a 400 that kills the
+ *  WHOLE request, not just that tool. */
+const MAX_TOOL_NAME = 64;
+
+/** `mcp__<server>__<tool>`, sanitized, and shortened with a content hash when it would not fit.
+ *  Deterministic, so a name stays stable across reconnects. */
+export function mcpToolName(server: string, tool: string): string {
+  const full = `${PREFIX}${sanitize(server)}__${sanitize(tool)}`;
+  if (full.length <= MAX_TOOL_NAME) return full;
+  const hash = createHash('sha1').update(`${server}__${tool}`).digest('hex').slice(0, 8);
+  return `${full.slice(0, MAX_TOOL_NAME - 9)}_${hash}`;
+}
 
 export class McpManager {
   private clients = new Map<string, McpClient>();
@@ -73,7 +87,7 @@ export class McpManager {
         clients.set(name, client);
         const toolNames: string[] = [];
         for (const t of client.tools) {
-          toolMap.set(`${PREFIX}${sanitize(name)}__${sanitize(t.name)}`, { server: name, tool: t.name });
+          toolMap.set(mcpToolName(name, t.name), { server: name, tool: t.name });
           toolNames.push(t.name);
         }
         infos.push({ name, status: 'connected', toolCount: client.tools.length, tools: toolNames });
@@ -105,6 +119,16 @@ export class McpManager {
       });
     }
     return specs;
+  }
+
+  /** Every connected server's own `instructions`, for the prompt's <mcp_instructions> block.
+   *  A server that ships none contributes nothing. */
+  instructions(): string {
+    const parts: string[] = [];
+    for (const [name, c] of this.clients) {
+      if (c.instructions) parts.push(`## ${name}\n${c.instructions}`);
+    }
+    return parts.join('\n\n');
   }
 
   isMcpTool(name: string): boolean {

@@ -66,6 +66,26 @@ All notable changes to TierMux are documented here. The format is loosely
 - **The explore agent carries a playbook**: how to approach "where is X", a wrong value, or an
   architecture question, and a fixed report shape — answer, evidence with `path:line`, what was
   ruled out, what is still open — so the caller learns what NOT to re-check.
+### Fixed — MCP is usable on an OpenAI-shaped wire
+
+- **Long MCP tool names no longer kill the request.** `mcp__<server>__<tool>` was sent
+  unbounded; past OpenAI's 64-character function-name limit the provider rejects the WHOLE
+  request, not just that tool. Names are now capped with a stable content hash
+  (`mcpToolName`), keeping a readable prefix and never colliding.
+- **A remote MCP request is time-bounded.** The HTTP transport had no timeout at all, so one
+  hung server held the turn; both transports now share a 30s per-request bound.
+- **A server's own `instructions` reach the model** in an `<mcp_instructions>` block (agent
+  mode only, capped at 2 KB), framed as guidance that never overrides the rules above.
+- Locked by `npm run test:e2e:mcp-wire`.
+
+### Fixed — Continue keeps the task list
+
+- **Continue keeps the task list.** A todo-driven turn that hit the step cap lost the list on
+  Continue — the new turn's transcript no longer carried the `todoWrite` result, so the model
+  started blind and the UI card was empty. The list now rides in a `<task_list>` block in the
+  resumed turn's system prompt (finished items marked, not dropped) and is re-rendered under
+  the new request id. A fully completed list is never injected, so old work cannot leak into
+  a new task. `foundation.e2e.ts` scenario 15b.
 - **Todo audit** (`tiermux.agent.auditTodos`, default on): when an agent turn marks todos
   complete, a read-only sub-agent checks the workspace for evidence of each one and hands back
   anything it cannot find, for at most one more pass. Bounded exactly like the verify gate —

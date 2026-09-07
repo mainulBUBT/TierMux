@@ -84,12 +84,29 @@ const MODE_TAIL: Record<Mode, string> = {
 /** The turn's system prompt. Kept deliberately short — the tool schemas carry the detail.
  *  `ctx` (rules / user memory / environment facts) is optional so this stays sync, pure, and
  *  vscode-free; when absent the prompt is exactly the pre-context BASE+MODE text. */
-export function composeSystemPrompt(mode: Mode, ctx?: PromptContext): string {
-  if (!ctx) return `${BASE}\n\n${MODE_TAIL[mode]}`;
+export function composeSystemPrompt(mode: Mode, ctx?: PromptContext, todos?: ReadonlyArray<{ content: string; status: string }>, mcpInstructions?: string): string {
+  const todoBlock = formatTodoBlock(todos);
+  // An MCP server can ship its own `instructions` telling the model how to use its tools; they
+  // are advice from that server, never a licence to override the rules above.
+  const mcpBlock = mcpInstructions?.trim()
+    ? `\n\n<mcp_instructions>\nGuidance from connected MCP servers about their own tools. Follow it where it does not conflict with anything above.\n\n${mcpInstructions.trim().slice(0, 2_000)}\n</mcp_instructions>`
+    : '';
+  if (!ctx) return `${BASE}\n\n${MODE_TAIL[mode]}${todoBlock}${mcpBlock}`;
   const blocks: string[] = [];
   if (ctx.rules.trim()) blocks.push(`<project_rules>\n${ctx.rules.trim()}\n</project_rules>`);
   if (ctx.memory.trim()) blocks.push(`<user_memory>\n${ctx.memory.trim()}\n</user_memory>`);
   if (ctx.env) blocks.push(`<environment_context>\n${formatEnvBlock(ctx.env)}\n</environment_context>`);
   const tail = blocks.length ? `\n\n${blocks.join('\n\n')}` : '';
-  return `${BASE}\n\n${MODE_TAIL[mode]}${tail}`;
+  return `${BASE}\n\n${MODE_TAIL[mode]}${tail}${todoBlock}${mcpBlock}`;
+}
+
+/** The task list a resumed turn inherits. The list lives in a todoWrite tool result, which
+ *  pruning may drop from a long transcript — so a continued turn was starting blind (2026-09-07:
+ *  a 50-step turn hit the cap and Continue lost the list entirely). Omitted when everything is
+ *  done, so an old finished list can never leak into new work. */
+function formatTodoBlock(todos?: ReadonlyArray<{ content: string; status: string }>): string {
+  const items = todos ?? [];
+  if (!items.some((t) => t.status !== 'completed')) return '';
+  const lines = items.map((t) => `- [${t.status === 'completed' ? 'x' : t.status === 'in_progress' ? '~' : ' '}] ${t.content}`);
+  return `\n\n<task_list>\nCarried over from earlier in this task — keep working it, and call todoWrite as statuses change. Do not restart finished items.\n${lines.join('\n')}\n</task_list>`;
 }
