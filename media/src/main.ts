@@ -2567,6 +2567,11 @@ import { handleToolStatus } from './handlers/toolStatus';
   let mcpSearchTimer;
   // MCP Add/Edit form state: null = closed, '' = new server, or the name being edited.
   let mcpFormOpenFor = null;
+  /** Browsable skills from the configured catalog; null until the first load returns. */
+  let skillCatalog = null;
+  let skillResultsEl = null;
+  let skillSearchId = 0;
+  let skillSearchTimer = null;
   /** Add-custom-endpoint form: fill fields → "Save & fetch models" → tick models → add. `phase`
    *  picks the half on screen; `endpointId` is matched by name in the next config push, since
    *  addCustomEndpoint has no reply of its own. */
@@ -2614,6 +2619,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     [
       ['providers', 'Providers', svg('<rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/>')],
       ['mcp', 'MCP', svg('<circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9v3a3 3 0 0 1-3 3H9"/>')],
+      ['skills', 'Skills', svg('<path d="M12 2l2.4 6.9L21 9.3l-5 4.4L17.6 21 12 17.3 6.4 21 8 13.7l-5-4.4 6.6-.4z"/>')],
       ['usage', 'Usage', svg('<line x1="6" y1="20" x2="6" y2="14"/><line x1="12" y1="20" x2="12" y2="8"/><line x1="18" y1="20" x2="18" y2="11"/>')],
       ['others', 'Others', svg('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>')],
     ].forEach(([tab, label, icon]) => {
@@ -2633,6 +2639,7 @@ import { handleToolStatus } from './handlers/toolStatus';
 
     if (settingsTab === 'providers') renderProviders();
     else if (settingsTab === 'mcp') renderMcpSection();
+    else if (settingsTab === 'skills') renderSkillsSection();
     else if (settingsTab === 'usage') renderUsageSection();
     else renderOthersSection();
   }
@@ -3809,6 +3816,117 @@ import { handleToolStatus } from './handlers/toolStatus';
     }
   }
 
+  /** Installed skills first (what `/name` can run today), then the browsable catalog. Skills
+   *  have no official registry, so the catalog is whatever `tiermux.skillRegistryUrl` serves. */
+  function renderSkillsSection() {
+    const installed = state.skills || [];
+    const installedNames = new Set(installed.map((s) => s.name));
+
+    const title = el('div', 'section-title');
+    title.textContent = 'Skills';
+    settingsContentEl.appendChild(title);
+    const hint = el('div', 'muted');
+    hint.textContent = 'A skill is a saved prompt you run as /name. Installed ones go to .agents/skills/, shared with other agent tools.';
+    settingsContentEl.appendChild(hint);
+
+    const actions = el('div', 'row-actions');
+    actions.style.margin = '6px 0';
+    const reBtn = document.createElement('button');
+    reBtn.className = 'secondary';
+    reBtn.textContent = '⟳ Refresh catalog';
+    reBtn.addEventListener('click', () => { skillCatalog = null; renderSettings(); send({ type: 'loadSkillCatalog' }); });
+    actions.appendChild(reBtn);
+    settingsContentEl.appendChild(actions);
+
+    const instTitle = el('div', 'section-title');
+    instTitle.textContent = `Installed (${installed.length}) — run with /name`;
+    settingsContentEl.appendChild(instTitle);
+    installed.forEach((sk) => {
+      const card = el('div', 'skill-card');
+      const head = el('div', 'skill-card-head');
+      head.innerHTML = `<span class="skill-name">/${escapeHtml(sk.name)}</span>`
+        + `<span class="skill-badge">${sk.removable ? 'installed' : 'bundled'}</span>`;
+      if (sk.removable) {
+        const rm = document.createElement('button');
+        rm.className = 'icon-btn';
+        rm.textContent = '✕';
+        rm.title = 'Remove skill';
+        rm.style.marginLeft = 'auto';
+        rm.addEventListener('click', () => send({ type: 'uninstallSkill', name: sk.name }));
+        head.appendChild(rm);
+      }
+      const desc = el('div', 'skill-desc');
+      desc.textContent = sk.detail || '';
+      card.append(head, desc);
+      settingsContentEl.appendChild(card);
+    });
+
+    const catTitle = el('div', 'section-title');
+    catTitle.textContent = 'Browse';
+    settingsContentEl.appendChild(catTitle);
+    const warn = el('div', 'muted');
+    warn.textContent = 'A skill is a prompt that steers the agent, so it runs with the agent\'s permissions — open the source and read it before installing. "vendor repo" means only that it installs from the vendor\'s own repository, not that anyone reviewed it. Set tiermux.skillRegistryUrl to browse another catalog.';
+    settingsContentEl.appendChild(warn);
+
+    const rsearch = document.createElement('input');
+    rsearch.type = 'text';
+    rsearch.className = 'settings-search';
+    rsearch.placeholder = 'Search every published skill… — empty shows the curated list';
+    settingsContentEl.appendChild(rsearch);
+
+    skillResultsEl = document.createElement('div');
+    settingsContentEl.appendChild(skillResultsEl);
+    rsearch.addEventListener('input', () => {
+      const q = rsearch.value.trim();
+      if (q.length < 2) { renderSkillItems(skillCatalog || []); return; }
+      const id = ++skillSearchId;
+      skillResultsEl.innerHTML = '<div class="muted">Searching the directory…</div>';
+      clearTimeout(skillSearchTimer);
+      skillSearchTimer = setTimeout(() => send({ type: 'searchSkillRegistry', queryId: id, query: q }), 350);
+    });
+
+    if (skillCatalog === null) {
+      skillResultsEl.innerHTML = '<div class="muted">Loading catalog…</div>';
+      send({ type: 'loadSkillCatalog' });
+      return;
+    }
+    renderSkillItems(skillCatalog);
+  }
+
+  /** Catalog entries or directory results — same card either way; only the trust badge differs. */
+  function renderSkillItems(items) {
+    if (!skillResultsEl) return;
+    skillResultsEl.innerHTML = '';
+    const installedNames = new Set((state.skills || []).map((s) => s.name));
+    if (!items.length) {
+      const none = el('div', 'muted');
+      none.textContent = 'Nothing to show — try the search box, or add a skill from GitHub.';
+      skillResultsEl.appendChild(none);
+      return;
+    }
+    items.forEach((it) => {
+      const already = installedNames.has(it.skill || it.id);
+      const card = el('div', 'skill-card');
+      const tags = (it.tags || []).map((t) => `<span class="skill-tag">${escapeHtml(t)}</span>`).join('');
+      const link = it.homepage || `https://github.com/${it.source}`;
+      card.innerHTML = `<div class="skill-card-head"><span class="skill-name">${escapeHtml(it.name)}</span>`
+        + (it.verified ? '<span class="skill-badge verified" title="Installs from the vendor\'s own repository. Not a review of the content.">vendor repo</span>' : '')
+        + `</div><div class="skill-desc">${escapeHtml(it.description || '')}</div>`
+        + `<div class="skill-meta"><a href="${escapeHtml(link)}" title="Read the source before installing">${escapeHtml(it.source)}${it.skill ? ' / ' + escapeHtml(it.skill) : ''}</a>${tags}</div>`;
+      const btn = document.createElement('button');
+      btn.className = already ? 'secondary' : 'primary';
+      btn.textContent = already ? 'Installed' : 'Install';
+      btn.disabled = already;
+      btn.addEventListener('click', () => {
+        btn.disabled = true;
+        btn.textContent = 'Installing…';
+        send({ type: 'installSkill', item: it });
+      });
+      card.appendChild(btn);
+      skillResultsEl.appendChild(card);
+    });
+  }
+
   function renderMcpSection() {
     const title = document.createElement('div');
     title.className = 'section-title';
@@ -4969,6 +5087,16 @@ import { handleToolStatus } from './handlers/toolStatus';
           }));
           items.length ? renderAc(items) : closeAc();
         }
+        break;
+      case 'skillCatalog':
+        skillCatalog = msg.items || [];
+        if (settingsEl && settingsTab === 'skills') renderSkillItems(skillCatalog);
+        break;
+      case 'skillSearchResults':
+        // Ignore a result that a newer keystroke has already superseded.
+        if (msg.queryId !== skillSearchId || !skillResultsEl) break;
+        if (msg.error) { skillResultsEl.innerHTML = `<div class="muted">Search failed: ${escapeHtml(msg.error)}</div>`; break; }
+        renderSkillItems(msg.items || []);
         break;
       case 'mcpRegistryResults':
         if (msg.queryId === mcpSearchId && mcpResultsEl) {

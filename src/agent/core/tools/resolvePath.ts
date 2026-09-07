@@ -35,6 +35,34 @@ export function resolveWorkspacePath(relPath: string): vscode.Uri {
   return uri;
 }
 
+/** Extra directories `readFile` may read from, outside the workspace. Populated when a skill
+ *  that ships its own files is invoked: a BUNDLED skill lives under the extension folder, so
+ *  its own `references/` were unreadable and the instruction to read them silently failed.
+ *  Read-only and opt-in — writes and commands keep the plain workspace containment. */
+const readableRoots = new Set<string>();
+
+export function registerReadableRoot(dir: string): void {
+  const d = (dir ?? '').trim();
+  if (d) readableRoots.add(d.replace(/\\/g, '/').replace(/\/+$/, ''));
+}
+
+/** Test seam — production only ever adds. */
+export function __clearReadableRoots(): void {
+  readableRoots.clear();
+}
+
+/** Workspace containment, plus an absolute path inside a registered readable root. Used by
+ *  readFile alone; every mutating tool stays on resolveWorkspacePath. */
+export function resolveReadablePath(relPath: string): vscode.Uri {
+  const raw = (relPath ?? '').trim().replace(/\\/g, '/');
+  if (raw.startsWith('/')) {
+    for (const root of readableRoots) {
+      if (raw === root || raw.startsWith(root + '/')) return vscode.Uri.file(raw);
+    }
+  }
+  return resolveWorkspacePath(relPath);
+}
+
 /** Containment test on a real path-segment boundary: bare `startsWith(root.path)` let a SIBLING
  *  through (`/htdocs/Proj-backup/.env` starts with `/htdocs/Proj`), and joinPath normalises `..`,
  *  so `../Proj-backup/.env` was accepted by every path-taking tool. */

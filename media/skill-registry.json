@@ -1,0 +1,288 @@
+{
+  "_comment": "Skill list shipped with TierMux \u2014 the offline fallback, exactly like media/mcp-registry.json. A skill is a prompt that runs with the agent's permissions, so `firstParty` asserts one checkable fact and nothing more: the repo it installs from belongs to the vendor of the thing it teaches (anthropics/skills is Anthropic's org, vercel-labs/agent-skills is Vercel's). It is NOT a review of the content. Everything else is listed with its real repo so it can be read before installing. The live list comes from tiermux.skillRegistryUrl (default: the catalog worker's /skills), so this file only has to be right when that is unreachable.",
+  "skills": [
+    {
+      "id": "skill-creator",
+      "name": "Skill Creator",
+      "description": "Write, edit and evaluate skills \u2014 including the ones you add to this panel.",
+      "source": "anthropics/skills",
+      "skill": "skill-creator",
+      "homepage": "https://github.com/anthropics/skills/tree/main/skills/skill-creator",
+      "tags": [
+        "authoring"
+      ],
+      "firstParty": true
+    },
+    {
+      "id": "mcp-builder",
+      "name": "MCP Builder",
+      "description": "Build an MCP server: tool design, schemas, transports, and the spec's requirements.",
+      "source": "anthropics/skills",
+      "skill": "mcp-builder",
+      "homepage": "https://github.com/anthropics/skills/tree/main/skills/mcp-builder",
+      "tags": [
+        "mcp",
+        "software"
+      ],
+      "firstParty": true
+    },
+    {
+      "id": "claude-api",
+      "name": "Claude API",
+      "description": "Model ids, pricing, streaming, tool use, caching \u2014 for code that calls the Claude API.",
+      "source": "anthropics/skills",
+      "skill": "claude-api",
+      "homepage": "https://github.com/anthropics/skills/tree/main/skills/claude-api",
+      "tags": [
+        "software",
+        "api"
+      ],
+      "firstParty": true
+    },
+    {
+      "id": "frontend-design",
+      "name": "Frontend Design",
+      "description": "Build interfaces that look designed rather than default-styled.",
+      "source": "anthropics/skills",
+      "skill": "frontend-design",
+      "homepage": "https://github.com/anthropics/skills/tree/main/skills/frontend-design",
+      "tags": [
+        "frontend",
+        "design"
+      ],
+      "firstParty": true
+    },
+    {
+      "id": "webapp-testing",
+      "name": "Webapp Testing",
+      "description": "Drive a real browser to check a web app actually works.",
+      "source": "anthropics/skills",
+      "skill": "webapp-testing",
+      "homepage": "https://github.com/anthropics/skills/tree/main/skills/webapp-testing",
+      "tags": [
+        "testing",
+        "frontend"
+      ],
+      "firstParty": true
+    },
+    {
+      "id": "doc-coauthoring",
+      "name": "Doc Co-authoring",
+      "description": "Write and revise a document with the user instead of dumping a draft.",
+      "source": "anthropics/skills",
+      "skill": "doc-coauthoring",
+      "homepage": "https://github.com/anthropics/skills/tree/main/skills/doc-coauthoring",
+      "tags": [
+        "writing"
+      ],
+      "firstParty": true
+    },
+    {
+      "id": "docx",
+      "name": "Word Documents",
+      "description": "Read, edit and create .docx files, tracked changes included.",
+      "source": "anthropics/skills",
+      "skill": "docx",
+      "homepage": "https://github.com/anthropics/skills/tree/main/skills/docx",
+      "tags": [
+        "documents"
+      ],
+      "firstParty": true
+    },
+    {
+      "id": "xlsx",
+      "name": "Spreadsheets",
+      "description": "Read, edit and create .xlsx files, formulas included.",
+      "source": "anthropics/skills",
+      "skill": "xlsx",
+      "homepage": "https://github.com/anthropics/skills/tree/main/skills/xlsx",
+      "tags": [
+        "documents",
+        "data"
+      ],
+      "firstParty": true
+    },
+    {
+      "id": "pdf",
+      "name": "PDF",
+      "description": "Extract text and tables from PDFs, fill forms, and generate new ones.",
+      "source": "anthropics/skills",
+      "skill": "pdf",
+      "homepage": "https://github.com/anthropics/skills/tree/main/skills/pdf",
+      "tags": [
+        "documents"
+      ],
+      "firstParty": true
+    },
+    {
+      "id": "pptx",
+      "name": "Presentations",
+      "description": "Read, edit and create .pptx decks.",
+      "source": "anthropics/skills",
+      "skill": "pptx",
+      "homepage": "https://github.com/anthropics/skills/tree/main/skills/pptx",
+      "tags": [
+        "documents"
+      ],
+      "firstParty": true
+    },
+    {
+      "id": "web-design-guidelines",
+      "name": "Web Design Guidelines",
+      "description": "Vercel's guidelines for interfaces that hold up in production.",
+      "source": "vercel-labs/agent-skills",
+      "skill": "web-design-guidelines",
+      "homepage": "https://github.com/vercel-labs/agent-skills",
+      "tags": [
+        "frontend",
+        "design"
+      ],
+      "firstParty": true
+    },
+    {
+      "id": "convex-design",
+      "name": "Convex Design",
+      "description": "Backend patterns for Convex: schema, queries, actions, auth.",
+      "source": "cline/skills",
+      "skill": "convex-design",
+      "tags": [
+        "backend",
+        "databases"
+      ],
+      "firstParty": false
+    },
+    {
+      "id": "sentry-cli",
+      "name": "Sentry CLI",
+      "description": "Wire up Sentry: releases, source maps, and reading an issue back.",
+      "source": "cline/skills",
+      "skill": "sentry-cli",
+      "tags": [
+        "observability"
+      ],
+      "firstParty": false
+    },
+    {
+      "id": "linear-sdk-scripting",
+      "name": "Linear SDK",
+      "description": "Script Linear through its SDK \u2014 issues, cycles, custom workflows.",
+      "source": "cline/skills",
+      "skill": "linear-sdk-scripting",
+      "tags": [
+        "productivity"
+      ],
+      "firstParty": false
+    },
+    {
+      "id": "use-railway",
+      "name": "Railway",
+      "description": "Deploy and operate a service on Railway.",
+      "source": "cline/skills",
+      "skill": "use-railway",
+      "tags": [
+        "deploy"
+      ],
+      "firstParty": false
+    },
+    {
+      "id": "searching-sourcegraph",
+      "name": "Sourcegraph Search",
+      "description": "Search code across repositories with Sourcegraph's query syntax.",
+      "source": "cline/skills",
+      "skill": "searching-sourcegraph",
+      "tags": [
+        "search"
+      ],
+      "firstParty": false
+    },
+    {
+      "id": "mintlify",
+      "name": "Mintlify Docs",
+      "description": "Write and structure documentation for a Mintlify site.",
+      "source": "cline/skills",
+      "skill": "mintlify",
+      "tags": [
+        "docs"
+      ],
+      "firstParty": false
+    },
+    {
+      "id": "building-pydantic-ai-agents",
+      "name": "Pydantic AI Agents",
+      "description": "Production patterns for agents built on Pydantic AI.",
+      "source": "cline/skills",
+      "skill": "building-pydantic-ai-agents",
+      "tags": [
+        "ai",
+        "python"
+      ],
+      "firstParty": false
+    },
+    {
+      "id": "oracledb",
+      "name": "Oracle DB",
+      "description": "Query and tune Oracle Database from application code.",
+      "source": "cline/skills",
+      "skill": "oracledb",
+      "tags": [
+        "databases"
+      ],
+      "firstParty": false
+    },
+    {
+      "id": "cosmosdb-best-practices",
+      "name": "Cosmos DB",
+      "description": "Azure Cosmos DB partitioning, indexing and cost rules for NoSQL.",
+      "source": "cline/skills",
+      "skill": "cosmosdb-best-practices",
+      "tags": [
+        "databases"
+      ],
+      "firstParty": false
+    },
+    {
+      "id": "firestore-data",
+      "name": "Firestore",
+      "description": "Model and query data in Firestore without the usual traps.",
+      "source": "cline/skills",
+      "skill": "firestore-data",
+      "tags": [
+        "databases"
+      ],
+      "firstParty": false
+    },
+    {
+      "id": "dsql",
+      "name": "Aurora DSQL",
+      "description": "Work with Amazon Aurora DSQL: schema, transactions, limits.",
+      "source": "cline/skills",
+      "skill": "dsql",
+      "tags": [
+        "databases"
+      ],
+      "firstParty": false
+    },
+    {
+      "id": "review-team",
+      "name": "Review Team",
+      "description": "Run a multi-perspective review pass over a change.",
+      "source": "cline/skills",
+      "skill": "review-team",
+      "tags": [
+        "review"
+      ],
+      "firstParty": false
+    },
+    {
+      "id": "data-analyst",
+      "name": "Data Analyst",
+      "description": "Interactive analysis workflow over a SQL-backed dataset.",
+      "source": "cline/skills",
+      "skill": "data-analyst",
+      "tags": [
+        "data"
+      ],
+      "firstParty": false
+    }
+  ]
+}

@@ -494,6 +494,16 @@
           "default": "https://tiermux.mainulislam3057.workers.dev/",
           "description": "URL that supplies the model catalog. Accepts the TierMux worker JSON ({ providers: [{ provider_id, enabled, models: [...] }] }) or a legacy published-sheet CSV. Fetched in the background when the editor starts; the last fetch is cached and used offline, falling back to the built-in catalog. Leave blank to use only the built-in catalog."
         },
+        "tiermux.skillRegistrySearchUrl": {
+          "type": "string",
+          "default": "https://skills.sh",
+          "description": "Base URL of the agent-skills directory searched by the Skills panel's remote box (skills.sh by default). Results come from whoever published them, so they are never shown as first-party — read the source before installing. Blank disables remote search; the curated list still works."
+        },
+        "tiermux.skillRegistryUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Replaces the live skill list. Left blank (the default), the Skills panel uses the catalog worker's /skills endpoint plus the list shipped with TierMux. Set this to browse a third-party catalog as well — e.g. https://cline.github.io/marketplace/catalog.json — any URL serving {entries:[{type:'skill', name, description, install:{args:['owner/repo','--skill','name']}}]} works. Because a skill runs with the agent's permissions, entries from a URL set here are merged in last: they can never replace a known skill or be shown as first-party."
+        },
         "tiermux.mcpRegistryUrl": {
           "type": "string",
           "default": "",
@@ -608,6 +618,7 @@
     "check:readme": "node scripts/sync-readme.mjs --check",
     "build:types": "tsc -p tsconfig.lib.json --incremental false",
     "publish:dry": "node scripts/publish-targets.mjs --dry-run",
+    "test:e2e:skill-catalog": "esbuild scripts/skillCatalog.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/skillCatalog.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/skillCatalog.e2e.cjs",
     "test:e2e:mcp-wire": "esbuild scripts/mcpWire.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/mcpWire.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/mcpWire.e2e.cjs",
     "test:e2e:agent-registry": "esbuild scripts/agentRegistry.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/agentRegistry.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/agentRegistry.e2e.cjs",
     "test:e2e:weak-model-plumbing": "esbuild scripts/weakModelPlumbing.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/weakModelPlumbing.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/weakModelPlumbing.e2e.cjs",

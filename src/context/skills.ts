@@ -13,6 +13,9 @@ export interface Skill {
   /** Folder the skill file lives in, so multi-file packages (SKILL.md + references/, scripts/)
    *  can resolve their own relative paths. */
   dir: string;
+  /** What uninstalling deletes: the package folder for `<name>/SKILL.md`, the single `.md`
+   *  otherwise. Absent for the bundled ones, which ship inside the extension. */
+  removablePath?: string;
 }
 
 function parseSkillFile(raw: string): { description: string; prompt: string } {
@@ -30,7 +33,7 @@ function loadDir(dir: string, into: Map<string, Skill>): void {
     const name = path.basename(f, '.md').toLowerCase();
     try {
       const { description, prompt } = parseSkillFile(fs.readFileSync(path.join(dir, f), 'utf8'));
-      if (prompt) into.set(name, { name, description, prompt, dir });
+      if (prompt) into.set(name, { name, description, prompt, dir, removablePath: path.join(dir, f) });
     } catch { /* skip unreadable file */ }
   }
 }
@@ -46,7 +49,7 @@ function loadUniversalDir(dir: string, into: Map<string, Skill>): void {
     try {
       const skillDir = path.join(dir, entry.name);
       const { description, prompt } = parseSkillFile(fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8'));
-      if (prompt) into.set(name, { name, description, prompt, dir: skillDir });
+      if (prompt) into.set(name, { name, description, prompt, dir: skillDir, removablePath: skillDir });
     } catch { /* no SKILL.md in this subfolder */ }
   }
 }
@@ -73,6 +76,9 @@ export function loadSkills(extensionPath: string, workspaceRoot?: string): Map<s
   const skills = new Map<string, Skill>();
   const bundledDir = path.join(extensionPath, '.tiermux', 'skills');
   loadDir(bundledDir, skills);
+  // Bundled skills live inside the extension: uninstalling one would be undone by the next
+  // update, so the panel offers no delete for them.
+  for (const s of skills.values()) delete s.removablePath;
   watchDir(bundledDir, cacheKey);
   if (workspaceRoot) {
     const universalDir = path.join(workspaceRoot, '.agents', 'skills');

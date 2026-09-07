@@ -2238,3 +2238,23 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .tm-source:hover { border-color: var(--tm-border-hover); }
 .tm-source-host { flex: 0 0 auto; color: var(--vscode-textLink-foreground); }
 .tm-source-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); }
+
+/* ── Skills tab ─────────────────────────────────────────────────────────── */
+.skill-card {
+  border: 1px solid var(--vscode-panel-border); border-radius: var(--tm-radius-xl);
+  padding: 8px 10px; margin-bottom: 6px; display: flex; flex-direction: column; gap: 4px;
+}
+.skill-card-head { display: flex; align-items: center; gap: 8px; }
+.skill-name { font-weight: 600; }
+.skill-badge {
+  font-size: 10px; padding: 1px 6px; border-radius: 999px;
+  background: var(--tm-surface-panel, var(--vscode-editorWidgetBackground));
+  color: var(--tm-fg-muted, var(--vscode-descriptionForeground));
+}
+.skill-badge.verified { color: var(--vscode-charts-green, #3fb950); }
+.skill-desc { color: var(--tm-fg-muted, var(--vscode-descriptionForeground)); font-size: 12px; }
+.skill-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; color: var(--tm-fg-muted, var(--vscode-descriptionForeground)); }
+.skill-tag { padding: 1px 6px; border-radius: 999px; background: var(--tm-surface-panel, var(--vscode-editorWidgetBackground)); }
+.skill-card > button { align-self: flex-start; margin-top: 2px; }
+.skill-card > button:disabled { opacity: .6; cursor: default; }
+.skill-card-head .icon-btn { padding: 2px 6px; }

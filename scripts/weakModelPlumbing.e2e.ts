@@ -2,7 +2,7 @@
  * optional params are stripped before any model repair; inputExamples reach the OpenAI-shaped
  * wire inside the description; reasoning models never receive a temperature; a short follow-up
  * inherits the previous turn's task kind. Run: npm run test:e2e:weak-model-plumbing */
-import { withoutNullKeys } from '../src/agent/core/repair';
+import { withoutNullKeys, resolveToolAlias } from '../src/agent/core/repair';
 import { classifyConversation } from '../src/agent/routing';
 import { OpenAIResponsesProvider } from '../src/providers/openai-responses';
 import { OpenAICompatProvider } from '../src/providers/openai-compat';
@@ -73,6 +73,21 @@ async function main() {
   ok('18. twice is not (a legitimate restatement)', !isDegenerateRepeat('Intro text. ' + para.repeat(2)));
   ok('19. long varied prose is not', !isDegenerateRepeat(Array.from({ length: 40 }, (_, i) => `Finding ${i}: value ${i * 7} differs from ${i * 3}.`).join(' ')));
   ok('20. "why X not set?" routes as debug', classifyConversation(['100058 order why minus in distance? and why vehicles id not set here?']).kind === 'debug');
+
+  console.log('— another harness\'s tool names resolve without a model call —');
+  {
+    const OFFERED = ['readFile', 'writeFile', 'editFile', 'deleteFile', 'glob', 'grep', 'listDir', 'runCommand', 'delegateTask', 'fetchUrl', 'webSearch', 'todoWrite', 'askUser', 'getDiagnostics'];
+    const a = (n: string) => resolveToolAlias(n, OFFERED);
+    // Nobody writes a skill or an agent file for TierMux, so a model following one calls the
+    // tools by the name its author's harness used.
+    ok('21. Claude Code names', a('Read') === 'readFile' && a('Bash') === 'runCommand' && a('Task') === 'delegateTask' && a('WebFetch') === 'fetchUrl');
+    ok('22. Codex / Anthropic API names', a('apply_patch') === 'editFile' && a('str_replace_editor') === 'editFile' && a('shell') === 'runCommand');
+    ok('23. OpenCode / Cline names', a('read') === 'readFile' && a('list_files') === 'listDir' && a('execute_command') === 'runCommand');
+    ok('24. only case or separators differ', a('ReadFile') === 'readFile' && a('read_file') === 'readFile' && a('todo-write') === 'todoWrite');
+    ok('25. an unknown name still goes to the model', a('Nonsense') === undefined && a('mcp__srv__tool') === undefined);
+    ok('26. an alias for a tool this mode does not offer is not invented',
+      resolveToolAlias('Bash', ['readFile', 'grep']) === undefined);
+  }
 
   console.log(bad === 0 ? '\nALL PASS' : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);

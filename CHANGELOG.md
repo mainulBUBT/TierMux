@@ -66,6 +66,45 @@ All notable changes to TierMux are documented here. The format is loosely
 - **The explore agent carries a playbook**: how to approach "where is X", a wrong value, or an
   architecture question, and a fixed report shape — answer, evidence with `path:line`, what was
   ruled out, what is still open — so the caller learns what NOT to re-check.
+### Fixed — instructions written for another agent still work here
+
+- **Tool names from other harnesses resolve mechanically.** Nobody writes a skill, an agent file
+  or a pasted instruction for TierMux, so a model following one calls `Read`, `Bash`,
+  `apply_patch` or `Task`. Those now map to `readFile` / `runCommand` / `editFile` /
+  `delegateTask` before any model repair round (`resolveToolAlias`), covering Claude Code,
+  Codex, OpenCode and Cline naming plus pure case/separator differences. An unrecognised name
+  still goes to the model, and an alias is never invented for a tool the current mode does not
+  offer. Invoking a skill also states the mapping once, up front.
+
+### Added — a Skills panel you can browse
+
+- **Settings → Skills**: what is installed (with the `/name` that runs it, and a remove button
+  for the ones that are not bundled) plus a browsable list with one-click install, which goes
+  through the existing `npx skills add <owner/repo> [--skill <name>]` into `.agents/skills/`,
+  shared with other agent tools.
+- **Live search against the agent-skills directory** (`tiermux.skillRegistrySearchUrl`,
+  skills.sh by default), the same shape as the MCP registry search: an empty box shows the
+  curated list, two characters or more queries the directory. Results carry their real
+  repository and install count, and are never shown as first-party.
+- **Who supplies the list is a trust decision.** A skill runs with the agent's permissions, so
+  the panel reads, in order: the catalog worker's `/skills` (derived from `tiermux.catalog.url`,
+  so the list can be updated without a release), then `media/skill-registry.json` shipped here
+  (24 entries; the whole list when offline), then any `tiermux.skillRegistryUrl` — which is
+  merged in LAST and can neither displace a known skill nor mark one first-party. The badge
+  says `vendor repo` and asserts exactly one checkable fact: it installs from the repository of
+  the vendor whose product it teaches. It is not a review. Every card links to its source.
+  Locked by `npm run test:e2e:skill-catalog`.
+
+### Fixed — a skill can read its own files
+
+- **Multi-file skills silently lost their references.** A skill that ships `references/` or
+  `scripts/` (our `/design`, and most of the installable ones) told the model to read them, but
+  `readFile` is confined to the workspace and a BUNDLED skill lives under the extension folder —
+  so every such read missed. Invoking a skill now registers that one directory as readable
+  (`registerReadableRoot` / `resolveReadablePath`): read-only, exact-directory, opt-in per skill.
+  Writes and commands keep the plain workspace containment. `resolvePath.e2e.ts` covers the
+  sibling-prefix and write-resolver cases.
+
 ### Fixed — MCP is usable on an OpenAI-shaped wire
 
 - **Long MCP tool names no longer kill the request.** `mcp__<server>__<tool>` was sent

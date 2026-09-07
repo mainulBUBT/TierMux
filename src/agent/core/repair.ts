@@ -30,6 +30,44 @@ function schemaOnly(tools: ToolSet): ToolSet {
   ) as unknown as ToolSet;
 }
 
+/** What other harnesses call the same tool. Skills, agent files and pasted instructions are
+ *  written for whichever agent their author used — nobody writes them for TierMux — so a model
+ *  following them emits `Read`, `Bash` or `apply_patch`. Mapping the name costs nothing; the
+ *  alternative is a model round-trip per mistaken call. Keys are normalized (lowercased,
+ *  non-alphanumerics stripped), so `WebFetch`, `web_fetch` and `web-fetch` all land here. */
+const TOOL_ALIASES: Record<string, string> = {
+  read: 'readFile', view: 'readFile', viewfile: 'readFile', cat: 'readFile', openfile: 'readFile',
+  strreplaceeditor: 'editFile', strreplacebasededittool: 'editFile', applypatch: 'editFile',
+  edit: 'editFile', editor: 'editFile', replaceinfile: 'editFile', multiedit: 'editFile',
+  write: 'writeFile', create: 'writeFile', createfile: 'writeFile', writetofile: 'writeFile',
+  delete: 'deleteFile', deletefile: 'deleteFile', removefile: 'deleteFile', rm: 'deleteFile',
+  bash: 'runCommand', shell: 'runCommand', run: 'runCommand', terminal: 'runCommand',
+  executecommand: 'runCommand', runterminalcommand: 'runCommand', command: 'runCommand',
+  search: 'grep', searchfiles: 'grep', ripgrep: 'grep', rg: 'grep', grepsearch: 'grep', codebasesearch: 'grep',
+  globfiles: 'glob', findfiles: 'glob', find: 'glob', filesearch: 'glob',
+  ls: 'listDir', list: 'listDir', listfiles: 'listDir', listdirectory: 'listDir', dir: 'listDir',
+  task: 'delegateTask', newtask: 'delegateTask', delegate: 'delegateTask', subagent: 'delegateTask',
+  agent: 'delegateTask', spawnagent: 'delegateTask', explore: 'delegateTask',
+  webfetch: 'fetchUrl', fetch: 'fetchUrl', fetchurl: 'fetchUrl', readurl: 'fetchUrl', browser: 'fetchUrl',
+  websearch: 'webSearch', searchweb: 'webSearch',
+  updateplan: 'todoWrite', todo: 'todoWrite', todos: 'todoWrite', writetodos: 'todoWrite', plan: 'todoWrite',
+  askfollowupquestion: 'askUser', askuserquestion: 'askUser', question: 'askUser', ask: 'askUser',
+  diagnostics: 'getDiagnostics', problems: 'getDiagnostics', getproblems: 'getDiagnostics', lint: 'getDiagnostics',
+};
+
+/** The offered tool this name most likely meant, or undefined. Exact matches never reach here
+ *  (the SDK would have dispatched them); a name that differs only in case or separators is
+ *  resolved first, then the cross-harness alias table. */
+export function resolveToolAlias(called: string, offered: string[]): string | undefined {
+  const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const target = norm(called);
+  if (!target) return undefined;
+  const sameShape = offered.find((o) => norm(o) === target);
+  if (sameShape) return sameShape;
+  const alias = TOOL_ALIASES[target];
+  return alias && offered.includes(alias) ? alias : undefined;
+}
+
 /** Input with top-level null-valued keys removed; undefined when there is nothing to fix. */
 export function withoutNullKeys(input: string): string | undefined {
   let parsed: unknown;
@@ -59,6 +97,12 @@ export function makeRepairViaModelSelfCorrection(ctx: { model: LanguageModel; si
     error: unknown;
   }): Promise<LanguageModelV4ToolCall | null> {
     const { toolCall, tools, inputSchema, error, messages } = args;
+
+    // No-model first pass: a tool named the way some other harness names it.
+    if (NoSuchToolError.isInstance(error)) {
+      const real = resolveToolAlias(toolCall.toolName, Object.keys(tools));
+      if (real) return { ...toolCall, toolName: real };
+    }
 
     // No-model first pass: weak models send `null` for an unset optional param, which zod rejects.
     if (InvalidToolInputError.isInstance(error)) {

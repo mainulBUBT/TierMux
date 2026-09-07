@@ -79,6 +79,21 @@ export interface McpServerInfo {
 }
 
 
+/** One browsable skill from the configured catalog; `source`/`skill` are what `npx skills add`
+ *  takes, so installing needs no translation. */
+export interface SkillCatalogItem {
+  id: string;
+  name: string;
+  description: string;
+  /** `owner/repo` to install from. */
+  source: string;
+  /** One skill inside a multi-skill repo. */
+  skill?: string;
+  homepage?: string;
+  tags: string[];
+  verified: boolean;
+}
+
 export interface McpRegistryItem {
   id: string;
   name: string;
@@ -162,7 +177,7 @@ export interface ConfigPayload {
    *  .tiermux/skills/*.md — the webview's `/` autocomplete renders this list.
    *  Full skill body text is never sent here; only the matched skill's prompt
    *  is substituted server-side when the user actually sends `/name`. */
-  skills: Array<{ name: string; detail: string }>;
+  skills: Array<{ name: string; detail: string; removable?: boolean }>;
 }
 
 
@@ -211,6 +226,10 @@ export type InMessage =
   | { type: 'editMcp' }
   | { type: 'reconnectMcp' }
   | { type: 'addMcpServer'; item: McpRegistryItem }
+  | { type: 'loadSkillCatalog' }
+  | { type: 'searchSkillRegistry'; queryId: number; query: string }
+  | { type: 'installSkill'; item: SkillCatalogItem }
+  | { type: 'uninstallSkill'; name: string }
   | { type: 'removeMcpServer'; name: string }
   /** Unified Add/Edit save from the MCP form. `originalName` set (and different from
    *  `name`) means a rename — the old key is removed and the new one added. */
@@ -390,6 +409,8 @@ export type OutMessage =
   | { type: 'mentionResults'; queryId: number; items: MentionItem[] }
   | { type: 'grepResults'; queryId: number; items: Array<{ path: string; lineNumber: number; lineText: string }> }
   | { type: 'mcpRegistryResults'; queryId: number; items: McpRegistryItem[]; error?: string }
+  | { type: 'skillCatalog'; items: SkillCatalogItem[] }
+  | { type: 'skillSearchResults'; queryId: number; items: SkillCatalogItem[]; error?: string }
   | { type: 'setInput'; text: string; attachments?: Attachment[] }
   | { type: 'toggleSettings' }
   | { type: 'toggleHistory' }

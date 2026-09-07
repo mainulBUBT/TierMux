@@ -4,7 +4,7 @@
 import * as vscode from 'vscode';
 import { tool } from 'ai';
 import { z } from 'zod';
-import { resolveWorkspacePath } from '../resolvePath';
+import { resolveReadablePath } from '../resolvePath';
 import { capToolOutput } from '../capOutput';
 
 const MAX_CHARS = 30_000;
@@ -25,7 +25,7 @@ async function readOne(
   limit?: number,
   charBudget = MAX_CHARS,
 ): Promise<string> {
-  const uri = resolveWorkspacePath(path);
+  const uri = resolveReadablePath(path);
   let text: string;
   try {
     text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));

@@ -44,7 +44,10 @@ import { resolveExecutionProfile } from './agent/executionProfile';
 import { structurePlanSteps, formatStructuredSteps, formatPlanForCard, isCleanNumberedList, renderPlanMarkdown } from './agent/planStructurer';
 import { deriveTitleFrom, looksLikeActionablePlan, sanitizeTitle, planStepsToTodos } from './session/titles';
 
-import { loadSkills } from './context/skills';
+import { loadSkills, invalidateSkillsCache } from './context/skills';
+import { fetchSkillCatalog, searchSkills } from './context/skillCatalog';
+import { checkNpxAvailable, installSkillPackage } from './context/skillInstaller';
+import { registerReadableRoot } from './agent/core/tools/resolvePath';
 
 interface ChatDeps {
   secrets: SecretStore;
@@ -1269,6 +1272,59 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.post({ type: 'mcpRegistryResults', queryId: m.queryId, items: [], error: e instanceof Error ? e.message : String(e) });
         }
         break;
+      case 'loadSkillCatalog':
+        this.post({ type: 'skillCatalog', items: await fetchSkillCatalog(this.extensionUri.fsPath) });
+        break;
+      case 'searchSkillRegistry':
+        try {
+          this.post({ type: 'skillSearchResults', queryId: m.queryId, items: await searchSkills(m.query) });
+        } catch (e) {
+          this.post({ type: 'skillSearchResults', queryId: m.queryId, items: [], error: e instanceof Error ? e.message : String(e) });
+        }
+        break;
+      case 'installSkill': {
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!root) { void vscode.window.showErrorMessage('TierMux: open a workspace folder first.'); break; }
+        if (!(await checkNpxAvailable())) {
+          void vscode.window.showErrorMessage(
+            'TierMux: skill packages need Node.js (npx) on PATH. Install Node.js, then try again.',
+            'Install Node.js',
+          ).then((choice) => { if (choice === 'Install Node.js') void vscode.env.openExternal(vscode.Uri.parse('https://nodejs.org/')); });
+          break;
+        }
+        const channel = vscode.window.createOutputChannel('TierMux Skills');
+        channel.appendLine(`$ npx skills add ${m.item.source}${m.item.skill ? ` --skill ${m.item.skill}` : ''} -y`);
+        const res = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: `TierMux: installing ${m.item.name}…` },
+          () => installSkillPackage(root, m.item.source, m.item.skill, (chunk) => channel.append(chunk)),
+        );
+        if (res.ok) {
+          invalidateSkillsCache(this.extensionUri.fsPath, root);
+          void this.sendConfig();
+          this.post({ type: 'notice', sessionId: this.current().id, icon: 'check', text: `Skill "${m.item.name}" installed — run it with /${m.item.skill ?? m.item.id}.` });
+        } else {
+          channel.show(true);
+          void vscode.window.showErrorMessage(`TierMux: could not install ${m.item.name} — see "TierMux Skills" output.`);
+        }
+        break;
+      }
+      case 'uninstallSkill': {
+        const sk = this.skills().get(m.name);
+        if (!sk?.removablePath) break;   // bundled, or already gone
+        const choice = await vscode.window.showWarningMessage(
+          `Remove the "${m.name}" skill?`, { modal: true, detail: sk.removablePath }, 'Remove',
+        );
+        if (choice !== 'Remove') break;
+        try {
+          await vscode.workspace.fs.delete(vscode.Uri.file(sk.removablePath), { recursive: true, useTrash: true });
+          invalidateSkillsCache(this.extensionUri.fsPath, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
+          void this.sendConfig();
+          this.post({ type: 'notice', sessionId: this.current().id, icon: 'check', text: `Skill "${m.name}" removed.` });
+        } catch (e) {
+          void vscode.window.showErrorMessage(`TierMux: could not remove ${m.name} — ${e instanceof Error ? e.message : String(e)}`);
+        }
+        break;
+      }
       case 'clearUsage': {
 
         const clearChoice = await vscode.window.showWarningMessage(
@@ -1993,8 +2049,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let prompt = m.text;
     const skill = slash && this.skills().get(slash.name);
     if (slash && skill) {
-      const dirNote = `(This skill's files live at: ${skill.dir}. Resolve any relative paths `
-        + `referenced in the instructions below — e.g. references/, scripts/, examples/ — against that directory.)\n\n`;
+      // A skill that ships its own files may live outside the workspace (the bundled ones do),
+      // where readFile's containment would refuse them — open that one directory for reading.
+      registerReadableRoot(skill.dir);
+      // Skills are written for whichever agent their author used, so the instructions below may
+      // name that harness's tools. Say so once, up front, instead of paying a repair round per call.
+      const dirNote = `(This skill's files live at: ${skill.dir}. Resolve any relative path `
+        + `referenced below — references/, scripts/, examples/ — against that directory, and pass `
+        + `readFile the full path. The instructions may name another agent's tools: Read/View is `
+        + `readFile, Write is writeFile, Edit/apply_patch is editFile, Bash/shell is runCommand, `
+        + `Glob is glob, Grep is grep, Task is delegateTask, WebFetch is fetchUrl. Use YOUR tools `
+        + `and ignore any tool it names that you do not have.)\n\n`;
       prompt = `${dirNote}${skill.prompt}\n\n${slash.rest}`;
     }
     const s = this.current();
@@ -3103,7 +3168,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         SETTINGS_META.map((meta) => [meta.key, vscode.workspace.getConfiguration('tiermux').get(meta.key, defaultForSetting(meta))]),
       ),
       autoApprove: this.autoApprove,
-      skills: Array.from(this.skills().values(), (sk) => ({ name: sk.name, detail: sk.description })),
+      skills: Array.from(this.skills().values(), (sk) => ({
+        name: sk.name, detail: sk.description,
+        // Bundled skills live under the extension folder and cannot be uninstalled.
+        removable: !!sk.removablePath,
+      })),
       disabledProviders: this.deps.settings.getDisabledProviders(),
       remoteDisabledProviders: this.deps.catalog.getRemoteDisabledPlatforms(),
       customEndpoints: (await Promise.all(this.deps.settings.getCustomEndpoints().map(async (ep) => ({

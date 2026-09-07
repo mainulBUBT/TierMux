@@ -4,7 +4,7 @@
  * (2) joinPath normalizes `..` and the guard was a bare prefix, so `../Proj-backup/.env` escaped
  * from every path-taking tool and runCommand's cwd. Run: npm run test:e2e:resolve-path */
 import * as vscode from 'vscode';
-import { resolveWorkspacePath } from '../src/agent/core/tools/resolvePath';
+import { resolveWorkspacePath, resolveReadablePath, registerReadableRoot, __clearReadableRoots } from '../src/agent/core/tools/resolvePath';
 
 const ROOT = '/htdocs/Proj';
 (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = [
@@ -41,6 +41,28 @@ ok('plain relative path still resolves', resolved('src/index.ts') === `${ROOT}/s
 ok('leading-slash relative path still resolves', resolved('/src/index.ts') === `${ROOT}/src/index.ts`);
 ok('nested relative path still resolves', resolved('a/b/c.ts') === `${ROOT}/a/b/c.ts`);
 ok('inner ".." that stays inside is allowed', resolved('src/../lib/x.ts') === `${ROOT}/lib/x.ts`);
+
+// --- 3. a skill's own directory is READABLE, and only readable (2026-09-07) ---
+// A bundled skill lives under the extension folder, so `references/preview.html` was outside
+// the workspace and readFile refused it — the instruction to read it failed silently.
+const SKILL = '/Users/me/.vscode/extensions/tiermux/.tiermux/skills';
+const readable = (p: string): string | null => {
+  try { return resolveReadablePath(p).path.replace(/\\/g, '/'); } catch { return null; }
+};
+__clearReadableRoots();
+ok('an unregistered outside path is still confined, not read',
+  readable(`${SKILL}/design/references/preview.html`) === `${ROOT}${SKILL}/design/references/preview.html`);
+registerReadableRoot(SKILL);
+ok('a registered skill dir reads the REAL file',
+  readable(`${SKILL}/design/references/preview.html`) === `${SKILL}/design/references/preview.html`);
+ok('the registered root itself resolves', readable(SKILL) === SKILL);
+ok('a SIBLING of the registered root is not opened by it',
+  readable(`${SKILL}-backup/secrets.txt`) === `${ROOT}${SKILL}-backup/secrets.txt`);
+ok('an unrelated absolute path stays confined', readable('/etc/passwd') === `${ROOT}/etc/passwd`);
+ok('workspace paths are unaffected', readable('src/index.ts') === `${ROOT}/src/index.ts`);
+ok('the WRITE resolver never honours a readable root',
+  resolved(`${SKILL}/design/references/preview.html`) === `${ROOT}${SKILL}/design/references/preview.html`);
+__clearReadableRoots();
 
 console.log(bad === 0 ? '\nALL PASS' : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);
