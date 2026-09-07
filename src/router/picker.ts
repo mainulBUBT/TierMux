@@ -24,14 +24,14 @@ const PROVIDER_OFF = 'provider switched off in Manage Models & Keys';
 export const TASK_ROUTING: Record<TaskKind, string[]> = {
   // Every id here MUST exist in media/catalog.json; a renamed gateway id goes dead silently
   // (11 of 13 were once dead), which is why the tail below is rank-sorted, not table-dependent.
-  coding: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::muse-spark-1.2-contributor-free', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
-  debug: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free'],
+  coding: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::nemotron-3.5-lightning-free'],
+  debug: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
   vision: ['google::gemini-2.5-flash'],
-  longContext: ['google::gemini-2.5-flash', 'groq::openai/gpt-oss-120b', 'opencode::muse-spark-1.2-contributor-free'],
-  plan: ['groq::openai/gpt-oss-120b', 'opencode::muse-spark-1.2-contributor-free', 'opencode::hy3-free'],
+  longContext: ['google::gemini-2.5-flash', 'groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free'],
+  plan: ['groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
   trivial: ['cerebras::gemma-4-31b', 'groq::openai/gpt-oss-20b', 'opencode::mimo-v2.5-free'],
-  chat: ['groq::openai/gpt-oss-120b', 'opencode::muse-spark-1.2-contributor-free', 'opencode::hy3-free'],
-  agent: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::muse-spark-1.2-contributor-free', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
+  chat: ['groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::mimo-v2.5-free'],
+  agent: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::nemotron-3.5-lightning-free'],
 };
 
 /** One row of the "Why this model?" report — numeric fields mirror the old scoring Router's
