@@ -11,10 +11,11 @@ import {
   type ToolSet,
   type LanguageModel,
 } from 'ai';
-import type { ChatMessage, ChatContentBlock, ProposedPlan } from '../../shared/types';
+import type { ChatMessage, ChatContentBlock, ProposedPlan, TodoItem } from '../../shared/types';
 import type { AgentOpts, AgentResult, ToolEvent } from '../agent';
 import { createRouterProvider } from './routerProvider';
 import { buildV3ToolSet, READ_ONLY_TOOLS } from './tools/v3';
+import { runSubagent } from './subagent';
 import { makeRepairViaModelSelfCorrection } from './repair';
 import { compactIfNeeded, ageToolOutputs } from './compact';
 import { resolveVerifyCommand, runVerifyCommand } from './tools/workspace/verifyCommand';
@@ -189,6 +190,11 @@ const planAccepted: StopCondition<ToolSet> = ({ steps }) =>
  *  and been documented since v3 while the engine hardcoded 50, so changing it did nothing. */
 const DEFAULT_MAX_STEPS = 50;
 
+/** Todos this turn declared complete get ONE evidence check, then at most one fix pass — the
+ *  same bounded shape as the verify gate, and for the same reason: the user should not have to
+ *  re-check the agent's own "done". Only fires on turns that used todoWrite. */
+const DEFAULT_AUDIT_TODOS = true;
+
 /** Fix-and-recheck rounds after the verify command fails. `tiermux.agent.verifyFixRounds`
  *  overrides it. 0 disables the retry (the failure is reported as-is), never the gate.
  *  2 → 1 on 2026-09-06: each round is a full model call over the whole transcript, and on free
@@ -274,11 +280,13 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let proposedPlan: ProposedPlan | undefined;
   /** The signature that tripped REPEAT_FAILURE_LIMIT or REPEAT_READ_LIMIT — the stop condition's trigger. */
   let stuckSignature: string | undefined;
+  /** The last todo list this turn wrote — the audit gate's trigger. */
+  let lastTodos: TodoItem[] | undefined;
   const tools: ToolSet = dedupeReads(buildV3ToolSet(opts.mode, {
     abortSignal: opts.abortSignal,
     sessionId: opts.sessionId,
     requestId: opts.requestId,
-    onTodos: opts.onTodos,
+    onTodos: (todos) => { lastTodos = todos; opts.onTodos(todos); },
     onBeforeWrite: opts.onBeforeWrite,
     onAskUser: opts.onAskUser,
     onPlanProposed: (plan) => { proposedPlan = plan; },
@@ -765,6 +773,44 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     }
   }
 
+  // ── TODO AUDIT — the turn said some todos are done; check the workspace, not the claim.
+  // Bounded exactly like the verify gate: agent mode, only when todoWrite ran, one read-only
+  // sub-agent, at most one fix pass, skipped on abort or a stuck stop.
+  let auditOutcome: AgentResult['auditOutcome'];
+  const completedTodos = (lastTodos ?? []).filter((t) => t.status === 'completed');
+  if ((opts.auditTodos ?? DEFAULT_AUDIT_TODOS) && opts.mode === 'agent' && completedTodos.length > 0
+    && !opts.abortSignal?.aborted && !stuckSignature) {
+    try {
+      const list = completedTodos.map((t, i) => `${i + 1}. ${t.content}`).join('\n');
+      const audit = await runSubagent({
+        task: `These todos were just marked complete. Verify each against the workspace as it is now.\n\n${list}`,
+        agent: 'audit',
+        sessionId: opts.sessionId,
+        requestId: opts.requestId,
+        abortSignal: opts.abortSignal,
+      });
+      const verdict = audit.summary.trim();
+      const firstLine = verdict.replace(/^[*#_\s\-]+/, '');
+      const incomplete = /^INCOMPLETE\b/i.test(firstLine);
+      auditOutcome = incomplete ? 'incomplete' : 'verified';
+      diagLog('engine.audit', `${completedTodos.length} completed todo(s) → ${auditOutcome}`);
+      if (incomplete && !opts.abortSignal?.aborted) {
+        await runPass([
+          ...modelMessages,
+          ...outcome.responseMessages,
+          {
+            role: 'user',
+            content: 'A read-only check of the workspace could not find evidence for work you marked complete. '
+              + 'Finish it now, or — if the check is wrong and the work IS there — say where in one line and stop. '
+              + `Do not restart the task or re-plan.\n\n${verdict.slice(0, 2_000)}`,
+          },
+        ]).consumeStream({ onError: passError('auditFix') });
+      }
+    } catch {
+      // The audit is best-effort: it must never lose the turn's real work.
+    }
+  }
+
   const workMessages = toChatMessages(outcome.responseMessages);
   // A turn cut by the step cap or by no-progress is NOT finished: `paused` shows the Continue
   // button and stopReason names the stop. `stuck` outranks `budget` (the more specific fact).
@@ -783,6 +829,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     verifyAvailable,
     ...(verifyCmd ? { verifyCmd } : {}),
     fixRounds,
+    ...(auditOutcome ? { auditOutcome } : {}),
     changedFiles: changedFiles.map((f) => ({
       path: f.path,
       status: (f.status === 'created' ? 'A' : f.status === 'deleted' ? 'D' : 'M') as 'A' | 'M' | 'D',
@@ -820,6 +867,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     workMessages,
     changedFiles,
     ...(verifyOutcome ? { verifyOutcome } : {}),
+    ...(auditOutcome ? { auditOutcome } : {}),
     ...(workReport ? { workReport } : {}),
     ...(stopReason ? { stopReason, paused: true } : {}),
     ...(proposedPlan ? { plan: proposedPlan } : {}),

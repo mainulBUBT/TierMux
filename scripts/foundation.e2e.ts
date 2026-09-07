@@ -1215,6 +1215,78 @@ async function main() {
       out.stopReason === 'stuck' && out.paused === true && model.calls.length === 5, `calls=${model.calls.length} stopReason=${out.stopReason}`);
   }
 
+  // ── Scenario 27d: the TODO AUDIT — a declared "done" is checked, not believed ──
+  // Pochi's completion audit, in the verify gate's bounded shape: agent mode, only when the
+  // turn used todoWrite, one read-only sub-agent, at most one fix pass.
+  {
+    const { __setSubagentModelForTests } = await import('../src/agent/core/subagent');
+    const todos = [{ content: 'Add min:0 validation to distance', status: 'completed' }];
+
+    // (a) the auditor finds no evidence → the turn gets one more pass, then ships
+    {
+      const ws = makeWorkspace();
+      const auditor = createMockModel([{ text: 'INCOMPLETE: no min:0 validation exists in the request rules.' }], 's27d-audit');
+      __setSubagentModelForTests(auditor as never);
+      const m = createMockModel([
+        { toolCalls: [{ toolName: 'todoWrite', input: { todos } }] },
+        { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'done' } }] },
+        { text: 'finished' },
+        { text: 'you are right — added it now' },
+      ], 's27d-a');
+      const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
+        messages: [{ role: 'user', content: 'add the validation' }],
+        mode: 'agent', autoApprove: true,
+      })));
+      __setSubagentModelForTests(undefined);
+      ok('27d. the auditor was asked about the completed todo',
+        JSON.stringify(auditor.calls[0]?.messages ?? []).includes('min:0 validation'), 'auditor saw no todo');
+      ok('27d. a missing-evidence verdict is reported', out.auditOutcome === 'incomplete', String(out.auditOutcome));
+      ok('27d. and the turn got ONE more pass with the verdict',
+        JSON.stringify(m.calls[m.calls.length - 1]?.messages ?? []).includes('could not find evidence'), `calls=${m.calls.length}`);
+      ok('27d. the turn still ships its work', out.text.length > 0 && ws.read('foo.txt') === 'done world', ws.read('foo.txt'));
+    }
+
+    // (b) evidence found → nothing extra happens
+    {
+      const ws = makeWorkspace();
+      const auditor = createMockModel([{ text: 'VERIFIED\nfoo.txt:1 holds the change.' }], 's27d-ok');
+      __setSubagentModelForTests(auditor as never);
+      const m = createMockModel([
+        { toolCalls: [{ toolName: 'todoWrite', input: { todos } }] },
+        { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'done' } }] },
+        { text: 'finished' },
+      ], 's27d-b');
+      const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
+        messages: [{ role: 'user', content: 'add the validation' }],
+        mode: 'agent', autoApprove: true,
+      })));
+      __setSubagentModelForTests(undefined);
+      ok('27d. a verified audit adds no pass', out.auditOutcome === 'verified' && m.calls.length === 3, `${out.auditOutcome} calls=${m.calls.length}`);
+    }
+
+    // (c) no todos, or the gate off → the auditor is never called
+    {
+      const ws = makeWorkspace();
+      const auditor = createMockModel([{ text: 'VERIFIED' }], 's27d-none');
+      __setSubagentModelForTests(auditor as never);
+      const m = createMockModel([{ text: 'just answering' }], 's27d-c');
+      const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
+        messages: [{ role: 'user', content: 'what is 2+2' }], mode: 'agent',
+      })));
+      ok('27d. a turn with no todos never runs the audit', auditor.calls.length === 0 && out.auditOutcome === undefined);
+
+      const m2 = createMockModel([
+        { toolCalls: [{ toolName: 'todoWrite', input: { todos } }] },
+        { text: 'finished' },
+      ], 's27d-off');
+      const out2 = await runWithWorkspaceRoot(ws.root, () => engineTurn(m2, engineOpts({
+        messages: [{ role: 'user', content: 'do it' }], mode: 'agent', auditTodos: false,
+      })));
+      __setSubagentModelForTests(undefined);
+      ok('27d. auditTodos:false disables it', auditor.calls.length === 0 && out2.auditOutcome === undefined);
+    }
+  }
+
   // ── Scenario 28: the VERIFY GATE and the WORK REPORT (§2.1 / §2.2) ───────────
   // Both shipped fully built and never invoked for the whole v3 era: verifyCommand.ts had zero
   // callers while two settings advertised it, and WorkReportData was declared, posted, rendered

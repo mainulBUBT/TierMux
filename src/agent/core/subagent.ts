@@ -16,6 +16,8 @@ import { createFetchUrlTool } from './tools/network/fetchUrl';
 import { createRunCommandTool } from './tools/v3/runCommand';
 import { diagLog } from '../../util/diag';
 import { METHOD } from '../../context/system';
+import { loadAgents, type AgentDef } from '../agents';
+import { effectiveRootUri } from './tools/workspaceRoot';
 
 export interface SubagentOpts {
   task: string;
@@ -23,6 +25,8 @@ export interface SubagentOpts {
   sessionId?: string;
   requestId?: string;
   abortSignal?: AbortSignal;
+  /** Registry name of the agent to run (see agents.ts); defaults to `explore`. */
+  agent?: string;
   /** Max sub-agent steps — default 8, capped at 15. */
   maxSteps?: number;
   /** Test seam: inject a model directly instead of routing through the live picker. */
@@ -32,19 +36,16 @@ export interface SubagentOpts {
 export interface SubagentResult {
   summary: string;
   stepsCount: number;
+  /** Which registry agent ran — the caller labels its report with it. */
+  agent: string;
 }
 
-const SUBAGENT_SYSTEM = `You are a research sub-agent in TierMux. Investigate the delegated task in the workspace and answer it with evidence. You cannot modify files; runCommand accepts read-only commands only.
 
-${METHOD}
 
-When finished, write a complete report as your final message — it is all the caller will see: the answer, exact paths with line numbers, and the code that proves it. Say what you checked and what you could not determine.`;
-
-export async function runSubagent(opts: SubagentOpts): Promise<SubagentResult> {
-  const maxSteps = Math.min(Math.max(1, opts.maxSteps ?? 8), 15);
-  diagLog('subagent.start', `task="${opts.task.slice(0, 80)}" maxSteps=${maxSteps}`);
-
-  const tools: ToolSet = {
+/** Tool factories a sub-agent may be given, by name. Nothing that mutates: a sub-agent has no
+ *  approval flow (AI SDK caveat), so every tool here must be safe to run unattended. */
+function subagentTools(opts: SubagentOpts, names?: string[]): ToolSet {
+  const all: ToolSet = {
     readFile: createReadFileTool(),
     listDir: createListDirTool(),
     glob: createGlobTool(),
@@ -52,12 +53,40 @@ export async function runSubagent(opts: SubagentOpts): Promise<SubagentResult> {
     getDiagnostics: createGetDiagnosticsTool(),
     webSearch: createWebSearchTool(),
     fetchUrl: createFetchUrlTool(),
-    // No approval flow inside a sub-agent, so the shell is read-only.
     runCommand: createRunCommandTool({ abortSignal: opts.abortSignal, sessionId: opts.sessionId, requestId: opts.requestId, readOnly: true }),
   } as ToolSet;
+  if (!names?.length) return all;
+  const picked: ToolSet = {};
+  for (const n of names) if (all[n]) picked[n] = all[n];
+  // An agent file naming only unknown tools would otherwise run blind.
+  return Object.keys(picked).length ? picked : all;
+}
 
-  const model = opts.model ?? createRouterProvider({
-    taskKind: 'debug',
+/** Test seam: the model every sub-agent run uses when the caller supplies none — lets an e2e
+ *  exercise a HOST-invoked sub-agent (the todo audit) without a provider. Production never sets it. */
+let subagentModelOverride: LanguageModelV4 | undefined;
+export function __setSubagentModelForTests(m: LanguageModelV4 | undefined): void {
+  subagentModelOverride = m;
+}
+
+/** The agent definition to run: the named one, else `explore`, else the first built-in. */
+export function resolveAgent(name?: string): AgentDef {
+  let root: string | undefined;
+  try { root = effectiveRootUri().fsPath; } catch { /* headless */ }
+  const agents = loadAgents(root);
+  return agents.get((name ?? 'explore').toLowerCase()) ?? agents.get('explore') ?? [...agents.values()][0];
+}
+
+export async function runSubagent(opts: SubagentOpts): Promise<SubagentResult> {
+  const def = resolveAgent(opts.agent);
+  const maxSteps = Math.min(Math.max(1, opts.maxSteps ?? def.maxSteps ?? 8), 15);
+  diagLog('subagent.start', `agent=${def.name} task="${opts.task.slice(0, 80)}" maxSteps=${maxSteps}`);
+
+  const tools = subagentTools(opts, def.tools);
+
+  const model = opts.model ?? subagentModelOverride ?? createRouterProvider({
+    taskKind: def.taskKind ?? 'debug',
+    pinnedModel: def.model,
     sessionId: opts.sessionId,
     requireTools: true,
   });
@@ -70,7 +99,7 @@ export async function runSubagent(opts: SubagentOpts): Promise<SubagentResult> {
   try {
     const result = streamText({
       model,
-      system: SUBAGENT_SYSTEM,
+      system: `${def.prompt}\n\n${METHOD}`,
       messages: [{ role: 'user', content: promptContent }],
       tools,
       temperature: 0.2,
@@ -96,6 +125,7 @@ export async function runSubagent(opts: SubagentOpts): Promise<SubagentResult> {
     return {
       summary: finalAnswer || 'Sub-agent completed the investigation without additional notes.',
       stepsCount,
+      agent: def.name,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -103,6 +133,7 @@ export async function runSubagent(opts: SubagentOpts): Promise<SubagentResult> {
     return {
       summary: `Sub-agent investigation stopped early: ${msg}`,
       stepsCount: 0,
+      agent: def.name,
     };
   }
 }

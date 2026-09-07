@@ -49,6 +49,7 @@ export interface WorkReportData {
    *  property of the PROJECT, so the UI stays silent. Older transcripts are treated as true. */
   verifyAvailable?: boolean;
   verifyCmd?: string;
+  auditOutcome?: 'verified' | 'incomplete';
   fixRounds: number;
   changedFiles: WorkReportChangedFile[];
   toolTally: WorkReportToolCount[];

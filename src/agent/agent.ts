@@ -44,6 +44,10 @@ export interface AgentResult {
    *  `workMessages`. Lets the caller render a deterministic "Files changed" recap independent of
    *  the model's prose, so a turn that ended on a bare tool call still surfaces what it changed. */
   changedFiles?: { path: string; status: 'created' | 'modified' | 'deleted' }[];
+  /** End-of-turn todo audit: 'verified' — a read-only pass found evidence for every todo the
+   *  turn marked complete; 'incomplete' — it did not, and one fix pass ran. Undefined when the
+   *  turn wrote no todos or the gate is off. */
+  auditOutcome?: 'verified' | 'incomplete';
   /** End-of-turn verify gate: 'passed' — the verify command exited 0 (possibly after fix
    *  rounds); 'failed' — non-zero even after `agent.verifyFixRounds`; 'unverified' — files were
    *  mutated but no verify command produced a signal. Undefined — no mutation. */
@@ -80,6 +84,9 @@ export interface AgentOpts {
    *  `tiermux.agent.verifyFixRounds`, threaded from host settings. 0 reports the failure
    *  without retrying; it never disables the gate itself (that is `verifyCommand: 'off'`). */
   verifyFixRounds?: number;
+  /** Check declared-complete todos against the workspace before the turn ends — mirrors
+   *  `tiermux.agent.auditTodos`. */
+  auditTodos?: boolean;
   /** `platform::modelId` keys to skip during Auto selection for this call only. Ignored when
    *  `pinnedModel` is set. */
   excludeModels?: string[];

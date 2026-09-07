@@ -56,6 +56,25 @@ All notable changes to TierMux are documented here. The format is loosely
   unrelated (a missing service) instead of reverting it.
 - Locked by `npm run test:e2e:weak-model-plumbing`; `tool-offer` and `delegate-task` updated.
 
+### Added — sub-agents are files, and memory asks first (2026-09-07)
+
+- **Sub-agent registry** (`src/agent/agents.ts`): `explore` and `review` ship built in, and
+  `.tiermux/agents/<name>.md` adds or replaces one — same frontmatter shape as skills, with
+  `description`, `tools`, `model`, `taskKind`, `maxSteps` and the body as that agent's prompt.
+  `delegateTask` lists the roster in its description and takes an `agent` name; the sub-agent
+  gets only the tools its file names, and nothing that mutates either way.
+- **The explore agent carries a playbook**: how to approach "where is X", a wrong value, or an
+  architecture question, and a fixed report shape — answer, evidence with `path:line`, what was
+  ruled out, what is still open — so the caller learns what NOT to re-check.
+- **Todo audit** (`tiermux.agent.auditTodos`, default on): when an agent turn marks todos
+  complete, a read-only sub-agent checks the workspace for evidence of each one and hands back
+  anything it cannot find, for at most one more pass. Bounded exactly like the verify gate —
+  agent mode only, only on turns that used `todoWrite`, skipped on abort or a stuck stop. The
+  trigger is missing evidence, never answer quality: the claim is not the evidence.
+- **`tiermux.agent.learnFromCorrections`** (`ask` | `always` | `off`, default `ask`): memory is
+  durable and lives in the user's repo, so a correction is now shown before it is written.
+- Locked by `npm run test:e2e:agent-registry`.
+
 ### Added — TierMux learns across sessions (no extra model calls)
 
 - **Corrections are remembered.** Every compaction already writes a "Corrections & rejected

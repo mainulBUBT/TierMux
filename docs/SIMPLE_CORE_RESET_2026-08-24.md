@@ -86,6 +86,15 @@ detector, stop and re-read this file.
    "Re-run checks" button — the exact user-recheck burden this reset's rules say needs an
    evidence-driven guard.)
 
+9. **A declared-complete todo is checked, not believed.** After an agent turn that used
+   `todoWrite` marks todos complete, a read-only sub-agent (`audit`, agents.ts) looks for
+   evidence of each in the workspace; a verdict of INCOMPLETE feeds back for at most ONE pass.
+   Same family as invariant 8 and bounded the same way: the trigger is absent evidence in the
+   FILES, never how the answer reads, and the gate is off outside agent mode, on abort, on a
+   stuck stop, or when no todos were written. `tiermux.agent.auditTodos` disables it.
+   (Added 2026-09-07 after repeated turns closed on "check X yourself" — pochi's completion
+   audit, in this repo's bounded shape.) `foundation.e2e.ts` scenario 27d locks it.
+
 ## What was kept (do not "clean these up")
 
 - **Sub-agents & multi-file:** `delegate`, `explore`, `implementPipeline` (parallel worktrees),
@@ -136,6 +145,7 @@ npm run test:e2e:compact-budget   # per-window prune target (executionProfile), 
 npm run test:e2e:router-sticky    # Auto keeps step 1's model for the turn; rotation is per turn, failover intact
 npm run test:e2e:memory-learned   # corrections → .tiermux/memory.md, implicit routing signals
 npm run test:e2e:weak-model-plumbing # null-strip repair, inputExamples on the wire, temperature guards, follow-up routing
+npm run test:e2e:agent-registry   # built-in + .tiermux/agents/*.md sub-agents, tool narrowing, roster in delegateTask
 # infra: condense-split, fit-messages, routing-gates, rate-limit-zero, quota-persist,
 #        edit-match, edit-gate, resolve-path, read-paging, checkpoint-persist, …
 ```

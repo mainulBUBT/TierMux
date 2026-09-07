@@ -370,6 +370,17 @@
           "default": "auto",
           "description": "Command run automatically after a turn edits files, to verify the project still works (a non-zero exit triggers bounded fix-and-recheck rounds). 'auto' detects it from the project (package.json test/typecheck/lint/build script, Makefile check/test, cargo test, go test, pytest, composer test); the planner's 'Verify:' line overrides per task; any other value is used verbatim; 'off' disables."
         },
+        "tiermux.agent.learnFromCorrections": {
+          "type": "string",
+          "enum": ["ask", "always", "off"],
+          "default": "ask",
+          "description": "When a compaction records what you corrected or rejected, carry those notes into .tiermux/memory.md so later sessions start knowing them. 'ask' confirms first and shows what would be written, 'always' writes silently, 'off' never writes. Costs no extra model call either way — the summary already produced the notes."
+        },
+        "tiermux.agent.auditTodos": {
+          "type": "boolean",
+          "default": true,
+          "description": "Before an agent turn ends, check the workspace for evidence of every todo it marked complete, and hand back anything it cannot find. Runs only on turns that used the todo list, at most once, with a read-only sub-agent."
+        },
         "tiermux.agent.verifyFixRounds": {
           "type": "number",
           "default": 1,
@@ -597,6 +608,7 @@
     "check:readme": "node scripts/sync-readme.mjs --check",
     "build:types": "tsc -p tsconfig.lib.json --incremental false",
     "publish:dry": "node scripts/publish-targets.mjs --dry-run",
+    "test:e2e:agent-registry": "esbuild scripts/agentRegistry.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/agentRegistry.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/agentRegistry.e2e.cjs",
     "test:e2e:weak-model-plumbing": "esbuild scripts/weakModelPlumbing.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/weakModelPlumbing.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/weakModelPlumbing.e2e.cjs",
     "test:e2e:memory-learned": "esbuild scripts/memoryLearned.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/memoryLearned.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/memoryLearned.e2e.cjs",
     "test:e2e:router-sticky": "esbuild scripts/routerSticky.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/routerSticky.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/routerSticky.e2e.cjs",

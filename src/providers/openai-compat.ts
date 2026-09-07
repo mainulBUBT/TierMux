@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from 'crypto';
 
 
 import type {
@@ -22,6 +23,9 @@ export interface OpenAICompatOpts {
   name: string;
   baseUrl: string;
   extraHeaders?: Record<string, string>;
+  /** Header that must carry a stable per-conversation id (OpenCode Zen: `x-opencode-session`,
+   *  required since 2026-09 — a request without it is refused with 400 MissingSessionID). */
+  sessionHeader?: string;
   timeoutMs?: number;
   keyless?: boolean;
   /** Free tier works anonymously, paid tier needs a key — see PlatformInfo.keyOptional. */
@@ -42,11 +46,23 @@ export interface OpenAICompatOpts {
   defaultMaxTokens?: number;
 }
 
+const USER_AGENT = 'tiermux/3.0.1';
+
+/** A stable UUID-shaped id for a conversation: the same session always maps to the same value,
+ *  and a call with no session (title generation, condense) gets a one-off. */
+function sessionUuid(sessionId?: string): string {
+  const hex = sessionId
+    ? createHash('sha1').update(sessionId).digest('hex').slice(0, 32)
+    : randomUUID().replace(/-/g, '');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
 export class OpenAICompatProvider extends BaseProvider {
   readonly platform: Platform;
   readonly name: string;
   private readonly baseUrl: string;
   private readonly extraHeaders: Record<string, string>;
+  private readonly sessionHeader?: string;
   private readonly timeoutMs: number;
   private readonly forceSingleToolCall: boolean;
   private readonly reasoningStyle: ReasoningStyle;
@@ -63,6 +79,7 @@ export class OpenAICompatProvider extends BaseProvider {
     this.runtimeName = opts.runtimeName ?? opts.name;
     this.baseUrl = opts.baseUrl;
     this.extraHeaders = opts.extraHeaders ?? {};
+    this.sessionHeader = opts.sessionHeader;
     this.timeoutMs = opts.timeoutMs ?? 60000;
     this.keyless = opts.keyless ?? false;
     this.forceSingleToolCall = opts.forceSingleToolCall ?? false;
@@ -77,6 +94,16 @@ export class OpenAICompatProvider extends BaseProvider {
   private resolveBaseUrl(options?: CompletionOptions): string {
     const o = options?.baseUrlOverride?.trim();
     return o && o.length > 0 ? o.replace(/\/+$/, '') : this.baseUrl;
+  }
+
+  private requestHeaders(apiKey: string, options?: CompletionOptions): Record<string, string> {
+    return {
+      ...this.authHeader(apiKey),
+      'Content-Type': 'application/json',
+      'User-Agent': USER_AGENT,
+      ...this.extraHeaders,
+      ...(this.sessionHeader ? { [this.sessionHeader]: sessionUuid(options?.sessionId) } : {}),
+    };
   }
 
   private authHeader(apiKey: string): Record<string, string> {
@@ -152,7 +179,7 @@ export class OpenAICompatProvider extends BaseProvider {
   ): Promise<ChatCompletionResponse> {
     const res = await this.fetchWithTimeout(`${this.resolveBaseUrl(options)}/chat/completions`, {
       method: 'POST',
-      headers: { ...this.authHeader(apiKey), 'Content-Type': 'application/json', ...this.extraHeaders },
+      headers: this.requestHeaders(apiKey, options),
       body: this.buildBody(messages, modelId, options, false),
       signal: options?.abortSignal,
     }, options?.timeoutMs ?? this.timeoutMs);
@@ -205,7 +232,7 @@ export class OpenAICompatProvider extends BaseProvider {
   ): AsyncGenerator<ChatCompletionChunk> {
     const res = await this.fetchWithTimeout(`${this.resolveBaseUrl(options)}/chat/completions`, {
       method: 'POST',
-      headers: { ...this.authHeader(apiKey), 'Content-Type': 'application/json', ...this.extraHeaders },
+      headers: this.requestHeaders(apiKey, options),
       body: this.buildBody(messages, modelId, options, true),
       signal: options?.abortSignal,
     }, options?.timeoutMs ?? this.timeoutMs);

@@ -1776,7 +1776,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  next session starts knowing them. No model call — the summary already wrote the section. */
   private async learnFromCompaction(corrections: string[]): Promise<void> {
     if (!corrections.length) return;
+    const mode = vscode.workspace.getConfiguration('tiermux.agent').get<string>('learnFromCorrections', 'ask');
+    if (mode === 'off') return;
     try {
+      // Memory is durable and lives in the user's repo, so the default asks first and shows
+      // exactly what would be written (pochi's rule: never write memory unconfirmed).
+      if (mode !== 'always') {
+        const preview = corrections.slice(0, 3).map((c) => `• ${c}`).join('\n');
+        const more = corrections.length > 3 ? `\n…and ${corrections.length - 3} more` : '';
+        const choice = await vscode.window.showInformationMessage(
+          `Remember what you corrected, for later sessions?\n${preview}${more}`,
+          { modal: false },
+          'Save to memory', 'Always', 'Not now',
+        );
+        if (choice === 'Always') {
+          await vscode.workspace.getConfiguration('tiermux.agent').update('learnFromCorrections', 'always', true);
+        } else if (choice !== 'Save to memory') {
+          return;
+        }
+      }
       const added = await appendLearned(corrections);
       if (added > 0) {
         invalidatePromptContext();
@@ -2667,6 +2685,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // hardcoded the same 50, so raising it in settings silently did nothing.
       maxStepsPerTurn: vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxStepsPerTurn', 50),
       verifyFixRounds: vscode.workspace.getConfiguration('tiermux.agent').get<number>('verifyFixRounds', 1),
+      auditTodos: vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('auditTodos', true),
       ...callbacks,
     };
   }

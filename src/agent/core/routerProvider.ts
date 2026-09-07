@@ -494,6 +494,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             max_tokens: options.maxOutputTokens,
             tools,
             reasoningEffort: providerOpts.effort,
+            sessionId: providerOpts.sessionId,
             abortSignal: options.abortSignal,
             timeoutMs: connectTimeoutFor(c.platform),
           });
@@ -654,6 +655,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                   max_tokens: options.maxOutputTokens,
                   tools,
                   reasoningEffort: providerOpts.effort,
+                  sessionId: providerOpts.sessionId,
                   abortSignal: ttftSignal,
                   timeoutMs: connectTimeoutFor(c.platform),
                 })) {

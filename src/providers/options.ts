@@ -15,6 +15,9 @@ export interface CompletionOptions {
   /** External cancellation (the Stop button, a sub-agent's deadline). Combined with the
    *  provider's own timeout in BaseProvider.fetchWithTimeout so it aborts the live request. */
   abortSignal?: AbortSignal;
+  /** TierMux chat session — gateways that route by conversation (OpenCode Zen's
+   *  `x-opencode-session`) get a stable id derived from it. */
+  sessionId?: string;
   /** Base URL override (from the settings store); falls back to the default. */
   baseUrlOverride?: string;
   /** Requested structured-output mode. NOT yet consumed by any adapter — routerProvider's
