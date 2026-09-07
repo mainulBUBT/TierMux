@@ -675,9 +675,14 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                     if (!textStarted) { textStarted = true; controller.enqueue({ type: 'text-start', id: textId }); }
                     controller.enqueue({ type: 'text-delta', id: textId, delta: split.text });
                     textAccum += split.text;
-                    if (textAccum.length >= nextLoopCheck && (nextLoopCheck += 400, isDegenerateRepeat(textAccum))) {
+                  }
+                  // Either channel can loop — the live repro looped in reasoning.
+                  const streamed = textAccum.length + reasoningAccum.length;
+                  if (streamed >= nextLoopCheck) {
+                    nextLoopCheck = streamed + 400;
+                    if (isDegenerateRepeat(textAccum) || isDegenerateRepeat(reasoningAccum)) {
                       loopCut = true;
-                      diagLog('rp.loop', `${c.platform}::${c.modelId} repeating itself after ${textAccum.length} chars — cutting the stream`);
+                      diagLog('rp.loop', `${c.platform}::${c.modelId} repeating itself after ${streamed} chars — cutting the stream`);
                       ttftController.abort(new Error('degenerate repetition'));
                       break;
                     }
