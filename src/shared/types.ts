@@ -38,6 +38,7 @@ export type Platform =
   | 'modelscope'
   | 'unorouter'
   | 'experientiallabs'
+  | 'bailu'
   | 'custom';
 
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';

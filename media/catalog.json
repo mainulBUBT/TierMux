@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Synced from remote /models JSON — 554 models from 34 providers.",
+  "note": "Synced from remote /models JSON — 541 models from 35 providers.",
   "models": [
     {
       "platform": "agnes",
@@ -1838,27 +1838,6 @@
       "origOutputPricePer1M": 0
     },
     {
-      "platform": "openrouter",
-      "modelId": "z-ai/glm-5.2:free",
-      "displayName": "Z.ai: GLM 5.2",
-      "intelligenceRank": 1,
-      "speedRank": 3,
-      "contextWindow": 256000,
-      "rpmLimit": 10,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
       "platform": "opencode",
       "modelId": "muse-spark-1.2-contributor-free",
       "displayName": "Muse Spark 1.2 Contributor",
@@ -1967,27 +1946,6 @@
       ],
       "origInputPricePer1M": 0.15,
       "origOutputPricePer1M": 0.29
-    },
-    {
-      "platform": "orcarouter",
-      "modelId": "qwen/qwen3.8-27b-free",
-      "displayName": "Qwen 3.8 27B",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 65536,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.33,
-      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "orcarouter",
@@ -3438,6 +3396,26 @@
         "reasoner",
         "free"
       ]
+    },
+    {
+      "platform": "llm7",
+      "modelId": "DeepSeek-V4-Flash-0731",
+      "displayName": "DeepSeek V4 Flash",
+      "intelligenceRank": 2,
+      "speedRank": 2,
+      "contextWindow": 256000,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "llm7",
@@ -4985,112 +4963,6 @@
       "origOutputPricePer1M": 3.75
     },
     {
-      "platform": "openadapter",
-      "modelId": "Llama-3.1-405B",
-      "displayName": "Llama 3.1 405B",
-      "intelligenceRank": 2,
-      "speedRank": 5,
-      "contextWindow": 128000,
-      "rpmLimit": 40,
-      "rpdLimit": 57600,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 3.5,
-      "origOutputPricePer1M": 3.5
-    },
-    {
-      "platform": "openrouter",
-      "modelId": "minimax/minimax-m3:free",
-      "displayName": "MiniMax: MiniMax M3 (free)",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 1048576,
-      "rpmLimit": 2,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "coding",
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openrouter",
-      "modelId": "minimax/minimax-m2.7:free",
-      "displayName": "MiniMax: MiniMax M2.7 (free)",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 196608,
-      "rpmLimit": 40,
-      "rpdLimit": 57600,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "kilo",
-      "modelId": "minimax/minimax-m3:free",
-      "displayName": "MiniMax: MiniMax M3 (free)",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 1048576,
-      "rpmLimit": 2,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "kilo",
-      "modelId": "minimax/minimax-m2.7:free",
-      "displayName": "MiniMax: MiniMax M2.7 (free)",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 196608,
-      "rpmLimit": 40,
-      "rpdLimit": 57600,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
       "platform": "groq",
       "modelId": "qwen/qwen3.8-27b",
       "displayName": "Qwen/Qwen3.8-27B",
@@ -5149,25 +5021,6 @@
       ],
       "origInputPricePer1M": 0.0001,
       "origOutputPricePer1M": 0.0002
-    },
-    {
-      "platform": "llm7",
-      "modelId": "gpt-oss",
-      "displayName": "GPT OSS",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 131072,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "reasoner",
-        "free"
-      ]
     },
     {
       "platform": "openadapter",
@@ -6139,26 +5992,6 @@
     },
     {
       "platform": "airforce",
-      "modelId": "mistral-vibe-cli-with-tools",
-      "displayName": "Mistral Vibe Cli With Tools",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
       "modelId": "glm-4.7-flash",
       "displayName": "GLM-4.7 Flash",
       "intelligenceRank": 2,
@@ -6193,27 +6026,6 @@
       "supportsReasoning": false,
       "tags": [
         "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
-      "modelId": "mistral-small-2603",
-      "displayName": "Mistral Small 4",
-      "intelligenceRank": 3,
-      "speedRank": 2,
-      "contextWindow": 256000,
-      "rpmLimit": 5,
-      "rpdLimit": 7200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "reasoner",
         "free"
       ],
       "origInputPricePer1M": 0.2,
@@ -6261,87 +6073,6 @@
     },
     {
       "platform": "airforce",
-      "modelId": "mistral-medium-2604",
-      "displayName": "Mistral Medium 3.5 (128B)",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 256000,
-      "rpmLimit": 5,
-      "rpdLimit": 7200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
-      "modelId": "mistral-small-2506",
-      "displayName": "Mistral Small 4",
-      "intelligenceRank": 3,
-      "speedRank": 2,
-      "contextWindow": 256000,
-      "rpmLimit": 5,
-      "rpdLimit": 7200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
-      "modelId": "mistral-medium-2505",
-      "displayName": "Mistral Medium 3.5 (128B)",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 256000,
-      "rpmLimit": 5,
-      "rpdLimit": 7200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
-      "modelId": "mistral-medium-2508",
-      "displayName": "Mistral Medium 3.5 (128B)",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 256000,
-      "rpmLimit": 5,
-      "rpdLimit": 7200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
       "modelId": "mistral-large-2512",
       "displayName": "Mistral Large 3",
       "intelligenceRank": 2,
@@ -6362,47 +6093,6 @@
     },
     {
       "platform": "airforce",
-      "modelId": "mistral-vibe-cli-latest",
-      "displayName": "Mistral Vibe Cli Latest",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
-      "modelId": "devstral-latest",
-      "displayName": "Devstral",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 128000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "coding",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
       "modelId": "voxtral-small-2507",
       "displayName": "Voxtral Small 2507",
       "intelligenceRank": 4,
@@ -6416,27 +6106,6 @@
       "supportsReasoning": false,
       "tags": [
         "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
-      "modelId": "mistral-code-agent-latest",
-      "displayName": "Mistral Code Agent Latest",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "coding",
         "free"
       ],
       "origInputPricePer1M": 0.2,
@@ -6481,7 +6150,7 @@
         "free"
       ],
       "origInputPricePer1M": 0.06,
-      "origOutputPricePer1M": 0.2
+      "origOutputPricePer1M": 0.19
     },
     {
       "platform": "airforce",
@@ -6526,46 +6195,6 @@
     },
     {
       "platform": "airforce",
-      "modelId": "mistral-medium",
-      "displayName": "Mistral Medium 3.5 (128B)",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 256000,
-      "rpmLimit": 5,
-      "rpdLimit": 7200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
-      "modelId": "mistral-medium-3",
-      "displayName": "Mistral Medium 3",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 131072,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
       "modelId": "ministral-8b-latest",
       "displayName": "Ministral 3 8B",
       "intelligenceRank": 4,
@@ -6583,27 +6212,6 @@
       ],
       "origInputPricePer1M": 0.16,
       "origOutputPricePer1M": 0.16
-    },
-    {
-      "platform": "airforce",
-      "modelId": "devstral-medium-latest",
-      "displayName": "Devstral 2",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 256000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "coding",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
     },
     {
       "platform": "airforce",
@@ -6668,26 +6276,6 @@
     },
     {
       "platform": "airforce",
-      "modelId": "mistral-vibe-cli-fast",
-      "displayName": "Mistral Vibe Cli Fast",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
       "modelId": "kimi-k2.7-code",
       "displayName": "Kimi K2.7 Code",
       "intelligenceRank": 1,
@@ -6731,27 +6319,6 @@
     },
     {
       "platform": "airforce",
-      "modelId": "mistral-small-latest",
-      "displayName": "Mistral Small 4",
-      "intelligenceRank": 3,
-      "speedRank": 2,
-      "contextWindow": 256000,
-      "rpmLimit": 5,
-      "rpdLimit": 7200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "general",
-        "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
       "modelId": "mistral-medium-latest",
       "displayName": "Mistral Medium 3.5 (128B)",
       "intelligenceRank": 2,
@@ -6766,26 +6333,6 @@
       "tags": [
         "general",
         "reasoner",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
-      "modelId": "magistral-small-latest",
-      "displayName": "Magistral Small",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": 128000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
         "free"
       ],
       "origInputPricePer1M": 0.2,
@@ -6827,27 +6374,6 @@
       "supportsReasoning": false,
       "tags": [
         "general",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 0.2
-    },
-    {
-      "platform": "airforce",
-      "modelId": "devstral-2512",
-      "displayName": "Devstral",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 128000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "general",
-        "coding",
         "free"
       ],
       "origInputPricePer1M": 0.2,
@@ -8042,6 +7568,225 @@
       ],
       "origInputPricePer1M": 10,
       "origOutputPricePer1M": 50
+    },
+    {
+      "platform": "nararouter",
+      "modelId": "muse-spark-1.2-contributor-free",
+      "displayName": "Muse Spark 1.2 Contributor",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1000000,
+      "rpmLimit": 60,
+      "rpdLimit": 7500,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "coding",
+        "reasoner",
+        "planner",
+        "vision",
+        "free"
+      ],
+      "origInputPricePer1M": 0.1,
+      "origOutputPricePer1M": 0.2
+    },
+    {
+      "platform": "bailu",
+      "modelId": "bailu-2.7-free",
+      "displayName": "BAILU 2.7 (Free)",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "coding",
+        "reasoner",
+        "general",
+        "planner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "bailu",
+      "modelId": "bailu-2.6-preview",
+      "displayName": "BAILU 2.6 Preview",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 256000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "coding",
+        "reasoner",
+        "general",
+        "planner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "bailu",
+      "modelId": "bailu-edge-2",
+      "displayName": "BAILU Edge 2",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "planner",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "bailu",
+      "modelId": "bailu-auto",
+      "displayName": "BAILU Auto",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 256000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "general",
+        "reasoner",
+        "planner",
+        "coding",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "bailu",
+      "modelId": "bailu-2.8-lite",
+      "displayName": "BAILU 2.8 Lite",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "coding",
+        "reasoner",
+        "general",
+        "planner",
+        "vision",
+        "free"
+      ]
+    },
+    {
+      "platform": "bailu",
+      "modelId": "bailu-apex-2.7",
+      "displayName": "BAILU APEX 2.7",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 512000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "coding",
+        "planner",
+        "general",
+        "vision",
+        "reasoner",
+        "free"
+      ]
+    },
+    {
+      "platform": "bailu",
+      "modelId": "bailu-apex-2",
+      "displayName": "BAILU APEX 2",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "coding",
+        "planner",
+        "free"
+      ]
+    },
+    {
+      "platform": "bailu",
+      "modelId": "bailu-edge-thinking",
+      "displayName": "BAILU Edge Thinking",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 200000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "reasoner",
+        "vision",
+        "planner",
+        "free"
+      ]
+    },
+    {
+      "platform": "orcarouter",
+      "modelId": "z-ai/glm-5.3-flash-free",
+      "displayName": "Z.ai: GLM 5.3 Flash (Free)",
+      "intelligenceRank": 2,
+      "speedRank": 2,
+      "contextWindow": 128000,
+      "rpmLimit": 60,
+      "rpdLimit": 10000,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "general",
+        "reasoner",
+        "free"
+      ],
+      "origInputPricePer1M": 0.0001,
+      "origOutputPricePer1M": 0.0002
     },
     {
       "platform": "unorouter",

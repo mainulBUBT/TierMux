@@ -47,6 +47,7 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'modelscope', name: "ModelScope", baseUrl: "https://api-inference.modelscope.cn/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://modelscope.cn/my/myaccesstoken" }, // auto-synced
   { platform: 'tokenrouter', name: "Token Router", baseUrl: "https://api.tokenrouter.com/v1", skipPreflight: true, timeoutMs: 600000 }, // auto-synced
   { platform: 'experientiallabs', name: "Experiential Labs", baseUrl: "https://api.experientiallabs.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://platform.experientiallabs.ai/settings" }, // auto-synced
+  { platform: 'bailu', name: "BAILU AI", baseUrl: "https://bailucode.com/openapi/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://bailucode.com/api_platform/" }, // auto-synced
 ];
 
 const providers = new Map<Platform, BaseProvider>();
