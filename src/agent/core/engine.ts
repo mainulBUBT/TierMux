@@ -543,6 +543,13 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     });
   };
 
+  /** A post-answer fix pass (verify/audit) replaces outcome.text in onEnd — keep the turn's own
+   *  summary in front of the fix note so the reply still says what was done. */
+  const keepSummary = (prior: string) => {
+    const next = outcome.text;
+    if (prior.trim() && next.trim() && next !== prior && !next.startsWith(prior)) outcome.text = `${prior}\n\n${next}`;
+  };
+
   try {
     await runPass(modelMessages).consumeStream({
       // ai v7: consumeStream resolves even when the provider stream errors — this option is the
@@ -755,6 +762,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       while (run.ok === false && fixRounds < maxFixRounds && !opts.abortSignal?.aborted) {
         fixRounds++;
         diagLog('engine.verifyFix', `round ${fixRounds}/${maxFixRounds} — feeding the failure back`);
+        const beforeFix = outcome.text;
         try {
           await runPass([
             ...modelMessages,
@@ -769,6 +777,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
         } catch {
           break; // a failed fix round must not lose the turn's real work
         }
+        keepSummary(beforeFix);
         run = await runVerifyCommand(verifyCmd);
         diagLog('engine.verify', `after fix round ${fixRounds}: ${run.ok === null ? 'could not run' : run.ok ? 'passed' : 'still failing'}`);
       }
@@ -798,6 +807,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       auditOutcome = incomplete ? 'incomplete' : 'verified';
       diagLog('engine.audit', `${completedTodos.length} completed todo(s) → ${auditOutcome}`);
       if (incomplete && !opts.abortSignal?.aborted) {
+        const beforeAudit = outcome.text;
         await runPass([
           ...modelMessages,
           ...outcome.responseMessages,
@@ -808,6 +818,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
               + `Do not restart the task or re-plan.\n\n${verdict.slice(0, 2_000)}`,
           },
         ]).consumeStream({ onError: passError('auditFix') });
+        keepSummary(beforeAudit);
       }
     } catch {
       // The audit is best-effort: it must never lose the turn's real work.

@@ -6,7 +6,14 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 import { detectVerifyCommand } from '../src/agent/core/tools/workspace/verifyCommand';
+
+/** The PHP syntax scan is only offered where a php binary exists, so the fixture below expects
+ *  what THIS machine can honestly run. Probed independently of the detector's own PATH lookup. */
+const PHP_SCAN = "! find . -path ./vendor -prune -o -name '*.php' -exec php -l {} \\; 2>&1 | grep -v '^No syntax errors'";
+const hasPhp = process.platform !== 'win32'
+  && spawnSync('sh', ['-lc', 'command -v php'], { stdio: 'ignore' }).status === 0;
 
 let pass = 0;
 let failed = 0;
@@ -58,14 +65,25 @@ expect('composer-script', {
 }, 'composer test');
 
 console.log('\n── 3. Dependencies not installed ⇒ withheld, not a command that can only fail ──');
+// PHP is the one exception: no vendor/ means no suite can run, but `php -l` still proves the
+// files parse — offered at the weakest strength, and only where php itself exists.
 expect('laravel-no-vendor', {
   'composer.json': JSON.stringify({ scripts: { test: 'phpunit' } }),
   artisan: '#!/usr/bin/env php',
   'phpunit.xml': '<phpunit/>',
-}, undefined);
+}, hasPhp ? PHP_SCAN : undefined);
 expect('node-no-modules', {
   'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }),
 }, undefined);
+// A non-PHP repo never gets it, php on PATH or not.
+expect('docs-only-no-php-scan', { 'README.md': '# docs' }, undefined);
+// The scan is the WEAKEST candidate: a frontend build still outranks a parse gate.
+expect('laravel-no-vendor-with-node-build', {
+  'composer.json': JSON.stringify({ scripts: { test: 'phpunit' } }),
+  artisan: '#!/usr/bin/env php',
+  'package.json': JSON.stringify({ scripts: { build: 'vite build' } }),
+  'node_modules/.package-lock.json': '{}',
+}, 'npm run build');
 
 console.log('\n── 4. Node stays first-class ──');
 expect('node-test', {

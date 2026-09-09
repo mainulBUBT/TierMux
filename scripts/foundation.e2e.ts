@@ -1400,6 +1400,11 @@ async function main() {
       model.calls.length === 4, `calls=${model.calls.length}`);
     ok('28b. the edit still stands — a failed verify never reverts work',
       ws.read('foo.txt') === 'broken world', ws.read('foo.txt'));
+    // A fix round's reply used to REPLACE the turn's summary, so a failed gate shipped the fix
+    // note alone and the user lost the account of what was done.
+    ok('28b. the turn summary survives the fix rounds', out.text.startsWith('edited'), JSON.stringify(out.text));
+    ok('28b. and every fix note is kept with it',
+      out.text.includes('attempted fix 1') && out.text.includes('attempted fix 2'), JSON.stringify(out.text));
   }
 
   // ── Scenario 28c: no mutation ⇒ no gate, no card ─────────────────────────────

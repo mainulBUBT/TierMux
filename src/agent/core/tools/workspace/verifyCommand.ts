@@ -2,8 +2,9 @@
 // Verify command for the end-of-turn gate: LSP diagnostics prove the edited FILES parse, this
 // proves the PROJECT works, and a non-zero exit feeds `agent.verifyFixRounds`. Detection is
 // stack-wise, not Node-first (a Laravel app with a Vite package.json verifies with `php artisan
-// test`): each stack contributes candidates by strength (test > typecheck > build) and the
-// strongest wins; a stack without installed dependencies is withheld.
+// test`): each stack contributes candidates by strength (test > typecheck > build > syntax scan)
+// and the strongest wins; a stack without installed dependencies is withheld, bar the PHP parse
+// gate below.
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -28,10 +29,10 @@ function readText(file: string): string | undefined {
 }
 
 /** How much a candidate command actually proves. A real suite beats a static check beats a
- *  build — and the ranking is cross-stack, which is what keeps a Laravel repo's `npm run build`
- *  from shadowing its `php artisan test`. */
-type Strength = 'test' | 'check' | 'build';
-const STRENGTH_RANK: Record<Strength, number> = { test: 3, check: 2, build: 1 };
+ *  build beats a bare syntax scan — and the ranking is cross-stack, which is what keeps a
+ *  Laravel repo's `npm run build` from shadowing its `php artisan test`. */
+type Strength = 'test' | 'check' | 'build' | 'lint';
+const STRENGTH_RANK: Record<Strength, number> = { test: 3, check: 2, build: 1, lint: 0 };
 
 interface Candidate {
   command: string;
@@ -98,15 +99,35 @@ function detectDeno(c: Ctx): Candidate | undefined {
   return undefined;
 }
 
-/** PHP — Laravel/Symfony/plain Composer. Everything here needs an installed vendor/ tree, so
- *  the whole stack is withheld without one. `composer test` (the project's own declared entry
+/** Is `bin` an executable on PATH? Only the syntax scan below needs this: it is the one command
+ *  offered for a stack whose dependencies are NOT installed, so a missing runtime would report a
+ *  perfectly fine project as broken. */
+function hasOnPath(bin: string): boolean {
+  return (process.env.PATH ?? '').split(path.delimiter).filter(Boolean).some((dir) => {
+    try { fs.accessSync(path.join(dir, bin), fs.constants.X_OK); return true; } catch { return false; }
+  });
+}
+
+/** No vendor/ ⇒ no suite can run, but a PHP repo still deserves a parse gate. Weakest strength
+ *  on purpose: it proves the files parse, nothing more. Leading `!` + grep because a failing
+ *  `php -l` under find would otherwise be invisible, and only the error lines are worth keeping. */
+function phpSyntaxScan(): Candidate | undefined {
+  if (process.platform === 'win32' || !hasOnPath('php')) return undefined;
+  return {
+    command: "! find . -path ./vendor -prune -o -name '*.php' -exec php -l {} \\; 2>&1 | grep -v '^No syntax errors'",
+    strength: 'lint',
+  };
+}
+
+/** PHP — Laravel/Symfony/plain Composer. Every suite here needs an installed vendor/ tree, so
+ *  without one only the syntax scan is offered. `composer test` (the project's own declared entry
  *  point) outranks a guessed runner; Laravel's `php artisan test` outranks a bare phpunit call
  *  because it boots the framework's own test environment. */
 function detectPhp(c: Ctx): Candidate | undefined {
   const composer = c.json('composer.json');
   const hasVendor = c.has('vendor/autoload.php');
   if (!composer && !c.has('artisan')) return undefined;
-  if (!hasVendor) return undefined;
+  if (!hasVendor) return phpSyntaxScan();
   const scripts = (composer?.scripts && typeof composer.scripts === 'object' ? composer.scripts : {}) as Record<string, unknown>;
   const phpunitCfg = c.has('phpunit.xml', 'phpunit.xml.dist', 'phpunit.dist.xml');
   if (scripts.test) return { command: 'composer test', strength: 'test' };
