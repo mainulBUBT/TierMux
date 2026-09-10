@@ -34,6 +34,28 @@ on the next provider, mid-sentence.
 Four providers ship keyless — your first message works with **no key, no account, no
 config**. Add free keys later for more headroom → [Providers & keys](docs/PROVIDERS.md).
 
+## A look inside
+
+<p align="center">
+  <img src="media/screenshots/chat.png" alt="TierMux chat panel" width="420">
+</p>
+
+Activity Bar → **TierMux**, then type. Pick **Ask · Plan · Agent** at the bottom left; leave the
+model on **Auto** to let routing choose, or click it to pin one. `/` runs a skill, `@` attaches a
+file, the paperclip adds an image. The footer counts your lifetime tokens and what those turns
+would have cost on a paid API.
+
+Everything else lives behind the **⚙ gear** — six tabs, all optional:
+
+| | |
+|---|---|
+| <img src="media/screenshots/providers.png" width="300"> | **Providers** — flip a provider on, paste a free key (some are `keyless`), and tick only the models you want in the chain. Enabled ones sort to the top; the `T V R` badges mean tools, vision, reasoning. Skip this entirely and the keyless four still answer. |
+| <img src="media/screenshots/custom-endpoint.png" width="300"> | **Custom endpoints** (bottom of Providers) — name + base URL + type (OpenAI-style for Ollama / LM Studio / vLLM / LiteLLM, *newer* for the Responses API, Anthropic-style for Claude-compatible), key optional → **Save & fetch models**. Local servers get probed for their real context window. |
+| <img src="media/screenshots/mcp.png" width="300"> | **MCP** — **+ Add server** or edit `settings.json`; every tool the server exposes becomes an agent tool. The registry below installs common servers (filesystem, GitHub, Fetch, Puppeteer…) in one click. |
+| <img src="media/screenshots/skills.png" width="300"> | **Skills** — a skill is a saved prompt you run as `/name`. Install from the catalog (or point `tiermux.skillRegistryUrl` at your own); they land in `.agents/skills/`, shared with other agent tools. Read the source before installing — a skill runs with the agent's permissions. |
+| <img src="media/screenshots/usage.png" width="300"> | **Usage** — lifetime tokens, request count and estimated money saved, broken down per model. Tracked locally, cleared only when you ask. Useful for spotting which free tier you actually lean on. |
+| <img src="media/screenshots/settings.png" width="300"> | **Others** — the utility model (chat titles, commit messages), the inline-completion model, **Require write confirmation** (diff approval before any edit), and **Command approval mode** (`always` / safe allowlist / off). Turn on **Diagnostic trace** when a turn feels slow. |
+
 ## Why people use it
 
 | | |
