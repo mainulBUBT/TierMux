@@ -11,8 +11,8 @@ How TierMux picks a model for each turn, what it does when one fails, and how to
  message ─▶ CLASSIFY ─▶ BUILD CHAIN ─▶ SEND ─▶ FAIL-OVER ─▶ COOL DOWN
              │              │            │         │            │
         question? edit?  pinned →     stream    availability   per-model
-        agent run? image task table →  to the   AND quality    30s → 2m
-                       enabled tail   provider   failures      backoff
+        agent run? image tier → quota  to the   AND quality    30s → 2m
+                       → feedback     provider   failures      backoff
 ```
 
 TierMux runs **two** selection paths, on purpose.
@@ -25,11 +25,17 @@ Deliberately readable: you can look at the table and know which model answers wh
    `coding`, `debug`, `plan`, `longContext`, `vision`. Regex-first (English **and**
    romanized Bengali), with an optional cheap-LLM double-check on low-confidence turns
    (`tiermux.classifierModel`).
-2. **Build the candidate chain**, in this order:
-   - your **pinned** model, if you picked one from the model dropdown;
-   - the **task table** entry for that kind (curated best-first per kind);
-   - **every other enabled, usable model**, sorted by the catalog's measured
-     **intelligence rank** (best first), unranked models keeping your settings order.
+2. **Build the candidate chain**: your **pinned** model runs alone if you picked one;
+   otherwise **every enabled, usable model**, ordered by
+   - speed class (a speed-5 model never leads);
+   - **tier** = the catalog's intelligence rank, one tier down once your net feedback on
+     that kind reaches −3 (three 👎, or six failed verifies);
+   - **kind fit** — `longContext` prefers a ≥128K window, `plan` prefers a reasoning model;
+     `vision` *filters* to models that take image input;
+   - **quota left** (`headroom`) — the peer with the most rpm/rpd remaining leads, so every
+     provider's free allowance is consumed in proportion;
+   - net 👍/👎, then gateway speed; exact ties rotate per turn.
+   There are no per-kind model tables: the top tier with quota left serves every kind.
 3. **Filter** as the chain is built. A candidate is dropped — with the reason recorded for
    the popover — when it is: excluded for this retry, on a switched-off provider, missing
    a stored key, inside a failure cooldown, not enabled, or marked
@@ -95,13 +101,13 @@ the selection for that turn — the winner *and* why every other candidate lost.
 Why groq::openai/gpt-oss-120b?
  ✓ groq::openai/gpt-oss-120b
    Score 1.00 · Capability 1.00 · Runtime ×1.00 · Confidence 0%
-   task table (coding) — serves this turn
+   rank 1 · quota 98% left — serves this turn
  · cerebras::gpt-oss-120b
    Score 1.00 · Capability 1.00 · Runtime ×1.00 · Confidence 0%
-   task table (coding) — failover #1
+   rank 1 · quota 50% left — failover #1
  · google::gemini-2.5-flash
    Score 0.80 · Capability 0.80 · Runtime ×1.00 · Confidence 0%
-   enabled tail · intelligence rank 2 — failover #2
+   rank 3 · quota 100% left — failover #2
  · openrouter::…
    Score 0.00 …
    no API key stored for this platform
@@ -120,8 +126,8 @@ Hovering any number shows that same explanation inline.
 
 > **Reading the numbers honestly:** **Runtime is always a neutral 1.0 and Confidence always 0.**
 > Nothing keeps a learned health multiplier any more — the scoring Router that produced real
-> values for them was retired (see §B) — so ordering comes from the task table and intelligence
-> rank, and the `reason` line is the only real signal. The two columns are kept in the payload
+> values for them was retired (see §B) — so ordering comes from tier, quota headroom and
+> feedback, and the `reason` line is the only real signal. The two columns are kept in the payload
 > (`src/router/picker.ts`) so the card's layout and the message contract stay stable.
 
 **The reason line** is where the actual answer lives:
@@ -129,8 +135,9 @@ Hovering any number shows that same explanation inline.
 | Reason | What happened |
 |---|---|
 | `pinned by you — serves this turn` | you chose it in the model dropdown |
-| `task table (coding) — serves this turn` | the curated first choice for this task kind |
-| `enabled tail · intelligence rank 2 — failover #2` | reached by rank after the table |
+| `rank 1 · quota 98% left — serves this turn` | top tier, most quota remaining among its peers |
+| `rank 1 (demoted by feedback) · quota 70% left — failover #3` | your 👎 on this kind dropped it a tier |
+| `no image input (an image is attached)` | filtered out of an image turn |
 | `not enabled in Manage Models & Keys` | its checkbox is off |
 | `provider switched off in Manage Models & Keys` | the provider switch is off |
 | `no API key stored for this platform` | keyed provider, no key |

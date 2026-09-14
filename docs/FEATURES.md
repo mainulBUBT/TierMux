@@ -11,7 +11,7 @@ Three modes, picked in the composer. **Ask** is the default.
 
 | Mode | What happens |
 |---|---|
-| **Ask** | Q&A only — streams answers, strictly read-only tools, touches nothing. |
+| **Ask** | Q&A only — a question about the workspace is investigated with read-only tools (read, grep, safe shell); a general question is answered directly from the model's knowledge. Touches nothing. |
 | **Plan** | Reads and searches read-only. `runCommand` is offered but every call is gated by an ask. Mutating tools are absent *and* policy-denied. The model ends the turn by calling `exitPlanMode` with a structured plan; you approve or reject the card. |
 | **Agent** | Full tool set — diffs (you approve), terminal (you approve), checkpoints, revert. |
 
@@ -80,11 +80,13 @@ from the card and the agent starts with the plan in front of it.
 
 **Let the verify gate work.** With `agent.verifyCommand: auto` the project's own test /
 typecheck / build runs after every turn that edits files, and a failure goes back to the agent
-for `agent.verifyFixRounds` fixes. Set a specific command if auto-detection picks the wrong one.
+for `agent.verifyFixRounds` fixes. Set a specific command if auto-detection picks the wrong one. The command is also baselined before the turn's first edit: a failure that was already there (a missing autoload file, an unreachable test DB) is reported as **Not verifiable** with the offending line, never as the change's failure, and spends no fix round.
 
-**Keep the prompt small.** `agent.toolCompaction: light` (default) stubs old tool output between
-steps; `agent.autoCondenseTokenCap` (default 32 000) summarizes older turns so every request
-stays bounded on gateways that don't cache prompts. Start a new chat when the topic changes.
+**Keep the prompt small.** `agent.toolCompaction: light` (default) keeps up to ~40k tokens of
+tool output verbatim and, past that, stubs the oldest results first until the transcript fits
+again (a three-result memory made a 45-file question take 198 steps); `agent.autoCondenseTokenCap`
+(default 32 000) summarizes older turns so every request stays bounded on gateways that don't
+cache prompts. Start a new chat when the topic changes.
 
 **Use Continue, not "continue".** A turn that stops at the step cap or gets stuck offers a
 Continue button with the full transcript in memory. Typing "continue" starts a new turn that

@@ -7,15 +7,15 @@ import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
 import type { UsageStore } from './config/usageStore';
 import type { Mode } from './shared/types';
-import { runAgentStream, runPlanStream, runAskStream, type AgentResult, type AgentOpts, type AgentMode, type ToolEvent } from './agent/agent';
+import { runAgentStream, runPlanStream, runAskStream, type AgentResult, type AgentOpts, type AgentMode, type ToolEvent, type SelectionRationaleInfo } from './agent/agent';
 import { findTextInWorkspace } from './context/textSearch';
-import { classifyTask } from './agent/routing';
+import { classifyTask, type TaskKind } from './agent/routing';
 
 import { PRODUCT_NAME } from './shared/branding';
 import { SETTINGS_META, defaultForSetting } from './settingsMeta';
 import { AllModelsFailedError } from './router/errors';
 import { routeOnceOrUndefined, utilityModelPreference } from './agent/core/routeOnce';
-import { peekTopModel } from './router/picker';
+import { peekTopModel, rationaleForServed, type SelectionRationale as PickerRationale } from './router/picker';
 import type { McpManager } from './mcp/mcpManager';
 import { CheckpointManager, type SerializedCheckpoint } from './edits/checkpoints';
 import { isDangerous } from './edits/commandClassify';
@@ -301,6 +301,8 @@ interface Session {
    *  persist it on the transcript entry (the (?) popover must survive a reload). Same
    *  keyed-by-requestId lifecycle as liveSteps: set while running, drained at turn end. */
   liveRationale: Map<string, SelectionRationale>;
+  /** The same, before display-name mapping — re-pointed at the served model when the turn ends. */
+  liveRationaleRaw: Map<string, SelectionRationaleInfo>;
   /** Models that actually produced tokens for each in-flight requestId, aggregated per model in
    *  first-seen order (an agent turn fires one usage event per STEP, mostly the same model, so
    *  the events are summed rather than listed). Merged into liveRationale.answered on every
@@ -533,6 +535,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       lastWindow: 0,
       liveSteps: new Map(),
       liveRationale: new Map(),
+      liveRationaleRaw: new Map(),
       liveAnswered: new Map(),
       commandBaselines: new Map(),
       toolStartTimes: new Map(),
@@ -579,6 +582,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       lastWindow: 0,
       liveSteps: new Map(),
       liveRationale: new Map(),
+      liveRationaleRaw: new Map(),
       liveAnswered: new Map(),
       commandBaselines: new Map(),
       toolStartTimes: new Map(),
@@ -2261,6 +2265,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       const displayText = todoNote ? `${replyText}${todoNote}` : replyText;
 
+      this.settleRationale(s, m.requestId, result);
       const persistedResult: AgentResult = displayText !== result.text ? { ...result, text: displayText } : result;
       this.persistAgentTurn(s, persistedResult);
       this.pushAssistantTurn(s, m.requestId, persistedResult, sentAt, usage);
@@ -2647,11 +2652,41 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Record a finished turn WITH what the live view showed (reasoning, steps, usage, duration) so
    *  a re-render can rebuild the disclosures. Drains the per-requestId step accumulator. */
+  /** Display-name form of a picker rationale. `entries` is the LAST chain (who was in line),
+   *  `answered` every model that has written tokens so far (who actually ran). */
+  private displayModelName(key: string): string {
+    const sep = key.indexOf('::');
+    const platformId = sep >= 0 ? key.slice(0, sep) : key;
+    const modelId = sep >= 0 ? key.slice(sep + 2) : '';
+    return `${displayNameForEntry({ platform: platformId, modelId }, this.deps)}/${modelId}`;
+  }
+
+  private displayRationale(s: Session, requestId: string, info: SelectionRationaleInfo): SelectionRationale {
+    return {
+      picked: info.picked ? this.displayModelName(info.picked) : undefined,
+      entries: info.entries.map((e) => ({ ...e, model: this.displayModelName(e.model) })),
+      answered: s.liveAnswered.get(requestId),
+    };
+  }
+
+  /** The footer names `result.model`, so the popover's ✓ must name it too. They drifted when the
+   *  serving model changed mid-turn without a fresh chain (2026-09-14: footer OrcaRouter, popover
+   *  ✓ Vyce) — settle both from the one fact the engine reports before anything is persisted. */
+  private settleRationale(s: Session, requestId: string, result: AgentResult): void {
+    const raw = s.liveRationaleRaw.get(requestId);
+    if (!raw || !result.platform || !result.model) return;
+    const pickerShape: PickerRationale = { ...raw, taskKind: raw.taskKind as TaskKind };
+    const display = this.displayRationale(s, requestId, rationaleForServed(pickerShape, result.platform, result.model));
+    s.liveRationale.set(requestId, display);
+    this.post({ type: 'selectionRationale', sessionId: s.id, requestId, taskKind: s.liveTaskKind ?? raw.taskKind, ...display });
+  }
+
   private pushAssistantTurn(s: Session, requestId: string, result: AgentResult, sentAt: number, usage?: { promptTokens: number; completionTokens: number; reasoningTokens?: number; totalTokens: number }): void {
     const steps = s.liveSteps.get(requestId);
     s.liveSteps.delete(requestId);
     const rationale = s.liveRationale.get(requestId);
     s.liveRationale.delete(requestId);
+    s.liveRationaleRaw.delete(requestId);
     // `answered` already points at the live list; drop the accumulator now that the entry owns it.
     s.liveAnswered.delete(requestId);
     // WorkReportData is persisted ON the entry (canonical) and posted live; `.text` also carries
@@ -2763,12 +2798,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // assistantStart is posted at ENTER and assistantMessage + busy:false at finish.
     const live = (): boolean => this.isActiveRun(s, requestId);
     /** "platform::modelId" → the "Provider/model-id" display string the popover and footer use. */
-    const displayModelName = (key: string): string => {
-      const sep = key.indexOf('::');
-      const platformId = sep >= 0 ? key.slice(0, sep) : key;
-      const modelId = sep >= 0 ? key.slice(sep + 2) : '';
-      return `${displayNameForEntry({ platform: platformId, modelId }, this.deps)}/${modelId}`;
-    };
+    const displayModelName = (key: string): string => this.displayModelName(key);
 
     // Reasoning stream: ONE block per thinking burst (think→tool→think timeline). A tool call
     // settles the current burst with its duration and advances the segment id so the next delta
@@ -2983,15 +3013,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       onSelectionRationale: (info) => {
         if (!live()) { diagLog('chat.rationale', `requestId=${requestId} DROPPED — run no longer active`); return; }
-        const rationale: SelectionRationale = {
-          picked: info.picked ? displayModelName(info.picked) : undefined,
-          entries: info.entries.map((e) => ({ ...e, model: displayModelName(e.model) })),
-          // Carried across selections: `entries` is the LAST chain (who was in line), `answered`
-          // is every model that has written tokens so far (who actually ran) — the popover
-          // renders the two as separate sections.
-          answered: s.liveAnswered.get(requestId),
-        };
+        const rationale = this.displayRationale(s, requestId, info);
         s.liveTaskKind = info.taskKind;
+        s.liveRationaleRaw.set(requestId, info);
         s.liveRationale.set(requestId, rationale);
         diagLog('chat.rationale', `requestId=${requestId} entries=${rationale.entries.length} picked=${rationale.picked ?? '<none>'} → posted`);
         this.post({ type: 'selectionRationale', sessionId: s.id, requestId, taskKind: info.taskKind, ...rationale });

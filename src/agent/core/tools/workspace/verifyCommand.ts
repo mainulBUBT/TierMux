@@ -304,3 +304,47 @@ export async function runVerifyCommand(command: string): Promise<VerifyRun> {
     return { ok: null, output: e instanceof Error ? e.message : String(e) };
   }
 }
+
+/** Baseline of the verify command BEFORE a turn edits anything, so a failure that was already
+ *  there (a missing autoload file, an unreachable test DB) is not pinned on the turn's change
+ *  and burns no fix rounds — 2026-09-14: `php artisan test` could not even bootstrap and every
+ *  blade edit got "❌ Verification failed". One entry per root+command, dropped after a turn
+ *  that mutated files. */
+interface VerifyBaseline extends VerifyRun { startedAt: number }
+const baselines = new Map<string, VerifyBaseline>();
+const baselineRuns = new Map<string, Promise<VerifyBaseline>>();
+function baselineKey(command: string): string {
+  try { return `${effectiveRootUri().fsPath}::${command}`; } catch { return `?::${command}`; }
+}
+
+/** Start (or reuse) the baseline run; a cached or in-flight entry costs nothing. */
+export function ensureVerifyBaseline(command: string): void {
+  const key = baselineKey(command);
+  if (baselines.has(key) || baselineRuns.has(key)) return;
+  const startedAt = Date.now();
+  const run = runVerifyCommand(command)
+    .then((r) => { const b = { ...r, startedAt }; baselines.set(key, b); return b; })
+    .finally(() => baselineRuns.delete(key));
+  baselineRuns.set(key, run);
+}
+
+/** The baseline for `command`, awaiting an in-flight run. A run that STARTED after the turn's
+ *  first write measured the edited tree, so it is no baseline at all. */
+export async function verifyBaseline(command: string, firstWriteAt?: number): Promise<VerifyBaseline | undefined> {
+  const key = baselineKey(command);
+  const b = baselines.get(key) ?? await baselineRuns.get(key);
+  if (!b || (firstWriteAt !== undefined && b.startedAt >= firstWriteAt)) return undefined;
+  return b;
+}
+
+export function invalidateVerifyBaseline(command: string): void {
+  baselines.delete(baselineKey(command));
+}
+
+/** What identifies a failure: the first three lines that mention an error-ish word, else the
+ *  first three non-empty ones. Equal signatures = the command failed the same way. */
+export function failureSignature(output: string): string {
+  const lines = output.split('\n').map((l) => l.trim()).filter(Boolean);
+  const hits = lines.filter((l) => /\b(error|warning|fail|failed|fatal|exception|not found)\b/i.test(l));
+  return (hits.length ? hits : lines).slice(0, 3).join('\n');
+}

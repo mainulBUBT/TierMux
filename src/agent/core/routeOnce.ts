@@ -153,6 +153,6 @@ export function utilityModelPreference(): string | undefined {
     const v = vscode?.workspace?.getConfiguration?.('tiermux')?.get<string>('utilityModel', 'auto');
     return v && v !== 'auto' ? v : undefined;
   } catch {
-    return undefined; // headless (e2e) — the trivial task table is the default anyway
+    return undefined; // headless (e2e) — Auto is the default anyway
   }
 }

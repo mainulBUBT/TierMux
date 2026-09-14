@@ -59,7 +59,7 @@ chatViewProvider.ts → agent.ts → core/engine.ts (streamText) →
 │                                   │ AI SDK types stop here          │
 │  ┌────────────────────────────────▼─────────────────────────────┐  │
 │  │  Model picker (src/router/picker.ts) — AI-SDK-agnostic       │  │
-│  │  - task table → intelligence-rank tail, never a dead end     │  │
+│  │  - tier (rank) → quota headroom → feedback, never a dead end │  │
 │  │  - multi-provider failover with per-key rotation             │  │
 │  │  - per-platform + per-key rate-limit cooldown                │  │
 │  │  - tool-incompatible + 404-deprecated quarantine             │  │

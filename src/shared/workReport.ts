@@ -44,7 +44,9 @@ export interface WorkReportToolCount {
 export interface WorkReportData {
   /** Persisted in transcripts — readers switch on this for forward compatibility. */
   version: 1;
-  verifyOutcome: 'verified' | 'failed' | 'unverified' | 'changes-only';
+  verifyOutcome: 'verified' | 'failed' | 'unverified' | 'changes-only' | 'preexisting';
+  /** 'preexisting' only: the first line of the failure the command already had before the turn. */
+  baselineNote?: string;
   /** Whether a verify command existed for this workspace at all. false ⇒ "unverified" is a
    *  property of the PROJECT, so the UI stays silent. Older transcripts are treated as true. */
   verifyAvailable?: boolean;
@@ -73,6 +75,8 @@ export function renderLegacyMarkdown(report: WorkReportData): string {
   if (report.verifyOutcome === 'verified') {
     const rTxt = rounds ? ` (after ${rounds} fix round${rounds === 1 ? '' : 's'})` : '';
     lines.push(`**✅ Verified** — \`${report.verifyCmd}\` passed${rTxt}.`);
+  } else if (report.verifyOutcome === 'preexisting') {
+    lines.push(`_Tests couldn't run — \`${report.verifyCmd}\` was already failing before this change${report.baselineNote ? ` (${report.baselineNote})` : ''}. Say "fix what blocks it" to have that sorted first._`);
   } else if (report.verifyOutcome === 'failed') {
     const r = rounds || 1;
     // Agent-owns-the-recheck copy (2026-08-25): the loop already ran the fix rounds itself, so

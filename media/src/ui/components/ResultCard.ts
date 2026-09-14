@@ -14,6 +14,8 @@ import type { WorkReportData } from '../../../../src/shared/workReport';
 export interface ResultCardOptions {
   /** Click on a changed file → host opens checkpoint↔current diff. Absent ⇒ rows are inert. */
   onDiffFile?: (path: string) => void;
+  /** A one-click follow-up the card suggests (sent as the next user message). */
+  onSuggest?: (prompt: string) => void;
 }
 
 // ========== Helpers ==========
@@ -22,6 +24,7 @@ const OUTCOME_META = {
   verified: { icon: '✅', label: 'Verified', cls: 'rc-verified' },
   failed: { icon: '❌', label: 'Verification failed', cls: 'rc-failed' },
   unverified: { icon: '⚠️', label: 'Unverified', cls: 'rc-unverified' },
+  preexisting: { icon: '⚠️', label: 'Not verifiable', cls: 'rc-unverified' },
   'changes-only': { icon: '✅', label: 'Changes applied', cls: 'rc-verified' },
 } as const;
 
@@ -44,7 +47,7 @@ export function createResultCard(report: WorkReportData, opts?: ResultCardOption
   if (report.verifyOutcome === 'unverified' && report.verifyAvailable === false) return null;
 
   const meta = OUTCOME_META[report.verifyOutcome] ?? OUTCOME_META.unverified;
-  const quiet = report.verifyOutcome === 'unverified';
+  const quiet = report.verifyOutcome === 'unverified' || report.verifyOutcome === 'preexisting';
 
   const card = el('div', { class: `tm-result-card ${quiet ? 'rc-quiet' : meta.cls}` });
 
@@ -59,6 +62,16 @@ export function createResultCard(report: WorkReportData, opts?: ResultCardOption
       head.append(el('span', { class: 'rc-pill' }, `${report.fixRounds} fix round${report.fixRounds === 1 ? '' : 's'}`));
     }
     card.append(head);
+  } else if (report.verifyOutcome === 'preexisting') {
+    // The project's check was already failing before this turn touched anything, so it says
+    // nothing about the edit: one quiet line and the follow-up the user would type anyway.
+    const hint = el('div', { class: 'rc-hint' }, `Tests couldn't run — \`${report.verifyCmd ?? 'verify'}\` was already failing before this change${report.baselineNote ? `: ${report.baselineNote}` : ''}.`);
+    if (opts?.onSuggest) {
+      const fix = el('button', { class: 'rc-suggest', type: 'button' }, 'Fix what blocks it');
+      fix.addEventListener('click', () => opts.onSuggest?.(`\`${report.verifyCmd ?? 'the verify command'}\` fails before my change${report.baselineNote ? `: ${report.baselineNote}` : ''}. Find what blocks it, fix that, then run it again until it passes.`));
+      hint.append(' ', fix);
+    }
+    card.append(hint);
   } else {
     card.append(el('div', { class: 'rc-hint' }, 'Not tested this turn'));
   }

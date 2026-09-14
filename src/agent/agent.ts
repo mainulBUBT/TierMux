@@ -50,8 +50,10 @@ export interface AgentResult {
   auditOutcome?: 'verified' | 'incomplete';
   /** End-of-turn verify gate: 'passed' — the verify command exited 0 (possibly after fix
    *  rounds); 'failed' — non-zero even after `agent.verifyFixRounds`; 'unverified' — files were
-   *  mutated but no verify command produced a signal. Undefined — no mutation. */
-  verifyOutcome?: 'passed' | 'failed' | 'unverified';
+   *  mutated but no verify command produced a signal; 'preexisting' — it fails exactly as it
+   *  did before the turn touched anything, so it says nothing about the change. Undefined — no
+   *  mutation. */
+  verifyOutcome?: 'passed' | 'failed' | 'unverified' | 'preexisting';
   /** Structured end-of-turn report, emitted for turns that changed files; the host persists it
    *  and the webview renders the ResultCard from it. */
   workReport?: import('../shared/workReport').WorkReportData;

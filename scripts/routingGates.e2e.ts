@@ -3,7 +3,7 @@
  * counted as selectable because selectModel read getFallback() instead of enabledByPriority();
  * (2) all four candidates were ollama (five rank-1 entries), so one account-level 402 burned the
  * whole chain in ~4s. Run: npm run test:e2e:routing-gates */
-import { selectModel, setModelSources, noteModelFailure, canonicalModelId, __resetTaskRoundCounters } from '../src/router/picker';
+import { selectModel, setModelSources, noteModelFailure, canonicalModelId, __resetTaskRoundCounters, recordRequest, setQuotaStore } from '../src/router/picker';
 import { resolveCandidates, isFailoverWorthy } from '../src/agent/core/routerProvider';
 import { ProviderHttpError } from '../src/providers/base';
 import type { FallbackEntry } from '../src/shared/types';
@@ -230,6 +230,52 @@ console.log('— ranking is by MODEL, with the fastest gateway for a model leadi
   ok('the faster twin leads', order[0] === 'kilo::nvidia/nemotron-3-super-120b-a12b:free', order.join(' > '));
   ok('the slower twin keeps the MODEL rank and sorts ahead of the rank-3 model',
     order[1] === 'openrouter::nvidia/nemotron-3-super-120b-a12b:free' && order[2] === 'groq::other-model', order.join(' > '));
+}
+
+console.log('\n— the top tier with quota left serves; kind filters, feedback demotes —');
+{
+  __resetTaskRoundCounters();
+  setQuotaStore(undefined); // fresh rate windows
+  // Settings list the rank-3 models FIRST — the 2026-09-14 shape, where the curated tables
+  // headed every chain with gpt-oss / gemini-flash while rank-1 models waited in the tail.
+  const rows: Record<string, Record<string, unknown>> = {
+    'groq::gpt-oss': { intelligenceRank: 3, speedRank: 1, supportsTools: true, supportsVision: false, rpmLimit: 30, rpdLimit: 1000 },
+    'google::gemini-flash': { intelligenceRank: 3, speedRank: 2, supportsTools: true, supportsVision: true, rpmLimit: 15, rpdLimit: 1500 },
+    'nvidia::kimi': { intelligenceRank: 1, speedRank: 3, supportsTools: true, supportsVision: true, rpmLimit: 300, rpdLimit: 432000 },
+    'xkiro::qwen-coder': { intelligenceRank: 1, speedRank: 3, supportsTools: true, supportsVision: false, rpmLimit: 10, rpdLimit: 250 },
+  };
+  const votes = new Map<string, number>();
+  const src = makeSources([
+    entry('groq', 'gpt-oss', 0), entry('google', 'gemini-flash', 1), entry('nvidia', 'kimi', 2), entry('xkiro', 'qwen-coder', 3),
+  ], [], ['groq', 'google', 'nvidia', 'xkiro']);
+  const mutable = src as unknown as { catalog: unknown; stats: unknown };
+  mutable.catalog = { find: (p: string, m: string) => rows[`${p}::${m}`] };
+  mutable.stats = { score: (_k: string, p: string, m: string) => votes.get(`${p}::${m}`) ?? 0 };
+  setModelSources(src);
+  const order = async (kind: string) => { const sel = await selectModel([{ role: 'user', content: 'x' }], { taskKind: kind }); return [sel.model, ...sel.fallbackChain]; };
+
+  let o = await order('chat');
+  ok('rank 1 leads although settings list the rank-3 models first', o[0] === 'nvidia::kimi', o.join(' > '));
+  ok('both rank-1 models precede every rank-3 one', o.slice(0, 2).sort().join(',') === 'nvidia::kimi,xkiro::qwen-coder' && o[2] === 'groq::gpt-oss', o.join(' > '));
+
+  for (let i = 0; i < 5; i++) recordRequest('nvidia', 'kimi'); // 5 of 300 rpm → 98% left
+  for (let i = 0; i < 5; i++) recordRequest('xkiro', 'qwen-coder'); // 5 of 10 rpm → 50% left
+  o = await order('chat');
+  ok('the peer with more quota left leads', o[0] === 'nvidia::kimi' && o[1] === 'xkiro::qwen-coder', o.join(' > '));
+
+  const vis = await selectModel([{ role: 'user', content: 'x' }], { taskKind: 'vision' });
+  o = [vis.model, ...vis.fallbackChain];
+  ok('an image turn keeps only image-capable models', o.join(',') === 'nvidia::kimi,google::gemini-flash', o.join(','));
+  ok('the text-only ones are reported as skipped for that reason',
+    vis.rationale!.entries.some((e) => e.model === 'xkiro::qwen-coder' && /image input/.test(e.skip ?? '')));
+  ok('the head label names tier, quota and fit', vis.rationale!.entries[0].reason.startsWith('rank 1 · quota 98% left · image input'), vis.rationale!.entries[0].reason);
+
+  votes.set('nvidia::kimi', -3);
+  o = await order('chat');
+  ok('three 👎 drop a model one tier: behind its rank-1 peer', o[0] === 'xkiro::qwen-coder' && o[1] === 'nvidia::kimi', o.join(' > '));
+  ok('…but still ahead of rank 3', o.indexOf('nvidia::kimi') < o.indexOf('groq::gpt-oss'), o.join(' > '));
+  ok('and the label says so', (await selectModel([{ role: 'user', content: 'x' }], { taskKind: 'chat' })).rationale!.entries[1].reason.startsWith('rank 1 (demoted by feedback)'));
+  setQuotaStore(undefined);
 }
 
 console.log(bad === 0 ? '\nAll routing gates hold.' : `\n${bad} FAILED`);

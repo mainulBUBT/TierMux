@@ -1,6 +1,6 @@
 // Public router surface — `import { selectModel } from 'tiermux/router'`.
 
-export { selectModel, setModelSources, peekTopModel, findCatalogModel, recordOutcome, recordRequest, isInCooldown, setQuotaStore, TASK_ROUTING } from './picker';
+export { selectModel, setModelSources, peekTopModel, findCatalogModel, recordOutcome, recordRequest, isInCooldown, setQuotaStore } from './picker';
 export type { ModelSelection, ModelSources, SelectionRationale } from './picker';
 export { AllModelsFailedError, NoVisionModelError } from './errors';
 export { RateTracker } from './rateTracker';
