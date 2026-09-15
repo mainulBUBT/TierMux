@@ -174,7 +174,7 @@ The ones worth knowing (`Settings → Extensions → TierMux`, or `tiermux.*` in
 | `tiermux.catalog.url` | TierMux worker | where the model + provider catalog comes from |
 | `tiermux.models.autoEnableNew` | `true` | auto-enable models newly discovered in the catalog |
 | `tiermux.agent.autoCompactThreshold` | `0.8` | compact the conversation past this fraction of the window (`0` disables) |
-| `tiermux.agent.toolCompaction` | `light` | `light` keeps ≤40k tokens of tool output verbatim, then stubs oldest-first; `aggressive` keeps ≤16k and stubs smaller outputs |
+| `tiermux.agent.toolCompaction` | `light` | `light` = head+tail of large command output; `aggressive` reaches further |
 | `tiermux.agent.commandApproval` | `always` | how `runCommand` is gated |
 | `tiermux.agent.commandAllowlist` | `[]` | commands that skip the approval prompt |
 | `tiermux.utilityModel` | `auto` | model for chat titles and commit messages |

@@ -1,10 +1,9 @@
-// Model picker: every enabled model, ordered by catalog facts and live quota. Pin → speed class
-// → tier (intelligence rank, one tier down when feedback is clearly negative) → kind preference
-// (image input / big window / reasoning) → remaining quota (headroom) → 👍/👎 → gateway speed.
-// The curated per-kind tables that used to head the chain pinned rank-3 models ahead of 44
-// rank-1 free ones (2026-09-14); kind is now a filter on catalog facts, never a table. No
-// learned health scoring — a slow-model demotion was tried for a day in 2026-09 and removed;
-// do not re-add. Sources are injected at activation via setModelSources.
+// Model picker: task kind → candidate chain, plus per-model cooldown and declared rpm/rpd
+// windows. Ordering is readable: pin → task table → speed class → intelligence rank, with an
+// OPTIONAL user-feedback tiebreak (👍/👎 from ModelStatsStore) that picks the preferred model
+// among otherwise-equal peers. No learned health scoring, no hedging — a slow-model demotion
+// was tried for a day in 2026-09 and removed; do not re-add. Sources are injected at
+// activation via setModelSources; headless callers get keyless platforms only.
 
 import type { Catalog } from '../catalog/catalog';
 import type { SettingsStore } from '../config/settingsStore';
@@ -20,6 +19,20 @@ import { diagLog } from '../util/diag';
 /** Skip reason for a model whose provider the user switched off — recorded so no other reason
  *  can claim it, never reported (see the skipList filter). */
 const PROVIDER_OFF = 'provider switched off in Manage Models & Keys';
+
+/** platform::modelId → candidate chain per task kind. Ordered: best first. */
+export const TASK_ROUTING: Record<TaskKind, string[]> = {
+  // Every id here MUST exist in media/catalog.json; a renamed gateway id goes dead silently
+  // (11 of 13 were once dead), which is why the tail below is rank-sorted, not table-dependent.
+  coding: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::nemotron-3.5-lightning-free'],
+  debug: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
+  vision: ['google::gemini-2.5-flash'],
+  longContext: ['google::gemini-2.5-flash', 'groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free'],
+  plan: ['groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
+  trivial: ['cerebras::gemma-4-31b', 'groq::openai/gpt-oss-20b', 'opencode::mimo-v2.5-free'],
+  chat: ['groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::mimo-v2.5-free'],
+  agent: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::nemotron-3.5-lightning-free'],
+};
 
 /** One row of the "Why this model?" report — numeric fields mirror the old scoring Router's
  *  shape so the webview popover renders unchanged (it calls .toFixed on score/capability/
@@ -415,61 +428,69 @@ export async function selectModel(
       };
     }
   }
-  // Kind is a filter/preference on catalog facts: an image needs image input, a long input
-  // prefers a big window, a plan prefers a reasoning model. Nothing else about the kind
-  // changes who serves — the top tier with quota left serves everything.
-  const wantsVision = taskKind === 'vision';
-  const prefersBigContext = taskKind === 'longContext';
-  const prefersReasoning = taskKind === 'plan';
-  /** Net feedback at or below this drops a model one tier: three 👎 (or six failed verifies)
-   *  on a task kind, and the next tier's best leads it. */
-  const FEEDBACK_DEMOTE = -3;
-  interface Row { key: string; rank: number; tier: number; pref: number; headroom: number; vote: number; speed: number; vision: boolean }
-  let ranked: Row[] = [];
+  for (const key of TASK_ROUTING[taskKind] ?? TASK_ROUTING.chat) {
+    const [tPlatform, ...tRest] = key.split('::');
+    const tModelId = tRest.join('::');
+    // Dead-ID guard: a renamed/retired gateway model must say so in the rationale instead of
+    // silently contributing nothing while the turn falls into the settings-order tail.
+    if (tPlatform && tModelId && !sources.catalog.find(tPlatform, tModelId) && !skipReasons.has(key)) {
+      skip(key, 'routing table entry not in catalog (renamed or retired?)');
+    }
+    const picked = await pick(key, `task table (${taskKind})`);
+    if (picked && !chain.includes(picked)) chain.push(picked);
+  }
+  // ALWAYS pad the chain with the rest of the usable enabled models, best intelligence rank
+  // first (settings order let whichever model sat first serve every task — 2026-08-28,
+  // nemotron-3-ultra-free). Pinned models are exempt.
+  const ranked: Array<{ key: string; rank: number; speed: number; vote: number }> = [];
   const modelRank = rankByModel(enabled);
   for (const key of enabled) {
+    // Already chained (pin/table pick)? Skip BEFORE re-picking: pick() would overwrite the
+    // entry's original label ('pinned by you' / 'task table (chat)') with 'enabled model' and
+    // the "Why this model?" popover would lie about WHY it served (live repro 2026-08-28:
+    // table-picked opencode/hy3-free reported "enabled model — serves this turn").
     if (chain.includes(key)) continue;
     const picked = await pick(key, 'enabled model');
     if (!picked || chain.includes(picked)) continue;
     const platform = key.split('::')[0];
     const modelId = key.split('::').slice(1).join('::');
     const meta = sources.catalog.find(platform, modelId);
-    const rank = modelRank.get(canonicalModelId(modelId)) ?? meta?.intelligenceRank ?? Number.POSITIVE_INFINITY;
-    const vote = voteScore(taskKind, picked);
-    const prefOk = (prefersBigContext && (meta?.contextWindow ?? 0) >= 128_000) || (prefersReasoning && !!meta?.supportsReasoning);
     ranked.push({
-      key: picked, rank, vote,
-      tier: Number.isFinite(rank) && vote <= FEEDBACK_DEMOTE ? rank + 1 : rank,
-      pref: (prefersBigContext || prefersReasoning) && !prefOk ? 1 : 0,
-      headroom: rateTracker.headroom(platform, modelId, meta?.rpmLimit ?? null, meta?.rpdLimit ?? null),
+      key: picked,
+      rank: modelRank.get(canonicalModelId(modelId)) ?? meta?.intelligenceRank ?? Number.POSITIVE_INFINITY,
       speed: meta?.speedRank ?? 5,
-      vision: meta ? !!meta.supportsVision : true,
+      // Net 👍−👎 for this task kind — the tiebreak that lets feedback pick the preferred
+      // model among equal peers. Zero without a stats store or any votes.
+      vote: voteScore(taskKind, picked),
     });
   }
-  // An attached image needs a model that takes image input; with none enabled the text-only
-  // chain still serves (the provider's own error names the model) rather than an empty one.
-  if (wantsVision && ranked.some((r) => r.vision)) {
-    for (const r of ranked) if (!r.vision) skip(r.key, 'no image input (an image is attached)');
-    ranked = ranked.filter((r) => r.vision);
-  }
-  // A speedRank-5 row (397B-class, a minute of prefill on a free gateway) stays in the pool as
-  // a last resort but never leads (2026-09-04: a chat turn took ~5 minutes that way). Within a
-  // tier the model with the most quota left leads, so every provider's allowance is consumed
-  // in proportion and none drains while peers sit idle; feedback and gateway speed break ties.
+  // Tail order: speed class, then MODEL rank, then user feedback, then this row's speed (the
+  // fastest gateway for a model leads its slower twins) — all from the catalog. Feedback sits
+  // between rank and speed on purpose: a liked model leads its rank even if a peer is faster,
+  // and a disliked one sinks to the rank's end, but a vote can NEVER skip a higher rank. A
+  // speedRank-5 row (397B-class, a minute of prefill on a free gateway) stays in the pool as
+  // a last resort but is never rotated into the head (2026-09-04: a chat turn took ~5 minutes
+  // that way).
   const slowCapable = (e: { speed: number }): number => (e.speed >= 4 ? 1 : 0);
-  ranked.sort((a, b) => slowCapable(a) - slowCapable(b) || a.tier - b.tier || a.pref - b.pref || b.headroom - a.headroom || b.vote - a.vote || a.speed - b.speed);
-  // Peers equal on every key above (typically: no quota declared, so headroom is 1 for all)
-  // rotate by a per-kind counter so the NEXT turn leads with a different one — deterministic,
-  // no RNG.
+  ranked.sort((a, b) => slowCapable(a) - slowCapable(b) || a.rank - b.rank || b.vote - a.vote || a.speed - b.speed);
+  // Quota-spreading among peers: rotate the head of each equal-rank, equal-speed, equal-vote
+  // group so the NEXT turn leads with a different peer ("600 models, but it keeps using the
+  // same 1-2"). Deterministic per taskKind via a counter — no RNG. Vote equals are required
+  // for a peer group, otherwise rotating would scramble the feedback order.
   {
     const counter = nextTaskRound(taskKind);
-    const same = (a: Row, b: Row) => a.tier === b.tier && a.pref === b.pref && a.headroom === b.headroom && a.vote === b.vote && a.speed === b.speed;
     let i = 0;
     while (i < ranked.length) {
+      const groupRank = ranked[i].rank;
+      const groupSpeed = ranked[i].speed;
+      const groupVote = ranked[i].vote;
       let j = i;
-      while (j < ranked.length && same(ranked[i], ranked[j])) j++;
-      if (j - i > 1 && Number.isFinite(ranked[i].tier)) {
-        const offset = counter % (j - i);
+      // Peers = same model rank, same speed class AND same vote score, so rotation never
+      // lifts a slower gateway above a faster one of the same quality, nor a disliked model
+      // back above a liked one.
+      while (j < ranked.length && ranked[j].rank === groupRank && ranked[j].speed === groupSpeed && ranked[j].vote === groupVote) j++;
+      if (j - i > 1 && Number.isFinite(groupRank)) {
+        const offset = counter % (j - i);          // 0..(groupSize-1)
         const rotated = [...ranked.slice(i, j).slice(offset), ...ranked.slice(i, j).slice(0, offset)];
         ranked.splice(i, j - i, ...rotated);
       }
@@ -477,9 +498,7 @@ export async function selectModel(
     }
   }
   for (const r of ranked) {
-    const tier = Number.isFinite(r.rank) ? `rank ${r.rank}${r.tier !== r.rank ? ' (demoted by feedback)' : ''}` : 'unranked';
-    const fit = `${wantsVision ? ' · image input' : ''}${prefersBigContext && r.pref === 0 ? ' · big window' : ''}${prefersReasoning && r.pref === 0 ? ' · reasoning' : ''}`;
-    pickLabels.set(r.key, `${tier} · quota ${Math.round(r.headroom * 100)}% left${fit}`);
+    if (Number.isFinite(r.rank)) pickLabels.set(r.key, `enabled tail · intelligence rank ${r.rank}`);
     chain.push(r.key);
   }
   if (chain.length === 0) return keylessFallback();

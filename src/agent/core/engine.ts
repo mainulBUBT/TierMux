@@ -19,7 +19,7 @@ import { runSubagent } from './subagent';
 import { getMcpManager } from './tools/mcp/manager';
 import { makeRepairViaModelSelfCorrection } from './repair';
 import { compactIfNeeded, ageToolOutputs } from './compact';
-import { resolveVerifyCommand, runVerifyCommand, ensureVerifyBaseline, verifyBaseline, invalidateVerifyBaseline, failureSignature } from './tools/workspace/verifyCommand';
+import { resolveVerifyCommand, runVerifyCommand } from './tools/workspace/verifyCommand';
 import { resolvePolicy, policyFromSettings } from '../../permissions/policy';
 import { recordOutcome, findCatalogModel } from '../../router/picker';
 import { resolveExecutionProfile } from '../executionProfile';
@@ -41,11 +41,6 @@ const FALLBACK_PROFILE = resolveExecutionProfile(undefined);
 const COORDINATION_TOOLS = ['todoWrite'];
 /** At/below this window the schema tax stops being affordable. */
 const SMALL_WINDOW_MAX = 16_384;
-/** Ceilings on the tool-output kept verbatim per step (tokens). Free gateways re-read the whole
- *  transcript every step, so the keep is bounded even on a 262k model; but keeping only three
- *  results made a 45-file question take 198 steps (2026-09-14) — round trips cost more than prefill. */
-const AGE_KEEP_LIGHT = 40_000;
-const AGE_KEEP_AGGRESSIVE = 16_000;
 
 /** UI-facing copy of a tool's result (ToolEvent.detail) — the tool card's "View output" body
  *  and the crash-recovery snapshot both read it. Capped separately from what the model sees:
@@ -289,20 +284,12 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   /** The task list as it stands: inherited on a Continue, replaced by each todoWrite. Drives
    *  the audit gate and the caller's remaining-items note. */
   let lastTodos: TodoItem[] | undefined = opts.todos;
-  // The verify command's baseline starts now, before any edit, so the gate can tell a failure
-  // the turn caused from one that was already there (see ensureVerifyBaseline).
-  let firstWriteAt: number | undefined;
-  if (opts.mode === 'agent') {
-    let cmd: string | undefined;
-    try { cmd = resolveVerifyCommand(); } catch { /* no workspace */ }
-    if (cmd) ensureVerifyBaseline(cmd);
-  }
   const tools: ToolSet = dedupeReads(buildV3ToolSet(opts.mode, {
     abortSignal: opts.abortSignal,
     sessionId: opts.sessionId,
     requestId: opts.requestId,
     onTodos: (todos) => { lastTodos = todos; opts.onTodos(todos); },
-    onBeforeWrite: (uri, before) => { firstWriteAt ??= Date.now(); opts.onBeforeWrite?.(uri, before); },
+    onBeforeWrite: opts.onBeforeWrite,
     onAskUser: opts.onAskUser,
     onPlanProposed: (plan) => { proposedPlan = plan; },
   }) as ToolSet, (sig, count) => {
@@ -431,17 +418,13 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           ? Object.keys(tools).filter((t) => !COORDINATION_TOOLS.includes(t))
           : undefined;
         const forcePlan = forcePlanToolOnNextStep && stepNumber === 0;
-        // Age FIRST, then compact against the aged transcript. tiermux.agent.toolCompaction:
-        // 'off'; 'light' keeps up to half the prune target (≤40k tokens) of tool output
-        // verbatim and stubs ≥2,000-char outputs past that; 'aggressive' a quarter (≤16k) and
-        // ≥800 chars. Unknown values → light.
+        // Age FIRST (every step, no budget needed), then compact against the aged transcript.
+        // tiermux.agent.toolCompaction sets only the aging threshold: 'off', 'light' (2,000
+        // chars), 'aggressive' (800). Unknown values → light.
         const compactionMode = opts.toolCompaction ?? 'light';
-        const keepTokens = compactionMode === 'aggressive'
-          ? Math.min(Math.floor(profile.pruneTarget * 0.25), AGE_KEEP_AGGRESSIVE)
-          : Math.min(Math.floor(profile.pruneTarget * 0.5), AGE_KEEP_LIGHT);
         const aging = compactionMode === 'off'
           ? { stubbedChars: 0 as number, messages: undefined as ModelMessage[] | undefined }
-          : ageToolOutputs(messages, compactionMode === 'aggressive' ? 800 : 2_000, keepTokens);
+          : ageToolOutputs(messages, compactionMode === 'aggressive' ? 800 : 2_000);
         if (aging.stubbedChars > 0) {
           diagLog('engine.ageToolOutputs', `${aging.stubbedChars.toLocaleString()} chars of earlier tool output elided before step ${stepNumber}`);
         }
@@ -763,8 +746,6 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let verifyCmd: string | undefined;
   let verifyAvailable = false;
   let fixRounds = 0;
-  /** Set when the post-turn failure matches the pre-turn baseline: reported, never "fixed". */
-  let baselineNote: string | undefined;
   const mutated = changedFilesFrom(toChatMessages(outcome.responseMessages));
   if (opts.mode === 'agent' && mutated.length > 0 && !opts.abortSignal?.aborted && !stuckSignature) {
     verifyCmd = resolveVerifyCommand();
@@ -778,17 +759,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       const maxFixRounds = Math.max(0, opts.verifyFixRounds ?? DEFAULT_VERIFY_FIX_ROUNDS);
       let run = await runVerifyCommand(verifyCmd);
       diagLog('engine.verify', `\`${verifyCmd}\` → ${run.ok === null ? 'could not run' : run.ok ? 'passed' : 'FAILED'}`);
-      if (run.ok === false) {
-        const base = await verifyBaseline(verifyCmd, firstWriteAt);
-        const sig = failureSignature(run.output);
-        // A failure that names a changed file is the change's, whatever the baseline said.
-        const namesChange = mutated.some((f) => sig.includes(f.path.split('/').pop() ?? f.path));
-        if (base?.ok === false && failureSignature(base.output) === sig && !namesChange) {
-          baselineNote = sig.split('\n')[0] || 'failed the same way before this change';
-          diagLog('engine.verify', `failure matches the pre-turn baseline — not the change's, no fix round`);
-        }
-      }
-      while (run.ok === false && !baselineNote && fixRounds < maxFixRounds && !opts.abortSignal?.aborted) {
+      while (run.ok === false && fixRounds < maxFixRounds && !opts.abortSignal?.aborted) {
         fixRounds++;
         diagLog('engine.verifyFix', `round ${fixRounds}/${maxFixRounds} — feeding the failure back`);
         const beforeFix = outcome.text;
@@ -800,7 +771,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
               role: 'user',
               content: `The verify command \`${verifyCmd}\` failed after your changes. If the failure is caused by your change, fix it, then stop — `
                 + 'it is re-run automatically. If it is unrelated (a missing service, environment, or a test that fails without your change), '
-                + `say so in one line and stop — unless the user asked this turn for the tests to pass, then fix what blocks them. Do not revert your work. Do not re-run the command yourself.\n\nOutput:\n${run.output.slice(0, 6_000)}`,
+                + `say so in one line and stop — do not revert your work. Do not re-run the command yourself.\n\nOutput:\n${run.output.slice(0, 6_000)}`,
             },
           ]).consumeStream({ onError: passError('verifyFix') });
         } catch {
@@ -810,8 +781,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
         run = await runVerifyCommand(verifyCmd);
         diagLog('engine.verify', `after fix round ${fixRounds}: ${run.ok === null ? 'could not run' : run.ok ? 'passed' : 'still failing'}`);
       }
-      verifyOutcome = run.ok === true ? 'passed' : run.ok === false ? (baselineNote ? 'preexisting' : 'failed') : 'unverified';
-      invalidateVerifyBaseline(verifyCmd); // the tree changed — the next agent turn re-measures
+      verifyOutcome = run.ok === true ? 'passed' : run.ok === false ? 'failed' : 'unverified';
     }
   }
 
@@ -869,10 +839,8 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     // command at all, 'unverified' when one exists but produced no signal.
     verifyOutcome: verifyOutcome === 'passed' ? 'verified' as const
       : verifyOutcome === 'failed' ? 'failed' as const
-      : verifyOutcome === 'preexisting' ? 'preexisting' as const
       : verifyAvailable ? 'unverified' as const : 'changes-only' as const,
     verifyAvailable,
-    ...(baselineNote ? { baselineNote } : {}),
     ...(verifyCmd ? { verifyCmd } : {}),
     fixRounds,
     ...(auditOutcome ? { auditOutcome } : {}),

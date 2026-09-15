@@ -39,6 +39,7 @@ export {
   recordRequest,
   isInCooldown,
   setQuotaStore,
+  TASK_ROUTING,
 } from './router/picker';
 export type { ModelSelection, ModelSources, SelectionRationale } from './router/picker';
 export { AllModelsFailedError, NoVisionModelError } from './router/errors';

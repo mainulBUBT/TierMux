@@ -70,11 +70,9 @@ Everything else lives behind the **⚙ gear** — six tabs, all optional:
 ## How a turn is routed
 
 Your message is classified (chat · coding · debug · plan · agent · vision — regex, no model
-call); the kind only filters (an image turn needs image input, a plan prefers a reasoning
-model). Then a chain is built: your pinned model if any, else every enabled model ordered by
-intelligence tier, then **quota left** (the peer with the most rpm/rpd remaining leads, so
-every free allowance is consumed in proportion), then your 👍/👎 — **one model per provider
-first**, so the chain spans providers instead of burning one provider's whole list.
+call), then a chain is built: your pinned model if any, else the task table's pick, then
+every enabled model strongest-first — **one model per provider first**, so the chain spans
+providers instead of burning one provider's whole list.
 
 | the provider did this | TierMux does this |
 |---|---|
@@ -90,13 +88,13 @@ Details: [Routing](docs/ROUTING.md).
 ## Providers
 
 <!-- catalog:start -->
-**552 models** across **37 providers**, and the catalog updates itself —
+**374 models** across **34 providers**, and the catalog updates itself —
 new free models and whole new providers appear without an extension update.
 
 | | |
 |---|---|
-| **Keyless — zero setup** |  |
-| **With a free API key** | Agnes AI · Aion Labs · Api.Airforce · BAILU AI · Cerebras · ChatAnywhere · Cloudflare Workers AI · Cohere · DreamPrompting · Experiential Labs · Google AI Studio · Groq · Kenari · Kilo Gateway · LLM Gateway · LLM7 · Mistral · ModelScope · Nara Router · NVIDIA NIM · Ollama Cloud · OpenAdapter · OpenCode Zen · OpenRouter · OrcaRouter · OVH AI Endpoints · Pollinations · Poolside · Requesty · Router9 · SambaNova · Token Router · unorouter · Vyce AI · xKiro · ZenMux · Zhipu AI |
+| **Keyless — zero setup** | Kilo Gateway · OpenCode Zen · OVH AI Endpoints · Pollinations |
+| **With a free API key** | Agnes AI · Aion Labs · Api.Airforce · BAILU AI · Cerebras · ChatAnywhere · Cloudflare Workers AI · Cohere · Experiential Labs · Google AI Studio · Groq · Kenari · LLM7 · Mistral · ModelScope · Nara Router · NVIDIA NIM · Ollama Cloud · OpenAdapter · OpenRouter · OrcaRouter · Poolside · Requesty · Router9 · SambaNova · Token Router · xKiro · Zhipu AI |
 | **Your own** | any OpenAI-compatible URL — vLLM, LiteLLM, LM Studio, Ollama, llama.cpp, Azure OpenAI |
 <!-- catalog:end -->
 

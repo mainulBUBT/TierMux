@@ -5,7 +5,7 @@
  * idempotent across steps; user/assistant text is never touched.
  * Run: npm run test:e2e:tool-output-aging */
 import type { ModelMessage } from 'ai';
-import { ageToolOutputs, estimateTokens } from '../src/agent/core/compact';
+import { ageToolOutputs } from '../src/agent/core/compact';
 
 let bad = 0;
 const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? `   (${d})` : ''}`); if (!c) bad++; };
@@ -126,32 +126,6 @@ const call = (id: string, input: Record<string, unknown> = { path: `src/f${id}.t
 {
   const r = ageToolOutputs([{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }] as ModelMessage[]);
   ok('pure chat untouched', r.stubbedChars === 0 && r.messages === undefined);
-}
-
-// ── budget: nothing ages while the transcript fits; past the budget the OLDEST go first, only
-// until it fits again (2026-09-14: three-result memory → 198 steps, one file read eight times) ──
-{
-  const messages: ModelMessage[] = [
-    { role: 'user', content: 'explore' },
-    call('b1'), result('b1', 'a'.repeat(30_000)),
-    call('b2'), result('b2', 'b'.repeat(30_000)),
-    call('b3'), result('b3', 'c'.repeat(30_000)),
-    call('b4'), result('b4', 'd'.repeat(30_000)),
-    call('b5'), result('b5', 'e'.repeat(30_000)),
-    call('b6'), result('b6', 'f'.repeat(30_000)),
-  ] as unknown as ModelMessage[];
-  const total = estimateTokens(messages); // ≈ 55k
-  const roomy = ageToolOutputs(messages, 2_000, total + 1_000);
-  ok('under the keep budget nothing is aged, however many steps', roomy.stubbedChars === 0 && roomy.messages === undefined, `${roomy.stubbedChars}`);
-  // Budget = everything minus ~1.5 results: only the oldest two must go, the rest stay.
-  const tight = ageToolOutputs(messages, 2_000, total - 14_000);
-  const out = tight.messages!;
-  ok('past the budget the oldest output goes first', (out[2] as any).content[0].output.value.includes('elided'));
-  ok('…then the next oldest', (out[4] as any).content[0].output.value.includes('elided'));
-  ok('and aging STOPS once the transcript fits again — b3 stays verbatim', (out[6] as any).content[0].output.value === 'c'.repeat(30_000));
-  ok('the recent window is still untouched', (out[12] as any).content[0].output.value === 'f'.repeat(30_000));
-  ok('a re-read of an aged file is what re-fills it — nothing else is re-sent', tight.stubbedChars === 60_000, `${tight.stubbedChars}`);
-  ok('no budget = the pre-budget behaviour (everything outside the recent window)', ageToolOutputs(messages).stubbedChars === 90_000, `${ageToolOutputs(messages).stubbedChars}`);
 }
 
 console.log(bad === 0 ? '\nALL PASS' : `\n${bad} FAILURES`);

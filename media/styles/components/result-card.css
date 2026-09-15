@@ -61,9 +61,3 @@
   font-size: 11.5px;
   color: var(--vscode-descriptionForeground, var(--vscode-foreground));
 }
-
-.tm-result-card .rc-suggest {
-  background: none; border: none; padding: 0; margin: 0;
-  color: var(--vscode-textLink-foreground); cursor: pointer; font: inherit; text-decoration: underline;
-}
-.tm-result-card .rc-suggest:hover { color: var(--vscode-textLink-activeForeground); }

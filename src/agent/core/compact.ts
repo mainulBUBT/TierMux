@@ -57,14 +57,10 @@ export function compactIfNeeded(
   return { messages: pruneAggressive(gentle) };
 }
 
-// ── Tool-output aging — every step, under a KEEP budget. compactIfNeeded fires only at 80% of
+// ── Tool-output aging — every step, budget-independent. compactIfNeeded fires only at 80% of
 // the window, so a big-window model re-sent every 30k readFile result on each of 15–25 round
-// trips (free gateways do not prompt-cache; 10–17s TTFT repros). Aging with no budget went the
-// other way: on a 262k model it kept three tool results and stubbed the rest every step, so a
-// 45-file question took 198 steps, re-read one file eight times and sent 891k tokens
-// (2026-09-14). Now nothing ages while the transcript fits `keepTokens`; past it the OLDEST
-// outputs go first, only until it fits again. Stubs name the tool + input and say to re-run
-// it. Errors and short outputs stay verbatim.
+// trips (free gateways do not prompt-cache; 10–17s TTFT repros). Stubs name the tool + input
+// and say to re-run it. Errors and short outputs stay verbatim.
 
 const AGE_MIN_CHARS = 2_000;
 
@@ -119,10 +115,7 @@ export interface AgeToolOutputsResult {
   stubbedChars: number;
 }
 
-/** @param keepTokens transcript size (estimateTokens) under which nothing is aged; past it,
- *  oldest outputs are stubbed only until the estimate is back under. Omitted = age everything
- *  outside the recent window (the pre-budget behaviour, kept for small windows and tests). */
-export function ageToolOutputs(messages: ModelMessage[], minChars = AGE_MIN_CHARS, keepTokens?: number): AgeToolOutputsResult {
+export function ageToolOutputs(messages: ModelMessage[], minChars = AGE_MIN_CHARS): AgeToolOutputsResult {
   // The most recent KEEP_RECENT_TOOL_MESSAGES tool messages are the steps the model is still
   // working from — kept verbatim, parts and all. Everything before the oldest of them is fair
   // game. Walking backwards means the boundary is the OLDEST kept message's index.
@@ -132,22 +125,19 @@ export function ageToolOutputs(messages: ModelMessage[], minChars = AGE_MIN_CHAR
   }
   const keepFrom = recent.length ? recent[recent.length - 1] : -1;
   if (keepFrom <= 0) return { stubbedChars: 0 };
-  let excess = keepTokens && keepTokens > 0 ? estimateTokens(messages) - keepTokens : Number.POSITIVE_INFINITY;
-  if (excess <= 0) return { stubbedChars: 0 };
 
   const inputById = toolCallInputs(messages);
   let stubbedChars = 0;
   let changed = false;
   const out = messages.map((m, i) => {
-    if (i >= keepFrom || m.role !== 'tool' || !Array.isArray(m.content) || excess <= 0) return m;
+    if (i >= keepFrom || m.role !== 'tool' || !Array.isArray(m.content)) return m;
     let touched = false;
     const content = (m.content as Array<Record<string, unknown>>).map((part) => {
-      if (part.type !== 'tool-result' || excess <= 0) return part;
+      if (part.type !== 'tool-result') return part;
       const text = ageOutputText(part.output);
       if (text == null || text.length < minChars) return part;
       changed = true;
       stubbedChars += text.length;
-      excess -= estimateTextTokens(text);
       touched = true;
       return {
         ...part,

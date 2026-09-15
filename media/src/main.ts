@@ -1054,20 +1054,6 @@ import { handleToolStatus } from './handlers/toolStatus';
   // it chosen" in one glance: sparkle = smart Auto pick, chip = pinned by you. Label =
   // the PRIMARY serving model (first to write tokens), extras folded into a "+N" count
   // inside the same pill. Click opens showRationalePopover anchored on the chip.
-  /** The model the chip names: the entry the host marked as having served (the popover's ✓),
-   *  then `picked`, then the host's own footer label, then whoever wrote tokens, and only
-   *  then the chain head. The chain head is who was TRIED first — naming it after a failover
-   *  put "OrcaRouter" in the footer under a popover that said "✓ Vyce" (2026-09-14). */
-  function servedPrimary(rationale, fallback) {
-    const entries = (rationale && rationale.entries) || [];
-    const sel = entries.find((e) => e && e.selected && !e.skip);
-    if (sel) return sel.model;
-    if (rationale && rationale.picked) return rationale.picked;
-    if (fallback) return fallback;
-    const answered = ((rationale && rationale.answered) || []).filter((a) => a && (a.inputTokens || a.outputTokens));
-    if (answered.length) return answered[0].model;
-    return entries.length ? entries[0].model : '';
-  }
   function makeServedChip(modelText, rationale) {
     const text = modelText || '';
     const sep = text.indexOf('  ·  ');
@@ -1075,7 +1061,9 @@ import { handleToolStatus } from './handlers/toolStatus';
     const answered = ((rationale && rationale.answered) || []).filter((a) => a && (a.inputTokens || a.outputTokens));
     const extra = answered.length - 1;
     const pinned = !!(rationale && rationale.entries && rationale.entries[0] && /pinned/i.test(rationale.entries[0].reason || ''));
-    const primary = servedPrimary(rationale, namePart);
+    const primary = answered.length
+      ? answered[0].model
+      : rationale && rationale.entries && rationale.entries.length ? rationale.entries[0].model : namePart;
     const chip = document.createElement('button');
     chip.type = 'button'; chip.className = 'served-chip';
     const glyph = document.createElement('span'); glyph.className = 'served-chip-icon';
@@ -1099,7 +1087,8 @@ import { handleToolStatus } from './handlers/toolStatus';
     const answered = (rationale.answered || []).filter((a) => a && (a.inputTokens || a.outputTokens));
     const extra = answered.length - 1;
     const nameEl = chip.querySelector('.served-chip-name');
-    const primary = servedPrimary(rationale, nameEl ? nameEl.textContent : '');
+    const primary = answered.length ? answered[0].model
+      : rationale.entries && rationale.entries.length ? rationale.entries[0].model : null;
     if (primary && nameEl) nameEl.textContent = primary;
     let countEl = chip.querySelector('.served-chip-count');
     if (extra > 0) {
@@ -1381,7 +1370,6 @@ import { handleToolStatus } from './handlers/toolStatus';
       const report = details.workReport;
       const card = createResultCard(report, {
         onDiffFile: (p) => send({ type: 'diffCheckpointFile', id: report.checkpointId || '', uri: p }),
-        onSuggest: (p) => { input.value = p; submitChat(); },
       });
       if (card) flow.appendChild(card);
     }
@@ -4988,7 +4976,6 @@ import { handleToolStatus } from './handlers/toolStatus';
           turnFailovers = report.telemetry.failovers || 0;
           const card = createResultCard(report, {
             onDiffFile: (p) => send({ type: 'diffCheckpointFile', id: report.checkpointId || '', uri: p }),
-            onSuggest: (p) => { input.value = p; submitChat(); },
           });
           if (card) {
             if (t.flow && t.flow.parentNode) t.flow.appendChild(card);

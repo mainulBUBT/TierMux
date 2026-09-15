@@ -607,12 +607,11 @@ async function main() {
         prompt.slice(0, 400));
       // Length pin through the REAL pipeline: a 9K rules file → loadProjectRules caps 8K →
       // gatherPromptContext slices to MAX_RULES_INJECT → composed prompt stays bounded.
-      // 10_000 = ~5.3K base (agent tail) + 4K rules + env; the Scope section moved it off 9_000 (2026-09-14).
       fs.writeFileSync(path.join(ws.root, 'AGENTS.md'), 'x'.repeat(9_000), 'utf8');
       invalidatePromptContext();
       ctx = await gatherPromptContext();
       const fatPrompt = composeSystemPrompt('agent', ctx);
-      ok('17. prompt length pinned < 10_000 with max-size rules', fatPrompt.length < 10_000 && fatPrompt.includes('[project rules truncated]'), `len=${fatPrompt.length}`);
+      ok('17. prompt length pinned < 9_000 with max-size rules', fatPrompt.length < 9_000 && fatPrompt.includes('[project rules truncated]'), `len=${fatPrompt.length}`);
     } finally {
       (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = prevFolders;
       invalidatePromptContext();
@@ -998,9 +997,9 @@ async function main() {
       JSON.stringify(skipRow));
     setModelSources(undefined as never);
 
-    // The chain head carries the picker's own label (tier + quota), never the generic
-    // 'enabled model' one that a second pick() of the same key used to overwrite it with
-    // (live repro: opencode/hy3-free showed "enabled model — serves this turn").
+    // A model picked BY THE TASK TABLE keeps its table label — the enabled-tail loop used to
+    // re-pick the same key with the generic 'enabled model' label and overwrite the popover's
+    // why (live repro: table-picked opencode/hy3-free showed "enabled model — serves this turn").
     setModelSources({
       catalog: { find: (_p: string, m: string) => (m === 'gemini-2.5-flash' ? { supportsTools: true, intelligenceRank: 1, speedRank: 1 } : undefined) } as never,
       settings: {
@@ -1014,10 +1013,10 @@ async function main() {
       } as never,
       secrets: { getKeys: async () => ['k'], isToolIncompatible: () => false } as never,
     });
-    const selT = await selectModel([], { taskKind: 'vision' });
-    ok('F. the head keeps the picker\'s tier/quota label in the rationale',
+    const selT = await selectModel([], { taskKind: 'vision' }); // vision table = [google::gemini-2.5-flash]
+    ok('F. task-table pick keeps its table label in the rationale',
       selT.model === 'google::gemini-2.5-flash' && !!selT.rationale
-      && selT.rationale.entries[0].reason.startsWith('rank 1 · quota'),
+      && selT.rationale.entries[0].reason.startsWith('task table (vision)'),
       JSON.stringify(selT.rationale?.entries[0]));
     setModelSources(undefined as never);
 
@@ -1375,9 +1374,7 @@ async function main() {
     const ws = makeWorkspace();
     const g = globalThis as { __tiermuxTestConfig?: Record<string, unknown> };
     const prev = g.__tiermuxTestConfig;
-    // Passes on the pre-edit tree ("hello world") and fails after the edit, naming the file —
-    // a failure the CHANGE caused, which is what the fix rounds are for (28d is the other case).
-    g.__tiermuxTestConfig = { ...(prev ?? {}), verifyCommand: "grep -q hello foo.txt || { echo 'foo.txt: hello missing'; exit 1; }" };
+    g.__tiermuxTestConfig = { ...(prev ?? {}), verifyCommand: 'exit 1' };
     let out: AgentResult;
     let model!: ReturnType<typeof createMockModel>;
     try {
@@ -1408,38 +1405,6 @@ async function main() {
     ok('28b. the turn summary survives the fix rounds', out.text.startsWith('edited'), JSON.stringify(out.text));
     ok('28b. and every fix note is kept with it',
       out.text.includes('attempted fix 1') && out.text.includes('attempted fix 2'), JSON.stringify(out.text));
-  }
-
-  // ── Scenario 28d: a failure that was ALREADY there is not the change's ───────
-  // 2026-09-14: `php artisan test` could not even bootstrap (composer autoload wanted a missing
-  // file), so every blade edit got "❌ Verification failed" plus a wasted fix round.
-  {
-    const ws = makeWorkspace();
-    const g = globalThis as { __tiermuxTestConfig?: Record<string, unknown> };
-    const prev = g.__tiermuxTestConfig;
-    g.__tiermuxTestConfig = { ...(prev ?? {}), verifyCommand: "echo 'Warning: require(app/CentralLogics/banner.php): No such file'; exit 1" };
-    let out: AgentResult;
-    let model!: ReturnType<typeof createMockModel>;
-    try {
-      model = createMockModel([
-        { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'bye' } }] },
-        { text: 'edited' },
-        { text: 'this fix round must never run' },
-      ], 's28d');
-      out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-        messages: [{ role: 'user', content: 'edit foo.txt' }],
-        mode: 'agent',
-        autoApprove: true,
-        verifyFixRounds: 2,
-      })));
-    } finally {
-      g.__tiermuxTestConfig = prev;
-    }
-    ok('28d. a failure identical to the pre-turn baseline is reported as preexisting', out.verifyOutcome === 'preexisting', `verifyOutcome=${out.verifyOutcome}`);
-    ok('28d. no fix round is spent on it', out.workReport?.fixRounds === 0 && model.calls.length === 2, `fixRounds=${out.workReport?.fixRounds} calls=${model.calls.length}`);
-    ok('28d. the report says so in user vocabulary, with the baseline line',
-      out.workReport?.verifyOutcome === 'preexisting' && /banner\.php/.test(out.workReport?.baselineNote ?? ''), JSON.stringify(out.workReport?.baselineNote));
-    ok('28d. the edit still stands', ws.read('foo.txt') === 'bye world', ws.read('foo.txt'));
   }
 
   // ── Scenario 28c: no mutation ⇒ no gate, no card ─────────────────────────────
