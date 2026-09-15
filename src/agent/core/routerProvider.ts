@@ -65,6 +65,12 @@ export function isFailoverWorthy(e: unknown): boolean {
  *  registry's single-shot timeouts would let one dead provider hold a turn. 25s → 60s on
  *  2026-09-04 (65k prefill on poolside/laguna-s-2.1). Not applied to custom/local endpoints. */
 const FAILOVER_CONNECT_TIMEOUT_MS = 60_000;
+/** Ceiling on time to the first CONTENT chunk (reply text, reasoning, tool call, finish) AFTER
+ *  the stream is alive. SSE keep-alives prove liveness, not progress: opencode zen streamed
+ *  `: keep-alive` lines for ~14s before its first reasoning delta (live 2026-09-15), and the old
+ *  single gate disarmed on the first keep-alive, so "connected but thinking forever" was
+ *  undetectable. Not applied to custom/local endpoints. */
+const FAILOVER_FIRST_CONTENT_TIMEOUT_MS = 30_000;
 
 /** Stop STARTING new candidates once the chain has burned this long. Never interrupts a
  *  candidate already streaming — it only declines to open another one. Bounds the pathological
@@ -629,16 +635,22 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                 ? [...messages, { role: 'user' as const, content: 'You produced reasoning but no final answer and called no tool. Reply now with your final answer to the user — concise, no meta-commentary, no tool calls.' }]
                 : messages;
 
-              // Stall failover: headers arrived, then no chunk at all within ttftGateMsFor ⇒
-              // abandon this candidate. Any first chunk clears the timer; never a cap on length.
-              const ttftMs = ttftGateMsFor(c.platform, !!providerOpts.pinnedModel);
+              // Stall failover, two gates. Headers gate: no chunk AT ALL (not even a keep-alive)
+              // within ttftGateMsFor ⇒ abandon. Content gate: stream alive but no CONTENT (text/
+              // reasoning/tool call/finish) within FAILOVER_FIRST_CONTENT_TIMEOUT_MS ⇒ abandon —
+              // keep-alives clear only the headers gate, never the content one. Never a cap on
+              // generation length.
+              const ttftGate = ttftGateMsFor(c.platform, !!providerOpts.pinnedModel);
+              const contentGate = ttftGate > 0 ? Math.min(ttftGate, FAILOVER_FIRST_CONTENT_TIMEOUT_MS) : 0;
               const ttftController = new AbortController();
-              const ttftTimer = ttftMs > 0
+              const armStall = (ms: number, what: string) => ms > 0
                 ? setTimeout(() => {
                     ttftController.abort(new ProviderHttpError(
-                      `${provider.name} produced no first token within ${ttftMs}ms — failing over`, 408));
-                  }, ttftMs)
+                      `${provider.name} produced no ${what} within ${ms}ms — failing over`, 408));
+                  }, ms)
                 : undefined;
+              const headersTimer = armStall(ttftGate, 'response');
+              const contentTimer = armStall(contentGate, 'content chunk');
               // The SDK's own abort (Stop button / sub-agent timeout) must still kill the
               // request — combine both signals rather than replacing the caller's.
               const ttftSignal = options.abortSignal
@@ -659,7 +671,9 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                   abortSignal: ttftSignal,
                   timeoutMs: connectTimeoutFor(c.platform),
                 })) {
-                  if (ttftTimer) clearTimeout(ttftTimer);
+                  // ANY chunk — even an SSE keep-alive — proves the stream is alive and clears
+                  // the headers gate…
+                  if (headersTimer) clearTimeout(headersTimer);
                   if (chunk.usage) usage = chunk.usage;
                   const choice = chunk.choices?.[0];
                   if (!choice) continue;
@@ -668,6 +682,12 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                   // Thinking arrives as native reasoning fields or `<think>` markup in content;
                   // the splitter routes both to the reasoning channel without doubling.
                   const split = splitter.feed(delta.content, reasoningFromDelta(delta as unknown as Record<string, unknown>));
+                  // …but only CONTENT clears the content gate (see armStall above). A stream
+                  // that pings keep-alives while "thinking" is just as stalled as one that
+                  // never answered.
+                  if (split.text || split.reasoning || (delta.tool_calls?.length ?? 0) > 0 || choice.finish_reason) {
+                    if (contentTimer) clearTimeout(contentTimer);
+                  }
                   if (split.reasoning) {
                     reasoningAccum += split.reasoning;
                     if (!reasoningStarted) { reasoningStarted = true; controller.enqueue({ type: 'reasoning-start', id: reasoningId }); }
@@ -705,7 +725,8 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                 // that fails to connect (the common 429/5xx) skipped the old post-loop
                 // clear entirely, leaving an armed timer for the whole gate window that
                 // later fired into an AbortController nobody was listening to any more.
-                if (ttftTimer) clearTimeout(ttftTimer);
+                if (headersTimer) clearTimeout(headersTimer);
+                if (contentTimer) clearTimeout(contentTimer);
               }
               if (loopCut) { looped = true; finish = 'stop'; }
 

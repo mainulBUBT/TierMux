@@ -3,7 +3,10 @@ import { normalizeAttachmentBlocks } from './content';
 
 export type TaskKind = 'trivial' | 'chat' | 'agent' | 'coding' | 'debug' | 'longContext' | 'plan' | 'vision';
 
-const GREETING = /^(hi+|hey+|hello+|yo|sup|howdy|gm|gn|good (morning|afternoon|evening|night)|thanks?|thank you|thx|ty|ok(ay)?|k|cool|nice|great|awesome|bye|goodbye|cheers|np|no problem|got it|sounds good)\b[\s!.?]*$/i;
+// Greetings beyond English — a "hola" that fell through this list routed a bare hello to the
+// agent table, where a reasoning model spent ~25s thinking about it (live 2026-09-15). Banglish
+// ones included: the maintainer's own chat opens with them.
+const GREETING = /^(hi+|hey+|hello+|yo|sup|howdy|gm|gn|good (morning|afternoon|evening|night)|thanks?|thank you|thx|ty|ok(ay)?|k|cool|nice|great|awesome|bye|goodbye|cheers|np|no problem|got it|sounds good|hola|ol[áa]|qu[eé] tal|buen(os)?\s+(d[ií]as|tardes|noches)|ciao|bonjour|salut|hallo|namaste|as\s?salamu?\s?(al)?aikum|sala?am|marhaba|merhaba|kemon acho|ki khobor|ki obosta|bhalo achi)\b[\s!.?]*$/i;
 
 const TASK_VERB = /\b(add|create|implement|build|write|fix|refactor|rename|move|delete|remove|update|change|modif(?:y|ies)|edit|generate|migrate|install|set ?up|wire|integrate|replace|convert|optimi[sz]e|run|test|make|put|turn|set|swap|drop|append|insert|extract|split|merge|comment|uncomment|format|bump|upgrade|downgrade|configure|enable|disable|support|handle|apply|hook|connect|expose|document|export|validate|cache|scaffold)\b/i;
 

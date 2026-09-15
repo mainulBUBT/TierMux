@@ -112,6 +112,8 @@ const WORKER_TAG_MAP = {
   planner: 'planner', plan: 'planner',
   reasoner: 'reasoner', reasoning: 'reasoner',
   general: 'general', router: 'router',
+  // Quality band — routing reads these via tierOf() in src/catalog/discovery.ts.
+  frontier: 'frontier', strong: 'strong', mid: 'mid', small: 'small', unknown: 'unknown',
 };
 
 const num = (s) => {

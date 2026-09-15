@@ -145,3 +145,38 @@ export function deriveMetadata(d: DiscoveredModel): Pick<
     tags: tags.length ? tags : undefined,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Quality tier
+// ---------------------------------------------------------------------------
+
+/** Hand-maintained quality band. The worker catalog tags every model with exactly one of
+ *  these (`/models` → `tags`); `unknown` = new or unassessed → tail only. */
+export type ModelTier = 'frontier' | 'strong' | 'mid' | 'small' | 'unknown';
+
+/** Sort order, best first. A lower number leads the chain; `unknown` sits at the very end
+ *  so an unassessed model can never outrank a judged one. */
+export const TIER_ORDER: Record<ModelTier, number> = { frontier: 0, strong: 1, mid: 2, small: 3, unknown: 4 };
+
+/** The quality band a model routes by: the tier tag from the worker catalog when present,
+ *  else a mapping of the model's intelligence rank for bundled/legacy rows, else `unknown`.
+ *  `bestRank` overrides the row's own rank in that fallback — the same weights carry
+ *  different ranks on different gateways (nemotron-3-super: 2 on kilo, 6 on openrouter), and
+ *  a twin must not change tier with the gateway it sits on. Routing reads THIS — never the
+ *  raw rank — so a rank-regex miss (gpt-4.1-nano clamped to flagship, live 2026-09-15) can
+ *  no longer put a small model at the head of a chain; worst case an untagged model routes
+ *  as `unknown`, which only the tail ever sees. */
+export function tierOf(model: CatalogModel | undefined, bestRank?: number): ModelTier {
+  for (const tag of model?.tags ?? []) {
+    const t = String(tag).toLowerCase();
+    if (t === 'frontier' || t === 'strong' || t === 'mid' || t === 'small' || t === 'unknown') return t;
+  }
+  const rank = typeof bestRank === 'number' && Number.isFinite(bestRank)
+    ? bestRank
+    : model?.intelligenceRank;
+  if (typeof rank !== 'number' || !Number.isFinite(rank)) return 'unknown';
+  if (rank <= 1.5) return 'frontier';
+  if (rank <= 2.5) return 'strong';
+  if (rank <= 3.5) return 'mid';
+  return 'small';
+}

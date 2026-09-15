@@ -206,12 +206,15 @@ export class Catalog {
 }
 
 /** Worker tag vocabulary → canonical tags (`coding`, `planner`, `reasoner`, `general`,
- *  `router`, `vision`). Display-only since the scoring Router was retired. */
+ *  `router`, `vision`) plus the quality band (`frontier`/`strong`/`mid`/`small`/`unknown`).
+ *  Tier tags are routing input via tierOf() (src/catalog/discovery.ts); the rest are
+ *  display-only. */
 const WORKER_TAG_MAP: Record<string, string> = {
   coder: 'coding', coding: 'coding',
   planner: 'planner', plan: 'planner',
   reasoner: 'reasoner', reasoning: 'reasoner',
   general: 'general', router: 'router',
+  frontier: 'frontier', strong: 'strong', mid: 'mid', small: 'small', unknown: 'unknown',
 };
 
 /** Coerce a worker-JSON cell to a finite number, or null when absent/garbled. */
@@ -345,8 +348,9 @@ function modelRowToCatalog(platform: string, raw: unknown): CatalogModel | null 
     : [];
   const tags: string[] = [];
   for (const t of rawTags) {
-    // `free` is dropped here and re-derived from pricing below. Other tags are display-only;
-    // routing reads the capability booleans (supportsTools/supportsVision), not tags.
+    // `free` is dropped here and re-derived from pricing below. Tier tags (frontier/strong/
+    // mid/small/unknown) are routing input via tierOf(); the remaining tags are display-only —
+    // routing otherwise reads the capability booleans (supportsTools/supportsVision), not tags.
     if (t === 'free') continue;
     const mapped = WORKER_TAG_MAP[t] ?? t;
     if (!tags.includes(mapped)) tags.push(mapped);

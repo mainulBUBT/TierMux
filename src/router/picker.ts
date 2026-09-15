@@ -13,6 +13,7 @@ import { allPlatformInfo } from '../providers';
 import type { ChatMessage, CatalogModel } from '../shared/types';
 import { classifyTask, type TaskKind } from '../agent/routing';
 import { RateTracker } from './rateTracker';
+import { TIER_ORDER, tierOf } from '../catalog/discovery';
 import type { QuotaStore } from '../config/quotaStore';
 import { diagLog } from '../util/diag';
 
@@ -446,6 +447,11 @@ export async function selectModel(
     return rateTracker.headroom(platform, modelId, meta?.rpmLimit ?? null, meta?.rpdLimit ?? null);
   };
 
+  // Best rank per CANONICAL model (across gateways) — computed once here because BOTH the
+  // table-head gate and the tail's tier fallback need it: a tier must belong to the model,
+  // never to the gateway row it happens to sit on.
+  const modelRank = rankByModel(enabled);
+
   const tableCandidates: Array<{ key: string; headroom: number }> = [];
   for (const key of TASK_ROUTING[taskKind] ?? TASK_ROUTING.chat) {
     const [tPlatform, ...tRest] = key.split('::');
@@ -456,7 +462,24 @@ export async function selectModel(
       skip(key, 'routing table entry not in catalog (renamed or retired?)');
     }
     const picked = await pick(key, `task table (${taskKind})`);
-    if (picked) tableCandidates.push({ key: picked, headroom: headroomOf(picked) });
+    if (!picked) continue;
+    // Tier gate on the HEAD (2026-09-16): small/unassessed models never lead a tool turn.
+    // The engine always offers tools, so this is the guarantee that a table edit, an `::auto`
+    // resolution or a renamed id can't hand the front of the chain to a nano-class model
+    // (the 2026-09-15 gpt-4.1-nano repro). They stay in the tail as a last resort below.
+    if (opts.requireTools && opts.pinnedModel !== picked) {
+      const [pPlatform, ...pRest] = picked.split('::');
+      const pModelId = pRest.join('::');
+      const tier = tierOf(
+        sources.catalog.find(pPlatform, pModelId),
+        modelRank.get(canonicalModelId(pModelId)),
+      );
+      if (tier === 'small' || tier === 'unknown') {
+        skip(picked, `${tier} tier — utility and last-resort only, never leads a tool turn`);
+        continue;
+      }
+    }
+    tableCandidates.push({ key: picked, headroom: headroomOf(picked) });
   }
   // Rotate the table itself, not just the tail below: the SAME curated candidate used to lead
   // every turn as long as it was merely reachable (2026-09-15 — the free/keyless leader almost
@@ -481,8 +504,7 @@ export async function selectModel(
   // ALWAYS pad the chain with the rest of the usable enabled models, best intelligence rank
   // first (settings order let whichever model sat first serve every task — 2026-08-28,
   // nemotron-3-ultra-free). Pinned models are exempt.
-  const ranked: Array<{ key: string; rank: number; speed: number; vote: number; headroom: number }> = [];
-  const modelRank = rankByModel(enabled);
+  const ranked: Array<{ key: string; tier: ReturnType<typeof tierOf>; rank: number; speed: number; vote: number; headroom: number }> = [];
   for (const key of enabled) {
     // Already chained (pin/table pick)? Skip BEFORE re-picking: pick() would overwrite the
     // entry's original label ('pinned by you' / 'task table (chat)') with 'enabled model' and
@@ -496,6 +518,9 @@ export async function selectModel(
     const meta = sources.catalog.find(platform, modelId);
     ranked.push({
       key: picked,
+      // Hand-maintained quality band (worker tag); rank only as the legacy fallback, taken
+      // from the MODEL's best rank so a twin's tier doesn't drift with its gateway row.
+      tier: tierOf(meta, modelRank.get(canonicalModelId(modelId))),
       rank: modelRank.get(canonicalModelId(modelId)) ?? meta?.intelligenceRank ?? Number.POSITIVE_INFINITY,
       speed: meta?.speedRank ?? 5,
       // Net 👍−👎 for this task kind — the tiebreak that lets feedback pick the preferred
@@ -512,27 +537,28 @@ export async function selectModel(
   // a last resort but is never rotated into the head (2026-09-04: a chat turn took ~5 minutes
   // that way).
   const slowCapable = (e: { speed: number }): number => (e.speed >= 4 ? 1 : 0);
-  // Headroom sits between vote and speed: a peer with meaningfully more declared quota left
-  // leads its tie group by default, same slot vote occupies — it nudges order, it never lets a
-  // lower-rank or disliked model skip ahead of a better one.
-  ranked.sort((a, b) => slowCapable(a) - slowCapable(b) || a.rank - b.rank || b.vote - a.vote || b.headroom - a.headroom || a.speed - b.speed);
-  // Quota-spreading among peers: rotate the head of each equal-rank, equal-speed, equal-vote
-  // group so the NEXT turn leads with a different peer ("600 models, but it keeps using the
-  // same 1-2"). Deterministic per taskKind via the SAME round counter the task-table rotation
-  // above uses — no RNG. Vote equals are required for a peer group, otherwise rotating would
-  // scramble the feedback order.
+  // Tier sits directly after the slow-capable cap: the best HAND-MAINTAINED quality band
+  // leads, and a small/unassessed model can only follow every judged one — rank (regex
+  // derived, kept for ordering within a tier) no longer decides alone.
+  ranked.sort((a, b) => slowCapable(a) - slowCapable(b) || TIER_ORDER[a.tier] - TIER_ORDER[b.tier] || a.rank - b.rank || b.vote - a.vote || b.headroom - a.headroom || a.speed - b.speed);
+  // Quota-spreading among peers: rotate the head of each equal-tier, equal-rank, equal-speed,
+  // equal-vote group so the NEXT turn leads with a different peer ("600 models, but it keeps
+  // using the same 1-2"). Deterministic per taskKind via the SAME round counter the
+  // task-table rotation above uses — no RNG. Vote equals are required for a peer group,
+  // otherwise rotating would scramble the feedback order.
   {
     const counter = round;
     let i = 0;
     while (i < ranked.length) {
+      const groupTier = ranked[i].tier;
       const groupRank = ranked[i].rank;
       const groupSpeed = ranked[i].speed;
       const groupVote = ranked[i].vote;
       let j = i;
-      // Peers = same model rank, same speed class AND same vote score, so rotation never
-      // lifts a slower gateway above a faster one of the same quality, nor a disliked model
-      // back above a liked one.
-      while (j < ranked.length && ranked[j].rank === groupRank && ranked[j].speed === groupSpeed && ranked[j].vote === groupVote) j++;
+      // Peers = same tier, same model rank, same speed class AND same vote score, so rotation
+      // never lifts a slower gateway above a faster one of the same quality, nor a disliked
+      // model back above a liked one, nor a lower tier above a higher one.
+      while (j < ranked.length && ranked[j].tier === groupTier && ranked[j].rank === groupRank && ranked[j].speed === groupSpeed && ranked[j].vote === groupVote) j++;
       if (j - i > 1 && Number.isFinite(groupRank)) {
         const offset = counter % (j - i);          // 0..(groupSize-1)
         const rotated = [...ranked.slice(i, j).slice(offset), ...ranked.slice(i, j).slice(0, offset)];
@@ -542,7 +568,7 @@ export async function selectModel(
     }
   }
   for (const r of ranked) {
-    if (Number.isFinite(r.rank)) pickLabels.set(r.key, `enabled tail · intelligence rank ${r.rank}`);
+    pickLabels.set(r.key, `enabled tail · ${r.tier} tier${Number.isFinite(r.rank) ? ` · rank ${r.rank}` : ''}`);
     chain.push(r.key);
   }
   if (chain.length === 0) return keylessFallback();
