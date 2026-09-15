@@ -27,9 +27,13 @@ Deliberately readable: you can look at the table and know which model answers wh
    (`tiermux.classifierModel`).
 2. **Build the candidate chain**, in this order:
    - your **pinned** model, if you picked one from the model dropdown;
-   - the **task table** entry for that kind (curated best-first per kind);
+   - the **task table** entries for that kind (curated best-first per kind) — rotated turn by
+     turn among themselves (see "Equal-rank head rotation" below: the same rotation the tail
+     uses also covers the table now, not just what comes after it), with a declared-quota
+     nudge that lets a fresher sibling jump ahead of one running low;
    - **every other enabled, usable model**, sorted by the catalog's measured
-     **intelligence rank** (best first), unranked models keeping your settings order.
+     **intelligence rank** (best first) and remaining declared quota, unranked models keeping
+     your settings order.
 3. **Filter** as the chain is built. A candidate is dropped — with the reason recorded for
    the popover — when it is: excluded for this retry, on a switched-off provider, missing
    a stored key, inside a failure cooldown, not enabled, or marked
@@ -155,7 +159,8 @@ All implemented natively — there is no external routing service in the path.
 | Exponential per-model cooldown (30 s → 2 min) | picker | stops hammering a model that just failed; resets on success |
 | Round-robin platform diversity in the failover scan | picker | one provider's twenty models can't consume every retry |
 | Per-key rotation with per-key cooldown | secret store | a dead/limited key rotates inside the provider before the platform is written off |
-| Equal-rank head rotation | picker | among models tied on intelligence rank, successive turns start at a different one, so quota spreads without the rationale naming a model that never ran |
+| Equal-rank head rotation | picker | among models tied on intelligence rank — task table entries for the kind included — successive turns start at a different one, so quota spreads without the rationale naming a model that never ran |
+| Declared-quota headroom nudge | picker / rate tracker | a candidate under ~25% of its declared rpm/rpd yields to a sibling with meaningfully more room, before `canSend`'s hard cliff would force a failover — deterministic, off the catalog's declared limits, not a learned/live signal |
 | Time-boxed tool-incompatible / deprecated quarantine | secret store | models that advertise tools then reject them (or 404) self-heal after the window |
 | Conservative rate-limit floors for unknown quotas | rate tracker | a catalog limit of `0` means “unknown”, not “unlimited” — guessing low is the safe direction |
 | Per-model context fitting with reserved anchors | budget | the task and the conversation anchor can never be evicted by a fat tool result |

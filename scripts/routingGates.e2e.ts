@@ -232,6 +232,30 @@ console.log('— ranking is by MODEL, with the fastest gateway for a model leadi
     order[1] === 'openrouter::nvidia/nemotron-3-super-120b-a12b:free' && order[2] === 'groq::other-model', order.join(' > '));
 }
 
+console.log('\n— the task table itself rotates, not just the tail (quota spreads across curated peers) —');
+{
+  // 2026-09-15 repro: chain[0] was ALWAYS TASK_ROUTING[taskKind][0] — the task table was walked
+  // in fixed order with no rotation, so a reachable leader (free, keyless, rarely cooldown'd)
+  // served every turn while its curated siblings, and the whole rank-sorted tail behind them,
+  // never ran. Both candidates here have no declared rpm/rpd (headroom ties at 1 for both), so
+  // this isolates the rotation signal from the headroom nudge.
+  __resetTaskRoundCounters();
+  const fallback = [
+    entry('groq', 'openai/gpt-oss-120b', 0),
+    entry('cerebras', 'gpt-oss-120b', 1),
+  ];
+  setModelSources(makeSources(fallback, [], ['groq', 'cerebras']));
+  const leaders: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    const sel = await selectModel([{ role: 'user', content: 'fix this bug in the code' } as never], { taskKind: 'coding' });
+    leaders.push(sel.model);
+  }
+  ok('the first call keeps today\'s untouched order (no rotation on turn 0)',
+    leaders[0] === 'groq::openai/gpt-oss-120b', leaders.join(' → '));
+  ok('later calls rotate through both task-table peers, not just index 0 forever',
+    new Set(leaders).size === 2, leaders.join(' → '));
+}
+
 console.log(bad === 0 ? '\nAll routing gates hold.' : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);
 }

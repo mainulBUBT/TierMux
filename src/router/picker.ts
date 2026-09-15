@@ -295,6 +295,12 @@ export async function selectModel(
     .map((m) => m.content as string)
     .join('\n');
   const taskKind = (opts.taskKind as TaskKind | undefined) ?? classifyTask(text);
+  // One counter drives BOTH the task-table rotation below and the tail's equal-rank rotation
+  // (2026-09-04) — a single per-task-kind round, so "which candidate leads" only advances once
+  // per turn. Post-increment: the FIRST call this session returns 0 (no rotation — today's
+  // ordering is unchanged), then 1, 2, … walk the group. __resetTaskRoundCounters() resets it
+  // for tests.
+  const round = nextTaskRound(taskKind);
   // enabledByPriority(), NOT getFallback(): the provider-level switch lives in a separate
   // disabled-providers list and never clears per-model `enabled` flags, so getFallback() still
   // offered every model of a switched-off provider.
@@ -428,6 +434,19 @@ export async function selectModel(
       };
     }
   }
+  // Declared-quota headroom (RateTracker) for a chained key — [0..1], 1 = untouched. Used below
+  // to nudge rotation toward whichever candidate has more room left, same idea LiteLLM's
+  // usage-based-routing and Vercel AI Gateway's load balancing use, just off the catalog's
+  // declared rpm/rpd rather than a learned/live signal.
+  const headroomOf = (key: string): number => {
+    if (!sources) return 1;
+    const platform = key.split('::')[0];
+    const modelId = key.split('::').slice(1).join('::');
+    const meta = sources.catalog.find(platform, modelId);
+    return rateTracker.headroom(platform, modelId, meta?.rpmLimit ?? null, meta?.rpdLimit ?? null);
+  };
+
+  const tableCandidates: Array<{ key: string; headroom: number }> = [];
   for (const key of TASK_ROUTING[taskKind] ?? TASK_ROUTING.chat) {
     const [tPlatform, ...tRest] = key.split('::');
     const tModelId = tRest.join('::');
@@ -437,12 +456,32 @@ export async function selectModel(
       skip(key, 'routing table entry not in catalog (renamed or retired?)');
     }
     const picked = await pick(key, `task table (${taskKind})`);
-    if (picked && !chain.includes(picked)) chain.push(picked);
+    if (picked) tableCandidates.push({ key: picked, headroom: headroomOf(picked) });
+  }
+  // Rotate the table itself, not just the tail below: the SAME curated candidate used to lead
+  // every turn as long as it was merely reachable (2026-09-15 — the free/keyless leader almost
+  // never hard-fails canSend's cliff, so its declared quota never got a chance to spread and
+  // its task-table siblings never ran). `round` (offset 0 on the first call) rotates the start
+  // position; a headroom floor then lets a sibling with meaningfully more quota jump the queue
+  // even mid-rotation, so quota drains toward whoever has room rather than by blind turn order.
+  const HEADROOM_YIELD_BELOW = 0.25;
+  const HEADROOM_MEANINGFULLY_MORE = 0.25;
+  if (tableCandidates.length > 1) {
+    const offset = round % tableCandidates.length;
+    let ordered = [...tableCandidates.slice(offset), ...tableCandidates.slice(0, offset)];
+    const leader = ordered[0];
+    const fresher = ordered.slice(1).find((c) => c.headroom > leader.headroom + HEADROOM_MEANINGFULLY_MORE);
+    if (leader.headroom < HEADROOM_YIELD_BELOW && fresher) {
+      ordered = [fresher, ...ordered.filter((c) => c !== fresher)];
+    }
+    for (const c of ordered) if (!chain.includes(c.key)) chain.push(c.key);
+  } else {
+    for (const c of tableCandidates) if (!chain.includes(c.key)) chain.push(c.key);
   }
   // ALWAYS pad the chain with the rest of the usable enabled models, best intelligence rank
   // first (settings order let whichever model sat first serve every task — 2026-08-28,
   // nemotron-3-ultra-free). Pinned models are exempt.
-  const ranked: Array<{ key: string; rank: number; speed: number; vote: number }> = [];
+  const ranked: Array<{ key: string; rank: number; speed: number; vote: number; headroom: number }> = [];
   const modelRank = rankByModel(enabled);
   for (const key of enabled) {
     // Already chained (pin/table pick)? Skip BEFORE re-picking: pick() would overwrite the
@@ -462,6 +501,7 @@ export async function selectModel(
       // Net 👍−👎 for this task kind — the tiebreak that lets feedback pick the preferred
       // model among equal peers. Zero without a stats store or any votes.
       vote: voteScore(taskKind, picked),
+      headroom: rateTracker.headroom(platform, modelId, meta?.rpmLimit ?? null, meta?.rpdLimit ?? null),
     });
   }
   // Tail order: speed class, then MODEL rank, then user feedback, then this row's speed (the
@@ -472,13 +512,17 @@ export async function selectModel(
   // a last resort but is never rotated into the head (2026-09-04: a chat turn took ~5 minutes
   // that way).
   const slowCapable = (e: { speed: number }): number => (e.speed >= 4 ? 1 : 0);
-  ranked.sort((a, b) => slowCapable(a) - slowCapable(b) || a.rank - b.rank || b.vote - a.vote || a.speed - b.speed);
+  // Headroom sits between vote and speed: a peer with meaningfully more declared quota left
+  // leads its tie group by default, same slot vote occupies — it nudges order, it never lets a
+  // lower-rank or disliked model skip ahead of a better one.
+  ranked.sort((a, b) => slowCapable(a) - slowCapable(b) || a.rank - b.rank || b.vote - a.vote || b.headroom - a.headroom || a.speed - b.speed);
   // Quota-spreading among peers: rotate the head of each equal-rank, equal-speed, equal-vote
   // group so the NEXT turn leads with a different peer ("600 models, but it keeps using the
-  // same 1-2"). Deterministic per taskKind via a counter — no RNG. Vote equals are required
-  // for a peer group, otherwise rotating would scramble the feedback order.
+  // same 1-2"). Deterministic per taskKind via the SAME round counter the task-table rotation
+  // above uses — no RNG. Vote equals are required for a peer group, otherwise rotating would
+  // scramble the feedback order.
   {
-    const counter = nextTaskRound(taskKind);
+    const counter = round;
     let i = 0;
     while (i < ranked.length) {
       const groupRank = ranked[i].rank;

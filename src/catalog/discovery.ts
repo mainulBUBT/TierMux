@@ -38,8 +38,12 @@ const BENCH_INTEL: Array<[RegExp, number]> = [
   // ---- Frontier / strong reasoning (1–1.5) ----
   [/nemotron.{0,4}ultra/i, 1],
   [/deepseek-r1\b/i, 1],
-  [/gpt-4\.1\b(?!.*mini)/i, 1.5],
-  [/gpt-4o\b(?!.*mini)/i, 1.5],
+  // (?!.*mini) alone let "gpt-4.1-nano" match the flagship rule — nano is a small-tier suffix
+  // too, and with the 1M-context bonus below it clamped to rank 1, tied with the real gpt-4.1
+  // (live repro 2026-09-15: the router picked it as "best" and it gave shallow, no-tool-use
+  // answers, as nano-tier models do).
+  [/gpt-4\.1\b(?!.*(?:mini|nano))/i, 1.5],
+  [/gpt-4o\b(?!.*(?:mini|nano))/i, 1.5],
   [/glm-?5\b|glm-?5\.\d/i, 1.5],
   [/command-a.{0,3}plus/i, 1.5],
   [/kimi-k2\.[6-9]|kimi-k3/i, 1.5],

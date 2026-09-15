@@ -1043,8 +1043,13 @@ import { handleToolStatus } from './handlers/toolStatus';
   // with "Auto · " unless the user pinned the model.
   function whyLine(data) {
     if (!data || !data.entries || !data.entries.length) return null;
-    const first = data.entries[0];
-    let why = (first.reason || '').split(' — serves this turn')[0].trim();
+    // entries[0] is chain[0] — who was tried FIRST, not who served. A failover leaves entries in
+    // their original chain order (rationaleForServed relabels in place, never reorders), so on a
+    // failed-over turn entries[0] describes the wrong model. `picked` is the one fact that always
+    // names who actually served — match it back to its row, falling back to entries[0] only when
+    // there's no failover to correct (picked absent, or an older rationale shape).
+    const first = (data.picked && data.entries.find((e) => e.model === data.picked)) || data.entries[0];
+    let why = (first.reason || '').replace(/\s*—\s*(serves this turn|served this turn|failover #\d+|tried first, failed over)$/i, '').trim();
     if (why && !/pinned/i.test(why)) why = `Auto · ${why}`;
     return why || null;
   }
@@ -1061,9 +1066,13 @@ import { handleToolStatus } from './handlers/toolStatus';
     const answered = ((rationale && rationale.answered) || []).filter((a) => a && (a.inputTokens || a.outputTokens));
     const extra = answered.length - 1;
     const pinned = !!(rationale && rationale.entries && rationale.entries[0] && /pinned/i.test(rationale.entries[0].reason || ''));
-    const primary = answered.length
-      ? answered[0].model
-      : rationale && rationale.entries && rationale.entries.length ? rationale.entries[0].model : namePart;
+    // `picked` names who ACTUALLY served (settleRationale re-points it after failover); prefer
+    // it over answered[0]/entries[0], which are "first to write a token" and "tried first" —
+    // both wrong once a failover happened (live repro: footer showed the failed chain[0] while
+    // the popover's own ✓ correctly named the model that served).
+    const primary = (rationale && rationale.picked)
+      || (answered.length ? answered[0].model
+        : rationale && rationale.entries && rationale.entries.length ? rationale.entries[0].model : namePart);
     const chip = document.createElement('button');
     chip.type = 'button'; chip.className = 'served-chip';
     const glyph = document.createElement('span'); glyph.className = 'served-chip-icon';
@@ -1087,8 +1096,10 @@ import { handleToolStatus } from './handlers/toolStatus';
     const answered = (rationale.answered || []).filter((a) => a && (a.inputTokens || a.outputTokens));
     const extra = answered.length - 1;
     const nameEl = chip.querySelector('.served-chip-name');
-    const primary = answered.length ? answered[0].model
-      : rationale.entries && rationale.entries.length ? rationale.entries[0].model : null;
+    // See makeServedChip: `picked` (who actually served) outranks answered[0]/entries[0].
+    const primary = rationale.picked
+      || (answered.length ? answered[0].model
+        : rationale.entries && rationale.entries.length ? rationale.entries[0].model : null);
     if (primary && nameEl) nameEl.textContent = primary;
     let countEl = chip.querySelector('.served-chip-count');
     if (extra > 0) {
@@ -2337,7 +2348,20 @@ import { handleToolStatus } from './handlers/toolStatus';
         thoughtAcc.set(block, { text: '', durMs: 0 });
         t.tools.appendChild(block);
       } else {
-        const acc = thoughtAcc.get(block) || { text: '', durMs: 0 };
+        // A block can reach here already populated but untracked by thoughtAcc: `clearDraft`
+        // (a streamed draft retracted into reasoning when a tool call revealed it was narration,
+        // not the answer) builds one directly via buildReasoningBlock, bypassing upsertTool
+        // entirely. Treating that as "empty" (the old `|| { text: '' }`) let the FIRST real
+        // 'running'/'done' delta for the same toolCallId silently overwrite the retracted text —
+        // live repro: "Thought for Ns" settles with the body thin or blank. Seed from the block's
+        // current body ONCE (thoughtAcc.set, same idiom as the merge branch above) so later ticks
+        // reuse the seed instead of re-reading — re-reading every tick would re-append text
+        // already folded into a prior msg.detail buffer and duplicate it.
+        let acc = thoughtAcc.get(block);
+        if (!acc) {
+          acc = { text: (block.querySelector('.tm-reasoning-body')?.textContent || '').trim(), durMs: 0 };
+          thoughtAcc.set(block, acc);
+        }
         const combined = acc.text ? `${acc.text}\n\n${msg.detail || ''}` : (msg.detail || '');
         const totalDur = msg.state === 'done' ? acc.durMs + (msg.durationMs || 0) : acc.durMs;
         if (msg.state === 'done') thoughtAcc.set(block, { text: combined, durMs: totalDur });

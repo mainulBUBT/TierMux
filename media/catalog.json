@@ -2072,7 +2072,7 @@
       "platform": "chatanywhere",
       "modelId": "gpt-4.1-nano",
       "displayName": "GPT-4.1 nano",
-      "intelligenceRank": 1,
+      "intelligenceRank": 3,
       "speedRank": 2,
       "contextWindow": 1047576,
       "rpmLimit": 15,

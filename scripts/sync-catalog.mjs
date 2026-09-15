@@ -33,8 +33,10 @@ function defaultCatalogUrl() {
 const BENCH_INTEL = [
   [/nemotron.{0,4}ultra/i, 1],
   [/deepseek-r1\b/i, 1],
-  [/gpt-4\.1\b(?!.*mini)/i, 1.5],
-  [/gpt-4o\b(?!.*mini)/i, 1.5],
+  // (?!.*mini) alone let "gpt-4.1-nano" match the flagship rule — see src/catalog/discovery.ts,
+  // kept in sync by hand.
+  [/gpt-4\.1\b(?!.*(?:mini|nano))/i, 1.5],
+  [/gpt-4o\b(?!.*(?:mini|nano))/i, 1.5],
   [/glm-?5\b|glm-?5\.\d/i, 1.5],
   [/command-a.{0,3}plus/i, 1.5],
   [/kimi-k2\.[6-9]|kimi-k3/i, 1.5],
