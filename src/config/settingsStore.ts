@@ -14,9 +14,11 @@ const NOTIFIED_MODELS_KEY = 'tiermux.notifiedModels';
  *  brand-new provider surfacing in the remote catalog notifies exactly once. */
 const NOTIFIED_PROVIDERS_KEY = 'tiermux.notifiedProviders';
 
-/** Platform left enabled by default — a keyless gateway that works with zero setup.
- *  Every other provider starts off until the user opts in (usually by adding a key). */
-const DEFAULT_ENABLED_PLATFORM: Platform = 'kilo';
+/** Platforms enabled on a FRESH install — every keyless gateway, so zero setup routes across
+ *  all of them instead of resting on one (kilo alone until 2026-09-16). Keyed providers stay
+ *  off until the user adds a key. Read only when no disabled list is stored yet. */
+const defaultEnabledPlatforms = (): Set<Platform> =>
+  new Set(allPlatformInfo().filter((p) => p.keyless).map((p) => p.platform));
 
 export class SettingsStore {
   private readonly _onChange = new vscode.EventEmitter<void>();
@@ -133,9 +135,10 @@ export class SettingsStore {
     const stored = this.state.get<Platform[]>(DISABLED_PROVIDERS_KEY);
     if (stored) return stored;
 
+    const on = defaultEnabledPlatforms();
     const def = allPlatformInfo()
       .map((p) => p.platform)
-      .filter((p) => p !== DEFAULT_ENABLED_PLATFORM);
+      .filter((p) => !on.has(p));
     void this.state.update(DISABLED_PROVIDERS_KEY, def);
     return def;
   }

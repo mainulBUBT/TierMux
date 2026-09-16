@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Synced from remote /models JSON — 632 models from 41 providers.",
+  "note": "Synced from remote /models JSON — 625 models from 41 providers.",
   "models": [
     {
       "platform": "agnes",
@@ -619,7 +619,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "unknown",
+        "mid",
         "router",
         "free"
       ],
@@ -800,7 +800,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "unknown",
+        "strong",
         "free"
       ],
       "insight": "Free reasoning model with tool calling and structured outputs. OpenCode dynamically routes requests to different backend models.",
@@ -892,7 +892,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "unknown",
+        "small",
         "router",
         "free"
       ],
@@ -1447,7 +1447,7 @@
       "displayName": "Agnes 2 0 Flash",
       "intelligenceRank": 4,
       "speedRank": 2,
-      "contextWindow": 255976,
+      "contextWindow": 256000,
       "rpmLimit": 5,
       "rpdLimit": 50,
       "monthlyTokenBudget": "",
@@ -1562,6 +1562,26 @@
       "origOutputPricePer1M": 0
     },
     {
+      "platform": "openrouter",
+      "modelId": "z-ai/glm-5.2:free",
+      "displayName": "Z.ai: GLM 5.2",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 32768,
+      "rpmLimit": 10,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
       "platform": "opencode",
       "modelId": "muse-spark-1.2-contributor-free",
       "displayName": "Muse Spark 1.2 Contributor",
@@ -1635,7 +1655,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "unknown",
+        "strong",
         "router",
         "free"
       ],
@@ -2544,24 +2564,6 @@
     },
     {
       "platform": "openadapter",
-      "modelId": "GPT-120-OSS",
-      "displayName": "GPT 120 OSS",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 128000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
       "modelId": "GPT-20-OSS",
       "displayName": "GPT 20 OSS",
       "intelligenceRank": 3,
@@ -2673,6 +2675,24 @@
     },
     {
       "platform": "openadapter",
+      "modelId": "Llama-3.1-8B",
+      "displayName": "Llama 3.1 8B",
+      "intelligenceRank": 5,
+      "speedRank": 2,
+      "contextWindow": 128000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "small",
+        "free"
+      ]
+    },
+    {
+      "platform": "openadapter",
       "modelId": "Llama-3.2-Vision-90B",
       "displayName": "Llama 3.2 Vision 90B",
       "intelligenceRank": 2,
@@ -2688,6 +2708,26 @@
         "small",
         "free"
       ]
+    },
+    {
+      "platform": "openadapter",
+      "modelId": "Llama-3.3-70B",
+      "displayName": "Llama 3.3 70B",
+      "intelligenceRank": 3,
+      "speedRank": 4,
+      "contextWindow": 128000,
+      "rpmLimit": 20,
+      "rpdLimit": 20,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "small",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 1.2
     },
     {
       "platform": "openadapter",
@@ -2721,7 +2761,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "strong",
+        "mid",
         "free"
       ]
     },
@@ -2739,7 +2779,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "strong",
+        "mid",
         "free"
       ]
     },
@@ -2813,6 +2853,24 @@
       "monthlyTokenBudget": "",
       "supportsTools": false,
       "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "small",
+        "free"
+      ]
+    },
+    {
+      "platform": "openadapter",
+      "modelId": "OA-Robin-Mini-Preview",
+      "displayName": "OA Robin Mini Preview",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "small",
@@ -2908,6 +2966,44 @@
         "mid",
         "free"
       ]
+    },
+    {
+      "platform": "openadapter",
+      "modelId": "Qwen3.5-VL",
+      "displayName": "Qwen3.5 VL",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "tags": [
+        "strong",
+        "free"
+      ]
+    },
+    {
+      "platform": "openadapter",
+      "modelId": "Qwen3.8-27B",
+      "displayName": "Qwen 3.8 27B",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 250000,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.33,
+      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "openadapter",
@@ -3057,7 +3153,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "unknown",
+        "small",
         "router",
         "free"
       ],
@@ -4744,346 +4840,6 @@
       "origOutputPricePer1M": 0
     },
     {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3.7-plus:free",
-      "displayName": "Qwen3.7 Plus (Free)",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 1000000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3.8-max:free",
-      "displayName": "Qwen3.8 Max (Free)",
-      "intelligenceRank": 1,
-      "speedRank": 4,
-      "contextWindow": 1000000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "frontier",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3.7-max:free",
-      "displayName": "Qwen3.7 Max (Free)",
-      "intelligenceRank": 1,
-      "speedRank": 4,
-      "contextWindow": 1000000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3.6-plus:free",
-      "displayName": "Qwen3.6 Plus (Free)",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 1000000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3.6-max-preview:free",
-      "displayName": "Qwen3.6 Max Preview (Free)",
-      "intelligenceRank": 1,
-      "speedRank": 4,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3.6-27b:free",
-      "displayName": "Qwen3.6 27B (Free)",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3.5-plus:free",
-      "displayName": "Qwen3.5 Plus (Free)",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 1000000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3.5-omni-plus:free",
-      "displayName": "Qwen3.5 Omni Plus (Free)",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3.6-35b-a3b:free",
-      "displayName": "Qwen3.6 35B A3B (Free)",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3.5-flash:free",
-      "displayName": "Qwen3.5 Flash (Free)",
-      "intelligenceRank": 3,
-      "speedRank": 2,
-      "contextWindow": 1000000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3.5-397b-a17b:free",
-      "displayName": "Qwen3.5 397B A17B (Free)",
-      "intelligenceRank": 1,
-      "speedRank": 5,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3.5-omni-flash:free",
-      "displayName": "Qwen3.5 Omni Flash (Free)",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3-max:free",
-      "displayName": "Qwen3 Max (Free)",
-      "intelligenceRank": 1,
-      "speedRank": 4,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen-plus-2025-07-28:free",
-      "displayName": "Qwen Plus 0728 (Free)",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 131072,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3-coder-plus:free",
-      "displayName": "Qwen3 Coder Plus (Free)",
-      "intelligenceRank": 1,
-      "speedRank": 3,
-      "contextWindow": 1048576,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3-vl-plus:free",
-      "displayName": "Qwen3 VL Plus (Free)",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "xkiro",
-      "modelId": "qwen/qwen3-omni-flash:free",
-      "displayName": "Qwen3 Omni Flash (Free)",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
       "platform": "openrouter",
       "modelId": "inclusionai/ling-3.0-flash-fin:free",
       "displayName": "Ling 3.0 Flash Fin (free)",
@@ -5373,7 +5129,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
-        "unknown",
+        "small",
         "free"
       ],
       "origInputPricePer1M": 3.66,
@@ -6634,6 +6390,26 @@
       "origOutputPricePer1M": 0
     },
     {
+      "platform": "experientiallabs",
+      "modelId": "nemotron-3-ultra-550b-a55b",
+      "displayName": "Nemotron 3 Ultra",
+      "intelligenceRank": 1,
+      "speedRank": 5,
+      "contextWindow": 512288,
+      "rpmLimit": 3,
+      "rpdLimit": 4800,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "mid",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.4
+    },
+    {
       "platform": "vyceai",
       "modelId": "deepseek-v4-flash",
       "displayName": "DeepSeek V4 Flash",
@@ -7270,7 +7046,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
-        "unknown",
+        "small",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -7370,7 +7146,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
-        "unknown",
+        "small",
         "free"
       ]
     },
@@ -8168,7 +7944,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "strong",
+        "mid",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -8368,7 +8144,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "strong",
+        "mid",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -8428,7 +8204,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "strong",
+        "mid",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -8888,7 +8664,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
-        "unknown",
+        "small",
         "router",
         "free"
       ],
@@ -8987,7 +8763,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "strong",
+        "mid",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -9047,7 +8823,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "strong",
+        "mid",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -9067,7 +8843,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
-        "strong",
+        "mid",
         "free"
       ],
       "origInputPricePer1M": 0,
@@ -9114,6 +8890,80 @@
       "origOutputPricePer1M": 0
     },
     {
+      "platform": "kilo",
+      "modelId": "z-ai/glm-5.2:free",
+      "displayName": "Z.ai: GLM 5.2 (free)",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 32768,
+      "rpmLimit": 10,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "kenari",
+      "modelId": "agnes-3-0-flash:free",
+      "displayName": "Agnes 3 0 Flash Free",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 512000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "strong",
+        "free"
+      ]
+    },
+    {
+      "platform": "google",
+      "modelId": "gemini-3.8-live",
+      "displayName": "Gemini 3.8 Live",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": null,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "small",
+        "free"
+      ]
+    },
+    {
+      "platform": "google",
+      "modelId": "gemini-3.8-live-extended-thinking",
+      "displayName": "Gemini 3.8 Live Extended Thinking",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": null,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "small",
+        "free"
+      ]
+    },
+    {
       "platform": "cerebras",
       "modelId": "gpt-oss-120b",
       "displayName": "GPT-OSS 120B (Cerebras)",
@@ -9129,6 +8979,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "mid",
         "general",
         "reasoner",
         "free"
@@ -9154,6 +9005,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "mid",
         "general",
         "reasoner",
         "free"
@@ -9176,6 +9028,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "mid",
         "general",
         "reasoner",
         "free"
@@ -9197,6 +9050,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "mid",
         "general",
         "reasoner",
         "free"
@@ -9218,6 +9072,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "mid",
         "general",
         "coding",
         "reasoner",
@@ -9240,6 +9095,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "strong",
         "general",
         "reasoner",
         "free"
@@ -9261,6 +9117,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "frontier",
         "general",
         "coding",
         "reasoner",
@@ -9285,6 +9142,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -9305,6 +9163,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -9325,6 +9184,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -9345,6 +9205,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -9365,6 +9226,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -9385,6 +9247,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -9405,6 +9268,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -9425,6 +9289,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "coding",
         "free"
       ],
@@ -9445,6 +9310,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -9465,6 +9331,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -9485,6 +9352,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -9505,6 +9373,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -9525,6 +9394,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -9545,6 +9415,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -9565,6 +9436,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -9585,6 +9457,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -9605,6 +9478,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -9625,6 +9499,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -9645,6 +9520,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -9665,6 +9541,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -9685,6 +9562,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -9705,6 +9583,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -9725,6 +9604,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -9745,6 +9625,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -9765,6 +9646,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -9785,6 +9667,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -9805,6 +9688,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -9825,6 +9709,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -9845,6 +9730,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -9865,6 +9751,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -9885,6 +9772,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -9905,6 +9793,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -9925,6 +9814,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -9945,6 +9835,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -9965,6 +9856,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -9985,6 +9877,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -10005,6 +9898,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -10025,6 +9919,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -10045,6 +9940,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -10065,6 +9961,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -10085,6 +9982,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -10105,6 +10003,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -10125,6 +10024,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -10145,6 +10045,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -10165,6 +10066,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -10185,6 +10087,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -10205,6 +10108,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -10225,6 +10129,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -10245,6 +10150,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -10265,6 +10171,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -10285,6 +10192,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -10305,6 +10213,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -10325,6 +10234,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -10345,6 +10255,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -10365,6 +10276,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -10385,6 +10297,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -10405,6 +10318,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -10425,6 +10339,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -10445,6 +10360,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -10465,6 +10381,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -10485,6 +10402,7 @@
       "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -10505,6 +10423,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -10525,6 +10444,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -10545,6 +10465,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -10565,6 +10486,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -10585,6 +10507,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -10605,6 +10528,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -10625,6 +10549,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -10645,6 +10570,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -10665,6 +10591,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -10685,6 +10612,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -10705,6 +10633,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -10725,6 +10654,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -10745,6 +10675,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -10765,6 +10696,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -10785,6 +10717,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -10805,6 +10738,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -10825,6 +10759,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -10845,6 +10780,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -10865,6 +10801,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -10885,6 +10822,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -10905,6 +10843,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -10925,6 +10864,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -10945,6 +10885,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -10965,6 +10906,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -10985,6 +10927,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -11005,6 +10948,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -11025,6 +10969,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -11045,6 +10990,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -11065,6 +11011,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -11085,6 +11032,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -11105,6 +11053,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -11125,6 +11074,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -11145,6 +11095,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -11165,6 +11116,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -11185,6 +11137,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -11205,6 +11158,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -11225,6 +11179,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "coding",
         "free"
       ],
@@ -11245,6 +11200,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -11265,6 +11221,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -11285,6 +11242,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -11305,6 +11263,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -11325,6 +11284,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -11345,6 +11305,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -11365,6 +11326,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -11385,6 +11347,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -11405,6 +11368,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -11425,6 +11389,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -11445,6 +11410,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -11465,6 +11431,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "coding",
         "free"
       ],
@@ -11485,6 +11452,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -11505,6 +11473,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -11525,6 +11494,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -11545,6 +11515,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -11565,6 +11536,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -11585,6 +11557,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -11605,6 +11578,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -11625,6 +11599,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -11645,6 +11620,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -11665,6 +11641,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "coding",
         "free"
       ],
@@ -11685,6 +11662,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -11705,6 +11683,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -11725,6 +11704,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -11745,6 +11725,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -11765,6 +11746,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -11785,6 +11767,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -11805,6 +11788,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -11825,6 +11809,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -11845,6 +11830,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -11865,6 +11851,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -11885,6 +11872,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "general",
         "free"
       ],
@@ -11905,6 +11893,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -11925,6 +11914,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -11945,6 +11935,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -11965,6 +11956,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -11985,6 +11977,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -12005,6 +11998,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -12025,6 +12019,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -12045,6 +12040,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -12065,6 +12061,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -12085,6 +12082,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -12105,6 +12103,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -12125,6 +12124,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -12145,6 +12145,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -12165,6 +12166,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -12185,6 +12187,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -12205,6 +12208,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -12225,6 +12229,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -12245,6 +12250,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -12265,6 +12271,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "reasoner",
         "free"
       ],
@@ -12285,6 +12292,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -12305,6 +12313,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -12325,6 +12334,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -12345,6 +12355,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -12365,6 +12376,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -12385,6 +12397,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -12405,6 +12418,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "general",
         "free"
       ],
@@ -12425,6 +12439,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -12445,6 +12460,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -12465,6 +12481,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -12485,6 +12502,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -12505,6 +12523,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -12525,6 +12544,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "reasoner",
         "free"
       ],
@@ -12545,6 +12565,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "small",
         "general",
         "free"
       ],
@@ -12565,6 +12586,7 @@
       "supportsVision": false,
       "supportsReasoning": false,
       "tags": [
+        "strong",
         "reasoner",
         "free"
       ],
@@ -12587,6 +12609,7 @@
       "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
+        "mid",
         "vision",
         "general",
         "free"
@@ -12611,6 +12634,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
+        "mid",
         "coding-agent-reasoning-vision-multimodal"
       ],
       "insight": "MoE multimodal model (~196B backbone, ~11B active per token), optimized for coding + long context + agent workflows with selectable reasoning levels",

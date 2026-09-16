@@ -125,11 +125,20 @@ export function resolvePolicy(
   if (config.autoApproveWrites === true && MUTATING_FILE_TOOLS.has(call.toolName)) {
     return Promise.resolve({ type: 'approved' });
   }
-  if (config.mode === 'auto' && call.toolName === 'runCommand') {
+  if (call.toolName === 'runCommand') {
     const cmd = commandFromInput(call.input);
-    if (cmd && !isDangerous(cmd)
-      && (matchesAllowlist(cmd, DEFAULT_COMMAND_ALLOWLIST) || matchesAllowlist(cmd, config.autoModeAllowlist) || isReadOnlyCommand(cmd))) {
-      return Promise.resolve({ type: 'approved' });
+    if (cmd && !isDangerous(cmd)) {
+      // A confidently read-only command auto-runs in EVERY mode. Ask mode and allowlist mode
+      // already did; agent mode with the default commandApproval: 'always' was the one place
+      // `ls` or `git log` still cost a prompt, so the most permissive session mode was the
+      // strictest about reading (2026-09-16). Plan and ask mode return in their own branches
+      // above, so this changes agent mode only.
+      if (isReadOnlyCommand(cmd)) return Promise.resolve({ type: 'approved' });
+      // The broader allowlist (installs, builds, test suites) stays gated on allowlist mode.
+      if (config.mode === 'auto'
+        && (matchesAllowlist(cmd, DEFAULT_COMMAND_ALLOWLIST) || matchesAllowlist(cmd, config.autoModeAllowlist))) {
+        return Promise.resolve({ type: 'approved' });
+      }
     }
   }
   if (!requestApproval) {

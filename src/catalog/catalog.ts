@@ -184,8 +184,8 @@ export class Catalog {
     );
     // Enabled by default: TierMux is meant to work with zero setup, and a fresh install
     // where every model is off routes nothing at all. The real gate is provider-level
-    // (getDisabledProviders leaves only DEFAULT_ENABLED_PLATFORM on), so this enables one
-    // keyless gateway's models, not all 22 providers'. Staged rows (ready === false) stay off.
+    // (getDisabledProviders leaves only the keyless gateways on), so this enables those
+    // gateways' models, not every provider's. Staged rows (ready === false) stay off.
     return sorted.map((m, i) => ({
       platform: m.platform,
       modelId: m.modelId,

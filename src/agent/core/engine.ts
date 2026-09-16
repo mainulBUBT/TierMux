@@ -211,13 +211,27 @@ const REPEAT_FAILURE_LIMIT = 3;
 const REPEAT_READ_LIMIT = 4;
 
 /** Read-only tools wrapped so an identical call returns the earlier result instead of re-running.
- *  Wire-level (same name, same input bytes) — never a judgment about what the model should do. */
+ *  Wire-level (same name, same input bytes) — never a judgment about what the model should do.
+ *  A read is a repeat only while NOTHING has changed: any non-read tool clears the cache, because
+ *  re-reading a file the turn just edited is the opposite of a loop. Without that, a read after an
+ *  edit was answered with the model's own pre-edit content plus "the result is unchanged" — so the
+ *  edit looked reverted and the model redid it (live repro 2026-09-16: a blade fix that "undid"
+ *  itself for 24 minutes). */
 function dedupeReads(tools: ToolSet, onRepeat: (signature: string, count: number) => void): ToolSet {
   const seen = new Map<string, { result: unknown; count: number }>();
   const out: ToolSet = {};
   for (const [name, t] of Object.entries(tools)) {
     const exec = (t as { execute?: (input: unknown, o: unknown) => Promise<unknown> }).execute;
-    if (!READ_ONLY_TOOLS.has(name) || !exec) { out[name] = t; continue; }
+    if (!exec) { out[name] = t; continue; }
+    if (!READ_ONLY_TOOLS.has(name)) {
+      out[name] = {
+        ...t,
+        execute: async (input: unknown, o: unknown) => {
+          try { return await exec(input, o); } finally { seen.clear(); }
+        },
+      } as ToolSet[string];
+      continue;
+    }
     out[name] = {
       ...t,
       execute: async (input: unknown, o: unknown) => {
@@ -226,8 +240,12 @@ function dedupeReads(tools: ToolSet, onRepeat: (signature: string, count: number
         if (prior) {
           prior.count++;
           onRepeat(sig, prior.count);
-          const note = `[Identical ${name} call #${prior.count} this turn — the result is unchanged. Use it; do not run this call again.]`;
-          return prior.count === 2 && typeof prior.result === 'string' ? `${note}\n${prior.result}` : note;
+          // The content comes back EVERY time, not just on the second copy. ageToolOutputs elides
+          // an older tool result with "Re-run the tool … to see it again", so withholding it here
+          // told the model to re-run and then refused to answer — it went blind on a file it had
+          // read and looped until the stuck guard cut the turn (live repro 2026-09-16).
+          const note = `[Identical ${name} call #${prior.count} this turn — served from this turn's cache, not re-run.]`;
+          return typeof prior.result === 'string' ? `${note}\n${prior.result}` : prior.result;
         }
         const result = await exec(input, o);
         seen.set(sig, { result, count: 1 });

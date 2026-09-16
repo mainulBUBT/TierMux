@@ -240,11 +240,23 @@ export function noteModelFailure(platform: string, modelId: string, status: numb
  *  model. Ranking is by MODEL; speed stays per row, because the same weights on a slow gateway
  *  genuinely are slower. */
 export function canonicalModelId(modelId: string): string {
-  return modelId.toLowerCase()
-    .replace(/^[^/]+\//, '')            // vendor namespace: openai/, nvidia/, @cf/meta/…
-    .replace(/:(free|latest)$/, '')       // gateway tier suffix
-    .replace(/-free$/, '')
-    .replace(/[-_.]instruct$|[-_.]it$/, '');
+  let s = modelId.toLowerCase().replace(/:(free|latest|floor|exp)$|-free$/, '');
+  // Vendor namespace, all of it — "@cf/meta/llama-4-scout" carries two segments. A trailing
+  // auto/free/default/router names a routing POLICY rather than a model, and which policy it
+  // is comes entirely from the namespace in front of it, so those keep theirs: "kilo-auto/free"
+  // and "openrouter/free" are different routers over different pools.
+  const tail = s.slice(s.lastIndexOf('/') + 1);
+  if (!/^(auto|free|default|router)$/.test(tail)) s = tail;
+  // Separators are spelling, not identity. opencode ships "mimo-v2.5-free" where kenari ships
+  // "mimo-v2-5:free" for the same weights; unfolded, the two sat in different rank groups and
+  // stopped rotating as peers, each drawing a full share of the traffic. Kept in step with
+  // modelTierKey() in scripts/modelTiers.mjs, which folds the tier table the same way — tier and
+  // rank have to agree on what "the same model" means, or the twin lands in one band by tag and
+  // in another by rank. A routing-gates case asserts the two agree on every catalog id.
+  s = s.replace(/@.*$/, '').replace(/[._:]/g, '-').replace(/-+/g, '-');
+  let prev: string;
+  do { prev = s; s = s.replace(/-(think-search|thinking|search|instruct|it)$/, ''); } while (s !== prev);
+  return s.replace(/-+(?=\d)/g, '');
 }
 
 /** Intelligence rank per MODEL, not per row. The catalog derives a rank per provider row, so
@@ -339,10 +351,18 @@ export async function selectModel(
       skip(`${e.platform}::${e.modelId}`, PROVIDER_OFF);
     }
   }
-  const pick = async (key: string, label: string): Promise<string | undefined> => {
+  // `platform::auto` is a WILDCARD — "whichever enabled model of this platform is usable" —
+  // but only where the platform has no model actually CALLED auto. dreamprompting publishes
+  // one (its own router alias, supportsTools=false in the catalog), and treating that row as a
+  // wildcard returned it before the gates below ran, so a tool turn could be handed the one
+  // row the catalog says cannot call tools (2026-09-16).
+  const isWildcard = (key: string): boolean =>
+    key.endsWith('::auto') && !sources?.catalog.find(key.slice(0, -6), 'auto');
+
+  const pickOne = async (key: string, label: string): Promise<string | undefined> => {
     if (exclude.has(key)) { skip(key, 'excluded for this retry'); return undefined; }
-    const platform = key.endsWith('::auto') ? key.slice(0, -6) : key.split('::')[0];
-    const modelId = key.endsWith('::auto') ? '' : key.split('::').slice(1).join('::');
+    const platform = key.split('::')[0];
+    const modelId = key.split('::').slice(1).join('::');
     // Provider switched off in Manage Models & Keys — checked before the key lookup so the
     // rationale says "provider off" rather than blaming a key that is actually stored. The
     // pinned model is exempt for the same reason it is exempt from the enabled filter below:
@@ -353,12 +373,6 @@ export async function selectModel(
     // the chain prefers healthy models. The pinned model is exempt — explicit user choice,
     // only the Stop button cancels it.
     if (modelId && isInCooldown(platform, modelId) && key !== opts.pinnedModel) { skip(key, 'in failure cooldown (recent errors)'); return undefined; }
-    if (key.endsWith('::auto')) {
-      const hit = [...enabled].find((k) => k.startsWith(`${platform}::`) && !exclude.has(k));
-      if (!hit) skip(key, 'platform enabled but no enabled model');
-      else pickLabels.set(hit, label);
-      return hit;
-    }
     if (enabled.size > 0 && !enabled.has(key) && opts.pinnedModel !== key) { skip(key, 'not enabled in Manage Models & Keys'); return undefined; }
     // An agent turn offers tools, so a model the catalog marks supportsTools=false would
     // deflect ("I don't have access to…") and every tool would silently "not work".
@@ -385,6 +399,24 @@ export async function selectModel(
     }
     pickLabels.set(key, label);
     return key;
+  };
+
+  // The wildcard resolves by running candidates through the SAME gates, so what it hands back
+  // is a model that passed cooldown, rate limit, deprecation and the tools check — not merely
+  // the first enabled row of the platform.
+  const pick = async (key: string, label: string): Promise<string | undefined> => {
+    if (!isWildcard(key)) return pickOne(key, label);
+    if (exclude.has(key)) { skip(key, 'excluded for this retry'); return undefined; }
+    const platform = key.slice(0, -6);
+    if (disabledProviders.has(platform) && key !== opts.pinnedModel) { skip(key, PROVIDER_OFF); return undefined; }
+    if (!(await platformUsable(platform))) { skip(key, 'no API key stored for this platform'); return undefined; }
+    for (const candidate of enabled) {
+      if (!candidate.startsWith(`${platform}::`) || isWildcard(candidate)) continue;
+      const hit = await pickOne(candidate, label);
+      if (hit) return hit;
+    }
+    skip(key, 'platform enabled but no model of it is usable right now');
+    return undefined;
   };
 
   const chain: string[] = [];
@@ -505,6 +537,9 @@ export async function selectModel(
   // first (settings order let whichever model sat first serve every task — 2026-08-28,
   // nemotron-3-ultra-free). Pinned models are exempt.
   const ranked: Array<{ key: string; tier: ReturnType<typeof tierOf>; rank: number; speed: number; vote: number; headroom: number }> = [];
+  // A wildcard resolves to a model that may also be enabled in its own right, so dedupe on what
+  // was PICKED — chain alone is not enough, it is filled only after this loop.
+  const takenTail = new Set<string>();
   for (const key of enabled) {
     // Already chained (pin/table pick)? Skip BEFORE re-picking: pick() would overwrite the
     // entry's original label ('pinned by you' / 'task table (chat)') with 'enabled model' and
@@ -512,9 +547,14 @@ export async function selectModel(
     // table-picked opencode/hy3-free reported "enabled model — serves this turn").
     if (chain.includes(key)) continue;
     const picked = await pick(key, 'enabled model');
-    if (!picked || chain.includes(picked)) continue;
-    const platform = key.split('::')[0];
-    const modelId = key.split('::').slice(1).join('::');
+    if (!picked || chain.includes(picked) || takenTail.has(picked)) continue;
+    takenTail.add(picked);
+    // Read the metadata off what was PICKED, not off the key that asked for it: a
+    // `platform::auto` entry resolves to a real model, and describing that model by the
+    // wildcard's own id gave it no catalog row at all — tier 'unknown', an infinite rank and
+    // speed 5, so a resolved frontier model sorted below every judged row (2026-09-16).
+    const platform = picked.split('::')[0];
+    const modelId = picked.split('::').slice(1).join('::');
     const meta = sources.catalog.find(platform, modelId);
     ranked.push({
       key: picked,

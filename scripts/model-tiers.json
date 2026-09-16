@@ -1,0 +1,2266 @@
+{
+ "0g-deepseek-v3": {
+  "tier": "mid",
+  "note": "BenchLM 41.74 (DeepSeek V3)"
+ },
+ "0g-deepseek-v4-flash": {
+  "tier": "strong",
+  "note": "DeepSeek V4 Flash, ~V4 Pro (66.6) band"
+ },
+ "0g-deepseek-v4-pro": {
+  "tier": "strong",
+  "note": "DeepSeek V4 Pro 0813 = 66.6"
+ },
+ "0g-glm-5": {
+  "tier": "strong",
+  "note": "BenchLM 61.69 (GLM-5-Turbo)"
+ },
+ "0g-glm-5.1": {
+  "tier": "strong",
+  "note": "BenchLM 63.35 (GLM-5.1)"
+ },
+ "0g-glm-5.2": {
+  "tier": "strong",
+  "note": "BenchLM 66.82 (GLM-5.2)"
+ },
+ "0g-minimax-m3": {
+  "tier": "strong",
+  "note": "BenchLM 61.47 (MiniMax M3)"
+ },
+ "0g-qwen-vl": {
+  "tier": "mid",
+  "note": "Qwen3-VL class"
+ },
+ "0g-qwen3.6": {
+  "tier": "strong",
+  "note": "Qwen3.6 Plus/Max = 60-64"
+ },
+ "0g-qwen3.7-max": {
+  "tier": "strong",
+  "note": "BenchLM 67.03 (Qwen3.7 Max)"
+ },
+ "0gm-1.0-35b-a3b": {
+  "tier": "mid",
+  "note": "35B/A3B open MoE"
+ },
+ "agnes-2-0-flash": {
+  "tier": "mid",
+  "note": "free coding/reasoning, mid-class"
+ },
+ "agnes-2-5-flash": {
+  "tier": "mid",
+  "note": "free coding/reasoning, mid-class"
+ },
+ "agnes-2.0-flash": {
+  "tier": "mid",
+  "note": "free coding/reasoning, mid-class"
+ },
+ "agnes-2.5-flash": {
+  "tier": "mid",
+  "note": "free coding/reasoning, mid-class"
+ },
+ "agnes-3.0-flash": {
+  "tier": "strong",
+  "note": "AA index 36 = DeepSeek V4 Pro (66.6 band); weaker agentic, TB2 7%"
+ },
+ "ai-synthetic-video-detector": {
+  "tier": "small",
+  "note": "detection"
+ },
+ "aion-2.0": {
+  "tier": "mid",
+  "note": "BenchLM 46.7"
+ },
+ "aion-3.0": {
+  "tier": "strong",
+  "note": "Aion flagship, $3/$6"
+ },
+ "aion-3.0-mini": {
+  "tier": "mid",
+  "note": "mini of Aion 3.0"
+ },
+ "aion-rp-llama-3.1-8b": {
+  "tier": "small",
+  "note": "8B roleplay fine-tune"
+ },
+ "allam-2-7b": {
+  "tier": "small",
+  "note": "7B"
+ },
+ "antangelmed": {
+  "tier": "mid",
+  "note": "medical specialist"
+ },
+ "antigravity-preview-05-2026": {
+  "tier": "mid",
+  "note": "agentic coding product model"
+ },
+ "antigravity-preview-09-2026": {
+  "tier": "mid",
+  "note": "agentic coding product model"
+ },
+ "aqa": {
+  "tier": "small",
+  "note": "exam-grading model"
+ },
+ "atria-dawn-preview": {
+  "tier": "mid",
+  "note": "Shanghai AI Lab preview"
+ },
+ "auto": {
+  "tier": "small",
+  "note": "provider auto-router, undocumented pool -- floor only"
+ },
+ "bailu-2.6-preview": {
+  "tier": "strong",
+  "note": "APEX predecessor"
+ },
+ "bailu-2.7": {
+  "tier": "strong",
+  "note": "vendor blog: APEX line built on 2.6"
+ },
+ "bailu-2.8-lite": {
+  "tier": "mid",
+  "note": "lite variant"
+ },
+ "bailu-apex-2": {
+  "tier": "strong",
+  "note": "vendor-claimed frontier, no third-party evidence"
+ },
+ "bailu-apex-2.7": {
+  "tier": "strong",
+  "note": "vendor-claimed frontier, no third-party evidence"
+ },
+ "bailu-auto": {
+  "tier": "mid",
+  "note": "router alias, mid-band default"
+ },
+ "bailu-edge-2": {
+  "tier": "mid",
+  "note": "edge variant"
+ },
+ "bailu-edge-thinking": {
+  "tier": "mid",
+  "note": "edge variant"
+ },
+ "bielik-11b-v3.0": {
+  "tier": "small",
+  "note": "11B Polish instruct"
+ },
+ "big-pickle": {
+  "tier": "strong",
+  "note": "OpenCode Zen stealth: SWE Atlas QnA 50.8%, over GLM-5.2; Sonnet 4.6 band"
+ },
+ "c4ai-aya-vision-32b": {
+  "tier": "mid",
+  "note": "Cohere Aya vision 32B"
+ },
+ "ch.at": {
+  "tier": "small",
+  "note": "ch.at relay, GPT-4o backend = 38.95"
+ },
+ "claude-fable-5.1": {
+  "tier": "frontier",
+  "note": "BenchLM 84.76 (Claude Fable 5.1)"
+ },
+ "claude-haiku-4-5": {
+  "tier": "mid",
+  "note": "BenchLM 52.91 (Claude Haiku 4.5)"
+ },
+ "claude-haiku-4.5": {
+  "tier": "mid",
+  "note": "BenchLM 52.91 (Claude Haiku 4.5)"
+ },
+ "claude-sonnet-4-6": {
+  "tier": "strong",
+  "note": "BenchLM 62.95 (Claude Sonnet 4.6)"
+ },
+ "codegemma-1.1-7b": {
+  "tier": "small",
+  "note": "7B"
+ },
+ "codegemma-7b": {
+  "tier": "small",
+  "note": "7B"
+ },
+ "codellama-70b": {
+  "tier": "small",
+  "note": "2023 gen"
+ },
+ "codestral-22b-instruct-v0.1": {
+  "tier": "small",
+  "note": "22B, v0.1"
+ },
+ "codestral-2501": {
+  "tier": "mid",
+  "note": "25B codestral"
+ },
+ "codestral-2508": {
+  "tier": "mid",
+  "note": "Codestral 25B, current"
+ },
+ "codestral-latest": {
+  "tier": "mid",
+  "note": "Codestral 25B, current"
+ },
+ "coding-glm-4.6": {
+  "tier": "mid",
+  "note": "GLM-4.6 = 52"
+ },
+ "coding-glm-4.7": {
+  "tier": "strong",
+  "note": "GLM-4.7 = 58"
+ },
+ "coding-glm-5": {
+  "tier": "strong",
+  "note": "GLM-5 = 61.5"
+ },
+ "coding-glm-5-turbo": {
+  "tier": "strong",
+  "note": "GLM-5-Turbo = 62"
+ },
+ "coding-glm-5.1": {
+  "tier": "strong",
+  "note": "GLM-5.1 = 63.4"
+ },
+ "coding-glm-5.2": {
+  "tier": "strong",
+  "note": "GLM-5.2 = 66.8"
+ },
+ "coding-glm-5.3": {
+  "tier": "strong",
+  "note": "GLM-5.3 = 67.1"
+ },
+ "coding-kimi-k3": {
+  "tier": "frontier",
+  "note": "Kimi K3 = 74.6"
+ },
+ "coding-minimax-m2": {
+  "tier": "mid",
+  "note": "MiniMax M2 line, under its measured sibling M2.5 (54.89)"
+ },
+ "coding-minimax-m2.1": {
+  "tier": "mid",
+  "note": "MiniMax M2.1 line, under its measured sibling M2.5 (54.89)"
+ },
+ "coding-minimax-m2.5": {
+  "tier": "mid",
+  "note": "BenchLM 54.89 (MiniMax M2.5)"
+ },
+ "coding-minimax-m2.7": {
+  "tier": "strong",
+  "note": "MiniMax M2.7 = 55"
+ },
+ "coding-minimax-m3": {
+  "tier": "strong",
+  "note": "MiniMax M3 = 61.5"
+ },
+ "command-a-03-2025": {
+  "tier": "mid",
+  "note": "Command A class"
+ },
+ "command-a-plus-05-2026": {
+  "tier": "mid",
+  "note": "Command A+ = 43"
+ },
+ "command-a-reasoning-08-2025": {
+  "tier": "mid",
+  "note": "Command A reasoning"
+ },
+ "command-a-vision-07-2025": {
+  "tier": "mid",
+  "note": "Command A vision"
+ },
+ "command-r-08-2024": {
+  "tier": "small",
+  "note": "2024 gen"
+ },
+ "command-r-plus-08-2024": {
+  "tier": "small",
+  "note": "2024 gen"
+ },
+ "command-r7b-arabic-02-2025": {
+  "tier": "small",
+  "note": "7B"
+ },
+ "compassjudger-1-32b-instruct": {
+  "tier": "small",
+  "note": "judge model"
+ },
+ "compound": {
+  "tier": "strong",
+  "note": "Cognition agentic model, $0.15/$60 output"
+ },
+ "compound-mini": {
+  "tier": "mid",
+  "note": "mini of Compound"
+ },
+ "cosmos-reason2-8b": {
+  "tier": "small",
+  "note": "physical/video reasoner"
+ },
+ "dbrx-instruct": {
+  "tier": "small",
+  "note": "2024 gen MoE"
+ },
+ "deep-research-max-preview-04-2026": {
+  "tier": "mid",
+  "note": "agentic research product"
+ },
+ "deep-research-preview-04-2026": {
+  "tier": "mid",
+  "note": "agentic research product, not a chat model"
+ },
+ "deep-research-pro-preview-12-2025": {
+  "tier": "mid",
+  "note": "agentic research product"
+ },
+ "deepseek-chat-v3.1": {
+  "tier": "mid",
+  "note": "BenchLM 50.84 (DeepSeek V3.1)"
+ },
+ "deepseek-coder-6.7b-instruct": {
+  "tier": "small",
+  "note": "6.7B, 2024 gen"
+ },
+ "deepseek-r1": {
+  "tier": "mid",
+  "note": "BenchLM 50.62 (DeepSeek-R1)"
+ },
+ "deepseek-r1-distill-qwen-32b": {
+  "tier": "small",
+  "note": "BenchLM 32.62 (DeepSeek R1 Distill Qwen 32B)"
+ },
+ "deepseek-v3": {
+  "tier": "mid",
+  "note": "BenchLM 41.74 (DeepSeek V3)"
+ },
+ "deepseek-v3.1": {
+  "tier": "mid",
+  "note": "BenchLM 50.84 (DeepSeek V3.1)"
+ },
+ "deepseek-v3.2": {
+  "tier": "strong",
+  "note": "BenchLM 56.87 (DeepSeek V3.2)"
+ },
+ "deepseek-v3.2-speciale": {
+  "tier": "strong",
+  "note": "DeepSeek V3.2 = 57"
+ },
+ "deepseek-v4-flash": {
+  "tier": "strong",
+  "note": "V4 Pro=66.6; reviews put Flash near Pro on current numbers"
+ },
+ "deepseek-v4-flash-0731": {
+  "tier": "strong",
+  "note": "same model, dated"
+ },
+ "deepseek-v4-flash-0731free": {
+  "tier": "strong",
+  "note": "same model, free access"
+ },
+ "deepseek-v4-flash-vision": {
+  "tier": "strong",
+  "note": "V4 Flash + vision"
+ },
+ "deepseek-v4-flash-vision-exp": {
+  "tier": "strong",
+  "note": "V4 Flash + vision"
+ },
+ "deepseek-v4-flash:0731": {
+  "tier": "strong",
+  "note": "same model"
+ },
+ "deepseek-v4-flash:preview": {
+  "tier": "strong",
+  "note": "same model"
+ },
+ "deepseek-v4-pro": {
+  "tier": "strong",
+  "note": "DeepSeek V4 Pro = 66.6"
+ },
+ "deepseek-v4-pro-0813": {
+  "tier": "strong",
+  "note": "BenchLM 66.57 (DeepSeek V4 Pro 0813)"
+ },
+ "deepseek-v4-pro:0813": {
+  "tier": "strong",
+  "note": "BenchLM 66.57 (DeepSeek V4 Pro 0813)"
+ },
+ "deepseek-v4-pro:preview": {
+  "tier": "strong",
+  "note": "same model"
+ },
+ "deepseek-v4.1-flash": {
+  "tier": "strong",
+  "note": "V4.1 successor of V4 Flash"
+ },
+ "default": {
+  "tier": "small",
+  "note": "LLM7 default: random pick over its free pool, floor Mistral Nemo"
+ },
+ "deplot": {
+  "tier": "mid",
+  "note": "chart generation"
+ },
+ "devstral": {
+  "tier": "mid",
+  "note": "Devstral 32B agentic code"
+ },
+ "devstral-2-123b": {
+  "tier": "mid",
+  "note": "123B agentic code"
+ },
+ "devstral-2512": {
+  "tier": "mid",
+  "note": "Devstral 32B agentic code"
+ },
+ "devstral-latest": {
+  "tier": "mid",
+  "note": "Devstral 32B agentic code"
+ },
+ "devstral-medium": {
+  "tier": "mid",
+  "note": "123B agentic code"
+ },
+ "devstral-medium-latest": {
+  "tier": "mid",
+  "note": "123B agentic code"
+ },
+ "devstral-small-2:24b": {
+  "tier": "small",
+  "note": "24B"
+ },
+ "diffusiongemma-26b-a4b-it": {
+  "tier": "small",
+  "note": "image generation"
+ },
+ "dots-3-note-preview": {
+  "tier": "strong",
+  "note": "BenchLM 64.09 (dots3-note Preview)"
+ },
+ "dots3-note-prev": {
+  "tier": "strong",
+  "note": "dots3-note = 64"
+ },
+ "ea-29b-a4b": {
+  "tier": "mid",
+  "note": "29B/A4B MoE"
+ },
+ "ernie-4.5-0.3b-pt": {
+  "tier": "small",
+  "note": "0.3B"
+ },
+ "ernie-4.5-21b-a3b-pt": {
+  "tier": "mid",
+  "note": "ERNIE 4.5 mid"
+ },
+ "ernie-4.5-300b-a47b-pt": {
+  "tier": "strong",
+  "note": "ERNIE 4.5 flagship MoE"
+ },
+ "ernie-4.5-vl-28b-a3b-pt": {
+  "tier": "mid",
+  "note": "ERNIE 4.5 VL mid"
+ },
+ "fast": {
+  "tier": "strong",
+  "note": "listed on BenchLM as Fast (59.4)"
+ },
+ "free": {
+  "tier": "small",
+  "note": "bare router alias, undocumented pool -- floor only"
+ },
+ "fuyu-8b": {
+  "tier": "small",
+  "note": "8B VL"
+ },
+ "gemini-2.0-flash": {
+  "tier": "small",
+  "note": "2 gen back; 2.5-flash=51, 3.5-flash=68"
+ },
+ "gemini-2.0-flash-lite": {
+  "tier": "small",
+  "note": "2 gen back, lite"
+ },
+ "gemini-2.5-computer-use-preview-10-2025": {
+  "tier": "small",
+  "note": "single-purpose Gemini surface"
+ },
+ "gemini-2.5-flash": {
+  "tier": "mid",
+  "note": "BenchLM 51.3 (Gemini 2.5 Flash)"
+ },
+ "gemini-2.5-flash-image": {
+  "tier": "small",
+  "note": "image generation"
+ },
+ "gemini-2.5-flash-lite": {
+  "tier": "small",
+  "note": "lite of a superseded gen"
+ },
+ "gemini-2.5-flash-native-audio-latest": {
+  "tier": "small",
+  "note": "single-purpose Gemini surface"
+ },
+ "gemini-2.5-flash-native-audio-preview-09-2025": {
+  "tier": "small",
+  "note": "single-purpose Gemini surface"
+ },
+ "gemini-2.5-flash-native-audio-preview-12-2025": {
+  "tier": "small",
+  "note": "single-purpose Gemini surface"
+ },
+ "gemini-2.5-pro": {
+  "tier": "strong",
+  "note": "BenchLM 57.37 (Gemini 2.5 Pro)"
+ },
+ "gemini-3-flash": {
+  "tier": "strong",
+  "note": "BenchLM 62 (Gemini 3 Flash)"
+ },
+ "gemini-3-flash-preview": {
+  "tier": "strong",
+  "note": "BenchLM 62 (Gemini 3 Flash)"
+ },
+ "gemini-3-pro-image": {
+  "tier": "small",
+  "note": "image generation"
+ },
+ "gemini-3-pro-image-preview": {
+  "tier": "small",
+  "note": "image generation"
+ },
+ "gemini-3.1-flash-image": {
+  "tier": "small",
+  "note": "image generation"
+ },
+ "gemini-3.1-flash-image-preview": {
+  "tier": "small",
+  "note": "image generation"
+ },
+ "gemini-3.1-flash-lite": {
+  "tier": "strong",
+  "note": "BenchLM 56.32 (Gemini 3.1 Flash-Lite)"
+ },
+ "gemini-3.1-flash-lite-image": {
+  "tier": "small",
+  "note": "image generation"
+ },
+ "gemini-3.1-flash-lite-preview": {
+  "tier": "strong",
+  "note": "BenchLM 56.32 (Gemini 3.1 Flash-Lite)"
+ },
+ "gemini-3.1-flash-live-preview": {
+  "tier": "small",
+  "note": "single-purpose Gemini surface"
+ },
+ "gemini-3.1-pro-preview": {
+  "tier": "frontier",
+  "note": "BenchLM 70.17 (Gemini 3.1 Pro)"
+ },
+ "gemini-3.1-pro-preview-customtools": {
+  "tier": "frontier",
+  "note": "Gemini 3.1 Pro = 70.2, tool-schema variant"
+ },
+ "gemini-3.5-flash": {
+  "tier": "strong",
+  "note": "BenchLM 68.16 (Gemini 3.5 Flash)"
+ },
+ "gemini-3.5-flash-lite": {
+  "tier": "strong",
+  "note": "BenchLM 58.84 (Gemini 3.5 Flash-Lite)"
+ },
+ "gemini-3.5-live-translate-preview": {
+  "tier": "small",
+  "note": "single-purpose Gemini surface"
+ },
+ "gemini-3.6-flash": {
+  "tier": "strong",
+  "note": "BenchLM 68.54 (Gemini 3.6 Flash)"
+ },
+ "gemini-3.7-flash": {
+  "tier": "strong",
+  "note": "BenchLM 68.64 (Gemini 3.7 Flash)"
+ },
+ "gemini-3.8-flash": {
+  "tier": "frontier",
+  "note": "BenchLM 75.48 (Gemini 3.8 Flash)"
+ },
+ "gemini-3.8-live": {
+  "tier": "small",
+  "note": "single-purpose Gemini surface (realtime speech)"
+ },
+ "gemini-3.8-live-extended-thinking": {
+  "tier": "small",
+  "note": "single-purpose Gemini surface (realtime speech)"
+ },
+ "gemini-embedding-001": {
+  "tier": "small",
+  "note": "embedding"
+ },
+ "gemini-flash-latest": {
+  "tier": "strong",
+  "note": "rolling alias of current Flash (3.5-3.8: 68-75)"
+ },
+ "gemini-flash-latest-high-res-exp": {
+  "tier": "strong",
+  "note": "same, high-res image setting"
+ },
+ "gemini-flash-lite": {
+  "tier": "mid",
+  "note": "rolling alias of current Flash-Lite (59)"
+ },
+ "gemini-flash-lite-latest": {
+  "tier": "mid",
+  "note": "rolling alias of current Flash-Lite (59)"
+ },
+ "gemini-omni-1.1-flash": {
+  "tier": "small",
+  "note": "video generation model"
+ },
+ "gemini-omni-flash-preview": {
+  "tier": "small",
+  "note": "video generation model"
+ },
+ "gemini-pro-latest": {
+  "tier": "strong",
+  "note": "rolling alias of current Pro (3.1 Pro = 70.2)"
+ },
+ "gemini-robotics-er-1.6-preview": {
+  "tier": "small",
+  "note": "single-purpose Gemini surface"
+ },
+ "gemini-robotics-er-2-preview": {
+  "tier": "small",
+  "note": "single-purpose Gemini surface"
+ },
+ "gemini-robotics-er-2-streaming-preview": {
+  "tier": "small",
+  "note": "single-purpose Gemini surface"
+ },
+ "gemma-2-27b": {
+  "tier": "small",
+  "note": "2 gen back"
+ },
+ "gemma-2b": {
+  "tier": "small",
+  "note": "size/naming heuristic"
+ },
+ "gemma-3-12b": {
+  "tier": "small",
+  "note": "12B"
+ },
+ "gemma-3-12b-it": {
+  "tier": "small",
+  "note": "12B"
+ },
+ "gemma-3-27b": {
+  "tier": "small",
+  "note": "BenchLM 35.82 (Gemma 3 27B)"
+ },
+ "gemma-3-27b-it": {
+  "tier": "small",
+  "note": "BenchLM 35.82 (Gemma 3 27B)"
+ },
+ "gemma-3-4b-it": {
+  "tier": "small",
+  "note": "4B"
+ },
+ "gemma-4-12b-it": {
+  "tier": "mid",
+  "note": "BenchLM 42.9 (Gemma 4 12B)"
+ },
+ "gemma-4-23b-it": {
+  "tier": "mid",
+  "note": "Gemma 4 mid size"
+ },
+ "gemma-4-26b": {
+  "tier": "strong",
+  "note": "Gemma 4 26B-A4B"
+ },
+ "gemma-4-26b-a4b-it": {
+  "tier": "strong",
+  "note": "BenchLM 55.1 (Gemma 4 26B A4B)"
+ },
+ "gemma-4-27b-it": {
+  "tier": "mid",
+  "note": "Gemma 4 mid size"
+ },
+ "gemma-4-31b": {
+  "tier": "mid",
+  "note": "BenchLM 52.58 (Gemma 4 31B)"
+ },
+ "gemma-4-31b-it": {
+  "tier": "mid",
+  "note": "BenchLM 52.58 (Gemma 4 31B)"
+ },
+ "gemma-4-31b-tee": {
+  "tier": "mid",
+  "note": "Gemma 4 31B = 53, TEE host"
+ },
+ "gemma-4-e2b-it": {
+  "tier": "small",
+  "note": "BenchLM 39.45 (Gemma 4 E2B)"
+ },
+ "gemma-4-e4b-it": {
+  "tier": "mid",
+  "note": "BenchLM 40.06 (Gemma 4 E4B)"
+ },
+ "gemma3-270m": {
+  "tier": "small",
+  "note": "270M on-device"
+ },
+ "gemma4:31b": {
+  "tier": "mid",
+  "note": "BenchLM 52.58 (Gemma 4 31B)"
+ },
+ "glm-4": {
+  "tier": "small",
+  "note": "2024 GLM-4 gen, two gens under GLM-4.6 (51.86)"
+ },
+ "glm-4-7-flash": {
+  "tier": "small",
+  "note": "nano/mini class"
+ },
+ "glm-4-air": {
+  "tier": "small",
+  "note": "GLM-4 Air, 2024 gen"
+ },
+ "glm-4-flash": {
+  "tier": "small",
+  "note": "GLM-4 Flash, 2024 gen"
+ },
+ "glm-4-flash-250414": {
+  "tier": "small",
+  "note": "GLM-4 Flash dated build, 2024 gen"
+ },
+ "glm-4-flashx-250414": {
+  "tier": "small",
+  "note": "GLM-4 FlashX dated build, 2024 gen"
+ },
+ "glm-4.1v-thinking-flashx": {
+  "tier": "small",
+  "note": "flash-sized VL, cf. glm-4.6v-flash"
+ },
+ "glm-4.5": {
+  "tier": "mid",
+  "note": "GLM-4.5, a step under GLM-4.6 (51.86)"
+ },
+ "glm-4.6": {
+  "tier": "mid",
+  "note": "BenchLM 51.86 (GLM-4.6)"
+ },
+ "glm-4.6v": {
+  "tier": "mid",
+  "note": "GLM-4.6V vision"
+ },
+ "glm-4.6v-flash": {
+  "tier": "small",
+  "note": "flash-sized VL"
+ },
+ "glm-4.7": {
+  "tier": "strong",
+  "note": "BenchLM 57.82 (GLM-4.7)"
+ },
+ "glm-4.7-flash": {
+  "tier": "small",
+  "note": "nano/mini class"
+ },
+ "glm-4v": {
+  "tier": "small",
+  "note": "GLM-4 VL, 2024 gen"
+ },
+ "glm-5": {
+  "tier": "strong",
+  "note": "BenchLM 61.69 (GLM-5-Turbo)"
+ },
+ "glm-5-2": {
+  "tier": "strong",
+  "note": "BenchLM 66.82 (GLM-5.2)"
+ },
+ "glm-5-turbo": {
+  "tier": "strong",
+  "note": "BenchLM 61.69 (GLM-5-Turbo)"
+ },
+ "glm-5.1": {
+  "tier": "strong",
+  "note": "BenchLM 63.35 (GLM-5.1)"
+ },
+ "glm-5.1-tee": {
+  "tier": "strong",
+  "note": "GLM-5.1 = 63.4, TEE host"
+ },
+ "glm-5.2": {
+  "tier": "strong",
+  "note": "BenchLM 66.82 (GLM-5.2)"
+ },
+ "glm-5.3": {
+  "tier": "strong",
+  "note": "BenchLM 67.07 (GLM-5.3)"
+ },
+ "glm-5.3-flash": {
+  "tier": "strong",
+  "note": "BenchLM 66.04 (GLM-5.3-Flash)"
+ },
+ "glm-5v-turbo": {
+  "tier": "strong",
+  "note": "VL sibling of GLM-5-Turbo (61.69)"
+ },
+ "glm-deep-research": {
+  "tier": "mid",
+  "note": "agentic research product"
+ },
+ "glm-zero-preview": {
+  "tier": "small",
+  "note": "2024 reasoning preview"
+ },
+ "gpt-120-oss": {
+  "tier": "mid",
+  "note": "GPT-OSS 120B = 45.9"
+ },
+ "gpt-20-oss": {
+  "tier": "mid",
+  "note": "GPT-OSS 20B = 41.2"
+ },
+ "gpt-3.5-turbo": {
+  "tier": "small",
+  "note": "2023 gen"
+ },
+ "gpt-4.1": {
+  "tier": "mid",
+  "note": "BenchLM 41.4"
+ },
+ "gpt-4.1-mini": {
+  "tier": "small",
+  "note": "BenchLM 33.5"
+ },
+ "gpt-4.1-nano": {
+  "tier": "small",
+  "note": "BenchLM 27.3"
+ },
+ "gpt-4o": {
+  "tier": "small",
+  "note": "BenchLM 38.95 (GPT-4o)"
+ },
+ "gpt-4o-mini": {
+  "tier": "small",
+  "note": "BenchLM 33.4"
+ },
+ "gpt-5": {
+  "tier": "strong",
+  "note": "BenchLM 56.47 (GPT-5 (high))"
+ },
+ "gpt-5-mini": {
+  "tier": "mid",
+  "note": "BenchLM 45.12 (GPT-5 mini)"
+ },
+ "gpt-5-nano": {
+  "tier": "small",
+  "note": "BenchLM 37.01 (GPT-5 nano)"
+ },
+ "gpt-5.3-codex-spark": {
+  "tier": "mid",
+  "note": "BenchLM 54.77 (GPT-5.3-Codex-Spark)"
+ },
+ "gpt-5.4-mini": {
+  "tier": "strong",
+  "note": "BenchLM 61.13 (GPT-5.4 mini)"
+ },
+ "gpt-5.4-nano": {
+  "tier": "strong",
+  "note": "BenchLM 59.52 (GPT-5.4 nano)"
+ },
+ "gpt-5.5": {
+  "tier": "frontier",
+  "note": "BenchLM 72.09 (GPT-5.5)"
+ },
+ "gpt-5.6-luna": {
+  "tier": "strong",
+  "note": "BenchLM 64.66 (GPT-5.6 Luna)"
+ },
+ "gpt-5.6-new": {
+  "tier": "strong",
+  "note": "undocumented 5.6 alias, $2/$2 pricing = Terra band"
+ },
+ "gpt-6-astra": {
+  "tier": "frontier",
+  "note": "BenchLM 82.94 (GPT-6 Astra)"
+ },
+ "gpt-oss": {
+  "tier": "mid",
+  "note": "GPT-OSS family 41-46"
+ },
+ "gpt-oss-120b": {
+  "tier": "mid",
+  "note": "BenchLM 45.93 (GPT-OSS 120B)"
+ },
+ "gpt-oss-20b": {
+  "tier": "mid",
+  "note": "BenchLM 41.18 (GPT-OSS 20B)"
+ },
+ "gpt-oss-safeguard-20b": {
+  "tier": "small",
+  "note": "safety variant"
+ },
+ "gpt-oss:120b": {
+  "tier": "mid",
+  "note": "BenchLM 45.93 (GPT-OSS 120B)"
+ },
+ "gpt-oss:120b-cloud": {
+  "tier": "mid",
+  "note": "BenchLM 45.93 (GPT-OSS 120B)"
+ },
+ "gpt-oss:20b": {
+  "tier": "mid",
+  "note": "BenchLM 41.18 (GPT-OSS 20B)"
+ },
+ "granite-3.0-3b-a800m-instruct": {
+  "tier": "small",
+  "note": "3B"
+ },
+ "granite-3.0-8b-instruct": {
+  "tier": "small",
+  "note": "2024 gen"
+ },
+ "granite-34b-code-instruct": {
+  "tier": "small",
+  "note": "2024 gen code"
+ },
+ "granite-4.0-h-micro": {
+  "tier": "small",
+  "note": "micro tier"
+ },
+ "granite-8b-code-instruct": {
+  "tier": "small",
+  "note": "2024 gen code"
+ },
+ "grok-4-1-fast-non-reasoning": {
+  "tier": "mid",
+  "note": "reasoning twin = 55"
+ },
+ "grok-4-1-fast-reasoning": {
+  "tier": "strong",
+  "note": "BenchLM 55.05 (Grok 4.1 Fast (Reasoning))"
+ },
+ "grok-4.20": {
+  "tier": "strong",
+  "note": "BenchLM 67.27 (Grok 4.20)"
+ },
+ "grok-4.20-multi-agent": {
+  "tier": "strong",
+  "note": "BenchLM 67.27 (Grok 4.20)"
+ },
+ "grok-4.20-non-reasoning": {
+  "tier": "strong",
+  "note": "Grok 4.20 = 67.3"
+ },
+ "grok-4.3": {
+  "tier": "strong",
+  "note": "BenchLM 59.81 (Grok 4.3)"
+ },
+ "grok-4.5": {
+  "tier": "strong",
+  "note": "BenchLM 68.03 (Grok 4.5)"
+ },
+ "grok-4.6": {
+  "tier": "strong",
+  "note": "BenchLM 69.9 (Grok 4.6)"
+ },
+ "grok-build-0.1": {
+  "tier": "strong",
+  "note": "xAI agentic build model, $1/$2"
+ },
+ "grok-chat-fast": {
+  "tier": "small",
+  "note": "fast chat sibling of grok-code-fast-1"
+ },
+ "grok-code-fast-1": {
+  "tier": "small",
+  "note": "BenchLM 34.2"
+ },
+ "hermes-4-14b": {
+  "tier": "small",
+  "note": "14B Nous"
+ },
+ "hermes-4-405b": {
+  "tier": "mid",
+  "note": "405B Nous, 2025 gen"
+ },
+ "hy3": {
+  "tier": "strong",
+  "note": "BenchLM 61"
+ },
+ "inkling": {
+  "tier": "strong",
+  "note": "BenchLM 60.52 (Inkling)"
+ },
+ "inkling-small": {
+  "tier": "strong",
+  "note": "BenchLM 58.95 (Inkling-Small)"
+ },
+ "intern-s1": {
+  "tier": "mid",
+  "note": "Shanghai AI Lab reasoner"
+ },
+ "intern-s1-mini": {
+  "tier": "small",
+  "note": "mini reasoner"
+ },
+ "intern-s2-preview": {
+  "tier": "strong",
+  "note": "S2 successor of S1"
+ },
+ "internvl3_5-241b-a28b": {
+  "tier": "mid",
+  "note": "241B VL, older gen"
+ },
+ "ising-calibration-1.5-31b": {
+  "tier": "small",
+  "note": "calibration/QA"
+ },
+ "jamba-1.5-large-instruct": {
+  "tier": "small",
+  "note": "2024 gen"
+ },
+ "k2.6-code-preview": {
+  "tier": "strong",
+  "note": "Kimi K2.6 = 66"
+ },
+ "kat-coder-air-v1": {
+  "tier": "mid",
+  "note": "Kwaipilot KAT-Coder Air v1, light member of the 73.4% SWE-bench line"
+ },
+ "kilo-auto/free": {
+  "tier": "mid",
+  "note": "Kilo Auto Free: best free model for the mode, curated pool"
+ },
+ "kimi-for-coding": {
+  "tier": "strong",
+  "note": "Moonshot coding line, K2.6/2.7-class"
+ },
+ "kimi-k2": {
+  "tier": "small",
+  "note": "BenchLM 23.3"
+ },
+ "kimi-k2-think": {
+  "tier": "small",
+  "note": "Kimi K2 = 23.3 (thinking variant, same gen)"
+ },
+ "kimi-k2-thinking": {
+  "tier": "small",
+  "note": "Kimi K2 = 23.3"
+ },
+ "kimi-k2.5": {
+  "tier": "strong",
+  "note": "BenchLM 57.17 (Kimi K2.5 (Reasoning))"
+ },
+ "kimi-k2.6": {
+  "tier": "strong",
+  "note": "BenchLM 65.51 (Kimi K2.6)"
+ },
+ "kimi-k2.7-code": {
+  "tier": "strong",
+  "note": "BenchLM 65.61 (Kimi K2.7 Code)"
+ },
+ "kimi-k3": {
+  "tier": "frontier",
+  "note": "BenchLM 74.63 (Kimi K3)"
+ },
+ "kokoro": {
+  "tier": "small",
+  "note": "text-to-speech"
+ },
+ "kosmos-2": {
+  "tier": "mid",
+  "note": "grounding VL"
+ },
+ "laguna-m.1": {
+  "tier": "strong",
+  "note": "Poolside flagship 225B/23B MoE"
+ },
+ "laguna-s-2-1": {
+  "tier": "mid",
+  "note": "Poolside 118B/8B sparse MoE"
+ },
+ "laguna-s-2.1": {
+  "tier": "mid",
+  "note": "Poolside 118B/8B sparse MoE"
+ },
+ "laguna-xs-2-1": {
+  "tier": "small",
+  "note": "Poolside 33B/3B active"
+ },
+ "laguna-xs-2.1": {
+  "tier": "small",
+  "note": "Poolside 33B/3B active"
+ },
+ "laguna-xs.2": {
+  "tier": "small",
+  "note": "Poolside XS line"
+ },
+ "leanstral-1-5": {
+  "tier": "mid",
+  "note": "Mistral formal-reasoning line"
+ },
+ "lfm-2-5-2-6b": {
+  "tier": "small",
+  "note": "BenchLM 39.77 (LFM2.5-2.6B)"
+ },
+ "lfm-2.5-2.6b": {
+  "tier": "small",
+  "note": "BenchLM 39.77 (LFM2.5-2.6B)"
+ },
+ "ling-3-0-flash-fin": {
+  "tier": "mid",
+  "note": "BenchLM 46.75 (Ling 3.0 Flash)"
+ },
+ "ling-3.0-flash": {
+  "tier": "mid",
+  "note": "BenchLM 46.75 (Ling 3.0 Flash)"
+ },
+ "ling-3.0-flash-fin": {
+  "tier": "mid",
+  "note": "BenchLM 46.75 (Ling 3.0 Flash)"
+ },
+ "ling-3.0-flash-sante": {
+  "tier": "mid",
+  "note": "BenchLM 46.75 (Ling 3.0 Flash)"
+ },
+ "ling-3.0-flash-vl": {
+  "tier": "mid",
+  "note": "BenchLM 46.75 (Ling 3.0 Flash)"
+ },
+ "ling-3.0-tiny": {
+  "tier": "small",
+  "note": "tiny variant"
+ },
+ "llama-3.1-405b": {
+  "tier": "small",
+  "note": "BenchLM 36.73 (Llama 3.1 405B)"
+ },
+ "llama-3.1-405b-instruct": {
+  "tier": "small",
+  "note": "BenchLM 36.73 (Llama 3.1 405B)"
+ },
+ "llama-3.1-70b-instruct": {
+  "tier": "small",
+  "note": "3.1 gen"
+ },
+ "llama-3.1-8b": {
+  "tier": "small",
+  "note": "3.1 gen 8B"
+ },
+ "llama-3.1-8b-instruct": {
+  "tier": "small",
+  "note": "3.1 gen 8B"
+ },
+ "llama-3.1-nemoguard-8b-content-safety": {
+  "tier": "small",
+  "note": "safety/guard model"
+ },
+ "llama-3.1-nemoguard-8b-topic-control": {
+  "tier": "small",
+  "note": "safety/guard model"
+ },
+ "llama-3.1-nemotron-51b-instruct": {
+  "tier": "small",
+  "note": "2024/25 gen RL-tuned"
+ },
+ "llama-3.1-nemotron-70b-instruct": {
+  "tier": "small",
+  "note": "2024/25 gen RL-tuned"
+ },
+ "llama-3.1-nemotron-nano-8b-v1": {
+  "tier": "small",
+  "note": "nano"
+ },
+ "llama-3.1-nemotron-nano-vl-8b-v1": {
+  "tier": "small",
+  "note": "nano/mini class"
+ },
+ "llama-3.1-nemotron-safety-guard-8b-v3": {
+  "tier": "small",
+  "note": "safety/guard model"
+ },
+ "llama-3.1-nemotron-ultra-253b-v1": {
+  "tier": "mid",
+  "note": "Nemotron-UItra 2025 gen"
+ },
+ "llama-3.2-11b-vision-instruct": {
+  "tier": "small",
+  "note": "3.2 gen"
+ },
+ "llama-3.2-1b-instruct": {
+  "tier": "small",
+  "note": "size/naming heuristic"
+ },
+ "llama-3.2-3b-instruct": {
+  "tier": "small",
+  "note": "size/naming heuristic"
+ },
+ "llama-3.2-90b-vision-instruct": {
+  "tier": "small",
+  "note": "3.2 gen"
+ },
+ "llama-3.2-nv-embedqa-1b-v1": {
+  "tier": "small",
+  "note": "embedding model"
+ },
+ "llama-3.2-vision-90b": {
+  "tier": "small",
+  "note": "3.2 gen"
+ },
+ "llama-3.3-70b": {
+  "tier": "small",
+  "note": "405B scores 36.7, 70B lower"
+ },
+ "llama-3.3-70b-instruct": {
+  "tier": "small",
+  "note": "same"
+ },
+ "llama-3.3-70b-instruct-fp8-fast": {
+  "tier": "small",
+  "note": "same, quantised"
+ },
+ "llama-3.3-nemotron-super-49b-v1": {
+  "tier": "mid",
+  "note": "2025 gen"
+ },
+ "llama-3.3-nemotron-super-49b-v1.5": {
+  "tier": "mid",
+  "note": "2025 gen"
+ },
+ "llama-4-maverick": {
+  "tier": "small",
+  "note": "BenchLM 22.86 (Llama 4 Maverick)"
+ },
+ "llama-4-maverick-17b-128e": {
+  "tier": "small",
+  "note": "same model as llama-4-maverick"
+ },
+ "llama-4-scout": {
+  "tier": "small",
+  "note": "BenchLM 33.42 (Llama 4 Scout)"
+ },
+ "llama-4-scout-17b-16e-instruct": {
+  "tier": "small",
+  "note": "Llama 4 Scout = 33.4"
+ },
+ "llama-guard-4-12b": {
+  "tier": "small",
+  "note": "safety"
+ },
+ "llama-instant": {
+  "tier": "small",
+  "note": "8B-class"
+ },
+ "llama-prompt-guard-2-22m": {
+  "tier": "small",
+  "note": "safety"
+ },
+ "llama-prompt-guard-2-86m": {
+  "tier": "small",
+  "note": "safety"
+ },
+ "llama2-70b": {
+  "tier": "small",
+  "note": "2023 gen"
+ },
+ "llama3-chatqa-1.5-70b": {
+  "tier": "small",
+  "note": "RAG adapter, 2024 gen"
+ },
+ "longcat-2.0": {
+  "tier": "mid",
+  "note": "Meituan MoE"
+ },
+ "longcat-flash-lite": {
+  "tier": "small",
+  "note": "lite variant"
+ },
+ "lyria-3-clip-preview": {
+  "tier": "mid",
+  "note": "music generation"
+ },
+ "lyria-3-pro-preview": {
+  "tier": "mid",
+  "note": "music generation"
+ },
+ "lyria-realtime-exp": {
+  "tier": "mid",
+  "note": "music generation"
+ },
+ "m2-heros2": {
+  "tier": "mid",
+  "note": "MiniMax M2-her roleplay variant (204,800 ctx), large single-purpose"
+ },
+ "magistral-small": {
+  "tier": "mid",
+  "note": "Mistral reasoning small"
+ },
+ "magistral-small-2509": {
+  "tier": "mid",
+  "note": "Mistral reasoning small"
+ },
+ "magistral-small-latest": {
+  "tier": "mid",
+  "note": "Mistral reasoning small"
+ },
+ "manta-flash-1.0": {
+  "tier": "small",
+  "note": "MegaNova Manta Flash, 16K ctx roleplay/assistant"
+ },
+ "manta-mini-1.0": {
+  "tier": "small",
+  "note": "MegaNova Manta Mini, 8K ctx"
+ },
+ "mathstral-7b": {
+  "tier": "small",
+  "note": "7B math specialist"
+ },
+ "mercury-2": {
+  "tier": "mid",
+  "note": "Inception diffusion LLM: GPQA 73.6-77, AIME 91.1, no BenchAlign coverage"
+ },
+ "meta-llama-3.1-8b-instruct-turbo": {
+  "tier": "small",
+  "note": "3.1 gen 8B"
+ },
+ "meta-llama-3.3-70b-instruct": {
+  "tier": "small",
+  "note": "same"
+ },
+ "mimo-v2-5": {
+  "tier": "strong",
+  "note": "BenchLM MiMo-V2.5-Pro 63.2"
+ },
+ "mimo-v2-flash": {
+  "tier": "mid",
+  "note": "BenchLM 49.02 (MiMo-V2-Flash)"
+ },
+ "mimo-v2.5": {
+  "tier": "strong",
+  "note": "BenchLM 62.89 (MiMo-V2.5-Pro)"
+ },
+ "minimax-2.5": {
+  "tier": "mid",
+  "note": "BenchLM 54.89 (MiniMax M2.5)"
+ },
+ "minimax-m1-80k": {
+  "tier": "small",
+  "note": "BenchLM 21.56 (MiniMax M1 80k)"
+ },
+ "minimax-m2": {
+  "tier": "mid",
+  "note": "MiniMax M2 line, under its measured sibling M2.5 (54.89)"
+ },
+ "minimax-m2-7": {
+  "tier": "strong",
+  "note": "BenchLM 55.14 (MiniMax M2.7)"
+ },
+ "minimax-m2.1": {
+  "tier": "mid",
+  "note": "MiniMax M2.1 line, under its measured sibling M2.5 (54.89)"
+ },
+ "minimax-m2.1-highspeed": {
+  "tier": "mid",
+  "note": "MiniMax M2.1 line, under its measured sibling M2.5 (54.89)"
+ },
+ "minimax-m2.5": {
+  "tier": "mid",
+  "note": "BenchLM 54.89 (MiniMax M2.5)"
+ },
+ "minimax-m2.5-highspeed": {
+  "tier": "mid",
+  "note": "BenchLM 54.89 (MiniMax M2.5)"
+ },
+ "minimax-m2.5-tee": {
+  "tier": "mid",
+  "note": "M2.5 = 54.89, TEE host"
+ },
+ "minimax-m2.7": {
+  "tier": "strong",
+  "note": "BenchLM 55.14 (MiniMax M2.7)"
+ },
+ "minimax-m2.7-highspeed": {
+  "tier": "strong",
+  "note": "BenchLM 55.14 (MiniMax M2.7)"
+ },
+ "minimax-m3": {
+  "tier": "strong",
+  "note": "BenchLM 61.47 (MiniMax M3)"
+ },
+ "ministral-14b": {
+  "tier": "mid",
+  "note": "Ministral 3 14B = 47"
+ },
+ "ministral-14b-2512": {
+  "tier": "mid",
+  "note": "BenchLM 47.35 (Ministral 3 14B (Reasoning))"
+ },
+ "ministral-14b-latest": {
+  "tier": "mid",
+  "note": "BenchLM 47.35 (Ministral 3 14B (Reasoning))"
+ },
+ "ministral-3-8b-instruct": {
+  "tier": "small",
+  "note": "BenchLM 38.58 (Ministral 3 8B (Reasoning))"
+ },
+ "ministral-3b": {
+  "tier": "small",
+  "note": "BenchLM 37.73 (Ministral 3 3B (Reasoning))"
+ },
+ "ministral-3b-2512": {
+  "tier": "small",
+  "note": "BenchLM 37.73 (Ministral 3 3B (Reasoning))"
+ },
+ "ministral-3b-latest": {
+  "tier": "small",
+  "note": "BenchLM 37.73 (Ministral 3 3B (Reasoning))"
+ },
+ "ministral-8b": {
+  "tier": "small",
+  "note": "BenchLM 38.58 (Ministral 3 8B (Reasoning))"
+ },
+ "ministral-8b-2512": {
+  "tier": "small",
+  "note": "BenchLM 38.58 (Ministral 3 8B (Reasoning))"
+ },
+ "ministral-8b-latest": {
+  "tier": "small",
+  "note": "BenchLM 38.58 (Ministral 3 8B (Reasoning))"
+ },
+ "mistral-7b-instruct-v0.3": {
+  "tier": "small",
+  "note": "7B"
+ },
+ "mistral-7b-instruct-v0p2": {
+  "tier": "small",
+  "note": "7B"
+ },
+ "mistral-code-agent-latest": {
+  "tier": "mid",
+  "note": "Mistral Code agent variant"
+ },
+ "mistral-code-fim-latest": {
+  "tier": "mid",
+  "note": "fill-in-middle completions"
+ },
+ "mistral-code-latest": {
+  "tier": "mid",
+  "note": "Mistral Code, 256K"
+ },
+ "mistral-large": {
+  "tier": "mid",
+  "note": "Mistral Large 3 = 45.9"
+ },
+ "mistral-large-2-instruct": {
+  "tier": "small",
+  "note": "BenchLM 36.47 (Mistral Large 2)"
+ },
+ "mistral-large-2407": {
+  "tier": "small",
+  "note": "Large 2 2407 = 36.5"
+ },
+ "mistral-large-2411": {
+  "tier": "mid",
+  "note": "BenchLM 45.6 (Mistral Large 3)"
+ },
+ "mistral-large-2512": {
+  "tier": "mid",
+  "note": "BenchLM 45.6 (Mistral Large 3)"
+ },
+ "mistral-large-3": {
+  "tier": "mid",
+  "note": "BenchLM 45.6 (Mistral Large 3)"
+ },
+ "mistral-large-3-675b-instruct": {
+  "tier": "mid",
+  "note": "Mistral Large 3 = 45.9"
+ },
+ "mistral-large-3:675b": {
+  "tier": "mid",
+  "note": "BenchLM 45.6 (Mistral Large 3)"
+ },
+ "mistral-large-instruct-2407": {
+  "tier": "mid",
+  "note": "BenchLM 45.6 (Mistral Large 3)"
+ },
+ "mistral-large-latest": {
+  "tier": "mid",
+  "note": "BenchLM 45.6 (Mistral Large 3)"
+ },
+ "mistral-medium": {
+  "tier": "mid",
+  "note": "BenchLM 42.49 (Mistral Medium 3.5 128B)"
+ },
+ "mistral-medium-2505": {
+  "tier": "mid",
+  "note": "BenchLM 42.49 (Mistral Medium 3.5 128B)"
+ },
+ "mistral-medium-2508": {
+  "tier": "mid",
+  "note": "BenchLM 42.49 (Mistral Medium 3.5 128B)"
+ },
+ "mistral-medium-2604": {
+  "tier": "mid",
+  "note": "BenchLM 42.49 (Mistral Medium 3.5 128B)"
+ },
+ "mistral-medium-3": {
+  "tier": "small",
+  "note": "BenchLM 30.72 (Mistral Medium 3)"
+ },
+ "mistral-medium-3-5": {
+  "tier": "mid",
+  "note": "Medium 3.5 128B = 42"
+ },
+ "mistral-medium-3.5": {
+  "tier": "mid",
+  "note": "Medium 3.5 128B = 42"
+ },
+ "mistral-medium-latest": {
+  "tier": "mid",
+  "note": "BenchLM 42.49 (Mistral Medium 3.5 128B)"
+ },
+ "mistral-nemo": {
+  "tier": "small",
+  "note": "12B Nemo"
+ },
+ "mistral-nemo-12b-instruct": {
+  "tier": "small",
+  "note": "12B"
+ },
+ "mistral-nemo-instruct-2407": {
+  "tier": "small",
+  "note": "12B"
+ },
+ "mistral-nemo-minitron-8b-8k-instruct": {
+  "tier": "small",
+  "note": "8B/8K"
+ },
+ "mistral-nemotron": {
+  "tier": "small",
+  "note": "12B nemotron mix"
+ },
+ "mistral-small": {
+  "tier": "mid",
+  "note": "BenchLM 43.01 (Mistral Small 4)"
+ },
+ "mistral-small-2506": {
+  "tier": "mid",
+  "note": "BenchLM 43.01 (Mistral Small 4)"
+ },
+ "mistral-small-2603": {
+  "tier": "mid",
+  "note": "BenchLM 43.01 (Mistral Small 4)"
+ },
+ "mistral-small-3.1-24b-instruct": {
+  "tier": "small",
+  "note": "superseded 3.1"
+ },
+ "mistral-small-3.2": {
+  "tier": "small",
+  "note": "24B, sibling of mistral-small-3.1-24b"
+ },
+ "mistral-small-latest": {
+  "tier": "mid",
+  "note": "BenchLM 43.01 (Mistral Small 4)"
+ },
+ "mistral-tiny-2407": {
+  "tier": "small",
+  "note": "tiny"
+ },
+ "mistral-tiny-latest": {
+  "tier": "small",
+  "note": "tiny"
+ },
+ "mistral-vibe-cli-fast": {
+  "tier": "mid",
+  "note": "CLI agent build"
+ },
+ "mistral-vibe-cli-latest": {
+  "tier": "mid",
+  "note": "CLI agent build"
+ },
+ "mistral-vibe-cli-with-tools": {
+  "tier": "mid",
+  "note": "CLI agent build"
+ },
+ "mixtral-8x22b-v0.1": {
+  "tier": "small",
+  "note": "2024 gen"
+ },
+ "mixtral-8x7b-instruct": {
+  "tier": "small",
+  "note": "2023 gen"
+ },
+ "muse-glimmer-30b": {
+  "tier": "mid",
+  "note": "BenchLM 45.0"
+ },
+ "muse-spark-1-2-contributor": {
+  "tier": "frontier",
+  "note": "same model as Muse Spark 1.2 (70.4)"
+ },
+ "muse-spark-1-3-contributor": {
+  "tier": "frontier",
+  "note": "same model as Muse Spark 1.3"
+ },
+ "muse-spark-1.1": {
+  "tier": "frontier",
+  "note": "BenchLM 70.31 (Muse Spark 1.1)"
+ },
+ "muse-spark-1.2": {
+  "tier": "frontier",
+  "note": "BenchLM 70.41 (Muse Spark 1.2)"
+ },
+ "muse-spark-1.2-contributor": {
+  "tier": "frontier",
+  "note": "same model as Muse Spark 1.2 (70.4)"
+ },
+ "muse-spark-1.3": {
+  "tier": "frontier",
+  "note": "MSPARK 1.1=70.3, 1.2=70.4, this is newer"
+ },
+ "muse-spark-1.3-contributor": {
+  "tier": "frontier",
+  "note": "same model as Muse Spark 1.3"
+ },
+ "nano-banana-pro-preview": {
+  "tier": "small",
+  "note": "image generation"
+ },
+ "nemoretriever-parse": {
+  "tier": "small",
+  "note": "document parse"
+ },
+ "nemotron-3-120b-a12b": {
+  "tier": "mid",
+  "note": "BenchLM 40.39 (Nemotron 3 Ultra)"
+ },
+ "nemotron-3-5-content-safety": {
+  "tier": "mid",
+  "note": "safety/guard model"
+ },
+ "nemotron-3-5-lightning": {
+  "tier": "mid",
+  "note": "Nemotron 3 family"
+ },
+ "nemotron-3-5-lightning-nvidia": {
+  "tier": "mid",
+  "note": "Nemotron 3 family"
+ },
+ "nemotron-3-nano-30b-a3b": {
+  "tier": "mid",
+  "note": "BenchLM 50.88 (Nemotron 3 Nano 30B)"
+ },
+ "nemotron-3-nano-omni-30b-a3b-reasoning": {
+  "tier": "mid",
+  "note": "BenchLM 40.77 (Nemotron 3 Nano Omni 30B A3B)"
+ },
+ "nemotron-3-nano:30b": {
+  "tier": "mid",
+  "note": "BenchLM 50.88 (Nemotron 3 Nano 30B)"
+ },
+ "nemotron-3-super": {
+  "tier": "mid",
+  "note": "Nemotron 3 Super 120B = 49"
+ },
+ "nemotron-3-super-120b": {
+  "tier": "mid",
+  "note": "BenchLM 48.94 (Nemotron 3 Super 120B A12B)"
+ },
+ "nemotron-3-super-120b-a12b": {
+  "tier": "mid",
+  "note": "BenchLM 48.94 (Nemotron 3 Super 120B A12B)"
+ },
+ "nemotron-3-ultra": {
+  "tier": "mid",
+  "note": "BenchLM 40.39 (Nemotron 3 Ultra)"
+ },
+ "nemotron-3-ultra-550b-a55b": {
+  "tier": "mid",
+  "note": "BenchLM 40.39 (Nemotron 3 Ultra)"
+ },
+ "nemotron-3.5-content-safety": {
+  "tier": "mid",
+  "note": "safety/guard model"
+ },
+ "nemotron-3.5-lightning": {
+  "tier": "mid",
+  "note": "Nemotron 3 family: Super 49, Ultra 40"
+ },
+ "nemotron-3.5-lightning-30b-a3b": {
+  "tier": "small",
+  "note": "30B/A3B"
+ },
+ "nemotron-4-340b": {
+  "tier": "small",
+  "note": "2024 gen"
+ },
+ "nemotron-4-340b-instruct": {
+  "tier": "small",
+  "note": "2024 gen"
+ },
+ "nemotron-4-340b-reward": {
+  "tier": "small",
+  "note": "safety/guard model"
+ },
+ "nemotron-mini-4b-instruct": {
+  "tier": "small",
+  "note": "nano/mini class"
+ },
+ "nemotron-nano-12b-v2": {
+  "tier": "small",
+  "note": "nano/mini class"
+ },
+ "nemotron-nano-12b-v2-vl": {
+  "tier": "small",
+  "note": "nano/mini class"
+ },
+ "nemotron-nano-3-30b-a3b": {
+  "tier": "small",
+  "note": "nano/mini class"
+ },
+ "nemotron-nano-9b-v2": {
+  "tier": "small",
+  "note": "nano/mini class"
+ },
+ "nemotron-parse": {
+  "tier": "small",
+  "note": "document parse"
+ },
+ "neva-22b": {
+  "tier": "small",
+  "note": "VL"
+ },
+ "nex-n2-5-pro": {
+  "tier": "mid",
+  "note": "35B-class open MoE"
+ },
+ "nex-n2.5-mini": {
+  "tier": "small",
+  "note": "mini variant"
+ },
+ "nex-n2.5-pro": {
+  "tier": "mid",
+  "note": "35B-class open MoE"
+ },
+ "north-mini-code": {
+  "tier": "small",
+  "note": "mini code model"
+ },
+ "north-mini-code-1-0": {
+  "tier": "small",
+  "note": "mini code model"
+ },
+ "nv-embedcode-7b-v1": {
+  "tier": "small",
+  "note": "embedding model"
+ },
+ "nv-embedqa-e5-v5": {
+  "tier": "small",
+  "note": "embedding model"
+ },
+ "nv-embedqa-mistral-7b-v2": {
+  "tier": "small",
+  "note": "embedding model"
+ },
+ "nvclip": {
+  "tier": "mid",
+  "note": "image-text"
+ },
+ "nvidia-nemotron-nano-9b-v2": {
+  "tier": "small",
+  "note": "nano/mini class"
+ },
+ "o3": {
+  "tier": "mid",
+  "note": "BenchLM 47.98 (o3-pro)"
+ },
+ "oa-robin-mini-preview": {
+  "tier": "small",
+  "note": "mini preview"
+ },
+ "open-mistral-nemo": {
+  "tier": "small",
+  "note": "12B, 2024 gen"
+ },
+ "open-mistral-nemo-2407": {
+  "tier": "small",
+  "note": "12B, 2024 gen"
+ },
+ "openai-fast": {
+  "tier": "strong",
+  "note": "listed as Fast = 59.4"
+ },
+ "openrouter": {
+  "tier": "small",
+  "note": "OpenRouter Free Models Router: random free model per request"
+ },
+ "openrouter/free": {
+  "tier": "small",
+  "note": "OpenRouter Free Models Router: random free model per request"
+ },
+ "orcarouter/free": {
+  "tier": "strong",
+  "note": "difficulty-routed over DeepSeek V4 Flash/Pro free, both 66.6 band"
+ },
+ "orpheus-arabic-saudi": {
+  "tier": "small",
+  "note": "text-to-speech"
+ },
+ "orpheus-v1-english": {
+  "tier": "small",
+  "note": "text-to-speech"
+ },
+ "ox-alpha": {
+  "tier": "strong",
+  "note": "Ox Alpha = GLM-5.3-Flash (Z.AI confirmed), BenchLM 66.04"
+ },
+ "palmyra-creative-122b": {
+  "tier": "small",
+  "note": "Mercator domain model"
+ },
+ "palmyra-fin-70b-32k": {
+  "tier": "mid",
+  "note": "Mercator domain model"
+ },
+ "palmyra-med-70b": {
+  "tier": "mid",
+  "note": "Mercator domain model"
+ },
+ "palmyra-med-70b-32k": {
+  "tier": "mid",
+  "note": "Mercator domain model"
+ },
+ "palmyra-vision-7b": {
+  "tier": "small",
+  "note": "Mercator domain model"
+ },
+ "parakeet": {
+  "tier": "small",
+  "note": "speech recognition"
+ },
+ "phi-3-vision-128k-instruct": {
+  "tier": "small",
+  "note": "2024 gen VL"
+ },
+ "phi-3.5-moe-instruct": {
+  "tier": "small",
+  "note": "2024 gen MoE"
+ },
+ "phi-4": {
+  "tier": "small",
+  "note": "BenchLM 33.2"
+ },
+ "phi-4-mini-instruct": {
+  "tier": "small",
+  "note": "3.8B"
+ },
+ "phi-4-mini-reasoning": {
+  "tier": "small",
+  "note": "3.8B"
+ },
+ "phi-4-multimodal-instruct": {
+  "tier": "small",
+  "note": "multimodal 5.6B"
+ },
+ "phi-4-reasoning": {
+  "tier": "small",
+  "note": "14B, 33 band"
+ },
+ "pixtral-large-2411": {
+  "tier": "mid",
+  "note": "size/naming heuristic"
+ },
+ "qwen-plus-2025-07-28": {
+  "tier": "mid",
+  "note": "Qwen Plus line, 2025 dated"
+ },
+ "qwen-sea-lion-v4-32b": {
+  "tier": "mid",
+  "note": "32B SEA-LION v4 regional tune"
+ },
+ "qwen-sea-lion-v4.5-27b": {
+  "tier": "small",
+  "note": "27B SEA-LION v4.5 regional tune"
+ },
+ "qwen2.5-72b-instruct": {
+  "tier": "small",
+  "note": "BenchLM 37.55 (Qwen2.5-72B)"
+ },
+ "qwen2.5-coder": {
+  "tier": "small",
+  "note": "2024 gen coder"
+ },
+ "qwen2.5-coder-32b-instruct": {
+  "tier": "small",
+  "note": "BenchLM 33.43 (Qwen2.5 Coder 32B Instruct)"
+ },
+ "qwen2.5-vl-7b-instruct-awq": {
+  "tier": "small",
+  "note": "7B VL, quantized"
+ },
+ "qwen3-14b": {
+  "tier": "small",
+  "note": "14B"
+ },
+ "qwen3-235b": {
+  "tier": "strong",
+  "note": "235B flagship of its gen"
+ },
+ "qwen3-235b-a22b": {
+  "tier": "strong",
+  "note": "235B"
+ },
+ "qwen3-235b-a22b-instruct-2507": {
+  "tier": "strong",
+  "note": "235B"
+ },
+ "qwen3-235b-a22b-thinking-2507": {
+  "tier": "strong",
+  "note": "235B"
+ },
+ "qwen3-30b-a3b": {
+  "tier": "mid",
+  "note": "30B/A3B"
+ },
+ "qwen3-30b-a3b-fp8": {
+  "tier": "mid",
+  "note": "30B/A3B quant"
+ },
+ "qwen3-30b-a3b-thinking-2507": {
+  "tier": "mid",
+  "note": "30B/A3B"
+ },
+ "qwen3-32b": {
+  "tier": "mid",
+  "note": "32B"
+ },
+ "qwen3-4b": {
+  "tier": "small",
+  "note": "4B"
+ },
+ "qwen3-8-27b": {
+  "tier": "strong",
+  "note": "BenchLM 64.65 (Qwen3.8-27B)"
+ },
+ "qwen3-8b": {
+  "tier": "small",
+  "note": "8B"
+ },
+ "qwen3-coder": {
+  "tier": "mid",
+  "note": "Qwen3 Coder"
+ },
+ "qwen3-coder-30b-a3b-instruct": {
+  "tier": "mid",
+  "note": "30B/A3B"
+ },
+ "qwen3-coder-480b-a35b-instruct": {
+  "tier": "strong",
+  "note": "480B flagship coder"
+ },
+ "qwen3-coder-next": {
+  "tier": "mid",
+  "note": "next-size coder"
+ },
+ "qwen3-coder-plus": {
+  "tier": "strong",
+  "note": "1M-ctx coder, Plus tier"
+ },
+ "qwen3-coder:480b-cloud": {
+  "tier": "strong",
+  "note": "480B flagship coder"
+ },
+ "qwen3-max": {
+  "tier": "mid",
+  "note": "BenchLM 40.87 (Qwen3 Max)"
+ },
+ "qwen3-next-80b-a3b": {
+  "tier": "mid",
+  "note": "80B/A3B"
+ },
+ "qwen3-next-80b-a3b-instruct": {
+  "tier": "mid",
+  "note": "80B/A3B"
+ },
+ "qwen3-next-80b-a3b-thinking": {
+  "tier": "mid",
+  "note": "80B/A3B"
+ },
+ "qwen3-omni-flash": {
+  "tier": "mid",
+  "note": "Qwen3 omni flash"
+ },
+ "qwen3-vl-235b-a22b-instruct": {
+  "tier": "mid",
+  "note": "235B VL"
+ },
+ "qwen3-vl-30b": {
+  "tier": "mid",
+  "note": "30B VL"
+ },
+ "qwen3-vl-8b-instruct": {
+  "tier": "small",
+  "note": "8B VL"
+ },
+ "qwen3-vl-8b-thinking": {
+  "tier": "small",
+  "note": "8B VL"
+ },
+ "qwen3-vl-plus": {
+  "tier": "strong",
+  "note": "VL Plus = flagship VL tier"
+ },
+ "qwen3.5": {
+  "tier": "strong",
+  "note": "BenchLM 56.2 (Qwen3.5 Flash)"
+ },
+ "qwen3.5-122b": {
+  "tier": "mid",
+  "note": "BenchLM 50.86 (Qwen3.5-122B-A10B)"
+ },
+ "qwen3.5-122b-a10b": {
+  "tier": "mid",
+  "note": "BenchLM 50.86 (Qwen3.5-122B-A10B)"
+ },
+ "qwen3.5-27b": {
+  "tier": "strong",
+  "note": "BenchLM 55.38 (Qwen3.5-27B)"
+ },
+ "qwen3.5-35b-a3b": {
+  "tier": "mid",
+  "note": "BenchLM 53.57 (Qwen3.5-35B-A3B)"
+ },
+ "qwen3.5-397b-a17b": {
+  "tier": "strong",
+  "note": "BenchLM 56.2 (Qwen3.5 Flash)"
+ },
+ "qwen3.5-4b": {
+  "tier": "small",
+  "note": "4B"
+ },
+ "qwen3.5-flash": {
+  "tier": "strong",
+  "note": "BenchLM 56.2 (Qwen3.5 Flash)"
+ },
+ "qwen3.5-omni-flash": {
+  "tier": "mid",
+  "note": "Qwen3.5 Flash = 56"
+ },
+ "qwen3.5-omni-plus": {
+  "tier": "strong",
+  "note": "Qwen3.5 Plus band (50)"
+ },
+ "qwen3.5-plus": {
+  "tier": "mid",
+  "note": "BenchLM 50.11 (Qwen3.5 Plus)"
+ },
+ "qwen3.5-vl": {
+  "tier": "strong",
+  "note": "BenchLM 56.2 (Qwen3.5 Flash)"
+ },
+ "qwen3.5:397b": {
+  "tier": "strong",
+  "note": "BenchLM 57.31 (Qwen3.5 397B (Reasoning))"
+ },
+ "qwen3.6-27b": {
+  "tier": "mid",
+  "note": "BenchLM 47.89 (Qwen3.6-27B)"
+ },
+ "qwen3.6-35b-a3b": {
+  "tier": "mid",
+  "note": "BenchLM 43.99 (Qwen3.6-35B-A3B)"
+ },
+ "qwen3.6-max-preview": {
+  "tier": "strong",
+  "note": "BenchLM 63.83 (Qwen 3.6 Max (preview))"
+ },
+ "qwen3.6-plus": {
+  "tier": "strong",
+  "note": "BenchLM 60.48 (Qwen3.6 Plus)"
+ },
+ "qwen3.6-plus-preview": {
+  "tier": "strong",
+  "note": "BenchLM 60.48 (Qwen3.6 Plus)"
+ },
+ "qwen3.7-flash": {
+  "tier": "mid",
+  "note": "BenchLM 49.24 (Qwen3.7 Flash)"
+ },
+ "qwen3.7-max": {
+  "tier": "strong",
+  "note": "BenchLM 67.03 (Qwen3.7 Max)"
+ },
+ "qwen3.7-plus": {
+  "tier": "strong",
+  "note": "BenchLM 61.78 (Qwen3.7 Plus)"
+ },
+ "qwen3.8-27b": {
+  "tier": "strong",
+  "note": "BenchLM 64.65 (Qwen3.8-27B)"
+ },
+ "qwen3.8-flash": {
+  "tier": "strong",
+  "note": "Qwen3.8-Flash-Next = 57"
+ },
+ "qwen3.8-flash-next": {
+  "tier": "strong",
+  "note": "BenchLM 57.02 (Qwen3.8-Flash-Next)"
+ },
+ "qwen3.8-max": {
+  "tier": "frontier",
+  "note": "BenchLM 71.76 (Qwen3.8 Max)"
+ },
+ "qwenvl": {
+  "tier": "mid",
+  "note": "generic Qwen-VL alias, Qwen3-VL class"
+ },
+ "qwq-32b": {
+  "tier": "mid",
+  "note": "32B reasoner, 2025 gen"
+ },
+ "recurrentgemma-2b": {
+  "tier": "small",
+  "note": "2B research"
+ },
+ "riva-translate-4b-instruct": {
+  "tier": "small",
+  "note": "translation model"
+ },
+ "riva-translate-4b-instruct-v1.1": {
+  "tier": "small",
+  "note": "translation model"
+ },
+ "riva-translate-4b-instruct-v2": {
+  "tier": "small",
+  "note": "translation model"
+ },
+ "rnj-1": {
+  "tier": "small",
+  "note": "Essential AI Rnj-1, 8B dense, 32K ctx, SWE-bench Verified 20.8%"
+ },
+ "s2.1-pro": {
+  "tier": "small",
+  "note": "Fish Audio S2.1 Pro, text-to-speech single-purpose"
+ },
+ "sarvam-30b": {
+  "tier": "mid",
+  "note": "30B Indic model, unscored"
+ },
+ "sea-lion-7b-instruct": {
+  "tier": "small",
+  "note": "7B"
+ },
+ "seed-oss-36b": {
+  "tier": "mid",
+  "note": "ByteDance Seed-OSS 36B"
+ },
+ "sensenova-6.7-flash-lite": {
+  "tier": "small",
+  "note": "flash-lite"
+ },
+ "sensenova-6.8-flash-lite": {
+  "tier": "small",
+  "note": "flash-lite"
+ },
+ "solar-pro4": {
+  "tier": "mid",
+  "note": "Upstage Pro line"
+ },
+ "sonar": {
+  "tier": "mid",
+  "note": "Perplexity search-grounded model"
+ },
+ "starcoder2-15b": {
+  "tier": "small",
+  "note": "2024 gen code"
+ },
+ "step-3-7-flash": {
+  "tier": "mid",
+  "note": "BenchLM 49.98 (Step 3.7 Flash)"
+ },
+ "step-3.5-flash": {
+  "tier": "mid",
+  "note": "BenchLM 50"
+ },
+ "step-3.7-flash": {
+  "tier": "mid",
+  "note": "BenchLM 49.98 (Step 3.7 Flash)"
+ },
+ "stepfun-3.7-flash": {
+  "tier": "mid",
+  "note": "BenchLM 49.98 (Step 3.7 Flash)"
+ },
+ "swe-1.6": {
+  "tier": "strong",
+  "note": "Cognition SWE-1.6, matches its Preview on SWE-Bench Pro"
+ },
+ "swe-1.6-slow": {
+  "tier": "strong",
+  "note": "SWE-1.6 free tier (200 tok/s), same weights"
+ },
+ "typhoon-v2.5-30b-a3b": {
+  "tier": "small",
+  "note": "30B with 3B active, Thai tune"
+ },
+ "unmoderated-gpt": {
+  "tier": "small",
+  "note": "api.airforce uncensored GPT alias, GPT-4o class (38.95)"
+ },
+ "v3.2": {
+  "tier": "strong",
+  "note": "bare version id; DeepSeek V3.2 = 57"
+ },
+ "vila": {
+  "tier": "mid",
+  "note": "VL grounding model"
+ },
+ "voxtral-small-2507": {
+  "tier": "small",
+  "note": "speech-input model"
+ },
+ "voxtral-small-latest": {
+  "tier": "small",
+  "note": "speech-input model"
+ },
+ "x-preview-f": {
+  "tier": "strong",
+  "note": "OpenCode Zen listing of Ox Alpha = GLM-5.3-Flash (66.04)"
+ },
+ "xiaomi-mimo-v2-omni": {
+  "tier": "mid",
+  "note": "omni-modal MiMo"
+ },
+ "xiaomi-mimo-v2-pro": {
+  "tier": "strong",
+  "note": "MiMo v2 Pro"
+ },
+ "xiaomi-mimo-v2.5": {
+  "tier": "strong",
+  "note": "MiMo-V2.5-Pro = 63"
+ },
+ "xiaomi-mimo-v2.5-pro": {
+  "tier": "strong",
+  "note": "MiMo-V2.5-Pro = 63"
+ },
+ "xiyansql-qwencoder-32b-2412": {
+  "tier": "small",
+  "note": "text-to-SQL"
+ },
+ "xiyansql-qwencoder-32b-2504": {
+  "tier": "small",
+  "note": "text-to-SQL"
+ },
+ "yi-large": {
+  "tier": "small",
+  "note": "2024 gen"
+ },
+ "zamba2-7b-instruct": {
+  "tier": "small",
+  "note": "7B hybrid"
+ }
+}

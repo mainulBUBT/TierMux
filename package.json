@@ -18,6 +18,8 @@
     "vscode": "^1.93.0"
   },
   "categories": [
+    "AI",
+    "Chat",
     "Machine Learning",
     "Programming Languages",
     "Other"

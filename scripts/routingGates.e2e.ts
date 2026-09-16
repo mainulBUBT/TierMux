@@ -7,6 +7,8 @@ import { selectModel, setModelSources, noteModelFailure, canonicalModelId, __res
 import { resolveCandidates, isFailoverWorthy } from '../src/agent/core/routerProvider';
 import { ProviderHttpError } from '../src/providers/base';
 import type { FallbackEntry } from '../src/shared/types';
+import { modelTierKey } from './modelTierKey.mjs';
+import { readFileSync } from 'node:fs';
 
 let bad = 0;
 const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? `   (${d})` : ''}`); if (!c) bad++; };
@@ -205,9 +207,37 @@ console.log('— a 404 / a 400-with-tools quarantines the MODEL, not just the mo
 console.log('— ranking is by MODEL, with the fastest gateway for a model leading its twins —');
 {
   __resetTaskRoundCounters();
+  // Asserted as agreement between spellings, not as an exact string: what the canonical form
+  // LOOKS like is an implementation detail, what matters is that two rows of one model meet.
   ok('canonical id strips vendor namespace and tier suffix',
-    canonicalModelId('openai/gpt-oss-120b:free') === 'gpt-oss-120b' && canonicalModelId('gpt-oss-120b') === 'gpt-oss-120b'
-    && canonicalModelId('nvidia/nemotron-3-super-120b-a12b:free') === 'nemotron-3-super-120b-a12b');
+    canonicalModelId('openai/gpt-oss-120b:free') === canonicalModelId('gpt-oss-120b')
+    && canonicalModelId('nvidia/nemotron-3-super-120b-a12b:free') === canonicalModelId('nemotron-3-super-120b-a12b')
+    && canonicalModelId('@cf/meta/llama-4-scout') === canonicalModelId('llama-4-scout'));
+  // 2026-09-16: gateways spell one model several ways, and each spelling used to form its own
+  // rank group — so the twins never rotated as peers and each drew a full share of traffic.
+  ok('canonical id folds gateway spelling (dots vs dashes, serving modes)',
+    canonicalModelId('mimo-v2.5-free') === canonicalModelId('mimo-v2-5:free')
+    && canonicalModelId('muse-spark-1.2-contributor-free') === canonicalModelId('muse-spark-1-2-contributor:free')
+    && canonicalModelId('z-ai/glm-5.2-thinking:free') === canonicalModelId('glm-5.2:free')
+    && canonicalModelId('qwen-3.8-27b:free') === canonicalModelId('qwen3.8-27b'));
+  // A router alias is a policy over a pool, and the pool is named by the namespace: folding
+  // these together would rank three unrelated routers as one model.
+  ok('canonical id keeps router aliases apart',
+    canonicalModelId('kilo-auto/free') !== canonicalModelId('openrouter/free')
+    && canonicalModelId('orcarouter/free') !== canonicalModelId('openrouter/free'));
+  // The tier table is indexed by modelTierKey() at sync time and read back by canonicalModelId()
+  // at routing time. Let them drift and a model is tiered under one key and ranked under another,
+  // which is how the twin-drift this whole fold exists to kill comes back.
+  {
+    const ids = [
+      ...(JSON.parse(readFileSync('media/catalog.json', 'utf8')).models as Array<{ modelId: string }>).map((m) => m.modelId),
+      'qwen3:latest', 'glm-5.2:floor', 'glm-5.2:exp', 'kimi-k2@0905', '@cf/meta/llama-4-scout',
+      'kilo-auto/free', 'openrouter/free', 'auto', 'free',
+    ];
+    const drift = ids.filter((id) => canonicalModelId(id) !== modelTierKey(id));
+    ok('canonicalModelId and modelTierKey agree on every id', drift.length === 0,
+      drift.length ? drift.slice(0, 3).map((id) => `${id}: ${canonicalModelId(id)} vs ${modelTierKey(id)}`).join(' · ') : `${ids.length} ids`);
+  }
   // The catalog rates the SAME model 2 on kilo and 6 on openrouter, and an unrelated rank-3
   // model sits between. By model identity the openrouter row is rank 2 too, so it must sort
   // ahead of the rank-3 model, and the faster gateway (kilo, speed 2) leads the slower twin.
@@ -254,6 +284,51 @@ console.log('\n— the task table itself rotates, not just the tail (quota sprea
     leaders[0] === 'groq::openai/gpt-oss-120b', leaders.join(' → '));
   ok('later calls rotate through both task-table peers, not just index 0 forever',
     new Set(leaders).size === 2, leaders.join(' → '));
+}
+
+console.log('\n— `platform::auto`: a wildcard resolves THROUGH the gates, a model named auto does not bypass them —');
+{
+  __resetTaskRoundCounters();
+  // dreamprompting publishes a model literally called `auto` (its own router alias) and the
+  // catalog says it cannot call tools. Until 2026-09-16 the `::auto` suffix alone made the
+  // picker read the row as "any enabled model of this platform" and return it before the
+  // tools/cooldown/rate gates ran — so a tool turn was handed the single row that cannot use
+  // tools, and the tail then described it by the unresolved key (tier unknown, rank infinite).
+  const fallback = [entry('dreamprompting', 'auto', 0), entry('dreamprompting', 'llama-3.3-70b', 1)];
+  const meta: Record<string, { intelligenceRank: number; speedRank: number; supportsTools: boolean }> = {
+    'dreamprompting::auto': { intelligenceRank: 1, speedRank: 1, supportsTools: false },
+    'dreamprompting::llama-3.3-70b': { intelligenceRank: 2, speedRank: 1, supportsTools: true },
+  };
+  const sources = makeSources(fallback, [], ['dreamprompting']) as unknown as { catalog: { find: (p: string, m: string) => unknown } };
+  sources.catalog.find = (p: string, m: string) => meta[`${p}::${m}`];
+  setModelSources(sources as unknown as Parameters<typeof setModelSources>[0]);
+  const sel = await selectModel([{ role: 'user', content: 'x' } as never], { requireTools: true });
+  ok('a catalogued `auto` row obeys the tools gate like any other model',
+    sel.model === 'dreamprompting::llama-3.3-70b' && ![sel.model, ...sel.fallbackChain].includes('dreamprompting::auto'),
+    [sel.model, ...sel.fallbackChain].join(' → '));
+  ok('…and the report says why it was skipped',
+    /cannot call tools/.test(sel.rationale?.entries.find((e) => e.model === 'dreamprompting::auto')?.skip ?? ''),
+    sel.rationale?.entries.find((e) => e.model === 'dreamprompting::auto')?.skip ?? '<no entry>');
+}
+{
+  __resetTaskRoundCounters();
+  // The real wildcard: kilo has no model called `auto`, so `kilo::auto` still means "whichever
+  // enabled kilo model is usable" — but it has to be one that PASSED the gates.
+  const fallback = [entry('kilo', 'auto', 0), entry('kilo', 'toolless', 1), entry('kilo', 'good', 2)];
+  const meta: Record<string, { intelligenceRank: number; speedRank: number; supportsTools: boolean }> = {
+    'kilo::toolless': { intelligenceRank: 1, speedRank: 1, supportsTools: false },
+    'kilo::good': { intelligenceRank: 2, speedRank: 1, supportsTools: true },
+  };
+  const sources = makeSources(fallback, [], ['kilo']) as unknown as { catalog: { find: (p: string, m: string) => unknown } };
+  sources.catalog.find = (p: string, m: string) => meta[`${p}::${m}`];
+  setModelSources(sources as unknown as Parameters<typeof setModelSources>[0]);
+  const sel = await selectModel([{ role: 'user', content: 'x' } as never], { requireTools: true });
+  const chain = [sel.model, ...sel.fallbackChain];
+  ok('the wildcard resolves past a model that fails a gate', sel.model === 'kilo::good', chain.join(' → '));
+  ok('…and never hands back the wildcard key itself as a model', !chain.includes('kilo::auto'), chain.join(' → '));
+  // The wildcard resolved to a model that is also enabled in its own right; without a dedupe on
+  // what was PICKED, the chain listed it twice and burned a failover slot re-dialling it.
+  ok('…and the resolved model appears once, not twice', new Set(chain).size === chain.length, chain.join(' → '));
 }
 
 console.log(bad === 0 ? '\nAll routing gates hold.' : `\n${bad} FAILED`);

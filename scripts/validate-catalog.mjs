@@ -29,6 +29,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { RETIRED_MODEL_KEYS } from './retiredModels.mjs';
+import { TIERS } from './modelTiers.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const WORKER_URL = 'https://tiermux.mainulislam3057.workers.dev/';
@@ -146,6 +147,17 @@ function structuralChecks(models, scope) {
     // unpadded month sorts wrongly and the model gets preferred as "newest".
     if (m.released != null && m.released !== '' && !/^\d{4}-\d{2}(-\d{2})?$/.test(String(m.released))) {
       add('error', scope, `${id}: released=${JSON.stringify(m.released)} is not YYYY-MM[-DD] — breaks recency sorting`);
+    }
+    // Exactly one quality tier per row. tierOf() reads the first tier word it finds and
+    // otherwise guesses from intelligenceRank, so a row with none is judged by the rank
+    // regex the tier table was brought in to replace, and a row with two is decided by
+    // tag order. On 2026-09-16 the bundled catalog carried 174 untiered rows: every
+    // UnoRouter model, plus five platforms the worker had since dropped or disabled.
+    const tierTags = (m.tags ?? []).map((t) => String(t)).filter((t) => TIERS.includes(t));
+    if (tierTags.length !== 1) {
+      add('error', scope, tierTags.length === 0
+        ? `${id}: no quality tier tag — add the model to scripts/model-tiers.json and re-run sync-catalog`
+        : `${id}: ${tierTags.length} tier tags (${tierTags.join(', ')}) — exactly one is allowed`);
     }
     // A tag cell that was never split on its delimiter.
     for (const t of m.tags ?? []) {

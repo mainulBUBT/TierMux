@@ -900,7 +900,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     if (openRationalePop) { closeRationalePop(); return; } // toggle off
     const pop = document.createElement('div');
     pop.className = 'rationale-pop';
-    const answered = (data.answered || []).filter((a) => a && (a.inputTokens || a.outputTokens));
+    const answered = (data.answered || []).filter((a) => a && a.model);
     const answeredNames = new Set(answered.map((a) => a.model));
     const byName = new Map((data.entries || []).map((e) => [e.model, e]));
 
@@ -953,7 +953,7 @@ import { handleToolStatus } from './handlers/toolStatus';
         row.innerHTML =
           `<span class="ra-no">${i + 1}</span>` +
           `<span class="ra-name">${escapeHtml(a.model)}</span>` +
-          `<span class="ra-tok">${escapeHtml(fmtTokens(a.inputTokens))} in · ${escapeHtml(fmtTokens(a.outputTokens))} out</span>` +
+          `<span class="ra-tok">${a.inputTokens || a.outputTokens ? `${escapeHtml(fmtTokens(a.inputTokens))} in · ${escapeHtml(fmtTokens(a.outputTokens))} out` : 'tokens not reported'}</span>` +
           `<span class="ra-role">${a.pass > 1 ? 'continuation' : 'first pass'}</span>`;
         sec.appendChild(row);
       });

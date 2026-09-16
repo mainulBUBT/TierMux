@@ -65,11 +65,11 @@ export function isFailoverWorthy(e: unknown): boolean {
  *  registry's single-shot timeouts would let one dead provider hold a turn. 25s → 60s on
  *  2026-09-04 (65k prefill on poolside/laguna-s-2.1). Not applied to custom/local endpoints. */
 const FAILOVER_CONNECT_TIMEOUT_MS = 60_000;
-/** Ceiling on time to the first CONTENT chunk (reply text, reasoning, tool call, finish) AFTER
- *  the stream is alive. SSE keep-alives prove liveness, not progress: opencode zen streamed
- *  `: keep-alive` lines for ~14s before its first reasoning delta (live 2026-09-15), and the old
- *  single gate disarmed on the first keep-alive, so "connected but thinking forever" was
- *  undetectable. Not applied to custom/local endpoints. */
+/** Ceiling on time to the first CONTENT chunk (reply text, reasoning, tool call, finish),
+ *  counted from the FIRST chunk — not from the request, or connect+prefill would share this
+ *  budget and silently undo the 60s above. Data-frame heartbeats (empty `choices`, role-only
+ *  deltas) prove liveness, not progress; SSE comment keep-alives never reach us at all, the
+ *  parser drops them (providers/base.ts). Not applied to custom/local endpoints. */
 const FAILOVER_FIRST_CONTENT_TIMEOUT_MS = 30_000;
 
 /** Stop STARTING new candidates once the chain has burned this long. Never interrupts a
@@ -506,9 +506,9 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
           });
           recordRequest(c.platform, c.modelId);
           reportServed(c, provider.runtimeName);
-          if (data.usage) {
-            providerOpts.onUsage?.({ inputTokens: data.usage.prompt_tokens, outputTokens: data.usage.completion_tokens, model: `${c.platform}::${c.modelId}` });
-          }
+          // Reported even when the gateway omits usage: this model SERVED, and the footer says
+          // so from reportServed above — a silent row is how the two drifted apart.
+          providerOpts.onUsage?.({ inputTokens: data.usage?.prompt_tokens ?? 0, outputTokens: data.usage?.completion_tokens ?? 0, model: `${c.platform}::${c.modelId}` });
           const msg = data.choices?.[0]?.message;
           const content: LanguageModelV4GenerateResult['content'] = [];
           if (msg?.content) {
@@ -635,13 +635,11 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                 ? [...messages, { role: 'user' as const, content: 'You produced reasoning but no final answer and called no tool. Reply now with your final answer to the user — concise, no meta-commentary, no tool calls.' }]
                 : messages;
 
-              // Stall failover, two gates. Headers gate: no chunk AT ALL (not even a keep-alive)
-              // within ttftGateMsFor ⇒ abandon. Content gate: stream alive but no CONTENT (text/
-              // reasoning/tool call/finish) within FAILOVER_FIRST_CONTENT_TIMEOUT_MS ⇒ abandon —
-              // keep-alives clear only the headers gate, never the content one. Never a cap on
-              // generation length.
+              // Stall failover, two gates. Headers gate: no chunk AT ALL within ttftGateMsFor ⇒
+              // abandon. Content gate: armed on the FIRST chunk, so a stream that heartbeats
+              // without ever producing content is abandoned too. Never a cap on generation length.
               const ttftGate = ttftGateMsFor(c.platform, !!providerOpts.pinnedModel);
-              const contentGate = ttftGate > 0 ? Math.min(ttftGate, FAILOVER_FIRST_CONTENT_TIMEOUT_MS) : 0;
+              const contentGate = ttftGate > 0 ? FAILOVER_FIRST_CONTENT_TIMEOUT_MS : 0;
               const ttftController = new AbortController();
               const armStall = (ms: number, what: string) => ms > 0
                 ? setTimeout(() => {
@@ -650,7 +648,8 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                   }, ms)
                 : undefined;
               const headersTimer = armStall(ttftGate, 'response');
-              const contentTimer = armStall(contentGate, 'content chunk');
+              let contentTimer: ReturnType<typeof setTimeout> | undefined;
+              let contentSeen = false;
               // The SDK's own abort (Stop button / sub-agent timeout) must still kill the
               // request — combine both signals rather than replacing the caller's.
               const ttftSignal = options.abortSignal
@@ -671,9 +670,10 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                   abortSignal: ttftSignal,
                   timeoutMs: connectTimeoutFor(c.platform),
                 })) {
-                  // ANY chunk — even an SSE keep-alive — proves the stream is alive and clears
-                  // the headers gate…
+                  // First chunk: the stream is alive, so the headers gate is done and the
+                  // content gate's clock starts HERE.
                   if (headersTimer) clearTimeout(headersTimer);
+                  if (contentGate > 0 && !contentSeen && !contentTimer) contentTimer = armStall(contentGate, 'content chunk');
                   if (chunk.usage) usage = chunk.usage;
                   const choice = chunk.choices?.[0];
                   if (!choice) continue;
@@ -682,11 +682,9 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                   // Thinking arrives as native reasoning fields or `<think>` markup in content;
                   // the splitter routes both to the reasoning channel without doubling.
                   const split = splitter.feed(delta.content, reasoningFromDelta(delta as unknown as Record<string, unknown>));
-                  // …but only CONTENT clears the content gate (see armStall above). A stream
-                  // that pings keep-alives while "thinking" is just as stalled as one that
-                  // never answered.
                   if (split.text || split.reasoning || (delta.tool_calls?.length ?? 0) > 0 || choice.finish_reason) {
-                    if (contentTimer) clearTimeout(contentTimer);
+                    contentSeen = true;
+                    if (contentTimer) { clearTimeout(contentTimer); contentTimer = undefined; }
                   }
                   if (split.reasoning) {
                     reasoningAccum += split.reasoning;
@@ -776,9 +774,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             // it healthy kept Auto re-picking nemotron-3-ultra-free every turn (×3, 2026-08-28).
             // The answer still ships; the cooldown steers the NEXT turn elsewhere.
             recordOutcome(c.platform, c.modelId, !folded && !looped);
-            if (usage) {
-              providerOpts.onUsage?.({ inputTokens: usage.prompt_tokens ?? 0, outputTokens: usage.completion_tokens ?? 0, model: `${c.platform}::${c.modelId}` });
-            }
+            providerOpts.onUsage?.({ inputTokens: usage?.prompt_tokens ?? 0, outputTokens: usage?.completion_tokens ?? 0, model: `${c.platform}::${c.modelId}` });
             if (reasoningStarted) controller.enqueue({ type: 'reasoning-end', id: reasoningId });
             if (textStarted) controller.enqueue({ type: 'text-end', id: textId });
             const hasCalls = acc.size > 0;

@@ -49,7 +49,12 @@ console.log('workReport.e2e');
 {
   const md = renderLegacyMarkdown(baseReport({ verifyOutcome: 'failed', verifyCmd: 'npm test', fixRounds: 2 }));
   assert(md.includes('**❌ Verification failed**'), 'load-bearing marker: Verification failed');
-  assert(md.includes('`npm test` still fails after 2 fix rounds.'), 'failed line names cmd + rounds');
+  assert(md.includes('\`npm test\`') && md.includes('2 fix rounds'), 'failed line names cmd + rounds');
+  // The gate never ran the command BEFORE the changes, so it cannot know the turn caused the
+  // failure — a suite that was already red reads identically (live repro 2026-09-16: a CSS edit
+  // on a Laravel repo with 56 pre-existing failures).
+  assert(!/issue isn't fully resolved/.test(md) && /exit code only/.test(md),
+    'failed copy states the exit code, never blames the turn');
   // The agent owns the recheck (2026-08-25): the copy must never hand the verify command back
   // to the user — only offer to let the agent keep going.
   assert(!md.includes('re-run the command'), 'failed copy never asks the user to re-run');

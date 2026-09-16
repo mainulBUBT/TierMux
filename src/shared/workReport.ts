@@ -78,7 +78,7 @@ export function renderLegacyMarkdown(report: WorkReportData): string {
     // Agent-owns-the-recheck copy (2026-08-25): the loop already ran the fix rounds itself, so
     // the user is never asked to re-run the command — the only follow-up offered is telling the
     // agent to keep going.
-    lines.push(`**❌ Verification failed** — \`${report.verifyCmd}\` still fails after ${r} fix round${r === 1 ? '' : 's'}. Your changes are saved, but the issue isn't fully resolved yet — say "keep fixing" and I'll continue from the current failures.`);
+    lines.push(`**❌ Verification failed** — \`${report.verifyCmd}\` still exits non-zero after ${r} fix round${r === 1 ? '' : 's'}; your changes are saved. The gate reads the exit code only — it never ran the command before the changes — so a project that was already failing looks the same. Say "keep fixing" to continue from the current failures.`);
   } else if (report.verifyOutcome === 'changes-only') {
     lines.push('**✅ Changes applied** — your changes are saved to disk.');
   } else if (report.verifyAvailable === false) {

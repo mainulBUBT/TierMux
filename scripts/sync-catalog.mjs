@@ -19,6 +19,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { loadTierTable, TIERS } from './modelTiers.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
@@ -277,9 +278,26 @@ async function main() {
     if (NO_LONGER_FREE.has(`${m.platform}||${m.modelId}`)) m.tags = (m.tags ?? []).filter((t) => t !== 'free');
     return m;
   };
+  // Every row needs its quality tier, including the platforms the worker never sees.
+  // Worker rows arrive tagged; externally-curated ones (UnoRouter's 165, plus anything
+  // whose platform the worker has since dropped or disabled) carry only the old
+  // capability tags, and an untiered row is judged by tierOf()'s rank fallback instead
+  // of by the table. The tier goes first, matching the worker's own convention.
+  const tiers = loadTierTable();
+  const untiered = [];
+  let stamped = 0;
+  const withTier = (m) => {
+    const tags = Array.isArray(m.tags) ? m.tags.map((t) => String(t)) : [];
+    if (tags.some((t) => TIERS.includes(t))) return m;
+    const tier = tiers.tierFor(m.modelId);
+    if (!tier) { untiered.push(`${m.platform}/${m.modelId}`); return m; }
+    stamped++;
+    return { ...m, tags: [tier, ...tags] };
+  };
   const finalModels = [...out, ...externallyCurated]
     .filter((m) => !RETIRED_MODEL_KEYS.has(`${m.platform}||${m.modelId}`))
-    .map(sanitizeRates);
+    .map(sanitizeRates)
+    .map(withTier);
 
   const providers = new Set(finalModels.map((m) => m.platform));
   const output = {
@@ -290,6 +308,8 @@ async function main() {
   writeFileSync(DEST, JSON.stringify(output, null, 2) + '\n', 'utf8');
   console.log(`Wrote ${finalModels.length} models (${providers.size} providers) to ${DEST}`);
   console.log(`  kept (curated): ${kept} · added (derived): ${added} · externally-curated (kept): ${externallyCurated.length} · pruned: ${prunable.length}`);
+  console.log(`  tier-stamped: ${stamped} (table: ${tiers.size} keys from ${tiers.source})`);
+  if (untiered.length) console.log(`  NO TIER — add them to model-tiers.json: ${untiered.join(', ')}`);
   if (added) console.log(`  added: ${out.filter((m) => !byKey.has(`${m.platform}||${m.modelId}`)).map((m) => `${m.platform}/${m.modelId}`).join(', ')}`);
   if (prunable.length) console.log(`  pruned: ${prunable.map((m) => `${m.platform}/${m.modelId}`).join(', ')}`);
 }
