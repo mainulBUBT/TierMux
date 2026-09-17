@@ -46,18 +46,57 @@ if (!dry) {
   }
 }
 
-const run = (cmd, args) => {
-  console.log(`\n$ ${cmd} ${args.join(' ')}`);
-  if (!dry) execFileSync(cmd, args, { cwd: ROOT, stdio: 'inherit' });
+/** The echoed command with the Open VSX token masked. `args.join(' ')` printed `-p <token>`
+ *  verbatim on every run, dry runs included — the token then lives in scrollback, in CI logs and
+ *  in any pasted output (leaked exactly that way on 2026-09-17). Masked here rather than dropped,
+ *  so the echo still shows that a token WAS passed. */
+const echo = (cmd, args) => {
+  const shown = args.map((a, i) => (args[i - 1] === '-p' && a ? `${a.slice(0, 6)}…<redacted>` : a));
+  console.log(`\n$ ${cmd} ${shown.join(' ')}`);
 };
 
-// --skip-duplicate on both: this loop publishes 2 marketplaces × every target and aborts on the
-// first failure (execFileSync throws), so a rollout interrupted anywhere — a flaky upload, one
-// bad token — used to be unresumable, because re-running died on "already exists" for whatever
-// had already landed. With it, re-running the script finishes the rollout.
+/** Run one publish. Returns the error instead of throwing: one marketplace being down must not
+ *  cancel the other eight targets (Open VSX answered 503 mid-rollout on 2026-09-17 and took the
+ *  whole run with it, leaving 1 of 9 targets on the Marketplace and nothing on Open VSX). */
+const attempt = (label, cmd, args) => {
+  echo(cmd, args);
+  if (dry) return undefined;
+  try {
+    execFileSync(cmd, args, { cwd: ROOT, stdio: 'inherit' });
+    return undefined;
+  } catch (e) {
+    console.error(`! ${label} FAILED — continuing`);
+    return { label, message: e instanceof Error ? e.message.split('\n')[0] : String(e) };
+  }
+};
+
+// ONE MARKETPLACE AT A TIME, not interleaved per target: the two are independent services, and
+// pairing them per target let an Open VSX outage block the Marketplace rollout as well.
+// --skip-duplicate on both, so re-running after a partial rollout finishes it instead of dying
+// on "already exists".
+const failures = [];
+console.log('\n── VS Code Marketplace ──');
 for (const f of vsixes) {
-  const p = join('release', f);
-  run('npx', ['vsce', 'publish', '--skip-duplicate', '--packagePath', p]);
-  run('npx', ['ovsx', 'publish', '--skip-duplicate', p, '-p', process.env.OVSX_PAT ?? '']);
+  failures.push(attempt(`marketplace ${f}`, 'npx', ['vsce', 'publish', '--skip-duplicate', '--packagePath', join('release', f)]));
 }
-console.log(`\n${dry ? '[dry run] nothing was published.' : `v${version} published to both marketplaces.`}`);
+console.log('\n── Open VSX ──');
+if (!dry && !process.env.OVSX_PAT) {
+  console.warn('! OVSX_PAT is not set — skipping Open VSX entirely (nothing was attempted).');
+} else {
+  for (const f of vsixes) {
+    failures.push(attempt(`open-vsx ${f}`, 'npx', ['ovsx', 'publish', '--skip-duplicate', join('release', f), '-p', process.env.OVSX_PAT ?? '']));
+  }
+}
+
+const failed = failures.filter(Boolean);
+if (dry) {
+  console.log('\n[dry run] nothing was published.');
+} else if (failed.length === 0) {
+  console.log(`\nv${version} published to both marketplaces — ${vsixes.length} targets each.`);
+} else {
+  // Non-zero exit so CI notices, but every publish that COULD succeed already has: re-running
+  // the script retries only what is still missing.
+  console.error(`\nv${version}: ${failed.length} of ${vsixes.length * 2} publishes failed — re-run to retry just these:`);
+  for (const f of failed) console.error(`  ${f.label} — ${f.message}`);
+  process.exit(1);
+}
