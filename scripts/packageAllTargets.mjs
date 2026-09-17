@@ -5,16 +5,18 @@
 // to just that target before packaging, otherwise every VSIX bundles every
 // platform's binary (or, worse, the wrong one for the host that built it).
 import { execFileSync } from 'node:child_process';
-import { rmSync, mkdirSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { rmSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const RIPGREP_VERSION = '1.18.0';
-const TARGETS = [
-  ['darwin-arm64', '@vscode/ripgrep-darwin-arm64'],
-  ['darwin-x64', '@vscode/ripgrep-darwin-x64'],
-  ['win32-x64', '@vscode/ripgrep-win32-x64'],
-  ['linux-x64', '@vscode/ripgrep-linux-x64'],
-];
+// Shared with scripts/package-targets.sh. This list was private and had drifted to four
+// entries, so `npm run publish:all` shipped no Linux ARM, Windows ARM or Alpine build at all
+// while `package:all` shipped six — the reason it now lives in one file.
+const { targets } = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'release-targets.json'), 'utf8'),
+);
+const TARGETS = targets.map((t) => [t.target, `@vscode/ripgrep-${t.rg}`, t.rg]);
 
 const outDir = 'dist-vsix';
 mkdirSync(outDir, { recursive: true });
@@ -22,11 +24,15 @@ for (const f of readdirSync(outDir)) rmSync(join(outDir, f));
 
 const run = (cmd, args) => execFileSync(cmd, args, { stdio: 'inherit' });
 
-for (const [target, pkg] of TARGETS) {
-  console.log(`\n=== ${target} ===`);
+for (const [target, pkg, rg] of TARGETS) {
+  console.log(`\n=== ${target} (${pkg}) ===`);
   run('npm', ['install', '--no-save', '--force', `${pkg}@${RIPGREP_VERSION}`]);
   for (const entry of readdirSync('node_modules/@vscode')) {
-    if (entry.startsWith('ripgrep-') && entry !== `ripgrep-${target}`) {
+    // Keep the RIPGREP package's directory, not one named after the target: lib/index.js
+    // resolves `@vscode/ripgrep-${process.platform}-${process.arch}` at runtime, which is
+    // linux-arm for linux-armhf and plain linux-* for both alpine targets. Comparing against
+    // the target name deleted the very binary the VSIX needed.
+    if (entry.startsWith('ripgrep-') && entry !== `ripgrep-${rg}`) {
       rmSync(join('node_modules/@vscode', entry), { recursive: true, force: true });
     }
   }

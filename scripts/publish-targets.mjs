@@ -51,9 +51,13 @@ const run = (cmd, args) => {
   if (!dry) execFileSync(cmd, args, { cwd: ROOT, stdio: 'inherit' });
 };
 
+// --skip-duplicate on both: this loop publishes 2 marketplaces × every target and aborts on the
+// first failure (execFileSync throws), so a rollout interrupted anywhere — a flaky upload, one
+// bad token — used to be unresumable, because re-running died on "already exists" for whatever
+// had already landed. With it, re-running the script finishes the rollout.
 for (const f of vsixes) {
   const p = join('release', f);
-  run('npx', ['vsce', 'publish', '--packagePath', p]);
-  run('npx', ['ovsx', 'publish', p, '-p', process.env.OVSX_PAT ?? '']);
+  run('npx', ['vsce', 'publish', '--skip-duplicate', '--packagePath', p]);
+  run('npx', ['ovsx', 'publish', '--skip-duplicate', p, '-p', process.env.OVSX_PAT ?? '']);
 }
 console.log(`\n${dry ? '[dry run] nothing was published.' : `v${version} published to both marketplaces.`}`);

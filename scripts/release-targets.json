@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Every VS Code platform target TierMux ships, and which @vscode/ripgrep package each needs.",
+    "Source of truth for BOTH release paths (package-targets.sh and packageAllTargets.mjs), which",
+    "previously kept their own lists and had drifted to 6 and 4 targets — publish:all silently",
+    "shipped no Linux ARM, Windows ARM or Alpine build at all.",
+    "",
+    "`rg` is NOT the VS Code target name: @vscode/ripgrep/lib/index.js resolves its binary as",
+    "`@vscode/ripgrep-${process.platform}-${process.arch}` at RUNTIME, so the directory installed",
+    "into a VSIX has to carry that name, not the target's. linux-armhf runs as linux-arm, and both",
+    "alpine targets run as plain linux — their rg binaries are statically linked, so the glibc",
+    "packages work under musl (verified with file(1) on 1.18.0: static-pie / statically linked).",
+    "",
+    "Getting this wrong is not a soft failure: '@vscode/ripgrep' is external in the bundle, so",
+    "Node's real require() runs lib/index.js, which THROWS when the package is absent — the",
+    "extension fails to activate. That is also why there is no universal/no-target VSIX.",
+    "",
+    "win32-ia32 is absent on purpose: VS Code dropped 32-bit Windows, so it is no longer a valid",
+    "target, even though @vscode/ripgrep still publishes the binary. `web` needs child_process."
+  ],
+  "targets": [
+    { "target": "darwin-arm64", "rg": "darwin-arm64" },
+    { "target": "darwin-x64",   "rg": "darwin-x64" },
+    { "target": "linux-x64",    "rg": "linux-x64" },
+    { "target": "linux-arm64",  "rg": "linux-arm64" },
+    { "target": "linux-armhf",  "rg": "linux-arm" },
+    { "target": "alpine-x64",   "rg": "linux-x64" },
+    { "target": "alpine-arm64", "rg": "linux-arm64" },
+    { "target": "win32-x64",    "rg": "win32-x64" },
+    { "target": "win32-arm64",  "rg": "win32-arm64" }
+  ]
+}

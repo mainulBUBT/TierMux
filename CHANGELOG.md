@@ -61,6 +61,27 @@ All notable changes to TierMux are documented here. The format is loosely
   one-sentence verdict; earlier rounds are told to fix and not to explain yet
   (`src/agent/core/engine.ts`).
 
+### Fixed — the release now covers every VS Code desktop platform
+
+- **Nine targets instead of six (or four).** `package:all` and `publish:all` each kept their own
+  private target list and had drifted apart: the first shipped six platforms, the second only
+  four — so `npm run publish:all` published **no Linux ARM, Windows ARM or Alpine build at all**.
+  Both now read `scripts/release-targets.json`. Added `linux-armhf`, `alpine-x64` and
+  `alpine-arm64` (Docker images, devcontainers and VS Code Server on musl had nothing to install).
+- **The ripgrep directory is named after the runtime, not the target.**
+  `@vscode/ripgrep/lib/index.js` resolves `@vscode/ripgrep-${process.platform}-${process.arch}`,
+  which is `linux-arm` for `linux-armhf` and plain `linux-*` for both alpine targets. The old
+  packagers assumed the two names matched; on the new targets that assumption deletes the very
+  binary the VSIX needs. Both alpine binaries are statically linked, so the glibc packages run
+  under musl. Verified per VSIX: exactly one ripgrep package, correct architecture.
+- **A partial rollout is resumable.** `publish-targets.mjs` publishes 2 marketplaces × every
+  target and aborts on the first failure, so an interrupted rollout could not be re-run —
+  whatever had already landed failed with "already exists". Both publishes now pass
+  `--skip-duplicate`.
+- No universal/no-target VSIX on purpose: `@vscode/ripgrep` is external in the bundle, so Node
+  loads `lib/index.js` for real and it THROWS when the platform package is missing — a
+  binary-less universal build would fail activation rather than degrade.
+
 ### Known issue
 
 - The VSIX still ships without the root `LICENSE` (vsce reports it as unmatched when listed in the
