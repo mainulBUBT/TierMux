@@ -55,19 +55,51 @@ const echo = (cmd, args) => {
   console.log(`\n$ ${cmd} ${shown.join(' ')}`);
 };
 
-/** Run one publish. Returns the error instead of throwing: one marketplace being down must not
- *  cancel the other eight targets (Open VSX answered 503 mid-rollout on 2026-09-17 and took the
- *  whole run with it, leaving 1 of 9 targets on the Marketplace and nothing on Open VSX). */
+/** execFileSync's Error message is "Command failed: <the whole argv>", so it carries the token
+ *  even when the echo above masked it — the failure SUMMARY leaked it a second time on
+ *  2026-09-17. Scrub any token-shaped argument out of arbitrary text before printing it. */
+const scrub = (text) => String(text).replace(/(ovsxat_|-p\s+)[\w-]{8,}/g, (m, p1) => `${p1}<redacted>`);
+
+/** Transient server-side refusals. Open VSX answered 503 to 5 of 9 uploads in one run
+ *  (2026-09-17) while the other 4 went through — an overloaded service, not a bad request, so
+ *  the same upload succeeds moments later. 429 is its rate limiter and behaves the same way. */
+const TRANSIENT = /\b(429|502|503|504)\b|ETIMEDOUT|ECONNRESET|socket hang up/i;
+const RETRIES = 4;
+const BACKOFF_MS = [5_000, 15_000, 30_000, 60_000];
+
+/** Run one publish, retrying transient failures with backoff. Returns the error instead of
+ *  throwing: one marketplace being down must not cancel the remaining targets (a 503 on the
+ *  first target used to end the whole run, leaving 1 of 9 on the Marketplace and nothing on
+ *  Open VSX). */
 const attempt = (label, cmd, args) => {
   echo(cmd, args);
   if (dry) return undefined;
-  try {
-    execFileSync(cmd, args, { cwd: ROOT, stdio: 'inherit' });
-    return undefined;
-  } catch (e) {
-    console.error(`! ${label} FAILED — continuing`);
-    return { label, message: e instanceof Error ? e.message.split('\n')[0] : String(e) };
+  let last;
+  for (let i = 0; i <= RETRIES; i++) {
+    try {
+      execFileSync(cmd, args, { cwd: ROOT, stdio: 'inherit' });
+      if (i > 0) console.log(`  (succeeded on attempt ${i + 1})`);
+      return undefined;
+    } catch (e) {
+      last = e;
+      const why = scrub(e instanceof Error ? e.message : e);
+      // stdio is 'inherit', so the tool's own 503 line is already on screen but NOT in `why`
+      // (which is just "Command failed: …"). Retry any failure from these two uploaders: a
+      // genuine rejection — bad token, bad manifest — fails identically every attempt and
+      // simply costs the backoff, whereas not retrying costs a manual re-run of the rollout.
+      if (i < RETRIES) {
+        const waitMs = BACKOFF_MS[i];
+        console.error(`! ${label} failed (attempt ${i + 1}/${RETRIES + 1}) — retrying in ${waitMs / 1000}s`);
+        // Synchronous sleep: this script is a sequential shell-out driver, and awaiting here
+        // would mean restructuring every caller for no gain.
+        execFileSync('sleep', [String(waitMs / 1000)]);
+        continue;
+      }
+      console.error(`! ${label} FAILED after ${RETRIES + 1} attempts — continuing`);
+      return { label, message: why.split('\n')[0] };
+    }
   }
+  return { label, message: scrub(last).split('\n')[0] };
 };
 
 // ONE MARKETPLACE AT A TIME, not interleaved per target: the two are independent services, and
@@ -97,6 +129,6 @@ if (dry) {
   // Non-zero exit so CI notices, but every publish that COULD succeed already has: re-running
   // the script retries only what is still missing.
   console.error(`\nv${version}: ${failed.length} of ${vsixes.length * 2} publishes failed — re-run to retry just these:`);
-  for (const f of failed) console.error(`  ${f.label} — ${f.message}`);
+  for (const f of failed) console.error(`  ${f.label} — ${scrub(f.message)}`);
   process.exit(1);
 }
