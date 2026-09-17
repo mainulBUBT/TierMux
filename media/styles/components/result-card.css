@@ -3,8 +3,8 @@
    (renderAssistantStatic reads entry.workReport), so one stylesheet serves both.
 
    Compact by design: token/model/duration telemetry stays in the message footer — this card
-   carries only verification status and what changed. No verify button: the agent owns the
-   recheck (bounded fix rounds run inside the turn). */
+   carries only verification status and what changed. No verdict badge: a failed gate renders in
+   the quiet style and suggests the user run the command (2026-09-17). */
 
 .tm-result-card {
   margin-top: 8px;
@@ -29,7 +29,6 @@
   font-weight: 600;
 }
 .tm-result-card .rc-status.rc-verified { color: var(--vscode-testing-iconPassed, #2e7d32); }
-.tm-result-card .rc-status.rc-failed { color: var(--vscode-errorForeground, #c33); }
 .tm-result-card .rc-status.rc-unverified { color: var(--vscode-editorWarning-foreground, #c9930a); }
 
 .tm-result-card .rc-cmd {
@@ -55,7 +54,7 @@
 .tm-result-card .cp-file.rc-clickable:hover { background: var(--tm-hover); }
 .tm-result-card .rc-more { opacity: 0.7; padding: 2px 4px; }
 
-/* Untested turns: no verdict badge, just a quiet note row. */
+/* Untested AND failed turns: no verdict badge, just a quiet note row. */
 .tm-result-card.rc-quiet { padding: 5px 10px; }
 .tm-result-card .rc-hint {
   font-size: 11.5px;

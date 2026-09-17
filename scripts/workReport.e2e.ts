@@ -47,24 +47,22 @@ console.log('workReport.e2e');
   assert(md.includes('**✅ Verified** — `npm run build` passed (after 1 fix round).'), 'verified line with fix round');
 }
 {
+  // A failed gate says NOTHING (2026-09-17, user direction). The command is never run before the
+  // changes, so a non-zero exit cannot be attributed to this turn — a suite that was already red
+  // reads identically (live repro 2026-09-16: a CSS edit on a Laravel repo with 56 pre-existing
+  // failures). Superseded here: the ❌ badge, the "exit code only" explanation, and the
+  // agent-owns-the-recheck "say keep fixing" follow-up (2026-08-25). The agent's own closing
+  // sentence reports a real failure; the report block only lists what changed.
   const md = renderLegacyMarkdown(baseReport({ verifyOutcome: 'failed', verifyCmd: 'npm test', fixRounds: 2 }));
-  assert(md.includes('**❌ Verification failed**'), 'load-bearing marker: Verification failed');
-  assert(md.includes('\`npm test\`') && md.includes('2 fix rounds'), 'failed line names cmd + rounds');
-  // The gate never ran the command BEFORE the changes, so it cannot know the turn caused the
-  // failure — a suite that was already red reads identically (live repro 2026-09-16: a CSS edit
-  // on a Laravel repo with 56 pre-existing failures). The card used to SPELL THAT OUT ("the gate
-  // reads the exit code only…"), but the agent now closes a failed turn with its own
-  // one-sentence reason, so the card stating it too meant reading the same excuse twice
-  // (2026-09-17, user direction). What must hold is the guarantee, not the sentence: report the
-  // mechanical fact, never attribute the failure to this turn's work.
-  assert(!/issue isn't fully resolved|your changes (?:broke|caused)|caused by your/i.test(md),
-    'failed copy never blames the turn for the failure');
-  assert(/exits non-zero/.test(md) && /changes are saved/.test(md),
-    'failed copy states the mechanical outcome and that the work survived');
-  // The agent owns the recheck (2026-08-25): the copy must never hand the verify command back
-  // to the user — only offer to let the agent keep going.
-  assert(!md.includes('re-run the command'), 'failed copy never asks the user to re-run');
-  assert(md.includes('keep fixing'), 'failed copy offers agent continuation');
+  for (const leak of ['❌', 'Verification failed', 'exits non-zero', 'fix round', 'keep fixing', 'npm test']) {
+    assert(!md.includes(leak), `failed outcome never mentions ${JSON.stringify(leak)}`);
+  }
+  const withFiles = renderLegacyMarkdown(baseReport({
+    verifyOutcome: 'failed', verifyCmd: 'npm test', fixRounds: 2,
+    changedFiles: [{ path: 'x.ts', status: 'M' }],
+  }));
+  assert(withFiles.includes('modified: x.ts'), 'a failed turn still reports what it changed');
+  assert(!/npm test|fix round/.test(withFiles), '…and still says nothing about the gate');
 }
 {
   const md = renderLegacyMarkdown(baseReport({ verifyOutcome: 'unverified' }));

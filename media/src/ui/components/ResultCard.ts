@@ -1,8 +1,10 @@
 // ResultCard — the structured end-of-turn work report. Renders WorkReportData for both the live
 // turn (`workReport` message) and replay (entry.workReport), so both are identical by
 // construction. Compact on purpose: telemetry stays in the footer; this carries only what the
-// footer cannot — verification status and what changed. No manual verify button: the agent owns
-// the recheck. Host interaction via callbacks (onDiffFile) only.
+// footer cannot — verification status and what changed. No verdict BADGE either: a failed gate
+// reads as a quiet note suggesting the user run the command (2026-09-17, user direction), since
+// the loop has already spent its fix rounds and the gate never saw the suite before the turn.
+// Host interaction via callbacks (onDiffFile) only.
 
 import { el } from '../dom';
 import { fmtDuration } from '../../format';
@@ -18,13 +20,6 @@ export interface ResultCardOptions {
 
 // ========== Helpers ==========
 
-const OUTCOME_META = {
-  verified: { icon: '✅', label: 'Verified', cls: 'rc-verified' },
-  failed: { icon: '❌', label: 'Verification failed', cls: 'rc-failed' },
-  unverified: { icon: '⚠️', label: 'Unverified', cls: 'rc-unverified' },
-  'changes-only': { icon: '✅', label: 'Changes applied', cls: 'rc-verified' },
-} as const;
-
 function fmtElapsed(ms: number): string {
   // Sub-second precision stays (tool timings are often < 10s); longer spans go human.
   if (ms >= 60_000) return fmtDuration(ms / 1000);
@@ -37,29 +32,20 @@ const BADGE_CLS = { A: 'cp-created', M: 'cp-modified', D: 'cp-deleted' } as cons
 // ========== Component ==========
 
 /** Build the card, or NULL when there is nothing to tell: a verified pass is the expected
- *  outcome, so success is SILENT; the card speaks only for a failed gate or untested work — and
- *  "untested" only when the workspace HAS a check to run (verifyAvailable !== false). */
+ *  outcome, so success is SILENT, and a FAILED gate is silent too (2026-09-17, user direction) —
+ *  the command was never run before the changes, so a non-zero exit cannot be attributed to this
+ *  turn, and reporting it anyway blamed the agent for a suite that was often already red. A
+ *  failed turn therefore renders only its changed files, and nothing at all when it changed none.
+ *  The one thing the card still SAYS is "untested", and only where the workspace HAS a check
+ *  (verifyAvailable !== false). The agent's own closing sentence is what reports a failure now. */
 export function createResultCard(report: WorkReportData, opts?: ResultCardOptions): HTMLElement | null {
   if (report.verifyOutcome === 'verified' || report.verifyOutcome === 'changes-only') return null;
   if (report.verifyOutcome === 'unverified' && report.verifyAvailable === false) return null;
+  if (report.verifyOutcome === 'failed' && report.changedFiles.length === 0) return null;
 
-  const meta = OUTCOME_META[report.verifyOutcome] ?? OUTCOME_META.unverified;
-  const quiet = report.verifyOutcome === 'unverified';
+  const card = el('div', { class: 'tm-result-card rc-quiet' });
 
-  const card = el('div', { class: `tm-result-card ${quiet ? 'rc-quiet' : meta.cls}` });
-
-  // ── Header: status badge + verify command chip + fix rounds (failure case only) ──
-  if (!quiet) {
-    const head = el('div', { class: 'rc-head' });
-    head.append(el('span', { class: `rc-status ${meta.cls}` }, `${meta.icon} ${meta.label}`));
-    if (report.verifyCmd) {
-      head.append(el('code', { class: 'rc-cmd', title: `Verify command: ${report.verifyCmd}` }, report.verifyCmd));
-    }
-    if (report.fixRounds > 0) {
-      head.append(el('span', { class: 'rc-pill' }, `${report.fixRounds} fix round${report.fixRounds === 1 ? '' : 's'}`));
-    }
-    card.append(head);
-  } else {
+  if (report.verifyOutcome !== 'failed') {
     card.append(el('div', { class: 'rc-hint' }, 'Not tested this turn'));
   }
 

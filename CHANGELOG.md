@@ -3,6 +3,70 @@
 All notable changes to TierMux are documented here. The format is loosely
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [3.0.2] — 2026-09-17
+
+### Fixed — an attachment can no longer be routed to a model that cannot see it
+
+- **Vision is now a routing gate, not just a task kind.** `classifyTask` correctly labelled an
+  image/PDF turn `vision`, but that only chose the head of the chain — `TASK_ROUTING.vision` held
+  a single keyed entry (`google::gemini-2.5-flash`), and the tail padded the chain with every
+  enabled model regardless of `supportsVision`. With no Google key the head was skipped and a
+  text-only model led, dropping the attachment silently. `selectModel` takes `requireVision` /
+  `requireRawPdf` and gates inside `pickOne`, so the tail is filtered too
+  (`src/router/picker.ts`, `src/agent/core/engine.ts`).
+- **Auto mode had no vision guard at all.** The pre-flight check in `chatViewProvider` was
+  conditioned on `m.model !== 'auto'`, so it only ran for a pinned model.
+- **Keyless vision routing.** `TASK_ROUTING.vision` gained the keyless, tool-capable
+  frontier/strong rows (`opencode::muse-spark-1.3-contributor-free`, `opencode::mimo-v2.5-free`,
+  `kilo::dots-studio/dots-3-note-preview:free`), so a zero-setup install routes an attachment.
+- **Content-flattening providers are excluded.** `OpenAICompatProvider.flattenContent` documented
+  itself as existing "so the router can exclude flatteners from vision turns" but nothing read it;
+  cohere and cloudflare rows with `supportsVision: true` flattened the image to text on the way
+  out. Now wired via `platformFlattensContent()` (`src/providers/index.ts`).
+- **`NoVisionModelError` is thrown.** It had existed and been re-exported since it was written
+  without a single caller; an exhausted vision chain used to fall back to the *unfiltered* keyless
+  chain, undoing the gate.
+- Locked by `npm run test:e2e:routing-gates`.
+
+### Fixed — utility calls get their failover back
+
+- **`routeOnce`'s `model` is a preference again, as its header always claimed.** It was passed to
+  the picker as `pinnedModel`, and PIN = EXACT returns an empty fallback chain — so every utility
+  caller with a preferred model got one candidate and no failover. One rate limit silently killed
+  an inline completion, a commit message or a chat title, which is why `condense` and the title
+  path hand-rolled a second call without `model`. The chain is now resolved unpinned and the
+  preference hoisted to its head (`src/agent/core/routeOnce.ts`). An explicit user pin in chat
+  still runs alone — that contract is unchanged and asserted.
+- **Inline completions no longer pick their own model.** `catalog.fastestEnabled()` read
+  `speedRank` alone — ignoring cooldown, rate limits and the provider switch, and rating
+  `kilo::kilo-auto/free` "fastest" though it is a router alias whose latency is unknowable. The
+  provider now routes through `taskKind: 'trivial'` unless the user set a model explicitly
+  (`src/completions/inlineCompletion.ts`); `fastestEnabled` is removed.
+- **`TASK_ROUTING.trivial` is ordered by speed**, since latency is the product for completions,
+  commit messages and titles. Added `kilo::stepfun/step-3.7-flash:free` — the only keyless
+  speedRank-1 row in the catalog, so a keyless install reaches a fast head from the table alone.
+
+### Changed — a failed verify no longer renders a verdict
+
+- **The result card says nothing about a failed gate.** The verify command is never run *before*
+  the changes, so a non-zero exit cannot be attributed to the turn — a suite that was already red
+  read identically (repro: a two-file edit on a Laravel repo with pre-existing failures). The
+  card's "❌ Verification failed … Say 'keep fixing' to continue" is gone; a failed turn renders
+  only its changed files, and nothing at all when it changed none (`media/src/ui/components/
+  ResultCard.ts`, `src/shared/workReport.ts`). Supersedes the agent-owns-the-recheck copy of
+  2026-08-25.
+- **The agent reports a real failure itself, in one sentence.** The fix-round prompt used to offer
+  "if it is unrelated, say so in one line and stop" on *every* round, so round 1 could be spent
+  writing an excuse instead of attempting the fix. Now only the final round asks for a
+  one-sentence verdict; earlier rounds are told to fix and not to explain yet
+  (`src/agent/core/engine.ts`).
+
+### Known issue
+
+- The VSIX still ships without the root `LICENSE` (vsce reports it as unmatched when listed in the
+  `files` allowlist, and excludes it otherwise). The repo is MIT and `LICENSE` is at the root; only
+  the packaged copy is missing.
+
 ## [3.0.1] — 2026-09-06
 
 ### Changed — fewer, faster steps on free tiers

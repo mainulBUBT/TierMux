@@ -65,8 +65,9 @@ export interface WorkReportData {
 // ── Legacy markdown serialization — only so transcripts persisted before WorkReportData keep
 // rendering. Never PARSE it back; emit and strip share one implementation.
 
-/** Marker phrases here are load-bearing: e2e suites key on them ('Verification failed',
- *  'Unverified'), and the wording is user-facing copy — change with care. */
+/** Marker phrases here are load-bearing: e2e suites key on them ('Unverified'), and the wording
+ *  is user-facing copy — change with care. The failed outcome emits NO verify line at all
+ *  (2026-09-17) — only its changed-files block. */
 export function renderLegacyMarkdown(report: WorkReportData): string {
   const lines: string[] = [];
   const rounds = report.fixRounds;
@@ -74,14 +75,13 @@ export function renderLegacyMarkdown(report: WorkReportData): string {
     const rTxt = rounds ? ` (after ${rounds} fix round${rounds === 1 ? '' : 's'})` : '';
     lines.push(`**✅ Verified** — \`${report.verifyCmd}\` passed${rTxt}.`);
   } else if (report.verifyOutcome === 'failed') {
-    const r = rounds || 1;
-    // Agent-owns-the-recheck copy (2026-08-25): the loop already ran the fix rounds itself, so
-    // the user is never asked to re-run the command — the only follow-up offered is telling the
-    // agent to keep going. Trimmed to one line (2026-09-17, user direction): the card used to
-    // explain that the gate reads only the exit code and that an already-failing project looks
-    // the same — the same excuse the agent now states in its own closing sentence, so the user
-    // read it twice on every failed turn.
-    lines.push(`**❌ Verification failed** — \`${report.verifyCmd}\` still exits non-zero after ${r} fix round${r === 1 ? '' : 's'}; your changes are saved. Say "keep fixing" to continue.`);
+    // SILENT (2026-09-17, user direction) — no line at all. The gate never runs the command
+    // before the changes, so a non-zero exit cannot be attributed to this turn; a suite that was
+    // already red reads identically (live repro 2026-09-16: a CSS edit on a Laravel repo with 56
+    // pre-existing failures). Every wording tried here still landed as "the agent broke it", so
+    // the report stops claiming a verdict it cannot support. The agent's closing sentence is
+    // where a real failure gets reported; the block below still lists what changed.
+    // Superseded: the ❌ badge and the agent-owns-the-recheck "say keep fixing" copy (2026-08-25).
   } else if (report.verifyOutcome === 'changes-only') {
     lines.push('**✅ Changes applied** — your changes are saved to disk.');
   } else if (report.verifyAvailable === false) {
