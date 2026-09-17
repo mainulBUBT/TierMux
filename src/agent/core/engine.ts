@@ -792,9 +792,19 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
             ...outcome.responseMessages,
             {
               role: 'user',
-              content: `The verify command \`${verifyCmd}\` failed after your changes. If the failure is caused by your change, fix it, then stop — `
-                + 'it is re-run automatically. If it is unrelated (a missing service, environment, or a test that fails without your change), '
-                + `say so in one line and stop — do not revert your work. Do not re-run the command yourself.\n\nOutput:\n${run.output.slice(0, 6_000)}`,
+              // TRY FIRST, EXPLAIN LAST (2026-09-17, user direction): the old text offered
+              // "if it is unrelated, say so and stop" on EVERY round, so round 1 could be spent
+              // writing an excuse instead of attempting the fix — and the excuse then arrived
+              // twice, once here and once in the report card. Only the final round asks for the
+              // one-sentence verdict. `fixRounds`/`maxFixRounds` are the loop's own counters, so
+              // this stays mechanical: no judging of what the model wrote.
+              content: fixRounds < maxFixRounds
+                ? `The verify command \`${verifyCmd}\` failed after your changes. Fix it, then stop — `
+                  + 'it is re-run automatically. Do not revert your work, do not re-run the command yourself, '
+                  + `and do not explain the failure yet.\n\nOutput:\n${run.output.slice(0, 6_000)}`
+                : `The verify command \`${verifyCmd}\` still fails and this is the last attempt. If you can fix it, do so. `
+                  + 'Otherwise reply with ONE sentence saying why it still fails — no preamble, no restating what you changed, '
+                  + `no advice. Do not revert your work and do not re-run the command yourself.\n\nOutput:\n${run.output.slice(0, 6_000)}`,
             },
           ]).consumeStream({ onError: passError('verifyFix') });
         } catch {

@@ -38,7 +38,12 @@ export const TASK_ROUTING: Record<TaskKind, string[]> = {
   vision: ['google::gemini-2.5-flash', 'opencode::muse-spark-1.3-contributor-free', 'opencode::mimo-v2.5-free', 'kilo::dots-studio/dots-3-note-preview:free'],
   longContext: ['google::gemini-2.5-flash', 'groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free'],
   plan: ['groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
-  trivial: ['cerebras::gemma-4-31b', 'groq::openai/gpt-oss-20b', 'opencode::mimo-v2.5-free'],
+  // Latency IS the product here (inline completions, commit messages, titles), so this table is
+  // ordered by speedRank, not tier. kilo::stepfun/step-3.7-flash is the only KEYLESS speedRank-1
+  // row in the catalog (of 7 total), so a zero-setup install gets a fast head instead of falling
+  // through to the rank-3 entries. kilo::kilo-auto/free is also speedRank 1 but is a router alias
+  // — kilo picks the model, so its latency is unknowable; it stays out on purpose.
+  trivial: ['cerebras::gemma-4-31b', 'kilo::stepfun/step-3.7-flash:free', 'groq::openai/gpt-oss-20b', 'opencode::mimo-v2.5-free'],
   chat: ['groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::mimo-v2.5-free'],
   agent: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::nemotron-3.5-lightning-free'],
 };

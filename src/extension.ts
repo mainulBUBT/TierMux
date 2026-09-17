@@ -288,7 +288,7 @@ export function activate(context: vscode.ExtensionContext): void {
       ...registerEditorCommands(chat),
       ...registerCodeActions(chat),
       registerInlineChat(editGate),
-      ...registerInlineCompletions(catalog, settings),
+      ...registerInlineCompletions(),
       registerCommitMessage(),
     );
   } catch (error) {

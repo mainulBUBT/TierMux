@@ -195,14 +195,6 @@ export class Catalog {
   }
 
   /** Pick a fast model for inline completions among the given enabled entries. */
-  fastestEnabled(entries: FallbackEntry[]): FallbackEntry | undefined {
-    const enabled = entries.filter((e) => e.enabled);
-    const withSpeed = enabled
-      .map((e) => ({ e, m: this.find(e.platform, e.modelId) }))
-      .filter((x): x is { e: FallbackEntry; m: CatalogModel } => !!x.m);
-    withSpeed.sort((a, b) => a.m.speedRank - b.m.speedRank || a.e.priority - b.e.priority);
-    return withSpeed[0]?.e;
-  }
 }
 
 /** Worker tag vocabulary → canonical tags (`coding`, `planner`, `reasoner`, `general`,

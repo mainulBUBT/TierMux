@@ -2,8 +2,6 @@
 
 import * as vscode from 'vscode';
 import { routeOnceOrUndefined } from '../agent/core/routeOnce';
-import type { Catalog } from '../catalog/catalog';
-import type { SettingsStore } from '../config/settingsStore';
 import { PRODUCT_NAME } from '../shared/branding';
 
 const SYSTEM = `You are an inline code completion engine. Continue the code at the cursor.
@@ -13,22 +11,21 @@ existing code. Keep it short (a line or a few lines).`;
 export class InlineCompletionProvider implements vscode.InlineCompletionItemProvider {
   private timer?: ReturnType<typeof setTimeout>;
 
-  constructor(
-    private readonly catalog: Catalog,
-    private readonly settings: SettingsStore,
-  ) {}
-
   private enabled(): boolean {
     return vscode.workspace.getConfiguration('tiermux.completions').get<boolean>('enabled', false);
   }
   private debounceMs(): number {
     return vscode.workspace.getConfiguration('tiermux.completions').get<number>('debounceMs', 350);
   }
-  private modelChoice(): string {
+  /** The user's explicit completions model, or undefined for "route it". Undefined is NOT a
+   *  fallback-free state any more: routeOnce resolves `taskKind: 'trivial'`, whose table is
+   *  speed-ordered and whose candidates have passed the cooldown / rate-limit / provider-off
+   *  gates. It used to hand back catalog.fastestEnabled() instead, which read speedRank alone —
+   *  so a rate-limited or cooldowned model still headed the chain, and a router alias (kilo-auto)
+   *  counted as "fastest" though kilo picks the model and the latency is unknowable. */
+  private modelChoice(): string | undefined {
     const m = vscode.workspace.getConfiguration('tiermux.completions').get<string>('model', 'auto');
-    if (m && m !== 'auto') return m;
-    const fast = this.catalog.fastestEnabled(this.settings.getFallback());
-    return fast ? `${fast.platform}::${fast.modelId}` : 'auto';
+    return m && m !== 'auto' ? m : undefined;
   }
 
   async provideInlineCompletionItems(
@@ -66,10 +63,10 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
   }
 }
 
-export function registerInlineCompletions(catalog: Catalog, settings: SettingsStore): vscode.Disposable[] {
+export function registerInlineCompletions(): vscode.Disposable[] {
   const provider = vscode.languages.registerInlineCompletionItemProvider(
     { pattern: '**' },
-    new InlineCompletionProvider(catalog, settings),
+    new InlineCompletionProvider(),
   );
   const toggle = vscode.commands.registerCommand('tiermux.toggleCompletions', async () => {
     const cfg = vscode.workspace.getConfiguration('tiermux.completions');

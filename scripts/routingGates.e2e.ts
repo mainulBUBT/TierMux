@@ -6,6 +6,7 @@
 import { selectModel, setModelSources, noteModelFailure, canonicalModelId, __resetTaskRoundCounters } from '../src/router/picker';
 import { NoVisionModelError } from '../src/router/errors';
 import { resolveCandidates, isFailoverWorthy } from '../src/agent/core/routerProvider';
+import { TASK_ROUTING } from '../src/router/picker';
 import { ProviderHttpError } from '../src/providers/base';
 import type { FallbackEntry } from '../src/shared/types';
 import { modelTierKey } from './modelTierKey.mjs';
@@ -399,6 +400,53 @@ console.log('\n— an attachment turn is gated on vision, tail included (the Aut
   catch (e) { pdfThrown = e; }
   ok('a raw-PDF turn names the one platform that forwards PDF bytes',
     /Gemini/.test((pdfThrown as Error | undefined)?.message ?? ''), (pdfThrown as Error | undefined)?.message?.slice(0, 60) ?? '');
+}
+
+console.log('\n— a utility `model` is a PREFERENCE (heads the chain), not a cage —');
+{
+  __resetTaskRoundCounters();
+  // routeOnce documents `model` as "a PREFERENCE for the head of the chain, never a cage", but
+  // it passed the key in as pinnedModel — and PIN = EXACT returns fallbackChain: []. So every
+  // utility caller with a preferred model got ONE candidate and no failover, which is why
+  // condense and the title path hand-rolled a second call without `model`. An inline completion
+  // just went silent when its one model was rate-limited.
+  const fallback = [entry('kilo', 'preferred', 0), entry('kilo', 'other', 1), entry('ovh', 'third', 2)];
+  setModelSources(makeSources(fallback, [], ['kilo', 'ovh']));
+
+  const pinned = await resolveCandidates({ taskKind: 'trivial', pinnedModel: 'kilo::preferred' });
+  ok('a PIN still runs alone — that contract is unchanged', pinned.length === 1,
+    pinned.map((c) => `${c.platform}::${c.modelId}`).join(' → '));
+
+  // What routeOnce does now: resolve the chain WITHOUT a pin, then hoist the preference.
+  const chain = await resolveCandidates({ taskKind: 'trivial' });
+  const keys = chain.map((c) => `${c.platform}::${c.modelId}`);
+  const at = keys.indexOf('kilo::preferred');
+  ok('the unpinned chain still contains the preferred model', at !== -1, keys.join(' → '));
+  ok('…and it carries real failover behind it', chain.length > 1, `${chain.length} candidates`);
+}
+
+console.log('\n— the trivial table is ordered by SPEED, because latency is the product there —');
+{
+  const rows = JSON.parse(readFileSync('media/catalog.json', 'utf8'));
+  const list: Array<{ platform: string; modelId?: string; id?: string; speedRank?: number }> =
+    Array.isArray(rows) ? rows : (rows.models ?? rows.entries ?? Object.values(rows).find(Array.isArray));
+  const speedOf = (key: string): number | undefined => {
+    const [p, ...r] = key.split('::');
+    const id = r.join('::');
+    return list.find((x) => x.platform === p && (x.modelId ?? x.id) === id)?.speedRank;
+  };
+  const KEYLESS = ['kilo', 'pollinations', 'opencode', 'ovh'];
+  const trivial = TASK_ROUTING.trivial;
+  ok('every trivial entry is still in the catalog', trivial.every((k) => speedOf(k) !== undefined),
+    trivial.map((k) => `${k}=${speedOf(k) ?? 'DEAD'}`).join(', '));
+  // The point of the table for this task kind: a zero-setup (keyless) install must reach a
+  // genuinely fast row, not fall through to the rank-3 tail.
+  const keylessFast = trivial.filter((k) => KEYLESS.includes(k.split('::')[0]) && (speedOf(k) ?? 9) <= 2);
+  ok('a keyless install reaches a speedRank≤2 row from the table alone', keylessFast.length > 0,
+    keylessFast.join(', ') || '<none — a keyless user falls through to the tail>');
+  // kilo-auto is speedRank 1 but a router alias: kilo chooses the model, so latency is unknowable.
+  ok('no router alias is used as a "fast" trivial entry', !trivial.some((k) => /auto|router/.test(k.split('::')[1] ?? '')),
+    trivial.join(', '));
 }
 
 console.log(bad === 0 ? '\nAll routing gates hold.' : `\n${bad} FAILED`);
