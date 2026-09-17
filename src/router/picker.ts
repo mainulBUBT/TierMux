@@ -9,13 +9,14 @@ import type { Catalog } from '../catalog/catalog';
 import type { SettingsStore } from '../config/settingsStore';
 import type { SecretStore } from '../config/secrets';
 import type { ModelStatsStore } from '../config/modelStats';
-import { allPlatformInfo } from '../providers';
+import { allPlatformInfo, platformCarriesRawPdf, platformFlattensContent } from '../providers';
 import type { ChatMessage, CatalogModel } from '../shared/types';
 import { classifyTask, type TaskKind } from '../agent/routing';
 import { RateTracker } from './rateTracker';
 import { TIER_ORDER, tierOf } from '../catalog/discovery';
 import type { QuotaStore } from '../config/quotaStore';
 import { diagLog } from '../util/diag';
+import { NoVisionModelError } from './errors';
 
 /** Skip reason for a model whose provider the user switched off — recorded so no other reason
  *  can claim it, never reported (see the skipList filter). */
@@ -27,7 +28,14 @@ export const TASK_ROUTING: Record<TaskKind, string[]> = {
   // (11 of 13 were once dead), which is why the tail below is rank-sorted, not table-dependent.
   coding: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::nemotron-3.5-lightning-free'],
   debug: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
-  vision: ['google::gemini-2.5-flash'],
+  // Gemini leads when a Google key exists, but the tail below is NOT a safety net on a vision
+  // turn — it used to pad the chain with every enabled model regardless of supportsVision, so a
+  // keyless install with no Google key answered an image with a text-only model that silently
+  // dropped it. The three keyless entries are tool-capable frontier/strong-tier vision rows, so
+  // Auto mode routes an attachment with zero setup. ovh::Qwen3.5-397B-A17B is vision-capable too
+  // but speedRank 5, and the table head has no slow-row cap the way the tail does — it stays a
+  // tail-only last resort (2026-09-04: a speed-5 row took ~5 minutes to answer).
+  vision: ['google::gemini-2.5-flash', 'opencode::muse-spark-1.3-contributor-free', 'opencode::mimo-v2.5-free', 'kilo::dots-studio/dots-3-note-preview:free'],
   longContext: ['google::gemini-2.5-flash', 'groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free'],
   plan: ['groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
   trivial: ['cerebras::gemma-4-31b', 'groq::openai/gpt-oss-20b', 'opencode::mimo-v2.5-free'],
@@ -299,7 +307,7 @@ export function __resetTaskRoundCounters(): void {
  *  enabled model when sources are wired. */
 export async function selectModel(
   messages: ChatMessage[],
-  opts: { pinnedModel?: string; excludeModels?: string[]; taskKind?: string; sessionId?: string; requireTools?: boolean } = {},
+  opts: { pinnedModel?: string; excludeModels?: string[]; taskKind?: string; sessionId?: string; requireTools?: boolean; requireVision?: boolean; requireRawPdf?: boolean } = {},
 ): Promise<ModelSelection> {
   if (!sources) return keylessFallback();
 
@@ -395,6 +403,15 @@ export async function selectModel(
         const meta = sources.catalog.find(platform, modelId);
         if (meta?.supportsTools === false) { skip(key, 'catalog says this model cannot call tools'); return undefined; }
         if (sources.secrets.isToolIncompatible?.(platform as never, modelId)) { skip(key, 'tool-incompatible platform'); return undefined; }
+      }
+      // Attachment capability, gated exactly like supportsTools above — no pin exemption,
+      // because reading an image is a hard capability, not a transient condition a retry
+      // clears. Unknown rows (custom endpoints) stay allowed, same permissive stance as tools.
+      if (opts.requireVision) {
+        const meta = sources.catalog.find(platform, modelId);
+        if (meta?.supportsVision === false) { skip(key, 'catalog says this model cannot read image or PDF attachments'); return undefined; }
+        if (platformFlattensContent(platform as never)) { skip(key, 'this provider flattens attachments to plain text — an image can never reach the model'); return undefined; }
+        if (opts.requireRawPdf && !platformCarriesRawPdf(platform as never)) { skip(key, 'this provider drops raw PDF bytes (only Gemini forwards them)'); return undefined; }
       }
     }
     pickLabels.set(key, label);
@@ -611,7 +628,13 @@ export async function selectModel(
     pickLabels.set(r.key, `enabled tail · ${r.tier} tier${Number.isFinite(r.rank) ? ` · rank ${r.rank}` : ''}`);
     chain.push(r.key);
   }
-  if (chain.length === 0) return keylessFallback();
+  if (chain.length === 0) {
+    // The keyless fallback is an UNFILTERED `platform::auto` chain, so handing a vision turn to
+    // it would undo the gate above and drop the attachment silently. Stop with the message
+    // NoVisionModelError has carried since it was written (nothing ever threw it until now).
+    if (opts.requireVision) throw new NoVisionModelError(opts.requireRawPdf ? 'no_raw_pdf_provider' : 'no_vision_model');
+    return keylessFallback();
+  }
 
   // "Why this model?" report: the chain in order (chain[0] = selected), then a BOUNDED sample
   // of skipped candidates — an unbounded list hit 361 entries and was re-posted every step.

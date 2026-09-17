@@ -135,6 +135,21 @@ export function allPlatformInfo(): PlatformInfo[] {
   return Array.from(platformInfo.values());
 }
 
+/** Whether this platform flattens multimodal content blocks to plain text before sending.
+ *  `OpenAICompatProvider.flattenContent` already documented itself as existing "so the router
+ *  can exclude flatteners from vision turns", but nothing read it, so cohere and cloudflare
+ *  rows the catalog marks supportsVision=true still dropped the image on the way out. */
+export function platformFlattensContent(platform: Platform): boolean {
+  return (providers.get(platform) as { flattenContent?: boolean } | undefined)?.flattenContent ?? false;
+}
+
+/** Whether this platform forwards a raw `type:'file'` block (PDF bytes) rather than dropping
+ *  it — Google alone today. Only reached when the webview could not render the PDF to page
+ *  images, since every vision model reads those. */
+export function platformCarriesRawPdf(platform: Platform): boolean {
+  return providers.get(platform)?.carriesRawPdf ?? false;
+}
+
 /** A provider definition advertised by the remote catalog. `baseUrl` is required to
  *  act; the rest is optional polish. `platform` may be a built-in id or a brand-new one. */
 export interface RemoteProviderDef {

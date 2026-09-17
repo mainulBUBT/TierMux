@@ -324,6 +324,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     sessionId: opts.sessionId,
     excludeModels: opts.excludeModels,
     requireTools: true, // the engine always offers tools — non-tool models would deflect
+    // Attachment capability from the SAME kinds that produced the taskKind above. A scanned PDF
+    // reaches here as `image` kinds (the webview renders page images), so a surviving `pdf`
+    // means a raw file block, which only a carriesRawPdf provider forwards.
+    requireVision: latestKinds.some((k) => k === 'image' || k === 'pdf'),
+    requireRawPdf: latestKinds.includes('pdf'),
     onFailover: (...args: Parameters<NonNullable<typeof opts.onFailover>>) => {
       failovers++;
       opts.onFailover?.(...args);

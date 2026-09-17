@@ -40,6 +40,12 @@ export interface RouterProviderOptions {
   /** The caller offers tools — selection must skip catalog models marked supportsTools=false
    *  (they cannot call anything and deflect instead). */
   requireTools?: boolean;
+  /** The turn carries an image/PDF attachment — selection must skip models the catalog marks
+   *  supportsVision=false and providers that flatten content blocks to text. */
+  requireVision?: boolean;
+  /** The attachment is a raw PDF block (the webview could not render page images), which only
+   *  a provider with carriesRawPdf forwards. */
+  requireRawPdf?: boolean;
   onFailover?: (from: string, reason: string) => void;
   onModelSelected?: (platform: string, model: string, runtimeName?: string) => void;
   onUsage?: (info: { inputTokens: number; outputTokens: number; model: string }) => void;
@@ -301,6 +307,8 @@ export async function resolveCandidates(
     taskKind: opts.taskKind,
     sessionId: opts.sessionId,
     requireTools: opts.requireTools,
+    requireVision: opts.requireVision,
+    requireRawPdf: opts.requireRawPdf,
   });
   // Emitted up front so the popover still has data when every candidate fails. It names
   // chain[0] — only correct when chain[0] actually serves, which is why the caller re-emits

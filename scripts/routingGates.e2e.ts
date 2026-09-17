@@ -4,6 +4,7 @@
  * (2) all four candidates were ollama (five rank-1 entries), so one account-level 402 burned the
  * whole chain in ~4s. Run: npm run test:e2e:routing-gates */
 import { selectModel, setModelSources, noteModelFailure, canonicalModelId, __resetTaskRoundCounters } from '../src/router/picker';
+import { NoVisionModelError } from '../src/router/errors';
 import { resolveCandidates, isFailoverWorthy } from '../src/agent/core/routerProvider';
 import { ProviderHttpError } from '../src/providers/base';
 import type { FallbackEntry } from '../src/shared/types';
@@ -329,6 +330,75 @@ console.log('\n— `platform::auto`: a wildcard resolves THROUGH the gates, a mo
   // The wildcard resolved to a model that is also enabled in its own right; without a dedupe on
   // what was PICKED, the chain listed it twice and burned a failover slot re-dialling it.
   ok('…and the resolved model appears once, not twice', new Set(chain).size === chain.length, chain.join(' → '));
+}
+
+console.log('\n— an attachment turn is gated on vision, tail included (the Auto-mode repro) —');
+{
+  __resetTaskRoundCounters();
+  // The repro: Auto mode, an image attached, no Google key. The vision table's Gemini head is
+  // unreachable, and the tail used to pad the chain with every enabled model regardless of
+  // supportsVision — so a text-only model led and dropped the image without a word.
+  const fallback = [entry('kilo', 'text-only', 0), entry('kilo', 'sees', 1)];
+  const meta: Record<string, { intelligenceRank: number; speedRank: number; supportsTools: boolean; supportsVision: boolean }> = {
+    'kilo::text-only': { intelligenceRank: 1, speedRank: 1, supportsTools: true, supportsVision: false },
+    'kilo::sees': { intelligenceRank: 3, speedRank: 1, supportsTools: true, supportsVision: true },
+  };
+  const sources = makeSources(fallback, [], ['kilo']) as unknown as { catalog: { find: (p: string, m: string) => unknown } };
+  sources.catalog.find = (p: string, m: string) => meta[`${p}::${m}`];
+  setModelSources(sources as unknown as Parameters<typeof setModelSources>[0]);
+
+  const plain = await selectModel([{ role: 'user', content: 'x' } as never], { requireTools: true });
+  ok('without an attachment the better-ranked text-only model still leads', plain.model === 'kilo::text-only', plain.model);
+
+  const sel = await selectModel([{ role: 'user', content: 'x' } as never], { requireTools: true, requireVision: true });
+  const chain = [sel.model, ...sel.fallbackChain];
+  ok('a vision turn skips the text-only model even though it ranks higher', sel.model === 'kilo::sees', chain.join(' → '));
+  ok('…and it is nowhere in the tail either', !chain.includes('kilo::text-only'), chain.join(' → '));
+  ok('…and the report says why', /cannot read image or PDF/.test(sel.rationale?.entries.find((e) => e.model === 'kilo::text-only')?.skip ?? ''),
+    sel.rationale?.entries.find((e) => e.model === 'kilo::text-only')?.skip ?? '<no entry>');
+}
+{
+  __resetTaskRoundCounters();
+  // cloudflare flattens content blocks to text in body(), so its supportsVision=true rows can
+  // never actually deliver an image. `flattenContent` documented itself as existing for this
+  // check; nothing read it until now.
+  const fallback = [entry('cloudflare', 'flattener', 0), entry('kilo', 'sees', 1)];
+  const meta: Record<string, { intelligenceRank: number; speedRank: number; supportsTools: boolean; supportsVision: boolean }> = {
+    'cloudflare::flattener': { intelligenceRank: 1, speedRank: 1, supportsTools: true, supportsVision: true },
+    'kilo::sees': { intelligenceRank: 3, speedRank: 1, supportsTools: true, supportsVision: true },
+  };
+  const sources = makeSources(fallback, [], ['kilo']) as unknown as { catalog: { find: (p: string, m: string) => unknown } };
+  sources.catalog.find = (p: string, m: string) => meta[`${p}::${m}`];
+  setModelSources(sources as unknown as Parameters<typeof setModelSources>[0]);
+  const sel = await selectModel([{ role: 'user', content: 'x' } as never], { requireTools: true, requireVision: true });
+  ok('a content-flattening provider is skipped on a vision turn despite supportsVision=true',
+    sel.model === 'kilo::sees', [sel.model, ...sel.fallbackChain].join(' → '));
+}
+{
+  __resetTaskRoundCounters();
+  // Nothing vision-capable left. The keyless fallback is an UNFILTERED `platform::auto` chain,
+  // so returning it would undo the gate — the turn must stop with the actionable message
+  // instead of burning a request on a model that cannot see.
+  const fallback = [entry('kilo', 'text-only', 0)];
+  const meta: Record<string, { intelligenceRank: number; speedRank: number; supportsTools: boolean; supportsVision: boolean }> = {
+    'kilo::text-only': { intelligenceRank: 1, speedRank: 1, supportsTools: true, supportsVision: false },
+  };
+  const sources = makeSources(fallback, [], ['kilo']) as unknown as { catalog: { find: (p: string, m: string) => unknown } };
+  sources.catalog.find = (p: string, m: string) => meta[`${p}::${m}`];
+  setModelSources(sources as unknown as Parameters<typeof setModelSources>[0]);
+  let thrown: unknown;
+  try { await selectModel([{ role: 'user', content: 'x' } as never], { requireTools: true, requireVision: true }); }
+  catch (e) { thrown = e; }
+  ok('no vision-capable model anywhere throws instead of silently falling back',
+    thrown instanceof NoVisionModelError, thrown instanceof Error ? thrown.name : String(thrown));
+  ok('…and the message tells the user what to do',
+    /Manage Models & Keys/.test((thrown as Error | undefined)?.message ?? ''), (thrown as Error | undefined)?.message?.slice(0, 60) ?? '');
+
+  let pdfThrown: unknown;
+  try { await selectModel([{ role: 'user', content: 'x' } as never], { requireTools: true, requireVision: true, requireRawPdf: true }); }
+  catch (e) { pdfThrown = e; }
+  ok('a raw-PDF turn names the one platform that forwards PDF bytes',
+    /Gemini/.test((pdfThrown as Error | undefined)?.message ?? ''), (pdfThrown as Error | undefined)?.message?.slice(0, 60) ?? '');
 }
 
 console.log(bad === 0 ? '\nAll routing gates hold.' : `\n${bad} FAILED`);
