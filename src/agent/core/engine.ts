@@ -496,11 +496,27 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           toolEvents.push(ev);
           opts.onTool(ev);
         }
-        const failed = new Set(
-          (step.content as Array<{ type?: string; toolName?: string }>)
-            .filter((p) => p.type === 'tool-error' && p.toolName)
-            .map((p) => p.toolName as string),
-        );
+        const errorParts = (step.content as Array<
+          { type?: string; toolCallId?: string; toolName?: string; input?: unknown; error?: unknown }
+        >).filter((p) => p.type === 'tool-error' && p.toolCallId);
+        const failed = new Set(errorParts.map((p) => p.toolName).filter((n): n is string => !!n));
+        for (const ep of errorParts) {
+          // A 'tool-error' part (e.g. args the SDK couldn't repair, see repair.ts) never appears
+          // in step.toolResults — the SDK excludes it there — so without this its 'running' event
+          // (posted above, from step.toolCalls) never gets a matching 'done'/'error', and the
+          // webview's step card is stuck showing a spinner forever even though the turn finishes
+          // and ships an answer (repro 2026-09-19: a malformed runCommand call left "Running …"
+          // frozen while later steps and the final answer rendered normally).
+          const ev: ToolEvent = {
+            toolCallId: ep.toolCallId as string,
+            name: ep.toolName ?? 'unknown',
+            args: ep.input,
+            state: 'error',
+            detail: toolDetail(ep.error instanceof Error ? ep.error.message : ep.error),
+          };
+          toolEvents.push(ev);
+          opts.onTool(ev);
+        }
         for (const tr of step.toolResults ?? []) {
           const isFailed = failed.has(tr.toolName);
           const ev: ToolEvent = {

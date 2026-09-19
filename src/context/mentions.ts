@@ -61,15 +61,19 @@ export function parseSlash(text: string): SlashCommand | undefined {
 export async function resolveMentions(text: string): Promise<{ text: string; count: number }> {
   const mentionRe = /@([^\s@]+)/g;
   const seen = new Set<string>();
-  const blocks: string[] = [];
+  const targets: string[] = [];
   let m: RegExpExecArray | null;
   while ((m = mentionRe.exec(text)) !== null) {
     const target = m[1];
     if (seen.has(target)) continue;
     seen.add(target);
-    const block = await resolveOne(target, text);
-    if (block) blocks.push(block);
+    targets.push(target);
   }
+  // Resolve every mention concurrently — each is an independent file read, and awaiting
+  // them one at a time made a 4-mention turn pay 4× the first read's latency (2026-09-19).
+  const blocks = (await Promise.all(targets.map((t) => resolveOne(t, text)))).filter(
+    (b): b is string => typeof b === 'string',
+  );
   return { text: blocks.join('\n\n'), count: blocks.length };
 }
 

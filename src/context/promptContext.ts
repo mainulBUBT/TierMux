@@ -63,14 +63,18 @@ let cache: { at: number; value: PromptContext } | undefined;
 
 export async function gatherPromptContext(): Promise<PromptContext> {
   if (cache && Date.now() - cache.at < TTL_MS) return cache.value;
-  let rules = '';
-  try { rules = await loadProjectRules(); } catch { /* absent */ }
-  let memory = '';
-  try { memory = await loadUserMemory(); } catch { /* absent */ }
-  if (rules.length > MAX_RULES_INJECT) {
-    rules = rules.slice(0, MAX_RULES_INJECT) + '\n…[project rules truncated]';
-  }
-  const value: PromptContext = { rules, memory, env: await gatherEnv() };
+  // Rules, memory and the environment block are independent reads — awaiting them
+  // sequentially made the pre-turn gate pay the sum of five fs/git round-trips on every
+  // message (2026-09-19). Run them concurrently; each is individually guarded.
+  const [rules, memory, env] = await Promise.all([
+    loadProjectRules().catch(() => ''),
+    loadUserMemory().catch(() => ''),
+    gatherEnv(),
+  ]);
+  const safeRules = rules.length > MAX_RULES_INJECT
+    ? rules.slice(0, MAX_RULES_INJECT) + '\n…[project rules truncated]'
+    : rules;
+  const value: PromptContext = { rules: safeRules, memory, env };
   cache = { at: Date.now(), value };
   return value;
 }

@@ -119,17 +119,20 @@ export function createGlobTool() {
 export function createGrepTool(runAbort?: AbortSignal) {
   return tool({
     description:
-      'Search file contents in the workspace for a regex pattern (ripgrep-backed). Results are '
-      + '`path:line:text` per match; with `context`, surrounding lines appear as `path-line-text` '
-      + 'and `--` separates non-adjacent groups; with `filesOnly`, one matching path per line and '
-      + 'nothing else (`context` is ignored). ALWAYS narrow the scope: pass `glob` (e.g. "*.ts") '
-      + 'or `path` (a subdirectory). Use `filesOnly` when you only need WHICH files match, and '
-      + '`context` when you need the surrounding lines — both avoid a follow-up readFile. Caps at '
-      + '200 matches per file (line mode) and ~20KB output.',
+      'Search file contents in the workspace for a regex pattern (ripgrep-backed). '
+      + 'Checking several terms for the same thing? Combine them with regex alternation in ONE call '
+      + '(`termA|termB|termC`) instead of calling grep once per term — one call per term costs one '
+      + 'full round-trip each. Results are `path:line:text` per match; with `context`, surrounding '
+      + 'lines appear as `path-line-text` and `--` separates non-adjacent groups; with `filesOnly`, '
+      + 'one matching path per line and nothing else (`context` is ignored). ALWAYS narrow the '
+      + 'scope: pass `glob` (e.g. "*.ts") or `path` (a subdirectory). Use `filesOnly` when you only '
+      + 'need WHICH files match, and `context` when you need the surrounding lines — both avoid a '
+      + 'follow-up readFile. Caps at 200 matches per file (line mode) and ~20KB output.',
     inputExamples: [
       { input: { pattern: 'session_timeout', filesOnly: true } },
       { input: { pattern: 'function resetSession', path: 'src', glob: '*.ts', context: 3 } },
       { input: { pattern: 'wallet', ignoreCase: true, filesOnly: true } },
+      { input: { pattern: 'sessionTimeout|resetSession|SESSION_TTL', filesOnly: true } },
     ],
     inputSchema: z.object({
       pattern: z.string().describe('Regex pattern to search for.'),

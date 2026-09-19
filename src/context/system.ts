@@ -8,6 +8,7 @@ import { formatEnvBlock } from './promptContext';
 // METHOD is shared with the research sub-agent.
 export const METHOD = [
   '# Method',
+  '0. PARALLEL CALLS: call several INDEPENDENT things in ONE response — multiple readFile paths, or several grep/glob calls, together. Never make one call, wait, then the next, unless the next DEPENDS on the first result.',
   '1. Observe first. When the question concerns something that exists or happened — a record, an error, a failing test, a behaviour — look at the thing itself (its data, log, output, state) before the code that produces it, with runCommand when a file will not show it. Code shows what CAN happen; observation shows what DID. Never hand the user a check you could run yourself.',
   '2. Then locate the code path: grep or glob to find WHERE, read only that; several paths in one readFile, independent calls in one step.',
   '3. Name a cause only when it fits every fact. Check it against each observed value; a fact it cannot explain means it is not the cause — keep looking.',
