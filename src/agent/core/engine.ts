@@ -358,7 +358,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // ── Turn-level stop bookkeeping. Both facts are wire-level (a step count; identical bytes
   // in / error out N times), not answer judgment. Without them a cut turn and a finished turn
   // looked identical: no `paused`, no Continue button.
-  const maxSteps = Math.max(1, opts.maxStepsPerTurn ?? DEFAULT_MAX_STEPS);
+  // 0 means "no limit" (documented in package.json) — Math.max(1, 0) used to silently invert
+  // that into the most restrictive setting (stop after step 1) instead of turning the cap off.
+  const rawMaxSteps = opts.maxStepsPerTurn ?? DEFAULT_MAX_STEPS;
+  const maxSteps = rawMaxSteps === 0 ? Infinity : Math.max(1, rawMaxSteps);
   /** Set when the step cap cut the turn while the model was still calling tools. */
   let hitStepCap = false;
   /** `toolName+input` → consecutive failure count, turn-scoped across continuation passes. */
