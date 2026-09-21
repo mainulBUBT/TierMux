@@ -48,6 +48,12 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'tokenrouter', name: "Token Router", baseUrl: "https://api.tokenrouter.com/v1", skipPreflight: true, timeoutMs: 600000 }, // auto-synced
   { platform: 'experientiallabs', name: "Experiential Labs", baseUrl: "https://api.experientiallabs.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://platform.experientiallabs.ai/settings" }, // auto-synced
   { platform: 'bailu', name: "BAILU AI", baseUrl: "https://bailucode.com/openapi/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://bailucode.com/api_platform/" }, // auto-synced
+  { platform: 'aihubmix', name: "AIHubMix", baseUrl: "https://aihubmix.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://aihubmix.com/" }, // auto-synced
+  { platform: 'bazaarlink', name: "BazaarLink", baseUrl: "https://api.bazaarlink.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://bazaarlink.ai/free" }, // auto-synced
+  { platform: 'dreamprompting', name: "DreamPrompting", baseUrl: "https://dreamprompting.com/api/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://dreamprompting.com/login" }, // auto-synced
+  { platform: 'naga', name: "NagaAI", baseUrl: "https://api.naga.ac/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://naga.ac/" }, // auto-synced
+  { platform: 'nous', name: "Nous Portal", baseUrl: "https://inference-api.nousresearch.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://portal.nousresearch.com/" }, // auto-synced
+  { platform: 'vyceai', name: "Vyce AI", baseUrl: "https://vyceai.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://vyceai.com" }, // auto-synced
 ];
 
 const providers = new Map<Platform, BaseProvider>();

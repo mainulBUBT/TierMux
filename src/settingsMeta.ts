@@ -28,6 +28,12 @@ export const SETTINGS_META: SettingMeta[] = [
     desc: 'Maximum number of chat sessions that run their agent at the same time.' },
   { key: 'agent.commandTimeoutMs', label: 'Command timeout (ms)', type: 'number', min: 1000, max: 300000,
     desc: 'Maximum time (ms) a single agent command may run before it is killed.' },
+  { key: 'agent.connectTimeoutMs', label: 'Failover connect timeout (ms)', type: 'number', min: 1000, max: 300000,
+    desc: 'Per-model ceiling on time to response headers while auto mode fails over between models. Lower it (e.g. 20000) when a dead gateway regularly holds turns; custom/local endpoints are exempt.' },
+  { key: 'agent.firstContentTimeoutMs', label: 'First-content timeout (ms)', type: 'number', min: 1000, max: 300000,
+    desc: 'Ceiling on time to the first real content chunk once a stream has started; a live-but-silent stream is abandoned after this and the next model takes over.' },
+  { key: 'agent.chainDeadlineMs', label: 'Failover chain deadline (ms)', type: 'number', min: 5000, max: 600000,
+    desc: 'Auto mode stops STARTING new failover candidates once the chain has spent this long on one request (a model already streaming is never interrupted).' },
   { key: 'agent.autoCompactThreshold', label: 'Auto-compact threshold', type: 'number', min: 0, max: 1, step: 0.05,
     desc: 'Fraction of the routed model\'s context window at which the conversation is compacted — older turns summarized, recent ones kept verbatim. Checked before a send and after a turn settles. The token cap below can lower the trigger further; "Auto-compact context" turns the whole thing off.' },
   // -- Completions --

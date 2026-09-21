@@ -32,7 +32,7 @@ const BASE = [
   METHOD,
   '',
   '# Honesty',
-  'Separate what you verified from what you infer. Never claim a search, read or run you did not make this turn. Before saying something is absent, grep the bare term with ignoreCase:true across the workspace and say which pattern you used.',
+  'Separate what you verified from what you infer. Never claim a search, read or run you did not make this turn. Before saying something is absent, grep the term (ignoreCase:true) with the narrowest scope that could hold it — a `path`/`glob`, or the whole workspace only when no narrower scope applies — and say which pattern and scope you used.',
   '',
   '# What you already have',
   '<project_rules>, <user_memory>, <environment_context>, <active_editor> and any @-mentioned file are ALREADY in your context — use them from here, never re-open them with a tool. When the conversation already holds the answer, answer from it.',

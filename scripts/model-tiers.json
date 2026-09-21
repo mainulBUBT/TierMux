@@ -59,10 +59,6 @@
   "tier": "mid",
   "note": "free coding/reasoning, mid-class"
  },
- "agnes-3.0-flash": {
-  "tier": "strong",
-  "note": "AA index 36 = DeepSeek V4 Pro (66.6 band); weaker agentic, TB2 7%"
- },
  "ai-synthetic-video-detector": {
   "tier": "small",
   "note": "detection"
@@ -108,8 +104,8 @@
   "note": "Shanghai AI Lab preview"
  },
  "auto": {
-  "tier": "small",
-  "note": "provider auto-router, undocumented pool -- floor only"
+  "tier": "unknown",
+  "note": "router alias"
  },
  "bailu-2.6-preview": {
   "tier": "strong",
@@ -143,21 +139,17 @@
   "tier": "mid",
   "note": "edge variant"
  },
- "bielik-11b-v3.0": {
-  "tier": "small",
-  "note": "11B Polish instruct"
- },
  "big-pickle": {
-  "tier": "strong",
-  "note": "OpenCode Zen stealth: SWE Atlas QnA 50.8%, over GLM-5.2; Sonnet 4.6 band"
+  "tier": "unknown",
+  "note": "unidentified"
  },
  "c4ai-aya-vision-32b": {
   "tier": "mid",
   "note": "Cohere Aya vision 32B"
  },
  "ch.at": {
-  "tier": "small",
-  "note": "ch.at relay, GPT-4o backend = 38.95"
+  "tier": "unknown",
+  "note": "non-model entry"
  },
  "claude-fable-5.1": {
   "tier": "frontier",
@@ -236,16 +228,16 @@
   "note": "Kimi K3 = 74.6"
  },
  "coding-minimax-m2": {
-  "tier": "mid",
-  "note": "MiniMax M2 line, under its measured sibling M2.5 (54.89)"
+  "tier": "strong",
+  "note": "MiniMax M2 line"
  },
  "coding-minimax-m2.1": {
-  "tier": "mid",
-  "note": "MiniMax M2.1 line, under its measured sibling M2.5 (54.89)"
+  "tier": "strong",
+  "note": "MiniMax M2.1 line"
  },
  "coding-minimax-m2.5": {
-  "tier": "mid",
-  "note": "BenchLM 54.89 (MiniMax M2.5)"
+  "tier": "strong",
+  "note": "MiniMax M2.5 = 55"
  },
  "coding-minimax-m2.7": {
   "tier": "strong",
@@ -396,8 +388,8 @@
   "note": "V4.1 successor of V4 Flash"
  },
  "default": {
-  "tier": "small",
-  "note": "LLM7 default: random pick over its free pool, floor Mistral Nemo"
+  "tier": "unknown",
+  "note": "router alias"
  },
  "deplot": {
   "tier": "mid",
@@ -468,8 +460,8 @@
   "note": "listed on BenchLM as Fast (59.4)"
  },
  "free": {
-  "tier": "small",
-  "note": "bare router alias, undocumented pool -- floor only"
+  "tier": "unknown",
+  "note": "not a model id"
  },
  "fuyu-8b": {
   "tier": "small",
@@ -514,10 +506,6 @@
  "gemini-2.5-pro": {
   "tier": "strong",
   "note": "BenchLM 57.37 (Gemini 2.5 Pro)"
- },
- "gemini-3-flash": {
-  "tier": "strong",
-  "note": "BenchLM 62 (Gemini 3 Flash)"
  },
  "gemini-3-flash-preview": {
   "tier": "strong",
@@ -587,14 +575,6 @@
   "tier": "frontier",
   "note": "BenchLM 75.48 (Gemini 3.8 Flash)"
  },
- "gemini-3.8-live": {
-  "tier": "small",
-  "note": "single-purpose Gemini surface (realtime speech)"
- },
- "gemini-3.8-live-extended-thinking": {
-  "tier": "small",
-  "note": "single-purpose Gemini surface (realtime speech)"
- },
  "gemini-embedding-001": {
   "tier": "small",
   "note": "embedding"
@@ -606,10 +586,6 @@
  "gemini-flash-latest-high-res-exp": {
   "tier": "strong",
   "note": "same, high-res image setting"
- },
- "gemini-flash-lite": {
-  "tier": "mid",
-  "note": "rolling alias of current Flash-Lite (59)"
  },
  "gemini-flash-lite-latest": {
   "tier": "mid",
@@ -675,10 +651,6 @@
   "tier": "mid",
   "note": "Gemma 4 mid size"
  },
- "gemma-4-26b": {
-  "tier": "strong",
-  "note": "Gemma 4 26B-A4B"
- },
  "gemma-4-26b-a4b-it": {
   "tier": "strong",
   "note": "BenchLM 55.1 (Gemma 4 26B A4B)"
@@ -715,37 +687,9 @@
   "tier": "mid",
   "note": "BenchLM 52.58 (Gemma 4 31B)"
  },
- "glm-4": {
-  "tier": "small",
-  "note": "2024 GLM-4 gen, two gens under GLM-4.6 (51.86)"
- },
  "glm-4-7-flash": {
   "tier": "small",
   "note": "nano/mini class"
- },
- "glm-4-air": {
-  "tier": "small",
-  "note": "GLM-4 Air, 2024 gen"
- },
- "glm-4-flash": {
-  "tier": "small",
-  "note": "GLM-4 Flash, 2024 gen"
- },
- "glm-4-flash-250414": {
-  "tier": "small",
-  "note": "GLM-4 Flash dated build, 2024 gen"
- },
- "glm-4-flashx-250414": {
-  "tier": "small",
-  "note": "GLM-4 FlashX dated build, 2024 gen"
- },
- "glm-4.1v-thinking-flashx": {
-  "tier": "small",
-  "note": "flash-sized VL, cf. glm-4.6v-flash"
- },
- "glm-4.5": {
-  "tier": "mid",
-  "note": "GLM-4.5, a step under GLM-4.6 (51.86)"
  },
  "glm-4.6": {
   "tier": "mid",
@@ -767,10 +711,6 @@
   "tier": "small",
   "note": "nano/mini class"
  },
- "glm-4v": {
-  "tier": "small",
-  "note": "GLM-4 VL, 2024 gen"
- },
  "glm-5": {
   "tier": "strong",
   "note": "BenchLM 61.69 (GLM-5-Turbo)"
@@ -778,10 +718,6 @@
  "glm-5-2": {
   "tier": "strong",
   "note": "BenchLM 66.82 (GLM-5.2)"
- },
- "glm-5-turbo": {
-  "tier": "strong",
-  "note": "BenchLM 61.69 (GLM-5-Turbo)"
  },
  "glm-5.1": {
   "tier": "strong",
@@ -802,18 +738,6 @@
  "glm-5.3-flash": {
   "tier": "strong",
   "note": "BenchLM 66.04 (GLM-5.3-Flash)"
- },
- "glm-5v-turbo": {
-  "tier": "strong",
-  "note": "VL sibling of GLM-5-Turbo (61.69)"
- },
- "glm-deep-research": {
-  "tier": "mid",
-  "note": "agentic research product"
- },
- "glm-zero-preview": {
-  "tier": "small",
-  "note": "2024 reasoning preview"
  },
  "gpt-120-oss": {
   "tier": "mid",
@@ -971,10 +895,6 @@
   "tier": "strong",
   "note": "xAI agentic build model, $1/$2"
  },
- "grok-chat-fast": {
-  "tier": "small",
-  "note": "fast chat sibling of grok-code-fast-1"
- },
  "grok-code-fast-1": {
   "tier": "small",
   "note": "BenchLM 34.2"
@@ -1026,14 +946,6 @@
  "k2.6-code-preview": {
   "tier": "strong",
   "note": "Kimi K2.6 = 66"
- },
- "kat-coder-air-v1": {
-  "tier": "mid",
-  "note": "Kwaipilot KAT-Coder Air v1, light member of the 73.4% SWE-bench line"
- },
- "kilo-auto/free": {
-  "tier": "mid",
-  "note": "Kilo Auto Free: best free model for the mode, curated pool"
  },
  "kimi-for-coding": {
   "tier": "strong",
@@ -1235,10 +1147,6 @@
   "tier": "small",
   "note": "BenchLM 22.86 (Llama 4 Maverick)"
  },
- "llama-4-maverick-17b-128e": {
-  "tier": "small",
-  "note": "same model as llama-4-maverick"
- },
  "llama-4-scout": {
   "tier": "small",
   "note": "BenchLM 33.42 (Llama 4 Scout)"
@@ -1292,8 +1200,8 @@
   "note": "music generation"
  },
  "m2-heros2": {
-  "tier": "mid",
-  "note": "MiniMax M2-her roleplay variant (204,800 ctx), large single-purpose"
+  "tier": "unknown",
+  "note": "unidentified"
  },
  "magistral-small": {
   "tier": "mid",
@@ -1307,21 +1215,9 @@
   "tier": "mid",
   "note": "Mistral reasoning small"
  },
- "manta-flash-1.0": {
-  "tier": "small",
-  "note": "MegaNova Manta Flash, 16K ctx roleplay/assistant"
- },
- "manta-mini-1.0": {
-  "tier": "small",
-  "note": "MegaNova Manta Mini, 8K ctx"
- },
  "mathstral-7b": {
   "tier": "small",
   "note": "7B math specialist"
- },
- "mercury-2": {
-  "tier": "mid",
-  "note": "Inception diffusion LLM: GPQA 73.6-77, AIME 91.1, no BenchAlign coverage"
  },
  "meta-llama-3.1-8b-instruct-turbo": {
   "tier": "small",
@@ -1344,28 +1240,28 @@
   "note": "BenchLM 62.89 (MiMo-V2.5-Pro)"
  },
  "minimax-2.5": {
-  "tier": "mid",
-  "note": "BenchLM 54.89 (MiniMax M2.5)"
+  "tier": "strong",
+  "note": "MiniMax M2.5 = 55"
  },
  "minimax-m1-80k": {
   "tier": "small",
   "note": "BenchLM 21.56 (MiniMax M1 80k)"
  },
  "minimax-m2": {
-  "tier": "mid",
-  "note": "MiniMax M2 line, under its measured sibling M2.5 (54.89)"
+  "tier": "strong",
+  "note": "MiniMax M2 line, band of M2.5 (55)"
  },
  "minimax-m2-7": {
   "tier": "strong",
   "note": "BenchLM 55.14 (MiniMax M2.7)"
  },
  "minimax-m2.1": {
-  "tier": "mid",
-  "note": "MiniMax M2.1 line, under its measured sibling M2.5 (54.89)"
+  "tier": "strong",
+  "note": "MiniMax M2.1 line"
  },
  "minimax-m2.1-highspeed": {
-  "tier": "mid",
-  "note": "MiniMax M2.1 line, under its measured sibling M2.5 (54.89)"
+  "tier": "strong",
+  "note": "MiniMax M2.1 line"
  },
  "minimax-m2.5": {
   "tier": "mid",
@@ -1376,8 +1272,8 @@
   "note": "BenchLM 54.89 (MiniMax M2.5)"
  },
  "minimax-m2.5-tee": {
-  "tier": "mid",
-  "note": "M2.5 = 54.89, TEE host"
+  "tier": "strong",
+  "note": "M2.5 = 55, TEE host"
  },
  "minimax-m2.7": {
   "tier": "strong",
@@ -1523,10 +1419,6 @@
   "tier": "mid",
   "note": "BenchLM 42.49 (Mistral Medium 3.5 128B)"
  },
- "mistral-nemo": {
-  "tier": "small",
-  "note": "12B Nemo"
- },
  "mistral-nemo-12b-instruct": {
   "tier": "small",
   "note": "12B"
@@ -1558,10 +1450,6 @@
  "mistral-small-3.1-24b-instruct": {
   "tier": "small",
   "note": "superseded 3.1"
- },
- "mistral-small-3.2": {
-  "tier": "small",
-  "note": "24B, sibling of mistral-small-3.1-24b"
  },
  "mistral-small-latest": {
   "tier": "mid",
@@ -1796,16 +1684,8 @@
   "note": "listed as Fast = 59.4"
  },
  "openrouter": {
-  "tier": "small",
-  "note": "OpenRouter Free Models Router: random free model per request"
- },
- "openrouter/free": {
-  "tier": "small",
-  "note": "OpenRouter Free Models Router: random free model per request"
- },
- "orcarouter/free": {
-  "tier": "strong",
-  "note": "difficulty-routed over DeepSeek V4 Flash/Pro free, both 66.6 band"
+  "tier": "unknown",
+  "note": "router alias"
  },
  "orpheus-arabic-saudi": {
   "tier": "small",
@@ -1816,8 +1696,8 @@
   "note": "text-to-speech"
  },
  "ox-alpha": {
-  "tier": "strong",
-  "note": "Ox Alpha = GLM-5.3-Flash (Z.AI confirmed), BenchLM 66.04"
+  "tier": "unknown",
+  "note": "unidentified 1M-ctx model"
  },
  "palmyra-creative-122b": {
   "tier": "small",
@@ -1879,14 +1759,6 @@
   "tier": "mid",
   "note": "Qwen Plus line, 2025 dated"
  },
- "qwen-sea-lion-v4-32b": {
-  "tier": "mid",
-  "note": "32B SEA-LION v4 regional tune"
- },
- "qwen-sea-lion-v4.5-27b": {
-  "tier": "small",
-  "note": "27B SEA-LION v4.5 regional tune"
- },
  "qwen2.5-72b-instruct": {
   "tier": "small",
   "note": "BenchLM 37.55 (Qwen2.5-72B)"
@@ -1898,10 +1770,6 @@
  "qwen2.5-coder-32b-instruct": {
   "tier": "small",
   "note": "BenchLM 33.43 (Qwen2.5 Coder 32B Instruct)"
- },
- "qwen2.5-vl-7b-instruct-awq": {
-  "tier": "small",
-  "note": "7B VL, quantized"
  },
  "qwen3-14b": {
   "tier": "small",
@@ -2039,10 +1907,6 @@
   "tier": "strong",
   "note": "BenchLM 56.2 (Qwen3.5 Flash)"
  },
- "qwen3.5-4b": {
-  "tier": "small",
-  "note": "4B"
- },
  "qwen3.5-flash": {
   "tier": "strong",
   "note": "BenchLM 56.2 (Qwen3.5 Flash)"
@@ -2116,8 +1980,8 @@
   "note": "BenchLM 71.76 (Qwen3.8 Max)"
  },
  "qwenvl": {
-  "tier": "mid",
-  "note": "generic Qwen-VL alias, Qwen3-VL class"
+  "tier": "small",
+  "note": "generic VL alias, older gen"
  },
  "qwq-32b": {
   "tier": "mid",
@@ -2140,24 +2004,16 @@
   "note": "translation model"
  },
  "rnj-1": {
-  "tier": "small",
-  "note": "Essential AI Rnj-1, 8B dense, 32K ctx, SWE-bench Verified 20.8%"
+  "tier": "unknown",
+  "note": "unidentified"
  },
  "s2.1-pro": {
-  "tier": "small",
-  "note": "Fish Audio S2.1 Pro, text-to-speech single-purpose"
- },
- "sarvam-30b": {
-  "tier": "mid",
-  "note": "30B Indic model, unscored"
+  "tier": "unknown",
+  "note": "unidentified"
  },
  "sea-lion-7b-instruct": {
   "tier": "small",
   "note": "7B"
- },
- "seed-oss-36b": {
-  "tier": "mid",
-  "note": "ByteDance Seed-OSS 36B"
  },
  "sensenova-6.7-flash-lite": {
   "tier": "small",
@@ -2195,21 +2051,9 @@
   "tier": "mid",
   "note": "BenchLM 49.98 (Step 3.7 Flash)"
  },
- "swe-1.6": {
-  "tier": "strong",
-  "note": "Cognition SWE-1.6, matches its Preview on SWE-Bench Pro"
- },
- "swe-1.6-slow": {
-  "tier": "strong",
-  "note": "SWE-1.6 free tier (200 tok/s), same weights"
- },
- "typhoon-v2.5-30b-a3b": {
-  "tier": "small",
-  "note": "30B with 3B active, Thai tune"
- },
  "unmoderated-gpt": {
-  "tier": "small",
-  "note": "api.airforce uncensored GPT alias, GPT-4o class (38.95)"
+  "tier": "unknown",
+  "note": "unidentified uncensored alias"
  },
  "v3.2": {
   "tier": "strong",
@@ -2228,8 +2072,8 @@
   "note": "speech-input model"
  },
  "x-preview-f": {
-  "tier": "strong",
-  "note": "OpenCode Zen listing of Ox Alpha = GLM-5.3-Flash (66.04)"
+  "tier": "unknown",
+  "note": "unidentified preview"
  },
  "xiaomi-mimo-v2-omni": {
   "tier": "mid",

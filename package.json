@@ -356,6 +356,24 @@
           "default": 50,
           "description": "Hard ceiling on the number of tool-loop steps in a SINGLE agent turn (0 = no limit). A backstop for the one runaway shape the other brakes miss: many distinct mutating tool calls (none exact-repeating, all 'real progress') that nonetheless sprawl. Fires as a budget-style cutoff (bounded by maxBudgetContinuations), not a resumable pause. Default 50: a legit task rarely exceeds 50 steps in one turn — long tasks span auto-continue rounds instead."
         },
+        "tiermux.agent.connectTimeoutMs": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 1000,
+          "description": "Per-candidate ceiling on time to response headers while auto mode fails over between models. Raise it only for gateways with very long prefills; lower it (e.g. 20000) if a dead provider regularly holds turns. Custom/local endpoints are exempt."
+        },
+        "tiermux.agent.firstContentTimeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 1000,
+          "description": "Ceiling on time to the FIRST content chunk once a stream has started, counted from the first chunk of any kind. A live-but-silent stream is abandoned after this and the next model takes over. Custom/local endpoints are exempt."
+        },
+        "tiermux.agent.chainDeadlineMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 5000,
+          "description": "Auto mode stops STARTING new failover candidates once the chain has spent this long on one request (a candidate already streaming is never interrupted). Lower it to fail faster when every gateway is unresponsive."
+        },
         "tiermux.agent.maxConcurrentRuns": {
           "type": "number",
           "default": 3,
@@ -374,7 +392,11 @@
         },
         "tiermux.agent.learnFromCorrections": {
           "type": "string",
-          "enum": ["ask", "always", "off"],
+          "enum": [
+            "ask",
+            "always",
+            "off"
+          ],
           "default": "ask",
           "description": "When a compaction records what you corrected or rejected, carry those notes into .tiermux/memory.md so later sessions start knowing them. 'ask' confirms first and shows what would be written, 'always' writes silently, 'off' never writes. Costs no extra model call either way — the summary already produced the notes."
         },

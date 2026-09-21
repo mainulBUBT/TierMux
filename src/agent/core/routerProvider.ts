@@ -25,7 +25,7 @@ import { diagLog } from '../../util/diag';
  *  models and custom/local endpoints, whose cold load may run minutes. */
 function ttftGateMsFor(platform: Platform, pinned: boolean): number {
   if (pinned || platform === 'custom') return 0;
-  return FAILOVER_CONNECT_TIMEOUT_MS;
+  return failoverConnectTimeoutMs();
 }
 
 export { setModelSources };
@@ -67,22 +67,40 @@ export function isFailoverWorthy(e: unknown): boolean {
   return e instanceof Error && /network|fetch failed|timed out|ECONN/i.test(e.message);
 }
 
+/** Failover time bounds read from settings (2026-09-22) — they were hard-coded before, so a
+ *  keyless install stuck behind slow gateways had no way to tighten them. Defaults are the
+ *  exact historical values; nothing changes until the user sets the setting. Lazy require:
+ *  this module also runs under test mocks without a real VS Code host (routeOnce pattern). */
+function agentNumberSetting(key: string, fallback: number): number {
+  const vscode = require('vscode') as typeof import('vscode');
+  const v = vscode?.workspace?.getConfiguration?.('tiermux.agent')?.get<number>(key, fallback);
+  return typeof v === 'number' && v > 0 ? v : fallback;
+}
+
 /** Per-candidate ceiling on TIME TO HEADERS while failing over — never on generation length; the
  *  registry's single-shot timeouts would let one dead provider hold a turn. 25s → 60s on
- *  2026-09-04 (65k prefill on poolside/laguna-s-2.1). Not applied to custom/local endpoints. */
-const FAILOVER_CONNECT_TIMEOUT_MS = 60_000;
+ *  2026-09-04 (65k prefill on poolside/laguna-s-2.1). Not applied to custom/local endpoints.
+ *  `tiermux.agent.connectTimeoutMs` (default 60 000). */
+function failoverConnectTimeoutMs(): number {
+  return agentNumberSetting('connectTimeoutMs', 60_000);
+}
 /** Ceiling on time to the first CONTENT chunk (reply text, reasoning, tool call, finish),
  *  counted from the FIRST chunk — not from the request, or connect+prefill would share this
- *  budget and silently undo the 60s above. Data-frame heartbeats (empty `choices`, role-only
- *  deltas) prove liveness, not progress; SSE comment keep-alives never reach us at all, the
- *  parser drops them (providers/base.ts). Not applied to custom/local endpoints. */
-const FAILOVER_FIRST_CONTENT_TIMEOUT_MS = 30_000;
+ *  budget and silently undo the connect bound above. Data-frame heartbeats (empty `choices`,
+ *  role-only deltas) prove liveness, not progress; SSE comment keep-alives never reach us at
+ *  all, the parser drops them (providers/base.ts). Not applied to custom/local endpoints.
+ *  `tiermux.agent.firstContentTimeoutMs` (default 30 000). */
+function firstContentTimeoutMs(): number {
+  return agentNumberSetting('firstContentTimeoutMs', 30_000);
+}
 
 /** Stop STARTING new candidates once the chain has burned this long. Never interrupts a
  *  candidate already streaming — it only declines to open another one. Bounds the pathological
  *  case (every candidate unresponsive) at roughly this plus one connect timeout, instead of
- *  candidates × timeout. */
-const CHAIN_DEADLINE_MS = 120_000;
+ *  candidates × timeout. `tiermux.agent.chainDeadlineMs` (default 120 000). */
+function chainDeadlineMs(): number {
+  return agentNumberSetting('chainDeadlineMs', 120_000);
+}
 
 /** Every way an OpenAI-compatible provider spells "ran out of output budget". Only the exact
  *  string 'length' used to map to the SDK's finishReason 'length', so a truncated reply from
@@ -114,7 +132,7 @@ function isTruncationFinish(raw: string | null | undefined): boolean {
 /** The connect cap for one candidate, or undefined to leave the provider's own timeout alone
  *  (custom/local endpoints, which declare no timeout on purpose). */
 function connectTimeoutFor(platform: Platform): number | undefined {
-  return platform === 'custom' ? undefined : FAILOVER_CONNECT_TIMEOUT_MS;
+  return platform === 'custom' ? undefined : failoverConnectTimeoutMs();
 }
 
 /** 401/402/403 are ACCOUNT-level (dead key, unpaid bill), so the platform's other models cannot
@@ -490,7 +508,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
         const c = candidates[i];
         const provider = resolveProvider(c.platform, c.modelId);
         if (!provider) continue;
-        if (Date.now() - startedAt > CHAIN_DEADLINE_MS) {
+        if (Date.now() - startedAt > chainDeadlineMs()) {
           attempts.push(`${c.platform}::${c.modelId} not started (chain deadline reached)`);
           break;
         }
@@ -606,7 +624,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
           const c = candidates[i];
           const provider = resolveProvider(c.platform, c.modelId);
           if (!provider) continue;
-          if (Date.now() - startedAt > CHAIN_DEADLINE_MS) {
+          if (Date.now() - startedAt > chainDeadlineMs()) {
             attempts.push(`${c.platform}::${c.modelId} not started (chain deadline reached)`);
             break;
           }
@@ -615,6 +633,11 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             continue;
           }
           let candidateError: unknown;
+          // diagTrace: this candidate's wall-clock + first-chunk time, for the per-model
+          // slow-spot hunt. Diagnostic ONLY — selection stays un-learned by design (picker.ts
+          // header); this is the read-only descendant of the 2026-09-05 instrumentation.
+          const candidateStart = Date.now();
+          let firstChunkAt: number | undefined;
           // Every stored key gets a turn within the candidate before it is abandoned — a
           // dead or quota'd key must not cost the whole platform.
           for (const apiKey of c.apiKeys) {
@@ -648,7 +671,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
               // abandon. Content gate: armed on the FIRST chunk, so a stream that heartbeats
               // without ever producing content is abandoned too. Never a cap on generation length.
               const ttftGate = ttftGateMsFor(c.platform, !!providerOpts.pinnedModel);
-              const contentGate = ttftGate > 0 ? FAILOVER_FIRST_CONTENT_TIMEOUT_MS : 0;
+              const contentGate = ttftGate > 0 ? firstContentTimeoutMs() : 0;
               const ttftController = new AbortController();
               const armStall = (ms: number, what: string) => ms > 0
                 ? setTimeout(() => {
@@ -682,6 +705,10 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                 })) {
                   // First chunk: the stream is alive, so the headers gate is done and the
                   // content gate's clock starts HERE.
+                  if (firstChunkAt === undefined) {
+                    firstChunkAt = Date.now();
+                    diagLog('rp.ttft', `${c.platform}::${c.modelId} first chunk after ${firstChunkAt - candidateStart}ms`);
+                  }
                   if (headersTimer) clearTimeout(headersTimer);
                   if (contentGate > 0 && !contentSeen && !contentTimer) contentTimer = armStall(contentGate, 'content chunk');
                   if (chunk.usage) usage = chunk.usage;
@@ -773,6 +800,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
               // empty. Only safe when nothing was already streamed to the user — if this candidate
               // showed reasoning, the nudge/fold above keeps the turn alive instead of switching.
               if (!reasoningStarted && acc.size === 0) {
+                diagLog('rp.candidate', `${c.platform}::${c.modelId} silent after ${Date.now() - candidateStart}ms — quality failover`);
                 recordOutcome(c.platform, c.modelId, false);
                 continue; // → Model B / C / D
               }
@@ -800,11 +828,13 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
               finishReason: { unified: hasCalls ? 'tool-calls' : (isTruncationFinish(finish) ? 'length' : 'stop'), raw: hasCalls ? 'tool_calls' : (finish ?? 'stop') },
               usage: toV4Usage(usage?.prompt_tokens, usage?.completion_tokens),
             });
+            diagLog('rp.candidate', `${c.platform}::${c.modelId} served in ${Date.now() - candidateStart}ms${folded ? ' (folded)' : ''}`);
             controller.close();
             return;
           } catch (e) {
             lastError = e;
             candidateError = e;
+            diagLog('rp.candidate', `${c.platform}::${c.modelId} failed after ${Date.now() - candidateStart}ms`);
             recordOutcome(c.platform, c.modelId, false);
             noteModelFailure(c.platform, c.modelId, e instanceof ProviderHttpError ? e.status : undefined, !!tools?.length);
             if (isFailoverWorthy(e)) {

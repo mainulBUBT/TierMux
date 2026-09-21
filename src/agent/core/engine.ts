@@ -283,6 +283,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   diagLog('engine.start', `mode=${opts.mode} msgs=${opts.messages?.length ?? 0} signalAborted=${opts.abortSignal?.aborted ?? 'none'} requestId=${opts.requestId ?? '-'}`);
   // diagTrace anchor: every stage below logs elapsed ms from here.
   const turnT0 = Date.now();
+  /** diagTrace: prepareStep timestamps so onStepEnd can log each step's wall-clock — the one
+   *  number that localizes a slow turn (model step vs tool execution is the next split). */
+  const stepStartAt = new Map<number, number>();
   // WorkReportData.telemetry — accumulated across EVERY model call this turn makes
   // (continuations and verify-fix rounds included).
   let usageIn = 0;
@@ -431,6 +434,14 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     // Per-PASS state, reset here so onChunk can close over it. Leaking it across passes fired
     // a second onRetractDraft for an already-retracted draft (exitPlanMode.e2e plan-gap case).
     narrationSinceToolCall = false;
+    // The onStep seam (host → webview status label) was wired end-to-end but never fired, so
+    // the status line sat on the send-time activity verb for the whole turn. A pass that
+    // follows tool results is synthesizing; the first pass is thinking. The phase string is
+    // the host's ('thinking' | 'synthesizing'); the label is what the webview shows.
+    opts.onStep(
+      toolEvents.length ? 'synthesizing' : 'thinking',
+      turnPass > 1 ? `Continuing (pass ${turnPass})…` : toolEvents.length ? 'Writing the reply…' : 'Thinking…',
+    );
     return streamText({
       model,
       system,
@@ -455,6 +466,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
 
       repairToolCall: repair,
       prepareStep: ({ messages, stepNumber }) => {
+        stepStartAt.set(stepNumber, Date.now());
         const profile = currentProfile();
         const offer = profile.contextWindow <= SMALL_WINDOW_MAX
           ? Object.keys(tools).filter((t) => !COORDINATION_TOOLS.includes(t))
@@ -520,6 +532,13 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       },
 
       onStepEnd: (step) => {
+        // Per-step wall-clock (diagTrace): the split that localizes a slow turn — this one
+        // number per step, plus rp.ttft's per-candidate first-chunk times in routerProvider.
+        const started = stepStartAt.get(step.stepNumber);
+        if (started !== undefined) {
+          diagLog('engine.step', `step ${step.stepNumber} took ${Date.now() - started}ms`
+            + ` (${(step.toolCalls?.length ?? 0)} tool call${(step.toolCalls?.length ?? 0) === 1 ? '' : 's'}, ${Date.now() - turnT0}ms into the turn)`);
+        }
         for (const tc of step.toolCalls ?? []) {
           const ev: ToolEvent = { toolCallId: tc.toolCallId, name: tc.toolName, args: tc.input, state: 'running' };
           toolEvents.push(ev);

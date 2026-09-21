@@ -13,7 +13,7 @@ import { allPlatformInfo, platformCarriesRawPdf, platformFlattensContent } from 
 import type { ChatMessage, CatalogModel } from '../shared/types';
 import { classifyTask, type TaskKind } from '../agent/routing';
 import { RateTracker } from './rateTracker';
-import { TIER_ORDER, tierOf } from '../catalog/discovery';
+import { TIER_ORDER, tierOf, type ModelTier } from '../catalog/discovery';
 import type { QuotaStore } from '../config/quotaStore';
 import { diagLog } from '../util/diag';
 import { NoVisionModelError } from './errors';
@@ -21,6 +21,23 @@ import { NoVisionModelError } from './errors';
 /** Skip reason for a model whose provider the user switched off — recorded so no other reason
  *  can claim it, never reported (see the skipList filter). */
 const PROVIDER_OFF = 'provider switched off in Manage Models & Keys';
+
+/** Layer-wise head floor (2026-09-22, user direction): the minimum quality tier allowed to
+ *  LEAD each task kind — real work (agent/coding/debug/plan) leads only with frontier/strong.
+ *  A below-floor row may still lead when it is fast (speedRank ≤ HEAD_FAST_ENOUGH): the
+ *  curated groq/cerebras heads are mid-tier precisely because latency is the product there.
+ *  Kinds absent from the map (trivial, vision) keep the legacy small/unknown-only gate. */
+const HEAD_MIN_TIER: Partial<Record<TaskKind, ModelTier>> = {
+  agent: 'strong', coding: 'strong', debug: 'strong', plan: 'strong',
+  chat: 'mid', longContext: 'mid',
+};
+/** Interactive kinds whose head never includes a slow row (speedRank ≥ 4) — a speed-5 head
+ *  once answered a vision turn in ~5 minutes (2026-09-04). Not applied to `trivial` (speed
+ *  IS the product) or `vision` (curated, capability-bound). Static catalog data, not a
+ *  learned latency signal — see the file header. */
+const HEAD_SPEED_CAP_KINDS = new Set<TaskKind>(['agent', 'coding', 'debug', 'plan', 'chat', 'longContext']);
+/** A below-floor tier can still lead at this speedRank or better — fast buys its way in. */
+const HEAD_FAST_ENOUGH = 2;
 
 /** platform::modelId → candidate chain per task kind. Ordered: best first. */
 export const TASK_ROUTING: Record<TaskKind, string[]> = {
@@ -520,16 +537,27 @@ export async function selectModel(
     // Tier gate on the HEAD (2026-09-16): small/unassessed models never lead a tool turn.
     // The engine always offers tools, so this is the guarantee that a table edit, an `::auto`
     // resolution or a renamed id can't hand the front of the chain to a nano-class model
-    // (the 2026-09-15 gpt-4.1-nano repro). They stay in the tail as a last resort below.
+    // (the 2026-09-15 gpt-4.1-nano repro). Since 2026-09-22 the head is also LAYER-WISE per
+    // task kind: below-floor tiers (mid on agent/coding/debug/plan) lead only when fast
+    // enough, and no interactive kind leads with a speedRank ≥ 4 row. Skipped rows stay in
+    // the tail below as failover — the chain never empties.
     if (opts.requireTools && opts.pinnedModel !== picked) {
       const [pPlatform, ...pRest] = picked.split('::');
       const pModelId = pRest.join('::');
-      const tier = tierOf(
-        sources.catalog.find(pPlatform, pModelId),
-        modelRank.get(canonicalModelId(pModelId)),
-      );
+      const meta = sources.catalog.find(pPlatform, pModelId);
+      const tier = tierOf(meta, modelRank.get(canonicalModelId(pModelId)));
+      const speed = meta?.speedRank ?? 5;
+      const floor = HEAD_MIN_TIER[taskKind];
       if (tier === 'small' || tier === 'unknown') {
         skip(picked, `${tier} tier — utility and last-resort only, never leads a tool turn`);
+        continue;
+      }
+      if (floor !== undefined && TIER_ORDER[tier] > TIER_ORDER[floor] && speed > HEAD_FAST_ENOUGH) {
+        skip(picked, `${tier} tier, speedRank ${speed} — below the ${taskKind} head floor; tail failover only`);
+        continue;
+      }
+      if (HEAD_SPEED_CAP_KINDS.has(taskKind) && speed >= 4) {
+        skip(picked, `speedRank ${speed} — too slow to lead a ${taskKind} turn; tail last resort`);
         continue;
       }
     }

@@ -34,6 +34,14 @@ Deliberately readable: you can look at the table and know which model answers wh
    - **every other enabled, usable model**, sorted by the catalog's measured
      **intelligence rank** (best first) and remaining declared quota, unranked models keeping
      your settings order.
+
+   The table **head is gated, layer-wise per task kind** (static catalog data — tiers and
+   speed ranks, no learned signal): on tool turns, `small`/`unknown`-tier models never lead;
+   real work (`agent`, `coding`, `debug`, `plan`) leads only with `frontier`/`strong`, and
+   `chat`/`longContext` with `mid` and up. A below-floor tier can still lead when it is fast
+   (`speedRank ≤ 2` — the groq/cerebras heads are mid-tier precisely because latency is the
+   product there), and no interactive kind leads with a `speedRank ≥ 4` row at all. Skipped
+   rows stay in the tail as failover, so the chain never empties.
 3. **Filter** as the chain is built. A candidate is dropped — with the reason recorded for
    the popover — when it is: excluded for this retry, on a switched-off provider, missing
    a stored key, inside a failure cooldown, not enabled, or marked
@@ -58,6 +66,15 @@ whole chain and dies in four seconds while two dozen keyed providers sit untried
 candidate gets 60 s to answer with headers (raised from 25 s after a live gateway needed 10 s
 plus keepalives), and the whole chain stops STARTING new candidates after 120 s — a candidate
 already streaming is never interrupted, TierMux just declines to open another one.
+
+All three failover time bounds are settings since 2026-09-22, defaulting to the historical
+values: `tiermux.agent.connectTimeoutMs` (60 000, per-candidate time to headers),
+`tiermux.agent.firstContentTimeoutMs` (30 000, time to the first real content chunk once a
+stream started) and `tiermux.agent.chainDeadlineMs` (120 000, stop starting candidates).
+Custom/local endpoints are exempt from all three. With `tiermux.agent.diagTrace` on, the
+diag channel also logs per-candidate first-chunk times (`rp.ttft`), per-candidate settle
+times (`rp.candidate`) and per-step wall-clock (`engine.step`) — read-only observability;
+selection stays un-learned by design.
 
 ### B. Utility calls — `routeOnce` (`src/agent/core/routeOnce.ts`)
 
@@ -140,6 +157,8 @@ Hovering any number shows that same explanation inline.
 | `no API key stored for this platform` | keyed provider, no key |
 | `in failure cooldown (recent errors)` | it failed recently and is backing off |
 | `catalog says this model cannot call tools` | this turn offers tools; it can't call them |
+| `mid tier, speedRank N — below the agent head floor; tail failover only` | below the task kind's minimum tier AND not fast enough to buy its way in — tail, never head |
+| `speedRank N — too slow to lead a coding turn; tail last resort` | slow row on an interactive kind; sorted last in the tail |
 | `tool-incompatible platform` | it advertised tools then rejected the payload — quarantined |
 | `excluded for this retry` | already tried and failed on this turn |
 

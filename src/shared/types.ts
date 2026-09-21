@@ -39,6 +39,12 @@ export type Platform =
   | 'unorouter'
   | 'experientiallabs'
   | 'bailu'
+  | 'aihubmix'
+  | 'bazaarlink'
+  | 'dreamprompting'
+  | 'naga'
+  | 'nous'
+  | 'vyceai'
   | 'custom';
 
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
