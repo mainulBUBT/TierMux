@@ -460,8 +460,10 @@ export function toolLabel(name: string, args: unknown, detail?: string, state?: 
     deleteFile: ['◉', path ? `Deleted ${path}` : 'Deleted a file'],
     impactAnalysis: ['⊕', 'Analyzed impact'],
     buildGraph: ['⊕', 'Built the call graph'],
-    getSymbolGraph: ['⊕', 'Indexed symbols'],
-    getDependencyTree: ['⊕', 'Mapped dependencies'],
+    outline: ['⊕', 'Read outline'],
+    findSymbol: ['⊕', 'Found symbol'],
+    references: ['⊕', 'Found references'],
+    definition: ['⊕', 'Found definition'],
     // todoWrite: the TodoSheet is the rich display; the card stays a quiet count line so the
     // raw todos JSON never dumps as the generic "TodoWrite" fallback it used to hit.
     todoWrite: ['≣', `Updated todos${Array.isArray((argsObj as { todos?: unknown[] }).todos) ? ` (${(argsObj as { todos: unknown[] }).todos.length})` : ''}`],

@@ -77,6 +77,23 @@ async function main(): Promise<void> {
   ok('4b. capped run yields the no-notes fallback summary',
     capped.summary.includes('without additional notes'), capped.summary.slice(0, 100));
 
+  // ── 4c. The LAST step is tool-less and asks for the report ────────────────
+  const wrapModel = createMockModel([
+    { toolCalls: [{ toolName: 'readFile', input: { path: 'notes.txt' } }] },
+    { toolCalls: [{ toolName: 'readFile', input: { path: 'notes.txt', offset: 2 } }] },
+    { text: 'Report: notes.txt holds a secret-token-123 line.' },
+  ], 'subagent-wrapup');
+  const wrapped = await runWithWorkspaceRoot(ws.root, () => runSubagent({
+    task: 'Look around.',
+    model: wrapModel as never,
+    maxSteps: 3,
+  }));
+  const choice = (wrapModel.calls[2]?.toolChoice as { type?: string } | undefined)?.type;
+  ok('4c. earlier steps leave toolChoice alone', wrapModel.calls[0]?.toolChoice === undefined || (wrapModel.calls[0].toolChoice as { type?: string }).type === 'auto');
+  ok('4d. the final step is sent toolChoice none', choice === 'none', JSON.stringify(wrapModel.calls[2]?.toolChoice));
+  ok('4e. the final step is told to write the report', JSON.stringify(wrapModel.calls[2]?.messages).includes('Write your final report now'));
+  ok('4f. the report reaches the parent', wrapped.summary.includes('secret-token-123'), wrapped.summary.slice(0, 100));
+
   // ── 5. Validation — no model call on an empty task ────────────────────────
   const tool = buildV3ToolSet('agent').delegateTask;
   const empty = await tool.execute!({ task: '   ' } as never, { tools: {} as never });

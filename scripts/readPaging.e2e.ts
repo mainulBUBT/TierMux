@@ -63,6 +63,16 @@ async function main() {
   ok('no paging marker on a file that fits', !small.includes('offset='), small);
   ok('content intact', small.includes('1\ta') && small.includes('3\tc'));
 
+  console.log('\n— the first page of a big file leads with a symbol map —');
+  const code = Array.from({ length: 1000 }, (_, i) => (i === 10 ? 'export function early() {}' : i === 900 ? 'export class Late {}' : `// filler ${i}`));
+  fs.writeFileSync(path.join(root, 'big.ts'), code.join('\n'));
+  const page1 = await read({ path: 'big.ts' });
+  ok('page one carries an outline naming a symbol far past the page', page1.startsWith('<outline path="big.ts">') && page1.includes('class Late L901'), page1.slice(0, 160));
+  ok('the outline sits OUTSIDE the file block, and the marker still survives', page1.indexOf('<outline') < page1.indexOf('<file') && /offset=\d+ to continue/.test(page1));
+  const page2 = await read({ path: 'big.ts', offset: 801 });
+  ok('later pages do not repeat it', !page2.includes('<outline'));
+  ok('a file that fits one page gets none', !(await read({ path: 'small.php' })).includes('<outline'));
+
   fs.rmSync(root, { recursive: true, force: true });
   console.log(bad === 0 ? '\nRead paging holds.' : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);

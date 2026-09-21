@@ -8,7 +8,11 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import type { ProposedPlan } from '../../../../shared/types';
 
-export function createExitPlanModeTool(onPlanProposed?: (plan: ProposedPlan) => void) {
+/** `checkPaths` is the host's existence check (planPathCheck.ts); absent in e2e/headless contexts. */
+export function createExitPlanModeTool(
+  onPlanProposed?: (plan: ProposedPlan) => void,
+  checkPaths?: (steps: Array<{ what: string; files?: string[]; evidence?: string }>) => Promise<string | undefined>,
+) {
   return tool({
     description:
       'Present your finished implementation plan to the user for approval, and END your turn. '
@@ -102,6 +106,8 @@ export function createExitPlanModeTool(onPlanProposed?: (plan: ProposedPlan) => 
         if (bare.length) {
           return { error: `Every step needs \`files\` (the paths it CHANGES) and \`evidence\` (the path:line you read that proves it is needed). Missing on: ${bare.map((s) => `"${s.what}"`).join(', ')}. A step you cannot ground in a file you read is not a step — if the answer is that nothing needs changing, use outcome "no-change".` };
         }
+        const ungrounded = await checkPaths?.(clean);
+        if (ungrounded) return { error: ungrounded };
         onPlanProposed({
           outcome: 'plan',
           title: title.trim() || 'Plan',

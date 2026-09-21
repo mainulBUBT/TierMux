@@ -29,14 +29,19 @@ function pruneGentle(messages: ModelMessage[]): ModelMessage[] {
   });
 }
 
-/** Tier 2 — every tool result outside the last few messages goes, file reads included. Only
- *  reached when tier 1 left the transcript still over budget, where the alternative is not
- *  "keep the evidence" but "overflow the provider and lose the whole turn". */
+/** Tools whose old results tier 2 may drop. The mutators (editFile/writeFile/deleteFile) and
+ *  todoWrite/delegateTask/askUser are NOT here: pruneMessages with no `tools` filter removes the
+ *  tool-call AND result parts of every tool, so the model forgot which files it had changed. */
+const PRUNABLE_TOOLS = ['readFile', 'grep', 'glob', 'listDir', 'webSearch', 'fetchUrl', 'getDiagnostics', 'runCommand'];
+
+/** Tier 2 — every read/search/shell result outside the last few messages goes, file reads
+ *  included. Only reached when tier 1 left the transcript still over budget, where the
+ *  alternative is not "keep the evidence" but "overflow the provider and lose the whole turn". */
 function pruneAggressive(messages: ModelMessage[]): ModelMessage[] {
   return pruneMessages({
     messages,
     reasoning: 'all',
-    toolCalls: [{ type: 'before-last-4-messages' }],
+    toolCalls: [{ type: 'before-last-4-messages', tools: PRUNABLE_TOOLS }],
     emptyMessages: 'remove',
   });
 }
@@ -85,14 +90,19 @@ function toolCallInputs(messages: ModelMessage[]): Map<string, unknown> {
   return byId;
 }
 
-/** One-line summary of a tool call for the stub header: "readFile src/x.ts". */
+/** One-line summary of a tool call for the stub header: "readFile src/x.ts offset=801 limit=400".
+ *  The window matters: a paged read stubbed as a bare path sent the model back to page one. */
 function ageInputSummary(toolName: string, input: unknown): string {
   const o = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
   const val = [o.path, o.query, o.pattern, o.url, o.task, o.command]
     .map((v) => (Array.isArray(v) ? v.join(',') : typeof v === 'string' ? v : ''))
     .find(Boolean) || '';
   const clipped = val.replace(/\s+/g, ' ').slice(0, 60);
-  return clipped ? `${toolName} ${clipped}` : toolName;
+  const window = [
+    typeof o.offset === 'number' ? `offset=${o.offset}` : '',
+    typeof o.limit === 'number' ? `limit=${o.limit}` : '',
+  ].filter(Boolean).join(' ');
+  return [toolName, clipped, window].filter(Boolean).join(' ');
 }
 
 /** Text of a tool-result output when it is plain text (string return / {type:'text'}).
@@ -113,7 +123,14 @@ export interface AgeToolOutputsResult {
   messages?: ModelMessage[];
   /** Chars of earlier tool output elided this pass — diag-visible so the saving is measurable. */
   stubbedChars: number;
+  /** Calls whose result was stubbed by THIS pass (not earlier ones), so a re-run is a recovery,
+   *  not a loop. */
+  stubbed?: Array<{ toolName: string; input: unknown }>;
 }
+
+/** delegateTask's report is the sub-agent's whole synthesis — stubbing it discards the only
+ *  thing the delegation produced, and a re-run means paying for the whole investigation again. */
+const AGE_EXEMPT_TOOLS = new Set(['delegateTask']);
 
 export function ageToolOutputs(messages: ModelMessage[], minChars = AGE_MIN_CHARS): AgeToolOutputsResult {
   // The most recent KEEP_RECENT_TOOL_MESSAGES tool messages are the steps the model is still
@@ -127,27 +144,30 @@ export function ageToolOutputs(messages: ModelMessage[], minChars = AGE_MIN_CHAR
   if (keepFrom <= 0) return { stubbedChars: 0 };
 
   const inputById = toolCallInputs(messages);
+  const stubbed: Array<{ toolName: string; input: unknown }> = [];
   let stubbedChars = 0;
   let changed = false;
   const out = messages.map((m, i) => {
     if (i >= keepFrom || m.role !== 'tool' || !Array.isArray(m.content)) return m;
     let touched = false;
     const content = (m.content as Array<Record<string, unknown>>).map((part) => {
-      if (part.type !== 'tool-result') return part;
+      if (part.type !== 'tool-result' || AGE_EXEMPT_TOOLS.has(String(part.toolName))) return part;
       const text = ageOutputText(part.output);
       if (text == null || text.length < minChars) return part;
       changed = true;
       stubbedChars += text.length;
       touched = true;
+      const input = inputById.get(String(part.toolCallId ?? ''));
+      stubbed.push({ toolName: String(part.toolName ?? 'tool'), input });
       return {
         ...part,
         output: {
           type: 'text',
-          value: `[${ageInputSummary(String(part.toolName ?? 'tool'), inputById.get(String(part.toolCallId ?? '')))} — ${(text.length).toLocaleString()} chars returned in an earlier step; output elided to keep the prompt small. Re-run the tool (narrower, if needed) to see it again.]`,
+          value: `[${ageInputSummary(String(part.toolName ?? 'tool'), input)} — ${(text.length).toLocaleString()} chars / ${text.split('\n').length} lines returned in an earlier step; output elided to keep the prompt small. Re-run the tool (narrower, if needed) to see it again.]`,
         },
       };
     });
     return touched ? ({ ...m, content } as ModelMessage) : m;
   });
-  return changed ? { messages: out, stubbedChars } : { stubbedChars: 0 };
+  return changed ? { messages: out, stubbedChars, stubbed } : { stubbedChars: 0 };
 }

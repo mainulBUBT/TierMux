@@ -104,6 +104,15 @@ export async function runSubagent(opts: SubagentOpts): Promise<SubagentResult> {
       tools,
       temperature: 0.2,
       stopWhen: [stepCountIs(maxSteps)],
+      // The LAST step is the only one whose text reaches the parent. A step budget spent entirely
+      // on tool calls left it empty and the parent got narration or a generic line — so the final
+      // step is tool-less and told to write the report.
+      prepareStep: ({ stepNumber, messages }) => maxSteps > 1 && stepNumber === maxSteps - 1
+        ? {
+          toolChoice: 'none' as const,
+          messages: [...messages, { role: 'user' as const, content: 'Step budget used up. Write your final report now from what you found — no more tool calls.' }],
+        }
+        : {},
       abortSignal: opts.abortSignal,
       maxRetries: 1,
       onChunk: ({ chunk }) => {

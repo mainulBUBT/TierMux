@@ -47,6 +47,16 @@ export function createListDirTool() {
   });
 }
 
+/** Build output and vendor trees fill the 200-result cap with files nobody asked for (an explicit
+ *  exclude also replaces files.exclude, so nothing else filtered them). A pattern that NAMES one of
+ *  these dirs is asking for it, so only the always-noise pair is excluded then. */
+const NOISE_DIRS = ['dist', 'out', 'coverage', '.next', '__pycache__', '.venv'];
+function globExclude(pattern: string): string {
+  const always = ['**/node_modules/**', '**/.git/**'];
+  const wanted = NOISE_DIRS.some((d) => pattern.includes(d));
+  return `{${(wanted ? always : [...always, ...NOISE_DIRS.map((d) => `**/${d}/**`)]).join(',')}}`;
+}
+
 /** Walk an ALS override root with minimatch (same skip-list as the legacy glob). */
 async function globInRoot(root: string, pattern: string): Promise<string[]> {
   const matches: string[] = [];
@@ -103,7 +113,7 @@ export function createGlobTool() {
             ? `${list.join('\n')}\n…[capped at ${GLOB_MAX_RESULTS} matches — use a more specific pattern.]`
             : list.join('\n');
         }
-        const files = await vscode.workspace.findFiles(pattern, '**/node_modules/**', GLOB_MAX_RESULTS);
+        const files = await vscode.workspace.findFiles(pattern, globExclude(pattern), GLOB_MAX_RESULTS);
         if (!files.length) return '(no matches)';
         const list = files.map((f) => vscode.workspace.asRelativePath(f)).join('\n');
         return files.length >= GLOB_MAX_RESULTS

@@ -37,6 +37,7 @@ import { contentToString } from './agent/content';
 import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSupportedAttachmentPath, kindForPath as kindFromName, lastPdfFailureReason, mimeForPath as mimeForName } from './util/extractAttachments';
 import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
+import { formatSessionFiles, readSessionFileStates } from './context/sessionFiles';
 import { condenseHistory, shouldCondense, generateHandoff, capForHistory } from './agent/condense';
 import { appendLearned } from './context/userMemory';
 import { invalidatePromptContext } from './context/promptContext';
@@ -272,6 +273,9 @@ interface Session {
   cards: OutMessage[];
   voteCtx: Map<string, { taskKind: string; platform: string; model: string; last: Vote }>;
   pendingPlanUser?: ChatContent;
+  /** The plan turn's own work (reads, greps, exitPlanMode) — the exploration behind the card.
+   *  Committed to history with the request on approve/defer so the model keeps what it learned. */
+  pendingPlanWork?: ChatMessage[];
   /** URI of the plan MD file saved at proposal time — updated if the user edits steps before approving. */
   pendingPlanFile?: { uri: vscode.Uri; title: string; request?: string };
   /** In-flight `askUser` tool calls, keyed by OpenAI tool_call_id, awaiting a webview answer. */
@@ -2214,6 +2218,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (planStepsText) {
           s.history.length -= 1; // not committed yet — re-added on approval
           s.pendingPlanUser = userContent;
+          s.pendingPlanWork = result.workMessages?.length ? capForHistory(result.workMessages) : undefined;
           this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId: m.requestId, steps: planStepsText });
           this.preparePlanFile(s, result.plan?.title || prompt, prompt);
           // Fire-and-forget re-refine ONLY on the fallback path: a tool-declared plan is already
@@ -2471,19 +2476,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  written to disk — the plan only touches the filesystem once approved. */
   private handleDeferPlan(m: Extract<InMessage, { type: 'deferPlan' }>): void {
     const s = this.current();
-    s.pendingPlanUser = undefined;
+    let proposed: string | undefined = m.steps;
     for (const c of s.cards) {
       if (c.type === 'planProposed' && c.requestId === m.requestId) {
         if (m.steps) (c as { steps?: string }).steps = m.steps;
+        proposed ??= (c as { steps?: string }).steps;
         (c as { deferred?: boolean }).deferred = true;
       }
     }
+    // The plan turn was withheld from history at proposal time; "keep discussing" without it left
+    // the model with no request, no exploration and no plan to discuss.
+    if (s.pendingPlanUser) s.history.push({ role: 'user', content: s.pendingPlanUser });
+    if (s.pendingPlanWork) s.history.push(...s.pendingPlanWork);
+    if (proposed) s.history.push({ role: 'assistant', content: `Proposed plan (not approved — the user wants to discuss it first):\n\n${proposed}` });
+    s.pendingPlanUser = undefined;
+    s.pendingPlanWork = undefined;
+    this.persist(s.id);
   }
 
   private async handleApprovePlan(m: Extract<InMessage, { type: 'approvePlan' }>): Promise<void> {
     const s = this.current();
     if (!m.approved) {
       s.pendingPlanUser = undefined;
+      s.pendingPlanWork = undefined;
       s.pendingPlanFile = undefined;
       for (const c of s.cards) {
         if (c.type === 'planProposed' && c.requestId === m.requestId) (c as { discarded?: boolean }).discarded = true;
@@ -2501,6 +2516,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const original = s.pendingPlanUser;
     s.pendingPlanUser = undefined;
     if (original) s.history.push({ role: 'user', content: original });
+    if (s.pendingPlanWork) s.history.push(...s.pendingPlanWork);
+    s.pendingPlanWork = undefined;
     if (m.steps) s.history.push({ role: 'assistant', content: `Approved plan:\n\n${m.steps}` });
     this.persist(s.id);
     this.post({ type: 'notice', sessionId: s.id, text: 'Plan approved — switch to Agent mode and send a message to start executing it.', icon: 'check' });
@@ -2521,6 +2538,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const original = s.pendingPlanUser;
     s.pendingPlanUser = undefined;
     if (original) s.history.push({ role: 'user', content: original });
+    if (s.pendingPlanWork) s.history.push(...s.pendingPlanWork);
+    s.pendingPlanWork = undefined;
     s.history.push({ role: 'assistant', content: `Approved plan:\n\n${m.steps}` });
     this.persist(s.id);
 
@@ -2528,10 +2547,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     //    executing ⚡ indicator for the about-to-launch run.
     this.post({ type: 'setMode', sessionId: s.id, mode: 'agent' });
 
-    // 3. First-class plan execution: structure the approved plan into steps and drive them
-    //    through the plan runner (per-step rounds, verify acceptance, bounded same-model
-    //    retries, read-only plan repair, resumable state). Degrades to the legacy single-send
-    //    path when no ≥2-step structure can be extracted (weak free models).
+    // 3. Structure the approved plan into steps and run them as one tracked agent turn (steps
+    //    seeded as todos; executePlanRun derives each step's status from the run). Degrades to the
+    //    legacy single-send path when no ≥2-step structure can be extracted (weak free models).
     const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     // A plan that came from the `exitPlanMode` tool (or that the user hand-edited on the card,
     // which re-serializes to the same shape) is ALREADY one clean step per numbered line — the
@@ -2595,27 +2613,66 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       planState.status = 'running';
       this.post({ type: 'planProgress', sessionId: s.id, requestId, state: planState });
 
-      // v3: the dedicated step engine is gone — an approved plan executes as ONE agent turn
-      // with the steps enumerated in the prompt. The model works the list with its tools;
-      // step-level pause/resume defers to v3.1.
-      const stepsText = planState.steps.map((st, i) => `${i + 1}. ${st.text}`).join('\n');
-      const planPrompt = `Execute this approved plan completely, step by step, using your tools. Verify each edit before moving on. When finished, reply with a short summary of what changed.\n\n${stepsText}`;
+      // An approved plan executes as ONE agent turn with the steps enumerated in the prompt and
+      // seeded as todos, so the model's todoWrite progress (and the todo audit gate) is what
+      // decides which steps are done — not an unconditional "all done" after the turn returns.
+      const stepsText = planState.steps.map((st, i) => `${i + 1}. ${st.status === 'done' ? '[done] ' : ''}${st.text}`).join('\n');
+      const planPrompt = `Execute this approved plan completely, step by step, using your tools. Verify each edit before moving on. Steps marked [done] are already finished — skip them. When finished, reply with a short summary of what changed.\n\n${stepsText}`;
+      const seeded: TodoItem[] = planState.steps.map((st, i) => ({
+        content: st.text,
+        status: st.status === 'done' ? 'completed' : i === planState.steps.findIndex((x) => x.status !== 'done') ? 'in_progress' : 'pending',
+      }));
+      s.lastTodos = seeded;
+      this.post({ type: 'todos', sessionId: s.id, requestId, todos: seeded, followingPlan: true });
       s.history.push({ role: 'user', content: planPrompt });
       s.transcript.push({ role: 'user', text: planPrompt, requestId, ts: Date.now(), historyLen: s.history.length - 1 });
       this.post({ type: 'userEcho', sessionId: s.id, requestId, text: planPrompt });
-      const result = await runAgentStream(this.makeAgentOpts(s, requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model),
-      );
+      const before = this.deps.usage.get();
+      const sentAt = Date.now();
+      const result = await runAgentStream({ ...this.makeAgentOpts(s, requestId, 'agent', s.reasoningEffort ?? 'medium', cbk, s.model), todos: seeded }, {});
 
       if (!this.isActiveRun(s, requestId)) return;
-      for (const st of planState.steps) st.status = 'done';
-      planState.status = 'done';
-      s.executingPlan = false;
-      const summary = result.text || 'Plan execution finished.';
       cbk.settleReasoning();
-      // Final summary as a real transcript entry so the finished plan reads as one turn.
-      s.transcript.push({ role: 'assistant', text: summary, requestId, ts: Date.now(), historyLen: s.history.length - 1 });
-      s.history.push({ role: 'assistant', content: summary });
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId, text: summary, platform: turnPlatformLabel(s.model, result, this.deps), model: turnModelLabel(s.model, result.model) });
+
+      // Step statuses come from what the run reported. todoWrite replaces the whole list, so map by
+      // position when the length still matches; with no todo signal a clean finish counts as done.
+      const todos = s.lastTodos ?? [];
+      const stopped = !!result.failed || !!result.paused;
+      planState.steps.forEach((st, i) => {
+        if (st.status === 'done') return;
+        if (todos.length === planState.steps.length) {
+          st.status = todos[i].status === 'completed' ? 'done' : todos[i].status === 'in_progress' ? 'in_progress' : 'pending';
+        } else if (!stopped && todos.every((t) => t.status === 'completed')) {
+          st.status = 'done';
+        }
+      });
+      planState.currentStep = Math.max(0, planState.steps.findIndex((x) => x.status !== 'done'));
+      const allDone = planState.steps.every((x) => x.status === 'done');
+      planState.status = result.failed ? 'failed' : allDone ? 'done' : 'paused';
+      planState.updatedAt = Date.now();
+      s.executingPlan = planState.status === 'paused' && !!result.paused;
+      this.post({ type: 'planProgress', sessionId: s.id, requestId, state: planState });
+      this.post({ type: 'planExecuting', sessionId: s.id, requestId, executing: s.executingPlan });
+
+      if (result.failed) {
+        const errorText = result.errorMessage || 'Plan execution failed. Try again, or switch to a different model.';
+        this.pushAssistantTurn(s, requestId, { ...result, text: errorText }, sentAt);
+        this.post({ type: 'assistantMessage', sessionId: s.id, requestId, text: errorText, platform: turnPlatformLabel(s.model, result, this.deps), model: turnModelLabel(s.model, result.model) });
+        return;
+      }
+      const after = this.deps.usage.get();
+      const usage = {
+        promptTokens: after.promptTokens - before.promptTokens,
+        completionTokens: after.completionTokens - before.completionTokens,
+        reasoningTokens: after.reasoningTokens - before.reasoningTokens,
+        totalTokens: after.totalTokens - before.totalTokens,
+      };
+      this.persistAgentTurn(s, result);
+      this.pushAssistantTurn(s, requestId, result, sentAt, usage);
+      this.rememberWindow(s, result.platform, result.model);
+      const summary = result.text || (allDone ? 'Plan execution finished.' : 'Plan execution paused — some steps are not finished yet.');
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId, text: summary, reasoning: result.reasoning, finishReason: result.finishReason, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: turnModelLabel(s.model, result.model), paused: !allDone });
+      this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
     } catch (e) {
       if (!this.isActiveRun(s, requestId)) return;
       this.post({ type: 'error', sessionId: s.id, requestId, message: e instanceof Error ? e.message : String(e) });
@@ -2745,6 +2802,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.settlePendingApprovals(s, false); // unblock any command/edit awaiting a click
     this.settlePendingAskUser(s); // unblock any in-chat askUser card
     s.pendingPlanUser = undefined;
+    s.pendingPlanWork = undefined;
     s.executingPlan = false;
     s.cards = [];
     this.setStatus(sessionId, 'idle');
@@ -2774,6 +2832,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       sessionId: s.id,
       requestId,
       mentionCount: s.lastMentionCount,
+      sessionFiles: async () => formatSessionFiles(await readSessionFileStates(s.checkpoints.touchedFiles())),
       abortSignal: s.cancel ? tokenToAbortSignal(s.cancel.token) : undefined,
       // Read by the engine's toolApproval policy (policyFromSettings).
       autoApprove: this.autoApprove,
@@ -3053,7 +3112,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Resume a paused run (step cap or a free model dropping out). The working transcript is
-   *  already in history, so the agent picks up rather than re-planning. Always Agent mode. */
+   *  already in history, so the agent picks up rather than re-planning. An Ask turn resumes in
+   *  Ask (read-only stays read-only — Continue must not hand it edit tools); everything else
+   *  resumes in Agent, because this path has no plan-card handling for a Plan-mode result. */
   private async handleResume(m: Extract<InMessage, { type: 'resume' }>): Promise<void> {
     const s = this.current();
 
@@ -3079,14 +3140,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await s.checkpoints.begin(m.requestId, 'Continue');
       const sentAt = Date.now();
       this.beginInProgressTurn(s, m.requestId);
-      const cbk4 = this.agentCallbacks(s, m.requestId, 'agent');
+      const resumeMode: AgentMode = s.lastMode === 'ask' ? 'ask' : 'agent';
+      const cbk4 = this.agentCallbacks(s, m.requestId, resumeMode);
       // The list belongs to the TASK, not the turn: re-render it under this requestId (each
       // turn builds its own card) and hand it to the engine, whose transcript may have pruned
       // the todoWrite result away.
       if (s.lastTodos?.length) {
         this.post({ type: 'todos', sessionId: s.id, requestId: m.requestId, todos: s.lastTodos, followingPlan: !!s.executingPlan });
       }
-      const result = await runAgentStream({ ...this.makeAgentOpts(s, m.requestId, 'agent', s.reasoningEffort ?? 'medium', cbk4, s.model), todos: s.lastTodos }, {});
+      // runAgentStream hard-codes mode:'agent' — an Ask resume must go through runAskStream.
+      const run = resumeMode === 'ask' ? runAskStream : runAgentStream;
+      const result = await run({ ...this.makeAgentOpts(s, m.requestId, resumeMode, s.reasoningEffort ?? 'medium', cbk4, s.model), todos: s.lastTodos }, {});
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       // See the `result.failed` guard in the main send handler — show a real reply bubble with
       // the failure reason instead of a phantom blank "successful" turn.

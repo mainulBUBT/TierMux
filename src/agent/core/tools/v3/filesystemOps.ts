@@ -6,7 +6,8 @@
 import * as vscode from 'vscode';
 import { tool } from 'ai';
 import { z } from 'zod';
-import { resolveWorkspacePath } from '../resolvePath';
+import { resolveWorkspacePath, resolveReadablePath } from '../resolvePath';
+import { visibleFileState } from './visibleRead';
 import { workspaceErrorSignatures } from '../workspace/formatDiagnostics';
 import { diagnosticsNote } from './editFile';
 import type { ToolsetBindings } from './index';
@@ -24,18 +25,40 @@ export function createWriteFileTool(bindings: ToolsetBindings = {}) {
   return tool({
     description:
       'Create or overwrite a file with the given text content. Parent directories are created '
-      + 'automatically. Prefer editFile for changing part of an existing file.',
+      + 'automatically. To replace an existing file you must have its CURRENT full content in view '
+      + '(read whole with readFile, not paged or elided) — otherwise the call is refused. Prefer '
+      + 'editFile for changing part of an existing file.',
     inputSchema: z.object({
       path: z.string().describe('Workspace-relative file path.'),
       content: z.string().describe('Full file content to write.'),
     }),
-    execute: async ({ path, content }): Promise<string | { error: string }> => {
+    execute: async ({ path, content }, options): Promise<string | { error: string }> => {
       try {
         if (!path) return { error: 'Missing required "path" argument.' };
         const uri = resolveWorkspacePath(path);
+        let existing: string | null = null;
+        try { existing = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri)); } catch { /* create */ }
+        // A full overwrite is only safe from a verbatim, current copy. The transcript is what the
+        // model actually sees (aged/pruned already), so a read that was stubbed or is stale fails.
+        const messages = options?.messages;
+        if (existing && messages) {
+          const target = uri.toString();
+          const same = (p: string) => { try { return resolveReadablePath(p).toString() === target; } catch { return false; } };
+          const seen = visibleFileState(messages, existing, same);
+          if (seen.kind !== 'match') {
+            const lines = existing.split('\n').length;
+            const why = seen.kind === 'stale' ? 'has changed since you read it' : 'is not in view (never read, paged, or elided)';
+            return {
+              error: `${path} already exists and ${why}, so writeFile would replace content you cannot see. `
+                + (lines > 800
+                  ? `It has ${lines} lines — too large to rewrite blind; use editFile for the change.`
+                  : `Call readFile on "${path}" (whole file), then resend writeFile with the complete intended content — or use editFile for a partial change.`),
+            };
+          }
+        }
         let before = new Set<string>();
         try { before = workspaceErrorSignatures(vscode.languages.getDiagnostics()); } catch { /* unavailable */ }
-        await recordBaseline(bindings, uri);
+        try { bindings.onBeforeWrite?.(uri, existing); } catch { /* checkpointing must never block a write */ }
         await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(content));
         return `Wrote ${path}.${await diagnosticsNote(uri, before)}`;
       } catch (e) {

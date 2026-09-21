@@ -18,7 +18,7 @@ import { buildV3ToolSet, READ_ONLY_TOOLS } from './tools/v3';
 import { runSubagent } from './subagent';
 import { getMcpManager } from './tools/mcp/manager';
 import { makeRepairViaModelSelfCorrection } from './repair';
-import { compactIfNeeded, ageToolOutputs } from './compact';
+import { compactIfNeeded, ageToolOutputs, type AgeToolOutputsResult } from './compact';
 import { resolveVerifyCommand, runVerifyCommand } from './tools/workspace/verifyCommand';
 import { resolvePolicy, policyFromSettings } from '../../permissions/policy';
 import { recordOutcome, findCatalogModel } from '../../router/picker';
@@ -217,7 +217,7 @@ const REPEAT_READ_LIMIT = 4;
  *  edit was answered with the model's own pre-edit content plus "the result is unchanged" — so the
  *  edit looked reverted and the model redid it (live repro 2026-09-16: a blade fix that "undid"
  *  itself for 24 minutes). */
-function dedupeReads(tools: ToolSet, onRepeat: (signature: string, count: number) => void): ToolSet {
+function dedupeReads(tools: ToolSet, onRepeat: (signature: string, count: number) => void): { tools: ToolSet; forget: (toolName: string, input: unknown) => void } {
   const seen = new Map<string, { result: unknown; count: number }>();
   const out: ToolSet = {};
   for (const [name, t] of Object.entries(tools)) {
@@ -253,7 +253,9 @@ function dedupeReads(tools: ToolSet, onRepeat: (signature: string, count: number
       },
     } as ToolSet[string];
   }
-  return out;
+  // A result that ageToolOutputs stubbed is no longer in the transcript, so the model re-running
+  // it is a recovery, not a loop: drop the cached entry so the re-run executes fresh at count 1.
+  return { tools: out, forget: (toolName, input) => { seen.delete(`${toolName}:${JSON.stringify(input ?? null)}`); } };
 }
 
 /** True when a tool RESULT is a failure — either the SDK's tool-error state or the v3
@@ -302,7 +304,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   /** The task list as it stands: inherited on a Continue, replaced by each todoWrite. Drives
    *  the audit gate and the caller's remaining-items note. */
   let lastTodos: TodoItem[] | undefined = opts.todos;
-  const tools: ToolSet = dedupeReads(buildV3ToolSet(opts.mode, {
+  const deduped = dedupeReads(buildV3ToolSet(opts.mode, {
     abortSignal: opts.abortSignal,
     sessionId: opts.sessionId,
     requestId: opts.requestId,
@@ -316,6 +318,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       diagLog('engine.stuck', `${sig.slice(0, 80)} repeated ${count}× — stopping the turn (resumable)`);
     }
   });
+  const tools: ToolSet = deduped.tools;
 
   const model: LanguageModel = modelOverride ?? createRouterProvider({
     effort: opts.effort,
@@ -408,8 +411,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
 
   // System prompt + context gathered ONCE per turn: both passes share the identical prefix
   // (provider prompt-cache friendly) and the async reads never happen per-pass.
+  const sessionFilesBlock = await opts.sessionFiles?.().catch(() => undefined);
   const system = composeSystemPrompt(opts.mode, await gatherPromptContext(), opts.todos,
-    opts.mode === 'agent' ? getMcpManager()?.instructions() : undefined);
+    opts.mode === 'agent' ? getMcpManager()?.instructions() : undefined)
+    + (sessionFilesBlock ? `\n\n${sessionFilesBlock}` : '');
   const runPass = (messages: ModelMessage[]) => {
     turnPass++;
     // Per-PASS state, reset here so onChunk can close over it. Leaking it across passes fired
@@ -449,10 +454,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
         // chars), 'aggressive' (800). Unknown values → light.
         const compactionMode = opts.toolCompaction ?? 'light';
         const aging = compactionMode === 'off'
-          ? { stubbedChars: 0 as number, messages: undefined as ModelMessage[] | undefined }
+          ? { stubbedChars: 0 as number, messages: undefined as ModelMessage[] | undefined, stubbed: undefined as AgeToolOutputsResult['stubbed'] }
           : ageToolOutputs(messages, compactionMode === 'aggressive' ? 800 : 2_000);
         if (aging.stubbedChars > 0) {
           diagLog('engine.ageToolOutputs', `${aging.stubbedChars.toLocaleString()} chars of earlier tool output elided before step ${stepNumber}`);
+          for (const c of aging.stubbed ?? []) deduped.forget(c.toolName, c.input);
         }
         const compaction = compactIfNeeded(aging.messages ?? messages, profile.pruneTarget);
         const stepMessages = compaction.messages ?? aging.messages;

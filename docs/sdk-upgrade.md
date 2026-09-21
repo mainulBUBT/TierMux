@@ -6,7 +6,7 @@ replacement, and remove a custom workaround the moment the SDK grows a native eq
 list is what to re-check every time that dependency is bumped, so those workarounds don't outlive
 the bug they exist for.
 
-Current pinned versions: `ai@^7.0.58`, `@ai-sdk/provider@^4.0.3`, `zod@^4.4.3`. For what TierMux
+Current pinned versions: `ai@^7.0.107`, `@ai-sdk/provider@^4.0.17`, `zod@^4.4.3` (bumped from 7.0.58 / 4.0.3 on 2026-09-21; typecheck and all e2e suites green; there is no v8 or 7.1 as of that date). For what TierMux
 does and does not adopt from the SDK at the policy level, see
 [`sdk-adoption-policy.md`](./sdk-adoption-policy.md).
 
@@ -18,6 +18,12 @@ Documented in [`tools/v3/index.ts`](../src/agent/core/tools/v3/index.ts): as of 
 `streamText()` spike against a fake `LanguageModelV4`) — `options.context` came back `undefined`
 both with no `contextSchema` declared, and with a declared `contextSchema` + matching
 `toolsContext` (which instead threw a Zod validation error against `undefined`).
+
+**Checked 2026-09-21 against `ai@7.0.58` (`@ai-sdk/provider@4.0.7`): FIXED.** A `streamText()` spike
+with a stub `LanguageModelV4` and a declared `contextSchema` + `toolsContext` delivered the value
+via `options.context`. The `tools/v3/index.ts` comment this section cites no longer exists, and
+`grep -rnE "runtimeContext|toolsContext" src` finds nothing — TierMux still uses the closure
+pattern. Migrating to context-based tools is optional cleanup, not a fix.
 
 - [ ] Re-run that spike against the new version. Does `options.context` now carry the value
       passed via `runtimeContext`/`toolsContext`?
@@ -34,9 +40,11 @@ code half-migrated (some tools on closures, some on context) without a comment e
 
 ## 3. Has `Experimental_Agent` (`ToolLoopAgent`) stabilized?
 
-`loop.ts` deliberately uses `streamText` + `tool()` + `isStepCount` + `toolApproval` directly
+`engine.ts` deliberately uses `streamText` + `tool()` + `stepCountIs` + `toolApproval` directly
 instead of the `Experimental_`-prefixed agent class, because that class's API wasn't stable at
-the time this was built.
+the time this was built. (As of 7.0.107 `ToolLoopAgent` is exported un-prefixed, so that premise is
+stale — the ban still holds, for a different reason: it assumes one model and SDK-owned control
+flow, which TierMux's router-as-model and custom stop conditions do not fit.)
 
 - [ ] Check whether the `Experimental_` prefix has been dropped from `Experimental_Agent`/
       `ToolLoopAgent` in the new version's exports.

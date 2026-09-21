@@ -12,6 +12,7 @@ export { createGetDiagnosticsTool } from './getDiagnostics';
 export { createAskUserTool } from './askUser';
 export { createDelegateTaskTool } from './delegateTask';
 export { createExitPlanModeTool } from './exitPlanMode';
+export { createOutlineTool, createFindSymbolTool, createReferencesTool, createDefinitionTool } from './codeIntel';
 
 import type { ToolSet } from 'ai';
 import type { Mode } from '../../../../shared/types';
@@ -26,6 +27,8 @@ import { createGetDiagnosticsTool } from './getDiagnostics';
 import { createAskUserTool } from './askUser';
 import { createDelegateTaskTool } from './delegateTask';
 import { createExitPlanModeTool } from './exitPlanMode';
+import { checkPlanPaths } from './planPathCheck';
+import { createOutlineTool, createFindSymbolTool, createReferencesTool, createDefinitionTool } from './codeIntel';
 import { createWebSearchTool } from '../network/webSearch';
 import { createFetchUrlTool } from '../network/fetchUrl';
 import { createMcpTools } from '../mcp/mcp';
@@ -34,8 +37,8 @@ import { getMcpManager } from '../mcp/manager';
 /** Tools that never mutate anything — the permission policy auto-approves these (plan §3).
  *  `showTodo` is a legacy name kept for the set's historical shape; the live tool is `todoWrite`. */
 export const READ_ONLY_TOOLS = new Set([
-  'readFile', 'listDir', 'glob', 'grep', 'getDiagnostics', 'getSymbolGraph',
-  'getDependencyTree', 'webSearch', 'delegateTask', 'fetchUrl', 'showTodo', 'todoWrite', 'askUser', 'recallNotes', 'checkPlan',
+  'readFile', 'listDir', 'glob', 'grep', 'getDiagnostics', 'outline', 'findSymbol', 'references', 'definition',
+  'webSearch', 'delegateTask', 'fetchUrl', 'showTodo', 'todoWrite', 'askUser',
   // exitPlanMode writes nothing — it hands a structured plan to the host and ends the turn.
   // Approval of the PLAN happens on the card afterwards, so gating the tool itself would just
   // put an "Allow exitPlanMode?" prompt in front of the real approval UI.
@@ -77,6 +80,13 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
   const webSearch = createWebSearchTool();
   const fetchUrl = createFetchUrlTool();
   const getDiagnostics = createGetDiagnosticsTool();
+  // Language-server navigation — read-only, so every mode gets it (ask and plan need it most).
+  const codeIntel = {
+    outline: createOutlineTool(),
+    findSymbol: createFindSymbolTool(),
+    references: createReferencesTool(),
+    definition: createDefinitionTool(),
+  };
 
   if (mode === 'plan') {
     return {
@@ -88,10 +98,11 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
       fetchUrl,
       todoWrite,
       getDiagnostics,
+      ...codeIntel,
       askUser: createAskUserTool(bindings.onAskUser),
       delegateTask: createDelegateTaskTool(bindings),
       runCommand: createRunCommandTool(bindings),
-      exitPlanMode: createExitPlanModeTool(bindings.onPlanProposed),
+      exitPlanMode: createExitPlanModeTool(bindings.onPlanProposed, checkPlanPaths),
     };
   }
   // Ask mode: read-only Q&A. Shell is offered read-only (the policy auto-runs `git log`,
@@ -106,6 +117,7 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
       fetchUrl,
       todoWrite,
       getDiagnostics,
+      ...codeIntel,
       askUser: createAskUserTool(bindings.onAskUser),
       delegateTask: createDelegateTaskTool(bindings),
       runCommand: createRunCommandTool(bindings),
@@ -125,6 +137,7 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
     fetchUrl,
     todoWrite,
     getDiagnostics,
+    ...codeIntel,
     askUser: createAskUserTool(bindings.onAskUser),
     delegateTask: createDelegateTaskTool(bindings),
     editFile: createEditFileTool(bindings),

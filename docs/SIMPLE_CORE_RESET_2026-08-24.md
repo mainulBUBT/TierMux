@@ -97,14 +97,17 @@ detector, stop and re-read this file.
 
 ## What was kept (do not "clean these up")
 
-- **Sub-agents & multi-file:** `delegate`, `explore`, `implementPipeline` (parallel worktrees),
-  `editFile`/`createFile`/`writeFile`, full `createToolSet`
+- **Sub-agents & multi-file:** `delegateTask`, the `explore` agent, `editFile`/`writeFile`, full
+  `buildV3ToolSet`. (Corrected 2026-09-21: `implementPipeline`/parallel worktrees and a `createFile`
+  tool are not in `src/` — `createFile` survives only as a legacy alias in `toolArgs.ts`.)
 - **Router:** rotation, 429 handling, cooldowns, scoring, Auto mode (`createRouterProvider`)
 - **Memory/context:** memory.md, project rules, session persistence, between-turn auto-condense
-  (`condense.ts`), active-editor + diagnostics injection, @mentions, deterministic project
-  profile, continue/resume context
-- **Token saving:** per-result output caps, `prepareStep` prune + re-anchor (`blankStaleToolResults`,
-  `AnchorStore`), `fitMessages`, cache-ordered prompt assembly (stable → volatile). Since
+  (`condense.ts`), active-editor + diagnostics injection, @mentions, continue/resume context
+  (a "deterministic project profile" is listed in older revisions of this doc but no such code
+  exists in `src/` — verified 2026-09-21)
+- **Token saving:** per-result output caps, `prepareStep` aging + prune (`ageToolOutputs`,
+  `compactIfNeeded` in `core/compact.ts` — there is no `AnchorStore`/`blankStaleToolResults`;
+  corrected 2026-09-21), `fitMessages`, cache-ordered prompt assembly (stable → volatile). Since
   2025-08-25 the adaptive prune budget (and the continuation fitter) subtract the MEASURED
   system+tools overhead from the window-fraction target, and the 12k floor no longer exceeds
   small windows — before that, every model below a ~45k window overflowed BEFORE pruning fired
@@ -172,3 +175,26 @@ A weak model may answer "Sure, you should inspect X and Y…" instead of editing
 narration SHIPS as the answer. The harness does not decide "this model should have acted,
 therefore retry." If users report a recurring failure shape, gather a live repro first, then
 add ONE targeted guard citing it. The tower is gone; keep it gone.
+
+## 2026-09-21 additions (all mechanical; live repro: "the agent deletes existing code")
+
+Root cause: `writeFile` replaced whole files from a model whose earlier `readFile` had been elided
+by `ageToolOutputs` / tier-2 prune / condense. Fixes, none of which judge answer quality:
+
+- `writeFile` refuses an existing non-empty file unless the step transcript (`options.messages`,
+  post-`prepareStep`) holds a verbatim, complete, still-current copy of it — or the model's own last
+  write. Text comparison only (`tools/v3/visibleRead.ts`); no transcript → no guard. Test:
+  `npm run test:e2e:write-stale`.
+- Tier-2 prune only drops read/search/shell results (`PRUNABLE_TOOLS`); edit records survive. Aged
+  stubs name `offset`/`limit`; `delegateTask` reports are never aged; a stubbed read re-run does not
+  count toward `REPEAT_READ_LIMIT`. Test: `test:e2e:compact-keep`.
+- `<session_files>` block (host-supplied via `AgentOpts.sessionFiles`): files changed this session with
+  their on-disk line count. Test: `test:e2e:session-files`.
+- `exitPlanMode` rejects a plan naming paths/lines that do not exist (`planPathCheck.ts`). Test:
+  `test:e2e:plan-paths`. Plan turns keep their exploration in history on approve/defer.
+- Sub-agents get a tool-less final step that asks for the report. Ask-turn Continue resumes in Ask.
+- Read-only tools `outline` / `findSymbol` / `references` / `definition` (language servers, with a
+  regex fallback for `outline`); `readFile` leads a big file's first page with a symbol map. Test:
+  `test:e2e:code-intel`.
+- Deliberately NOT changed: plan mode still asks before EVERY shell command (foundation scenario
+  19d pins it); small-window tool trimming still keeps every capability tool.

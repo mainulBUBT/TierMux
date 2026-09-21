@@ -31,10 +31,11 @@ adopted API is future breakage surface; adopt only when it pays for that.
 | `tool` + `ToolSet` | all tool definitions (`core/tools/`) |
 | `jsonSchema` | MCP tool bridging (`core/tools/mcp/mcp.ts`) |
 | `pruneMessages` | transcript compaction (`core/compact.ts`) |
-| `prepareStep` (`messages`) | compaction hook (`core/engine.ts`) |
+| `prepareStep` (`messages`) | compaction hook (`core/engine.ts`); the same hook gives the sub-agent's LAST step `toolChoice: 'none'` (`core/subagent.ts`) |
+| tool `execute` options `messages` | `writeFile` guard (`tools/v3/filesystemOps.ts`, `visibleRead.ts`) — the step's post-`prepareStep` transcript, i.e. what the model can actually see |
 | `repairToolCall` option | tool-call self-healing hook (`core/engine.ts`) |
 | `toolApproval` | permission gate (`core/engine.ts`) |
-| `isStepCount`, `hasToolCall`, `NoSuchToolError`, `InvalidToolInputError` | loop control, error handling |
+| `stepCountIs`, `NoSuchToolError`, `InvalidToolInputError` | loop control, error handling |
 | `prepareStep` (`toolChoice`) | forcing a closing tool call on the plan-gap continuation (`core/engine.ts`) — note it only became REAL on 2026-09-01, when `core/routerProvider.ts` finally mapped it to the router's `tool_choice`; before that the adapter dropped it and the "wire-level guarantee" was prompt text |
 | `LanguageModelV4` spec types | the router-as-model adapter (`core/routerProvider.ts`) |
 

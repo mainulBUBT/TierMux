@@ -90,6 +90,9 @@ export interface AgentOpts {
   /** The task list this turn inherits (a Continue after a step-cap pause). Injected into the
    *  system prompt when anything is unfinished; the engine keeps it current from todoWrite. */
   todos?: TodoItem[];
+  /** Lazily builds the `<session_files>` block (files changed earlier this session, with their
+   *  on-disk state). Called once per turn; the host owns the IO so the engine stays mechanical. */
+  sessionFiles?: () => Promise<string | undefined>;
   /** `platform::modelId` keys to skip during Auto selection for this call only. Ignored when
    *  `pinnedModel` is set. */
   excludeModels?: string[];

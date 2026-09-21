@@ -171,6 +171,18 @@ export class CheckpointManager {
     return gitFiles;
   }
 
+  /** Every path TierMux edited in this session, most recently touched first. */
+  touchedFiles(): string[] {
+    const seen = new Set<string>();
+    for (let i = this.checkpoints.length - 1; i >= 0; i--) {
+      for (const rel of [...this.checkpoints[i].touched].reverse()) seen.add(rel);
+    }
+    if (this.current && !this.checkpoints.includes(this.current)) {
+      for (const rel of [...this.current.touched].reverse()) seen.add(rel);
+    }
+    return [...seen];
+  }
+
   /** Paths TIERMUX itself edited from checkpoint `id` onward — edit-tool writes (record())
    *  plus changes attributed to the agent's shell commands (recordTouched()). */
   private aggregateTouchedSince(id: string): Set<string> {

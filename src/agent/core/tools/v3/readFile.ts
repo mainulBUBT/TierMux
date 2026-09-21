@@ -6,6 +6,7 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import { resolveReadablePath } from '../resolvePath';
 import { capToolOutput } from '../capOutput';
+import { extract } from '../../../../context/symbolExtract';
 
 const MAX_CHARS = 30_000;
 const DEFAULT_LINE_LIMIT = 800;
@@ -15,6 +16,27 @@ const MAX_PATHS_PER_CALL = 8;
  *  a character budget. The marker MUST survive — it is the only thing that tells the model
  *  where to resume. */
 const PAGING_MARKER_RESERVE = 240;
+
+/** Cap on the outline header — it is a map, not a second copy of the file. */
+const OUTLINE_MAX_CHARS = 1_500;
+
+/** One-line symbol map for a file too big to fit one page. The model sees WHERE things are and
+ *  reads the exact `offset`/`limit` instead of paging from the top. Regex-based (no language
+ *  server round trip inside a read); empty when the extractor recognises nothing. */
+function outlineHeader(path: string, text: string): string {
+  const symbols = extract(path, text).symbols;
+  if (!symbols.length) return '';
+  let body = '';
+  let shown = 0;
+  for (const s of symbols) {
+    const item = `${body ? '; ' : ''}${s.kind} ${s.name} L${s.line}`;
+    if (body.length + item.length > OUTLINE_MAX_CHARS) break;
+    body += item;
+    shown++;
+  }
+  const more = shown < symbols.length ? ` …+${symbols.length - shown} more (use the outline tool)` : '';
+  return `<outline path="${path}">${body}${more}</outline>\n`;
+}
 
 /** Read one file with `cat -n`-style line numbers. `charBudget` is enforced HERE on a line
  *  boundary: slicing the result afterwards cut mid-line AND deleted the trailing "read again
@@ -37,6 +59,9 @@ async function readOne(
   const start = offset && offset > 0 ? offset - 1 : 0;
   const count = limit && limit > 0 ? limit : DEFAULT_LINE_LIMIT;
   const slice = lines.slice(start, start + count);
+  // First page of a file that will not fit: lead with its symbol map (charged to the budget).
+  const outline = start === 0 && lines.length > slice.length ? outlineHeader(path, text) : '';
+  charBudget -= outline.length;
 
   const width = String(start + slice.length).length;
   const numbered = slice.map((line, i) => `${String(start + i + 1).padStart(width)}\t${line}`);
@@ -55,7 +80,7 @@ async function readOne(
 
   const shown = numbered.slice(0, kept);
   const lastLine = start + shown.length;
-  let body = `<file path="${path}">\n${shown.join('\n')}\n</file>`;
+  let body = `${outline}<file path="${path}">\n${shown.join('\n')}\n</file>`;
 
   if (lastLine < lines.length) {
     const why = kept < slice.length ? 'output size' : 'the line limit';
