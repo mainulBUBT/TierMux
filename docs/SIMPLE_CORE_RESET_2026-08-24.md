@@ -59,8 +59,9 @@ detector, stop and re-read this file.
    ONLY in the failed model's tool result must appear in the replacement's request).
 3. **Exactly ONE continuation.** Initial execution → one continuation → stop. No ladder, no
    behavioral retries, no answer-quality retries. Three wire-level triggers can ask for that
-   pass — provider failure, the agent-mode act/report gap, and a `finish_reason: length` cut —
-   but a turn gets AT MOST ONE, whichever fires first (`continued` in `engine.ts`; note that
+   pass — provider failure, the agent-mode act/report gap, and a `finish_reason: length` cut
+   (plus a fourth, added 2026-09-21 with the owner's approval: ask mode's stuck wrap-up, see the
+   additions section) — but a turn gets AT MOST ONE, whichever fires first (`continued` in `engine.ts`; note that
    `onEnd` overwrites `outcome.finishReason` with the CONTINUATION's reason, so the triggers
    do not exclude each other on their own). A continuation that is itself length-cut ships
    truncated with finish `length`, which is what the UI's Continue affordance is for.
@@ -198,3 +199,23 @@ by `ageToolOutputs` / tier-2 prune / condense. Fixes, none of which judge answer
   `test:e2e:code-intel`.
 - Deliberately NOT changed: plan mode still asks before EVERY shell command (foundation scenario
   19d pins it); small-window tool trimming still keeps every capability tool.
+- **Ask mode ends with an answer.** Live repro 2026-09-21 (ask, ~6 min, 70+ tool calls, the same four
+  files re-read 7-9× each, no answer). Two causes, both fixed: (1) an earlier attempt to evict the
+  dedupe cache when a read was stubbed reset the repeat count and removed the backstop entirely —
+  reverted, pinned by `test:e2e:read-loop`; (2) Ask/Plan keep the last 10 tool results verbatim
+  (`EXPLORE_KEEP_RECENT`; Agent stays at 3), so a round-robin over big files rarely needs a re-read.
+  When the repeat guard still stops an ask turn with no answer it gets ONE tool-less continuation
+  (`STUCK_WRAPUP`), and the last budgeted step of an ask turn is tool-less (`BUDGET_WRAPUP`). The
+  turn still reports `stopReason: 'stuck'`/paused, so Continue stays. Agent and Plan are unchanged.
+- **Code intelligence, no extra rounds (2026-09-21).** Five read-only language-server tools —
+  `outline`, `findSymbol`, `references` (with `kind`: references | implementations | incomingCalls |
+  outgoingCalls), `definition`, `hover` — plus one METHOD line telling the model to prefer them when it
+  knows a name. A server that returns nothing produces an IMMEDIATE "use grep or glob" message: no wait,
+  no retry, no `openTextDocument` (zero added latency), and a `codeIntel.empty` diag line so the
+  frequency can be measured before any retry is justified. `grep` keeps its default scope; an EMPTY
+  result now notes that .gitignore'd/hidden files were not searched, and `includeIgnored:true` opts in
+  (still excluding node_modules/.git). Expected effect (fewer exploratory calls) is a hypothesis, NOT
+  measured: compare `engine.turnEnd … steps= tools=` for the same questions before/after (needs
+  `tiermux.agent.diagTrace` on). Deliberately NOT added: verification chips/buttons, a verifier agent,
+  extra model rounds, new step caps. Tests: `test:e2e:code-intel`, `test:e2e:grep-options`.
+

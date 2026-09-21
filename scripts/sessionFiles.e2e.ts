@@ -44,7 +44,7 @@ async function main() {
   const opts = {
     messages: [{ role: 'user', content: 'what changed?' }], mode: 'ask', effort: 'medium',
     onChunk: () => {}, onTool: () => {}, onReasoning: () => {}, onModel: () => {}, onFailover: () => {}, onStep: () => {}, onTodos: () => {},
-    onAskUser: async () => 'yes', onError: () => {},
+    onAskUser: async () => ({ status: 'answered' as const, answers: ['yes'] }), onError: () => {},
     sessionFiles: async () => '<session_files>\n- src/a.ts — 3 lines\n</session_files>',
   } as AgentOpts;
   try { await runWithWorkspaceRoot(root, () => runAskStream(opts)); } finally { __setEngineModelForTests(undefined); }

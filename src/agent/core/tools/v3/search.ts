@@ -153,9 +153,11 @@ export function createGrepTool(runAbort?: AbortSignal) {
       filesOnly: z.boolean().optional()
         .describe('Return only the paths of files that contain a match, one per line — no line numbers, no matched text. Far smaller output when the question is "where is X used?".'),
       ignoreCase: z.boolean().optional().describe('Case-insensitive match.'),
+      includeIgnored: z.boolean().optional()
+        .describe('Also search .gitignore\'d and hidden files (off by default; node_modules and .git stay excluded). Use with a narrow `path` or `glob` — the search scope is much larger.'),
     }),
     execute: async (
-      { pattern, path: rel, glob, context, filesOnly, ignoreCase },
+      { pattern, path: rel, glob, context, filesOnly, ignoreCase, includeIgnored },
       options: { abortSignal?: AbortSignal } = {},
     ): Promise<string | { error: string }> => {
       try {
@@ -179,6 +181,9 @@ export function createGrepTool(runAbort?: AbortSignal) {
         }
         if (ignoreCase) rgArgs.push('--ignore-case');
         if (glob) rgArgs.push('--glob', glob);
+        // Opt-in only: --no-ignore drops EVERY ignore filter, so the heavy trees are re-excluded
+        // (after the user's glob — a later --glob wins) or the scope explodes into node_modules/vendor.
+        if (includeIgnored) rgArgs.push('--hidden', '--no-ignore', '--glob', '!**/node_modules/**', '--glob', '!**/.git/**');
         rgArgs.push('--', pattern, target);
 
         const out = await new Promise<{ text: string; capped: boolean }>((resolve, reject) => {
@@ -220,7 +225,12 @@ export function createGrepTool(runAbort?: AbortSignal) {
         const hint = filesOnly
           ? 'Add a "path" or "glob" filter, or a more specific pattern.'
           : 'Add a "path" or "glob" filter, a more specific pattern, or pass filesOnly:true to get just the paths.';
-        const text = out.text.trim() || '(no matches)';
+        // rg skips .gitignore'd and hidden files by default, so "0 matches" can be a blind spot rather
+        // than an absence — say so on the empty result only (no extra search, no extra round).
+        const text = out.text.trim()
+          || (includeIgnored
+            ? '(no matches)'
+            : '(no matches)\nNote: .gitignore\'d and hidden files are not searched. If the target may be one, retry with includeIgnored:true and a narrow `path` or `glob`.');
         // A capped run was stopped mid-search, so the true total is unknown — say so rather
         // than let capToolOutput print "N of M" against the clipped buffer (the review's
         // repro: 720KB of matches reported as "45,056 of 65,536 chars omitted").

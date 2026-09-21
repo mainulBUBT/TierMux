@@ -1,5 +1,5 @@
 // Wire protocol between the extension host and the chat webview.
-import type { CatalogModel, CustomEndpointType, CustomModel, FallbackEntry, KeyStatus, Mode, Platform, PlanRunState, ReasoningEffort, TodoItem } from './shared/types';
+import type { AskQuestion, PlanDecision, CatalogModel, CustomEndpointType, CustomModel, FallbackEntry, KeyStatus, Mode, Platform, PlanRunState, ReasoningEffort, TodoItem } from './shared/types';
 import type { WorkReportData } from './shared/workReport';
 import type { McpServerConfig } from './mcp/mcpClient';
 export type { McpServerConfig, McpLocalServerConfig, McpRemoteServerConfig, McpOAuthConfig } from './mcp/mcpClient';
@@ -247,7 +247,7 @@ export type InMessage =
   | { type: 'setAutoApprove'; enabled: boolean }
   | { type: 'resume'; requestId: string }
   | { type: 'newChat' }
-  | { type: 'askUserResponse'; requestId: string; callId: string; answer: string; cancelled?: boolean; sessionId?: string }
+  | { type: 'askUserResponse'; requestId: string; callId: string; answers?: string[]; cancelled?: boolean; sessionId?: string }
   | { type: 'clearUsage' }
   // Custom OpenAI-compatible endpoints
   | { type: 'addCustomEndpoint'; name: string; baseUrl: string; endpointType?: CustomEndpointType }
@@ -365,7 +365,7 @@ export type OutMessage =
   | { type: 'switchSession'; sessionId: string; messages: TranscriptMessage[] }
   | { type: 'userEcho'; sessionId: string; requestId: string; text: string }
   | { type: 'assistantStart'; sessionId: string; requestId: string; platform: string; model: string }
-  | { type: 'planProposed'; sessionId: string; requestId: string; steps: string; discarded?: boolean; deferred?: boolean }
+  | { type: 'planProposed'; sessionId: string; requestId: string; steps: string; decisions?: PlanDecision[]; discarded?: boolean; deferred?: boolean }
   | { type: 'planDiscarded'; sessionId: string; requestId: string }
   | { type: 'editApproval'; sessionId: string; requestId: string; id: string; path: string; title: string; kind: 'write' | 'delete' }
   | { type: 'permissionAsk'; sessionId: string; requestId: string; id: string; title: string; pattern?: string | string[] }
@@ -388,7 +388,7 @@ export type OutMessage =
   | { type: 'agentStep'; sessionId: string; requestId: string; phase: 'thinking' | 'synthesizing' | 'done'; label: string }
   /** Result of fetchCustomEndpointModels: the model IDs discovered at the endpoint (or an error). */
   | { type: 'customEndpointModels'; id: string; models: string[]; error?: string }
-  | { type: 'askUserPrompt'; sessionId: string; requestId: string; callId: string; question: string; options?: string[] }
+  | { type: 'askUserPrompt'; sessionId: string; requestId: string; callId: string; questions: AskQuestion[] }
   | { type: 'askUserDismissed'; sessionId: string; requestId: string; callId: string }
   // The host force-settled an editApproval/permissionAsk card without a user
   // click (e.g. the run ended/was cancelled first) — `id` is globally unique across all three

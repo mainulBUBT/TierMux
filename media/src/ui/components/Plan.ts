@@ -49,6 +49,9 @@ export interface PlanOptions {
   settled?: 'discarded' | 'deferred';
   /** Optional summary line (e.g. "3 steps · 2 files"). */
   summary?: string;
+  /** What the user chose in answer to the agent's questions. DOM-only: it is never serialized into
+   *  the steps text, so no step parser can mistake a decision for a step. */
+  decisions?: Array<{ question: string; answer: string }>;
   /** edit-mode callbacks. `steps` is the re-serialized (possibly edited) numbered plan text. */
   onApprove?: (steps: string) => void;
   onDefer?: (steps: string) => void;
@@ -355,6 +358,14 @@ export function createPlan(opts: PlanOptions): HTMLElement {
       el('span', { class: 'tm-plan-meta-text' }, data.reading)));
   }
   if (description) always.appendChild(el('p', { class: 'tm-plan-description' }, description));
+  if (opts.decisions?.length) {
+    const list = el('ul', { class: 'tm-plan-decisions-list' });
+    opts.decisions.forEach((d) => list.appendChild(el('li', {},
+      el('span', { class: 'tm-plan-decision-q' }, d.question),
+      el('span', { class: 'tm-plan-decision-a' }, d.answer))));
+    always.appendChild(el('div', { class: 'tm-plan-decisions' },
+      el('div', { class: 'tm-plan-decisions-title' }, 'Decisions'), list));
+  }
   if (summary && !settled) always.appendChild(el('div', { class: 'tm-plan-summary' }, summary));
   plan.appendChild(always);
 

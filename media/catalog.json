@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Synced from remote /models JSON — 625 models from 41 providers.",
+  "note": "Synced from remote /models JSON — 618 models from 41 providers.",
   "models": [
     {
       "platform": "agnes",
@@ -741,73 +741,6 @@
       ]
     },
     {
-      "platform": "opencode",
-      "modelId": "nemotron-3-ultra-free",
-      "displayName": "Nemotron 3 Ultra (OpenCode Zen)",
-      "intelligenceRank": 2,
-      "speedRank": 5,
-      "released": "2026-05",
-      "sizeLabel": "Frontier",
-      "contextWindow": 131072,
-      "rpmLimit": 10,
-      "rpdLimit": 1000,
-      "monthlyTokenBudget": "~free",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "origInputPricePer1M": 0.65,
-      "origOutputPricePer1M": 3.25,
-      "tags": [
-        "mid",
-        "free"
-      ]
-    },
-    {
-      "platform": "opencode",
-      "modelId": "mimo-v2.5-free",
-      "displayName": "MiMo v2.5 (OpenCode Zen)",
-      "intelligenceRank": 4,
-      "speedRank": 3,
-      "released": "2026-02",
-      "sizeLabel": "Medium",
-      "contextWindow": 131072,
-      "rpmLimit": 10,
-      "rpdLimit": 1000,
-      "monthlyTokenBudget": "~free",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0.14,
-      "origOutputPricePer1M": 0.28
-    },
-    {
-      "platform": "opencode",
-      "modelId": "big-pickle",
-      "displayName": "Big Pickle (OpenCode Zen)",
-      "intelligenceRank": 4,
-      "speedRank": 4,
-      "released": "2025-06",
-      "sizeLabel": "Dynamic",
-      "contextWindow": 200000,
-      "rpmLimit": 60,
-      "rpdLimit": 200,
-      "monthlyTokenBudget": "Unlimited (fair use)",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "insight": "Free reasoning model with tool calling and structured outputs. OpenCode dynamically routes requests to different backend models.",
-      "origInputPricePer1M": 0.65,
-      "origOutputPricePer1M": 3.25
-    },
-    {
       "platform": "openrouter",
       "modelId": "nvidia/nemotron-3-super-120b-a12b:free",
       "displayName": "Nemotron 3 Super 120B (OpenRouter)",
@@ -1362,26 +1295,6 @@
       "origOutputPricePer1M": 60
     },
     {
-      "platform": "opencode",
-      "modelId": "nemotron-3.5-lightning-free",
-      "displayName": "Nemotron 3.5 Lightning Free",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 60,
-      "rpdLimit": 100,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0.05,
-      "origOutputPricePer1M": 0.2
-    },
-    {
       "platform": "kilo",
       "modelId": "nvidia/nemotron-3.5-lightning:free",
       "displayName": "NVIDIA: Nemotron 3.5 Lightning (free)",
@@ -1580,26 +1493,6 @@
       ],
       "origInputPricePer1M": 0,
       "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "opencode",
-      "modelId": "muse-spark-1.2-contributor-free",
-      "displayName": "Muse Spark 1.2 Contributor",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 1048576,
-      "rpmLimit": 60,
-      "rpdLimit": 7500,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "frontier",
-        "free"
-      ],
-      "origInputPricePer1M": 0.1,
-      "origOutputPricePer1M": 0.2
     },
     {
       "platform": "kenari",
@@ -4898,26 +4791,6 @@
       ]
     },
     {
-      "platform": "opencode",
-      "modelId": "ling-3.0-flash-fin-free",
-      "displayName": "Ling 3.0 Flash Fin (free)",
-      "intelligenceRank": 3,
-      "speedRank": 2,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
       "platform": "ollama",
       "modelId": "glm-5.3",
       "displayName": "GLM 5.3 Free",
@@ -6027,24 +5900,6 @@
       "platform": "kenari",
       "modelId": "muse-spark-1-3-contributor:free",
       "displayName": "Muse Spark 1 3 Contributor Free",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 1048576,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "frontier",
-        "free"
-      ]
-    },
-    {
-      "platform": "opencode",
-      "modelId": "muse-spark-1.3-contributor-free",
-      "displayName": "Muse Spark 1.3 Contributor Free",
       "intelligenceRank": 2,
       "speedRank": 3,
       "contextWindow": 1048576,

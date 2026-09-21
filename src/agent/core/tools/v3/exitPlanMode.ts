@@ -77,7 +77,7 @@ export function createExitPlanModeTool(
         const retired = rest as { questions?: unknown; approach?: unknown };
         const retiredQuestions = Array.isArray(retired.questions) ? retired.questions.length > 0 : !!retired.questions;
         if (retiredQuestions || retired.approach) {
-          return { error: 'A plan carries no open questions and no `approach` field — those were retired. Resolve every guess FIRST with askUser (one question at a time, with options), then call exitPlanMode with the final plan.' };
+          return { error: 'A plan carries no open questions and no `approach` field — those were retired. Resolve every guess FIRST with askUser (all open questions in ONE call, with options), then call exitPlanMode with the final plan.' };
         }
         // Hesitation has a NAME now. The 2026-09-01 repro's model re-read the user's wording,
         // could not decide between a local and a global fix, and shipped a plan built on the

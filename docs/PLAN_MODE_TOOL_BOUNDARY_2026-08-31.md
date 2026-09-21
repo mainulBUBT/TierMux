@@ -228,3 +228,38 @@ stays recoverable because the turn stops on the accepted RESULT (`planAccepted`)
 
 The same suites verify it; the exit-plan-mode run covers the passthrough rejection, the
 question-free card text, and the legacy-line skipping.
+
+## Batched questions, decisions, and Continue (2026-09-21)
+
+The pre-plan question card grew up without changing the boundary: questions still go out BEFORE the
+plan, on the shared `askUser` card, and a plan that reaches the card is still settled.
+
+- **One call, 1-4 questions.** `askUser` takes `questions: [{question, header?, options?: string[],
+  multiSelect?}]`; the old `question` + `options` shape is still accepted. Options are flat strings
+  written `"Label — what it means"` (nested objects and `anyOf` are avoided on purpose — the free
+  tiers TierMux routes handle a `string[]` far better). The webview's `renderQuestionCard` already
+  supported tabs, multi-select and free text; only the tool, host and message types were
+  single-question. Plan mode's prompt now says: gather every open question first, ask them together,
+  put your recommendation first, and offer 2-3 options with trade-offs only when genuinely different
+  ways to do the work exist.
+- **Skipped ≠ cancelled.** The host reports `{status: 'answered'|'dismissed'|'cancelled', answers}`;
+  both used to be an empty string. In plan mode a `dismissed` result tells the model to ask ONCE more
+  with narrower options or to state its assumption in `interpretation` — never the generic "proceed
+  with the safest approach".
+- **Decisions ride beside the plan, not in it.** The host keeps `s.planDecisions` (newest 12) from
+  plan-mode answers; the card renders them in a "Decisions" block (DOM-only), the saved file gets a
+  `## Decisions` section, and the execution prompt gets "Settled with the user…". They are NEVER
+  written into the steps text: every step parser scans the whole text, so a `Q → A` bullet becomes a
+  fake step and a fake todo. Kept across "keep discussing"; cleared when the plan is decided.
+- **Continue stays in plan.** `s.resumeMode` (set wherever a turn ends paused) picks the runner; a
+  Plan Continue can still end on the card via the shared `proposePlanCard`. On a resume the original
+  request and first-pass exploration are already in history, so only the new pass's work is held.
+  A PAUSED turn's cut-off prose is never promoted to a card by the regex fallback.
+- **Checked, no guard added:** a provider that ignores the forced `toolChoice` makes the SDK raise
+  `ToolChoiceViolationError` on the plan-gap step. Reproduced with a mock: the turn still ends cleanly
+  (second narration ships, not failed; `finishReason` reads `'error'`, which nothing consumes). Pinned
+  by `exitPlanMode.e2e.ts` 4d — do not add a handler without a live dead-end.
+
+Verify: `npm run test:e2e:ask-user`, `test:e2e:plan-decisions`, `test:e2e:plan-resume`,
+`test:e2e:exit-plan-mode`, `test:e2e:foundation`.
+

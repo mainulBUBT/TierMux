@@ -37,7 +37,7 @@ async function offeredFor(platform: string): Promise<string[]> {
       pinnedModel: `${platform}::m`,
       onChunk: () => {}, onTool: () => {}, onReasoning: () => {}, onModel: () => {},
       onFailover: () => {}, onStep: () => {}, onTodos: () => {},
-      onAskUser: async () => 'yes', onError: () => {},
+      onAskUser: async () => ({ status: 'answered' as const, answers: ['yes'] }), onError: () => {},
     } as unknown as AgentOpts);
   } finally {
     __setEngineModelForTests(undefined);

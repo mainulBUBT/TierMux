@@ -3,7 +3,7 @@
 // The stable contract chatViewProvider.ts depends on — TierMux's own types only, no AI SDK
 // type here or above. Everything AI-SDK-shaped lives in ./core/*, loaded lazily so this file
 // stays vscode-free.
-import type { ChatMessage, TodoItem, ReasoningEffort, ProposedPlan } from '../shared/types';
+import type { ChatMessage, TodoItem, ReasoningEffort, ProposedPlan, AskQuestion, AskResult } from '../shared/types';
 
 export interface ToolEvent {
   toolCallId: string;
@@ -124,7 +124,7 @@ export interface AgentOpts {
    *  CheckpointManager.record(); type-only vscode reference (erased at runtime — this file
    *  stays vscode-free). */
   onBeforeWrite?: (uri: import('vscode').Uri, before: string | null) => void;
-  onAskUser: (question: string, options?: string[]) => Promise<string>;
+  onAskUser: (questions: AskQuestion[]) => Promise<AskResult>;
   /** A tool call is paused pending approval — resolved by src/permissions/policy.ts. */
   onPermissionAsk?: (info: { title: string; pattern?: string | string[]; command?: string; toolName?: string }) => Promise<'once' | 'always' | 'reject'>;
   onError: (message: string) => void;

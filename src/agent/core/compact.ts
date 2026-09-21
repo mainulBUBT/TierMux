@@ -123,28 +123,24 @@ export interface AgeToolOutputsResult {
   messages?: ModelMessage[];
   /** Chars of earlier tool output elided this pass — diag-visible so the saving is measurable. */
   stubbedChars: number;
-  /** Calls whose result was stubbed by THIS pass (not earlier ones), so a re-run is a recovery,
-   *  not a loop. */
-  stubbed?: Array<{ toolName: string; input: unknown }>;
 }
 
 /** delegateTask's report is the sub-agent's whole synthesis — stubbing it discards the only
  *  thing the delegation produced, and a re-run means paying for the whole investigation again. */
 const AGE_EXEMPT_TOOLS = new Set(['delegateTask']);
 
-export function ageToolOutputs(messages: ModelMessage[], minChars = AGE_MIN_CHARS): AgeToolOutputsResult {
-  // The most recent KEEP_RECENT_TOOL_MESSAGES tool messages are the steps the model is still
+export function ageToolOutputs(messages: ModelMessage[], minChars = AGE_MIN_CHARS, keepRecent = KEEP_RECENT_TOOL_MESSAGES): AgeToolOutputsResult {
+  // The most recent `keepRecent` tool messages are the steps the model is still
   // working from — kept verbatim, parts and all. Everything before the oldest of them is fair
   // game. Walking backwards means the boundary is the OLDEST kept message's index.
   const recent: number[] = [];
-  for (let i = messages.length - 1; i >= 0 && recent.length < KEEP_RECENT_TOOL_MESSAGES; i--) {
+  for (let i = messages.length - 1; i >= 0 && recent.length < keepRecent; i--) {
     if (messages[i].role === 'tool') recent.push(i);
   }
   const keepFrom = recent.length ? recent[recent.length - 1] : -1;
   if (keepFrom <= 0) return { stubbedChars: 0 };
 
   const inputById = toolCallInputs(messages);
-  const stubbed: Array<{ toolName: string; input: unknown }> = [];
   let stubbedChars = 0;
   let changed = false;
   const out = messages.map((m, i) => {
@@ -158,7 +154,6 @@ export function ageToolOutputs(messages: ModelMessage[], minChars = AGE_MIN_CHAR
       stubbedChars += text.length;
       touched = true;
       const input = inputById.get(String(part.toolCallId ?? ''));
-      stubbed.push({ toolName: String(part.toolName ?? 'tool'), input });
       return {
         ...part,
         output: {
@@ -169,5 +164,5 @@ export function ageToolOutputs(messages: ModelMessage[], minChars = AGE_MIN_CHAR
     });
     return touched ? ({ ...m, content } as ModelMessage) : m;
   });
-  return changed ? { messages: out, stubbedChars, stubbed } : { stubbedChars: 0 };
+  return changed ? { messages: out, stubbedChars } : { stubbedChars: 0 };
 }

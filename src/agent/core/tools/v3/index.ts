@@ -12,11 +12,11 @@ export { createGetDiagnosticsTool } from './getDiagnostics';
 export { createAskUserTool } from './askUser';
 export { createDelegateTaskTool } from './delegateTask';
 export { createExitPlanModeTool } from './exitPlanMode';
-export { createOutlineTool, createFindSymbolTool, createReferencesTool, createDefinitionTool } from './codeIntel';
+export { createOutlineTool, createFindSymbolTool, createReferencesTool, createDefinitionTool, createHoverTool } from './codeIntel';
 
 import type { ToolSet } from 'ai';
 import type { Mode } from '../../../../shared/types';
-import type { TodoItem, ProposedPlan } from '../../../../shared/types';
+import type { TodoItem, ProposedPlan, AskQuestion, AskResult } from '../../../../shared/types';
 import { createReadFileTool } from './readFile';
 import { createEditFileTool } from './editFile';
 import { createWriteFileTool, createDeleteFileTool } from './filesystemOps';
@@ -28,7 +28,7 @@ import { createAskUserTool } from './askUser';
 import { createDelegateTaskTool } from './delegateTask';
 import { createExitPlanModeTool } from './exitPlanMode';
 import { checkPlanPaths } from './planPathCheck';
-import { createOutlineTool, createFindSymbolTool, createReferencesTool, createDefinitionTool } from './codeIntel';
+import { createOutlineTool, createFindSymbolTool, createReferencesTool, createDefinitionTool, createHoverTool } from './codeIntel';
 import { createWebSearchTool } from '../network/webSearch';
 import { createFetchUrlTool } from '../network/fetchUrl';
 import { createMcpTools } from '../mcp/mcp';
@@ -37,7 +37,7 @@ import { getMcpManager } from '../mcp/manager';
 /** Tools that never mutate anything — the permission policy auto-approves these (plan §3).
  *  `showTodo` is a legacy name kept for the set's historical shape; the live tool is `todoWrite`. */
 export const READ_ONLY_TOOLS = new Set([
-  'readFile', 'listDir', 'glob', 'grep', 'getDiagnostics', 'outline', 'findSymbol', 'references', 'definition',
+  'readFile', 'listDir', 'glob', 'grep', 'getDiagnostics', 'outline', 'findSymbol', 'references', 'definition', 'hover',
   'webSearch', 'delegateTask', 'fetchUrl', 'showTodo', 'todoWrite', 'askUser',
   // exitPlanMode writes nothing — it hands a structured plan to the host and ends the turn.
   // Approval of the PLAN happens on the card afterwards, so gating the tool itself would just
@@ -53,7 +53,7 @@ export interface ToolsetBindings {
   /** Mid-turn clarifying-question channel — the toolset binds it as the `askUser` tool.
    *  The host implementation renders an in-chat card and resolves with the user's answer
    *  ('' when dismissed). Unset (e2e/sub-agent contexts) → the tool degrades to `{ error }`. */
-  onAskUser?: (question: string, options?: string[]) => Promise<string>;
+  onAskUser?: (questions: AskQuestion[]) => Promise<AskResult>;
   /** Checkpoint baseline — fires INSIDE a write tool, after the pre-write content is read but
    *  BEFORE the mutation (`before` null = create). Capturing it from onStepEnd instead ran
    *  after the write, so Undo restored post-edit content (2026-08-28). */
@@ -86,6 +86,7 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
     findSymbol: createFindSymbolTool(),
     references: createReferencesTool(),
     definition: createDefinitionTool(),
+    hover: createHoverTool(),
   };
 
   if (mode === 'plan') {
@@ -99,7 +100,7 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
       todoWrite,
       getDiagnostics,
       ...codeIntel,
-      askUser: createAskUserTool(bindings.onAskUser),
+      askUser: createAskUserTool(bindings.onAskUser, mode),
       delegateTask: createDelegateTaskTool(bindings),
       runCommand: createRunCommandTool(bindings),
       exitPlanMode: createExitPlanModeTool(bindings.onPlanProposed, checkPlanPaths),
@@ -118,7 +119,7 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
       todoWrite,
       getDiagnostics,
       ...codeIntel,
-      askUser: createAskUserTool(bindings.onAskUser),
+      askUser: createAskUserTool(bindings.onAskUser, mode),
       delegateTask: createDelegateTaskTool(bindings),
       runCommand: createRunCommandTool(bindings),
     };
@@ -138,7 +139,7 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
     todoWrite,
     getDiagnostics,
     ...codeIntel,
-    askUser: createAskUserTool(bindings.onAskUser),
+    askUser: createAskUserTool(bindings.onAskUser, mode),
     delegateTask: createDelegateTaskTool(bindings),
     editFile: createEditFileTool(bindings),
     writeFile: createWriteFileTool(bindings),

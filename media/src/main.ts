@@ -4785,6 +4785,7 @@ import { handleToolStatus } from './handlers/toolStatus';
           mode: settled ? 'live' : 'edit',
           settled,
           summary: settled ? undefined : summary,
+          decisions: msg.decisions,
           onApprove: (steps) => send({ type: 'approvePlan', requestId: newId(), approved: true, steps }),
           onExecute: (steps) => {
             send({ type: 'executePlan', requestId: newId(), steps });
@@ -4820,21 +4821,30 @@ import { handleToolStatus } from './handlers/toolStatus';
       }
       case 'askUserPrompt': {
         // The agent's `askUser` tool. Answering resumes the paused turn via `askUserResponse`
-        // (callId → pending promise); it is single-question, so one entry — its flat string[]
-        // options map to titled rows (or a free-text row when there are none).
+        // (callId → pending promise). 1-4 questions share ONE card; each option is a flat string
+        // written "Label — what it means", split into a titled row + description (a question
+        // with no options is a free-text row).
         const t = ensureTarget(msg.requestId);
         stopStatusTimer(msg.requestId, true);
         finalizeWork(msg.requestId);
         t.body.innerHTML = '';
-        const options = (Array.isArray(msg.options) ? msg.options : []).map((o) => ({ title: o }));
+        const questions = (Array.isArray(msg.questions) ? msg.questions : []).map((q) => ({
+          text: q.question,
+          label: q.header,
+          multi: !!q.multiSelect,
+          options: (Array.isArray(q.options) ? q.options : []).map((o) => {
+            const cut = o.indexOf(' — ');
+            return cut > 0 ? { title: o.slice(0, cut).trim(), description: o.slice(cut + 3).trim() } : { title: o };
+          }),
+        }));
         renderQuestionCard(t, {
-          questions: [{ text: msg.question, options }],
-          intro: 'The agent has a quick question:',
+          questions,
+          intro: questions.length > 1 ? 'The agent has a few questions:' : 'The agent has a quick question:',
           callId: msg.callId,
           submitTitle: '✓ Answer submitted',
           dismissTitle: '— skipped —',
-          onSubmit: (answers) => send({ type: 'askUserResponse', requestId: msg.requestId, callId: msg.callId, answer: answers[0] || '(no answer)' }),
-          onDismiss: () => send({ type: 'askUserResponse', requestId: msg.requestId, callId: msg.callId, answer: '', cancelled: true }),
+          onSubmit: (answers) => send({ type: 'askUserResponse', requestId: msg.requestId, callId: msg.callId, answers: answers.map((a) => a || '(no answer)') }),
+          onDismiss: () => send({ type: 'askUserResponse', requestId: msg.requestId, callId: msg.callId, answers: [], cancelled: true }),
         });
         break;
       }

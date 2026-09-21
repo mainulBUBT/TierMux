@@ -68,7 +68,7 @@ async function runOne(
     onFailover: () => {},
     onStep: () => {},
     onTodos: () => {},
-    onAskUser: async () => '',
+    onAskUser: async () => ({ status: 'cancelled' as const, answers: [] }),
     onError: (e) => { errors.push(typeof e === 'string' ? e : (e as any)?.message ?? JSON.stringify(e)); },
   };
 

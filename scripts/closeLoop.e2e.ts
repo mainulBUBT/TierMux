@@ -22,7 +22,7 @@ function opts(over: Partial<AgentOpts>): AgentOpts {
     mode: 'agent', effort: 'medium',
     onChunk: () => {}, onTool: () => {}, onReasoning: () => {}, onModel: () => {},
     onFailover: () => {}, onStep: () => {}, onTodos: () => {},
-    onAskUser: async () => 'yes', onError: () => {},
+    onAskUser: async () => ({ status: 'answered' as const, answers: ['yes'] }), onError: () => {},
     ...over,
   } as AgentOpts;
 }

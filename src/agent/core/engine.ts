@@ -18,7 +18,7 @@ import { buildV3ToolSet, READ_ONLY_TOOLS } from './tools/v3';
 import { runSubagent } from './subagent';
 import { getMcpManager } from './tools/mcp/manager';
 import { makeRepairViaModelSelfCorrection } from './repair';
-import { compactIfNeeded, ageToolOutputs, type AgeToolOutputsResult } from './compact';
+import { compactIfNeeded, ageToolOutputs } from './compact';
 import { resolveVerifyCommand, runVerifyCommand } from './tools/workspace/verifyCommand';
 import { resolvePolicy, policyFromSettings } from '../../permissions/policy';
 import { recordOutcome, findCatalogModel } from '../../router/picker';
@@ -41,6 +41,18 @@ const FALLBACK_PROFILE = resolveExecutionProfile(undefined);
 const COORDINATION_TOOLS = ['todoWrite'];
 /** At/below this window the schema tax stops being affordable. */
 const SMALL_WINDOW_MAX = 16_384;
+
+/** Tool messages kept verbatim per step. Ask and Plan are EXPLORATION: with agent's 3, a turn that
+ *  reads four big files round-robin stubs each one before it comes round again and re-reads them
+ *  until the repeat guard fires (live repro 2026-09-21, ask mode, ~6 min, no answer). Agent stays at
+ *  3 — its edits need exact text and the write guard demands a current copy anyway. */
+const EXPLORE_KEEP_RECENT = 10;
+
+/** Ask mode ends with an ANSWER, not a silent pause. The last budgeted step is tool-less and a stuck
+ *  turn gets one tool-less continuation — both mechanical (budget arithmetic / the repeat guard's own
+ *  signal), neither judges the answer. */
+const BUDGET_WRAPUP = 'Step budget used up. Answer the user now from what you have already read — no more tool calls. Cite path:line and say plainly what you could not confirm.';
+const STUCK_WRAPUP = 'You keep re-reading the same files without converging. Stop using tools and answer the user\'s question now from what you have already found — cite path:line and say plainly what you could not confirm.';
 
 /** UI-facing copy of a tool's result (ToolEvent.detail) — the tool card's "View output" body
  *  and the crash-recovery snapshot both read it. Capped separately from what the model sees:
@@ -217,7 +229,7 @@ const REPEAT_READ_LIMIT = 4;
  *  edit was answered with the model's own pre-edit content plus "the result is unchanged" — so the
  *  edit looked reverted and the model redid it (live repro 2026-09-16: a blade fix that "undid"
  *  itself for 24 minutes). */
-function dedupeReads(tools: ToolSet, onRepeat: (signature: string, count: number) => void): { tools: ToolSet; forget: (toolName: string, input: unknown) => void } {
+function dedupeReads(tools: ToolSet, onRepeat: (signature: string, count: number) => void): ToolSet {
   const seen = new Map<string, { result: unknown; count: number }>();
   const out: ToolSet = {};
   for (const [name, t] of Object.entries(tools)) {
@@ -253,9 +265,7 @@ function dedupeReads(tools: ToolSet, onRepeat: (signature: string, count: number
       },
     } as ToolSet[string];
   }
-  // A result that ageToolOutputs stubbed is no longer in the transcript, so the model re-running
-  // it is a recovery, not a loop: drop the cached entry so the re-run executes fresh at count 1.
-  return { tools: out, forget: (toolName, input) => { seen.delete(`${toolName}:${JSON.stringify(input ?? null)}`); } };
+  return out;
 }
 
 /** True when a tool RESULT is a failure — either the SDK's tool-error state or the v3
@@ -304,7 +314,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   /** The task list as it stands: inherited on a Continue, replaced by each todoWrite. Drives
    *  the audit gate and the caller's remaining-items note. */
   let lastTodos: TodoItem[] | undefined = opts.todos;
-  const deduped = dedupeReads(buildV3ToolSet(opts.mode, {
+  const tools: ToolSet = dedupeReads(buildV3ToolSet(opts.mode, {
     abortSignal: opts.abortSignal,
     sessionId: opts.sessionId,
     requestId: opts.requestId,
@@ -318,7 +328,6 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       diagLog('engine.stuck', `${sig.slice(0, 80)} repeated ${count}× — stopping the turn (resumable)`);
     }
   });
-  const tools: ToolSet = deduped.tools;
 
   const model: LanguageModel = modelOverride ?? createRouterProvider({
     effort: opts.effort,
@@ -383,6 +392,8 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // (toolChoice 'required' + PLAN_CLOSERS). Does not pin WHICH closer — pinning exitPlanMode
   // forced a plan out of a hesitating model (2026-09-01); askUser is the other legitimate close.
   let forcePlanToolOnNextStep = false;
+  // Armed for the ask-mode stuck wrap-up: step 0 must answer in prose (toolChoice 'none').
+  let forceAnswerOnNextStep = false;
   /** The only two tool calls that close a plan-mode turn. askUser does not stop the turn — its
    *  answer comes back and the loop continues. */
   const PLAN_CLOSERS = ['exitPlanMode', 'askUser'];
@@ -449,21 +460,30 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           ? Object.keys(tools).filter((t) => !COORDINATION_TOOLS.includes(t))
           : undefined;
         const forcePlan = forcePlanToolOnNextStep && stepNumber === 0;
+        const forceAnswer = forceAnswerOnNextStep && stepNumber === 0;
+        // Ask mode's last budgeted step: no tools, write the answer (unlimited budgets never reach it).
+        const budgetWrapUp = opts.mode === 'ask' && Number.isFinite(maxSteps) && maxSteps > 1 && stepNumber === maxSteps - 1;
         // Age FIRST (every step, no budget needed), then compact against the aged transcript.
         // tiermux.agent.toolCompaction sets only the aging threshold: 'off', 'light' (2,000
         // chars), 'aggressive' (800). Unknown values → light.
         const compactionMode = opts.toolCompaction ?? 'light';
         const aging = compactionMode === 'off'
-          ? { stubbedChars: 0 as number, messages: undefined as ModelMessage[] | undefined, stubbed: undefined as AgeToolOutputsResult['stubbed'] }
-          : ageToolOutputs(messages, compactionMode === 'aggressive' ? 800 : 2_000);
+          ? { stubbedChars: 0 as number, messages: undefined as ModelMessage[] | undefined }
+          : ageToolOutputs(messages, compactionMode === 'aggressive' ? 800 : 2_000, opts.mode === 'agent' ? undefined : EXPLORE_KEEP_RECENT);
         if (aging.stubbedChars > 0) {
           diagLog('engine.ageToolOutputs', `${aging.stubbedChars.toLocaleString()} chars of earlier tool output elided before step ${stepNumber}`);
-          for (const c of aging.stubbed ?? []) deduped.forget(c.toolName, c.input);
         }
         const compaction = compactIfNeeded(aging.messages ?? messages, profile.pruneTarget);
         const stepMessages = compaction.messages ?? aging.messages;
+        if (budgetWrapUp) {
+          return {
+            messages: [...(stepMessages ?? messages), { role: 'user' as const, content: BUDGET_WRAPUP }],
+            toolChoice: 'none' as const,
+          };
+        }
         return {
           ...(stepMessages ? { messages: stepMessages } : {}),
+          ...(forceAnswer ? { toolChoice: 'none' as const } : {}),
           // forcePlan's activeTools wins over the small-window offer: on this one step the turn
           // has to close, and every tool outside PLAN_CLOSERS is a way not to.
           ...(forcePlan
@@ -719,8 +739,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     // AM, both passes' narration stacked in one bubble); pass 2's text is the sole draft.
     if (outcome.text.trim()) opts.onRetractDraft?.();
     // The continuation's first step is FORCED to call one of PLAN_CLOSERS — "narrate a third
-    // time" is the only outcome this removes; askUser stays available. Providers that ignore
-    // toolChoice fall back to the prose nudge below.
+    // time" is the only outcome this removes; askUser stays available. A provider that ignores
+    // toolChoice makes the SDK raise ToolChoiceViolationError on that step: the turn still ships the
+    // second narration, is not failed, and reports finishReason 'error' (nothing reads it).
+    // Pinned by exitPlanMode.e2e.ts 4d.
     forcePlanToolOnNextStep = planGap;
     try {
       await runPass([
@@ -748,6 +770,27 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       recordOutcome(served.platform, served.model, false);
       diagLog('engine.actGapDemote', `no tool work after continuation — cooldown for ${served.platform}::${served.model}`);
     }
+  }
+
+  // STUCK WRAP-UP (ask mode) — the repeat guard cut the turn with tool calls still in flight, so no
+  // answer exists. ONE tool-less continuation asks for it from what was already read (live repro
+  // 2026-09-21: ~6 min of re-reads, then nothing). Same at-most-one rule as the other triggers;
+  // the turn still reports stopReason 'stuck', so Continue stays available.
+  if (opts.mode === 'ask' && stuckSignature && !continued && !opts.abortSignal?.aborted && outcome.text.trim().length === 0) {
+    diagLog('engine.stuckWrapUp', `ask turn stuck on ${stuckSignature.slice(0, 60)} with no answer — one tool-less continuation`);
+    forceAnswerOnNextStep = true;
+    try {
+      await runPass([
+        ...modelMessages,
+        ...outcome.responseMessages,
+        { role: 'user', content: STUCK_WRAPUP },
+      ]).consumeStream({ onError: passError('stuckWrapUp') });
+    } catch {
+      // Keep the paused turn rather than failing it.
+    } finally {
+      forceAnswerOnNextStep = false;
+    }
+    continued = true;
   }
 
   // LENGTH-CUT CONTINUATION — finish 'length' (the reply hit the output budget mid-sentence;

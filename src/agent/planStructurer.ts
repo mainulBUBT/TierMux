@@ -5,7 +5,7 @@
 // classifier deciding whether prose "was a plan" (docs/PLAN_MODE_TOOL_BOUNDARY_2026-08-31.md).
 import { generateText, Output, type LanguageModel } from 'ai';
 import { z } from 'zod';
-import type { ProposedPlan } from '../shared/types';
+import type { PlanDecision, ProposedPlan } from '../shared/types';
 import { createRouterProvider } from './core/routerProvider';
 
 const StepsSchema = z.object({
@@ -149,6 +149,8 @@ export interface PlanFileMeta {
   status: 'approved' | 'executing';
   model?: string;
   sessionId?: string;
+  /** What the user chose when the agent asked — written as a `## Decisions` section. */
+  decisions?: PlanDecision[];
   /** Injected for deterministic tests; defaults to now. */
   now?: Date;
 }
@@ -209,6 +211,9 @@ export function renderPlanMarkdown(steps: string, meta: PlanFileMeta): string {
   }
   if (reading) body.push('## Reading', '', reading, '');
   if (description) body.push(description, '');
+  if (meta.decisions?.length) {
+    body.push('## Decisions', '', ...meta.decisions.map((d) => `- **${d.question.replace(/\s+/g, ' ').trim()}** — ${d.answer.replace(/\s+/g, ' ').trim()}`), '');
+  }
   body.push('## Steps', '');
   if (!parsed.length) {
     body.push('_No steps._', '');

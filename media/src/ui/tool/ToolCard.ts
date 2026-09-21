@@ -402,8 +402,10 @@ export function toolLabel(name: string, args: unknown, detail?: string, state?: 
     return { icon: '◎', title: excerpt ? `Delegated: "${excerpt}"` : 'Delegated to a sub-agent' };
   }
   if (name === 'askUser') {
-    const q = String((argsObj as { question?: string }).question || '').replace(/\s+/g, ' ').trim();
-    const excerpt = q.length > 64 ? q.slice(0, 63) + '…' : q;
+    const a = argsObj as { question?: string; questions?: Array<{ question?: string }> };
+    const q = String(a.questions?.[0]?.question || a.question || '').replace(/\s+/g, ' ').trim();
+    const more = (a.questions?.length ?? 0) > 1 ? ` (+${a.questions!.length - 1} more)` : '';
+    const excerpt = (q.length > 64 ? q.slice(0, 63) + '…' : q) + (q ? more : '');
     const live = state === 'running' || state === 'queued';
     if (live) return { icon: '◎', title: 'Asking…' };
     return { icon: '◎', title: excerpt ? `Asked: "${excerpt}"` : 'Asked the user' };
@@ -464,6 +466,7 @@ export function toolLabel(name: string, args: unknown, detail?: string, state?: 
     findSymbol: ['⊕', 'Found symbol'],
     references: ['⊕', 'Found references'],
     definition: ['⊕', 'Found definition'],
+    hover: ['⊕', 'Read type info'],
     // todoWrite: the TodoSheet is the rich display; the card stays a quiet count line so the
     // raw todos JSON never dumps as the generic "TodoWrite" fallback it used to hit.
     todoWrite: ['≣', `Updated todos${Array.isArray((argsObj as { todos?: unknown[] }).todos) ? ` (${(argsObj as { todos: unknown[] }).todos.length})` : ''}`],

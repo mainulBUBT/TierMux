@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
-  createOutlineTool, createFindSymbolTool, createReferencesTool, createDefinitionTool,
+  createOutlineTool, createFindSymbolTool, createReferencesTool, createDefinitionTool, createHoverTool,
   formatOutline, locateSymbol, type Exec,
 } from '../src/agent/core/tools/v3/codeIntel';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
@@ -82,12 +82,62 @@ async function main() {
   // The mock's asRelativePath returns absolute paths; real VS Code returns workspace-relative ones.
   ok('resolves to path:line and the declaration text', d1.endsWith('a.ts:1  export function handleAuth() {'), d1);
 
+  console.log('\n— hover —');
+  const hoverExec: Exec = async () => [{ contents: [{ value: '```ts\nfunction handleAuth(): void\n```' }, 'Authenticates the request.', { language: 'ts', value: 'x' }] }] as never;
+  const h1 = await run(createHoverTool(hoverExec), { path: 'a.ts', symbol: 'handleAuth' });
+  ok('joins MarkdownString, plain-string and MarkedString parts', h1.includes('function handleAuth(): void') && h1.includes('Authenticates the request.') && h1.includes('x'), h1);
+  const h2 = await run(createHoverTool(noServer), { path: 'a.ts', symbol: 'handleAuth' });
+  ok('an empty hover falls back to definition + readFile, at once', h2.startsWith('No type information') && h2.includes('definition + readFile'), h2);
+
+  console.log('\n— references kind: each view asks the right provider —');
+  const trace: string[] = [];
+  const item = { name: 'check', kind: 11, uri: uriOf('a.ts'), range: range(3, 3) };
+  const kindExec: Exec = async (cmd) => {
+    trace.push(cmd);
+    if (cmd === 'vscode.prepareCallHierarchy') return [item] as never;
+    if (cmd === 'vscode.provideIncomingCalls') return [{ from: item }] as never;
+    if (cmd === 'vscode.provideOutgoingCalls') return [{ to: { ...item, name: 'log' } }] as never;
+    return [{ uri: uriOf('b.ts'), range: range(1, 1) }] as never;
+  };
+  const refTool = createReferencesTool(kindExec);
+  const impl = await run(refTool, { path: 'a.ts', symbol: 'handleAuth', kind: 'implementations' });
+  ok('implementations → executeImplementationProvider', trace.at(-1) === 'vscode.executeImplementationProvider' && impl.startsWith('1 implementation(s) of'), `${trace.at(-1)} | ${impl}`);
+  trace.length = 0;
+  const inc = await run(refTool, { path: 'a.ts', symbol: 'handleAuth', kind: 'incomingCalls' });
+  ok('incomingCalls → prepareCallHierarchy then provideIncomingCalls', JSON.stringify(trace) === JSON.stringify(['vscode.prepareCallHierarchy', 'vscode.provideIncomingCalls']) && inc.includes('Callers of "handleAuth"') && inc.includes('function check'), `${trace} | ${inc}`);
+  trace.length = 0;
+  const out = await run(refTool, { path: 'a.ts', symbol: 'handleAuth', kind: 'outgoingCalls' });
+  ok('outgoingCalls → provideOutgoingCalls and names the callee', trace[1] === 'vscode.provideOutgoingCalls' && out.includes('Calls made by') && out.includes('function log'), `${trace} | ${out}`);
+  trace.length = 0;
+  await run(refTool, { path: 'a.ts', symbol: 'handleAuth' });
+  ok('no kind = references (the old behaviour)', trace.at(-1) === 'vscode.executeReferenceProvider', trace.at(-1));
+
+  console.log('\n— an empty answer returns AT ONCE: one call, no wait, no retry, and it is logged —');
+  let calls = 0; const logged: string[] = [];
+  const emptyExec: Exec = async () => { calls++; return [] as never; };
+  const t0 = Date.now();
+  const e1 = await run(createReferencesTool(emptyExec, (scope, msg) => logged.push(`${scope} ${msg}`)), { path: 'a.ts', symbol: 'handleAuth' });
+  ok('exactly one provider call (no retry)', calls === 1, `${calls}`);
+  ok('it returned without waiting (no 700ms sleep)', Date.now() - t0 < 200, `${Date.now() - t0}ms`);
+  ok('the model is told to use grep/glob instead', e1.startsWith('No references found') && /use grep or glob instead/.test(e1), e1);
+  ok('the empty answer is logged (codeIntel.empty) so its frequency can be measured', logged.length === 1 && logged[0].startsWith('codeIntel.empty ') && logged[0].includes('executeReferenceProvider'), JSON.stringify(logged));
+  calls = 0;
+  const e2 = await run(createReferencesTool(emptyExec), { path: 'a.ts', symbol: 'handleAuth', kind: 'incomingCalls' });
+  ok('a call hierarchy with no items stops after ONE call too', calls === 1 && e2.startsWith('No callers found'), `${calls} | ${e2}`);
+  const fsLogged: string[] = [];
+  await run(createFindSymbolTool(async () => [] as never, (s, m) => fsLogged.push(`${s} ${m}`)), { query: 'zzz' });
+  ok('findSymbol logs its empty answer too', fsLogged.length === 1 && fsLogged[0].includes('executeWorkspaceSymbolProvider'), JSON.stringify(fsLogged));
+  const noOutline: string[] = [];
+  await run(createOutlineTool(noServer, (s, m) => noOutline.push(`${s} ${m}`)), { path: 'a.ts' });
+  ok('outline logs when it had to fall back to the regex extractor', noOutline.length === 1 && noOutline[0].includes('executeDocumentSymbolProvider'), JSON.stringify(noOutline));
+
   console.log('\n— wiring —');
+  const FIVE = ['outline', 'findSymbol', 'references', 'definition', 'hover'];
   for (const mode of ['ask', 'plan', 'agent'] as const) {
     const set = buildV3ToolSet(mode);
-    ok(`${mode} mode offers all four`, ['outline', 'findSymbol', 'references', 'definition'].every((n) => n in set));
+    ok(`${mode} mode offers all five`, FIVE.every((n) => n in set));
   }
-  ok('all four are read-only (auto-approved, dedupe-cached)', ['outline', 'findSymbol', 'references', 'definition'].every((n) => READ_ONLY_TOOLS.has(n)));
+  ok('all five are read-only (auto-approved, dedupe-cached)', FIVE.every((n) => READ_ONLY_TOOLS.has(n)));
   ok('the phantom tool names are gone from the read-only set', !['getSymbolGraph', 'getDependencyTree', 'recallNotes', 'checkPlan'].some((n) => READ_ONLY_TOOLS.has(n)));
 
   fs.rmSync(root, { recursive: true, force: true });

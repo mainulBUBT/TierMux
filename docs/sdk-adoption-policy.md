@@ -106,6 +106,6 @@ appeared in zero files. It is restored above.
 
 | API | Why not |
 |---|---|
-| `addToolInputExamplesMiddleware` + `wrapLanguageModel` | Rule 3. It would add a middleware layer around `core/routerProvider.ts` rather than replace anything, and the field it serializes (`inputExamples`) is dropped by that adapter's own tool mapping anyway. The one place a worked example was worth having — `exitPlanMode` — carries it inline in the tool description instead. |
+| `addToolInputExamplesMiddleware` + `wrapLanguageModel` | Rule 3. It would add a middleware layer around `core/routerProvider.ts` rather than replace anything, and `core/routerProvider.ts` already folds `inputExamples` into the tool description itself (`describeWithExamples`; corrected 2026-09-21 — this row used to say the adapter dropped the field). The one place a worked example was worth having — `exitPlanMode` — carries it inline in the tool description instead. |
 | `detectToolDrift` / `fingerprintTools` | Solves MCP tool-definition "rug pull", not tool-call reliability. No live problem to point at. |
 | XML/text tool protocol as a fallback for weak models | Rule 2 (that is provider/reliability work, TierMux's own layer) — and the evidence is against it: Roo Code migrated OFF XML after measuring ~10% tool-call failure on top-tier models, >15% on `apply_diff`, degrading through multi-turn. `toolChoice` forcing gets the same reliability win at the wire level without a second parser. |

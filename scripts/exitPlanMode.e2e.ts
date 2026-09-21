@@ -54,7 +54,7 @@ function engineOpts(over: Partial<AgentOpts> & { messages: AgentOpts['messages']
     onFailover: () => {},
     onStep: () => {},
     onTodos: () => {},
-    onAskUser: async () => 'yes',
+    onAskUser: async () => ({ status: 'answered' as const, answers: ['yes'] }),
     onError: () => {},
     ...over,
   };
@@ -269,13 +269,35 @@ async function main(): Promise<void> {
     try {
       const out = await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'make the edit-mode grid filter like the admin one' }],
-        onAskUser: async (q) => { asked.push(q); return 'Only the vendor order view'; },
+        onAskUser: async (qs) => { asked.push(qs[0].question); return { status: 'answered' as const, answers: ['Only the vendor order view'] }; },
       }));
       ok('a hesitating model may close the nudged step by ASKING, not by inventing a plan',
         asked.length === 1 && /globally|vendor order view/i.test(asked[0]), JSON.stringify(asked));
       ok('asking does not fabricate a plan card', out.plan === undefined, JSON.stringify(out.plan));
       ok('askUser does not end the turn — the answer comes back and the loop continues',
         model.calls.length === 4, `calls=${model.calls.length}`);
+    } finally {
+      __setEngineModelForTests(undefined);
+    }
+  }
+
+  // ── 4d. A provider that IGNORES the forced toolChoice (drops tool_choice on the wire): the SDK
+  // raises ToolChoiceViolationError on that step. Checked 2026-09-21 — the turn must still end
+  // cleanly: second narration ships, not failed, no dead-end. (finishReason reads 'error'; no UI
+  // consumer reads it.)
+  {
+    const model = createMockModel([
+      { toolCalls: [{ toolName: 'grep', input: { pattern: 'dark', path: '.' } }] },
+      { text: 'Now let me check if there is any existing theme or dark mode support.' },
+      { text: 'I will look at the settings next.' },
+    ], 'plan-gap-ignored');
+    __setEngineModelForTests(model);
+    try {
+      const out = await runPlanStream(engineOpts({ messages: [{ role: 'user', content: 'add a dark mode toggle' }] }));
+      const forced = (model.calls[2]?.toolChoice as { type?: string } | undefined)?.type;
+      ok('the continuation step WAS forced (toolChoice required)', forced === 'required', String(forced));
+      ok('a provider that ignores it does not fail the turn', !out.failed && out.plan === undefined, JSON.stringify({ failed: out.failed, plan: out.plan }));
+      ok('the reply still ships instead of a blank dead-end', out.text.includes('settings next'), out.text);
     } finally {
       __setEngineModelForTests(undefined);
     }

@@ -256,3 +256,12 @@
   line-height: 1.55;
 }
 .tm-plan-reading .tm-plan-meta-text { color: var(--tm-fg); }
+
+/* Decisions the user made when the agent asked — visible when collapsed, like the reading. */
+.tm-plan-decisions { margin-top: var(--tm-space-2, 8px); font-size: var(--tm-text-sm); line-height: 1.5; }
+.tm-plan-decisions-title { color: var(--tm-fg-muted, var(--tm-fg)); font-weight: 600; margin-bottom: 2px; }
+.tm-plan-decisions-list { list-style: none; margin: 0; padding: 0; }
+.tm-plan-decisions-list li { display: flex; flex-wrap: wrap; gap: 0 6px; }
+.tm-plan-decision-q { color: var(--tm-fg-muted, var(--tm-fg)); }
+.tm-plan-decision-q::after { content: ' →'; }
+.tm-plan-decision-a { color: var(--tm-fg); font-weight: 600; }

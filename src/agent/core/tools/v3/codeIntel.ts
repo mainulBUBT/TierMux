@@ -1,4 +1,4 @@
-// outline / findSymbol / references / definition — the editor's language servers as read-only
+// outline / findSymbol / references / definition / hover — the editor's language servers as read-only
 // tools. One call answers what a grep-then-read chain needs several round trips for. Nothing here
 // indexes anything: VS Code already runs the language servers, so this is zero new dependencies and
 // works for every language that has one. `outline` falls back to the regex extractor when no
@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { resolveReadablePath } from '../resolvePath';
 import { capToolOutput } from '../capOutput';
 import { extract } from '../../../../context/symbolExtract';
+import { diagLog } from '../../../../util/diag';
 
 const MAX_CHARS = 10_000;
 const MAX_OUTLINE_LINES = 300;
@@ -18,6 +19,16 @@ const MAX_REFS = 40;
 
 export type Exec = <T>(command: string, ...args: unknown[]) => PromiseLike<T | undefined>;
 const liveExec: Exec = (command, ...args) => vscode.commands.executeCommand(command, ...args);
+
+type Log = (scope: string, msg: string) => void;
+
+/** A language server that answers nothing is not an answer. Tell the model AT ONCE to fall back —
+ *  no wait, no retry (zero added latency) — and log it so how often it happens can be measured
+ *  before any retry is even considered. */
+function noResult(log: Log, command: string, subject: string, what: string, fallback = 'grep or glob'): string {
+  log('codeIntel.empty', `${command} · ${subject}`);
+  return `No ${what}. The language server returned no result (it may still be indexing, or not cover this language) — use ${fallback} instead.`;
+}
 
 // vscode.SymbolKind numbering (0-based) — a local table so the tools do not depend on the enum
 // object being present (headless/e2e mocks).
@@ -60,7 +71,7 @@ async function readText(uri: vscode.Uri): Promise<string | undefined> {
   try { return new TextDecoder().decode(await vscode.workspace.fs.readFile(uri)); } catch { return undefined; }
 }
 
-export function createOutlineTool(exec: Exec = liveExec) {
+export function createOutlineTool(exec: Exec = liveExec, log: Log = diagLog) {
   return tool({
     description:
       'List the symbols (classes, functions, methods, …) declared in ONE file with their line ranges, '
@@ -75,6 +86,7 @@ export function createOutlineTool(exec: Exec = liveExec) {
         if (text === undefined) return { error: `File not found: ${path}` };
         const symbols = (await exec<DocSymbolLike[]>('vscode.executeDocumentSymbolProvider', uri)) ?? [];
         if (symbols.length) return capToolOutput(`<outline path="${path}" lines="${text.split('\n').length}">\n${formatOutline(symbols).join('\n')}\n</outline>`, MAX_CHARS, 'Read a narrower part of the file.');
+        log('codeIntel.empty', `executeDocumentSymbolProvider · ${path}`);
         const fallback = extract(path, text).symbols;
         if (!fallback.length) return `No symbols found in ${path} (no language server answered and the file has no recognisable declarations).`;
         return capToolOutput(`<outline path="${path}" lines="${text.split('\n').length}" source="regex — no language server result">\n${fallback.map((s) => `${s.kind} ${s.name}  L${s.line}`).join('\n')}\n</outline>`, MAX_CHARS, 'Read a narrower part of the file.');
@@ -85,7 +97,7 @@ export function createOutlineTool(exec: Exec = liveExec) {
   });
 }
 
-export function createFindSymbolTool(exec: Exec = liveExec) {
+export function createFindSymbolTool(exec: Exec = liveExec, log: Log = diagLog) {
   return tool({
     description:
       'Find where a class / function / method / type is DECLARED anywhere in the workspace, by (partial) name, '
@@ -100,7 +112,7 @@ export function createFindSymbolTool(exec: Exec = liveExec) {
           .filter((s) => !/(^|\/)node_modules\//.test(rel(s.location.uri)))
           .slice(0, MAX_FIND)
           .map((s) => `${kindName(s.kind)} ${s.name}${s.containerName ? ` (in ${s.containerName})` : ''} — ${rel(s.location.uri)}:${s.location.range.start.line + 1}`);
-        return lines.length ? lines.join('\n') : `No symbol matching "${query}". Language servers may still be starting — try grep.`;
+        return lines.length ? lines.join('\n') : noResult(log, 'executeWorkspaceSymbolProvider', query, `symbol matching "${query}"`);
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) };
       }
@@ -159,23 +171,45 @@ async function withPosition(
   }
 }
 
-export function createReferencesTool(exec: Exec = liveExec) {
+export function createReferencesTool(exec: Exec = liveExec, log: Log = diagLog) {
   return tool({
     description:
       'List every place a symbol is USED (call sites, imports, type uses) across the workspace, from the '
       + 'language servers — the reliable way to find all call sites before changing a signature. Returns '
-      + '`path:line  <code>`. Falls back to nothing when no server understands the file — use grep then.',
-    inputSchema: z.object(positionSchema),
+      + '`path:line  <code>`. Set `kind` for a different view: "implementations" (classes implementing an '
+      + 'interface or abstract method), "incomingCalls" (who calls it), "outgoingCalls" (what it calls). '
+      + 'If the server returns nothing, use grep.',
+    inputSchema: z.object({
+      ...positionSchema,
+      kind: z.enum(['references', 'implementations', 'incomingCalls', 'outgoingCalls']).optional()
+        .describe('What to list (default "references").'),
+    }),
     execute: (args) => withPosition(args, async (uri, pos) => {
-      const locs = (await exec<LocLike[]>('vscode.executeReferenceProvider', uri, pos)) ?? [];
-      if (!locs.length) return `No references found for "${args.symbol}". The language server may not cover this file — try grep.`;
+      const kind = args.kind ?? 'references';
+      if (kind === 'incomingCalls' || kind === 'outgoingCalls') {
+        const items = (await exec<CallItem[]>('vscode.prepareCallHierarchy', uri, pos)) ?? [];
+        const cmd = kind === 'incomingCalls' ? 'vscode.provideIncomingCalls' : 'vscode.provideOutgoingCalls';
+        const calls = items.length ? ((await exec<Array<{ from?: CallItem; to?: CallItem }>>(cmd, items[0])) ?? []) : [];
+        const lines = calls
+          .map((c) => c.from ?? c.to)
+          .filter((i): i is CallItem => !!i)
+          .slice(0, MAX_REFS)
+          .map((i) => `${kindName(i.kind)} ${i.name} — ${rel(i.uri)}:${i.range.start.line + 1}`);
+        if (!lines.length) return noResult(log, cmd.replace('vscode.', ''), args.symbol, `${kind === 'incomingCalls' ? 'callers' : 'callees'} found for "${args.symbol}"`);
+        return capToolOutput(`${kind === 'incomingCalls' ? 'Callers of' : 'Calls made by'} "${args.symbol}":\n${lines.join('\n')}`, MAX_CHARS, 'Ask for a narrower symbol.');
+      }
+      const command = kind === 'implementations' ? 'vscode.executeImplementationProvider' : 'vscode.executeReferenceProvider';
+      const locs = (await exec<LocLike[]>(command, uri, pos)) ?? [];
+      if (!locs.length) return noResult(log, command.replace('vscode.', ''), args.symbol, `${kind} found for "${args.symbol}"`);
       const lines = await formatLocations(locs, MAX_REFS);
-      return capToolOutput(`${locs.length} reference(s) to "${args.symbol}":\n${lines.join('\n')}${locs.length > MAX_REFS ? `\n…[showing ${MAX_REFS} of ${locs.length}]` : ''}`, MAX_CHARS, 'Ask for a narrower symbol.');
+      return capToolOutput(`${locs.length} ${kind === 'implementations' ? 'implementation(s) of' : 'reference(s) to'} "${args.symbol}":\n${lines.join('\n')}${locs.length > MAX_REFS ? `\n…[showing ${MAX_REFS} of ${locs.length}]` : ''}`, MAX_CHARS, 'Ask for a narrower symbol.');
     }),
   });
 }
 
-export function createDefinitionTool(exec: Exec = liveExec) {
+interface CallItem { name: string; kind: number; uri: vscode.Uri; range: { start: { line: number } } }
+
+export function createDefinitionTool(exec: Exec = liveExec, log: Log = diagLog) {
   return tool({
     description:
       'Jump to where a symbol used in a file is DEFINED (follows imports and re-exports), from the language '
@@ -183,8 +217,31 @@ export function createDefinitionTool(exec: Exec = liveExec) {
     inputSchema: z.object(positionSchema),
     execute: (args) => withPosition(args, async (uri, pos) => {
       const locs = (await exec<LocLike[]>('vscode.executeDefinitionProvider', uri, pos)) ?? [];
-      if (!locs.length) return `No definition found for "${args.symbol}". The language server may not cover this file — try findSymbol or grep.`;
+      if (!locs.length) return noResult(log, 'executeDefinitionProvider', args.symbol, `definition found for "${args.symbol}"`, 'findSymbol or grep');
       return (await formatLocations(locs, 10)).join('\n');
+    }),
+  });
+}
+
+/** A hover `contents` entry is a string, a MarkdownString, or a `{language, value}` MarkedString. */
+function hoverText(c: unknown): string {
+  if (typeof c === 'string') return c;
+  const v = (c as { value?: unknown } | null)?.value;
+  return typeof v === 'string' ? v : '';
+}
+
+export function createHoverTool(exec: Exec = liveExec, log: Log = diagLog) {
+  return tool({
+    description:
+      'Show the type signature and documentation the language server has for a symbol used in a file (what an '
+      + 'editor hover shows) — cheaper than reading the declaration when you only need its type or docs. '
+      + 'If the server returns nothing, read the declaration instead.',
+    inputSchema: z.object(positionSchema),
+    execute: (args) => withPosition(args, async (uri, pos) => {
+      const hovers = (await exec<Array<{ contents?: unknown[] }>>('vscode.executeHoverProvider', uri, pos)) ?? [];
+      const text = hovers.flatMap((h) => h.contents ?? []).map(hoverText).filter(Boolean).join('\n---\n').trim();
+      if (!text) return noResult(log, 'executeHoverProvider', args.symbol, `type information for "${args.symbol}"`, 'definition + readFile');
+      return capToolOutput(text, 3_000, 'Use definition + readFile for the full declaration.');
     }),
   });
 }

@@ -203,6 +203,17 @@ export interface CatalogModel {
 }
 
 /** One entry in the agent's live task list (TodoWrite-style progress tracking). */
+/** One question on an askUser card. `options` are flat strings ("Label — what it means/costs") —
+ *  flat on purpose: weak free-tier models handle a string[] far better than nested objects. */
+export interface AskQuestion { question: string; header?: string; options?: string[]; multiSelect?: boolean }
+/** What the host reports back. `dismissed` = the user pressed Skip; `cancelled` = the turn ended
+ *  (Stop / new message / no UI) — the two used to be indistinguishable empty strings. */
+export interface AskResult { status: 'answered' | 'dismissed' | 'cancelled'; answers: string[] }
+
+/** A question the user answered during plan mode, and what they chose — shown on the plan card so
+ *  approval happens knowing which premises were settled with them (never carried in the steps text). */
+export interface PlanDecision { question: string; answer: string }
+
 export interface TodoItem {
   content: string;
   status: 'pending' | 'in_progress' | 'completed';

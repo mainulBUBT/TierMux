@@ -31,11 +31,9 @@ async function main() {
   const s = text(aged.messages ?? []);
   ok('stub carries offset and limit', s.includes('readFile src/big.ts offset=801 limit=400'), s.slice(s.indexOf('[readFile'), s.indexOf('[readFile') + 90));
   ok('stub carries a line count', /chars \/ \d+ lines/.test(s));
-  ok('the stubbed call is reported for cache eviction', aged.stubbed?.some((c) => c.toolName === 'readFile') === true);
 
   console.log('\n— delegateTask reports are never aged —');
   ok('the sub-agent report survives verbatim', s.includes(big), 'report intact');
-  ok('and is not listed as stubbed', !aged.stubbed?.some((c) => c.toolName === 'delegateTask'));
 
   console.log('\n— tier-2 prune keeps the record of edits —');
   const pruned = compactIfNeeded(history, 100).messages ?? [];

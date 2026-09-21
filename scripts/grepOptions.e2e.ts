@@ -65,7 +65,7 @@ async function main() {
   ok('filesOnly + ignoreCase + path scope',
     JSON.stringify(paths(both)) === JSON.stringify(['src/a.ts', 'src/b.ts', 'src/c.ts']), both.replace(/\n/g, ' | '));
   const miss = await run({ pattern: 'ZZZ_NOT_PRESENT', filesOnly: true });
-  ok('no matches reads as "(no matches)"', miss === '(no matches)', JSON.stringify(miss));
+  ok('no matches still LEADS with "(no matches)" (then the ignored-files note)', miss.startsWith('(no matches)'), JSON.stringify(miss));
 
   console.log('\n— `path` is confined to the workspace like every other tool —');
   const escape = await run({ pattern: 'SECRET_NEEDLE', path: '../ws-backup', filesOnly: true });
@@ -105,6 +105,29 @@ async function main() {
   ok('it returns content, not a timeout error', !capped.startsWith('ERROR:'), capped.slice(0, 60));
   ok('the marker says the search was stopped early', /search stopped early/.test(capped), capped.slice(-120));
   ok('and does not invent a total', !/of [\d,]+ chars omitted/.test(capped));
+
+  console.log('\n— ignored and hidden files: a blind spot that is SAID, and an opt-in that stays narrow —');
+  // `.ignore` is honoured by rg with or without a git repo, so it stands in for .gitignore here.
+  fs.writeFileSync(path.join(root, '.ignore'), 'ignored/\nnode_modules/\n');
+  fs.mkdirSync(path.join(root, 'ignored'));
+  fs.writeFileSync(path.join(root, 'ignored', 'x.ts'), 'export const ONLYHERE = 1;\n');
+  fs.writeFileSync(path.join(root, '.hidden.md'), 'ONLYHERE lives in a dotfile\n');
+  fs.mkdirSync(path.join(root, 'node_modules', 'pkg'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'node_modules', 'pkg', 'i.js'), 'module.exports = "ONLYHERE";\n');
+
+  const blind = await run({ pattern: 'ONLYHERE' });
+  ok('by default ignored and hidden files are NOT searched (unchanged)', blind.startsWith('(no matches)') && !/ignored\/x\.ts|\.hidden\.md/.test(blind), blind);
+  ok('and the empty result says so, pointing at includeIgnored with a narrow scope',
+    /gitignore'd and hidden files are not searched/.test(blind) && /includeIgnored:true/.test(blind) && /narrow/.test(blind), blind);
+  const found = await run({ pattern: 'NEEDLE', filesOnly: true });
+  ok('a search that HAS matches carries no such note', !/not searched/.test(found), found);
+
+  const opt = await run({ pattern: 'ONLYHERE', filesOnly: true, includeIgnored: true });
+  ok('includeIgnored:true reaches the ignored file and the dotfile',
+    JSON.stringify(paths(opt)) === JSON.stringify(['.hidden.md', 'ignored/x.ts']), opt.replace(/\n/g, ' | '));
+  ok('but never node_modules, even though the ignore filters are off', !/node_modules/.test(opt), opt);
+  const none = await run({ pattern: 'NOSUCHTHING', includeIgnored: true });
+  ok('with includeIgnored an empty result is plain (nothing left to caveat)', none === '(no matches)', none);
 
   console.log(`\n${bad === 0 ? 'ALL PASS' : `${bad} FAILED`}`);
 }
