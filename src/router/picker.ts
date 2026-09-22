@@ -554,7 +554,12 @@ export async function selectModel(
         skip(picked, `${tier} tier, speedRank ${speed} — below the ${taskKind} head floor; tail failover only`);
         continue;
       }
-      if (HEAD_SPEED_CAP_KINDS.has(taskKind) && speed >= 4) {
+      // work's cap is tighter (2026-09-22, cline branch: turn time complaints) — a speedRank-3
+      // head (big-pickle class) made every third turn crawl on a slow free lane; work now leads
+      // ONLY with speedRank ≤ 2, and the slow rows stay in the tail as failover. longContext
+      // keeps the looser cap: its payloads are big, latency is dominated by transfer anyway.
+      const headSpeedCap = taskKind === 'work' ? 3 : 4;
+      if (HEAD_SPEED_CAP_KINDS.has(taskKind) && speed >= headSpeedCap) {
         skip(picked, `speedRank ${speed} — too slow to lead a ${taskKind} turn; tail last resort`);
         continue;
       }
