@@ -1,7 +1,7 @@
 {
   "name": "tiermux",
   "displayName": "TierMux",
-  "description": "Free agentic AI coding assistant for VS Code. Multiplexes many free-tier LLM providers into one self-healing surface — auto-routes, auto-fails-over, learns your codebase. Zero setup with keyless providers; bring your own keys anytime.",
+  "description": "Free agentic AI coding assistant for VS Code. Multiplexes many free-tier LLM providers into one self-healing surface \u2014 auto-routes, auto-fails-over, learns your codebase. Zero setup with keyless providers; bring your own keys anytime.",
   "version": "3.0.2",
   "publisher": "mainul-islam",
   "license": "MIT",
@@ -354,7 +354,7 @@
         "tiermux.agent.maxStepsPerTurn": {
           "type": "number",
           "default": 50,
-          "description": "Hard ceiling on the number of tool-loop steps in a SINGLE agent turn (0 = no limit). A backstop for the one runaway shape the other brakes miss: many distinct mutating tool calls (none exact-repeating, all 'real progress') that nonetheless sprawl. Fires as a budget-style cutoff (bounded by maxBudgetContinuations), not a resumable pause. Default 50: a legit task rarely exceeds 50 steps in one turn — long tasks span auto-continue rounds instead."
+          "description": "Hard ceiling on the number of tool-loop steps in a SINGLE agent turn (0 = no limit). A backstop for the one runaway shape the other brakes miss: many distinct mutating tool calls (none exact-repeating, all 'real progress') that nonetheless sprawl. Fires as a budget-style cutoff (bounded by maxBudgetContinuations), not a resumable pause. Default 50: a legit task rarely exceeds 50 steps in one turn \u2014 long tasks span auto-continue rounds instead."
         },
         "tiermux.agent.connectTimeoutMs": {
           "type": "number",
@@ -398,7 +398,7 @@
             "off"
           ],
           "default": "ask",
-          "description": "When a compaction records what you corrected or rejected, carry those notes into .tiermux/memory.md so later sessions start knowing them. 'ask' confirms first and shows what would be written, 'always' writes silently, 'off' never writes. Costs no extra model call either way — the summary already produced the notes."
+          "description": "When a compaction records what you corrected or rejected, carry those notes into .tiermux/memory.md so later sessions start knowing them. 'ask' confirms first and shows what would be written, 'always' writes silently, 'off' never writes. Costs no extra model call either way \u2014 the summary already produced the notes."
         },
         "tiermux.agent.auditTodos": {
           "type": "boolean",
@@ -410,7 +410,7 @@
           "default": 1,
           "minimum": 0,
           "maximum": 5,
-          "description": "When the verify command fails after a turn edits files, the failure output is fed back to the agent for up to this many fix-and-recheck rounds before the turn reports failure. The agent owns the recheck — no manual re-run needed. 0 reports the failure without retrying (it does not disable the check; set tiermux.agent.verifyCommand to 'off' for that)."
+          "description": "When the verify command fails after a turn edits files, the failure output is fed back to the agent for up to this many fix-and-recheck rounds before the turn reports failure. The agent owns the recheck \u2014 no manual re-run needed. 0 reports the failure without retrying (it does not disable the check; set tiermux.agent.verifyCommand to 'off' for that)."
         },
         "tiermux.agent.toolCompaction": {
           "type": "string",
@@ -420,12 +420,12 @@
             "aggressive"
           ],
           "default": "light",
-          "description": "Compact bulky tool results before they enter the model's context. On every step, tool outputs from EARLIER steps are replaced by a one-line stub naming the tool and its arguments, so the model can re-run it if it truly needs the content again; 'light' stubs outputs over ~2,000 characters, 'aggressive' over ~800. The most recent step's results, short outputs, and error payloads always stay verbatim. File reads ARE included — they are the largest outputs and the reason this exists. 'off' keeps every result verbatim."
+          "description": "Compact bulky tool results before they enter the model's context. On every step, tool outputs from EARLIER steps are replaced by a one-line stub naming the tool and its arguments, so the model can re-run it if it truly needs the content again; 'light' stubs outputs over ~2,000 characters, 'aggressive' over ~800. The most recent step's results, short outputs, and error payloads always stay verbatim. File reads ARE included \u2014 they are the largest outputs and the reason this exists. 'off' keeps every result verbatim."
         },
         "tiermux.agent.autoCondense": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically compact the conversation (summarize older turns) when its history approaches ~80% of the routed model's context window, before a turn starts — so the model begins with headroom instead of losing tool evidence to mid-turn pruning. The manual Compact command still works regardless."
+          "description": "Automatically compact the conversation (summarize older turns) when its history approaches ~80% of the routed model's context window, before a turn starts \u2014 so the model begins with headroom instead of losing tool evidence to mid-turn pruning. The manual Compact command still works regardless."
         },
         "tiermux.agent.autoCondenseTokenCap": {
           "type": "number",
@@ -436,7 +436,7 @@
         "tiermux.agent.diagTrace": {
           "type": "boolean",
           "default": false,
-          "description": "Log the model's path from picker → router → provider → AI SDK (pinned value, resolved candidate, runtimeName, raw usage) to the \"TierMux Diag\" output channel. Temporary diagnostic for the wrong-provider-name / 0-token issue."
+          "description": "Log the model's path from picker \u2192 router \u2192 provider \u2192 AI SDK (pinned value, resolved candidate, runtimeName, raw usage) to the \"TierMux Diag\" output channel. Temporary diagnostic for the wrong-provider-name / 0-token issue."
         },
         "tiermux.agent.commandApproval": {
           "type": "string",
@@ -474,7 +474,7 @@
         "tiermux.context.includeOpenEditors": {
           "type": "boolean",
           "default": true,
-          "description": "Each turn, silently attach the active editor (the selection, or a slice around the cursor — see ambientSliceRadius) and its live diagnostics to the model-facing prompt. The visible transcript is unchanged; this just lets \"fix this\" resolve to the cursor location."
+          "description": "Each turn, silently attach the active editor (the selection, or a slice around the cursor \u2014 see ambientSliceRadius) and its live diagnostics to the model-facing prompt. The visible transcript is unchanged; this just lets \"fix this\" resolve to the cursor location."
         },
         "tiermux.context.ambientSliceRadius": {
           "type": "number",
@@ -486,7 +486,7 @@
         "tiermux.utilityModel": {
           "type": "string",
           "default": "auto",
-          "description": "Model used for short utility tasks (chat titles, commit messages). 'auto' prefers a strong keyless model so it works without an API key; or pick a specific model in Settings → Others."
+          "description": "Model used for short utility tasks (chat titles, commit messages). 'auto' prefers a strong keyless model so it works without an API key; or pick a specific model in Settings \u2192 Others."
         },
         "tiermux.plan.saveToFile": {
           "type": "boolean",
@@ -501,7 +501,7 @@
         "tiermux.completions.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable Copilot-style inline (ghost-text) completions. Off by default — high request volume against free-tier rate limits."
+          "description": "Enable Copilot-style inline (ghost-text) completions. Off by default \u2014 high request volume against free-tier rate limits."
         },
         "tiermux.completions.model": {
           "type": "string",
@@ -521,17 +521,17 @@
         "tiermux.skillRegistrySearchUrl": {
           "type": "string",
           "default": "https://skills.sh",
-          "description": "Base URL of the agent-skills directory searched by the Skills panel's remote box (skills.sh by default). Results come from whoever published them, so they are never shown as first-party — read the source before installing. Blank disables remote search; the curated list still works."
+          "description": "Base URL of the agent-skills directory searched by the Skills panel's remote box (skills.sh by default). Results come from whoever published them, so they are never shown as first-party \u2014 read the source before installing. Blank disables remote search; the curated list still works."
         },
         "tiermux.skillRegistryUrl": {
           "type": "string",
           "default": "",
-          "description": "Replaces the live skill list. Left blank (the default), the Skills panel uses the catalog worker's /skills endpoint plus the list shipped with TierMux. Set this to browse a third-party catalog as well — e.g. https://cline.github.io/marketplace/catalog.json — any URL serving {entries:[{type:'skill', name, description, install:{args:['owner/repo','--skill','name']}}]} works. Because a skill runs with the agent's permissions, entries from a URL set here are merged in last: they can never replace a known skill or be shown as first-party."
+          "description": "Replaces the live skill list. Left blank (the default), the Skills panel uses the catalog worker's /skills endpoint plus the list shipped with TierMux. Set this to browse a third-party catalog as well \u2014 e.g. https://cline.github.io/marketplace/catalog.json \u2014 any URL serving {entries:[{type:'skill', name, description, install:{args:['owner/repo','--skill','name']}}]} works. Because a skill runs with the agent's permissions, entries from a URL set here are merged in last: they can never replace a known skill or be shown as first-party."
         },
         "tiermux.mcpRegistryUrl": {
           "type": "string",
           "default": "",
-          "description": "Optional URL to a custom curated MCP list (JSON array or {servers:[…]} in this extension's format). When set, it replaces the bundled 'Add a server' list shown when the search box is empty."
+          "description": "Optional URL to a custom curated MCP list (JSON array or {servers:[\u2026]} in this extension's format). When set, it replaces the bundled 'Add a server' list shown when the search box is empty."
         },
         "tiermux.mcpRegistrySearchUrl": {
           "type": "string",
@@ -605,6 +605,7 @@
     "test:e2e:ask-user": "esbuild scripts/askUser.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/askUser.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/askUser.e2e.cjs",
     "test:e2e:exit-plan-mode": "esbuild scripts/exitPlanMode.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/exitPlanMode.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/exitPlanMode.e2e.cjs",
     "test:e2e:think-split": "esbuild scripts/thinkSplit.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/thinkSplit.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/thinkSplit.e2e.cjs",
+    "test:e2e:opencode-lane": "esbuild scripts/opencodeLane.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/opencodeLane.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/opencodeLane.e2e.cjs",
     "test:e2e:verify-detect": "esbuild scripts/verifyDetect.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/verifyDetect.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/verifyDetect.e2e.cjs",
     "test:e2e:checkpoint-persist": "esbuild scripts/checkpointPersist.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/checkpointPersist.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/checkpointPersist.e2e.cjs",
     "test:e2e:plan-structurer": "esbuild scripts/planStructurer.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planStructurer.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planStructurer.e2e.cjs",

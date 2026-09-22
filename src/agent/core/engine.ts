@@ -308,7 +308,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       attachmentKinds: latestKinds,
       attachments: latestKinds.length,
     },
-  ).kind;
+  );
   diagLog('engine.taskKind', taskKind);
   // exitPlanMode's validated structure; the host renders the plan card from it. Last call wins.
   let proposedPlan: ProposedPlan | undefined;

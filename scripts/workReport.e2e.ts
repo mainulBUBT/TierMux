@@ -25,7 +25,7 @@ function baseReport(over: Partial<WorkReportData>): WorkReportData {
     stopReason: '',
     telemetry: {
       model: 'openrouter/deepseek/deepseek-chat-v3.1',
-      taskKind: 'coding',
+      taskKind: 'work',
       inputTokens: 1234,
       outputTokens: 567,
       toolCalls: 7,

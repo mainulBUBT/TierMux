@@ -24,7 +24,6 @@ export type { RouterProviderOptions } from './agent/core/routerProvider';
 export {
   classifyTask,
   classifyTaskCore,
-  isPureVisualDescribe,
   attachmentKindsFromContent,
 } from './agent/routing';
 export type { TaskKind, ClassifySignals } from './agent/routing';

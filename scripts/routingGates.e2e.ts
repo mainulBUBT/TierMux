@@ -114,13 +114,13 @@ console.log('\n— the chain spends its bound on BREADTH, not on one provider �
     plats.slice(0, keyed.length).filter((p) => p === 'ollama').length === 1, plats.join(' → '));
   ok('only AFTER round 0 does a platform get a second model',
     plats.slice(keyed.length).every((p) => round0.includes(p)), plats.slice(keyed.length).join(' → ') || '<none>');
-  // Breadth assertions above are platform-level, which rotation preserves. The head model is
-  // opencode (only model of its rank-group whose catalog rank this mock reports — all rank 1,
-  // so rotation may reorder the multi-model ollama block, never the chain HEAD unless a second
-  // turn has passed). First-call counter = 0, so this single-turn assert still holds the
-  // picker's own first choice.
-  ok('the first choice is still the picker\'s first choice',
-    `${cands[0].platform}::${cands[0].modelId}` === 'opencode::muse-spark',
+  // Breadth assertions above are platform-level, which rotation preserves. The head is the
+  // work table's own pick: groq's entry has no key in this mock, so the table's second entry —
+  // cerebras::gpt-oss-120b, enabled and keyed — leads, and round 0 still reaches every other
+  // platform exactly once below it. (All mock ranks are 1, so rotation may reorder the
+  // multi-model ollama block, never the HEAD, on this first call.)
+  ok('the first choice is the task table\'s own pick',
+    `${cands[0].platform}::${cands[0].modelId}` === 'cerebras::gpt-oss-120b',
     `${cands[0].platform}::${cands[0].modelId}`);
 }
 
@@ -279,7 +279,7 @@ console.log('\n— the task table itself rotates, not just the tail (quota sprea
   setModelSources(makeSources(fallback, [], ['groq', 'cerebras']));
   const leaders: string[] = [];
   for (let i = 0; i < 4; i++) {
-    const sel = await selectModel([{ role: 'user', content: 'fix this bug in the code' } as never], { taskKind: 'coding' });
+    const sel = await selectModel([{ role: 'user', content: 'fix this bug in the code' } as never], { taskKind: 'work' });
     leaders.push(sel.model);
   }
   ok('the first call keeps today\'s untouched order (no rotation on turn 0)',

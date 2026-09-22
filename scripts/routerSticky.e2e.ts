@@ -65,7 +65,7 @@ async function main() {
     __resetTaskRoundCounters();
     served.length = 0;
     const selections: string[] = [];
-    const turn = createRouterProvider({ taskKind: 'chat', onModelSelected: (_p, m) => selections.push(m) });
+    const turn = createRouterProvider({ taskKind: 'work', onModelSelected: (_p, m) => selections.push(m) });
     for (let i = 0; i < 4; i++) await turn.doGenerate(step());
     ok('1. four steps hit the wire four times', served.length === 4, served.join(','));
     ok('2. every step was served by the SAME model', new Set(served).size === 1, served.join(','));
@@ -79,7 +79,7 @@ async function main() {
     // step; it was never meant to be per step.
     const first = served[0];
     served.length = 0;
-    const turn2 = createRouterProvider({ taskKind: 'chat' });
+    const turn2 = createRouterProvider({ taskKind: 'work' });
     await turn2.doGenerate(step());
     await turn2.doGenerate(step());
     ok('4. the second turn opened on the OTHER peer', served[0] !== first, `${first} → ${served[0]}`);
@@ -92,7 +92,7 @@ async function main() {
     for (const m of [A, B]) recordOutcome('groq', m, true);
     served.length = 0;
     const failovers: string[] = [];
-    const turn3 = createRouterProvider({ taskKind: 'chat', onFailover: (from) => failovers.push(from) });
+    const turn3 = createRouterProvider({ taskKind: 'work', onFailover: (from) => failovers.push(from) });
     await turn3.doGenerate(step());
     const sticky = served[0];
     const other = sticky === A ? B : A;

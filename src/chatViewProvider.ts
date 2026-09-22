@@ -1891,7 +1891,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const last = this.autoCondenseAt.get(s.id) ?? 0;
       if (Date.now() - last < ChatViewProvider.AUTO_CONDENSE_COOLDOWN_MS) return;
       if (!shouldCondense(s.history)) return;
-      const profile = resolveExecutionProfile(await peekTopModel('chat'));
+      const profile = resolveExecutionProfile(await peekTopModel('work'));
       const tokens = estimateMessagesTokens(s.history);
       const cap = cfg.get<number>('autoCondenseTokenCap', ChatViewProvider.AUTO_CONDENSE_TOKEN_CAP_DEFAULT);
       const ratio = cfg.get<number>('autoCompactThreshold', 0.8);
@@ -2920,7 +2920,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const rationale = s.liveRationale.get(requestId);
           if (rationale) {
             rationale.answered = list;
-            this.post({ type: 'selectionRationale', sessionId: s.id, requestId, taskKind: s.liveTaskKind ?? 'chat', ...rationale });
+            this.post({ type: 'selectionRationale', sessionId: s.id, requestId, taskKind: s.liveTaskKind ?? 'work', ...rationale });
           }
         }
       },

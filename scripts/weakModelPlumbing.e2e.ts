@@ -3,7 +3,7 @@
  * wire inside the description; reasoning models never receive a temperature; a short follow-up
  * inherits the previous turn's task kind. Run: npm run test:e2e:weak-model-plumbing */
 import { withoutNullKeys, resolveToolAlias } from '../src/agent/core/repair';
-import { classifyConversation } from '../src/agent/routing';
+import { classifyConversation, classifyTask } from '../src/agent/routing';
 import { OpenAIResponsesProvider } from '../src/providers/openai-responses';
 import { OpenAICompatProvider } from '../src/providers/openai-compat';
 import { isDegenerateRepeat } from '../src/agent/core/routerProvider';
@@ -34,7 +34,7 @@ async function main() {
       secrets: { getKeys: async () => ['k'], getCloudflareAccountId: async () => undefined, isToolIncompatible: () => false },
     } as never);
     recordOutcome('groq', 'm', true);
-    const p = createRouterProvider({ taskKind: 'chat' });
+    const p = createRouterProvider({ taskKind: 'work' });
     await p.doGenerate({
       prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
       tools: [{ type: 'function', name: 'readFile', description: 'Read a file.', inputSchema: { type: 'object' }, inputExamples: [{ input: { path: 'src/a.ts' } }] }],
@@ -59,20 +59,23 @@ async function main() {
     ok('10. compat: o3 via a gateway gets none', !('temperature' in o3));
   }
 
-  console.log('— a short follow-up inherits the working task kind —');
-  ok('11. debug question stays debug', classifyConversation(['100058 order why minus in distance? and why vehicle id not set?']).kind === 'agent' || classifyConversation(['order 100058 is broken: distance is negative']).kind === 'debug');
-  ok('12. "is this correct?" after a debug turn → debug', classifyConversation(['order 100058 is broken: distance is negative', 'is this the correct answer?']).kind === 'debug');
-  ok('13. "issue ki?" after a coding turn → coding', classifyConversation(['refactor the getDeliveryCharge function in PlaceNewOrder.php', 'issue ki?']).kind === 'coding');
-  ok('14. a long new question is classified on its own', classifyConversation(['fix the failing cart test', 'can you explain in general how laravel middleware ordering is decided for a request']).kind === 'chat');
-  ok('15. a follow-up after a plain chat stays chat', classifyConversation(['what is a closure?', 'and a monad?']).kind === 'chat');
-  ok('16. a greeting in between is skipped', classifyConversation(['the build is broken', 'thanks', 'and now?']).kind === 'debug');
+  console.log('— classification collapsed to four kinds —');
+  ok('11. a broken-thing question is work', classifyConversation(['order 100058 is broken: distance is negative']) === 'work');
+  ok('12. "is this correct?" after a work turn → work', classifyConversation(['order 100058 is broken: distance is negative', 'is this the correct answer?']) === 'work');
+  ok('13. "issue ki?" after a work turn → work', classifyConversation(['refactor the getDeliveryCharge function in PlaceNewOrder.php', 'issue ki?']) === 'work');
+  ok('14. a long new question is work too', classifyConversation(['fix the failing cart test', 'can you explain in general how laravel middleware ordering is decided for a request']) === 'work');
+  ok('15. a bare greeting is trivial', classifyTask('hi') === 'trivial' && classifyTask('kemon acho?') === 'trivial');
+  ok('16. a greeting in between is skipped', classifyConversation(['the build is broken', 'thanks', 'and now?']) === 'work');
+  ok('16b. a greeting naming an action is work, not trivial', classifyTask('fix this bug') === 'work' && classifyTask('file ta update koro') === 'work');
+  ok('16c. an image attachment is vision at any length', classifyTask('hi', { attachmentKinds: ['image'] }) === 'vision' && classifyTask('x'.repeat(7000), { attachmentKinds: ['pdf'] }) === 'vision');
+  ok('16d. big input is longContext', classifyTask('x'.repeat(7000)) === 'longContext' && classifyTask('ok', { attachments: 1 }) === 'longContext');
 
   console.log('— a decoding loop is cut —');
   const para = 'Let me check if there is a different issue with the distance validation. The original validation was required_unless, which means it is not required for take_away orders. But the user is asking about a negative distance value.\n\n';
   ok('17. the same paragraph three times is a loop', isDegenerateRepeat('Intro text. ' + para.repeat(3)));
   ok('18. twice is not (a legitimate restatement)', !isDegenerateRepeat('Intro text. ' + para.repeat(2)));
   ok('19. long varied prose is not', !isDegenerateRepeat(Array.from({ length: 40 }, (_, i) => `Finding ${i}: value ${i * 7} differs from ${i * 3}.`).join(' ')));
-  ok('20. "why X not set?" routes as debug', classifyConversation(['100058 order why minus in distance? and why vehicles id not set here?']).kind === 'debug');
+  ok('20. "why X not set?" is work', classifyConversation(['100058 order why minus in distance? and why vehicles id not set here?']) === 'work');
 
   console.log('— another harness\'s tool names resolve without a model call —');
   {

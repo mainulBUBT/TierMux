@@ -13,7 +13,7 @@ import { diagLog } from '../../util/diag';
 import { isFailoverWorthy, resolveCandidates } from './routerProvider';
 
 export interface RouteOnceOptions {
-  /** Task kind for the picker's routing table. Defaults to 'chat'. */
+  /** Task kind for the picker's routing table. Defaults to 'work'. */
   taskKind?: string;
   /** Preferred model (`platform::modelId`). Heads the chain; the rest still serve as failover. */
   model?: string;
@@ -71,7 +71,7 @@ export async function routeOnce(messages: ChatMessage[], opts: RouteOnceOptions 
   // is why condense and the title path hand-rolled a second call without `model` — the exact
   // ladder this module exists to delete. Resolve the normal chain, then hoist the preference.
   const chain = await resolveCandidates({
-    taskKind: opts.taskKind ?? 'chat',
+    taskKind: opts.taskKind ?? 'work',
     excludeModels: opts.exclude,
     effort: opts.effort,
   });
@@ -82,7 +82,7 @@ export async function routeOnce(messages: ChatMessage[], opts: RouteOnceOptions 
       // Not in the chain at all — an explicitly configured utilityModel that is disabled, in
       // cooldown or keyless-unavailable. A pin resolution honors the user's choice where it can
       // still run; when it cannot, the chain above stands rather than failing the call.
-      const pinned = await resolveCandidates({ taskKind: opts.taskKind ?? 'chat', pinnedModel: opts.model, effort: opts.effort });
+      const pinned = await resolveCandidates({ taskKind: opts.taskKind ?? 'work', pinnedModel: opts.model, effort: opts.effort });
       if (pinned.length > 0) chain.unshift(pinned[0]);
     }
   }

@@ -174,12 +174,12 @@ async function completeOnce(
   label: string,
 ): Promise<{ text: string; key: string } | null> {
   const first = await routeOnce(request, {
-    taskKind: 'chat', temperature: 0.2, maxTokens: SUMMARY_MAX_TOKENS, model: utilityModelPreference(), label,
+    taskKind: 'work', temperature: 0.2, maxTokens: SUMMARY_MAX_TOKENS, model: utilityModelPreference(), label,
   });
   if (first.text.trim()) return { text: first.text.trim(), key: first.key };
   diagLog(`${label}.retry`, `empty output from ${first.key} — retrying with a different model`);
   const second = await routeOnce(request, {
-    taskKind: 'chat', temperature: 0.2, maxTokens: SUMMARY_MAX_TOKENS, exclude: [first.key], label,
+    taskKind: 'work', temperature: 0.2, maxTokens: SUMMARY_MAX_TOKENS, exclude: [first.key], label,
   });
   return second.text.trim() ? { text: second.text.trim(), key: second.key } : { text: '', key: second.key };
 }
@@ -216,7 +216,7 @@ export async function condenseHistory(
   const instruction = { role: 'user' as const, content: 'Summarize the conversation above so it can continue with minimal context. Keep file names, decisions, and unresolved next steps. If it opens with an earlier summary, carry its Goal, Corrections and Next steps forward unless later messages supersede them.' };
   // Shrink, then fit to the summarizer's own window: fitMessages keeps the system prompt, the
   // FIRST user message (the goal) and the instruction, and fills newest-first between them.
-  const budget = inputBudget(resolveExecutionProfile(await peekTopModel('chat')).contextWindow, SUMMARY_MAX_TOKENS);
+  const budget = inputBudget(resolveExecutionProfile(await peekTopModel('work')).contextWindow, SUMMARY_MAX_TOKENS);
   const summaryRequest = fitMessages([
     { role: 'system' as const, content: SUMMARY_SYSTEM },
     ...shrinkForSummary(prefix),

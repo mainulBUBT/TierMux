@@ -21,7 +21,6 @@ export type { RouterProviderOptions, ModelSources } from './core/routerProvider'
 export {
   classifyTask,
   classifyTaskCore,
-  isPureVisualDescribe,
   attachmentKindsFromContent,
 } from './routing';
 export type { TaskKind, ClassifySignals } from './routing';

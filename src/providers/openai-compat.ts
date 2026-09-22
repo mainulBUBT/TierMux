@@ -11,6 +11,7 @@ import type {
 } from '../shared/types';
 import { BaseProvider, providerHttpError } from './base';
 import type { CompletionOptions } from './options';
+import { foldSseToCompletion, openCodeLaneHeaders, shapeOpenCodeRequest } from './opencodeLane';
 import { repairToolArguments, rescueInlineToolCalls, toolSchemaMap, sanitizeToolName, stripHarmonyTokens } from '../agent/toolArgs';
 import { flattenMessageContent, stripFileBlocks, contentToString } from '../agent/content';
 import { diagLog } from '../util/diag';
@@ -23,9 +24,15 @@ export interface OpenAICompatOpts {
   name: string;
   baseUrl: string;
   extraHeaders?: Record<string, string>;
-  /** Header that must carry a stable per-conversation id (OpenCode Zen: `x-opencode-session`,
-   *  required since 2026-09 — a request without it is refused with 400 MissingSessionID). */
+  /** Header that must carry a stable per-conversation id, for providers that route
+   *  or cache per session. Superseded for OpenCode by `opencodeFreeLane`, which
+   *  sends the same header in the stricter shape the free lane now demands. */
   sessionHeader?: string;
+  /** Dress requests as the official OpenCode client so Zen's anonymous free lane
+   *  (locked to the official client since 2026-09-16) lets them through. Applies
+   *  the client headers, forces streaming with the two decoy tools the gate looks
+   *  for, and folds the stream back for non-streaming callers. See opencodeLane.ts. */
+  opencodeFreeLane?: boolean;
   timeoutMs?: number;
   keyless?: boolean;
   /** Free tier works anonymously, paid tier needs a key — see PlatformInfo.keyOptional. */
@@ -63,6 +70,7 @@ export class OpenAICompatProvider extends BaseProvider {
   private readonly baseUrl: string;
   private readonly extraHeaders: Record<string, string>;
   private readonly sessionHeader?: string;
+  private readonly opencodeFreeLane: boolean;
   private readonly timeoutMs: number;
   private readonly forceSingleToolCall: boolean;
   private readonly reasoningStyle: ReasoningStyle;
@@ -80,6 +88,7 @@ export class OpenAICompatProvider extends BaseProvider {
     this.baseUrl = opts.baseUrl;
     this.extraHeaders = opts.extraHeaders ?? {};
     this.sessionHeader = opts.sessionHeader;
+    this.opencodeFreeLane = opts.opencodeFreeLane ?? false;
     this.timeoutMs = opts.timeoutMs ?? 60000;
     this.keyless = opts.keyless ?? false;
     this.forceSingleToolCall = opts.forceSingleToolCall ?? false;
@@ -103,6 +112,9 @@ export class OpenAICompatProvider extends BaseProvider {
       'User-Agent': USER_AGENT,
       ...this.extraHeaders,
       ...(this.sessionHeader ? { [this.sessionHeader]: sessionUuid(options?.sessionId) } : {}),
+      // Lane headers last: the costume must win over our own User-Agent and
+      // any sessionHeader spelling on exactly the providers that need it.
+      ...(this.opencodeFreeLane ? openCodeLaneHeaders(options?.sessionId) : {}),
     };
   }
 
@@ -143,7 +155,7 @@ export class OpenAICompatProvider extends BaseProvider {
       : modelId;
     // OpenAI reasoning models reject temperature/top_p.
     const fixedSampling = /(^|\/)(o[1-9]|gpt-5)/.test(wireModel);
-    return JSON.stringify({
+    const body: Record<string, unknown> = {
       model: wireModel,
       messages: wireMessages,
       ...(fixedSampling ? {} : { temperature: options?.temperature, top_p: options?.top_p }),
@@ -153,7 +165,8 @@ export class OpenAICompatProvider extends BaseProvider {
       parallel_tool_calls: this.resolveParallelToolCalls(options),
       ...this.reasoningFields(options?.reasoningEffort),
       ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
-    });
+    };
+    return JSON.stringify(this.opencodeFreeLane ? shapeOpenCodeRequest(body) : body);
   }
 
   private rescueFailedGeneration(errBody: unknown, options?: CompletionOptions): ChatToolCall[] | null {
@@ -204,7 +217,9 @@ export class OpenAICompatProvider extends BaseProvider {
 
     let data: ChatCompletionResponse;
     try {
-      data = (await res.json()) as ChatCompletionResponse;
+      // The free lane was forced to stream (the gate rejects non-streaming
+      // bodies), so fold the frames back into the single answer asked for.
+      data = this.opencodeFreeLane ? foldSseToCompletion(await res.text(), modelId) : (await res.json()) as ChatCompletionResponse;
     } catch {
       throw new Error(
         `${this.name} returned a non-JSON 200 body — the endpoint may not be OpenAI-compatible. Check the base URL (e.g. Ollama needs the /v1 path).`,

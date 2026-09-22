@@ -40,7 +40,7 @@ async function main() {
       'triage.md': `---
 description: Triage a failing test and report the first broken assumption.
 tools: [readFile, grep, runCommand]
-taskKind: debug
+taskKind: work
 maxSteps: 5
 ---
 You are the Triage agent. Report the first assumption that does not hold.`,
@@ -50,7 +50,7 @@ You are the Triage agent. Report the first assumption that does not hold.`,
     ok('4. the file is registered under its filename', !!t, [...agents.keys()].join(','));
     ok('5. description parsed', t.description.startsWith('Triage a failing test'));
     ok('6. inline tools list parsed', JSON.stringify(t.tools) === '["readFile","grep","runCommand"]', JSON.stringify(t.tools));
-    ok('7. taskKind and maxSteps parsed', t.taskKind === 'debug' && t.maxSteps === 5, `${t.taskKind}/${t.maxSteps}`);
+    ok('7. taskKind and maxSteps parsed', t.taskKind === 'work' && t.maxSteps === 5, `${t.taskKind}/${t.maxSteps}`);
     ok('8. body is the prompt, frontmatter stripped', t.prompt.startsWith('You are the Triage agent') && !t.prompt.includes('---'));
     ok('9. built-ins survive alongside it', agents.has('explore') && agents.has('review'));
   }

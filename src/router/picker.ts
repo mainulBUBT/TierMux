@@ -23,28 +23,29 @@ import { NoVisionModelError } from './errors';
 const PROVIDER_OFF = 'provider switched off in Manage Models & Keys';
 
 /** Layer-wise head floor (2026-09-22, user direction): the minimum quality tier allowed to
- *  LEAD each task kind — real work (agent/coding/debug/plan) leads only with frontier/strong.
- *  A below-floor row may still lead when it is fast (speedRank ≤ HEAD_FAST_ENOUGH): the
- *  curated groq/cerebras heads are mid-tier precisely because latency is the product there.
- *  Kinds absent from the map (trivial, vision) keep the legacy small/unknown-only gate. */
+ *  LEAD each task kind — work leads only with frontier/strong. A below-floor row may still
+ *  lead when it is fast (speedRank ≤ HEAD_FAST_ENOUGH): the curated groq/cerebras heads are
+ *  mid-tier precisely because latency is the product there. Kinds absent from the map
+ *  (trivial, vision) keep the legacy small/unknown-only gate. */
 const HEAD_MIN_TIER: Partial<Record<TaskKind, ModelTier>> = {
-  agent: 'strong', coding: 'strong', debug: 'strong', plan: 'strong',
-  chat: 'mid', longContext: 'mid',
+  work: 'strong', longContext: 'mid',
 };
 /** Interactive kinds whose head never includes a slow row (speedRank ≥ 4) — a speed-5 head
  *  once answered a vision turn in ~5 minutes (2026-09-04). Not applied to `trivial` (speed
  *  IS the product) or `vision` (curated, capability-bound). Static catalog data, not a
  *  learned latency signal — see the file header. */
-const HEAD_SPEED_CAP_KINDS = new Set<TaskKind>(['agent', 'coding', 'debug', 'plan', 'chat', 'longContext']);
+const HEAD_SPEED_CAP_KINDS = new Set<TaskKind>(['work', 'longContext']);
 /** A below-floor tier can still lead at this speedRank or better — fast buys its way in. */
 const HEAD_FAST_ENOUGH = 2;
 
-/** platform::modelId → candidate chain per task kind. Ordered: best first. */
+/** platform::modelId → candidate chain per task kind. Ordered: best first. Since the 2026-09-22
+ *  collapse (routing.ts) there are four kinds; `work` is everything that is not fast-by-length,
+ *  big-by-input or visual-by-attachment — the five old work-ish tables were merged because they
+ *  shared the same head. Every id here MUST exist in media/catalog.json; a renamed gateway id
+ *  goes dead silently (11 of 13 were once dead), which is why the tail below is rank-sorted,
+ *  not table-dependent. */
 export const TASK_ROUTING: Record<TaskKind, string[]> = {
-  // Every id here MUST exist in media/catalog.json; a renamed gateway id goes dead silently
-  // (11 of 13 were once dead), which is why the tail below is rank-sorted, not table-dependent.
-  coding: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::nemotron-3.5-lightning-free'],
-  debug: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
+  work: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::nemotron-3.5-lightning-free'],
   // Gemini leads when a Google key exists, but the tail below is NOT a safety net on a vision
   // turn — it used to pad the chain with every enabled model regardless of supportsVision, so a
   // keyless install with no Google key answered an image with a text-only model that silently
@@ -54,15 +55,12 @@ export const TASK_ROUTING: Record<TaskKind, string[]> = {
   // tail-only last resort (2026-09-04: a speed-5 row took ~5 minutes to answer).
   vision: ['google::gemini-2.5-flash', 'opencode::muse-spark-1.3-contributor-free', 'opencode::mimo-v2.5-free', 'kilo::dots-studio/dots-3-note-preview:free'],
   longContext: ['google::gemini-2.5-flash', 'groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free'],
-  plan: ['groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
   // Latency IS the product here (inline completions, commit messages, titles), so this table is
   // ordered by speedRank, not tier. kilo::stepfun/step-3.7-flash is the only KEYLESS speedRank-1
   // row in the catalog (of 7 total), so a zero-setup install gets a fast head instead of falling
   // through to the rank-3 entries. kilo::kilo-auto/free is also speedRank 1 but is a router alias
   // — kilo picks the model, so its latency is unknowable; it stays out on purpose.
   trivial: ['cerebras::gemma-4-31b', 'kilo::stepfun/step-3.7-flash:free', 'groq::openai/gpt-oss-20b', 'opencode::mimo-v2.5-free'],
-  chat: ['groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::mimo-v2.5-free'],
-  agent: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::nemotron-3.5-lightning-free'],
 };
 
 /** One row of the "Why this model?" report — numeric fields mirror the old scoring Router's
@@ -227,7 +225,7 @@ export async function peekTopModel(taskKind: string): Promise<CatalogModel | und
 function keylessFallback(): ModelSelection {
   const keyless = allPlatformInfo().filter((p) => p.keyless).map((p) => p.platform);
   const chain = keyless.map((p) => `${p}::auto`);
-  return { model: chain[0] ?? 'groq::llama-3.3-70b-versatile', fallbackChain: chain.slice(1), taskKind: 'chat' };
+  return { model: chain[0] ?? 'groq::llama-3.3-70b-versatile', fallbackChain: chain.slice(1), taskKind: 'work' };
 }
 
 /** Per-model cooldown — the ONLY resilience state the picker keeps. A failing model is skipped
@@ -524,7 +522,7 @@ export async function selectModel(
   const modelRank = rankByModel(enabled);
 
   const tableCandidates: Array<{ key: string; headroom: number }> = [];
-  for (const key of TASK_ROUTING[taskKind] ?? TASK_ROUTING.chat) {
+  for (const key of TASK_ROUTING[taskKind] ?? TASK_ROUTING.work) {
     const [tPlatform, ...tRest] = key.split('::');
     const tModelId = tRest.join('::');
     // Dead-ID guard: a renamed/retired gateway model must say so in the rationale instead of

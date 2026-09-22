@@ -34,7 +34,7 @@ export function registerInlineChat(editGate: EditGate): vscode.Disposable {
             { role: 'system', content: SYSTEM },
             { role: 'user', content: `Instruction: ${instruction}\n\nLanguage: ${lang}\n\nCode:\n\`\`\`${lang}\n${code}\n\`\`\`` },
           ],
-          { taskKind: 'coding', label: 'inlineChat' },
+          { taskKind: 'work', label: 'inlineChat' },
         );
         const newCode = stripFences(result.text).trimEnd();
         if (useWholeFile) {
