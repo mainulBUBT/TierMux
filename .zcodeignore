@@ -1,0 +1,80 @@
+node_modules/
+dist/
+media/vendor/
+*.vsix
+.DS_Store
+# Local editor settings (may contain personal API keys per device)
+.vscode/settings.json
+# OpenCode bundled binary (downloaded at runtime)
+bin/
+# Test extension path artifacts (created during dev)
+extensionPath/
+# OpenCode user config (may contain secrets)
+.tiermux/opencode.jsonc
+# OpenCode provider package install (auto-generated, ~10 MB node_modules)
+.tiermux/opencode/node_modules/
+.tiermux/opencode/package.json
+.tiermux/opencode/package-lock.json
+# Auto-generated opencode.jsonc (provider config, written on activate)
+.tiermux/opencode/config.json
+# Legacy retrieval artifacts (pre-research removed in v7.0)
+.tiermux/graph/
+.tiermux/memory.md
+# Kilo AI extension artifacts (separate extension, not part of TierMux)
+.kilo/
+# Claude Code / Antigravity IDE metadata
+.claude/
+.commandcode/
+.benchmarks/
+.puku/
+
+# Webview TS incremental build cache
+.cache/
+
+# Secrets. PUBLISHING.md step 1 checks that no .env file is TRACKED, but nothing stopped one from
+# being added in the first place — a `git add -A` on a machine that had a local .env was all it
+# would have taken. Benchmark runs need real provider keys (BENCH_KEY_<PLATFORM>), which is exactly
+# the situation that puts a key in the working tree.
+.env
+.env.*
+!.env.example
+
+# Ad-hoc debug scratch scripts (never part of a build or test run)
+scripts/tmp/
+
+# Webview bundle (esbuild: media/src/main.ts -> media/main.js). Generated exactly like
+# dist/extension.js, which has always been untracked — packaging already requires a build
+# (npm run build / package:all / publish all run it), so tracking this only added ~5k-line
+# diffs to every commit that touched the webview.
+media/main.js
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

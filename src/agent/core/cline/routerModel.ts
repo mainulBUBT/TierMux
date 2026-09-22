@@ -49,6 +49,20 @@ export function agentMessagesToChat(messages: readonly AgentMessage[]): ChatMess
 
 /** At/below this window the schema tax stops being affordable (mirrors the old engine). */
 const SMALL_WINDOW_MAX = 16_384;
+
+/** The opencode free lane rides two DECOY tools (`read`, `bash` — see opencodeLane.ts) past
+ *  Zen's client gate, with "do not call" descriptions. A weak model sometimes calls them
+ *  anyway, and the runtime would answer "Unknown tool" and burn a step. Their decoy schemas
+ *  deliberately mirror the real tools ({path} / {command}), so rename the call to the real
+ *  tool at the model boundary — the turn keeps its evidence instead of tripping on a decoy. */
+const TOOL_ALIASES: Record<string, string> = {
+  read: 'readFile',
+  bash: 'runCommand',
+};
+
+function resolveToolName(name: string | undefined): string {
+  return (name && TOOL_ALIASES[name]) || name || '';
+}
 /** Coordination tools withdrawn from small-window models' view (schema tax). */
 const COORDINATION_TOOLS = ['todoWrite'];
 
@@ -162,7 +176,7 @@ export function createTierMuxAgentModel(opts: TierMuxAgentModelOptions): AgentMo
               if (rawDelta.content) yield { type: 'text-delta', text: rawDelta.content };
               if (delta?.tool_calls?.length) {
                 for (const started of assembler.push(delta.tool_calls)) {
-                  if (started.name) yield { type: 'tool-call-delta', toolCallId: started.id, toolName: started.name, inputText: '' };
+                  if (started.name) yield { type: 'tool-call-delta', toolCallId: started.id, toolName: resolveToolName(started.name), inputText: '' };
                 }
               }
               if (chunk.usage) usage = chunk.usage;
@@ -176,7 +190,7 @@ export function createTierMuxAgentModel(opts: TierMuxAgentModelOptions): AgentMo
             for (const call of assembler.complete()) {
               let input: unknown;
               try { input = JSON.parse(call.args || '{}'); } catch { input = {}; }
-              yield { type: 'tool-call-delta', toolCallId: call.id, toolName: call.name, input };
+              yield { type: 'tool-call-delta', toolCallId: call.id, toolName: resolveToolName(call.name), input };
             }
             if (usage) {
               const inputTokens = usage.prompt_tokens ?? 0;
