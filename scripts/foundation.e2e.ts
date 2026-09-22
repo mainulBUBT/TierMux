@@ -13,7 +13,7 @@ import { createMockModel, type MockResponse } from './mockClineModel';
 import { createReadFileTool } from '../src/agent/core/tools/v3/readFile';
 import { createEditFileTool } from '../src/agent/core/tools/v3/editFile';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
-import { runAgentStream as engineRun, runPlanStream as engineRunPlan, runPlanStream as engineRunAsk } from '../src/agent/agent';
+import { runAgentStream as engineRun, runPlanStream as engineRunPlan } from '../src/agent/agent';
 import { __setClineEngineModelForTests } from '../src/agent/core/cline/clineEngine';
 import { resolvePolicy, defaultPolicy as prodDefaultPolicy, policyFromSettings, clearSessionGrants } from '../src/permissions/policy';
 import { setMcpManager } from '../src/agent/core/tools/mcp/manager';
@@ -80,7 +80,7 @@ function engineOpts(over: Partial<AgentOpts> & { messages: ChatMessage[]; mode: 
 async function engineTurn(model: ReturnType<typeof createMockModel>, opts: AgentOpts): Promise<AgentResult> {
   __setClineEngineModelForTests(model);
   // The public entries force their mode (same as production callers) — pick by requested mode.
-  const entry = opts.mode === 'plan' ? engineRunPlan : opts.mode === 'ask' ? engineRunAsk : engineRun;
+  const entry = opts.mode === 'plan' ? engineRunPlan : engineRun;
   try {
     return await entry(opts);
   } finally {
@@ -471,7 +471,7 @@ async function main() {
     const m2 = createMockModel([{ text: 'hello world, as I read earlier' }], 's12b');
     await runWithWorkspaceRoot(ws.root, () => engineTurn(m2, engineOpts({
       messages: [...(r1.workMessages ?? []), { role: 'user', content: 'what did foo.txt say? quote it exactly' }],
-      mode: 'ask',
+      mode: 'agent',
     })));
 
     const prompt2 = JSON.stringify(m2.calls[0].messages);
@@ -582,7 +582,7 @@ async function main() {
     ok('15. turn completed', out.finishReason === 'stop', `finish=${out.finishReason}`);
 
     const { buildV3ToolSet } = await import('../src/agent/core/tools/v3');
-    ok('15. todoWrite offered in all 3 modes', ['agent', 'plan', 'ask'].every((mode) => 'todoWrite' in buildV3ToolSet(mode as never)));
+    ok('15. todoWrite offered in both modes', ['agent', 'plan'].every((mode) => 'todoWrite' in buildV3ToolSet(mode as never)));
   }
 
   // ── Scenario 16: project rules reach the system prompt ──────────────────────
@@ -1111,33 +1111,19 @@ async function main() {
       toRouterToolChoice({ type: 'auto' }) === 'auto' && toRouterToolChoice({ type: 'none' }) === 'none'
       && toRouterToolChoice(undefined) === undefined);
 
-    const askTools = buildV3ToolSet('ask');
-    ok('F. web tools offered in ask mode too', 'webSearch' in askTools && 'fetchUrl' in askTools);
-
-    // Ask mode = read-only Q&A: file mutators are withheld by the toolset AND hard-denied
-    // by the policy. Shell is offered READ-ONLY — `git log` auto-runs, destructive commands
-    // are denied outright, the ambiguous rest go through the approval channel.
-    ok('F. runCommand offered read-only in ask mode', 'runCommand' in askTools);
-    ok('F. ask mode still has no editors',
-      !('editFile' in askTools) && !('writeFile' in askTools) && !('deleteFile' in askTools));
-    const askPolicy = { ...prodDefaultPolicy, sessionMode: 'ask' as const, mode: 'full-auto' as const, alwaysAllow: new Set(['editFile']), alwaysDeny: new Set<string>() };
-    const askEdit = await resolvePolicy({ toolName: 'editFile' }, askPolicy);
-    ok('F. edits hard-denied in ask mode even under full-auto + alwaysAllow',
-      (askEdit as { type: string }).type === 'denied', JSON.stringify(askEdit));
-    const askReadOnly = await resolvePolicy({ toolName: 'runCommand', input: { command: 'git log --oneline -5' } }, askPolicy);
-    ok('F. read-only shell auto-runs in ask mode',
-      (askReadOnly as { type: string }).type === 'approved', JSON.stringify(askReadOnly));
-    const askDanger = await resolvePolicy({ toolName: 'runCommand', input: { command: 'rm -rf dist' } }, askPolicy);
-    ok('F. destructive shell hard-denied in ask mode even under full-auto',
-      (askDanger as { type: string }).type === 'denied', JSON.stringify(askDanger));
-    let asked = 0;
-    const askAmbiguous = await resolvePolicy(
-      { toolName: 'runCommand', input: { command: 'npm test' } },
-      { ...askPolicy, mode: 'ask' as const },
-      async () => { asked++; return 'allow'; },
-    );
-    ok('F. ambiguous shell asks in ask mode (no blanket allow)',
-      (askAmbiguous as { type: string }).type === 'approved' && asked === 1, JSON.stringify(askAmbiguous));
+    // Ask mode is gone (modes are 'plan' | 'agent'); its read-only Q&A surface lives on in
+    // plan mode, whose toolset still withholds the editors and whose policy still denies them.
+    const planTools = buildV3ToolSet('plan');
+    ok('F. web tools offered in plan mode too', 'webSearch' in planTools && 'fetchUrl' in planTools);
+    ok('F. plan mode still has no editors',
+      !('editFile' in planTools) && !('writeFile' in planTools) && !('deleteFile' in planTools));
+    const planHardPolicy = { ...prodDefaultPolicy, sessionMode: 'plan' as const, mode: 'full-auto' as const, alwaysAllow: new Set(['editFile']), alwaysDeny: new Set<string>() };
+    const planEdit = await resolvePolicy({ toolName: 'editFile' }, planHardPolicy);
+    ok('F. edits hard-denied in plan mode even under full-auto + alwaysAllow',
+      (planEdit as { type: string }).type === 'denied', JSON.stringify(planEdit));
+    gone('F. read-only shell auto-ran in ask mode', 'ask mode removed (modes are plan | agent)');
+    gone('F. destructive shell hard-denied in ask mode', 'ask mode removed (modes are plan | agent)');
+    gone('F. ambiguous shell asked in ask mode', 'ask mode removed (modes are plan | agent)');
   }
 
   // ── Scenario 26: a turn cut by the STEP CAP must say so ─────────────────────
@@ -1341,173 +1327,31 @@ async function main() {
     ok('15b. no list, no block', !sys3.includes('<task_list>'));
   }
 
-  // ── Scenario 27d: the TODO AUDIT — a declared "done" is checked, not believed ──
-  // Pochi's completion audit, in the verify gate's bounded shape: agent mode, only when the
-  // turn used todoWrite, one read-only sub-agent, at most one fix pass.
+  // ── Scenario 27d: the TODO AUDIT — dropped with the old engine ────────────────
+  // The user chose to drop the auditTodos gate permanently on the cline branch: the runtime's
+  // own completion machinery (completionPolicy) owns end-of-turn behavior now, and the host
+  // never judges answer quality (SIMPLE_CORE_RESET). The todo LIST itself (todoWrite +
+  // injection) is covered by scenario 15/15b.
   {
-    const { __setSubagentModelForTests } = await import('../src/agent/core/subagent');
-    const todos = [{ content: 'Add min:0 validation to distance', status: 'completed' }];
-
-    // (a) the auditor finds no evidence → the turn gets one more pass, then ships
-    {
-      const ws = makeWorkspace();
-      const auditor = createMockModel([{ text: 'INCOMPLETE: no min:0 validation exists in the request rules.' }], 's27d-audit');
-      __setSubagentModelForTests(auditor as never);
-      const m = createMockModel([
-        { toolCalls: [{ toolName: 'todoWrite', input: { todos } }] },
-        { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'done' } }] },
-        { text: 'finished' },
-        { text: 'you are right — added it now' },
-      ], 's27d-a');
-      const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
-        messages: [{ role: 'user', content: 'add the validation' }],
-        mode: 'agent', autoApprove: true,
-      })));
-      __setSubagentModelForTests(undefined);
-      gone('27d. the auditor was asked about the completed todo', 'auditTodos gate not ported on the cline branch');
-      if (false) ok('27d. the auditor was asked about the completed todo',
-        JSON.stringify(auditor.calls[0]?.messages ?? []).includes('min:0 validation'), 'auditor saw no todo');
-      gone('27d. a missing-evidence verdict is reported', 'auditTodos gate not ported');
-      gone('27d. and the turn got ONE more pass with the verdict', 'auditTodos gate not ported');
-      if (false) ok('27d. and the turn got ONE more pass with the verdict',
-        JSON.stringify(m.calls[m.calls.length - 1]?.messages ?? []).includes('could not find evidence'), `calls=${m.calls.length}`);
-      ok('27d. the turn still ships its work', out.text.length > 0 && ws.read('foo.txt') === 'done world', ws.read('foo.txt'));
-    }
-
-    // (b) evidence found → nothing extra happens
-    {
-      const ws = makeWorkspace();
-      const auditor = createMockModel([{ text: 'VERIFIED\nfoo.txt:1 holds the change.' }], 's27d-ok');
-      __setSubagentModelForTests(auditor as never);
-      const m = createMockModel([
-        { toolCalls: [{ toolName: 'todoWrite', input: { todos } }] },
-        { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'done' } }] },
-        { text: 'finished' },
-      ], 's27d-b');
-      const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
-        messages: [{ role: 'user', content: 'add the validation' }],
-        mode: 'agent', autoApprove: true,
-      })));
-      __setSubagentModelForTests(undefined);
-      gone('27d. a verified audit adds no pass', 'auditTodos gate not ported');
-    }
-
-    // (c) no todos, or the gate off → the auditor is never called
-    {
-      const ws = makeWorkspace();
-      const auditor = createMockModel([{ text: 'VERIFIED' }], 's27d-none');
-      __setSubagentModelForTests(auditor as never);
-      const m = createMockModel([{ text: 'just answering' }], 's27d-c');
-      const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
-        messages: [{ role: 'user', content: 'what is 2+2' }], mode: 'agent',
-      })));
-      ok('27d. a turn with no todos never runs the audit', auditor.calls.length === 0 && out.auditOutcome === undefined);
-
-      const m2 = createMockModel([
-        { toolCalls: [{ toolName: 'todoWrite', input: { todos } }] },
-        { text: 'finished' },
-      ], 's27d-off');
-      const out2 = await runWithWorkspaceRoot(ws.root, () => engineTurn(m2, engineOpts({
-        messages: [{ role: 'user', content: 'do it' }], mode: 'agent', auditTodos: false,
-      })));
-      __setSubagentModelForTests(undefined);
-      ok('27d. auditTodos:false disables it', auditor.calls.length === 0 && out2.auditOutcome === undefined);
-    }
+    gone('27d. the auditor was asked about the completed todo', 'auditTodos gate dropped with the old engine');
+    gone('27d. a missing-evidence verdict is reported', 'auditTodos gate dropped with the old engine');
+    gone('27d. and the turn got ONE more pass with the verdict', 'auditTodos gate dropped with the old engine');
+    gone('27d. a verified audit adds no pass', 'auditTodos gate dropped with the old engine');
+    gone('27d. auditTodos:false disables it', 'setting removed with the gate');
   }
 
-  // ── Scenario 28: the VERIFY GATE and the WORK REPORT (§2.1 / §2.2) ───────────
-  // Both shipped fully built and never invoked for the whole v3 era: verifyCommand.ts had zero
-  // callers while two settings advertised it, and WorkReportData was declared, posted, rendered
-  // live and on replay — and never once produced by the engine.
+  // ── Scenario 28: the VERIFY GATE and the WORK REPORT — dropped with the old engine ──
+  // The user chose to drop both permanently on the cline branch: verifyCommand/fix rounds and
+  // workReport/ResultCard never ran in the v3 era anyway (zero callers), and the webview now
+  // keeps only stripLegacyMarkdown for replaying old sessions. Candidate for a future Cline
+  // plugin if the need returns.
   {
-    const ws = makeWorkspace();
-    const g = globalThis as { __tiermuxTestConfig?: Record<string, unknown> };
-    const prev = g.__tiermuxTestConfig;
-    // A command the temp workspace really runs, so the gate is exercised end to end.
-    g.__tiermuxTestConfig = { ...(prev ?? {}), verifyCommand: 'exit 0' };
-    let out: AgentResult;
-    try {
-      const model = createMockModel([
-        { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'verified' } }] },
-        { text: 'edited' },
-      ], 's28');
-      out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-        messages: [{ role: 'user', content: 'edit foo.txt' }],
-        mode: 'agent',
-        autoApprove: true,
-        verifyFixRounds: 2,
-      })));
-    } finally {
-      g.__tiermuxTestConfig = prev;
-    }
-    gone('28. the verify gate ran and passed', 'verify gate not ported on the cline branch (candidate: Cline plugin)');
-    gone('28. a work report is produced at all (it never was before)', 'workReport generation not ported on the cline branch');
-    const r = out.workReport!;
-    ok('28. the report is the versioned shape the webview renders', r.version === 1);
-    ok('28. it names the verify outcome in USER vocabulary', r.verifyOutcome === 'verified', String(r.verifyOutcome));
-    ok('28. it carries the command that was run', r.verifyCmd === 'exit 0', String(r.verifyCmd));
-    ok('28. no fix rounds were needed', r.fixRounds === 0, String(r.fixRounds));
-    ok('28. changed files use the A/M/D badge vocabulary',
-      r.changedFiles.length === 1 && r.changedFiles[0].path.endsWith('foo.txt') && r.changedFiles[0].status === 'M',
-      JSON.stringify(r.changedFiles));
-    ok('28. the tool tally counts the edit', r.toolTally.some((t) => t.name === 'editFile' && t.count === 1),
-      JSON.stringify(r.toolTally));
-    ok('28. telemetry describes the turn', r.telemetry.toolCalls === 1 && r.telemetry.elapsedMs >= 0,
-      JSON.stringify(r.telemetry));
-  }
-
-  // ── Scenario 28b: a FAILING verify command drives BOUNDED fix rounds ─────────
-  {
-    const ws = makeWorkspace();
-    const g = globalThis as { __tiermuxTestConfig?: Record<string, unknown> };
-    const prev = g.__tiermuxTestConfig;
-    g.__tiermuxTestConfig = { ...(prev ?? {}), verifyCommand: 'exit 1' };
-    let out: AgentResult;
-    let model!: ReturnType<typeof createMockModel>;
-    try {
-      model = createMockModel([
-        { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'broken' } }] },
-        { text: 'edited' },
-        // Two fix rounds, one model call each. The command keeps failing, so the gate gives up.
-        { text: 'attempted fix 1' },
-        { text: 'attempted fix 2' },
-      ], 's28b');
-      out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-        messages: [{ role: 'user', content: 'edit foo.txt' }],
-        mode: 'agent',
-        autoApprove: true,
-        verifyFixRounds: 2,
-      })));
-    } finally {
-      g.__tiermuxTestConfig = prev;
-    }
-    ok('28b. a persistent failure is reported as failed', out.verifyOutcome === 'failed', `verifyOutcome=${out.verifyOutcome}`);
-    ok('28b. the fix rounds are BOUNDED by the setting', out.workReport?.fixRounds === 2, String(out.workReport?.fixRounds));
-    ok('28b. the agent owned the recheck (2 + 2 fix rounds = 4 model calls)',
-      model.calls.length === 4, `calls=${model.calls.length}`);
-    ok('28b. the edit still stands — a failed verify never reverts work',
-      ws.read('foo.txt') === 'broken world', ws.read('foo.txt'));
-    // A fix round's reply used to REPLACE the turn's summary, so a failed gate shipped the fix
-    // note alone and the user lost the account of what was done.
-    ok('28b. the turn summary survives the fix rounds', out.text.startsWith('edited'), JSON.stringify(out.text));
-    ok('28b. and every fix note is kept with it',
-      out.text.includes('attempted fix 1') && out.text.includes('attempted fix 2'), JSON.stringify(out.text));
-  }
-
-  // ── Scenario 28c: no mutation ⇒ no gate, no card ─────────────────────────────
-  {
-    const ws = makeWorkspace();
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-      { text: 'it says hello world' },
-    ], 's28c');
-    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'what does foo.txt say?' }],
-      mode: 'agent',
-    })));
-    ok('28c. a read-only turn runs no verify command', out.verifyOutcome === undefined, String(out.verifyOutcome));
-    ok('28c. and produces no work report (an empty card is worse than none)',
-      out.workReport === undefined, JSON.stringify(out.workReport));
+    gone('28. the verify gate ran and passed', 'verify gate dropped with the old engine');
+    gone('28. a work report is produced at all (it never was before)', 'workReport generation dropped with the old engine');
+    gone('28b. a persistent failure is reported as failed', 'verify gate dropped with the old engine');
+    gone('28b. the fix rounds are BOUNDED by the setting', 'verifyFixRounds setting removed');
+    gone('28c. a read-only turn runs no verify command', 'verify gate dropped with the old engine');
+    gone('28c. and produces no work report', 'workReport generation dropped with the old engine');
   }
 
   // ── Scenario 29: `commandApproval: "never"` DISABLES the shell ───────────────
@@ -1551,11 +1395,9 @@ async function main() {
       ok('30. an MCP tool is offered in agent mode', agentTools.includes('mcp__docs__search'), agentTools.join(','));
       ok('30. the built-ins are still all there', agentTools.includes('readFile') && agentTools.includes('editFile'));
 
-      // The two read-only modes deliberately do NOT get them: an MCP tool's capability is
-      // unknowable, plan mode's policy would deny it anyway, and ask mode would AUTO-APPROVE
-      // it under full-auto — quietly breaking the read-only promise.
+      // Plan mode deliberately does NOT get them: an MCP tool's capability is unknowable and
+      // plan mode's policy would deny it anyway.
       ok('30. plan mode does not offer MCP tools', !Object.keys(buildV3ToolSet('plan')).includes('mcp__docs__search'));
-      ok('30. ask mode does not offer MCP tools', !Object.keys(buildV3ToolSet('ask')).includes('mcp__docs__search'));
 
       // Not read-only ⇒ the normal approval chain asks first. Right default for a tool whose
       // code lives outside this repo.

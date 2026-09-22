@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createMockModel } from './mockClineModel';
-import { runAgentStream } from '../src/agent/agent';
+import { runAgentStream, runPlanStream } from '../src/agent/agent';
 import { __setClineEngineModelForTests, agentToChatMessages } from '../src/agent/core/cline/clineEngine';
 import { chatToAgentMessages } from '../src/agent/core/cline/clineEngine';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
@@ -37,10 +37,21 @@ function opts(over: Partial<AgentOpts>): AgentOpts {
   } as AgentOpts;
 }
 
+const models = new Map<string, ReturnType<typeof createMockModel>>();
 async function turn(model: ReturnType<typeof createMockModel>, over: Partial<AgentOpts> = {}): Promise<AgentResult> {
+  models.set(model.name, model);
   __setClineEngineModelForTests(model);
-  try { return await runWithWorkspaceRoot(root, () => runAgentStream(opts(over))); }
+  const run = over.mode === 'plan' ? runPlanStream : runAgentStream;
+  try { return await runWithWorkspaceRoot(root, () => run(opts(over))); }
   finally { __setClineEngineModelForTests(undefined); }
+}
+function modelCallsOf(name: string): number {
+  return models.get(name)?.calls.length ?? 0;
+}
+function lastRequestJson(name: string): string {
+  const calls = models.get(name)?.calls ?? [];
+  const last = calls[calls.length - 1];
+  return JSON.stringify(last?.messages ?? []);
 }
 
 async function main() {
@@ -114,6 +125,151 @@ async function main() {
     setTimeout(() => controller.abort(), 300);
     const r = await p;
     ok('the aborted turn returned (no throw)', !!r && r.text === '', `text=${r.text}`);
+  }
+
+  console.log('\n— plan mode: an accepted exitPlanMode completes the run (completionPolicy) —');
+  {
+    const r = await turn(createMockModel([
+      { toolCalls: [{ toolName: 'exitPlanMode', input: { outcome: 'plan', title: 'T', interpretation: 'The user wants the file echoed.', steps: [{ what: 'Echo a.txt', files: ['a.txt'], evidence: 'a.txt:1 has hello' }] } }] },
+    ], 'plan-accept'), {
+      mode: 'plan',
+    });
+    ok('an accepted plan ends the run natively', !!r.plan && r.plan.steps?.length === 1 && !r.failed, `plan=${!!r.plan} failed=${r.failed}`);
+    ok('the tool meta-string does not ship as the answer', r.text === '', r.text);
+  }
+
+  console.log('\n— plan mode: a REJECTED plan (error output) does NOT complete the run —');
+  {
+    const r = await turn(createMockModel([
+      { toolCalls: [{ toolName: 'exitPlanMode', input: { outcome: 'plan', title: 'T', interpretation: 'wants it', steps: [{ what: 'x — missing files/evidence' }] } }] },
+      { toolCalls: [{ toolName: 'exitPlanMode', input: { outcome: 'plan', title: 'T', interpretation: 'The user wants the file echoed.', steps: [{ what: 'Echo a.txt', files: ['a.txt'], evidence: 'a.txt:1' }] } }] },
+    ], 'plan-reject'), {
+      mode: 'plan',
+    });
+    ok('the rejected call did not end the run (a second request happened)', modelCallsOf('plan-reject') === 2, `${modelCallsOf('plan-reject')}`);
+    ok('the rejection error reached the next request', lastRequestJson('plan-reject').includes('Every step needs'), '');
+    ok('the revised plan completed the run', !!r.plan && !r.failed, `plan=${!!r.plan} failed=${r.failed}`);
+  }
+
+  console.log('\n— plan mode: a prose-only finish gets the completion reminder and continues —');
+  {
+    const r = await turn(createMockModel([
+      { text: 'I found the answer — the file says hello. The fix is obvious; let me set it up now.' },
+      { toolCalls: [{ toolName: 'exitPlanMode', input: { outcome: 'plan', title: 'T', interpretation: 'The user wants the file echoed.', steps: [{ what: 'Echo a.txt', files: ['a.txt'], evidence: 'a.txt:1' }] } }] },
+    ], 'plan-gap'), { mode: 'plan' });
+    ok('the run continued past the prose-only finish (two requests)', modelCallsOf('plan-gap') === 2, `${modelCallsOf('plan-gap')}`);
+    ok('the second request carries the completion reminder', lastRequestJson('plan-gap').includes('[SYSTEM]'), '');
+    ok('the run completed on the exitPlanMode call', !!r.plan && !r.failed, `plan=${!!r.plan} failed=${r.failed}`);
+  }
+
+  console.log('\n— steering: a mid-run push lands before the next model request, once —');
+  {
+    let sawHandle = false;
+    let steer: { push: (text: string) => void } | undefined;
+    const p = turn(createMockModel([
+      { text: 'thinking…', hangUntilSteer: true },
+      { text: 'ok — changing course.' },
+    ], 'steer'), {
+      onSteerReady: (h) => { if (h) { sawHandle = true; steer = h; } },
+    });
+    // Wait for the in-flight request, steer, then release it the way a steering interrupt does.
+    while (modelCallsOf('steer') < 1) await new Promise((r) => setTimeout(r, 10));
+    steer?.push('actually — answer with BANANA only');
+    models.get('steer')?.release();
+    const r = await p;
+    ok('the steer handle was handed to the host while the run was live', sawHandle, '');
+    ok('the run completed after the steering interrupt', r.text === 'ok — changing course.', r.text);
+    ok('the steer text led the next request as a user message', lastRequestJson('steer').includes('BANANA'), '');
+    ok('the steer text entered the transcript exactly once',
+      r.workMessages?.filter((m) => m.role === 'user' && m.content.includes('BANANA')).length === 1, '');
+  }
+
+  console.log('\n— WS0: chaining turns on the returned transcript never duplicates history —');
+  {
+    const r1 = await turn(createMockModel([{ text: 'first answer' }], 'ws0-1'), {
+      messages: [{ role: 'user', content: 'turn one question' }],
+    });
+    ok('turn one returned the seeded user + answer', r1.workMessages?.length === 2, `${r1.workMessages?.length}`);
+    const r2 = await turn(createMockModel([{ text: 'second answer' }], 'ws0-2'), {
+      messages: [...(r1.workMessages ?? []), { role: 'user', content: 'turn two question' }],
+    });
+    const userTexts = (r2.workMessages ?? []).filter((m) => m.role === 'user').map((m) => String(m.content));
+    ok('turn one\'s user message appears exactly once after chaining',
+      userTexts.filter((t) => t === 'turn one question').length === 1, JSON.stringify(userTexts));
+    ok('turn two\'s transcript is seed + exactly one new answer', (r2.workMessages?.length ?? 0) === 4, `${r2.workMessages?.length}`);
+  }
+
+  console.log('\n— overflow recovery: the runtime re-projects through prepareTurn and retries —');
+  {
+    const big = 'x'.repeat(40_000);
+    const history: ChatMessage[] = [
+      { role: 'user', content: 'summarize the file after reading' },
+      { role: 'assistant', content: '', tool_calls: [{ id: 'call_big', type: 'function', function: { name: 'readFile', arguments: '{"path":"big.txt"}' } }] },
+      { role: 'tool', content: big, tool_call_id: 'call_big' },
+      { role: 'assistant', content: 'I read the big file.' },
+      { role: 'user', content: 'now summarize it in one line' },
+    ];
+    const r = await turn(createMockModel([
+      { finishError: { error: 'This model\'s maximum context length is exceeded', errorClass: 'context_window_exceeded', errorRetryable: false } },
+      { text: 'the file is a long run of x characters.' },
+    ], 'overflow'), {
+      messages: history,
+    });
+    ok('the run recovered and answered after ONE recovery pass', r.text === 'the file is a long run of x characters.' && modelCallsOf('overflow') === 2, `calls=${modelCallsOf('overflow')} text=${r.text.slice(0, 40)}`);
+    const first = models.get('overflow')?.calls[0];
+    const second = models.get('overflow')?.calls[1];
+    ok('the recovered request was strictly shorter than the overflowing one',
+      !!first && !!second && JSON.stringify(second.messages).length < JSON.stringify(first.messages).length,
+      `${JSON.stringify(first?.messages ?? []).length} → ${JSON.stringify(second?.messages ?? []).length}`);
+  }
+
+  console.log('\n— overflow terminal: nothing left to compact fails the run with the runtime\'s error —');
+  {
+    const big = 'y'.repeat(40_000);
+    const r = await turn(createMockModel([
+      { finishError: { error: 'maximum context length exceeded', errorClass: 'context_window_exceeded', errorRetryable: false } },
+      { finishError: { error: 'maximum context length exceeded', errorClass: 'context_window_exceeded', errorRetryable: false } },
+    ], 'overflow-terminal'), {
+      messages: [
+        { role: 'user', content: 'summarize' },
+        { role: 'assistant', content: '', tool_calls: [{ id: 'call_big', type: 'function', function: { name: 'readFile', arguments: '{"path":"big.txt"}' } }] },
+        { role: 'tool', content: big, tool_call_id: 'call_big' },
+        { role: 'assistant', content: 'read done.' },
+        { role: 'user', content: 'summarize again' },
+      ],
+    });
+    ok('the run FAILED after the one allowed recovery', r.failed === true && modelCallsOf('overflow-terminal') === 2, `failed=${r.failed} calls=${modelCallsOf('overflow-terminal')}`);
+    ok('the terminal error names the overflow/compaction failure', /overflow|compac|context/i.test(r.errorMessage ?? ''), r.errorMessage?.slice(0, 120));
+  }
+
+  console.log('\n— parallel reads batch; the sequential boundary still holds —');
+  {
+    const r = await turn(createMockModel([
+      { toolCalls: [
+        { toolName: 'readFile', input: { path: 'a.txt' } },
+        { toolCallId: 'call_x', toolName: 'readFile', input: { path: 'a.txt' } },
+      ] },
+      { text: 'both reads finished.' },
+    ], 'parallel'), {});
+    const toolResults = (r.workMessages ?? []).filter((m) => m.role === 'tool');
+    ok('both adjacent readFile calls executed and returned',
+      toolResults.length === 2 && toolResults.every((m) => String(m.content).includes('hello')),
+      `${toolResults.length} results`);
+    ok('the run completed after the batch', r.text === 'both reads finished.', r.text);
+  }
+
+  console.log('\n— the deny REASON reaches the model, not just "user denied" —');
+  {
+    const r = await turn(createMockModel([
+      { toolCalls: [{ toolName: 'runCommand', input: { command: 'sudo rm -rf /' } }] },
+      { text: 'understood — staying read-only.' },
+    ], 'deny-reason'), {
+      onPermissionAsk: async () => 'reject',
+    });
+    ok('the plan-mode deny reason text reached the next request',
+      lastRequestJson('deny-reason').includes('denied') || lastRequestJson('deny-reason').includes('permission'),
+      '');
+    ok('the turn completed after the denial', r.text === 'understood — staying read-only.', r.text);
   }
 
   console.log(bad === 0 ? '\nALL PASS' : `\n${bad} FAILURE(S)`);

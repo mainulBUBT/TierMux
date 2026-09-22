@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createMockModel } from './mockClineModel';
-import { runAgentStream, runPlanStream } from '../src/agent/agent';
+import { runAgentStream } from '../src/agent/agent';
 import { __setClineEngineModelForTests } from '../src/agent/core/cline/clineEngine';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
 import type { AgentOpts, AgentResult } from '../src/agent/agent';
@@ -22,7 +22,7 @@ fs.writeFileSync(path.join(root, 'a.txt'), 'hello');
 function opts(over: Partial<AgentOpts>): AgentOpts {
   return {
     messages: [{ role: 'user', content: 'list the unused pages in the app' }],
-    mode: 'ask', effort: 'medium',
+    mode: 'agent', effort: 'medium',
     onChunk: () => {}, onTool: () => {}, onReasoning: () => {}, onModel: () => {},
     onFailover: () => {}, onStep: () => {}, onTodos: () => {},
     onAskUser: async () => ({ status: 'answered' as const, answers: ['yes'] }), onError: () => {},
@@ -31,7 +31,7 @@ function opts(over: Partial<AgentOpts>): AgentOpts {
 }
 
 async function turn(model: ReturnType<typeof createMockModel>, over: Partial<AgentOpts> = {},
-  entry = runPlanStream): Promise<AgentResult> {
+  entry = runAgentStream): Promise<AgentResult> {
   __setClineEngineModelForTests(model);
   try { return await runWithWorkspaceRoot(root, () => entry(opts(over))); }
   finally { __setClineEngineModelForTests(undefined); }

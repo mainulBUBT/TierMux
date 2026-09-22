@@ -25,10 +25,6 @@ export interface AgentResult {
   taskKind?: string;
   workMessages?: ChatMessage[];
   paused?: boolean;
-  /** Set when the turn STOPPED ITSELF: 'budget' — the step cap cut it mid-tool-calls; 'stuck'
-   *  — the same tool call failed identically REPEAT_FAILURE_LIMIT times. Both also set
-   *  `paused`. Undefined = the model concluded on its own terms. */
-  stopReason?: 'budget' | 'stuck';
   /** The validated structure plan mode's `exitPlanMode` tool produced; the host renders the
    *  plan card from it. Undefined = no plan proposed this turn. */
   plan?: ProposedPlan;
@@ -44,17 +40,6 @@ export interface AgentResult {
    *  `workMessages`. Lets the caller render a deterministic "Files changed" recap independent of
    *  the model's prose, so a turn that ended on a bare tool call still surfaces what it changed. */
   changedFiles?: { path: string; status: 'created' | 'modified' | 'deleted' }[];
-  /** End-of-turn todo audit: 'verified' — a read-only pass found evidence for every todo the
-   *  turn marked complete; 'incomplete' — it did not, and one fix pass ran. Undefined when the
-   *  turn wrote no todos or the gate is off. */
-  auditOutcome?: 'verified' | 'incomplete';
-  /** End-of-turn verify gate: 'passed' — the verify command exited 0 (possibly after fix
-   *  rounds); 'failed' — non-zero even after `agent.verifyFixRounds`; 'unverified' — files were
-   *  mutated but no verify command produced a signal. Undefined — no mutation. */
-  verifyOutcome?: 'passed' | 'failed' | 'unverified';
-  /** Structured end-of-turn report, emitted for turns that changed files; the host persists it
-   *  and the webview renders the ResultCard from it. */
-  workReport?: import('../shared/workReport').WorkReportData;
 }
 
 /** "Why this model?" rationale from the picker, forwarded by routerProvider. */
@@ -64,7 +49,7 @@ export interface SelectionRationaleInfo {
   entries: Array<{ model: string; selected: boolean; score: number; capability: number; runtime: number; preference: number; confidence: number; reason: string; skip?: string; keyless?: boolean }>;
 }
 
-export type AgentMode = 'plan' | 'agent' | 'ask';
+export type AgentMode = 'plan' | 'agent';
 
 export interface AgentOpts {
   messages: ChatMessage[];
@@ -80,13 +65,6 @@ export interface AgentOpts {
   /** Hard cap on model round-trips in one turn — mirrors `tiermux.agent.maxStepsPerTurn`.
    *  Omitted ⇒ the engine's default. */
   maxStepsPerTurn?: number;
-  /** Fix-and-recheck rounds after the end-of-turn verify command fails — mirrors
-   *  `tiermux.agent.verifyFixRounds`, threaded from host settings. 0 reports the failure
-   *  without retrying; it never disables the gate itself (that is `verifyCommand: 'off'`). */
-  verifyFixRounds?: number;
-  /** Check declared-complete todos against the workspace before the turn ends — mirrors
-   *  `tiermux.agent.auditTodos`. */
-  auditTodos?: boolean;
   /** The task list this turn inherits (a Continue after a step-cap pause). Injected into the
    *  system prompt when anything is unfinished; the engine keeps it current from todoWrite. */
   todos?: TodoItem[];
@@ -107,17 +85,13 @@ export interface AgentOpts {
   mentionCount?: number;
 
   onChunk: (text: string) => void;
-  /** Retract the live text draft: a tentative chat reply turned out to be tool-planning narration
-   *  (a tool call arrived in the same step), so the draft bubble must be cleared — that text is
-   *  re-routed to the Chain-of-Thought block via `onReasoning`. */
-  onRetractDraft?: () => void;
   onTool: (e: ToolEvent) => void;
   onReasoning: (text: string) => void;
   onModel: (platform: string, model: string, runtimeName?: string) => void;
   onFailover: (from: string, reason: string) => void;
   onSelectionRationale?: (info: SelectionRationaleInfo) => void;
   onKeyRotated?: (info: { platform: string; keyIndex: number; keyTotal: number }) => void;
-  onStep: (phase: string, label: string) => void;
+  onStep: (phase: 'thinking' | 'status', label?: string) => void;
   onTodos: (todos: TodoItem[]) => void;
   /** Checkpoint baseline — fired by the v3 write tools AFTER reading a file's pre-write
    *  content but BEFORE mutating it (null = about to be created). The host wires this to
@@ -128,7 +102,10 @@ export interface AgentOpts {
   /** A tool call is paused pending approval — resolved by src/permissions/policy.ts. */
   onPermissionAsk?: (info: { title: string; pattern?: string | string[]; command?: string; toolName?: string }) => Promise<'once' | 'always' | 'reject'>;
   onError: (message: string) => void;
-  onWarning?: (message: string) => void;
+  /** Mid-run steering handle. Called once with the handle before the run starts and with
+   *  `undefined` after it settles; `push(text)` queues a user message the runtime injects at
+   *  the next iteration boundary (interrupting only the in-flight model request). */
+  onSteerReady?: (steer: { push: (text: string) => void } | undefined) => void;
   /** Turn telemetry sink — set by runTurn itself (not callers); every model call the turn
    *  makes (planner, executor, judges, recap) reports its provider-measured usage here so
    *  WorkReportData.telemetry reflects the WHOLE turn. See src/shared/workReport.ts. */

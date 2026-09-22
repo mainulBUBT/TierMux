@@ -233,17 +233,24 @@ async function main(): Promise<void> {
       retried.plan?.title === 'Add dark mode' && retried.plan?.steps.length === 3,
       JSON.stringify(retried.plan));
 
-    // A plan-mode turn that does NOT call the tool must leave result.plan undefined, so the
-    // host renders a normal answer instead of a plan card. This is the "a finding is not a
-    // plan" case the old regex+LLM classifier kept getting wrong in both directions.
-    const answerModel = createMockModel([{ text: 'Stock IS checked on order edit — see src/orders.ts:412.' }], 'answer');
+    // A plan-mode ANSWER is declared with outcome 'no-change' — the host renders the finding,
+    // not a plan card with steps. This is the "a finding is not a plan" case the old
+    // regex+LLM classifier kept getting wrong in both directions; now the declaration itself
+    // carries the distinction, and no host-side prose classification exists at all.
+    const answerModel = createMockModel([
+      { text: 'Stock IS checked on order edit — see src/orders.ts:412.' },
+      { toolCalls: [{ toolName: 'exitPlanMode', input: {
+        outcome: 'no-change', title: 'Stock check',
+        finding: 'Stock IS checked on order edit — see src/orders.ts:412.',
+      } }] },
+    ], 'answer');
     __setClineEngineModelForTests(answerModel);
     try {
       const answer = await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'is stock checked on order edit?' }],
       }));
-      ok('a plan-mode ANSWER leaves result.plan undefined', answer.plan === undefined, JSON.stringify(answer.plan));
-      ok('the answer text still ships', answer.text.includes('src/orders.ts:412'), answer.text);
+      ok('a plan-mode ANSWER is a no-change declaration, not a plan', answer.plan?.outcome === 'no-change' && !answer.plan.steps?.length, JSON.stringify(answer.plan));
+      ok('the answer text still ships', (answer.plan.finding ?? '').includes('src/orders.ts:412') || answer.text.includes('src/orders.ts:412'), answer.plan?.finding ?? answer.text);
     } finally {
       __setClineEngineModelForTests(undefined);
     }
@@ -263,7 +270,10 @@ async function main(): Promise<void> {
         question: 'Fix it globally in scopeActive(), or only in the vendor order view?',
         options: ['Globally in scopeActive()', 'Only the vendor order view'],
       } }] },
-      { text: 'Understood — scoping it to the vendor order view.' },
+      { toolCalls: [{ toolName: 'exitPlanMode', input: {
+        outcome: 'no-change', title: 'Scoped to the vendor view',
+        finding: 'The fix lands in the vendor order view only (answer from askUser); no shared change is needed.',
+      } }] },
     ], 'plan-gap-ask');
     const asked: string[] = [];
     __setClineEngineModelForTests(model);
@@ -272,37 +282,38 @@ async function main(): Promise<void> {
         messages: [{ role: 'user', content: 'make the edit-mode grid filter like the admin one' }],
         onAskUser: async (qs) => { asked.push(qs[0].question); return { status: 'answered' as const, answers: ['Only the vendor order view'] }; },
       }));
-      // SUPERSEDED on the cline branch: Cline's runtime ends the run on a prose-only finish
-      // (no plan-gap nudge, no toolChoice pinning), so the narration at step 2 closes the turn
-      // before the scripted askUser ever runs. The askUser-continues-the-loop guarantee was
-      // re-verified directly by the tool-call scenario above; what holds here is:
-      ok('the narration ends the turn (Cline has no plan-gap nudge)', model.calls.length === 2, `calls=${model.calls.length}`);
-      ok('no askUser reached the host', asked.length === 0, JSON.stringify(asked));
-      ok('asking does not fabricate a plan card', out.plan === undefined, JSON.stringify(out.plan));
+      // completionPolicy (WS1): a prose-only finish no longer ends the run — the runtime injects
+      // the "[SYSTEM] not complete" reminder and continues, so the narration at step 2 is now
+      // FOLLOWED by the scripted askUser. The hesitation-then-ask flow the old engine coerced
+      // with toolChoice happens mechanically here.
+      ok('the narration did NOT end the turn (completionPolicy continued it)', model.calls.length === 4, `calls=${model.calls.length}`);
+      ok('the reminder reached the request after the narration',
+        JSON.stringify(model.calls[1]?.messages ?? []).includes('[SYSTEM]'), '');
+      ok('askUser DID reach the host', asked.length === 1, JSON.stringify(asked));
+      ok('the run closed on the no-change declaration after the answer', out.plan?.outcome === 'no-change' && !out.failed, JSON.stringify(out.plan));
     } finally {
       __setClineEngineModelForTests(undefined);
     }
   }
 
-  // ── 4d. A provider that IGNORES the forced toolChoice (drops tool_choice on the wire): the SDK
-  // raises ToolChoiceViolationError on that step. Checked 2026-09-21 — the turn must still end
-  // cleanly: second narration ships, not failed, no dead-end. (finishReason reads 'error'; no UI
-  // consumer reads it.)
+  // ── 4d. A model that keeps narrating cannot stall the turn forever: completionPolicy keeps
+  // re-injecting the reminder, and the moment it declares via exitPlanMode the run completes.
+  // (The old engine needed toolChoice pinning for this; the policy replaces it mechanically.)
   {
     const model = createMockModel([
       { toolCalls: [{ toolName: 'grep', input: { pattern: 'dark', path: '.' } }] },
       { text: 'Now let me check if there is any existing theme or dark mode support.' },
-      { text: 'I will look at the settings next.' },
+      { toolCalls: [{ toolName: 'exitPlanMode', input: {
+        outcome: 'no-change', title: 'Already themed',
+        finding: 'media/main.css:1-40 already themes off VS Code tokens; a toggle needs the settings wiring described in the plan.',
+      } }] },
     ], 'plan-gap-ignored');
     __setClineEngineModelForTests(model);
     try {
       const out = await runPlanStream(engineOpts({ messages: [{ role: 'user', content: 'add a dark mode toggle' }] }));
-      // SUPERSEDED: the old engine forced the continuation with toolChoice 'required'; Cline's
-      // loop has no per-step toolChoice. The narration itself now closes the turn — the old
-      // 2026-08-31 plan-gap repro would ship its narration under this branch (known trade-off).
-      ok('the turn does not fail', !out.failed, JSON.stringify({ failed: out.failed }));
-      ok('the narration ships as the reply (the turn ended on it)', out.text.includes('existing theme'), out.text);
-      ok('no plan card is fabricated from narration', out.plan === undefined, JSON.stringify(out.plan));
+      ok('the narration did not dead-end the turn', !out.failed, JSON.stringify({ failed: out.failed }));
+      ok('the reminder followed the narration (request 2)', JSON.stringify(model.calls[1]?.messages ?? []).includes('[SYSTEM]'), '');
+      ok('the declaration completed the run', out.plan?.outcome === 'no-change', JSON.stringify(out.plan));
     } finally {
       __setClineEngineModelForTests(undefined);
     }
@@ -314,25 +325,20 @@ async function main(): Promise<void> {
       { text: 'Now let me check if there is any existing theme or dark mode support.' },
       { toolCalls: [{ toolName: 'exitPlanMode', input: PLAN }] },
     ], 'plan-gap');
-    const retracted: number[] = [];
     __setClineEngineModelForTests(model);
     try {
       const nudged = await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'add a dark mode toggle to setting' }],
-        onRetractDraft: () => retracted.push(1),
       }));
-      // SUPERSEDED on the cline branch: the old plan-gap nudge (narration → forced exitPlanMode
-      // continuation, draft retraction, one-continuation ladder invariant) is not implementable
-      // through Cline's hook surface — a prose-only finish ends the run. Locked behavior:
-      ok('the narration ends the turn before the scripted exitPlanMode call', model.calls.length === 2, `calls=${model.calls.length}`);
-      ok('no plan card is fabricated', nudged.plan === undefined, JSON.stringify(nudged.plan));
-      ok('no draft retraction fired (onRetractDraft is not wired on this branch)', retracted.length === 0, `retracted=${retracted.length}`);
-      // The continuation does not merely ASK the model to finish — its first step is sent with
-      // toolChoice 'required', so a model that ignores prose instructions still cannot narrate
-      // a third time. Earlier steps must stay on 'auto' or investigation is impossible.
-      // SUPERSEDED: forced continuations (toolChoice required / narrowed closers) do not exist
-      // on Cline's loop. What still holds on this branch: the full plan toolset — BOTH closers —
-      // is offered from the first call, and investigation steps are never coerced.
+      // The 2026-08-31 plan-gap repro, under completionPolicy: the narration does NOT end the
+      // run — the runtime injects the "[SYSTEM] not complete" reminder (the ONE mechanical
+      // continuation) and the scripted exitPlanMode now runs. No prose classification anywhere;
+      // the model declares via the tool, per the tool-boundary doctrine.
+      ok('the narration did not end the turn before the scripted exitPlanMode call', model.calls.length === 3, `calls=${model.calls.length}`);
+      ok('the completion reminder followed the narration (request 2)',
+        JSON.stringify(model.calls[1]?.messages ?? []).includes('[SYSTEM]'), '');
+      ok('the plan card IS produced (the gap is closed)', !!nudged.plan && nudged.plan.steps?.length === 3, JSON.stringify(nudged.plan)?.slice(0, 80));
+      // What still holds: the full plan toolset — BOTH closers — is offered from the first call.
       const c0 = (model.calls[0]?.tools ?? []).map((t) => (t as { name?: string }).name ?? '');
       ok('exitPlanMode AND askUser are both offered from the start',
         c0.includes('exitPlanMode') && c0.includes('askUser'), c0.join(','));
@@ -341,12 +347,9 @@ async function main(): Promise<void> {
     }
   }
   {
-    // CONTRACT CHANGE (2026-09-01): a prose "nothing to add" reply to a CHANGE request is a
-    // finding delivered the wrong way, and it is now nudged into declaring itself — exactly as
-    // agent mode nudges "I would edit X" into editing. The tool-boundary doctrine is that the
-    // model DECLARES the outcome and the host never classifies prose; before outcome
-    // 'no-change' existed there was no tool to declare this with, so the reply had to be let
-    // through. There is one now, and the nudge's forced step offers it.
+    // CONTRACT: a prose "nothing to add" reply to a CHANGE request no longer ends the turn —
+    // completionPolicy's reminder asks for a declaration, and outcome 'no-change' is the tool
+    // the model declares a finding with. The host never classifies prose.
     const model = createMockModel([
       { text: 'The settings panel already themes off VS Code tokens (media/main.css:1-40); nothing to add.' },
       { toolCalls: [{ toolName: 'exitPlanMode', input: {
@@ -359,11 +362,9 @@ async function main(): Promise<void> {
       const out = await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'add a dark mode toggle to setting' }],
       }));
-      // SUPERSEDED on the cline branch: the no-change nudge (prose → forced exitPlanMode
-      // continuation) does not exist; the prose answer IS the turn.
-      ok('the prose answer ends the turn without a nudge', model.calls.length === 1, `calls=${model.calls.length}`);
-      ok('no plan card is fabricated from prose', out.plan === undefined, JSON.stringify(out.plan));
-      ok('and it ships verbatim', out.text.includes('media/main.css:1-40'), out.text);
+      ok('the prose answer alone does not end the turn', model.calls.length === 2, `calls=${model.calls.length}`);
+      ok('the reminder asks for the declaration (request 2)', JSON.stringify(model.calls[1]?.messages ?? []).includes('[SYSTEM]'), '');
+      ok('the finding ships as a no-change declaration, not a plan card', out.plan?.outcome === 'no-change' && out.plan.finding?.includes('media/main.css:1-40'), JSON.stringify(out.plan));
     } finally {
       __setClineEngineModelForTests(undefined);
     }
@@ -385,48 +386,57 @@ async function main(): Promise<void> {
       const out = await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'check the edit-mode product filtering and make a plan first.' }],
       }));
-      // SUPERSEDED on the cline branch (no plan-gap nudge): the narration closes the turn and
-      // the scripted exitPlanMode never runs. This is the branch's biggest plan-mode regression
-      // surface vs the old engine — Cline's completionPolicy is the candidate replacement.
-      ok('the narration ends the turn before the scripted exitPlanMode call', model.calls.length === 2, `calls=${model.calls.length}`);
-      ok('no plan card is fabricated', out.plan === undefined, JSON.stringify(out.plan));
+      // completionPolicy closed this gap too: the unnarrated narration ("I found the key
+      // line…") gets the reminder and the scripted exitPlanMode now runs — the biggest
+      // regression surface vs the old engine is the OLD engine's behavior again, mechanically.
+      ok('the narration did not end the turn before the scripted exitPlanMode call', model.calls.length === 3, `calls=${model.calls.length}`);
+      ok('the reminder asks for the declaration (request 2)', JSON.stringify(model.calls[1]?.messages ?? []).includes('[SYSTEM]'), '');
+      ok('the plan card IS produced', !!out.plan && out.plan.steps?.length === 3, JSON.stringify(out.plan)?.slice(0, 80));
     } finally {
       __setClineEngineModelForTests(undefined);
     }
   }
 
   {
-    // Narration in reply to a QUESTION stays unnudged — plan mode answers questions in prose,
-    // and forcing a plan onto one is the exact failure the old regex+classifier kept making.
+    // A QUESTION in plan mode: the answer is declared with outcome 'no-change' (finding = the
+    // answer) — never fabricated into a PLAN with steps. The reminder drives the declaration
+    // mechanically; the host never classifies prose to decide "this was only a question".
     const model = createMockModel([
       { text: 'Let me look at how the theme is currently wired.' },
+      { toolCalls: [{ toolName: 'exitPlanMode', input: {
+        outcome: 'no-change', title: 'How theming works',
+        finding: 'The settings panel reads the theme from workspace config (src/settingsMeta.ts:12) and applies it in media/src/main.ts:40.',
+      } }] },
     ], 'plan-question');
     __setClineEngineModelForTests(model);
     try {
-      await runPlanStream(engineOpts({
+      const out = await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'how does the settings panel pick its theme?' }],
       }));
-      ok('a QUESTION is not nudged toward a plan', model.calls.length === 1, `calls=${model.calls.length}`);
+      ok('the answer ships as a no-change declaration, not a plan', out.plan?.outcome === 'no-change' && !out.plan.steps?.length, JSON.stringify(out.plan));
+      ok('the tool meta-string does not ship as the answer', out.text === '', out.text);
+      ok('the question turn completed (no dead loop)', !out.failed, `calls=${model.calls.length}`);
     } finally {
       __setClineEngineModelForTests(undefined);
     }
   }
   {
-    // Live case 2026-09-01 5:09 PM: "give me an example of plan mode" in plan mode. It is
-    // plainly an information request, but it leads with an imperative and ends with no "?", so
-    // the interrogative-only carve-out missed it — and since planGap stopped testing the reply's
-    // shape, missing it means forcing a fabricated plan onto a question.
+    // Live case 2026-09-01 5:09 PM: "give me an example of plan mode" in plan mode — plainly an
+    // information request that led with an imperative. Same contract: the answer is DECLARED.
     const model = createMockModel([
-      { text: 'Plan mode answers by calling exitPlanMode with {interpretation, questions, steps}.' },
+      { text: 'Plan mode answers by calling exitPlanMode with {interpretation, steps}.' },
+      { toolCalls: [{ toolName: 'exitPlanMode', input: {
+        outcome: 'no-change', title: 'Plan mode example',
+        finding: 'Plan mode: the model investigates read-only, then calls exitPlanMode with a title, an interpretation and steps ({what, files, evidence}).',
+      } }] },
     ], 'plan-meta-question');
     __setClineEngineModelForTests(model);
     try {
       const out = await runPlanStream(engineOpts({
         messages: [{ role: 'user', content: 'give me an example of plan mode' }],
       }));
-      ok('an imperative INFORMATION request is not nudged into a plan',
-        model.calls.length === 1, `calls=${model.calls.length}`);
-      ok('and its prose answer ships', out.plan === undefined && out.text.includes('exitPlanMode'), out.text);
+      ok('an imperative INFORMATION request completes as a no-change declaration',
+        out.plan?.outcome === 'no-change' && !out.failed, JSON.stringify(out.plan));
     } finally {
       __setClineEngineModelForTests(undefined);
     }

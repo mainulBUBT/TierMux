@@ -24,7 +24,6 @@ import type { ModelStatsStore, Vote } from './config/modelStats';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
 import type { McpRegistryItem, McpServerConfig } from './messages';
 import type { AnnouncementItem, Attachment, ConfigPayload, InMessage, KeyStatusInfo, OutMessage, PlanDataPayload, SelectionRationale, AnsweredModel, SessionStatus, TranscriptMessage, TranscriptStep } from './messages';
-import { renderLegacyMarkdown } from './shared/workReport';
 import { fetchAnnouncements as fetchWorkerAnnouncements, markAnnouncementsSeen, unseenAnnouncementIds } from './catalog/announcements';
 import { normalizeMcpServerConfig } from './mcp/mcpClient';
 import { getNonce } from './util/nonce';
@@ -111,24 +110,6 @@ function incompleteTodosNote(allTodos: TodoItem[], remainingTodos: TodoItem[]): 
     .map((t) => `- ${t.content}${t.status === 'in_progress' ? ' (in progress)' : ''}`)
     .join('\n');
   return `\n\n---\n**Stopped with unfinished work — ${doneCount}/${allTodos.length} steps done.** Remaining:\n${list}`;
-}
-
-/** Why a turn stopped ITSELF (step cap or no-progress guard). Until 2026-09-05 both looked like
- *  completion; the host knows the reason from the wire, so the model is never asked to explain. */
-function stopReasonNote(stopReason: NonNullable<AgentResult['stopReason']>, remaining: TodoItem[]): string {
-  const list = remaining.length
-    ? `\n\nRemaining:\n${remaining.map((t) => `- ${t.content}`).join('\n')}`
-    : '';
-  if (stopReason === 'budget') {
-    return '\n\n---\n**Stopped at the step limit — this task is not finished.** Continue picks up from here '
-      + 'with the full transcript, so nothing is repeated. For long unattended tasks, raise '
-      + '`tiermux.agent.maxStepsPerTurn`.' + list;
-  }
-  if (stopReason === 'stuck') {
-    return '\n\n---\n**Stopped: no progress — the model kept repeating the same tool call.** '
-      + 'Continue to let it try again, say what to do differently, or pin a stronger model.' + list;
-  }
-  return '';
 }
 
 /** Companion to {@link incompleteTodosNote}: a short deterministic brief for the success case,
@@ -331,6 +312,13 @@ interface Session {
   toolStartTimes: Map<string, number>;
   model?: string;
   reasoningEffort?: ReasoningEffort;
+  /** Mid-run steering handle from the active run's onSteerReady — set while the engine is
+   *  executing a turn, cleared (undefined) when it settles. Lets a follow-up send during a
+   *  busy session STEER the run instead of cancel-and-reseed. */
+  steer?: { push: (text: string) => void };
+  /** Last context-pressure reading of this session (from the run's usage sink) — re-posted on
+   *  session switch so the webview's chip reflects the entered session, not the previous one. */
+  lastContextPressure?: { requestId: string; percent: number; contextTokens: number; contextWindow: number };
   /** How many `@mentions` resolved into context on the most recent send — carried through to
    *  AgentOpts.mentionCount so routing (classifyTaskCore) can tell "content already supplied"
    *  turns apart from ambiguous ones without re-parsing the message text. Persists across a
@@ -1009,9 +997,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'busy', sessionId: id, busy: !!s.activeRequestId });
 
     this.postLiveRunState(s);
+    this.postContextPressure(s);
     this.postCheckpoints(s);
     void this.sendConfig();
     this.updateViewTitle();
+  }
+
+  /** Re-post the session's last context-pressure reading, so the webview's chip reflects the
+   *  entered session rather than whatever the previously viewed session reported last. */
+  private postContextPressure(s: Session): void {
+    if (s.lastContextPressure) this.post({ type: 'contextPressure', sessionId: s.id, ...s.lastContextPressure });
   }
 
   /** Re-send the viewed session's live UI state (a running turn's start/step/todos, pending
@@ -1073,6 +1068,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'switchSession', sessionId: s.id, messages: s.transcript });
         this.post({ type: 'busy', sessionId: s.id, busy: !!s.activeRequestId });
         this.postLiveRunState(s);
+        this.postContextPressure(s);
         this.postCheckpoints(s);
         await this.sendConfig();
         diagLog('view.ready', `transcript=${s.transcript.length} config=${Date.now() - t0}ms`);
@@ -1832,20 +1828,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  turns are summarized. `tiermux.agent.autoCondenseTokenCap`; 0 = window-only. */
   private static readonly AUTO_CONDENSE_TOKEN_CAP_DEFAULT = 32_000;
 
-  /** Implicit routing feedback from a finished turn — the verify exit code and the stuck stop.
-   *  Pinned models are skipped (the user chose; nothing to learn for Auto). */
-  private recordTurnSignal(s: Session, result: AgentResult): void {
-    if (!result.taskKind || !result.platform || !result.model) return;
-    if (s.model && s.model !== 'auto') return;
-    const signal = result.stopReason === 'stuck' ? 'stuck'
-      : result.verifyOutcome === 'passed' ? 'verifyPassed'
-      : result.verifyOutcome === 'failed' ? 'verifyFailed'
-      : undefined;
-    if (!signal) return;
-    this.deps.modelStats.recordSignal(result.taskKind, result.platform, result.model, signal);
-    diagLog('routing.signal', `${signal} → ${result.platform}::${result.model} (${result.taskKind})`);
-  }
-
   /** Carry a compaction's "Corrections & rejected approaches" into .tiermux/memory.md so the
    *  next session starts knowing them. No model call — the summary already wrote the section. */
   private async learnFromCompaction(corrections: string[]): Promise<void> {
@@ -2084,6 +2066,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.model = m.model;
     s.reasoningEffort = m.reasoningEffort;
     diagLog('sendMessage', `requestId=${m.requestId} mode=${m.mode} pinnedModel="${m.model ?? '<none>'}" reasoningEffort=${m.reasoningEffort ?? '<none>'}`);
+    // Mid-run steering (Cline's notifyPendingUserMessage/consumePendingUserMessage): while a run
+    // is live, a typed follow-up does NOT cancel the run — it is queued at the runtime and enters
+    // the transcript right before the next model request, interrupting only the in-flight call.
+    // Raw text only (no @mention/editor enrichment — those assume a fresh turn); attachments keep
+    // the old cancel-and-replace flow. Not pushed into s.history here — the steer text re-enters
+    // once, inside the run's persisted workMessages slice (WS0 keeps it a single copy).
+    if (s.steer && m.text.trim() && !(m.attachments && m.attachments.length)) {
+      s.transcript.push({ role: 'user', text: prompt, requestId: s.activeRequestId ?? m.requestId, ts: Date.now() });
+      s.steer.push(prompt);
+      return;
+    }
     const mentionResult = await resolveMentions(prompt).catch(() => ({ text: '', count: 0 }));
     const contextText = mentionResult.text;
     s.lastMentionCount = mentionResult.count;
@@ -2135,6 +2128,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const historyContent = withModeTag(baseContent, m.mode as AgentMode, s.lastMode);
     s.lastMode = m.mode as AgentMode;
     s.history.push({ role: 'user', content: historyContent });
+    // Where this run's NEW history begins. The Cline engine returns the FULL transcript
+    // (restored seed + this run) as workMessages; persistAgentTurn/proposePlanCard slice from
+    // here so the pre-existing prefix is never appended twice.
+    const runStartLen = s.history.length;
     s.transcript.push({ role: 'user', text: prompt, requestId: m.requestId, ts: Date.now(), historyLen: s.history.length - 1, attachments: m.attachments });
     s.updatedAt = Date.now();
     void this.maybeGenerateTitle(s); // title from the user's message right away (e.g. "hi" -> "Greetings")
@@ -2214,7 +2211,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       let replyText = result.text;
       if (m.mode === 'plan') {
-        const proposed = this.proposePlanCard(s, m.requestId, result, replyText, { request: prompt, requestContent: userContent });
+        const proposed = this.proposePlanCard(s, m.requestId, result, replyText, { request: prompt, requestContent: userContent, runStartLen });
         replyText = proposed.replyText;
         if (proposed.posted) return;
       }
@@ -2249,27 +2246,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const wroteTodosThisSend = s.lastTodos !== todosAtSendStart;
       const finalTodos = wroteTodosThisSend ? (s.lastTodos ?? []) : [];
       const finalRemainingTodos = finalTodos.filter((t) => t.status !== 'completed');
-      // A self-stop (step cap / no progress) OUTRANKS the todo notes: it explains the stop
-      // itself, which the todo list cannot, and it carries the remaining items anyway. Without
-      // this branch a capped turn fell into the `result.paused ? ''` case below and shipped no
-      // footer at all — the turn ended silently, which is the whole failure being fixed here.
-      const stopNote = result.stopReason ? stopReasonNote(result.stopReason, finalRemainingTodos) : '';
-      const todoNote = stopNote || (finalRemainingTodos.length > 0
+      const todoNote = finalRemainingTodos.length > 0
           ? (!result.paused ? incompleteTodosNote(finalTodos, finalRemainingTodos) : '')
           : finalTodos.length > 0 ? completedTodosNote(finalTodos)
-          : '');
+          : '';
 
       const displayText = todoNote ? `${replyText}${todoNote}` : replyText;
 
       this.settleRationale(s, m.requestId, result);
       const persistedResult: AgentResult = displayText !== result.text ? { ...result, text: displayText } : result;
-      this.persistAgentTurn(s, persistedResult);
+      this.persistAgentTurn(s, persistedResult, runStartLen);
       this.pushAssistantTurn(s, m.requestId, persistedResult, sentAt, usage);
       this.rememberWindow(s, result.platform, result.model);
 
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
-        this.recordTurnSignal(s, result);
       }
       const modelLabel = turnModelLabel(s.model, result.model);
 
@@ -2380,7 +2371,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (firstCpId) await s.checkpoints.restore(firstCpId);
     s.checkpoints.dropByRequestIds(removedIds);
 
-    const cut = s.transcript[idx]?.historyLen;
+    // Steer entries carry no historyLen (they enter history inside the run's persisted slice —
+    // the index is unknown at push time). Truncate at the nearest earlier entry that has one.
+    let cut: number | undefined;
+    for (let i = idx; i >= 0 && cut === undefined; i--) cut = s.transcript[i]?.historyLen;
     s.transcript = s.transcript.slice(0, idx);
     s.history = (typeof cut === 'number' && cut <= s.history.length)
       ? s.history.slice(0, cut)
@@ -2622,6 +2616,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       s.lastTodos = seeded;
       this.post({ type: 'todos', sessionId: s.id, requestId, todos: seeded, followingPlan: true });
       s.history.push({ role: 'user', content: planPrompt });
+      // Same WS0 contract as handleSend — slice the run's NEW history from here.
+      const runStartLen = s.history.length;
       s.transcript.push({ role: 'user', text: planPrompt, requestId, ts: Date.now(), historyLen: s.history.length - 1 });
       this.post({ type: 'userEcho', sessionId: s.id, requestId, text: planPrompt });
       const before = this.deps.usage.get();
@@ -2664,7 +2660,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         reasoningTokens: after.reasoningTokens - before.reasoningTokens,
         totalTokens: after.totalTokens - before.totalTokens,
       };
-      this.persistAgentTurn(s, result);
+      this.persistAgentTurn(s, result, runStartLen);
       this.pushAssistantTurn(s, requestId, result, sentAt, usage);
       this.rememberWindow(s, result.platform, result.model);
       const summary = result.text || (allDone ? 'Plan execution finished.' : 'Plan execution paused — some steps are not finished yet.');
@@ -2690,10 +2686,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Append a run's outcome to history. Agent runs return their full working transcript as
-   *  workMessages — persisting it is what lets a paused/failed run resume with memory. Tool-less
+  /** Append a run's outcome to history. The Cline engine returns the FULL transcript (the
+   *  restored seed + this run's new messages) as workMessages — only the slice past runStartLen
+   *  is new, so that's all that lands in history (persisting the whole thing duplicated the
+   *  seed every turn). Paused/failed runs still keep memory via the seed + run prefix. Tool-less
    *  runs fall back to the final text. */
-  private persistAgentTurn(s: Session, result: AgentResult): void {
+  private persistAgentTurn(s: Session, result: AgentResult, runStartLen: number): void {
     // An aborted run's working transcript must not bleed into the next turn's history — the
     // model treated an abandoned tool call as a real request ("the next hola answered against
     // the previous project"). Stop leaves a final-reply bubble, not inherited messages.
@@ -2701,7 +2699,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       s.history.push({ role: 'assistant', content: result.text });
       return;
     }
-    if (result.workMessages && result.workMessages.length) s.history.push(...capForHistory(result.workMessages));
+    const newMessages = result.workMessages && result.workMessages.length
+      ? result.workMessages.slice(runStartLen)
+      : undefined;
+    if (newMessages && newMessages.length) s.history.push(...capForHistory(newMessages));
     else s.history.push({ role: 'assistant', content: result.text });
   }
 
@@ -2744,23 +2745,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.liveRationaleRaw.delete(requestId);
     // `answered` already points at the live list; drop the accumulator now that the entry owns it.
     s.liveAnswered.delete(requestId);
-    // WorkReportData is persisted ON the entry (canonical) and posted live; `.text` also carries
-    // the legacy markdown so older transcripts keep rendering — it is never parsed back.
-    let text = result.text;
-    // The agent loop leaves `checkpointId` unset (it has no requestId); the HOST owns the turn
-    // identity, so it is stamped here — before the report is posted OR persisted, so the live
-    // ResultCard and its replay resolve the same immutable baseline. Without it every
-    // changed-file row renders unclickable and `diffCheckpointFile` is unreachable.
-    const report = result.workReport
-      ? { ...result.workReport, checkpointId: s.checkpoints.idForTurn(requestId) }
-      : undefined;
-    if (report) {
-      text += renderLegacyMarkdown(report); // LEGACY TRANSCRIPT SERIALIZATION — remove after the minimum supported transcript migration window.
-      this.post({ type: 'workReport', sessionId: s.id, requestId, report });
-    }
     s.transcript.push({
       role: 'assistant',
-      text,
+      text: result.text,
       // Carried so a replayed footer can vote (voteCtx is keyed by it). "Revert to here" only
       // ever matches role==='user' entries, so this can't be mistaken for a revert anchor.
       requestId,
@@ -2771,7 +2758,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, reasoningTokens: usage.reasoningTokens } : undefined,
       steps: steps && steps.length ? steps : undefined,
       rationale: rationale && rationale.entries.length ? rationale : undefined,
-      workReport: report,
     });
   }
 
@@ -2841,8 +2827,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Declared and documented since v3, read by nothing until 2026-09-05 — the engine
       // hardcoded the same 50, so raising it in settings silently did nothing.
       maxStepsPerTurn: vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxStepsPerTurn', 50),
-      verifyFixRounds: vscode.workspace.getConfiguration('tiermux.agent').get<number>('verifyFixRounds', 1),
-      auditTodos: vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('auditTodos', true),
+      // Mid-run steering: set in agentCallbacks via onSteerReady.
+      onSteerReady: (steer) => { s.steer = steer; },
       ...callbacks,
     };
   }
@@ -2899,6 +2885,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           completion_tokens: info.outputTokens,
           total_tokens: info.inputTokens + info.outputTokens,
         });
+        // Live context-pressure chip (WS5b): the provider-measured prompt size vs the serving
+        // window. One post per model call — the chip just re-renders from the latest value.
+        // Remembered per session so switching back re-shows the entered session's pressure.
+        if (info.contextTokens > 0 && info.contextWindow && info.contextWindow > 0) {
+          const pressure = {
+            requestId,
+            percent: Math.min(100, Math.round((100 * info.contextTokens) / info.contextWindow)),
+            contextTokens: info.contextTokens,
+            contextWindow: info.contextWindow,
+          };
+          s.lastContextPressure = pressure;
+          this.post({ type: 'contextPressure', sessionId: s.id, ...pressure });
+        }
         // Attribute this call to the model that actually made it (info.model is
         // "platform::modelId", the same shape reportServed uses) — addRequest is the only
         // writer of the lifetime byModel store the "Est. saved" tile reads, and until now
@@ -3032,13 +3031,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (s.liveActivity !== 'Text change') { s.liveActivity = 'Text change'; this.postSessionList(); }
         this.post({ type: 'assistantChunk', sessionId: s.id, requestId, text });
       },
-      onRetractDraft: () => {
-        if (!live()) return;
-        // Hand the webview the reasoning segment this draft is about to become; the reasoning post
-        // that follows carries the same toolCallId, so it updates the block in place.
-        if (!reasoningStart) reasoningStart = Date.now();
-        this.post({ type: 'clearDraft', sessionId: s.id, requestId, reasoningId: reasoningId() });
-      },
       onAskUser: async (questions) => {
         if (!live()) return { status: 'cancelled', answers: [] };
 
@@ -3088,11 +3080,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!live()) return;
         this.post({ type: 'error', sessionId: s.id, requestId, message });
       },
-      onWarning: (message) => {
-
-        if (!live()) return;
-        this.post({ type: 'notice', sessionId: s.id, text: message });
-      },
     };
   }
 
@@ -3124,7 +3111,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     requestId: string,
     result: AgentResult,
     replyText: string,
-    ctx: { request: string; requestContent?: ChatContent },
+    ctx: { request: string; requestContent?: ChatContent; runStartLen?: number },
   ): { posted: boolean; replyText: string } {
     const noChange = result.plan?.outcome === 'no-change' ? result.plan : undefined;
     let text = replyText;
@@ -3137,7 +3124,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!steps) return { posted: false, replyText: text };
     s.history.length -= 1;
     s.pendingPlanUser = ctx.requestContent;
-    s.pendingPlanWork = result.workMessages?.length ? capForHistory(result.workMessages) : undefined;
+    // WS0: only THIS run's new messages are held for approval — workMessages is the full
+    // transcript (seed + run), and holding all of it duplicated the seed when approval
+    // re-committed it. On a resume (no runStartLen) the seed is history itself, so keep the
+    // legacy full-array behavior.
+    s.pendingPlanWork = result.workMessages?.length
+      ? capForHistory(ctx.runStartLen != null ? result.workMessages.slice(ctx.runStartLen) : result.workMessages)
+      : undefined;
     this.postCard(s, { type: 'planProposed', sessionId: s.id, requestId, steps, decisions: s.planDecisions.length ? [...s.planDecisions] : undefined });
     this.preparePlanFile(s, result.plan?.title || ctx.request, ctx.request);
     // Fire-and-forget re-refine ONLY on the fallback path: a tool-declared plan is already one clean
@@ -3175,6 +3168,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         : 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.')
         + (carried.length ? `\n\nStill open:\n${carried.map((t) => `- ${t.content}`).join('\n')}` : ''),
     });
+    // WS0: where this resume's NEW history begins (same contract as handleSend).
+    const runStartLen = s.history.length;
     // Cancel the previous run BEFORE replacing the token. CancellationTokenSource.dispose()
     // only drops listeners — it does NOT abort — so without cancel() a pre-empted in-flight
     // run keeps executing its model call in the background, wasting tokens and racing the
@@ -3216,7 +3211,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // first-pass exploration are already in history, so only this pass's work is held for approval.
       let shown = result;
       if (resumeMode === 'plan') {
-        const proposed = this.proposePlanCard(s, m.requestId, result, result.text, { request: this.lastRequestText(s) });
+        const proposed = this.proposePlanCard(s, m.requestId, result, result.text, { request: this.lastRequestText(s), runStartLen });
         if (proposed.posted) { s.resumeMode = undefined; return; }
         shown = { ...result, text: proposed.replyText };
       }
@@ -3228,12 +3223,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         reasoningTokens: after.reasoningTokens - before.reasoningTokens,
         totalTokens: after.totalTokens - before.totalTokens,
       };
-      this.persistAgentTurn(s, shown);
+      this.persistAgentTurn(s, shown, runStartLen);
       this.pushAssistantTurn(s, m.requestId, shown, sentAt, usage);
       this.rememberWindow(s, result.platform, result.model);
       if (result.taskKind && result.platform && result.model) {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
-        this.recordTurnSignal(s, result);
       }
       s.resumeMode = result.paused ? resumeMode : undefined;
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: shown.text, reasoning: result.reasoning, finishReason: result.finishReason, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: result.model, paused: result.paused });

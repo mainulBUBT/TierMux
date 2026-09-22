@@ -38,4 +38,4 @@ export type {
   TurnTelemetry,
   ContextTelemetry,
 } from './workReport';
-export { renderLegacyMarkdown, stripLegacyMarkdown } from './workReport';
+export { stripLegacyMarkdown } from './workReport';

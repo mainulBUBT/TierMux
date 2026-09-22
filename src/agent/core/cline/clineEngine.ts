@@ -1,10 +1,10 @@
-// The Cline-backed engine: replaces the AI SDK streamText loop with @cline/agents'
-// AgentRuntime while keeping EVERYTHING else TierMux — the v3 toolset, the picker, the
-// permissions policy, the mode system prompts, the transcript wire shape. Cline owns only
-// the loop (iteration, tool execution, overflow/compaction recovery); TierMux owns what the
-// loop talks to. Ask mode is gone on this branch: it maps to plan (read-only) defensively
-// for old persisted sessions.
+// The Cline-backed engine: the @cline/agents AgentRuntime owns the FULL loop machinery —
+// iteration, tool execution, completionPolicy, overflow/compaction recovery (through our
+// prepareTurn), mid-run steering, and max-tokens/provider-error recovery — while everything
+// the loop talks to stays TierMux: the v3 toolset, the picker (routerModel), the permissions
+// policy, the mode system prompts, and the host-owned ChatMessage[] transcript.
 import { loadClineRuntime } from './clineRuntime';
+import { makePrepareTurn } from './prepareTurn';
 
 import type { AgentMessage, AgentRuntimeEvent, AgentTool, AgentToolContext } from '@cline/shared';
 import type { Tool, ToolSet } from 'ai';
@@ -25,6 +25,19 @@ import { diagLog } from '../../../util/diag';
 
 /** maxStepsPerTurn=0 means unlimited in settings; Cline has no unlimited — use a generous cap. */
 const UNLIMITED_ITERATIONS = 200;
+
+/** Window assumed before the first onModel report — matches the AUTO_CONDENSE cap in
+ *  chatViewProvider. Refined the moment a model actually serves. */
+const FALLBACK_CONTEXT_WINDOW = 32_000;
+
+/** Tools Cline may run CONCURRENTLY when the model emits them adjacently — pure reads over
+ *  independent inputs. Mutations, shell, the subagent, the plan exit, askUser and every MCP
+ *  tool stay sequential; an allowlist means an unknown (MCP) name can never default to
+ *  parallel. */
+const PARALLEL_SAFE_TOOLS = new Set([
+  'readFile', 'listDir', 'glob', 'grep', 'webSearch', 'fetchUrl',
+  'outline', 'findSymbol', 'references', 'definition', 'hover', 'getDiagnostics',
+]);
 
 /** Files this turn touched, derived from the executed tool calls (same derivation the old
  *  engine used for the "Files changed" recap). */
@@ -119,7 +132,7 @@ export function chatToAgentMessages(messages: ChatMessage[], startId: { n: numbe
 
 /** AI SDK v3 tool (zod inputSchema, TierMux execute semantics) → Cline AgentTool. Keeps the
  *  whole TierMux toolset — checkpoints, MCP, askUser, exitPlanMode — under Cline's loop. */
-function wrapSdkTool(name: string, t: Tool): AgentTool | undefined {
+function wrapSdkTool(name: string, t: Tool, planMode: boolean): AgentTool | undefined {
   const anyTool = t as { description?: string; inputSchema?: unknown; execute?: (input: unknown, o: unknown) => Promise<unknown> };
   const execute = anyTool.execute;
   if (typeof execute !== 'function') return undefined;
@@ -132,6 +145,10 @@ function wrapSdkTool(name: string, t: Tool): AgentTool | undefined {
     name,
     description: anyTool.description ?? '',
     inputSchema,
+    // Plan mode's terminal tool: a non-error exitPlanMode result IS the completed run
+    // (completionPolicy.requireCompletionTool makes it the ONLY way to end the turn).
+    ...(planMode && name === 'exitPlanMode' ? { lifecycle: { completesRun: true } } : {}),
+    ...(PARALLEL_SAFE_TOOLS.has(name) ? { executionMode: 'parallel' as const } : {}),
     async execute(input: unknown, ctx: AgentToolContext) {
       return execute(input, {
         toolCallId: ctx.toolCallId ?? `${name}_${ctx.iteration}`,
@@ -147,6 +164,17 @@ function mapFinishReason(status: string, error?: Error): string {
   return status === 'failed' ? 'unknown' : 'stop';
 }
 
+/** The `reason` half of a denied resolvePolicy verdict — Cline appends it to the tool result
+ *  the model reads, so "plan mode is read-only…" reaches the model instead of a bare
+ *  "user rejected". */
+function denyReason(verdict: unknown): string {
+  if (verdict && typeof verdict === 'object' && 'reason' in verdict) {
+    const r = (verdict as { reason?: unknown }).reason;
+    if (typeof r === 'string' && r) return r;
+  }
+  return 'blocked by the permission policy';
+}
+
 /** Test seam: when set, the engine uses this scripted AgentModel instead of the picker router.
  *  Production never sets it. Mirrors the old engine's __setEngineModelForTests. */
 let modelOverride: import('@cline/shared').AgentModel | undefined;
@@ -158,9 +186,8 @@ export function __setClineEngineModelForTests(m: import('@cline/shared').AgentMo
  *  (chatViewProvider) unchanged apart from losing the ask runner. */
 export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentResult> {
   const t0 = Date.now();
-  // Ask mode is dropped on this branch; a stale persisted session still lands somewhere sane.
-  const mode = opts.mode === 'ask' ? 'plan' : opts.mode;
-  diagLog('engine.start', `mode=${opts.mode}→${mode} msgs=${opts.messages?.length ?? 0} requestId=${opts.requestId ?? '-'}`);
+  const mode = opts.mode;
+  diagLog('engine.start', `mode=${mode} msgs=${opts.messages?.length ?? 0} requestId=${opts.requestId ?? '-'}`);
 
   const userTurns = (opts.messages ?? []).filter((m) => m.role === 'user');
   const userTexts = userTurns.map((m) => contentToString(m.content));
@@ -179,6 +206,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let proposedPlan: ProposedPlan | undefined;
   let served: { platform?: string; model?: string; runtimeName?: string } = {};
   let iteration = 0;
+  let lastWindow = FALLBACK_CONTEXT_WINDOW;
   const reasoningParts: string[] = [];
 
   const tools: ToolSet = buildV3ToolSet(mode, {
@@ -191,8 +219,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     onPlanProposed: (plan) => { proposedPlan = plan; },
   }) as ToolSet;
 
+  const planMode = mode === 'plan';
   const clineTools: AgentTool[] = Object.entries(tools)
-    .map(([name, t]) => wrapSdkTool(name, t as Tool))
+    .map(([name, t]) => wrapSdkTool(name, t as Tool, planMode))
     .filter((t): t is AgentTool => !!t);
 
   // Small-window schema tax. With a PIN the serving head is known up front, so the offer is
@@ -226,6 +255,18 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let history = seedAll;
   if (history.at(-1)?.role === 'user') history = history.slice(0, -1);
 
+  // Mid-run steering: the host pushes user text while the run is busy; the runtime interrupts
+  // only its in-flight MODEL request (running tools finish) and consumePendingUserMessage
+  // drains the queue into the transcript at the next iteration boundary.
+  const steerQueue: string[] = [];
+  let runtimeRef: { notifyPendingUserMessage(): void } | undefined;
+  opts.onSteerReady?.({
+    push: (text: string) => {
+      steerQueue.push(text);
+      runtimeRef?.notifyPendingUserMessage();
+    },
+  });
+
   const { AgentRuntime } = loadClineRuntime();
   const runtime = new AgentRuntime({
     sessionId: opts.sessionId,
@@ -237,16 +278,25 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       pinnedModel: opts.pinnedModel,
       excludeModels: opts.excludeModels,
       abortSignal: opts.abortSignal,
+      sessionId: opts.sessionId,
       onModel: (platform, model, runtimeName) => {
         served = { platform, model, runtimeName };
+        const win = findCatalogModel(platform, model)?.contextWindow;
+        if (win) lastWindow = win;
         opts.onModel(platform, model, runtimeName);
       },
       onFailover: (from, reason) => opts.onFailover?.(from, reason),
+      onSelectionRationale: opts.onSelectionRationale,
+      onKeyRotated: opts.onKeyRotated,
       onUsage: (info) => {
+        // usage-updated is deliberately NOT handled: routerModel's per-request report is the
+        // source of truth (the runtime's cumulative event would double-add to the host's
+        // trackers). contextTokens + contextWindow drive the live context-pressure chip.
         opts.usageSink?.({
           inputTokens: info.inputTokens,
           outputTokens: info.outputTokens,
           contextTokens: info.contextTokens,
+          contextWindow: lastWindow,
           model: info.model,
           pass: iteration,
         });
@@ -257,6 +307,20 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     maxIterations: opts.maxStepsPerTurn === undefined ? 40
       : opts.maxStepsPerTurn < 1 ? UNLIMITED_ITERATIONS
       : opts.maxStepsPerTurn,
+    // Plan mode's stop condition, Cline-native: requireCompletionTool + exitPlanMode's
+    // lifecycle.completesRun make an ACCEPTED exitPlanMode the only way to complete the run;
+    // a prose-only finish gets the runtime's mechanical "[SYSTEM] This run is not complete…"
+    // reminder instead of ending the turn (the plan-gap nudge, no narration detector).
+    ...(planMode ? { completionPolicy: { requireCompletionTool: true } } : {}),
+    // Host-owned request projection: per-step tool-output aging + compaction at 80% of the
+    // serving window, and the runtime's ONE overflow recovery (context_window_exceeded →
+    // forced shrink → retry) routes through here. Affects the provider request only.
+    prepareTurn: makePrepareTurn({
+      level: opts.toolCompaction ?? 'light',
+      windowOf: () => lastWindow,
+      onNotice: (message) => opts.onStep('status', message),
+    }),
+    consumePendingUserMessage: () => steerQueue.shift(),
     requestToolApproval: async (req) => {
       const verdict = await resolvePolicy({ toolName: req.toolName, input: req.input }, policy, async (r) => {
         if (!opts.onPermissionAsk) return 'deny';
@@ -271,20 +335,22 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       });
       const approved = verdict === 'approved'
         || (typeof verdict === 'object' && verdict !== null && 'type' in verdict && (verdict as { type?: string }).type === 'approved');
-      return { approved };
+      return approved ? { approved: true } : { approved: false, reason: denyReason(verdict) };
     },
     hooks: {
-      // Plan mode's stop condition: an ACCEPTED exitPlanMode result ends the run; a rejected
-      // one (error output) keeps the loop alive so the model can revise — same semantics the
-      // old engine's planAccepted StopCondition enforced.
+      // A REJECTED plan must not complete the run: exitPlanMode keeps validation recoverable
+      // as a plain { error } OUTPUT object (exitPlanMode.ts), which a completesRun tool would
+      // read as success. Marking it isError makes findCompletingToolMessage skip it — the loop
+      // continues so the model reads the error and revises. Accepted plans complete natively.
       afterTool: async ({ toolCall, result }) => {
-        if (mode !== 'plan' || toolCall.toolName !== 'exitPlanMode') return undefined;
+        if (!planMode || toolCall.toolName !== 'exitPlanMode') return undefined;
         const out = result?.output;
         const rejected = typeof out === 'object' && out !== null && 'error' in (out as Record<string, unknown>);
-        return rejected ? undefined : { stop: true, reason: 'plan accepted' };
+        return rejected ? { result: { ...result, isError: true } } : undefined;
       },
     },
   });
+  runtimeRef = runtime;
 
   const onEvent = (e: AgentRuntimeEvent) => {
     if (e.type === 'assistant-text-delta') {
@@ -311,7 +377,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       opts.onTool(ev);
     } else if (e.type === 'turn-started') {
       iteration = e.iteration;
-      opts.onStep('thinking', iteration > 1 ? `Continuing (step ${iteration})…` : 'Thinking…');
+      // No label: the webview's own rolling activity ("Reading …", "Searching …") is more
+      // informative than a step counter, and an explicit label would override it.
+      opts.onStep('thinking');
     } else if (e.type === 'status-notice') {
       opts.onStep('status', e.message);
     } else if (e.type === 'run-failed') {
@@ -348,7 +416,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       };
     }
     return {
-      text: result.outputText,
+      // With completesRun, the runtime's outputText is the COMPLETING TOOL's return value —
+      // exitPlanMode's meta-string ("Finding reported to the user. Stop here…"), which shipped
+      // as the assistant's answer (live repro: "hika" run, Opencode/big-pickle, 2026-09-23).
+      // The card is the UI for a declared plan/finding; never surface the tool's echo.
+      text: proposedPlan ? '' : result.outputText,
       ...(reasoningParts.length ? { reasoning: reasoningParts.join('') } : {}),
       finishReason: mapFinishReason(result.status),
       platform: served.platform,
@@ -380,5 +452,6 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   } finally {
     opts.abortSignal?.removeEventListener('abort', onAbort);
     unsubscribe();
+    opts.onSteerReady?.(undefined);
   }
 }

@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createMockModel } from './mockClineModel';
-import { runPlanStream } from '../src/agent/agent';
+import { runAgentStream } from '../src/agent/agent';
 import { __setClineEngineModelForTests } from '../src/agent/core/cline/clineEngine';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
 import { formatSessionFiles, readSessionFileStates } from '../src/context/sessionFiles';
@@ -42,19 +42,19 @@ async function main() {
   const m = createMockModel([{ text: 'done' }], 'sf');
   __setClineEngineModelForTests(m);
   const opts = {
-    messages: [{ role: 'user', content: 'what changed?' }], mode: 'ask', effort: 'medium',
+    messages: [{ role: 'user', content: 'what changed?' }], mode: 'agent', effort: 'medium',
     onChunk: () => {}, onTool: () => {}, onReasoning: () => {}, onModel: () => {}, onFailover: () => {}, onStep: () => {}, onTodos: () => {},
     onAskUser: async () => ({ status: 'answered' as const, answers: ['yes'] }), onError: () => {},
     sessionFiles: async () => '<session_files>\n- src/a.ts — 3 lines\n</session_files>',
   } as AgentOpts;
-  try { await runWithWorkspaceRoot(root, () => runPlanStream(opts)); } finally { __setClineEngineModelForTests(undefined); }
+  try { await runWithWorkspaceRoot(root, () => runAgentStream(opts)); } finally { __setClineEngineModelForTests(undefined); }
   // On the cline branch the block rides in the system prompt (request.systemPrompt).
   const sent = JSON.stringify({ s: m.calls[0]?.systemPrompt, m: m.calls[0]?.messages });
   ok('the block reaches the model', sent.includes('<session_files>') && sent.includes('src/a.ts'), sent.slice(0, 120));
 
   const m2 = createMockModel([{ text: 'done' }], 'sf2');
   __setClineEngineModelForTests(m2);
-  try { await runWithWorkspaceRoot(root, () => runPlanStream({ ...opts, sessionFiles: async () => { throw new Error('disk gone'); } } as AgentOpts)); } finally { __setClineEngineModelForTests(undefined); }
+  try { await runWithWorkspaceRoot(root, () => runAgentStream({ ...opts, sessionFiles: async () => { throw new Error('disk gone'); } } as AgentOpts)); } finally { __setClineEngineModelForTests(undefined); }
   ok('a failing ledger never fails the turn', m2.calls.length === 1);
 
   fs.rmSync(root, { recursive: true, force: true });

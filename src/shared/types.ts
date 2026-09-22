@@ -53,7 +53,7 @@ export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
  *  ask (everything EXCEPT file edits — read/search/shell/sub-agents are all available so a
  *  question about git history or test output is answerable by running it; see MODE_TAIL.ask in
  *  context/system.ts). */
-export type Mode = 'plan' | 'agent' | 'ask';
+export type Mode = 'plan' | 'agent';
 
 /** A plan proposed by the model via the `exitPlanMode` tool — validated structure straight off
  *  the tool call, so nothing downstream guesses whether a prose reply "was a plan". */

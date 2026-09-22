@@ -53,11 +53,17 @@ async function main() {
 
   // ── 2. A stale persisted 'ask' session runs as read-only plan (editors never offered) ───────
   {
-    const steps: Array<Record<string, unknown>> = [{ toolCalls: [{ toolName: 'readFile', input: { path: 'A.php' } }] }, { text: 'It fails at line 3.' }];
+    // completionPolicy: the answer DECLARES itself with outcome 'no-change' — prose alone
+    // cannot finish a plan-mode turn, so the stale-session answer closes via the tool.
+    const steps: Array<Record<string, unknown>> = [
+      { toolCalls: [{ toolName: 'readFile', input: { path: 'A.php' } }] },
+      { text: 'It fails at line 3.' },
+      { toolCalls: [{ toolName: 'exitPlanMode', input: { outcome: 'no-change', title: 'Why it fails', finding: 'It fails at line 3.' } }] },
+    ];
     const m = createMockModel(steps as never, 'ask-maps-to-plan');
     const r = await run(m, 'ask');
     const names = offered(m, 0);
-    ok("a persisted 'ask' turn still runs", r.text.includes('line 3'), r.text);
+    ok("a persisted 'ask' turn still runs", (r.plan?.finding ?? r.text).includes('line 3'), `${r.text} ${r.plan?.finding ?? ''}`);
     ok('its toolset is the read-only plan set — no editors', !names.includes('editFile') && !names.includes('writeFile') && !names.includes('deleteFile'), names.join(','));
     ok('read tools survive the mapping', names.includes('readFile') && names.includes('grep'), names.join(','));
   }

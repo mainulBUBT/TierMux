@@ -5,7 +5,7 @@
 // hop, no gateway registration.
 import type { AgentModel, AgentModelEvent, AgentToolDefinition, AgentMessage } from '@cline/shared';
 import type { ChatMessage, ChatToolCall, ChatToolDefinition, ReasoningEffort, TokenUsage } from '../../../shared/types';
-import { findCatalogModel, recordOutcome, recordRequest } from '../../../router/picker';
+import { findCatalogModel, recordOutcome, recordRequest, rationaleForServed, type SelectionRationale } from '../../../router/picker';
 import { resolveCandidates } from '../routerProvider';
 import { resolveProvider } from '../../../providers';
 import { ProviderHttpError } from '../../../providers/base';
@@ -110,10 +110,31 @@ export interface TierMuxAgentModelOptions {
   pinnedModel?: string;
   excludeModels?: string[];
   abortSignal?: AbortSignal;
+  /** Session id — the picker's cooldown and grant stores key off it. */
+  sessionId?: string;
   onModel?: (platform: string, model: string, runtimeName?: string) => void;
   onFailover?: (from: string, reason: string) => void;
+  /** "Why this model?" — resolveCandidates emits the selection report; re-pointed at the
+   *  candidate that actually served once one does. */
+  onSelectionRationale?: (info: SelectionRationale) => void;
+  /** A candidate's key failed and the next stored key is being tried. */
+  onKeyRotated?: (info: { platform: string; keyIndex: number; keyTotal: number }) => void;
   /** Per-request provider-measured usage, for the turn telemetry sink. */
   onUsage?: (info: { inputTokens: number; outputTokens: number; contextTokens: number; model: string }) => void;
+}
+
+/** How a failed provider attempt classifies for the runtime's recovery policy. */
+type FailureClass = 'auth' | 'overflow' | 'transient' | 'other';
+
+function classifyFailure(e: unknown): FailureClass {
+  if (e instanceof ProviderHttpError) {
+    if ([401, 402, 403].includes(e.status ?? 0)) return 'auth';
+    if (e.status === 429 || (e.status ?? 0) >= 500) return 'transient';
+  }
+  const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
+  if (/context (window|length)|too many (input )?tokens|maximum context|input.*exceeds|context_window/.test(msg)) return 'overflow';
+  if (/fetch failed|econnreset|etimedout|socket hang up|rate.?limit|timed out/.test(msg)) return 'transient';
+  return 'other';
 }
 
 /** Wires the failover chain into Cline's model boundary. One instance per turn. */
@@ -125,12 +146,19 @@ export function createTierMuxAgentModel(opts: TierMuxAgentModelOptions): AgentMo
         yield { type: 'finish', reason: 'stop' };
         return;
       }
+      // The selection rationale rides out via opts.onSelectionRationale (resolveCandidates
+      // emits it up front, naming chain[0]); the out-param captures the raw report so it can
+      // be re-pointed at whichever candidate actually serves.
+      const out: { rationale?: SelectionRationale } = {};
       const chain = await resolveCandidates({
         taskKind: opts.taskKind,
         pinnedModel: opts.pinnedModel,
         excludeModels: opts.excludeModels,
         effort: opts.effort,
-      });
+        sessionId: opts.sessionId,
+        onSelectionRationale: opts.onSelectionRationale,
+      }, out);
+      const rawRationale = out.rationale;
       if (!chain.length) {
         yield { type: 'finish', reason: 'error', error: 'No usable model candidate resolved.', errorRetryable: false };
         return;
@@ -144,6 +172,7 @@ export function createTierMuxAgentModel(opts: TierMuxAgentModelOptions): AgentMo
         function: { name: d.name, description: d.description, parameters: d.inputSchema },
       }));
       const attempts: string[] = [];
+      const failureClasses: FailureClass[] = [];
       const deadPlatforms = new Set<string>();
       for (const c of chain) {
         if (deadPlatforms.has(c.platform)) continue;
@@ -152,7 +181,9 @@ export function createTierMuxAgentModel(opts: TierMuxAgentModelOptions): AgentMo
         if (!provider) { attempts.push(`${c.platform}::${c.modelId}: no provider resolved`); continue; }
         const key = `${c.platform}::${c.modelId}`;
         // Key rotation within one candidate: a dead or quota'd key must not cost the whole model.
+        let keyIndex = 0;
         for (const apiKey of c.apiKeys) {
+          if (keyIndex > 0) opts.onKeyRotated?.({ platform: c.platform, keyIndex, keyTotal: c.apiKeys.length });
           try {
             const assembler = new ToolCallAssembler();
             let usage: TokenUsage | undefined;
@@ -168,10 +199,17 @@ export function createTierMuxAgentModel(opts: TierMuxAgentModelOptions): AgentMo
                 content?: string;
                 reasoning_content?: string;
                 reasoning?: string;
+                reasoning_details?: Array<{ text?: string } | string>;
                 tool_calls?: ChatToolCall[];
               };
               const delta = rawDelta;
-              const reasoning = rawDelta.reasoning_content ?? rawDelta.reasoning;
+              // Live repro 2026-09-23: OpenRouter-style lanes carry reasoning ONLY in
+              // reasoning_details[] — frames with no recognized field produced zero events and
+              // the runtime failed the turn with "Model returned empty response".
+              const detailsText = Array.isArray(rawDelta.reasoning_details)
+                ? rawDelta.reasoning_details.map((d) => (typeof d === 'string' ? d : d.text ?? '')).join('')
+                : undefined;
+              const reasoning = rawDelta.reasoning_content ?? rawDelta.reasoning ?? (detailsText || undefined);
               if (reasoning) yield { type: 'reasoning-delta', text: reasoning };
               if (rawDelta.content) yield { type: 'text-delta', text: rawDelta.content };
               if (delta?.tool_calls?.length) {
@@ -185,6 +223,9 @@ export function createTierMuxAgentModel(opts: TierMuxAgentModelOptions): AgentMo
             recordRequest(c.platform, c.modelId);
             recordOutcome(c.platform, c.modelId, true);
             opts.onModel?.(c.platform, c.modelId, provider.name);
+            // Re-point the popover at the candidate that actually served — the up-front report
+            // named chain[0], which is only correct when chain[0] is the one that answered.
+            if (rawRationale) opts.onSelectionRationale?.(rationaleForServed(rawRationale, c.platform, c.modelId));
             // Complete calls carry the parsed `input` so the runtime can build tool-call parts
             // without re-assembling argument text across deltas.
             for (const call of assembler.complete()) {
@@ -214,14 +255,31 @@ export function createTierMuxAgentModel(opts: TierMuxAgentModelOptions): AgentMo
             opts.onFailover?.(key, reason);
             diagLog('cline.model.failover', `${key} — ${reason.slice(0, 120)}`);
             if (isPlatformFatal(e)) deadPlatforms.add(c.platform);
+            failureClasses.push(classifyFailure(e));
+          } finally {
+            keyIndex++;
           }
         }
       }
+      // Chain exhausted. The finish event's error contract routes the runtime's recovery:
+      //   - all-transient → errorRetryable: true — the runtime retries the WHOLE fresh chain
+      //     (≤3x, backoff, skipped once visible output streamed);
+      //   - any auth → errorClass 'auth', non-retryable — condemned platforms never retry;
+      //   - all-overflow → errorClass 'context_window_exceeded', non-retryable — this is what
+      //     routes the run into the runtime's ONE overflow recovery → our prepareTurn.
+      // Per-key failover inside the chain already happened above.
+      const anyAuth = failureClasses.includes('auth');
+      const allTransient = failureClasses.length > 0 && failureClasses.every((f) => f === 'transient');
+      const overflowOnly = !anyAuth && failureClasses.length > 0 && failureClasses.every((f) => f === 'overflow' || f === 'transient') && failureClasses.includes('overflow');
       yield {
         type: 'finish',
         reason: 'error',
         error: attempts.join(' | ').slice(0, 400) || 'Every model in the chain failed.',
-        errorRetryable: false,
+        ...(anyAuth
+          ? { errorClass: 'auth' as const, errorRetryable: false }
+          : overflowOnly
+            ? { errorClass: 'context_window_exceeded' as const, errorRetryable: false }
+            : { errorRetryable: allTransient }),
       };
     },
   };

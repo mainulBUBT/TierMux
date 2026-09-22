@@ -11,7 +11,7 @@ import { renderMarkdown, appendStreamCursor } from './markdown';
 import { stripLegacyMarkdown } from '../../src/shared/workReport';
 import { renderPdfToPageImages, PDF_MAX_RENDER_PAGES } from './pdfPages';
 import { buildReasoningBlock, updateReasoningBlock, settleReasoningBlock, buildToolCard, buildEditDiff, editDiffArgs, toolLabel, activityFor, buildToolGroupRow, GROUPABLE_TOOL_NAMES, toolStateGlyph } from './ui/tool/ToolCard';
-import { createPlan, planDataFromStepText, planDataFromTodos, createResultCard } from './ui/components';
+import { createPlan, planDataFromStepText, planDataFromTodos } from './ui/components';
 import { createAgentPicker } from './ui/components/AgentPicker';
 import { createModelPicker } from './ui/components/ModelPicker';
 import { createTodoSheet } from './ui/components/TodoSheet';
@@ -229,11 +229,10 @@ import { handleToolStatus } from './handlers/toolStatus';
   let currentMode = 'plan';
 
   // Per-mode composer placeholders (Claude-Code-style: the input hints at what the mode does).
-  // NOTE: the `ask` string is duplicated as the textarea's static `placeholder` in the app
+  // NOTE: the `plan` string is duplicated as the textarea's static `placeholder` in the app
   // shell above, because that markup renders before any JS applies a mode — they must stay in
   // sync or the placeholder visibly rewrites itself a beat after load.
   const MODE_PLACEHOLDERS = {
-    ask: 'Ask anything about this workspace…',
     plan: 'Describe what to build — I\'ll research and propose a plan…',
     agent: 'Describe a task — I\'ll read, edit files, and run commands to complete it…',
   } as const;
@@ -1372,20 +1371,9 @@ import { handleToolStatus } from './handlers/toolStatus';
     // Collapse tool cards/reasoning into "Worked for Ns" — same treatment the live run got via
     // finalizeWork. Without this, reopening/switching back to a session showed every tool call as
     // a flat, uncollapsed list instead of matching what it looked like while live.
-    collapseFlowTimeline(flow, secs, null,
-      details.workReport ? [`${fmtTokens(details.workReport.telemetry.inputTokens + details.workReport.telemetry.outputTokens)} tok`] : undefined);
+    collapseFlowTimeline(flow, secs, null);
 
-    // Structured work report → the SAME ResultCard the live turn mounted (live == replay).
-    // Entries persisted before WorkReportData have none and just keep their legacy markdown.
-    if (details.workReport) {
-      const report = details.workReport;
-      const card = createResultCard(report, {
-        onDiffFile: (p) => send({ type: 'diffCheckpointFile', id: report.checkpointId || '', uri: p }),
-      });
-      if (card) flow.appendChild(card);
-    }
-
-    // Only attach flow if it has children (pure-text ask-mode: just the text seg).
+    // Only attach flow if it has children (pure-text modes: just the text seg).
     if (flow.children.length) el.appendChild(flow);
 
     // Pass requestId + rationale so a replayed turn keeps the SAME footer affordances a live one
@@ -1429,7 +1417,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     t = {
       el, body: bubble, tools: flow, flow, currentText: null, statusEl,
       statusLabel: statusEl.querySelector('.agent-label'), statusCaret: statusEl.querySelector('.agent-caret'), statusElapsed: statusEl.querySelector('.agent-elapsed'),
-      toolRunning: false, activeTool: null, model: modelStr, requestId, workReport: null,
+      toolRunning: false, activeTool: null, model: modelStr, requestId,
       // Grouped-read state (docs/UI_POLISH_TOOL_REASONING_2026-09-02.md item 1) — see upsertTool.
       // toolMsgs is the one source of truth a group's DOM gets rebuilt from on every update, so
       // the live rendering can never drift from what buildToolGroupRow (also used by the static
@@ -1632,16 +1620,18 @@ import { handleToolStatus } from './handlers/toolStatus';
     t.currentText = null;
     if (!t.flow) return;
     const elapsed = t.startedAt ? Math.round((Date.now() - t.startedAt) / 1000) : null;
-    // The workReport message precedes assistantMessage, so the telemetry is already here when
-    // the flow collapses — feed its token totals into the "Worked for Ns" summary.
-    const rep = t.workReport;
-    collapseFlowTimeline(t.flow, elapsed, t.planEl,
-      rep ? [`${fmtTokens(rep.telemetry.inputTokens + rep.telemetry.outputTokens)} tok`] : undefined);
+    collapseFlowTimeline(t.flow, elapsed, t.planEl);
     scrollDown();
   }
 
   function submitChat() {
-    if (busy) { send({ type: 'cancel', requestId: 'current', sessionId: viewedSessionId }); return; }
+    // While a run is live, the composer STEERS: a non-empty submit queues the text as a
+    // mid-run follow-up (the host injects it before the next model request); an empty submit
+    // is still Stop. Attachments ride along — the host decides steer-vs-cancel-and-replace.
+    if (busy) {
+      const text = input.value.trim();
+      if (!text && pendingAttachments.length === 0) { send({ type: 'cancel', requestId: 'current', sessionId: viewedSessionId }); return; }
+    }
     const text = input.value.trim();
     if (!text && pendingAttachments.length === 0) return;
     const requestId = newId();
@@ -1807,11 +1797,11 @@ import { handleToolStatus } from './handlers/toolStatus';
   }
 
   // ── Context-pressure chip: a circular ring gauge showing how much of the SERVING model's
-  // window the most recent request used (from WorkReportData.context — never recomputed).
-  // Amber past 70%; hover keeps the exact numbers. ──
+  // window the most recent request used (from the run's contextPressure message — never
+  // recomputed). Amber past 70%; hover keeps the exact numbers. ──
   const ctxChip = $('#ctx-chip');
-  function updateContextChip(report) {
-    const c = report && report.context;
+  function updateContextChip(p) {
+    const c = p && { percent: p.percent, contextTokens: p.contextTokens, contextWindow: p.contextWindow };
     if (!c || !c.contextWindow || !(c.percent >= 0)) { ctxChip.classList.add('hidden'); return; }
     ctxChip.classList.remove('hidden');
     ctxChip.classList.toggle('warn', c.percent > 70);
@@ -2348,15 +2338,14 @@ import { handleToolStatus } from './handlers/toolStatus';
         thoughtAcc.set(block, { text: '', durMs: 0 });
         t.tools.appendChild(block);
       } else {
-        // A block can reach here already populated but untracked by thoughtAcc: `clearDraft`
-        // (a streamed draft retracted into reasoning when a tool call revealed it was narration,
-        // not the answer) builds one directly via buildReasoningBlock, bypassing upsertTool
-        // entirely. Treating that as "empty" (the old `|| { text: '' }`) let the FIRST real
-        // 'running'/'done' delta for the same toolCallId silently overwrite the retracted text —
-        // live repro: "Thought for Ns" settles with the body thin or blank. Seed from the block's
-        // current body ONCE (thoughtAcc.set, same idiom as the merge branch above) so later ticks
-        // reuse the seed instead of re-reading — re-reading every tick would re-append text
-        // already folded into a prior msg.detail buffer and duplicate it.
+        // A block can reach here already populated but untracked by thoughtAcc (built directly
+        // via buildReasoningBlock, bypassing upsertTool). Treating that as "empty" (the old
+        // `|| { text: '' }`) let the FIRST real 'running'/'done' delta for the same toolCallId
+        // silently overwrite the settled text — live repro: "Thought for Ns" settles with the
+        // body thin or blank. Seed from the block's current body ONCE (thoughtAcc.set, same
+        // idiom as the merge branch above) so later ticks reuse the seed instead of re-reading
+        // — re-reading every tick would re-append text already folded into a prior msg.detail
+        // buffer and duplicate it.
         let acc = thoughtAcc.get(block);
         if (!acc) {
           acc = { text: (block.querySelector('.tm-reasoning-body')?.textContent || '').trim(), durMs: 0 };
@@ -4418,7 +4407,7 @@ import { handleToolStatus } from './handlers/toolStatus';
   // Message types scoped to one session's pane: when one carries a sessionId, the pane-bound
   // state is repointed at that session BEFORE its case body runs. 'switchSession' is included
   // so its body can use the returned `existed` flag.
-  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'planData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'workReport', 'planProposed', 'planDiscarded', 'editApproval', 'permissionAsk', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
+  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'planData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'contextPressure', 'planProposed', 'planDiscarded', 'editApproval', 'permissionAsk', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
 
   // ---------- inbound messages ----------
   // Diagnostic ring of the last 150 host messages; `__tmLog()` in devtools prints them, which is
@@ -4556,12 +4545,8 @@ import { handleToolStatus } from './handlers/toolStatus';
           (msg.messages || []).forEach((mm) => mm.role === 'user' ? addUserBubble(mm.text, mm.requestId, mm.ts, mm.attachments) : renderAssistantStatic(mm.text, mm.model, mm.ts, mm.secs, { reasoning: mm.reasoning, steps: mm.steps, usage: mm.usage, workReport: mm.workReport, rationale: mm.rationale, requestId: mm.requestId }));
           if (!(msg.messages || []).length) renderEmpty();
         }
-        // Context chip reflects the session being entered — its most recent workReport's
-        // context telemetry (replay uses the SAME field the live message carried).
-        for (let i = (msg.messages || []).length - 1; i >= 0; i--) {
-          const mm = msg.messages[i];
-          if (mm.role === 'assistant' && mm.workReport) { updateContextChip(mm.workReport); break; }
-        }
+        // Context chip reflects the session being entered — the host re-posts that session's
+        // last contextPressure right after switchSession, so there is nothing to scan here.
         loadComposer(viewedSessionId); // restore the entering session's draft/settings
         scrollDown();
         break;
@@ -4917,31 +4902,6 @@ import { handleToolStatus } from './handlers/toolStatus';
         }
         break;
       }
-      case 'clearDraft': {
-        // A tool call arrived in the same step as text that streamed as a tentative reply — that
-        // text was narration. Only the segment currently streaming is affected; earlier steps'
-        // closed .flow-text divs may hold a real answer and stay.
-        const t = ensureTarget(msg.requestId);
-        if (t.currentText) {
-          // With a reasoning segment named, RE-LABEL the streamed text in place rather than
-          // deleting it — the matching reasoning post updates this node, so the thought reads as
-          // one stream instead of appearing all at once a moment later.
-          const streamedText = msg.reasoningId ? (t.currentText._buf ?? t.currentText.textContent ?? '') : '';
-          if (msg.reasoningId && streamedText.trim()) {
-            const block = buildReasoningBlock(streamedText, msg.reasoningId, true);
-            t.currentText.replaceWith(block);
-          } else {
-            t.currentText.remove();
-          }
-          t.currentText = null;
-        }
-        // The draft just became Chain-of-Thought, so the turn is generating again (nudge
-        // continuation pass). Put the label back on the rolling writing verb + caret —
-        // otherwise it stays on the stale "Responding…" from the retracted text and the
-        // wait for the next pass's first token looks frozen.
-        setStatusLabel(msg.requestId, 'Thinking…', { force: true });
-        break;
-      }
       case 'assistantMessage': {
         const t = ensureTarget(msg.requestId);
         stopStatusTimer(msg.requestId, true);
@@ -5001,21 +4961,6 @@ import { handleToolStatus } from './handlers/toolStatus';
         // The canonical reply bubble is already rendered above (draft → canonical reconciliation).
         t._wasStreamed = false;
         finalizeWork(msg.requestId);
-        // Structured work report → ResultCard, mounted after the collapse so it sits BELOW the
-        // answer (live). Replay mounts the identical component from entry.workReport.
-        let turnFailovers = 0;
-        if (t.workReport) {
-          const report = t.workReport;
-          t.workReport = null;
-          turnFailovers = report.telemetry.failovers || 0;
-          const card = createResultCard(report, {
-            onDiffFile: (p) => send({ type: 'diffCheckpointFile', id: report.checkpointId || '', uri: p }),
-          });
-          if (card) {
-            if (t.flow && t.flow.parentNode) t.flow.appendChild(card);
-            else t.el.appendChild(card);
-          }
-        }
         // The final message carries the model that actually answered — use it as
         // the source of truth so the footer never blanks (e.g. when a forced model
         // failed over before assistantStart could set t.model).
@@ -5023,13 +4968,14 @@ import { handleToolStatus } from './handlers/toolStatus';
         {
           const startedAt = t.startedAt ?? startTimes.get(msg.requestId);
           const secs = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
-          // Failover count comes from the turn's telemetry (single source) — the silent
+          // Failover count comes from the turn's failoverNotice accumulator — the silent
           // failoverNotice chatter stays hidden, but the reroute shows as an icon-led count.
+          const failovers = t.failoverCount || 0;
           const foot = assistantFooter(t.el, {
             model: t.model || '',
             usage: msg.usage,
             duration: secs != null ? fmtDuration(secs) : undefined,
-            failovers: turnFailovers > 0 ? turnFailovers : undefined,
+            failovers: failovers > 0 ? failovers : undefined,
           }, Date.now(), msg.requestId, t.rationale);
           t.footActs = foot._acts;
           t.servedChip = foot._servedChip; // so a late-arriving selectionRationale can still relabel the chip
@@ -5048,15 +4994,10 @@ import { handleToolStatus } from './handlers/toolStatus';
         scrollDown();
         break;
       }
-      case 'workReport': {
-        // The host posts this right BEFORE the paired assistantMessage. Store it on the turn
-        // target; the assistantMessage handler mounts the ResultCard AFTER finalizeWork so
-        // the DOM order is [collapsed work summary] → [answer text] → [ResultCard] — the same
-        // order replay renders, keeping live == replay.
-        const t = ensureTarget(msg.requestId);
-        t.workReport = msg.report;
-        // Context-pressure chip reflects the VIEWED session's most recent request only.
-        if (!msg.sessionId || msg.sessionId === viewedSessionId) updateContextChip(msg.report);
+      case 'contextPressure': {
+        // Live context-pressure chip (WS5b): posted per model call from the run's usage sink;
+        // re-posted by the host on session switch. Chip shows the VIEWED session's pressure.
+        if (!msg.sessionId || msg.sessionId === viewedSessionId) updateContextChip(msg);
         break;
       }
       case 'usageTotals':
@@ -5208,6 +5149,9 @@ import { handleToolStatus } from './handlers/toolStatus';
           sb.innerHTML = busy ? SEND_SPINNER : ICON.send;
           sb.title = busy ? 'Stop' : 'Send (Enter)';
           sb.classList.toggle('stopping', busy);
+          // While a run is live the composer steers (text is a mid-run follow-up, empty is Stop)
+          // — say so where the user is looking. Restored to the mode's own placeholder on idle.
+          input.placeholder = busy ? 'Send a follow-up to steer… (empty submit = Stop)' : (MODE_PLACEHOLDERS[currentMode] || input.placeholder);
           updateSendEnabled();
           // Turn lifecycle finally: the serving indicator always returns to the user's pick.
           if (!busy) resetServingModel();

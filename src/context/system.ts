@@ -16,8 +16,8 @@ export const METHOD = [
   '5. Gather as much as the task needs, and never repeat a call whose result you already have.',
 ].join('\n');
 
-/** Agent-only: ask and plan have no editFile/writeFile, so these rules were dead weight (and a
- *  mixed message) in their prompts. */
+/** Agent-only: plan has no editFile/writeFile, so these rules were dead weight (and a
+ *  mixed message) in its prompt. */
 const EDITING = [
   '# Editing',
   'Read the target first, then apply the smallest correct edit. The search string must match the file EXACTLY (whitespace included) and appear once — add context when ambiguous; several changes to one file go in ONE editFile via `edits`. A successful result confirms the write and reports new diagnostics, so re-read only when it flags a problem or you need fresh line numbers. When a tool errors, read the error and change the call — never repeat the same failing arguments.',
@@ -59,13 +59,14 @@ const MODE_TAIL: Record<Mode, string> = {
   ].join('\n'),
   // The plan→execution boundary is the exitPlanMode TOOL CALL, so there is no step template
   // here: the tool's schema carries what/files/verify. A plan-mode QUESTION comes back as a
-  // finding ("do NOT call exitPlanMode"), never forced into a step shape.
+  // finding declared with outcome 'no-change' — never forced into a step shape. The run only
+  // completes on the tool call, so prose alone never ends a turn.
   plan: [
     'Analyze the codebase with tools first. Do not modify files. Do not run implementation commands.',
     '',
     'If the user asked for a CHANGE (build / add / refactor / fix): investigate, then call exitPlanMode with the finished plan. That tool call IS how you present the plan and request approval — do not also write the plan out in prose, and do not ask for approval in words.',
     '',
-    'If the user asked a QUESTION (does X happen, verify Y, why Z): just ANSWER it with path:line evidence and say what you checked. Do NOT call exitPlanMode — a finding is not a plan.',
+    'If the user asked a QUESTION (does X happen, verify Y, why Z): investigate, then call exitPlanMode with outcome "no-change" and put the answer, with path:line evidence and what you checked, in `finding`. A finding is not a plan — it never gets steps. Prose alone does not finish a turn: the run only completes on the exitPlanMode call.',
     '',
     // An UNSURE model with nowhere to put its doubt guessed the wrong branch and shipped a plan
     // that implemented the OPPOSITE of the request (2026-09-01) — so the premise is explicit
@@ -78,13 +79,6 @@ const MODE_TAIL: Record<Mode, string> = {
     'Call exitPlanMode only with a FINISHED plan: every premise settled by the conversation or by askUser. A plan carries no open questions — if it would, you are not ready to propose it.',
     '',
     'Every step you propose must CHANGE a file, and must name the path:line you read that proves it is needed. If your investigation concludes nothing needs changing, say so with exitPlanMode outcome "no-change" — never pad a plan with a step that only re-checks something.',
-    DELEGATE_LINE,
-  ].join('\n'),
-  ask: [
-    'You are in ASK mode: you answer the question yourself instead of changing the codebase.',
-    'If the conversation or the context above already answers it, answer directly — no tool needed. Otherwise read files, grep, and call runCommand for what the workspace itself will not tell you — git history, file listings, installed versions, a data query. Say what you checked.',
-    'For a question about how the codebase works, orient before diving in — listDir the top level or read the manifest/README if you do not yet know the layout — then read every file the answer depends on, not just the first hit. Lead with the answer.',
-    'The ONE thing you cannot do is modify files — no editFile/writeFile/deleteFile, and no destructive or mutating shell command either. If the answer requires a change, describe it and say to switch to agent mode.',
     DELEGATE_LINE,
   ].join('\n'),
 };

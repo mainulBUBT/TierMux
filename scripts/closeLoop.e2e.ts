@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createMockModel } from './mockClineModel';
-import { runAgentStream, runPlanStream } from '../src/agent/agent';
+import { runAgentStream } from '../src/agent/agent';
 import { __setClineEngineModelForTests } from '../src/agent/core/cline/clineEngine';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
 import type { AgentOpts, AgentResult } from '../src/agent/agent';
@@ -117,13 +117,12 @@ async function main() {
     ok('an answer that merely CONTAINS "let me" is not nudged', m.calls.length === 2, `${m.calls.length}`);
     ok('it ships verbatim', r.text.includes('place_order'), r.text.slice(0, 70));
   }
-  {
-    const m = createMockModel([readCall, { text: 'Let me continue reading the trait.' }], 'ask-mode');
-    const r = await turn(m, { mode: 'ask', messages: [{ role: 'user', content: 'how are orders placed?' }] }, runPlanStream);
-    // 2 calls = the tool step plus the SDK's natural following step. A nudge would be a 3rd.
-    ok('ask mode is never nudged', m.calls.length === 2, `${m.calls.length} model calls`);
-    ok('its prose answer ships', r.text.includes('Let me continue'), r.text.slice(0, 50));
-  }
+  // cline branch: ask mode is gone (modes are 'plan' | 'agent') and plan-mode prose is handled
+  // by the runtime's completion reminder, not a nudge — a Q&A turn completes via the
+  // exitPlanMode 'no-change' declaration, covered by exitPlanMode.e2e (plan-answer /
+  // plan-question blocks).
+  gone('ask mode is never nudged', 'ask mode removed; plan-mode Q&A completes via no-change declaration (exitPlanMode.e2e)');
+  gone('its prose answer ships', 'ask mode removed; plan-mode Q&A completes via no-change declaration (exitPlanMode.e2e)');
 
   fs.rmSync(root, { recursive: true, force: true });
   console.log(bad === 0 ? '\nLoop closing holds.' : `\n${bad} FAILED`);

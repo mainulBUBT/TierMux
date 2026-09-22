@@ -1,11 +1,19 @@
 # Plan mode's boundary is a tool call (2026-08-31)
 
+> **2026-09-23, cline-agent branch:** the engine underneath this boundary is now Cline's
+> `AgentRuntime` (`src/agent/core/cline/clineEngine.ts`), and the turn no longer ends by a
+> host-side `stopWhen` — see [The boundary on the cline-agent branch](#the-boundary-on-the-cline-agent-branch-2026-09-23)
+> below. The doctrine is unchanged and stricter: the tool call is the ONLY way a plan-mode turn
+> completes, and the host still never classifies prose. Sections describing the old engine's
+> planGap nudge, `toolChoice` pinning and `onRetractDraft` are historical record now.
+
 ## What changed
 
-The model now DECLARES its plan by calling `exitPlanMode`
+The model DECLARES its plan by calling `exitPlanMode`
 (`src/agent/core/tools/v3/exitPlanMode.ts`). The engine captures the validated input on
-`AgentResult.plan` and ends the turn (`stopWhen: [stepCountIs(50), hasToolCall('exitPlanMode')]`).
-`chatViewProvider` renders the `planProposed` card straight from that structure.
+`AgentResult.plan`, and on the cline branch the RUN completes natively through the runtime's
+completion policy (see the dated section below). `chatViewProvider` renders the `planProposed`
+card straight from that structure.
 
 Before, plan mode inferred AFTER the fact whether a prose reply "was a plan":
 
@@ -182,6 +190,41 @@ persisted mid-generation saved a derived stand-in — and `hydrateSession` infer
 string that a title had already been generated, permanently preventing the real one. Both
 `title` and `titleGenerated` are now persisted explicitly, with the old inference kept only as
 the back-compat path for sessions stored before the flag existed.
+
+## The boundary on the cline-agent branch (2026-09-23)
+
+The AI SDK loop (`stopWhen`, `prepareStep`, the planGap hook) is gone — commit `ffc6c99` moved
+the loop to Cline's `AgentRuntime`, and plan-mode completion is now runtime machinery, not
+TierMux code:
+
+- **`completionPolicy.requireCompletionTool`** is set for plan mode in `clineEngine.ts`, and
+  the engine stamps `exitPlanMode` with `lifecycle.completesRun: true` (agent mode stamps
+  nothing). The tool v3 set stays engine-neutral.
+- **Completion mechanics (verified against the runtime bundle):** a run completes only on a
+  completing-tool result with falsy `isError`. The runtime injects a `[SYSTEM]` reminder at run
+  START and again after EVERY prose-only finish; a prose-only finish under the policy loops
+  until the iteration cap, then the run FAILS — it never ships narration as a finished answer.
+  This is the plan-gap nudge's guarantee without the nudge: one mechanical continuation,
+  owned by the runtime, with no host-side prose detection anywhere.
+- **Rejection is an `isError` transform.** An `afterTool` transform in `clineEngine.ts` marks
+  an `{error}`-shaped `exitPlanMode` output `isError: true`; `findCompletingToolMessage` skips
+  error results, so a rejected plan does NOT complete the run — the model reads the error and
+  re-submits. An accepted plan completes the run (`'completed'`, not the old stop-throw's
+  `'aborted'`).
+- **Questions are declarations too.** Because prose alone can never finish a turn, a plan-mode
+  QUESTION (including imperative-shaped ones like "give me an example of plan mode") is answered
+  by calling `exitPlanMode` with `outcome: 'no-change'` and the answer in `finding`. The old
+  "Do NOT call exitPlanMode" prompt line was itself the contradiction — it demanded prose
+  endings from a loop that only completes on the tool. `system.ts` now directs models to
+  `no-change`; the card renders the finding, never steps.
+- **What died with the old engine and stays dead:** `planGap`, the `toolChoice` pinning lever
+  (and with it the `ToolChoiceViolationError` corner), `onRetractDraft`, the plan-gap health
+  demotion, and `looksLikeActionablePlan`'s engine-side caller. The card-side regex fallback
+  (`planStructurer`) remains only for PAUSED-legacy replay, never for tool-path turns.
+
+Verify: `npm run test:e2e:exit-plan-mode` (adapted to the completion policy: reminder after
+narration, no-change declarations, reject-continue-accept), `npm run test:e2e:cline-engine`
+(plan accept / reject / reminder sections), `npm run test:e2e:foundation`.
 
 ## Verify
 

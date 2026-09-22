@@ -1,6 +1,7 @@
 
-// Verify command for the end-of-turn gate: LSP diagnostics prove the edited FILES parse, this
-// proves the PROJECT works, and a non-zero exit feeds `agent.verifyFixRounds`. Detection is
+// Verify command for plan-mode evidence: LSP diagnostics prove the edited FILES parse, this
+// proves the PROJECT works (the old end-of-turn fix-rounds gate is gone with the old engine).
+// Detection is
 // stack-wise, not Node-first (a Laravel app with a Vite package.json verifies with `php artisan
 // test`): each stack contributes candidates by strength (test > typecheck > build > syntax scan)
 // and the strongest wins; a stack without installed dependencies is withheld, bar the PHP parse

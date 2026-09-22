@@ -150,15 +150,29 @@ export abstract class BaseProvider {
               object: 'chat.completion.chunk',
               created: parsed.created ?? Math.floor(Date.now() / 1000),
               model: parsed.model ?? '',
-              choices: (parsed.choices).map((c, i) => ({
-                index: c.index ?? i,
-                delta: {
-                  role: 'assistant',
-                  ...(typeof c.message?.content === 'string' ? { content: c.message.content } : {}),
-                  ...(c.message?.tool_calls ? { tool_calls: c.message.tool_calls } : {}),
-                },
-                finish_reason: c.finish_reason ?? 'stop',
-              })),
+              choices: (parsed.choices).map((c, i) => {
+                // Live repro 2026-09-23 (Opencode/nemotron-3-ultra-free, "Model returned empty
+                // response" x2 @ 19.7k in / 393 out): the one-shot body carried the answer in
+                // reasoning_content/reasoning and the OLD fallback dropped both — the runtime
+                // saw zero content parts and failed the turn. Carry every reasoning dialect.
+                const msg = c.message as (ChatMessage & { reasoning?: unknown; reasoning_details?: unknown }) | undefined;
+                const details = Array.isArray(msg?.reasoning_details) ? msg.reasoning_details : [];
+                const reasoning = msg?.reasoning_content
+                  ?? (typeof msg?.reasoning === 'string' ? msg.reasoning : undefined)
+                  ?? (details.length
+                    ? details.map((d) => (typeof d === 'string' ? d : (d as { text?: string }).text ?? '')).join('')
+                    : undefined);
+                return {
+                  index: c.index ?? i,
+                  delta: {
+                    role: 'assistant',
+                    ...(typeof c.message?.content === 'string' ? { content: c.message.content } : {}),
+                    ...(reasoning ? { reasoning_content: reasoning } : {}),
+                    ...(c.message?.tool_calls ? { tool_calls: c.message.tool_calls } : {}),
+                  },
+                  finish_reason: c.finish_reason ?? 'stop',
+                };
+              }),
               ...(parsed.usage ? { usage: parsed.usage } : {}),
             };
             chunkCount = parsed.choices.length;

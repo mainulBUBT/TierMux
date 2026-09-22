@@ -87,7 +87,7 @@ export type {
   PlanRunState,
 } from './shared/types';
 
-// ── Work report — the durable end-of-turn representation ─────────────────────
+// ── Legacy work report — strip support for transcripts persisted before it was removed ──
 export type {
   WorkReportData,
   WorkReportChangedFile,
@@ -95,4 +95,4 @@ export type {
   TurnTelemetry,
   ContextTelemetry,
 } from './shared/workReport';
-export { renderLegacyMarkdown, stripLegacyMarkdown } from './shared/workReport';
+export { stripLegacyMarkdown } from './shared/workReport';

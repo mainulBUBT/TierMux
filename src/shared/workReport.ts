@@ -1,16 +1,12 @@
-/** Structured end-of-turn report, imported by host AND webview (type-only imports here).
- *  TurnTelemetry tokens accumulate across the turn's model calls (COST); ContextTelemetry is the
- *  most recent request's context size against the serving model's window (PRESSURE). */
+/** Legacy end-of-turn report types + markdown strip, kept ONLY so transcripts persisted before
+ *  the structured work report was removed (cline-agent branch, 2026-09-22) stay replayable.
+ *  Nothing new produces WorkReportData; the webview strips the serialized block from old
+ *  entries and renders the plain text. Type-only imports here (host AND webview import it). */
 
-import type { TaskKind } from '../agent/routing';
-
-/** THE accounting object for one turn — the live status line, footer, ResultCard, and replay
- *  all read these numbers from one place. No component recomputes its own copy. */
+/** THE accounting object one old turn carried. No longer produced — legacy shapes only. */
 export interface TurnTelemetry {
-  /** "provider/modelId" of the model that actually served, or "unknown". Always present —
-   *  deterministic rendering beats defensive optionality. */
   model: string;
-  taskKind: TaskKind;
+  taskKind: string;
   inputTokens: number;
   outputTokens: number;
   toolCalls: number;
@@ -19,16 +15,12 @@ export interface TurnTelemetry {
   elapsedMs: number;
 }
 
-/** Request/window pressure state for the most recent serving request — NOT turn accounting. */
+/** Request/window pressure state for the most recent serving request. No longer produced —
+ *  live turns report pressure via the `contextPressure` message instead. */
 export interface ContextTelemetry {
-  /** Actual context size of the most recent model request (conversation + retained history +
-   *  tool output + system prompt, as fitted and sent). */
   contextTokens: number;
-  /** The SERVING model's declared context window. */
   contextWindow: number;
-  /** Math.floor(contextTokens / contextWindow * 100), precomputed host-side. */
   percent: number;
-  // Future: breakdown { system, retained, user, tools }
 }
 
 export interface WorkReportChangedFile {
@@ -42,11 +34,8 @@ export interface WorkReportToolCount {
 }
 
 export interface WorkReportData {
-  /** Persisted in transcripts — readers switch on this for forward compatibility. */
   version: 1;
   verifyOutcome: 'verified' | 'failed' | 'unverified' | 'changes-only';
-  /** Whether a verify command existed for this workspace at all. false ⇒ "unverified" is a
-   *  property of the PROJECT, so the UI stays silent. Older transcripts are treated as true. */
   verifyAvailable?: boolean;
   verifyCmd?: string;
   auditOutcome?: 'verified' | 'incomplete';
@@ -56,42 +45,28 @@ export interface WorkReportData {
   stopReason: string;
   telemetry: TurnTelemetry;
   context?: ContextTelemetry;
-  /** The turn's own checkpoint (requestId) — turn-scoped and immutable after the turn ends,
-   *  so replay-time changed-file clicks always diff against this turn's baseline. Stamped by
-   *  the HOST (chatViewProvider), which owns the requestId; the agent loop leaves it unset. */
   checkpointId?: string;
 }
 
-// ── Legacy markdown serialization — only so transcripts persisted before WorkReportData keep
-// rendering. Never PARSE it back; emit and strip share one implementation.
+// ── Legacy markdown serialization — emit and strip share one implementation so the strip is
+// lossless. Only `stripLegacyMarkdown` is exported; nothing renders new reports.
 
-/** Marker phrases here are load-bearing: e2e suites key on them ('Unverified'), and the wording
- *  is user-facing copy — change with care. The failed outcome emits NO verify line at all
- *  (2026-09-17) — only its changed-files block. */
-export function renderLegacyMarkdown(report: WorkReportData): string {
+/** Marker phrases here are load-bearing: old persisted entries end in exactly this block, and
+ *  the strip relies on byte-identical reproduction. */
+function renderLegacyMarkdown(report: WorkReportData): string {
   const lines: string[] = [];
   const rounds = report.fixRounds;
   if (report.verifyOutcome === 'verified') {
     const rTxt = rounds ? ` (after ${rounds} fix round${rounds === 1 ? '' : 's'})` : '';
     lines.push(`**✅ Verified** — \`${report.verifyCmd}\` passed${rTxt}.`);
   } else if (report.verifyOutcome === 'failed') {
-    // SILENT (2026-09-17, user direction) — no line at all. The gate never runs the command
-    // before the changes, so a non-zero exit cannot be attributed to this turn; a suite that was
-    // already red reads identically (live repro 2026-09-16: a CSS edit on a Laravel repo with 56
-    // pre-existing failures). Every wording tried here still landed as "the agent broke it", so
-    // the report stops claiming a verdict it cannot support. The agent's closing sentence is
-    // where a real failure gets reported; the block below still lists what changed.
-    // Superseded: the ❌ badge and the agent-owns-the-recheck "say keep fixing" copy (2026-08-25).
+    // SILENT (2026-09-17, user direction) — was emitted with no line at all. Kept as a branch
+    // so the strip matches what old code actually wrote.
   } else if (report.verifyOutcome === 'changes-only') {
     lines.push('**✅ Changes applied** — your changes are saved to disk.');
   } else if (report.verifyAvailable === false) {
-    // No test/build command exists in this workspace for ANY stack. Flagging the turn as
-    // untested (and asking for a command) blames the turn for a property of the project, on
-    // every single turn — pure noise. State what IS true and stop there.
-    lines.push('**\u2705 Changes applied** \u2014 your changes are saved to disk.');
+    lines.push('**✅ Changes applied** — your changes are saved to disk.');
   } else {
-    // Every untested mutating turn says so: what IS true (changes saved), why untested, one
-    // next step addressed to the AGENT. A command DOES exist here (verifyAvailable !== false).
     const reason = report.stopReason
       ? 'the run ended before the final check could run'
       : report.verifyAvailable
@@ -111,7 +86,6 @@ export function renderLegacyMarkdown(report: WorkReportData): string {
     if (created.length) parts.push(`created: ${created.join(', ')}`);
     if (modified.length) parts.push(`modified: ${modified.join(', ')}`);
     if (deleted.length) parts.push(`deleted: ${deleted.join(', ')}`);
-    // Always present — a structured report may repeat what the prose above already said.
     lines.push(`**Files changed:** ${parts.join('; ')}.`);
   }
   if (report.toolTally.length) {
@@ -123,7 +97,7 @@ export function renderLegacyMarkdown(report: WorkReportData): string {
   return `\n\n---\n${lines.join('\n')}`;
 }
 
-/** Remove exactly what renderLegacyMarkdown appended — same input ⇒ same string, so a suffix
+/** Remove exactly what the legacy serializer appended — same input ⇒ same string, so a suffix
  *  match is lossless. Returns `text` unchanged when no report block is present (e.g. legacy
  *  prose that never had one). */
 export function stripLegacyMarkdown(text: string, report: WorkReportData): string {

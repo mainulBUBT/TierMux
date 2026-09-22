@@ -1,6 +1,6 @@
-// Public agent surface — the v3 engine: TierMux policy/orchestration over the AI SDK
-// execution engine (see src/agent/core/engine.ts). Three entry points, one per mode,
-// plus task classification and the AI SDK adapter.
+// Public agent surface — the Cline runtime engine: TierMux policy/orchestration over the
+// AgentRuntime loop (see src/agent/core/cline/clineEngine.ts). Two entry points, one per mode,
+// plus task classification and the model selection boundary.
 
 export {
   runAgentStream,

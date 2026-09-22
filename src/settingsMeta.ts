@@ -51,8 +51,6 @@ export const SETTINGS_META: SettingMeta[] = [
   // -- Other --
   { key: 'agent.toolCompaction', label: 'Tool-result compaction', type: 'enum', enum: ['off', 'light', 'aggressive'],
     desc: 'Replace EARLIER steps\' bulky tool outputs with a one-line stub naming the tool and its arguments, so each step re-sends a small prompt; light stubs over ~2,000 characters, aggressive over ~800. The most recent step\'s results, short outputs and error payloads stay verbatim. File reads are included — they are the largest outputs and the reason this exists.' },
-  { key: 'agent.verifyFixRounds', label: 'Verify fix rounds', type: 'number', min: 0, max: 5,
-    desc: 'After a turn edits files, the project\'s verify command runs. If it fails, the failure output goes back to the agent for up to this many fix-and-recheck rounds before the turn reports failure — you are never asked to re-run it. 0 reports the failure without retrying.' },
   { key: 'agent.autoCondense', label: 'Auto-compact context', type: 'boolean',
     desc: 'Automatically summarize older turns when the conversation approaches ~80% of the model\'s context window, before a turn starts.' },
   // min 0, not 8000: 0 is the documented "no cap, window-only" value (package.json declares

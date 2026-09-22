@@ -18,7 +18,7 @@ export interface PolicyConfig {
   mode: PermissionMode;
   /** 'plan' applies §12's profile: read/search auto-allow, shell ASKS, edit/delete/write
    *  hard-deny — approval of a plan is never a blanket approval to mutate. */
-  sessionMode?: 'plan' | 'agent' | 'ask';
+  sessionMode?: 'plan' | 'agent';
   alwaysAllow: Set<string>;
   alwaysDeny: Set<string>;
   /** Command PREFIXES `commandApproval: 'allowlist'` auto-runs (on top of the built-in safe
@@ -76,34 +76,10 @@ export function resolvePolicy(
     return Promise.resolve({ type: 'denied', reason: 'plan mode is read-only — edits are disabled until the plan is approved' });
   }
 
-  // Ask mode: file mutators hard-denied; shell READ-ONLY — a confidently read-only command
-  // (ls, git log/status/diff) auto-runs, a dangerous one is denied, anything ambiguous falls
-  // through to the normal chain. alwaysAllow from an agent-mode turn is ignored for shell here.
-  if (config.sessionMode === 'ask' && MUTATING_FILE_TOOLS.has(call.toolName)) {
-    return Promise.resolve({ type: 'denied', reason: 'ask mode answers questions — file edits are disabled; switch to agent mode to change files' });
-  }
-  if (config.sessionMode === 'ask' && call.toolName === 'runCommand') {
-    const cmd = commandFromInput(call.input);
-    if (cmd && isDangerous(cmd)) {
-      return Promise.resolve({ type: 'denied', reason: 'ask mode never runs destructive commands — switch to agent mode for that' });
-    }
-    if (cmd && isReadOnlyCommand(cmd)) return Promise.resolve({ type: 'approved' });
-    if (!requestApproval) return Promise.resolve({ type: 'denied', reason: 'no approval channel configured' });
-    return requestApproval({ tool: call.toolName, input: call.input }).then((d) => {
-      return d === 'allow'
-        ? { type: 'approved' as const }
-        : { type: 'denied' as const, reason: 'user denied' };
-    });
-  }
+  // Ask mode is gone (modes are 'plan' | 'agent'); its read-only shell behavior lives on in the
+  // generic read-only auto-approve below, which every session mode gets.
 
   if (config.alwaysAllow.has(call.toolName)) {
-    // A session-scoped "Always" grant from an agent-mode turn must never unlock mutation
-    // in ask mode — plan mode returned above before reaching here, and ask-mode mutating
-    // tools were denied above, so this is defense-in-depth. Shell is exempt: ask mode
-    // handles runCommand in its own branch above (read-only auto, dangerous deny).
-    if (config.sessionMode === 'ask' && MUTATING_FILE_TOOLS.has(call.toolName)) {
-      return Promise.resolve({ type: 'denied', reason: 'ask mode is read-only — a prior "Always" grant does not carry over' });
-    }
     return Promise.resolve({ type: 'approved' });
   }
   if (READ_ONLY_TOOLS.has(call.toolName)) {
@@ -128,11 +104,11 @@ export function resolvePolicy(
   if (call.toolName === 'runCommand') {
     const cmd = commandFromInput(call.input);
     if (cmd && !isDangerous(cmd)) {
-      // A confidently read-only command auto-runs in EVERY mode. Ask mode and allowlist mode
-      // already did; agent mode with the default commandApproval: 'always' was the one place
-      // `ls` or `git log` still cost a prompt, so the most permissive session mode was the
-      // strictest about reading (2026-09-16). Plan and ask mode return in their own branches
-      // above, so this changes agent mode only.
+      // A confidently read-only command auto-runs in EVERY mode. Allowlist mode already did;
+      // the default commandApproval: 'always' was the one place `ls` or `git log` still cost a
+      // prompt, so the most permissive session mode was the strictest about reading
+      // (2026-09-16). Plan mode returns in its own branch above, so this changes agent mode
+      // only.
       if (isReadOnlyCommand(cmd)) return Promise.resolve({ type: 'approved' });
       // The broader allowlist (installs, builds, test suites) stays gated on allowlist mode.
       if (config.mode === 'auto'
@@ -173,7 +149,7 @@ export function clearSessionGrants(sessionId?: string): void {
 
 export function policyFromSettings(
   autoApproveSession = false,
-  sessionMode: 'plan' | 'agent' | 'ask' = 'agent',
+  sessionMode: 'plan' | 'agent' = 'agent',
   sessionId?: string,
 ): PolicyConfig {
   const cfg = vscode.workspace.getConfiguration('tiermux.agent');

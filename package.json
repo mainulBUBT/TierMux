@@ -400,18 +400,6 @@
           "default": "ask",
           "description": "When a compaction records what you corrected or rejected, carry those notes into .tiermux/memory.md so later sessions start knowing them. 'ask' confirms first and shows what would be written, 'always' writes silently, 'off' never writes. Costs no extra model call either way — the summary already produced the notes."
         },
-        "tiermux.agent.auditTodos": {
-          "type": "boolean",
-          "default": true,
-          "description": "Before an agent turn ends, check the workspace for evidence of every todo it marked complete, and hand back anything it cannot find. Runs only on turns that used the todo list, at most once, with a read-only sub-agent."
-        },
-        "tiermux.agent.verifyFixRounds": {
-          "type": "number",
-          "default": 1,
-          "minimum": 0,
-          "maximum": 5,
-          "description": "When the verify command fails after a turn edits files, the failure output is fed back to the agent for up to this many fix-and-recheck rounds before the turn reports failure. The agent owns the recheck — no manual re-run needed. 0 reports the failure without retrying (it does not disable the check; set tiermux.agent.verifyCommand to 'off' for that)."
-        },
         "tiermux.agent.toolCompaction": {
           "type": "string",
           "enum": [
@@ -598,7 +586,6 @@
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
     "typecheck:lib": "tsc -p tsconfig.lib.json",
-    "test:e2e:workReport": "esbuild scripts/workReport.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/workReport.e2e.cjs && node dist/workReport.e2e.cjs",
     "test:e2e:abort-stops-shell": "esbuild scripts/abortStopsShell.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/abortStopsShell.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/abortStopsShell.e2e.cjs",
     "test:e2e:foundation": "esbuild scripts/foundation.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/foundation.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/foundation.e2e.cjs",
     "test:e2e:delegate-task": "esbuild scripts/delegateTask.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/delegateTask.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/delegateTask.e2e.cjs",
@@ -655,7 +642,6 @@
     "test:e2e:skill-catalog": "esbuild scripts/skillCatalog.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/skillCatalog.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/skillCatalog.e2e.cjs",
     "test:e2e:mcp-wire": "esbuild scripts/mcpWire.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/mcpWire.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/mcpWire.e2e.cjs",
     "test:e2e:agent-registry": "esbuild scripts/agentRegistry.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/agentRegistry.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/agentRegistry.e2e.cjs",
-    "test:e2e:weak-model-plumbing": "esbuild scripts/weakModelPlumbing.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/weakModelPlumbing.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/weakModelPlumbing.e2e.cjs",
     "test:e2e:memory-learned": "esbuild scripts/memoryLearned.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/memoryLearned.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/memoryLearned.e2e.cjs",
     "test:e2e:router-sticky": "esbuild scripts/routerSticky.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/routerSticky.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/routerSticky.e2e.cjs",
     "test:e2e:rationale-served": "esbuild scripts/rationaleServed.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rationaleServed.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/rationaleServed.e2e.cjs",

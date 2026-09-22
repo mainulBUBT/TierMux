@@ -1,5 +1,12 @@
 # The Simple Core Reset (2026-08-24)
 
+> **2026-09-23, cline-agent branch:** the loop this document guards is now
+> `src/agent/core/cline/clineEngine.ts` (Cline's `AgentRuntime` wiring). `engine.ts` — the
+> AI SDK loop the reset produced — is deleted. Every `engine.ts` reference below means the
+> loop, wherever it now lives; the doctrine (never judges, one mechanical continuation) is
+> unchanged and the runtime's own recovery (completion reminder, overflow recovery, provider
+> retries) is that continuation, mechanically.
+>
 > **Audience:** any agent (or human) working on this repo after 2026-08-24. Read this before
 > touching `src/agent/core/engine.ts`, adding a "quality" retry, or reviving a detector. It
 > documents what the reset removed, what it kept, the invariants that must survive, and how to

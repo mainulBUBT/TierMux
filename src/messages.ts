@@ -1,6 +1,5 @@
 // Wire protocol between the extension host and the chat webview.
 import type { AskQuestion, PlanDecision, CatalogModel, CustomEndpointType, CustomModel, FallbackEntry, KeyStatus, Mode, Platform, PlanRunState, ReasoningEffort, TodoItem } from './shared/types';
-import type { WorkReportData } from './shared/workReport';
 import type { McpServerConfig } from './mcp/mcpClient';
 export type { McpServerConfig, McpLocalServerConfig, McpRemoteServerConfig, McpOAuthConfig } from './mcp/mcpClient';
 
@@ -310,11 +309,6 @@ export interface TranscriptMessage {
    *  replayed so the footer's "Why this model?" (?) survives a reload/session switch. Live-only
    *  before this field existed, so it silently vanished on every re-render. */
   rationale?: SelectionRationale;
-  /** Structured end-of-turn report — the CANONICAL representation a replay renders as a
-   *  ResultCard. When present, `.text` also carries the legacy markdown serialization
-   *  (renderLegacyMarkdown) purely so pre-WorkReportData readers keep working; new code
-   *  must render from here and never parse that markdown back. */
-  workReport?: WorkReportData;
 }
 
 /** One scored candidate in the "Why this model?" panel. `model` is a display string
@@ -371,21 +365,13 @@ export type OutMessage =
   | { type: 'permissionAsk'; sessionId: string; requestId: string; id: string; title: string; pattern?: string | string[] }
   | { type: 'sessionTitle'; sessionId: string; title: string }
   | { type: 'assistantMessage'; sessionId: string; requestId: string; text: string; reasoning?: string; finishReason?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean }
-  // Structured end-of-turn report — posted right after the assistantMessage it belongs to.
-  // The webview mounts a ResultCard on the live turn target AND stores it for replay parity
-  // (same component renders both paths). `text` in the paired assistantMessage deliberately
-  // carries NO report markdown — the card replaces that legacy serialization.
-  | { type: 'workReport'; sessionId: string; requestId: string; report: WorkReportData }
+  | { type: 'contextPressure'; sessionId: string; requestId: string; percent: number; contextTokens: number; contextWindow: number }
   | { type: 'assistantChunk'; sessionId: string; requestId: string; text: string }
-  // Retract the live text draft: a tool call arrived in the same step, so the streamed text was
-  // narration, not the reply. The webview converts the draft node into the reasoning block
-  // `reasoningId` in place, so it doesn't vanish and re-appear.
-  | { type: 'clearDraft'; sessionId: string; requestId: string; reasoningId?: string }
   | { type: 'usageTotals'; totals: UsageTotals }
   | { type: 'checkpoint'; sessionId: string; requestId: string; id: string; files: CheckpointFile[] }
   | { type: 'toolStatus'; sessionId: string; requestId: string; toolCallId: string; name: string; args: unknown; state: 'running' | 'done' | 'error'; detail?: string; durationMs?: number }
   | { type: 'changedFiles'; sessionId: string; id: string; files: CheckpointFile[] }
-  | { type: 'agentStep'; sessionId: string; requestId: string; phase: 'thinking' | 'synthesizing' | 'done'; label: string }
+  | { type: 'agentStep'; sessionId: string; requestId: string; phase: 'thinking' | 'synthesizing' | 'done'; label?: string }
   /** Result of fetchCustomEndpointModels: the model IDs discovered at the endpoint (or an error). */
   | { type: 'customEndpointModels'; id: string; models: string[]; error?: string }
   | { type: 'askUserPrompt'; sessionId: string; requestId: string; callId: string; questions: AskQuestion[] }

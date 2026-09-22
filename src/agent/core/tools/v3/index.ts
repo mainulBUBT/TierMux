@@ -106,24 +106,6 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
       exitPlanMode: createExitPlanModeTool(bindings.onPlanProposed, checkPlanPaths),
     };
   }
-  // Ask mode: read-only Q&A. Shell is offered read-only (the policy auto-runs `git log`,
-  // denies `rm -rf`, asks for the rest) so history questions are answered from real output.
-  if (mode === 'ask') {
-    return {
-      readFile,
-      listDir,
-      glob,
-      grep,
-      webSearch,
-      fetchUrl,
-      todoWrite,
-      getDiagnostics,
-      ...codeIntel,
-      askUser: createAskUserTool(bindings.onAskUser, mode),
-      delegateTask: createDelegateTaskTool(bindings),
-      runCommand: createRunCommandTool(bindings),
-    };
-  }
 
   return {
     // MCP tools of every connected server — AGENT MODE ONLY: an MCP tool may write anything,
