@@ -3,9 +3,9 @@
  * message is sent. `activeTools` drops only the two COORDINATION tools (todo list, sub-agent);
  * the web tools are the largest schema and deliberately kept, since withdrawing a capability
  * makes the model refuse the task rather than do it cheaper. Run: npm run test:e2e:tool-offer */
-import { createMockModel } from './mockModel';
+import { createMockModel } from './mockClineModel';
 import { runAgentStream } from '../src/agent/agent';
-import { __setEngineModelForTests } from '../src/agent/core/engine';
+import { __setClineEngineModelForTests } from '../src/agent/core/cline/clineEngine';
 import { setModelSources } from '../src/router/picker';
 import type { AgentOpts } from '../src/agent/agent';
 import type { CatalogModel } from '../src/shared/types';
@@ -28,7 +28,7 @@ setModelSources({
 /** Runs one engine turn with a pinned model and returns the tool names actually offered. */
 async function offeredFor(platform: string): Promise<string[]> {
   const model = createMockModel([{ text: 'done' }], `offer-${platform}`);
-  __setEngineModelForTests(model);
+  __setClineEngineModelForTests(model);
   try {
     await runAgentStream({
       messages: [{ role: 'user', content: 'hello' }],
@@ -40,9 +40,10 @@ async function offeredFor(platform: string): Promise<string[]> {
       onAskUser: async () => ({ status: 'answered' as const, answers: ['yes'] }), onError: () => {},
     } as unknown as AgentOpts);
   } finally {
-    __setEngineModelForTests(undefined);
+    __setClineEngineModelForTests(undefined);
   }
-  return model.calls[0].tools;
+  // Cline model requests carry AgentToolDefinition[] (name on the definition itself).
+  return (model.calls[0].tools ?? []).map((t) => (t as { name?: string }).name ?? '');
 }
 
 async function main() {

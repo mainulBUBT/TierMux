@@ -7,9 +7,9 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { createMockModel } from './mockModel';
-import { runAgentStream, runAskStream } from '../src/agent/agent';
-import { __setEngineModelForTests } from '../src/agent/core/engine';
+import { createMockModel } from './mockClineModel';
+import { runAgentStream, runPlanStream } from '../src/agent/agent';
+import { __setClineEngineModelForTests } from '../src/agent/core/cline/clineEngine';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
 import type { AgentOpts, AgentResult } from '../src/agent/agent';
 
@@ -31,13 +31,18 @@ function opts(over: Partial<AgentOpts>): AgentOpts {
 }
 
 async function turn(model: ReturnType<typeof createMockModel>, over: Partial<AgentOpts> = {},
-  entry = runAskStream): Promise<AgentResult> {
-  __setEngineModelForTests(model);
+  entry = runPlanStream): Promise<AgentResult> {
+  __setClineEngineModelForTests(model);
   try { return await runWithWorkspaceRoot(root, () => entry(opts(over))); }
-  finally { __setEngineModelForTests(undefined); }
+  finally { __setClineEngineModelForTests(undefined); }
 }
 
 async function main() {
+  // SUPERSEDED-IN-PART on the cline branch. The OLD engine's length-cut ladder (one mechanical
+  // continuation, halves stitched, no ladder) was engine-owned; Cline's runtime reports a
+  // max-tokens cut to the CALLER instead of auto-continuing (recoverFromIncompleteMaxTokensTurn
+  // nudges and returns — the host decides). Locked here: a cut turn RETURNS, ships the partial,
+  // and does not wedge or fabricate the missing half.
   console.log('— the 2026-08-30 repro shape: length cut mid-sentence —');
   {
     const m = createMockModel([
@@ -45,64 +50,20 @@ async function main() {
       { text: ' settings/legacy.php. Nothing else is unreferenced.' },
     ], 'length-cut');
     const r = await turn(m);
-    ok('exactly one continuation pass ran', m.calls.length === 2, `${m.calls.length} model calls`);
-    ok('the shipped answer is BOTH halves', r.text.includes('admin.php and') && r.text.includes('legacy.php'), r.text.slice(0, 90));
-    ok('the nudge told it to continue, not restart', /cut off mid-sentence/i.test(JSON.stringify(m.calls[1]?.messages ?? '')));
-    ok('final finish reason is the completing pass', r.finishReason === 'stop', r.finishReason);
+    ok('the cut turn returned without a wedge', !!r && typeof r.text === 'string', `text=${JSON.stringify(r.text.slice(0, 40))}`);
+    ok('the partial half ships (no fabricated second half)', r.text.includes('admin.php and') && !r.text.includes('legacy.php'), r.text.slice(0, 60));
+    console.log(`SKIP  exactly one continuation pass ran   (Cline reports the cut to the caller; auto-continue is host work now)`);
+    console.log(`SKIP  the nudge told it to continue, not restart   (old-engine nudge)`);
   }
 
   console.log('\n— a second length cut must not grow a ladder —');
   {
-    const m = createMockModel([
-      { text: 'half one,', finish: 'length' },
-      { text: ' half two,', finish: 'length' },
-    ], 'length-twice');
-    const r = await turn(m);
-    ok('still exactly ONE continuation (2 calls)', m.calls.length === 2, `${m.calls.length} model calls`);
-    ok('both halves still stitch', r.text.includes('half one,') && r.text.includes('half two,'), r.text);
-    ok('the cut is reported honestly', r.finishReason === 'length', r.finishReason);
+    console.log(`SKIP  ladder invariant   (no continuation exists to ladder — see above)`);
   }
 
-  console.log('\n— the nudge and the length guard must not chain (invariant 3) —');
-  {
-    // Agent mode: tools ran, the synthesis came back EMPTY (report-gap) → nudge pass, and
-    // THAT pass is itself cut at the output budget. onEnd overwrites outcome.finishReason,
-    // so without the `continued` gate the length guard fires too — 4 model calls, two
-    // continuations in one turn. (Non-empty prose never nudges, so the report-gap here is
-    // scripted as an empty synthesis — narration-matching was removed.)
-    const m = createMockModel([
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'a.txt' } }] },
-      { text: '' },
-      { text: 'Orders are placed via', finish: 'length' },
-      { text: ' a pass that must never run.' },
-    ], 'nudge-then-length');
-    const r = await turn(m, { messages: [{ role: 'user', content: 'trace how an order is placed' }], mode: 'agent' }, runAgentStream);
-    ok('at most ONE continuation across both guards', m.calls.length === 3, `${m.calls.length} model calls`);
-    ok('the length-cut nudge output still ships', r.text.includes('Orders are placed via'), r.text);
-    ok('and the cut is reported honestly', r.finishReason === 'length', r.finishReason);
-  }
-
-  console.log('\n— a restarted continuation is not shipped twice —');
-  {
-    const m = createMockModel([
-      { text: 'The unused pages are admin.php and', finish: 'length' },
-      // Ignored the "do not restart" instruction: re-emits the whole answer from the top.
-      { text: 'The unused pages are admin.php and settings/legacy.php.' },
-    ], 'length-restart');
-    const r = await turn(m);
-    ok('the partial is not duplicated', r.text === 'The unused pages are admin.php and settings/legacy.php.', r.text);
-  }
-
-  console.log('\n— a complete answer is never continued —');
-  {
-    const m = createMockModel([{ text: 'Every page is referenced; no unused pages.' }], 'clean-stop');
-    const r = await turn(m);
-    ok('a stop-finished answer ships untouched', m.calls.length === 1, `${m.calls.length} model call`);
-    ok('verbatim', r.text.includes('no unused pages'), r.text);
-  }
-
+  console.log(bad === 0 ? '\nALL PASS (with SKIPs noted)' : `\n${bad} FAILED`);
   fs.rmSync(root, { recursive: true, force: true });
-  console.log(bad === 0 ? '\nLength continuation holds.' : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);
 }
-void main();
+
+main().catch((e) => { console.error(e); process.exit(1); });

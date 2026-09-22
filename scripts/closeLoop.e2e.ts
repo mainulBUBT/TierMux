@@ -4,13 +4,15 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { createMockModel } from './mockModel';
-import { runAgentStream, runAskStream } from '../src/agent/agent';
-import { __setEngineModelForTests } from '../src/agent/core/engine';
+import { createMockModel } from './mockClineModel';
+import { runAgentStream, runPlanStream } from '../src/agent/agent';
+import { __setClineEngineModelForTests } from '../src/agent/core/cline/clineEngine';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
 import type { AgentOpts, AgentResult } from '../src/agent/agent';
 
 let bad = 0;
+// cline-agent branch: old-engine loop mechanics are logged SKIP (Cline owns the loop now).
+const gone = (n: string, why: string) => { console.log(`SKIP  ${n}   (${why})`); };
 const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? `   (${d})` : ''}`); if (!c) bad++; };
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-loop-'));
@@ -29,9 +31,9 @@ function opts(over: Partial<AgentOpts>): AgentOpts {
 
 async function turn(model: ReturnType<typeof createMockModel>, over: Partial<AgentOpts> = {},
   entry = runAgentStream): Promise<AgentResult> {
-  __setEngineModelForTests(model);
+  __setClineEngineModelForTests(model);
   try { return await runWithWorkspaceRoot(root, () => entry(opts(over))); }
-  finally { __setEngineModelForTests(undefined); }
+  finally { __setClineEngineModelForTests(undefined); }
 }
 
 const readCall = { toolCalls: [{ toolName: 'readFile', input: { path: 'a.txt' } }] };
@@ -52,14 +54,16 @@ async function main() {
   {
     const m = createMockModel([readCall, { text: '' }, { text: 'Done: read a.txt.' }], 'empty-after-tools');
     const r = await turn(m);
-    ok('tools ran + empty reply still nudges', m.calls.length === 3, `${m.calls.length}`);
-    ok('and ships the continuation', r.text.includes('Done'), r.text);
+    // SUPERSEDED on the cline branch: the empty-reply nudge was old-engine; Cline's run ends
+    // when the model finishes without tool calls. The empty reply ships as-is.
+    gone('tools ran + empty reply still nudges', 'empty-reply nudge is old-engine; Cline ends the run');
+    ok('the empty reply SURFACES as a failure, not a silent blank', r.failed === true, `failed=${r.failed}`);
   }
   {
     const m = createMockModel([{ text: '' }, { text: 'Read it: hello.' }], 'empty-no-tools');
     const r = await turn(m);
-    ok('no tools + empty reply still nudges', m.calls.length === 2, `${m.calls.length}`);
-    ok('and ships the continuation', r.text.includes('hello'), r.text);
+    gone('no tools + empty reply still nudges', 'empty-reply nudge is old-engine; Cline ends the run');
+    ok('the empty turn SURFACES as a failure, not a silent blank', r.failed === true, `failed=${r.failed}`);
   }
 
   console.log('\n— non-empty prose after tools is never second-guessed —');
@@ -115,7 +119,7 @@ async function main() {
   }
   {
     const m = createMockModel([readCall, { text: 'Let me continue reading the trait.' }], 'ask-mode');
-    const r = await turn(m, { mode: 'ask', messages: [{ role: 'user', content: 'how are orders placed?' }] }, runAskStream);
+    const r = await turn(m, { mode: 'ask', messages: [{ role: 'user', content: 'how are orders placed?' }] }, runPlanStream);
     // 2 calls = the tool step plus the SDK's natural following step. A nudge would be a 3rd.
     ok('ask mode is never nudged', m.calls.length === 2, `${m.calls.length} model calls`);
     ok('its prose answer ships', r.text.includes('Let me continue'), r.text.slice(0, 50));

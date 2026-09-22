@@ -139,16 +139,15 @@ export interface AgentOpts {
 // toolset, the policy's config reads). This file itself stays vscode-free so it can run
 // headlessly under plain Node — a static import here would drag the whole vscode-dependent
 // agent core into any headless test that only imports this module for its types.
-let runTurn: typeof import('./core/engine').runTurn | undefined;
-async function loadCore(): Promise<typeof import('./core/engine').runTurn> {
-  if (!runTurn) ({ runTurn } = await import('./core/engine'));
+let runTurn: typeof import('./core/cline/clineEngine').runTurn | undefined;
+async function loadCore(): Promise<typeof import('./core/cline/clineEngine').runTurn> {
+  if (!runTurn) ({ runTurn } = await import('./core/cline/clineEngine'));
   return runTurn;
 }
 
-/** Agent mode: full tool loop, via the AI SDK. The trailing `_tools` param is unused — the
- *  engine builds its own tool set. The leading `router` argument is gone as of 2026-09-05
- *  (plan §4.2): it had been ignored since v3, and the Router it referred to no longer exists.
- *  Model selection lives in router/picker.ts. */
+/** Agent mode: full tool loop, now on the Cline AgentRuntime (cline-agent branch). The trailing
+ *  `_tools` param is unused — the engine builds its own tool set. Model selection lives in
+ *  router/picker.ts, served to Cline through core/cline/routerModel. */
 export async function runAgentStream(opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
   return (await loadCore())(undefined, { ...opts, mode: 'agent' });
 }
@@ -157,9 +156,4 @@ export async function runAgentStream(opts: AgentOpts, _tools?: unknown): Promise
  *  mutating, and the mode filter drops those tools from the model's view entirely. */
 export async function runPlanStream(opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
   return (await loadCore())(undefined, { ...opts, mode: 'plan' });
-}
-
-/** Ask mode: read-only Q&A — same toolset as plan, different system-prompt framing. */
-export async function runAskStream(opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
-  return (await loadCore())(undefined, { ...opts, mode: 'ask' });
 }

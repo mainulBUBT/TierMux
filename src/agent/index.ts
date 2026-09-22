@@ -5,7 +5,6 @@
 export {
   runAgentStream,
   runPlanStream,
-  runAskStream,
 } from './agent';
 export type {
   AgentOpts,

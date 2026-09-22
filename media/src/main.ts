@@ -221,12 +221,12 @@ import { handleToolStatus } from './handlers/toolStatus';
 
   // Agent types (modes) — data for the AgentPicker component. The value rides on every
   // sendMessage; labels/descriptions/caps are presentation for the picker's rich cards.
+  // ask mode is gone on the cline-agent branch — Plan and Agent only.
   const MODES = [
-    { value: 'ask', label: 'Ask', icon: ICON.search, desc: 'Read-only Q&A — answers a direct question, or talks through options and trade-offs for an open-ended one. Cannot edit files or run commands.', caps: ['read-only'] },
     { value: 'plan', label: 'Plan', icon: ICON.checkSquare, desc: 'Researches the code by reading and searching it, proposes a plan, then edits only after you approve.', caps: ['research', 'edits after approval'] },
     { value: 'agent', label: 'Agent', icon: ICON.zap, desc: 'Full agent — reads, edits files, runs commands, and tracks a live task list.', caps: ['edits files', 'runs commands', 'task list'] },
   ];
-  let currentMode = 'ask';
+  let currentMode = 'plan';
 
   // Per-mode composer placeholders (Claude-Code-style: the input hints at what the mode does).
   // NOTE: the `ask` string is duplicated as the textarea's static `placeholder` in the app

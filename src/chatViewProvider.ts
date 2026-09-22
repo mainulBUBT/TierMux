@@ -7,7 +7,7 @@ import type { Catalog } from './catalog/catalog';
 import type { UsageTracker } from './config/usage';
 import type { UsageStore } from './config/usageStore';
 import type { Mode } from './shared/types';
-import { runAgentStream, runPlanStream, runAskStream, type AgentResult, type AgentOpts, type AgentMode, type ToolEvent, type SelectionRationaleInfo } from './agent/agent';
+import { runAgentStream, runPlanStream, type AgentResult, type AgentOpts, type AgentMode, type ToolEvent, type SelectionRationaleInfo } from './agent/agent';
 import { findTextInWorkspace } from './context/textSearch';
 import { classifyTask, type TaskKind } from './agent/routing';
 
@@ -2205,7 +2205,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await this.maybeAutoCondense(s);
       const cbk = this.agentCallbacks(s, m.requestId, m.mode as Mode);
       const sdkMode = m.mode as AgentMode;
-      const runner = sdkMode === 'plan' ? runPlanStream : sdkMode === 'ask' ? runAskStream : runAgentStream;
+      const runner = sdkMode === 'plan' ? runPlanStream : runAgentStream;
       diagLog('send.gate', `requestId=${m.requestId} · invoking ${sdkMode} runner`);
       let result = await runner(this.makeAgentOpts(s, m.requestId, sdkMode, m.reasoningEffort ?? 'medium', cbk, m.model), {});
       diagLog('send.gate', `requestId=${m.requestId} · runner returned paused=${result.paused} textLen=${result.text?.length ?? 0}`);
@@ -3199,7 +3199,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'todos', sessionId: s.id, requestId: m.requestId, todos: s.lastTodos, followingPlan: !!s.executingPlan });
       }
       // runAgentStream hard-codes mode:'agent' — Ask and Plan resumes must use their own runners.
-      const run = resumeMode === 'ask' ? runAskStream : resumeMode === 'plan' ? runPlanStream : runAgentStream;
+      const run = resumeMode === 'plan' ? runPlanStream : runAgentStream;
       const result = await run({ ...this.makeAgentOpts(s, m.requestId, resumeMode, s.reasoningEffort ?? 'medium', cbk4, s.model), todos: s.lastTodos }, {});
       if (!this.isActiveRun(s, m.requestId)) return; // abandoned mid-run by a cancel
       // See the `result.failed` guard in the main send handler — show a real reply bubble with
