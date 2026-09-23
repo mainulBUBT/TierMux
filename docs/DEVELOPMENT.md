@@ -61,19 +61,16 @@ There is no single monolithic test runner — instead there are ~30 focused e2e 
 npm script:
 
 ```bash
-npm run test:e2e:foundation       # THE contract: 32 scenarios over the real engine
-npm run test:e2e:exit-plan-mode   # plan mode's tool boundary
-npm run test:e2e:edit-match       # editFile search/replace failure diagnostics
-npm run test:e2e:grep-options     # grep filesOnly / context / ignoreCase output shapes
-npm run test:e2e:read-paging      # a truncated read always says where to resume
-npm run test:e2e:tool-output-aging  # earlier steps' bulky outputs become stubs
+npm run test:e2e:foundation       # THE contract: Cline's real tools through the engine, approvals, plan mode, checkpoints, MCP
+npm run test:e2e:cline-engine     # engine mechanics: steering, transcript chaining, overflow recovery
+npm run test:e2e:inline-tool-dialect  # text-form tool calls rescued onto Cline's tools
 npm run test:e2e:routing-gates    # picker skip filters, quota, rotation
 npm run test:e2e:fit-messages     # per-model context-window fitting
 ```
 
 Browse `package.json` → `"scripts"` for the rest; names map 1:1 to the behavior they cover
-(`edit-gate`, `verify-detect`, `condense-split`, `delegate-task`, …). Start with `foundation` — the
-core reset note treats it as the contract the loop must not break.
+(`edit-gate`, `router-sticky`, `mcp-wire`, …). Start with `foundation` — see
+[CLINE_AGENT.md](CLINE_AGENT.md) for what it locks and why.
 
 ## Scripts
 

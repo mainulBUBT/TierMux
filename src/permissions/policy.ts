@@ -1,18 +1,23 @@
-// Tool-approval policy for streamText's `toolApproval`. Priority, always in this order:
+// Tool-approval policy — Cline's `requestToolApproval`. Priority, always in this order:
 //   1. alwaysDeny (even full-auto cannot bypass)  2. alwaysAllow  3. READ_ONLY tools
 //   4. mode — 'full-auto' approves the rest; 'auto' approves allowlisted shell commands;
 //      `autoApproveWrites` approves file mutation  5. ask the user.
 // policyFromSettings reads vscode config; resolvePolicy is pure so the e2e drives it directly.
 
 import * as vscode from 'vscode';
-import type { ToolApprovalStatus } from 'ai';
-import { READ_ONLY_TOOLS } from '../agent/core/tools/v3';
 import { commandFromInput, isDangerous, isReadOnlyCommand, matchesAllowlist, DEFAULT_COMMAND_ALLOWLIST } from '../edits/commandClassify';
 
 export type PermissionMode = 'ask' | 'auto' | 'full-auto';
 
-/** The tools that write to disk — denied outright in plan and ask session modes. */
-const MUTATING_FILE_TOOLS = new Set(['editFile', 'writeFile', 'deleteFile', 'editMatch']);
+export type ToolApprovalStatus = { type: 'approved' } | { type: 'denied'; reason: string };
+
+/** Cline builtin tools that never change the workspace — auto-approved in every mode. */
+export const READ_ONLY_TOOLS = new Set(['read_files', 'search_codebase', 'fetch_web_content', 'skills', 'ask_question']);
+
+/** The tools that write to disk — denied outright in plan mode. */
+const MUTATING_FILE_TOOLS = new Set(['editor', 'apply_patch']);
+
+const SHELL_TOOL = 'run_commands';
 
 export interface PolicyConfig {
   mode: PermissionMode;
@@ -29,9 +34,8 @@ export interface PolicyConfig {
    *  `mode` because 'never' means both "never ask" AND "never run", and folding it into
    *  full-auto lost the second half entirely (see resolvePolicy). */
   shellDisabled?: boolean;
-  /** `agent.requireWriteConfirmation: false` — file writes in agent mode run without a prompt.
-   *  Until 2026-09-05 the setting only reached inline chat's EditGate; the agent's own
-   *  editFile/writeFile/deleteFile never read it, so its description was false. */
+  /** `agent.requireWriteConfirmation: false` — the agent's file writes (Cline's editor) run
+   *  without a prompt; shell commands still follow commandApproval. */
   autoApproveWrites?: boolean;
 }
 
@@ -64,7 +68,7 @@ export function resolvePolicy(
   // mutation here, so an approved plan never doubles as a blanket edit approval.
   if (config.sessionMode === 'plan') {
     if (READ_ONLY_TOOLS.has(call.toolName)) return Promise.resolve({ type: 'approved' });
-    if (call.toolName === 'runCommand') {
+    if (call.toolName === SHELL_TOOL) {
       if (!requestApproval) return Promise.resolve({ type: 'denied', reason: 'no approval channel configured' });
       return requestApproval({ tool: call.toolName, input: call.input }).then((d) => {
         if (d === 'allow-always') config.alwaysAllow.add(call.toolName);
@@ -73,7 +77,7 @@ export function resolvePolicy(
           : { type: 'denied' as const, reason: 'user denied' };
       });
     }
-    return Promise.resolve({ type: 'denied', reason: 'plan mode is read-only — edits are disabled until the plan is approved' });
+    return Promise.resolve({ type: 'denied', reason: 'plan mode is read-only — the user must switch to Agent mode before anything changes' });
   }
 
   // Ask mode is gone (modes are 'plan' | 'agent'); its read-only shell behavior lives on in the
@@ -89,7 +93,7 @@ export function resolvePolicy(
   // 2026-09-05 policyFromSettings folded it into full-auto, so the one setting that switches the
   // shell OFF auto-approved every command. `shellDisabled` keeps the "don't ask" half and
   // restores the "don't run" half.
-  if (config.shellDisabled === true && call.toolName === 'runCommand') {
+  if (config.shellDisabled === true && call.toolName === SHELL_TOOL) {
     return Promise.resolve({
       type: 'denied',
       reason: 'terminal command execution is disabled (tiermux.agent.commandApproval = "never")',
@@ -101,7 +105,7 @@ export function resolvePolicy(
   if (config.autoApproveWrites === true && MUTATING_FILE_TOOLS.has(call.toolName)) {
     return Promise.resolve({ type: 'approved' });
   }
-  if (call.toolName === 'runCommand') {
+  if (call.toolName === SHELL_TOOL) {
     const cmd = commandFromInput(call.input);
     if (cmd && !isDangerous(cmd)) {
       // A confidently read-only command auto-runs in EVERY mode. Allowlist mode already did;

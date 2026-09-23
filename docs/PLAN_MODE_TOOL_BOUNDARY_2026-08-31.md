@@ -1,5 +1,9 @@
 # Plan mode's boundary is a tool call (2026-08-31)
 
+> **Superseded 2026-09-23.** The agent is now Cline's SDK and the TierMux-built harness this
+> document describes was removed — see [CLINE_AGENT.md](CLINE_AGENT.md). Kept as a record of
+> the reasoning; nothing below describes current code.
+
 > **2026-09-23, cline-agent branch:** the engine underneath this boundary is now Cline's
 > `AgentRuntime` (`src/agent/core/cline/clineEngine.ts`), and the turn no longer ends by a
 > host-side `stopWhen` — see [The boundary on the cline-agent branch](#the-boundary-on-the-cline-agent-branch-2026-09-23)

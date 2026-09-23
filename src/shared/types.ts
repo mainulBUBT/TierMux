@@ -49,43 +49,8 @@ export type Platform =
 
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
 
-/** TierMux's chat modes: plan (read-only, proposes concrete steps), agent (full read/write/run),
- *  ask (everything EXCEPT file edits — read/search/shell/sub-agents are all available so a
- *  question about git history or test output is answerable by running it; see MODE_TAIL.ask in
- *  context/system.ts). */
+/** TierMux's chat modes — Cline's plan (read-only) and act (full read/write/run). */
 export type Mode = 'plan' | 'agent';
-
-/** A plan proposed by the model via the `exitPlanMode` tool — validated structure straight off
- *  the tool call, so nothing downstream guesses whether a prose reply "was a plan". */
-export interface ProposedPlanStep {
-  /** The action, imperative mood, one line. */
-  what: string;
-  /** Workspace-relative paths this step touches — authoritative, not regex-guessed from prose. */
-  files?: string[];
-  /** The path:line the model actually READ that proves this step is needed. Surfaced on the card
-   *  so a step resting on an unverified claim is visible BEFORE approval — the 2026-09-01 repro
-   *  shipped "the query is double-constrained" as a step, which a read of the scope disproved. */
-  evidence?: string;
-  /** How to confirm the step landed (a command, or a check to re-read). */
-  verify?: string;
-}
-
-export interface ProposedPlan {
-  title: string;
-  /** What the investigation concluded. 'no-change' renders as a finding, not as a step list —
-   *  so "nothing needs changing" stops being expressible only as a fake verification step.
-   *  Optional for back-compat: the prose fallback path (planStructurer) has no outcome. */
-  outcome?: 'plan' | 'no-change';
-  /** One or two sentences of context, rendered above the steps on the plan card. */
-  description?: string;
-  /** Set when outcome is 'no-change': what was checked and why nothing needs changing. */
-  finding?: string;
-  /** The reading of the request these steps implement, in one sentence, rendered at the top of
-   *  the card — a plan can be right in every step and still implement the wrong request.
-   *  Questions are asked BEFORE the plan via askUser, never carried on it. */
-  interpretation?: string;
-  steps: ProposedPlanStep[];
-}
 
 interface ChatToolCallFunction {
   name: string;
@@ -216,15 +181,6 @@ export interface AskQuestion { question: string; header?: string; options?: stri
  *  (Stop / new message / no UI) — the two used to be indistinguishable empty strings. */
 export interface AskResult { status: 'answered' | 'dismissed' | 'cancelled'; answers: string[] }
 
-/** A question the user answered during plan mode, and what they chose — shown on the plan card so
- *  approval happens knowing which premises were settled with them (never carried in the steps text). */
-export interface PlanDecision { question: string; answer: string }
-
-export interface TodoItem {
-  content: string;
-  status: 'pending' | 'in_progress' | 'completed';
-}
-
 export type KeyStatus = 'healthy' | 'rate_limited' | 'invalid' | 'error' | 'unknown' | 'missing';
 
 /** One entry in the ordered failover chain (persisted to globalState). */
@@ -290,33 +246,4 @@ export interface CustomEndpoint {
   models: CustomModel[];
   /** Unix-ms when created. */
   createdAt: number;
-}
-
-// ── Plan execution state (first-class plan runner) ─────────────────────────────
-// An approved plan runs as a tracked state machine, persisted with the session so an
-// interrupted run (window reload, extension restart) can resume from `currentStep`
-// instead of restarting or silently vanishing. Pure data — no engine imports here.
-
-/** One step of an executing plan. */
-export type PlanStepStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'skipped';
-export interface PlanStep {
-  text: string;
-  status: PlanStepStatus;
-  /** Execution attempts on this step (verify-failed retries). */
-  attempts: number;
-}
-
-export type PlanRunStatus = 'running' | 'paused' | 'done' | 'failed' | 'aborted';
-export interface PlanRunState {
-  id: string;
-  /** The user's original request the plan was approved for (first ~200 chars). */
-  originalTask: string;
-  steps: PlanStep[];
-  /** Index of the step being executed / next to execute. */
-  currentStep: number;
-  status: PlanRunStatus;
-  /** Plan repairs consumed (read-only planner rewrites of the remaining steps). */
-  repairs: number;
-  startedAt: number;
-  updatedAt: number;
 }

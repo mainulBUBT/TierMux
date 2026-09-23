@@ -53,11 +53,18 @@ export function matchesAllowlist(command: string, prefixes: Iterable<string>): b
   return false;
 }
 
-/** The `command` argument of a runCommand tool call, or undefined when absent/not a string. */
+/** run_commands input → one shell line. Entries are strings or `{command, args}`; joining with
+ *  `&&` lets the segment classifier vet every command, so one dangerous entry blocks the batch. */
 export function commandFromInput(input: unknown): string | undefined {
   if (!input || typeof input !== 'object') return undefined;
-  const c = (input as Record<string, unknown>).command;
-  return typeof c === 'string' ? c : undefined;
+  const r = input as Record<string, unknown>;
+  if (typeof r.command === 'string') return r.command;
+  if (!Array.isArray(r.commands)) return undefined;
+  const lines = r.commands.map((c) => typeof c === 'string' ? c
+    : c && typeof c === 'object' && typeof (c as { command?: unknown }).command === 'string'
+      ? [(c as { command: string }).command, ...(((c as { args?: string[] }).args) ?? [])].join(' ')
+      : '').filter(Boolean);
+  return lines.length ? lines.join(' && ') : undefined;
 }
 
 const WRITE_REDIRECT_OPS = new Set(['>', '>>', '>|']);

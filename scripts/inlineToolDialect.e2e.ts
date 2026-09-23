@@ -9,38 +9,48 @@ import { rescueInlineToolCalls } from '../src/agent/toolArgs';
 let bad = 0;
 const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? `   (${d})` : ''}`); if (!c) bad++; };
 
-const TOOLS = new Set(['readFile', 'editFile', 'todoWrite', 'listDir', 'grep', 'runCommand']);
+const TOOLS = new Set(['read_files', 'editor', 'search_codebase', 'run_commands']);
 const parse = (text: string): string[] => rescueInlineToolCalls(text, TOOLS).calls.map((c) => `${c.name} ${c.arguments}`);
 const first = (text: string): string => parse(text)[0] ?? '<none>';
+const call = (text: string): { name: string; args: Record<string, unknown> } => {
+  const c = rescueInlineToolCalls(text, TOOLS).calls[0];
+  return { name: c?.name ?? '<none>', args: c ? JSON.parse(c.arguments) as Record<string, unknown> : {} };
+};
 
 // The XML namespace some Claude-trained models keep on their tool tags. Assembled at runtime so
 // this source file never contains the literal marker (it would confuse tooling that scans for it).
 const NS = 'antml' + ':';
 
 // ── 1. The exact xKiro deepseek-v4-pro reply, verbatim from the 2026-09-01 session ───────────
+// Its imagined `readFile {path, offset, limit}` resolves to Cline's read_files: the path wrapped in
+// files[], offset/limit folded into that item's line range.
 const XKIRO = '<invoke name="readFile"> <parameter name="path">src/lib/finderScan.js</parameter> '
   + '<parameter name="offset">301</parameter> <parameter name="limit">220</parameter> </invoke>';
-ok('xkiro bare <invoke> parses',
-  first(XKIRO) === 'readFile {"path":"src/lib/finderScan.js","offset":301,"limit":220}', first(XKIRO));
+{
+  const c = call(XKIRO);
+  ok('xkiro bare <invoke> parses to read_files',
+    c.name === 'read_files' && JSON.stringify(c.args) === '{"files":[{"path":"src/lib/finderScan.js","start_line":301,"end_line":520}]}', first(XKIRO));
+}
 
 // ── 2. Dialects nobody hardcoded — the whole point of the generic shape ──────────────────────
-ok('tag IS the tool name', first('<readFile><path>package.json</path></readFile>') === 'readFile {"path":"package.json"}',
-  first('<readFile><path>package.json</path></readFile>'));
+ok('tag IS the tool name', first('<read_files><path>package.json</path></read_files>') === 'read_files {"files":[{"path":"package.json"}]}',
+  first('<read_files><path>package.json</path></read_files>'));
 ok('unknown wrapper word carrying name=""',
-  first('<call name="listDir"><parameter name="path">src</parameter></call>') === 'listDir {"path":"src"}',
-  first('<call name="listDir"><parameter name="path">src</parameter></call>'));
+  first('<call name="run_commands"><parameter name="command">ls src</parameter></call>') === 'run_commands {"commands":["ls src"]}',
+  first('<call name="run_commands"><parameter name="command">ls src</parameter></call>'));
 const nsCall = `<${NS}invoke name="grep"><${NS}parameter name="pattern">TODO</${NS}parameter></${NS}invoke>`;
-ok('namespaced invoke', first(nsCall) === 'grep {"pattern":"TODO"}', first(nsCall));
+ok('namespaced invoke, imagined grep → search_codebase', first(nsCall) === 'search_codebase {"queries":["TODO"]}', first(nsCall));
 ok('imagined name resolves through the alias table',
-  first('<invoke name="read"><parameter name="file">a.ts</parameter></invoke>') === 'readFile {"path":"a.ts"}',
+  first('<invoke name="read"><parameter name="file">a.ts</parameter></invoke>') === 'read_files {"files":[{"path":"a.ts"}]}',
   first('<invoke name="read"><parameter name="file">a.ts</parameter></invoke>'));
 
 // ── 3. Braces and newlines inside an edit payload survive ────────────────────────────────────
 const EDIT = '<invoke name="editFile"><parameter name="path">a.ts</parameter><parameter name="search">\n'
   + 'function f() {\n  return 1;\n}\n</parameter><parameter name="replace">\nfunction f() {\n  return 2;\n}\n</parameter></invoke>';
-const edited = JSON.parse(first(EDIT).slice('editFile '.length)) as Record<string, string>;
-ok('edit search keeps its braces byte for byte', edited.search === 'function f() {\n  return 1;\n}', JSON.stringify(edited.search));
-ok('edit replace keeps its braces byte for byte', edited.replace === 'function f() {\n  return 2;\n}', JSON.stringify(edited.replace));
+const edited = call(EDIT);
+ok('an imagined editFile resolves to editor', edited.name === 'editor', edited.name);
+ok('edit old_text keeps its braces byte for byte', edited.args.old_text === 'function f() {\n  return 1;\n}', JSON.stringify(edited.args.old_text));
+ok('edit new_text keeps its braces byte for byte', edited.args.new_text === 'function f() {\n  return 2;\n}', JSON.stringify(edited.args.new_text));
 
 // ── 4. Ordinary markup in an answer is NOT a tool call ───────────────────────────────────────
 // The registered-tool-set lookup is the only false-positive guard, so this is the guard's test.

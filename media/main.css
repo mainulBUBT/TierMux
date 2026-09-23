@@ -739,8 +739,7 @@ details[open].reasoning summary::before { content: '▾ '; }
 }
 .toast.show { opacity: 1; }
 
-/* Resume (paused-turn) action row. The plan approval card now lives in
-   media/styles/components/plan.css (Chain-of-Thought Plan component). */
+/* Resume (paused-turn) action row. */
 .resume-actions { display: flex; gap: 8px; margin-top: 8px; }
 
 /* Inline runCommand/editFile/permission approval card now lives entirely in
@@ -814,9 +813,6 @@ details[open].reasoning summary::before { content: '▾ '; }
 .clarify-recap-row { display: flex; gap: 6px; font-size: 12px; line-height: 1.4; }
 .clarify-recap-q { flex: 0 0 auto; opacity: .55; }
 .clarify-recap-a { font-weight: 600; min-width: 0; word-break: break-word; }
-
-/* Plan → Agent handoff styling now lives in media/styles/components/plan.css
-   (Chain-of-Thought Plan component: tm-plan-settled etc.). */
 
 /* OC-native askUser questions now render through the shared `.clarify` card (see
    renderQuestionCard in main.ts) — the old bespoke `.ask-*` card styles are retired. */
@@ -1330,8 +1326,6 @@ details[open].reasoning summary::before { content: '▾ '; }
    default text color (often black) instead of the theme foreground, which is why this
    rendered unreadable-dark-on-dark before this was added. */
 button.compact-divider { background: none; font: inherit; color: inherit; display: block; width: 100%; }
-.compact-divider-link { cursor: pointer; color: var(--vscode-textLink-foreground, #4daafc); opacity: .85; }
-.compact-divider-link:hover { opacity: 1; text-decoration: underline; }
 /* Leading SVG icon (TierMux's own stroke-icon style, not an emoji glyph) on a notice divider. */
 .compact-divider.with-icon { display: flex; align-items: center; justify-content: center; gap: 6px; }
 .compact-divider.with-icon svg { flex: 0 0 auto; }
@@ -2214,30 +2208,6 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .toolbar { gap: 5px; }
 .tgroup.right .icon-btn-sm,
 .toggle-pill.icon-only-sm { border-radius: 50%; }
-
-/* Sources — AI Elements' Sources: a collapsible "Used N sources" trigger under the answer,
-   with one chip per cited page. Built from the webSearch tool's own result text (see
-   parseSearchSources in main.ts); before this the links existed only inside the tool card,
-   so a web-backed answer cited nothing. */
-.tm-sources { margin-top: 6px; }
-.tm-sources-trigger {
-  background: none; border: none; padding: 0; cursor: pointer;
-  font: inherit; font-size: 11px;
-  color: var(--vscode-descriptionForeground);
-}
-.tm-sources-trigger:hover { color: var(--vscode-foreground); text-decoration: underline; }
-.tm-sources-list { display: none; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
-.tm-sources.open .tm-sources-list { display: flex; }
-.tm-source {
-  display: inline-flex; align-items: baseline; gap: 5px; max-width: 100%;
-  padding: 2px 8px; border-radius: 999px;
-  border: 1px solid var(--vscode-panel-border);
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127, 127, 127, .12));
-  color: var(--vscode-foreground); text-decoration: none; font-size: 11px;
-}
-.tm-source:hover { border-color: var(--tm-border-hover); }
-.tm-source-host { flex: 0 0 auto; color: var(--vscode-textLink-foreground); }
-.tm-source-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); }
 
 /* ── Skills tab ─────────────────────────────────────────────────────────── */
 .skill-card {

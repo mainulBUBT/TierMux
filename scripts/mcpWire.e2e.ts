@@ -1,10 +1,8 @@
 /* MCP on an OpenAI-shaped wire (2026-09-07): a tool name over the 64-char function-name limit
- * is rejected with a 400 that kills the WHOLE request, so names are capped with a stable hash;
- * a server's own instructions reach the prompt; both transports are time-bounded.
+ * is rejected with a 400 that kills the WHOLE request, so the names TierMux hands Cline's
+ * createMcpTools are capped with a stable hash. Connections and calls are Cline's.
  * Run: npm run test:e2e:mcp-wire */
 import { mcpToolName } from '../src/mcp/mcpManager';
-import { DEFAULT_REQUEST_TIMEOUT_MS } from '../src/mcp/mcpClient';
-import { composeSystemPrompt } from '../src/context/system';
 
 let bad = 0;
 const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? `   (${d})` : ''}`); if (!c) bad++; };
@@ -33,20 +31,6 @@ async function main() {
     const huge = mcpToolName('x'.repeat(200), 'y'.repeat(200));
     ok('8. a pathological pair still fits and is legal', huge.length === 64 && VALID.test(huge), `${huge.length}`);
   }
-
-  console.log('— a server\'s own instructions reach the model —');
-  {
-    const withMcp = composeSystemPrompt('agent', undefined, undefined, '## github\nAlways pass owner and repo explicitly.');
-    ok('9. wrapped in its own block', withMcp.includes('<mcp_instructions>') && withMcp.includes('pass owner and repo'));
-    ok('10. framed as advice, not authority', /where it does not conflict/i.test(withMcp));
-    const without = composeSystemPrompt('agent', undefined, undefined, '   ');
-    ok('11. no servers, no block', !without.includes('<mcp_instructions>'));
-    const huge = composeSystemPrompt('agent', undefined, undefined, 'z'.repeat(9_000));
-    ok('12. a verbose server cannot flood the prompt', huge.length < 8_000, `${huge.length}`);
-  }
-
-  console.log('— every MCP request is time-bounded —');
-  ok('13. both transports share one bound', DEFAULT_REQUEST_TIMEOUT_MS === 30_000, String(DEFAULT_REQUEST_TIMEOUT_MS));
 
   console.log(bad === 0 ? '\nALL PASS' : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);

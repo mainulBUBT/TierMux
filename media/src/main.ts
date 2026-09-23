@@ -11,10 +11,8 @@ import { renderMarkdown, appendStreamCursor } from './markdown';
 import { stripLegacyMarkdown } from '../../src/shared/workReport';
 import { renderPdfToPageImages, PDF_MAX_RENDER_PAGES } from './pdfPages';
 import { buildReasoningBlock, updateReasoningBlock, settleReasoningBlock, buildToolCard, buildEditDiff, editDiffArgs, toolLabel, activityFor, buildToolGroupRow, GROUPABLE_TOOL_NAMES, toolStateGlyph } from './ui/tool/ToolCard';
-import { createPlan, planDataFromStepText, planDataFromTodos } from './ui/components';
 import { createAgentPicker } from './ui/components/AgentPicker';
 import { createModelPicker } from './ui/components/ModelPicker';
-import { createTodoSheet } from './ui/components/TodoSheet';
 import { handleAssistantStart } from './handlers/assistantStart';
 import { handleAgentStep } from './handlers/agentStep';
 import { handleToolStatus } from './handlers/toolStatus';
@@ -76,7 +74,6 @@ import { handleToolStatus } from './handlers/toolStatus';
       <div class="index-status hidden" id="index-status"></div>
       <div class="new-models-bar hidden" id="new-models-bar"></div>
       <div class="new-models-bar hidden" id="new-providers-bar"></div>
-      <div class="new-models-bar hidden" id="plan-progress-bar"></div>
       <div class="changed-bar hidden" id="changed-bar"></div>
       <div class="input-wrap">
         <div class="chips" id="chips"></div>
@@ -120,9 +117,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     el.className = 'session-pane hidden';
     el.dataset.sessionId = id;
     thread.appendChild(el);
-    // todoState/planState/busy live on the pane: the checklist bar above the composer is one
-    // element for the viewed session, so a background session's todos must not overwrite it.
-    const p = { id, el, targets: new Map(), userTargets: new Map(), startTimes: new Map(), statusTimers: new Map(), currentTurn: null, todoState: null, planState: null, busy: false };
+    const p = { id, el, targets: new Map(), userTargets: new Map(), startTimes: new Map(), statusTimers: new Map(), currentTurn: null, busy: false };
     panes.set(id, p);
     return p;
   }
@@ -165,34 +160,6 @@ import { handleToolStatus } from './handlers/toolStatus';
   const sessionTabsEl = $('#session-tabs');
   const settingsEl = $('#settings');
   const composer = $('#composer');
-  // Checklist bar + bottom sheet (replaces the old one-line plan-progress banner): collapsed
-  // by default; click opens the full step list above the composer. Fed from 'todos' (agent
-  // checklist), 'planProgress' (plan runner), and the Execute click's preparing state.
-  const todoSheet = createTodoSheet({
-    onResume: () => send({ type: 'resumePlan' }),
-    onDismiss: () => { const p = panes.get(viewedSessionId); if (p) { p.todoState = null; p.planState = null; } todoSheet.update(null); },
-  });
-  $('#plan-progress-bar').replaceWith(todoSheet.root);
-  /** Render the checklist bar for the VIEWED session from its own pane state — a plan run if
-   *  one is active, else the agent's todos. The 'todos' messages arrive mid-run, so the
-   *  terminal state (completed note + dismiss ×) is applied when that pane's busy flips false.
-   *  Called on every todos/planProgress/busy message for the viewed session and on switch. */
-  function renderAgentTodoBar() {
-    const p = panes.get(viewedSessionId);
-    if (!p) { todoSheet.update(null); return; }
-    if (p.planState) { renderPlanProgress(p.planState); return; }
-    if (!p.todoState) { todoSheet.update(null); return; }
-    const { title, steps } = p.todoState;
-    const allDone = steps.length > 0 && steps.every((s) => s.status === 'done' || s.status === 'failed');
-    const finished = !p.busy;
-    todoSheet.update({
-      title,
-      steps,
-      running: p.busy,
-      finished,
-      note: finished && allDone ? `${title} completed (${steps.filter((s) => s.status === 'done').length}/${steps.length})` : undefined,
-    });
-  }
   const footerEl = $('#footer');
   // Footer summary → Settings ▸ Usage. Opens settings (if closed) and switches
   // tab without reloading/recreating the webview, then scrolls the
@@ -221,10 +188,10 @@ import { handleToolStatus } from './handlers/toolStatus';
 
   // Agent types (modes) — data for the AgentPicker component. The value rides on every
   // sendMessage; labels/descriptions/caps are presentation for the picker's rich cards.
-  // ask mode is gone on the cline-agent branch — Plan and Agent only.
+  // Cline's two modes: plan (read-only) and act (shown as Agent).
   const MODES = [
-    { value: 'plan', label: 'Plan', icon: ICON.checkSquare, desc: 'Researches the code by reading and searching it, proposes a plan, then edits only after you approve.', caps: ['research', 'edits after approval'] },
-    { value: 'agent', label: 'Agent', icon: ICON.zap, desc: 'Full agent — reads, edits files, runs commands, and tracks a live task list.', caps: ['edits files', 'runs commands', 'task list'] },
+    { value: 'plan', label: 'Plan', icon: ICON.checkSquare, desc: 'Reads and searches the code and proposes a plan. Nothing is edited — switch to Agent to carry it out.', caps: ['research', 'read-only'] },
+    { value: 'agent', label: 'Agent', icon: ICON.zap, desc: 'Full agent — reads, edits files and runs commands.', caps: ['edits files', 'runs commands'] },
   ];
   let currentMode = 'plan';
 
@@ -259,22 +226,6 @@ import { handleToolStatus } from './handlers/toolStatus';
     currentMode = m.value;
     agentPicker.setValue(m.value);
     input.placeholder = MODE_PLACEHOLDERS[currentMode as keyof typeof MODE_PLACEHOLDERS] || input.placeholder;
-  }
-
-  // Visual-only "executing an approved plan" state on the agent pill — never touches
-  // `currentMode` (the user's next-message mode selection is untouched). Keyed by
-  // requestId so a stale/mismatched `executing:false` from a different run (or a leftover
-  // one from a superseded session view) can't clear an indicator for a still-running plan.
-  let executingPlanRequestId = null;
-  function setPlanExecuting(requestId, executing) {
-    if (executing) {
-      executingPlanRequestId = requestId;
-      agentPicker.setExecuting(true);
-    } else {
-      if (executingPlanRequestId !== requestId) return;
-      executingPlanRequestId = null;
-      agentPicker.setExecuting(false);
-    }
   }
 
   // Auto-approve toggle: when on, the agent runs commands and applies edits without a
@@ -365,52 +316,6 @@ import { handleToolStatus } from './handlers/toolStatus';
   const atBottom = () => thread.scrollHeight - thread.scrollTop - thread.clientHeight <= NEAR_BOTTOM_PX;
   /** True while the reader has scrolled away; the tail stops following and the button shows. */
   let detachedFromBottom = false;
-
-  // ── Sources ── webSearch results have a stable shape (`[1] Title` + indented `URL:`), parsed
-  // here into a collapsible "Used N sources" row so a web-built answer cites something.
-  function parseSearchSources(detail) {
-    const out = [];
-    const lines = String(detail || '').split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const t = lines[i].match(/^\s*\[(\d+)\]\s+(.*\S)\s*$/);
-      if (!t) continue;
-      const u = (lines[i + 1] || '').match(/^\s*URL:\s*(\S+)\s*$/);
-      if (u) out.push({ title: t[2], url: u[1] });
-    }
-    return out;
-  }
-
-  /** Append/merge the turn's source chips. Deduped by URL — the same page often comes back
-   *  from more than one search in a turn. */
-  function addSources(turnEl, sources) {
-    if (!turnEl || !sources.length) return;
-    let box = turnEl.querySelector('.tm-sources');
-    if (!box) {
-      box = document.createElement('div');
-      box.className = 'tm-sources';
-      box.innerHTML = '<button type="button" class="tm-sources-trigger"></button><div class="tm-sources-list"></div>';
-      box.querySelector('.tm-sources-trigger').addEventListener('click', () => box.classList.toggle('open'));
-      turnEl.appendChild(box);
-    }
-    const list = box.querySelector('.tm-sources-list');
-    const seen = new Set(Array.from(list.querySelectorAll('a')).map((a) => a.getAttribute('href')));
-    for (const src of sources) {
-      if (seen.has(src.url)) continue;
-      seen.add(src.url);
-      const a = document.createElement('a');
-      a.className = 'tm-source';
-      a.href = src.url;
-      a.title = src.url;
-      let host = src.url;
-      try { host = new URL(src.url).hostname.replace(/^www\./, ''); } catch { /* keep the raw url */ }
-      a.innerHTML = `<span class="tm-source-host"></span><span class="tm-source-title"></span>`;
-      a.querySelector('.tm-source-host').textContent = host;
-      a.querySelector('.tm-source-title').textContent = src.title;
-      list.appendChild(a);
-    }
-    const n = list.children.length;
-    box.querySelector('.tm-sources-trigger').textContent = `Used ${n} source${n === 1 ? '' : 's'}`;
-  }
 
   function syncScrollButton() {
     const btn = $('#scroll-bottom');
@@ -1321,7 +1226,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     }
 
     // Tool cards and text segments interleaved in recorded step order. Every groupable call
-    // (readFile/grep/glob/listDir) renders as the flat glyph+verb+targets row — even a run of
+    // (read_files/search_codebase) renders as the flat glyph+verb+targets row — even a run of
     // one; only edit/terminal-type tools use the bordered card.
     let pendingGroup: { name: string; items: typeof steps } | null = null;
     const flushGroup = () => {
@@ -1371,7 +1276,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     // Collapse tool cards/reasoning into "Worked for Ns" — same treatment the live run got via
     // finalizeWork. Without this, reopening/switching back to a session showed every tool call as
     // a flat, uncollapsed list instead of matching what it looked like while live.
-    collapseFlowTimeline(flow, secs, null);
+    collapseFlowTimeline(flow, secs);
 
     // Only attach flow if it has children (pure-text modes: just the text seg).
     if (flow.children.length) el.appendChild(flow);
@@ -1401,7 +1306,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     const statusEl = document.createElement('div');
     statusEl.className = 'agent-status';
     statusEl.innerHTML = `<span class="agent-dots"><span></span><span></span><span></span></span><span class="agent-label"></span><span class="agent-caret">▍</span><span class="agent-elapsed"></span>`;
-    // `bubble` stays AFTER the flow for interactive cards (approvals/plans/askUser) and the
+    // `bubble` stays AFTER the flow for interactive cards (approvals/askUser) and the
     // non-streamed final answer — keeping those paths untouched.
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
@@ -1487,7 +1392,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     if (opts.done) t.toolRunning = false;
     if (text != null) {
       // A real label is being written — force the row visible again in case an earlier
-      // planProposed/askUserPrompt card hid it via stopStatusTimer(id, true). Guarded on
+      // askUserPrompt card hid it via stopStatusTimer(id, true). Guarded on
       // `text != null` so this never unhides an empty row on an opts.done-only call.
       if (t.statusEl) t.statusEl.classList.remove('hidden');
       if (IDLE_LABELS.has(text)) {
@@ -1546,7 +1451,7 @@ import { handleToolStatus } from './handlers/toolStatus';
   // Collapse a flow's tool cards and think-blocks behind "Worked for Ns" so the answer shows
   // first. Shared by the live finish path AND static reconstruction — a reopened session used
   // to show the trace flat because only the live path collapsed it.
-  function collapseFlowTimeline(flow, elapsedSeconds, planEl, extraStats) {
+  function collapseFlowTimeline(flow, elapsedSeconds, extraStats) {
     if (!flow) return;
 
     // Drop empty text segments — multiple tool calls each reset currentText, leaving
@@ -1580,8 +1485,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     }
 
     // Timeline = chronological prefix through the last work node, minus the answer and the plan
-    // (planEl sits at the top of the flow and is a persistent overview, not step noise).
-    const timelineNodes = children.slice(0, lastWorkIdx + 1).filter((el) => el !== answerNode && el !== planEl);
+    const timelineNodes = children.slice(0, lastWorkIdx + 1).filter((el) => el !== answerNode);
     // Nothing left to collapse once the answer and plan are excluded — leave the flow as-is.
     if (!timelineNodes.length) return;
     // Duration only — the user asked for no tool/thought counts in the summary line
@@ -1620,7 +1524,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     t.currentText = null;
     if (!t.flow) return;
     const elapsed = t.startedAt ? Math.round((Date.now() - t.startedAt) / 1000) : null;
-    collapseFlowTimeline(t.flow, elapsed, t.planEl);
+    collapseFlowTimeline(t.flow, elapsed);
     scrollDown();
   }
 
@@ -2466,8 +2370,8 @@ import { handleToolStatus } from './handlers/toolStatus';
     }
     
     // State class on card for styling
-    const isValidation = msg.name === 'runCommand' && /\b(tsc|eslint|prettier|lint|typecheck|check|jest|vitest|mocha|pytest|go\s+test|cargo\s+(check|test)|npm\s+test|yarn\s+test|pnpm\s+test)\b/.test(
-      String(msg.args && typeof msg.args === 'object' ? (msg.args.command ?? JSON.stringify(msg.args)) : msg.args || '')
+    const isValidation = msg.name === 'run_commands' && /\b(tsc|eslint|prettier|lint|typecheck|check|jest|vitest|mocha|pytest|go\s+test|cargo\s+(check|test)|npm\s+test|yarn\s+test|pnpm\s+test)\b/.test(
+      JSON.stringify(msg.args && typeof msg.args === 'object' ? (msg.args.commands ?? msg.args) : msg.args || '')
     );
     let cls = `tm-tool-card ${msg.state}`;
     if (isValidation) cls += ' validation';
@@ -2476,7 +2380,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     
     const body = card.querySelector('.tm-tool-card-body');
     const pre = card.querySelector('.tm-tool-card-output');
-    const isEdit = msg.name === 'editFile' || msg.name === 'writeFile' || msg.name === 'createFile';
+    const isEdit = msg.name === 'editor' || msg.name === 'apply_patch';
     const editArgs = isEdit && msg.args && typeof msg.args === 'object' ? msg.args : null;
     
     let hasBody = false;
@@ -4353,13 +4257,6 @@ import { handleToolStatus } from './handlers/toolStatus';
     toolCallId?: string;
   }
 
-  interface TodosMessage {
-    type: 'todos';
-    requestId: string;
-    todos: Todo[];
-    followingPlan?: boolean;
-  }
-
   interface HandlerContext {
     // State maps
     targets: Map<string, Target>;
@@ -4407,7 +4304,7 @@ import { handleToolStatus } from './handlers/toolStatus';
   // Message types scoped to one session's pane: when one carries a sessionId, the pane-bound
   // state is repointed at that session BEFORE its case body runs. 'switchSession' is included
   // so its body can use the returned `existed` flag.
-  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'planData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'contextPressure', 'planProposed', 'planDiscarded', 'editApproval', 'permissionAsk', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
+  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'contextPressure', 'planProposed', 'planDiscarded', 'editApproval', 'permissionAsk', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
 
   // ---------- inbound messages ----------
   // Diagnostic ring of the last 150 host messages; `__tmLog()` in devtools prints them, which is
@@ -4449,14 +4346,6 @@ import { handleToolStatus } from './handlers/toolStatus';
           announcementsRenderedKey = key;
           // The composer's headline ticker reads the same cache — refresh it in place.
           refreshTipsStrip();
-          break;
-        }
-        case 'planProgress': {
-          // Pane-scoped like 'todos': a background session's plan run must not take over the
-          // viewed session's checklist bar.
-          const pane = panes.get(msg.sessionId) || createPaneObj(msg.sessionId);
-          pane.planState = msg.state && msg.state.status !== 'aborted' ? msg.state : null;
-          if (msg.sessionId === viewedSessionId) renderAgentTodoBar();
           break;
         }
       case 'openAnnouncements':
@@ -4531,7 +4420,6 @@ import { handleToolStatus } from './handlers/toolStatus';
         if (!openTabIds.includes(viewedSessionId)) openTabIds.push(viewedSessionId);
         renderSessionTabs(); // move the active-tab highlight now, don't wait for the next sessionList broadcast
         renderChangedBar({ files: [] }); // reset; the host re-sends this session's own bar via postCheckpoints
-        renderAgentTodoBar(); // the checklist bar is per session — show this one's, or nothing
         if (rebuildInPlace) {
           activeThreadEl.innerHTML = '';
           currentTurn = null;
@@ -4609,42 +4497,9 @@ import { handleToolStatus } from './handlers/toolStatus';
         handleAgentStep(ctx, msg);
         break;
       }
-      case 'todos': {
-        // Live task list → same Chain-of-Thought Plan component as planData, mounted once at the
-        // top of the flow (t.planEl) and swapped in place as tasks progress.
-        const t = ensureTarget(msg.requestId);
-        const title = msg.followingPlan ? 'Following the approved plan' : 'Tasks';
-        const data = planDataFromTodos(title, msg.todos || []);
-        const next = createPlan({ data, mode: 'live' });
-        next.classList.add('collapsed'); // the composer's todo bar + sheet carries the live view
-        if (t.planEl) t.planEl.replaceWith(next); else t.flow.insertBefore(next, t.flow.firstChild);
-        t.planEl = next;
-        activePaneObj.todoState = {
-          title: msg.followingPlan ? 'Plan' : 'Tasks',
-          steps: (msg.todos || []).map((td) => ({ text: td.content, status: td.status === 'completed' ? 'done' : td.status === 'in_progress' ? 'active' : 'pending' })),
-        };
-        if (msg.sessionId === viewedSessionId) renderAgentTodoBar();
-        scrollDown();
-        break;
-      }
-      case 'planData': {
-        // Plan progress → mount/swap the Plan component at t.planEl (same slot as 'todos').
-        const t = ensureTarget(msg.requestId);
-        const next = createPlan({ data: msg.data, mode: 'live' });
-        next.classList.add('collapsed');
-        if (t.planEl) t.planEl.replaceWith(next); else t.flow.insertBefore(next, t.flow.firstChild);
-        t.planEl = next;
-        scrollDown();
-        break;
-      }
       case 'toolStatus': {
         const ctx = createHandlerContext();
         handleToolStatus(ctx, msg);
-        // A finished web search contributes its links to the turn's source list.
-        if (msg.name === 'webSearch' && msg.state === 'done' && msg.detail) {
-          const target = targets.get(msg.requestId);
-          addSources(target?.el, parseSearchSources(msg.detail));
-        }
         break;
       }
       case 'failoverNotice': {
@@ -4755,57 +4610,9 @@ import { handleToolStatus } from './handlers/toolStatus';
         scrollDown();
         break;
       }
-      case 'planProposed': {
-        const t = ensureTarget(msg.requestId);
-        stopStatusTimer(msg.requestId, true);
-        finalizeWork(msg.requestId);
-        t.body.innerHTML = '';
-        // One Chain-of-Thought-styled Plan component for both states:
-        //  - active proposal → mode 'edit' (editable steps + Save & Run / Discuss / Discard)
-        //  - replayed/decided → mode 'live' + settled flag (read-only, with status note)
-        const settled = msg.discarded ? 'discarded' : msg.deferred ? 'deferred' : undefined;
-        const { data, summary } = planDataFromStepText('Plan', msg.steps);
-        const plan = createPlan({
-          data,
-          mode: settled ? 'live' : 'edit',
-          settled,
-          summary: settled ? undefined : summary,
-          decisions: msg.decisions,
-          onApprove: (steps) => send({ type: 'approvePlan', requestId: newId(), approved: true, steps }),
-          onExecute: (steps) => {
-            send({ type: 'executePlan', requestId: newId(), steps });
-            // Switching to Agent mode and spinning up the runner takes a moment — say so
-            // instead of showing nothing between the click and the first progress state.
-            todoSheet.update({ title: 'Plan', steps: [], preparing: true, running: true });
-          },
-          onDiscard: () => send({ type: 'approvePlan', requestId: newId(), approved: false, steps: '' }),
-          onDefer: (steps) => {
-            const note = document.createElement('div'); note.className = 'tm-plan-note';
-            note.textContent = 'Kept for discussion — edit steps, then Save & Run when ready.';
-            t.body.appendChild(note);
-            send({ type: 'deferPlan', requestId: msg.requestId, steps });
-          },
-        });
-        t.body.appendChild(plan);
-        scrollDown();
-        break;
-      }
-      case 'planDiscarded': {
-        // The host rejected this plan — append a "✗ Discarded" note under the matching
-        // plan body so the rejected plan stays in the transcript.
-        for (const t of targets.values()) {
-          if (t.requestId === msg.requestId) {
-            const note = document.createElement('div'); note.className = 'plan-discarded';
-            note.textContent = '✗ Discarded';
-            t.body.appendChild(note);
-            scrollDown();
-            break;
-          }
-        }
-        break;
-      }
+
       case 'askUserPrompt': {
-        // The agent's `askUser` tool. Answering resumes the paused turn via `askUserResponse`
+        // Cline's `ask_question` tool. Answering resumes the paused turn via `askUserResponse`
         // (callId → pending promise). 1-4 questions share ONE card; each option is a flat string
         // written "Label — what it means", split into a titled row + description (a question
         // with no options is a free-text row).
@@ -5079,27 +4886,18 @@ import { handleToolStatus } from './handlers/toolStatus';
           else renderMcpItems(msg.items || []);
         }
         break;
-      case 'planExecuting': {
-        setPlanExecuting(msg.requestId, msg.executing);
-        break;
-      }
       case 'setMode': {
-        // Host-driven mode switch (e.g. executing an approved plan flips to Agent). Updates the
-        // user's actual mode selection, so their next message lands in the new mode too — unlike
-        // setPlanExecuting, which is a visual-only pill state.
+        // Host-driven mode switch (a Continue resuming in the mode that paused). Updates the
+        // user's actual mode selection, so their next message lands in the new mode too.
         if (msg.mode) setMode(msg.mode);
         break;
       }
       case 'notice': {
         clearEmpty();
-        const d = document.createElement(msg.action ? 'button' : 'div');
+        const d = document.createElement('div');
         d.className = 'compact-divider' + (msg.icon ? ' with-icon' : '');
         if (msg.icon) d.innerHTML = ICON[msg.icon] + escapeHtml(msg.text);
         else d.textContent = msg.text;
-        if (msg.action?.kind === 'openPlanFile') {
-          d.classList.add('compact-divider-link');
-          d.addEventListener('click', () => send({ type: 'openPlanFile', uri: msg.action.uri }));
-        }
         (currentTurn || activeThreadEl).appendChild(d);
         scrollDown();
         break;
@@ -5155,9 +4953,6 @@ import { handleToolStatus } from './handlers/toolStatus';
           updateSendEnabled();
           // Turn lifecycle finally: the serving indicator always returns to the user's pick.
           if (!busy) resetServingModel();
-          // Run over → give the agent checklist its terminal state (completed note + dismiss ×)
-          // instead of leaving the last mid-run frame pinned above the composer.
-          if (!busy) renderAgentTodoBar();
         }
         // Backstop: any run that ended without a terminal message (e.g. plan mode's early
         // return) still flips busy off — clear any lingering live status in THIS message's
@@ -5413,36 +5208,6 @@ import { handleToolStatus } from './handlers/toolStatus';
     head.appendChild(icon); head.appendChild(title); head.appendChild(manage); head.appendChild(close);
     bar.appendChild(head);
     bar.classList.remove('hidden');
-  }
-
-  /** Live plan-execution banner (first-class plan runner): shows step progress while
-   *  running, a Resume button while paused (window reload interrupted the run), and a
-   *  terminal summary when done/failed. The step checklist itself renders through the
-   *  normal todos path; this bar carries only run status. */
-  function renderPlanProgress(state) {
-    if (!state || state.status === 'aborted') { todoSheet.update(null); return; }
-    const status = state.status || 'done';
-    const steps = (state.steps || []).map((st, i) => ({
-      text: st.text,
-      status: st.status === 'done' ? 'done'
-        : st.status === 'failed' ? 'failed'
-        : status === 'running' && i === state.currentStep ? 'active'
-        : 'pending',
-    }));
-    const done = steps.filter((s) => s.status === 'done').length;
-    const total = steps.length;
-    const currentStep = Math.min((state.currentStep ?? 0) + 1, Math.max(total, 1));
-    todoSheet.update({
-      title: 'Plan',
-      steps,
-      running: status === 'running',
-      paused: status === 'paused',
-      finished: status !== 'running' && status !== 'paused',
-      note: status === 'failed' ? `Plan stopped — a step failed verification (${done}/${total} done)`
-        : status === 'done' ? `Plan completed (${done}/${total} steps)`
-        : status === 'paused' ? `Paused at step ${currentStep}/${total} (${done} done)`
-        : undefined,
-    });
   }
 
   /** Dismissible "new providers available" banner — same one-shot, dismiss-on-close

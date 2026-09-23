@@ -83,8 +83,6 @@ export type {
   CatalogModel,
   ReasoningEffort,
   Mode,
-  TodoItem,
-  PlanRunState,
 } from './shared/types';
 
 // ── Legacy work report — strip support for transcripts persisted before it was removed ──

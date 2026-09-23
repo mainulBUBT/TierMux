@@ -1,5 +1,9 @@
 # Agent reliability plan — 2026-09-05
 
+> **Superseded 2026-09-23.** The agent is now Cline's SDK and the TierMux-built harness this
+> document describes was removed — see [CLINE_AGENT.md](CLINE_AGENT.md). Kept as a record of
+> the reasoning; nothing below describes current code.
+
 **No new features.** Every item below makes something that already exists actually work, or
 deletes something that pretends to.
 

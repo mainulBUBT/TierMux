@@ -1,9 +1,6 @@
-
-
-// The stable contract chatViewProvider.ts depends on — TierMux's own types only, no AI SDK
-// type here or above. Everything AI-SDK-shaped lives in ./core/*, loaded lazily so this file
-// stays vscode-free.
-import type { ChatMessage, TodoItem, ReasoningEffort, ProposedPlan, AskQuestion, AskResult } from '../shared/types';
+// The stable contract chatViewProvider.ts depends on — TierMux's own types only. The Cline
+// engine lives in ./core/cline/*, loaded lazily so this file stays vscode-free.
+import type { ChatMessage, ReasoningEffort, AskQuestion, AskResult } from '../shared/types';
 
 export interface ToolEvent {
   toolCallId: string;
@@ -16,8 +13,8 @@ export interface ToolEvent {
 export interface AgentResult {
   text: string;
   reasoning?: string;
-  /** SDK finish reason ('stop' | 'length' | 'tool-calls' | 'unknown') so the webview's
-   *  empty-reply placeholder can tell budget exhaustion from a model that chose to stop. */
+  /** 'stop' | 'unknown' — lets the webview's empty-reply placeholder tell a failure from a
+   *  model that chose to stop. */
   finishReason?: string;
   platform?: string;
   model?: string;
@@ -25,9 +22,6 @@ export interface AgentResult {
   taskKind?: string;
   workMessages?: ChatMessage[];
   paused?: boolean;
-  /** The validated structure plan mode's `exitPlanMode` tool produced; the host renders the
-   *  plan card from it. Undefined = no plan proposed this turn. */
-  plan?: ProposedPlan;
   /** Set when the turn ended via the genuine-error catch path (not abort) — `onError` already
    *  surfaced a message to the UI. Callers must NOT also render this as a normal completed
    *  turn (empty text + a real footer reads as a phantom "successful" blank reply). */
@@ -36,9 +30,7 @@ export interface AgentResult {
    *  here so the caller can render it as a proper reply bubble instead of leaving the user with
    *  only the thin error notice and no visible response in the conversation. */
   errorMessage?: string;
-  /** Files this turn created/modified/deleted via mutating tools, derived from the tool calls in
-   *  `workMessages`. Lets the caller render a deterministic "Files changed" recap independent of
-   *  the model's prose, so a turn that ended on a bare tool call still surfaces what it changed. */
+  /** Files Cline's editor created or modified this turn, for the "Files changed" recap. */
   changedFiles?: { path: string; status: 'created' | 'modified' | 'deleted' }[];
 }
 
@@ -59,18 +51,11 @@ export interface AgentOpts {
   pinnedModel?: string;
   /** Host auto-approve toggle for this session — forwarded to the toolApproval policy. */
   autoApprove?: boolean;
-  /** Tool-result aging level for this turn — mirrors the tiermux.agent.toolCompaction
-   *  setting ('off' | 'light' | 'aggressive'). Threaded from host settings. */
-  toolCompaction?: 'off' | 'light' | 'aggressive';
+  /** tiermux.agent.toolCompaction: 'off' compacts only on a provider overflow. */
+  toolCompaction?: string;
   /** Hard cap on model round-trips in one turn — mirrors `tiermux.agent.maxStepsPerTurn`.
    *  Omitted ⇒ the engine's default. */
   maxStepsPerTurn?: number;
-  /** The task list this turn inherits (a Continue after a step-cap pause). Injected into the
-   *  system prompt when anything is unfinished; the engine keeps it current from todoWrite. */
-  todos?: TodoItem[];
-  /** Lazily builds the `<session_files>` block (files changed earlier this session, with their
-   *  on-disk state). Called once per turn; the host owns the IO so the engine stays mechanical. */
-  sessionFiles?: () => Promise<string | undefined>;
   /** `platform::modelId` keys to skip during Auto selection for this call only. Ignored when
    *  `pinnedModel` is set. */
   excludeModels?: string[];
@@ -92,11 +77,9 @@ export interface AgentOpts {
   onSelectionRationale?: (info: SelectionRationaleInfo) => void;
   onKeyRotated?: (info: { platform: string; keyIndex: number; keyTotal: number }) => void;
   onStep: (phase: 'thinking' | 'status', label?: string) => void;
-  onTodos: (todos: TodoItem[]) => void;
-  /** Checkpoint baseline — fired by the v3 write tools AFTER reading a file's pre-write
-   *  content but BEFORE mutating it (null = about to be created). The host wires this to
-   *  CheckpointManager.record(); type-only vscode reference (erased at runtime — this file
-   *  stays vscode-free). */
+  /** Checkpoint baseline — fired before Cline's editor writes a file, with its pre-write
+   *  content (null = about to be created). The host wires this to CheckpointManager.record();
+   *  type-only vscode reference (erased at runtime — this file stays vscode-free). */
   onBeforeWrite?: (uri: import('vscode').Uri, before: string | null) => void;
   onAskUser: (questions: AskQuestion[]) => Promise<AskResult>;
   /** A tool call is paused pending approval — resolved by src/permissions/policy.ts. */
@@ -106,31 +89,26 @@ export interface AgentOpts {
    *  `undefined` after it settles; `push(text)` queues a user message the runtime injects at
    *  the next iteration boundary (interrupting only the in-flight model request). */
   onSteerReady?: (steer: { push: (text: string) => void } | undefined) => void;
-  /** Turn telemetry sink — set by runTurn itself (not callers); every model call the turn
-   *  makes (planner, executor, judges, recap) reports its provider-measured usage here so
-   *  WorkReportData.telemetry reflects the WHOLE turn. See src/shared/workReport.ts. */
+  /** Turn telemetry sink — every model request the turn makes reports its provider-measured
+   *  usage here. See src/shared/workReport.ts. */
   usageSink?: (info: { inputTokens: number; outputTokens: number; contextTokens: number; contextWindow?: number; model: string; pass?: number }) => void;
 }
 
-// Lazy/dynamic on purpose: everything under `./core/` imports `vscode` (workspace.fs, the
-// toolset, the policy's config reads). This file itself stays vscode-free so it can run
-// headlessly under plain Node — a static import here would drag the whole vscode-dependent
-// agent core into any headless test that only imports this module for its types.
+// Lazy/dynamic on purpose: the engine imports `vscode`. This file stays vscode-free so headless
+// tests can import it for its types.
 let runTurn: typeof import('./core/cline/clineEngine').runTurn | undefined;
 async function loadCore(): Promise<typeof import('./core/cline/clineEngine').runTurn> {
   if (!runTurn) ({ runTurn } = await import('./core/cline/clineEngine'));
   return runTurn;
 }
 
-/** Agent mode: full tool loop, now on the Cline AgentRuntime (cline-agent branch). The trailing
- *  `_tools` param is unused — the engine builds its own tool set. Model selection lives in
- *  router/picker.ts, served to Cline through core/cline/routerModel. */
+/** Agent mode: Cline's act mode. Model selection lives in router/picker.ts, served to Cline
+ *  through core/cline/routerModel. The trailing `_tools` param is unused. */
 export async function runAgentStream(opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
   return (await loadCore())(undefined, { ...opts, mode: 'agent' });
 }
 
-/** Plan mode: read-only toolset (readFile/listDir/glob/grep) — the policy still gates anything
- *  mutating, and the mode filter drops those tools from the model's view entirely. */
+/** Plan mode: Cline's plan mode — no editor tool, and the policy hard-denies mutation. */
 export async function runPlanStream(opts: AgentOpts, _tools?: unknown): Promise<AgentResult> {
   return (await loadCore())(undefined, { ...opts, mode: 'plan' });
 }

@@ -10,7 +10,7 @@ import * as path from 'path';
 import { createMockModel } from './mockClineModel';
 import { runAgentStream } from '../src/agent/agent';
 import { __setClineEngineModelForTests } from '../src/agent/core/cline/clineEngine';
-import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
+import { runWithWorkspaceRoot } from '../src/util/workspaceRoot';
 import type { AgentOpts, AgentResult } from '../src/agent/agent';
 
 let bad = 0;
@@ -24,7 +24,7 @@ function opts(over: Partial<AgentOpts>): AgentOpts {
     messages: [{ role: 'user', content: 'list the unused pages in the app' }],
     mode: 'agent', effort: 'medium',
     onChunk: () => {}, onTool: () => {}, onReasoning: () => {}, onModel: () => {},
-    onFailover: () => {}, onStep: () => {}, onTodos: () => {},
+    onFailover: () => {}, onStep: () => {},
     onAskUser: async () => ({ status: 'answered' as const, answers: ['yes'] }), onError: () => {},
     ...over,
   } as AgentOpts;

@@ -22,19 +22,20 @@ import { NoVisionModelError } from './errors';
  *  can claim it, never reported (see the skipList filter). */
 const PROVIDER_OFF = 'provider switched off in Manage Models & Keys';
 
-/** Layer-wise head floor (2026-09-22, user direction): the minimum quality tier allowed to
- *  LEAD each task kind — work leads only with frontier/strong. A below-floor row may still
- *  lead when it is fast (speedRank ≤ HEAD_FAST_ENOUGH): the curated groq/cerebras heads are
- *  mid-tier precisely because latency is the product there. Kinds absent from the map
+/** Smartest first (2026-09-23, user direction): an agent turn is led by the best model
+ *  available — tier, then intelligence rank — with speed only a tiebreak. No curated table and
+ *  no speed gate for `work`: a fast mid-tier head wandered through many tool calls (live repro:
+ *  nemotron-3.5-lightning answered with gibberish), which cost more than a slower strong head. */
+const SMARTEST_FIRST_KINDS = new Set<TaskKind>(['work']);
+/** Layer-wise head floor: the minimum quality tier allowed to LEAD a task kind. A below-floor
+ *  row may still lead when it is fast (speedRank ≤ HEAD_FAST_ENOUGH). Kinds absent from the map
  *  (trivial, vision) keep the legacy small/unknown-only gate. */
 const HEAD_MIN_TIER: Partial<Record<TaskKind, ModelTier>> = {
-  work: 'strong', longContext: 'mid',
+  longContext: 'mid',
 };
-/** Interactive kinds whose head never includes a slow row (speedRank ≥ 4) — a speed-5 head
- *  once answered a vision turn in ~5 minutes (2026-09-04). Not applied to `trivial` (speed
- *  IS the product) or `vision` (curated, capability-bound). Static catalog data, not a
- *  learned latency signal — see the file header. */
-const HEAD_SPEED_CAP_KINDS = new Set<TaskKind>(['work', 'longContext']);
+/** Kinds whose head never includes a slow row (speedRank ≥ 4) — a speed-5 head once answered a
+ *  vision turn in ~5 minutes (2026-09-04). Static catalog data, not a learned latency signal. */
+const HEAD_SPEED_CAP_KINDS = new Set<TaskKind>(['longContext']);
 /** A below-floor tier can still lead at this speedRank or better — fast buys its way in. */
 const HEAD_FAST_ENOUGH = 2;
 
@@ -45,7 +46,8 @@ const HEAD_FAST_ENOUGH = 2;
  *  goes dead silently (11 of 13 were once dead), which is why the tail below is rank-sorted,
  *  not table-dependent. */
 export const TASK_ROUTING: Record<TaskKind, string[]> = {
-  work: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::nemotron-3.5-lightning-free'],
+  // Smartest first (SMARTEST_FIRST_KINDS): the enabled pool is ordered by tier then rank.
+  work: [],
   // Gemini leads when a Google key exists, but the tail below is NOT a safety net on a vision
   // turn — it used to pad the chain with every enabled model regardless of supportsVision, so a
   // keyless install with no Google key answered an image with a text-only model that silently
@@ -554,12 +556,7 @@ export async function selectModel(
         skip(picked, `${tier} tier, speedRank ${speed} — below the ${taskKind} head floor; tail failover only`);
         continue;
       }
-      // work's cap is tighter (2026-09-22, cline branch: turn time complaints) — a speedRank-3
-      // head (big-pickle class) made every third turn crawl on a slow free lane; work now leads
-      // ONLY with speedRank ≤ 2, and the slow rows stay in the tail as failover. longContext
-      // keeps the looser cap: its payloads are big, latency is dominated by transfer anyway.
-      const headSpeedCap = taskKind === 'work' ? 3 : 4;
-      if (HEAD_SPEED_CAP_KINDS.has(taskKind) && speed >= headSpeedCap) {
+      if (HEAD_SPEED_CAP_KINDS.has(taskKind) && speed >= 4) {
         skip(picked, `speedRank ${speed} — too slow to lead a ${taskKind} turn; tail last resort`);
         continue;
       }
@@ -632,8 +629,10 @@ export async function selectModel(
   const slowCapable = (e: { speed: number }): number => (e.speed >= 4 ? 1 : 0);
   // Tier sits directly after the slow-capable cap: the best HAND-MAINTAINED quality band
   // leads, and a small/unassessed model can only follow every judged one — rank (regex
-  // derived, kept for ordering within a tier) no longer decides alone.
-  ranked.sort((a, b) => slowCapable(a) - slowCapable(b) || TIER_ORDER[a.tier] - TIER_ORDER[b.tier] || a.rank - b.rank || b.vote - a.vote || b.headroom - a.headroom || a.speed - b.speed);
+  // derived, kept for ordering within a tier) no longer decides alone. Smartest-first kinds
+  // drop the slow cap: tier, then rank, and speed only breaks ties.
+  const smartest = SMARTEST_FIRST_KINDS.has(taskKind);
+  ranked.sort((a, b) => (smartest ? 0 : slowCapable(a) - slowCapable(b)) || TIER_ORDER[a.tier] - TIER_ORDER[b.tier] || a.rank - b.rank || b.vote - a.vote || (smartest ? a.speed - b.speed : 0) || b.headroom - a.headroom || a.speed - b.speed);
   // Quota-spreading among peers: rotate the head of each equal-tier, equal-rank, equal-speed,
   // equal-vote group so the NEXT turn leads with a different peer ("600 models, but it keeps
   // using the same 1-2"). Deterministic per taskKind via the SAME round counter the

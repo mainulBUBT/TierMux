@@ -7,7 +7,7 @@ import * as path from 'path';
 import { createMockModel } from './mockClineModel';
 import { runAgentStream } from '../src/agent/agent';
 import { __setClineEngineModelForTests } from '../src/agent/core/cline/clineEngine';
-import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
+import { runWithWorkspaceRoot } from '../src/util/workspaceRoot';
 import type { AgentOpts, AgentResult } from '../src/agent/agent';
 
 let bad = 0;
@@ -23,7 +23,7 @@ function opts(over: Partial<AgentOpts>): AgentOpts {
     messages: [{ role: 'user', content: 'trace how an order is placed' }],
     mode: 'agent', effort: 'medium',
     onChunk: () => {}, onTool: () => {}, onReasoning: () => {}, onModel: () => {},
-    onFailover: () => {}, onStep: () => {}, onTodos: () => {},
+    onFailover: () => {}, onStep: () => {},
     onAskUser: async () => ({ status: 'answered' as const, answers: ['yes'] }), onError: () => {},
     ...over,
   } as AgentOpts;
@@ -36,7 +36,7 @@ async function turn(model: ReturnType<typeof createMockModel>, over: Partial<Age
   finally { __setClineEngineModelForTests(undefined); }
 }
 
-const readCall = { toolCalls: [{ toolName: 'readFile', input: { path: 'a.txt' } }] };
+const readCall = { toolCalls: [{ toolName: 'read_files', input: { files: [{ path: path.join(root, 'a.txt') }] } }] };
 
 async function main() {
   console.log('— tools ran, non-empty synthesis ships as-is (no prose guessing) —');
@@ -117,12 +117,10 @@ async function main() {
     ok('an answer that merely CONTAINS "let me" is not nudged', m.calls.length === 2, `${m.calls.length}`);
     ok('it ships verbatim', r.text.includes('place_order'), r.text.slice(0, 70));
   }
-  // cline branch: ask mode is gone (modes are 'plan' | 'agent') and plan-mode prose is handled
-  // by the runtime's completion reminder, not a nudge — a Q&A turn completes via the
-  // exitPlanMode 'no-change' declaration, covered by exitPlanMode.e2e (plan-answer /
-  // plan-question blocks).
-  gone('ask mode is never nudged', 'ask mode removed; plan-mode Q&A completes via no-change declaration (exitPlanMode.e2e)');
-  gone('its prose answer ships', 'ask mode removed; plan-mode Q&A completes via no-change declaration (exitPlanMode.e2e)');
+  // Ask mode is gone (modes are 'plan' | 'agent'); a plan-mode prose answer simply completes the
+  // turn, covered by the cline-engine suite.
+  gone('ask mode is never nudged', 'ask mode removed; a plan-mode prose answer completes the turn (cline-engine suite)');
+  gone('its prose answer ships', 'ask mode removed; a plan-mode prose answer completes the turn (cline-engine suite)');
 
   fs.rmSync(root, { recursive: true, force: true });
   console.log(bad === 0 ? '\nLoop closing holds.' : `\n${bad} FAILED`);

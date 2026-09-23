@@ -8,19 +8,16 @@ free model across 30 built-in LLM providers (plus unlimited user-defined
 OpenAI-compatible endpoints), with automatic failover, key rotation,
 rate-limit cooldowns, and quality-based escalation.
 
-Agent execution runs **in-process**, built directly on the **AI SDK**
-(`ai@^7.0.34` + `@ai-sdk/provider@^4.0.3` — referred to generically as "the
-AI SDK," never by vendor name) — `streamText()` is the actual execution
-engine (loop, step orchestration, tool lifecycle, streaming, retry, stop
-conditions, tool-approval gate). TierMux owns routing, provider adapters,
-permission policy, and VS Code integration; it does not implement its own
-agent loop. (OpenCode — a separate, external-process agent CLI TierMux
-used to spawn and route through an HTTP proxy — was fully removed 2026-07;
-see "History" below.)
+The coding agent is **Cline's SDK** (`@cline/agents` runs the loop, `@cline/core` supplies
+the tools, prompt, rules, skills, compaction and MCP), in-process. TierMux owns what sits
+around it: the model router and provider fleet underneath, the approval policy, sessions, and
+the VS Code UI on top. It does not implement agent behavior — see
+[CLINE_AGENT.md](CLINE_AGENT.md). The AI SDK (`ai`) is still used for TierMux's own one-shot
+calls (titles, handoff notes, commit messages, inline completions).
 
 ```
-chatViewProvider.ts → agent.ts → core/engine.ts (streamText) →
-  core/routerProvider.ts → router/picker.ts → 30 Built-in Providers (+ custom)
+chatViewProvider.ts → agent.ts → core/cline/clineEngine.ts (Cline AgentRuntime + @cline/core tools) →
+  core/cline/routerModel.ts → router/picker.ts → 30 Built-in Providers (+ custom)
 ```
 
 ---
@@ -41,30 +38,26 @@ chatViewProvider.ts → agent.ts → core/engine.ts (streamText) →
 │                                   │                                │
 │  ┌────────────────────────────────▼─────────────────────────────┐  │
 │  │  agent.ts (stable contract — AgentOpts/AgentResult/ToolEvent) │  │
-│  │  runAgentStream / runPlanStream / runAskStream                │  │
-│  │  generateSessionTitle (direct Router)                        │  │
+│  │  runAgentStream / runPlanStream                               │  │
 │  └────────────────────────────────┬─────────────────────────────┘  │
 │                                   │ dynamic import (vscode-free      │
 │                                   │ above this line)                │
 │  ┌────────────────────────────────▼─────────────────────────────┐  │
-│  │  agent/core/  — the AI-SDK-based agent engine                │  │
-│  │  engine.ts        runTurn(): builds the streamText() call     │  │
-│  │  routerProvider.ts  picker → LanguageModelV4 protocol adapter │  │
-│  │  routeOnce.ts     one-shot routing for utility callers        │  │
-│  │  compact.ts       prepareStep pruning + tool-output aging     │  │
-│  │  repair.ts        weak-model tool-call dialect rescue         │  │
-│  │  subagent.ts      the read-only delegateTask worker           │  │
-│  │  tools/v3/**      file/search/shell/ui tool factories         │  │
+│  │  agent/core/cline/ — the host seams around Cline's SDK        │  │
+│  │  clineEngine.ts   one turn: Cline tools + prompt + runtime    │  │
+│  │  routerModel.ts   the picker as a Cline AgentModel            │  │
+│  │  prepareTurn.ts   Cline compaction adapter (+ /compact)       │  │
+│  │  clineRuntime.ts  loads the ESM-only @cline/* packages        │  │
 │  └────────────────────────────────┬─────────────────────────────┘  │
-│                                   │ AI SDK types stop here          │
+│                                   │ Cline types stop here           │
 │  ┌────────────────────────────────▼─────────────────────────────┐  │
-│  │  Model picker (src/router/picker.ts) — AI-SDK-agnostic       │  │
-│  │  - task table → intelligence-rank tail, never a dead end     │  │
-│  │  - multi-provider failover with per-key rotation             │  │
-│  │  - per-platform + per-key rate-limit cooldown                │  │
-│  │  - tool-incompatible + 404-deprecated quarantine             │  │
-│  │  - round-robin platform diversity across the failover scan   │  │
-│  │  - proactive rate-limit skip (rateTracker.ts)                │  │
+│  │  Model picker (src/router/picker.ts) — AI-SDK-agnostic        │  │
+│  │  - task table → intelligence-rank tail, never a dead end      │  │
+│  │  - multi-provider failover with per-key rotation              │  │
+│  │  - per-platform + per-key rate-limit cooldown                 │  │
+│  │  - tool-incompatible + 404-deprecated quarantine              │  │
+│  │  - round-robin platform diversity across the failover scan    │  │
+│  │  - proactive rate-limit skip (rateTracker.ts)                 │  │
 │  └────────────────────────┬─────────────────────────────────────┘  │
 │                           │                                        │
 │  ┌────────────────────────▼─────────────────────────────────────┐  │
@@ -75,14 +68,11 @@ chatViewProvider.ts → agent.ts → core/engine.ts (streamText) →
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-**Layering boundary**: AI SDK types (`streamText`, `LanguageModel`, `Tool`,
-`ToolSet`, `ToolApprovalStatus`, …) are used *inside* `agent/core/` only.
-`agent.ts` exposes just TierMux's own `AgentOpts`/`AgentResult`/`ToolEvent`
-— nothing above it (`chatViewProvider.ts`, the webview) ever imports an AI
-SDK type. `Router` itself never imports an AI SDK type either — it exposes
-`route(messages, opts): RouteResult` and knows nothing about
-`LanguageModel`/`Tool`/`streamText`. If a future AI SDK major version
-changes its APIs, only `agent/core/` changes.
+**Layering boundary**: Cline types (`@cline/shared`'s `AgentMessage`, `AgentModel`,
+`AgentTool`, …) are used *inside* `agent/core/cline/` only. `agent.ts` exposes just TierMux's
+own `AgentOpts`/`AgentResult`/`ToolEvent` — nothing above it (`chatViewProvider.ts`, the
+webview) imports a Cline type. The picker never imports one either; `routerModel.ts` is the
+only place the two meet. A Cline upgrade changes `agent/core/cline/` and nothing else.
 
 ---
 
@@ -123,62 +113,27 @@ upsert path (`upsertCompatFromCatalog`) can register brand-new compat platforms
 without an extension update. Untouched by the OpenCode removal / AI SDK
 migration — the Router calls them exactly as before.
 
-### Agent core — `src/agent/core/`
+### Agent — Cline, and its seams in `src/agent/core/cline/`
 
-The in-process agent engine, built directly on the AI SDK. Nothing above this
-layer (`agent.ts`, `chatViewProvider.ts`, the webview) ever imports an AI SDK
-type — see the Layering boundary note above.
+The agent is Cline's SDK; **read [CLINE_AGENT.md](CLINE_AGENT.md) before changing anything
+here.** TierMux supplies only what a host must:
 
-**Read `docs/SIMPLE_CORE_RESET_2026-08-24.md` before changing anything here.**
-The loop is a mechanical execution engine: it runs tools and models, preserves
-the one `CoreMessage[]` transcript, rotates providers, and recovers from
-provider failures with exactly ONE mechanical continuation. It never judges
-answer quality, never detects "narration", never retries on weak-looking output.
+- **`routerModel.ts`** — every model request Cline makes is served from the picker's failover
+  chain (key rotation, cooldowns, platform condemn) and reported back as Cline model events.
+- **`../../permissions/policy.ts`** — Cline's `requestToolApproval`. Chain:
+  `alwaysDeny → plan-mode profile → alwaysAllow → READ_ONLY_TOOLS → settings → ask`.
+- **`clineEngine.ts`** — builds Cline's act/plan toolset with three host executors (the ask
+  card, the editor wrapped to record the checkpoint baseline, skills), adds MCP tools in agent
+  mode, and maps runtime events onto the `AgentOpts` callbacks.
+- **`prepareTurn.ts`** — Cline's own compaction pipeline, adapted to the runtime hook.
+- **`../routeOnce.ts`** — one non-agentic call for the utility callers (titles, handoff,
+  commit messages, completions), through the AI SDK adapter in `routerProvider.ts`.
+- **`../../toolArgs.ts`** — provider-side rescue of tool calls weak models write as text,
+  mapped onto Cline's tool names and argument shapes.
 
-- **`engine.ts`** — `runTurn(opts)`, the one place `streamText()` is called.
-  A thin direct function, not wrapped in a runner/manager class. Consumes
-  `result.fullStream` and maps each part to the existing `AgentOpts` callbacks.
-  Owns the turn's `stopWhen` set: the step cap, plan acceptance, and a
-  no-progress guard that stops a turn repeating an identical failing tool call.
-  A turn stopped by any of those returns a `stopReason` and `paused: true` so
-  the UI can offer Continue with the full transcript intact.
-- **`routerProvider.ts`** — a *pure* protocol adapter implementing
-  `LanguageModelV4` (`doGenerate`/`doStream`) over the picker. No routing
-  decisions here. Forwards `onFailover`/`onKeyRotated`/`onSelectionRationale`.
-- **`routeOnce.ts`** — one non-agentic call for the utility callers (titles,
-  commit messages, completions, compaction, plan structuring). Failover, key
-  rotation and account-level platform drop are the default, not options.
-- **`compact.ts`** — two independent context controls: `compactIfNeeded`, a
-  `prepareStep` override that prunes the transcript in two tiers once the model's
-  own window is 80% full, and `ageToolOutputs`, which runs every step and elides
-  earlier bulky tool results into stubs that name the tool and say how to re-run it.
-- **`repair.ts`** — rescues weak models that emit a tool call as text
-  (`<function=readFile>{…}</function>`) instead of a native call.
-- **`subagent.ts`** — the read-only worker behind `delegateTask`. Only its
-  report returns, so the main context stays small.
-- **`../../permissions/policy.ts`** — the verdict function passed as
-  `streamText`'s native `toolApproval` option (a denied verdict means the tool's
-  `execute()` never runs, not that its effect is discarded). Chain:
-  `alwaysDeny → alwaysAllow → READ_ONLY_TOOLS → mode → ask`.
-- **`tools/v3/**`** — one `create*Tool()` factory per tool, assembled by
-  `tools/v3/index.ts`'s `buildV3ToolSet(mode, bindings)` into the mode's actual
-  set (see "Three modes"). Each is `tool()`-form with a Zod schema, an
-  exception-safe `execute` (expected failures return `{ error }`), and NO
-  embedded approval — the policy decides IF a mutating tool runs.
-  `tools/network/` adds the keyless `webSearch`/`fetchUrl` pair, offered in
-  every mode. `tools/mcp/mcp.ts` registers every connected MCP server's tools as
-  ordinary `tool()` objects in **agent mode only** — nothing in the loop or the
-  tool-set builder can tell an MCP-backed tool from a built-in one.
-  Tools capture session data via closures rather than the AI SDK's
-  `runtimeContext`/`ToolExecutionOptions.context` — that mechanism was verified
-  empirically **not** to propagate as documented (see `docs/sdk-upgrade.md`).
-  What the codebase adopts from the SDK at all is governed by
-  `docs/sdk-adoption-policy.md`.
-
-`agent.ts` is the stable contract above `core/`: `AgentOpts`/`AgentResult`/
-`ToolEvent`, and `runAgentStream`/`runPlanStream`/`runAskStream` (each just
-sets `mode` and dynamically imports `core/engine.ts` — dynamic so `agent.ts`
-itself stays `vscode`-free and independently testable).
+`agent.ts` is the stable contract above: `AgentOpts`/`AgentResult`/`ToolEvent` and
+`runAgentStream`/`runPlanStream`, which dynamically import the engine so `agent.ts` stays
+`vscode`-free.
 
 ### Settings + secrets — `src/config/`
 
@@ -195,40 +150,31 @@ itself stays `vscode`-free and independently testable).
 
 ```
 1. User types in the webview.
-2. webview postMessage → chatViewProvider.handleSend(m).
-3. handleSend builds AgentOpts and dispatches to
-   runAgentStream | runPlanStream | runAskStream (agent.ts).
-4. agent.ts dynamically imports core/engine.ts and calls runTurn(opts).
-5. runTurn() calls streamText({ model: createRouterProvider(providerOpts),
-   tools: buildV3ToolSet(mode, bindings), toolApproval: the permissions/policy.ts
-   verdict, prepareStep: compaction + tool-output aging, stopWhen: [...] }).
-6. Each doGenerate/doStream call inside the provider adapter walks the picker's
-   candidate chain → 1+ provider adapter calls (with failover/rotation/cooling)
-   — entirely in-process, no HTTP hop.
-7. runTurn() consumes result.fullStream directly, mapping text-delta/
-   reasoning-delta/tool-call/tool-result/tool-error parts onto the AgentOpts
-   callbacks (onChunk, onTool, onReasoning, onTodos, onStep, onError).
-8. On stream end: finish with accumulated text; in agent mode with mutated
-   files, the verify gate runs and the work report is built. Token usage →
-   UsageStore. Title generation fires in the background via routeOnce.
+2. webview postMessage → chatViewProvider.handleSend(m); the turn is wrapped in Cline's
+   <user_input mode="…"> (plus <mode_notice> after a Plan/Agent switch).
+3. handleSend builds AgentOpts and calls runAgentStream | runPlanStream (agent.ts).
+4. agent.ts dynamically imports core/cline/clineEngine.ts and calls runTurn(opts).
+5. runTurn() builds Cline's toolset, prompt and rules, re-seeds Cline's AgentRuntime with the
+   session transcript, and runs it with the TierMux AgentModel, the approval policy and
+   Cline's compaction.
+6. Each model request walks the picker's candidate chain → 1+ provider adapter calls (with
+   failover/rotation/cooling) — entirely in-process, no HTTP hop.
+7. Runtime events map onto the AgentOpts callbacks (onChunk, onTool, onReasoning, onStep,
+   onError); ask_question drives the ask card, editor writes feed the checkpoints.
+8. The run's transcript is persisted for the next turn; usage → UsageStore; the title is
+   generated in the background via routeOnce.
 ```
 
 ---
 
-## Three modes
+## Two modes
 
-`buildV3ToolSet(mode)` (`tools/v3/index.ts`) is the single source of truth for
-what each mode can do; the permissions policy denies anything a mode does not
-offer, so the two lists cannot drift apart.
+Cline's presets decide the toolset; the approval policy enforces the same line.
 
 | Mode | Tools offered | Notes |
 |---|---|---|
-| Ask | read/search + web + `todoWrite`, `getDiagnostics`, `askUser`, `delegateTask`, and a READ-ONLY `runCommand` | The policy auto-runs confidently read-only commands (`ls`, `git log`), hard-denies destructive ones, asks for the rest. No file mutation. |
-| Plan | the Ask set plus `exitPlanMode` | `exitPlanMode` is plan mode's ONLY exit — see `docs/PLAN_MODE_TOOL_BOUNDARY_2026-08-31.md`. No file mutation. |
-| Agent | everything: the above plus `editFile`, `writeFile`, `deleteFile`, and every connected MCP server's tools | MCP tools are agent-only because their capability is unknowable and the read-only modes cannot gate what they cannot classify. |
-
-Every mode streams. The old buffered-vs-streaming split (`wantsStream`) was a
-property of the retired Router and is gone with it.
+| Plan (Cline `plan`) | `read_files`, `search_codebase`, `run_commands`, `fetch_web_content`, `skills`, `ask_question` | No editor. Every shell command asks. The plan is the answer; the user switches to Agent to carry it out. |
+| Agent (Cline `act`) | the above plus `editor`, and every connected MCP server's tools | Read-only commands auto-run; writes and other commands follow the approval settings. |
 
 ---
 
@@ -240,7 +186,7 @@ These bypass the agent loop and make one non-agentic call through
 - `inlineChat` (Cmd+I) — edit selection via `EditGate`.
 - `commitMessage` (git SCM) — generate commit message from diff.
 - `generateSessionTitle` — 2-5 word title from first message.
-- `condenseHistory` — long-context compaction.
+- `generateHandoff` — a handoff note for the session.
 
 ---
 
@@ -250,12 +196,9 @@ Settings (`package.json:contributes.configuration`) — `package.json` is the
 authority; this is the shape, not the registry:
 
 - `tiermux.agent.{maxStepsPerTurn, maxConcurrentRuns, requireWriteConfirmation,
-  commandApproval, commandAllowlist, commandTimeoutMs, verifyCommand,
-  verifyFixRounds, toolCompaction, autoCondense, autoCondenseTokenCap,
-  autoCompactThreshold, diagTrace}`.
+  commandApproval, commandAllowlist, commandTimeoutMs, toolCompaction, diagTrace}`.
 - `tiermux.completions.{enabled, model, debounceMs}`, `tiermux.utilityModel`.
 - `tiermux.context.{includeOpenEditors, ambientSliceRadius}`.
-- `tiermux.plan.{saveToFile, folder}`.
 - `tiermux.catalog.url`, `tiermux.models.autoEnableNew`.
 - `tiermux.{mcpServers, mcpRegistryUrl, mcpRegistrySearchUrl}`.
 
@@ -306,7 +249,7 @@ Three tables built after real usage patterns emerge:
 The current in-memory state (picker.ts's `modelHealth` cooldown map and
 `taskRoundCounters`, plus `RateTracker`) is the Phase 1 stand-in.
 
-### History — three agent execution eras
+### History — four agent execution eras
 
 1. **v6 and prior** — a hand-rolled, in-process agent loop (`src/agent/
    {agent,tools,toolSpecs,tiermuxProvider,lspTools,editLock,templates,
@@ -317,7 +260,7 @@ The current in-memory state (picker.ts's `modelHealth` cooldown map and
    bridge (since removed) that exposed the Router as an
    OpenAI-compatible `/v1` endpoint. This traded owning the agent loop for
    OpenCode's session/tool management "for free."
-3. **v8 (current)** — OpenCode was fully removed (2026-07). The bet in v7
+3. **v8** — OpenCode was fully removed (2026-07). The bet in v7
    didn't pay off: OC's HTTP round-trip was lossy (a global forced-model
    race condition living in module-level singletons, permission state
    snapshotted once per turn and unable to react mid-turn) and each issue
@@ -328,6 +271,10 @@ The current in-memory state (picker.ts's `modelHealth` cooldown map and
    direct in-process provider adapter passes model/task-kind/attachments/
    reasoning-effort as real per-call arguments, closing the v7 race-
    condition class by construction rather than patching it again.
+4. **Cline (current, 2026-09-23)** — the AI SDK loop plus TierMux's own tools, prompts,
+   condense, plan structuring and sub-agent were a harness TierMux had to keep improving. The
+   agent is now Cline's SDK, run in-process with the router as its model; TierMux keeps
+   routing, providers and the UI. See [CLINE_AGENT.md](CLINE_AGENT.md).
 
 ---
 
@@ -343,21 +290,20 @@ The current in-memory state (picker.ts's `modelHealth` cooldown map and
    directly. `Router` never knows VS Code APIs *or* AI SDK APIs — it
    exposes `route(request): RouteResult` and nothing about
    `LanguageModel`/`Tool`/`streamText` leaks into it.
-3. **AI SDK owns execution, TierMux owns orchestration and routing** — the
-   agent core configures the AI SDK (`streamText`, `toolApproval`,
-   `wrapLanguageModel`) rather than reproducing its control flow. `runTurn()`
-   stays a thin, direct call into `streamText()` — no wrapper class.
+3. **Cline owns the agent, TierMux owns routing, providers and UI** — no agent behavior is
+   written in TierMux; the engine only wires Cline's runtime and tools to TierMux's model,
+   approvals and UI.
 4. **Provider is an implementation detail** — the Router only sees catalog
    entries; adapters are pluggable.
-5. **Closures over `runtimeContext`** — the AI SDK's `runtimeContext`/
-   `ToolExecutionOptions.context` doesn't propagate as documented (verified
-   empirically against `ai@7.0.34`); tools capture session data via
-   closures instead. Re-check on every AI SDK upgrade (`docs/sdk-upgrade.md`).
+5. **Upgrade Cline, don't patch around it** — the `@cline/*` packages are pinned to one exact
+   version and upgraded together; a gap in agent behavior is fixed by a Cline upgrade or
+   upstream, not in TierMux (see [CLINE_AGENT.md](CLINE_AGENT.md#upgrading-cline)).
 6. **Local SecretStorage for keys** — keys live in `vscode.SecretStorage`,
    per VS Code install. No account, no cross-device sync, no managed keys.
 7. **In-process, no loopback bridge** — v7's Router Proxy (HTTP, bound to
-   `127.0.0.1`) no longer exists; the AI SDK's `LanguageModelV4` adapter
-   walks the picker's chain directly in the same process. There is still no remote-TierMux option.
+   `127.0.0.1`) no longer exists; Cline's model is `routerModel.ts`, which walks the picker's
+   chain directly in the same process. (Serving the router as a local endpoint again is the
+   one way to unlock Cline's `ClineCore` and sub-agents — see CLINE_AGENT.md.)
 8. **No rollback to OpenCode** — the v8 removal was deliberate and total
    (no dual-engine toggle, no "native" naming implying an alternative
    engine still exists). There is no flip-back-to-OpenCode path.

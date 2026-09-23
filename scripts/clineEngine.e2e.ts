@@ -1,8 +1,8 @@
-/* The cline-agent engine's core invariants, locked headlessly (no vscode, no fleet keys):
+/* The Cline engine's core invariants, locked headlessly (no vscode, no fleet keys):
  *  1. a plain text answer round-trips — result.text, finishReason, and the workMessages
  *     transcript (user → assistant) that the host persists for the NEXT turn's re-seed;
- *  2. a scripted tool call executes the REAL v3 tool (todoWrite) and the transcript carries
- *     BOTH the tool call and its result, so the next turn re-seeds faithfully;
+ *  2. a scripted tool call executes Cline's REAL builtin tool (read_files) and the transcript
+ *     carries BOTH the tool call and its result, so the next turn re-seeds faithfully;
  *  3. the transcript round-trip is lossless: agentToChatMessages(chatToAgentMessages(x))
  *     preserves roles, text, tool calls and tool results;
  *  4. the permission path maps Cline's requestToolApproval onto TierMux's onPermissionAsk,
@@ -16,7 +16,7 @@ import { createMockModel } from './mockClineModel';
 import { runAgentStream, runPlanStream } from '../src/agent/agent';
 import { __setClineEngineModelForTests, agentToChatMessages } from '../src/agent/core/cline/clineEngine';
 import { chatToAgentMessages } from '../src/agent/core/cline/clineEngine';
-import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
+import { runWithWorkspaceRoot } from '../src/util/workspaceRoot';
 import type { AgentOpts, AgentResult } from '../src/agent/agent';
 import type { ChatMessage } from '../src/shared/types';
 
@@ -31,7 +31,7 @@ function opts(over: Partial<AgentOpts>): AgentOpts {
     messages: [{ role: 'user', content: 'what is in a.txt?' }],
     mode: 'agent', effort: 'medium',
     onChunk: () => {}, onTool: () => {}, onReasoning: () => {}, onModel: () => {},
-    onFailover: () => {}, onStep: () => {}, onTodos: () => {},
+    onFailover: () => {}, onStep: () => {},
     onAskUser: async () => ({ status: 'answered' as const, answers: ['yes'] }), onError: () => {},
     ...over,
   } as AgentOpts;
@@ -69,16 +69,13 @@ async function main() {
       && r.workMessages[0].role === 'user' && r.workMessages[1].role === 'assistant', JSON.stringify(r.workMessages?.map((m) => m.role)));
   }
 
-  console.log('\n— a scripted tool call runs the REAL v3 tool and round-trips —');
+  console.log('\n— a scripted tool call runs Cline\'s REAL builtin tool and round-trips —');
   {
-    const todos: unknown[] = [];
     const r = await turn(createMockModel([
-      { toolCalls: [{ toolName: 'todoWrite', input: { todos: [{ content: 'read a.txt', status: 'in_progress' }] } }] },
+      { toolCalls: [{ toolName: 'read_files', input: { files: [{ path: path.join(root, 'a.txt') }] } }] },
       { text: 'done — a.txt says hello.' },
-    ], 'tool-call'), {
-      onTodos: (t) => todos.push(t),
-    });
-    ok('todoWrite executed through Cline\'s loop', todos.length === 1, JSON.stringify(todos).slice(0, 80));
+    ], 'tool-call'), {});
+    ok('read_files executed through Cline\'s loop', lastRequestJson('tool-call').includes('hello'), '');
     ok('the follow-up answer arrived', r.text === 'done — a.txt says hello.', r.text);
     const roles = r.workMessages?.map((m) => m.role) ?? [];
     ok('transcript has assistant tool_calls and tool results',
@@ -90,13 +87,13 @@ async function main() {
   {
     const wire: ChatMessage[] = [
       { role: 'user', content: 'read the file' },
-      { role: 'assistant', content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'readFile', arguments: '{"path":"a.txt"}' } }] },
+      { role: 'assistant', content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_files', arguments: '{"files":[{"path":"a.txt"}]}' } }] },
       { role: 'tool', content: 'hello', tool_call_id: 'call_1' },
       { role: 'assistant', content: 'it says hello' },
     ];
     const back = agentToChatMessages(chatToAgentMessages(wire, { n: 0 }));
     ok('4 messages survive the round-trip', back.length === wire.length, `${back.length}`);
-    ok('tool call preserved', JSON.stringify(back[1]?.tool_calls?.[0]?.function) === JSON.stringify({ name: 'readFile', arguments: '{"path":"a.txt"}' }));
+    ok('tool call preserved', JSON.stringify(back[1]?.tool_calls?.[0]?.function) === JSON.stringify({ name: 'read_files', arguments: '{"files":[{"path":"a.txt"}]}' }));
     ok('tool result preserved', back[2]?.role === 'tool' && (back[2] as { content?: string }).content === 'hello'
       && (back[2] as { tool_call_id?: string }).tool_call_id === 'call_1');
   }
@@ -105,12 +102,12 @@ async function main() {
   {
     const asks: string[] = [];
     const r = await turn(createMockModel([
-      { toolCalls: [{ toolName: 'runCommand', input: { command: 'rm -rf /' } }] },
+      { toolCalls: [{ toolName: 'run_commands', input: { commands: ['rm -rf /'] } }] },
       { text: 'the command was denied.' },
     ], 'denied-tool'), {
       onPermissionAsk: async (info) => { asks.push(`${info.toolName}:${info.command ?? ''}`); return 'reject'; },
     });
-    ok('the host was asked for permission', asks.length === 1 && asks[0].startsWith('runCommand'), asks.join('|'));
+    ok('the host was asked for permission', asks.length === 1 && asks[0].startsWith('run_commands'), asks.join('|'));
     ok('the turn completed with the follow-up answer', r.text === 'the command was denied.', r.text);
     ok('a tool ERROR result reached the transcript',
       r.workMessages?.some((m) => m.role === 'tool'), (r.workMessages?.map((m) => m.role) ?? []).join(','));
@@ -127,39 +124,13 @@ async function main() {
     ok('the aborted turn returned (no throw)', !!r && r.text === '', `text=${r.text}`);
   }
 
-  console.log('\n— plan mode: an accepted exitPlanMode completes the run (completionPolicy) —');
+  console.log('\n— plan mode: a prose answer completes the run (no completion tool) —');
   {
     const r = await turn(createMockModel([
-      { toolCalls: [{ toolName: 'exitPlanMode', input: { outcome: 'plan', title: 'T', interpretation: 'The user wants the file echoed.', steps: [{ what: 'Echo a.txt', files: ['a.txt'], evidence: 'a.txt:1 has hello' }] } }] },
-    ], 'plan-accept'), {
-      mode: 'plan',
-    });
-    ok('an accepted plan ends the run natively', !!r.plan && r.plan.steps?.length === 1 && !r.failed, `plan=${!!r.plan} failed=${r.failed}`);
-    ok('the tool meta-string does not ship as the answer', r.text === '', r.text);
-  }
-
-  console.log('\n— plan mode: a REJECTED plan (error output) does NOT complete the run —');
-  {
-    const r = await turn(createMockModel([
-      { toolCalls: [{ toolName: 'exitPlanMode', input: { outcome: 'plan', title: 'T', interpretation: 'wants it', steps: [{ what: 'x — missing files/evidence' }] } }] },
-      { toolCalls: [{ toolName: 'exitPlanMode', input: { outcome: 'plan', title: 'T', interpretation: 'The user wants the file echoed.', steps: [{ what: 'Echo a.txt', files: ['a.txt'], evidence: 'a.txt:1' }] } }] },
-    ], 'plan-reject'), {
-      mode: 'plan',
-    });
-    ok('the rejected call did not end the run (a second request happened)', modelCallsOf('plan-reject') === 2, `${modelCallsOf('plan-reject')}`);
-    ok('the rejection error reached the next request', lastRequestJson('plan-reject').includes('Every step needs'), '');
-    ok('the revised plan completed the run', !!r.plan && !r.failed, `plan=${!!r.plan} failed=${r.failed}`);
-  }
-
-  console.log('\n— plan mode: a prose-only finish gets the completion reminder and continues —');
-  {
-    const r = await turn(createMockModel([
-      { text: 'I found the answer — the file says hello. The fix is obvious; let me set it up now.' },
-      { toolCalls: [{ toolName: 'exitPlanMode', input: { outcome: 'plan', title: 'T', interpretation: 'The user wants the file echoed.', steps: [{ what: 'Echo a.txt', files: ['a.txt'], evidence: 'a.txt:1' }] } }] },
-    ], 'plan-gap'), { mode: 'plan' });
-    ok('the run continued past the prose-only finish (two requests)', modelCallsOf('plan-gap') === 2, `${modelCallsOf('plan-gap')}`);
-    ok('the second request carries the completion reminder', lastRequestJson('plan-gap').includes('[SYSTEM]'), '');
-    ok('the run completed on the exitPlanMode call', !!r.plan && !r.failed, `plan=${!!r.plan} failed=${r.failed}`);
+      { text: '1. Echo a.txt. Switch to Agent mode to apply it.' },
+    ], 'plan-prose'), { mode: 'plan' });
+    ok('one request, no completion reminder', modelCallsOf('plan-prose') === 1, `${modelCallsOf('plan-prose')}`);
+    ok('the plan ships as the answer', r.text.startsWith('1. Echo a.txt') && !r.failed, r.text);
   }
 
   console.log('\n— steering: a mid-run push lands before the next model request, once —');
@@ -204,7 +175,7 @@ async function main() {
     const big = 'x'.repeat(40_000);
     const history: ChatMessage[] = [
       { role: 'user', content: 'summarize the file after reading' },
-      { role: 'assistant', content: '', tool_calls: [{ id: 'call_big', type: 'function', function: { name: 'readFile', arguments: '{"path":"big.txt"}' } }] },
+      { role: 'assistant', content: '', tool_calls: [{ id: 'call_big', type: 'function', function: { name: 'read_files', arguments: '{"files":[{"path":"big.txt"}]}' } }] },
       { role: 'tool', content: big, tool_call_id: 'call_big' },
       { role: 'assistant', content: 'I read the big file.' },
       { role: 'user', content: 'now summarize it in one line' },
@@ -232,7 +203,7 @@ async function main() {
     ], 'overflow-terminal'), {
       messages: [
         { role: 'user', content: 'summarize' },
-        { role: 'assistant', content: '', tool_calls: [{ id: 'call_big', type: 'function', function: { name: 'readFile', arguments: '{"path":"big.txt"}' } }] },
+        { role: 'assistant', content: '', tool_calls: [{ id: 'call_big', type: 'function', function: { name: 'read_files', arguments: '{"files":[{"path":"big.txt"}]}' } }] },
         { role: 'tool', content: big, tool_call_id: 'call_big' },
         { role: 'assistant', content: 'read done.' },
         { role: 'user', content: 'summarize again' },
@@ -246,13 +217,13 @@ async function main() {
   {
     const r = await turn(createMockModel([
       { toolCalls: [
-        { toolName: 'readFile', input: { path: 'a.txt' } },
-        { toolCallId: 'call_x', toolName: 'readFile', input: { path: 'a.txt' } },
+        { toolName: 'read_files', input: { files: [{ path: path.join(root, 'a.txt') }] } },
+        { toolCallId: 'call_x', toolName: 'read_files', input: { files: [{ path: path.join(root, 'a.txt') }] } },
       ] },
       { text: 'both reads finished.' },
     ], 'parallel'), {});
     const toolResults = (r.workMessages ?? []).filter((m) => m.role === 'tool');
-    ok('both adjacent readFile calls executed and returned',
+    ok('both adjacent read_files calls executed and returned',
       toolResults.length === 2 && toolResults.every((m) => String(m.content).includes('hello')),
       `${toolResults.length} results`);
     ok('the run completed after the batch', r.text === 'both reads finished.', r.text);
@@ -261,12 +232,12 @@ async function main() {
   console.log('\n— the deny REASON reaches the model, not just "user denied" —');
   {
     const r = await turn(createMockModel([
-      { toolCalls: [{ toolName: 'runCommand', input: { command: 'sudo rm -rf /' } }] },
+      { toolCalls: [{ toolName: 'run_commands', input: { commands: ['sudo rm -rf /'] } }] },
       { text: 'understood — staying read-only.' },
     ], 'deny-reason'), {
       onPermissionAsk: async () => 'reject',
     });
-    ok('the plan-mode deny reason text reached the next request',
+    ok('the deny reason text reached the next request',
       lastRequestJson('deny-reason').includes('denied') || lastRequestJson('deny-reason').includes('permission'),
       '');
     ok('the turn completed after the denial', r.text === 'understood — staying read-only.', r.text);

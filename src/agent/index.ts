@@ -1,6 +1,5 @@
-// Public agent surface — the Cline runtime engine: TierMux policy/orchestration over the
-// AgentRuntime loop (see src/agent/core/cline/clineEngine.ts). Two entry points, one per mode,
-// plus task classification and the model selection boundary.
+// Public agent surface. The agent is Cline (src/agent/core/cline/clineEngine.ts); TierMux adds
+// the model selection boundary and task classification for routing.
 
 export {
   runAgentStream,
@@ -23,5 +22,3 @@ export {
   attachmentKindsFromContent,
 } from './routing';
 export type { TaskKind, ClassifySignals } from './routing';
-
-export { buildV3ToolSet, READ_ONLY_TOOLS } from './core/tools/v3';

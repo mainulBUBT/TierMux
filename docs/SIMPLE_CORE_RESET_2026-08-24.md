@@ -1,5 +1,9 @@
 # The Simple Core Reset (2026-08-24)
 
+> **Superseded 2026-09-23.** The agent is now Cline's SDK and the TierMux-built harness this
+> document describes was removed — see [CLINE_AGENT.md](CLINE_AGENT.md). Kept as a record of
+> the reasoning; nothing below describes current code.
+
 > **2026-09-23, cline-agent branch:** the loop this document guards is now
 > `src/agent/core/cline/clineEngine.ts` (Cline's `AgentRuntime` wiring). `engine.ts` — the
 > AI SDK loop the reset produced — is deleted. Every `engine.ts` reference below means the

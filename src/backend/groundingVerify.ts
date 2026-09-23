@@ -67,12 +67,10 @@ async function runOne(
     onModel: () => {},
     onFailover: () => {},
     onStep: () => {},
-    onTodos: () => {},
     onAskUser: async () => ({ status: 'cancelled' as const, answers: [] }),
     onError: (e) => { errors.push(typeof e === 'string' ? e : (e as any)?.message ?? JSON.stringify(e)); },
   };
 
-  // The v3 engine ignores this argument — selection lives in router/picker.ts.
   const result = await runPlanStream(opts, {});
   const text = result.text || '';
 
@@ -92,7 +90,7 @@ async function runOne(
   checks.push({ label: 'tool calls within budget', pass: toolCalls <= TOOL_BUDGET, detail: `${toolCalls} calls` });
   checks.push({ label: 'no hallucinated paths', pass: missingPaths.length === 0, detail: missingPaths.length ? `missing: ${missingPaths.slice(0, 3).join(', ')}` : 'all exist' });
   checks.push({ label: 'cites file paths', pass: citedPaths.length > 0, detail: `${citedPaths.length} path(s)` });
-  checks.push({ label: 'used search tool', pass: toolNames.some((n) => ['glob', 'grep', 'list'].includes(n)), detail: toolNames.join(', ') || 'none' });
+  checks.push({ label: 'used search tool', pass: toolNames.some((n) => ['search_codebase', 'run_commands'].includes(n)), detail: toolNames.join(', ') || 'none' });
 
   if (type === 'broad') {
     const lower = text.toLowerCase();

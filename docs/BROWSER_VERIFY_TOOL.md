@@ -1,5 +1,9 @@
 # Browser verification tool — design notes (WIP)
 
+> **Superseded 2026-09-23.** The agent is now Cline's SDK and the TierMux-built harness this
+> document describes was removed — see [CLINE_AGENT.md](CLINE_AGENT.md). Kept as a record of
+> the reasoning; nothing below describes current code.
+
 Status: research/design only, not implemented. Captures the reasoning from the
 2026-08-12 design discussion so it can be picked up later without re-deriving it.
 

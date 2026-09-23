@@ -61,10 +61,10 @@ Everything else lives behind the **⚙ gear** — six tabs, all optional:
 | | |
 |---|---|
 | **It keeps going** | A 429, a dead key, a 5xx, a removed model or an *empty* reply all fail over to the next provider silently. Failing models are cooled down; ones that 404 or reject tools are quarantined. Several keys per provider, rotated. |
-| **It finishes** | A turn that hits its step cap or gets stuck stops *visibly* and offers **Continue** with full memory — nothing is redone. After it edits files, your own test/typecheck/build command runs and failures go back to the agent for bounded fix rounds. |
-| **Three modes** | **Ask** answers from evidence (reads, greps, `git log`) and never edits. **Plan** investigates and hands you a plan to approve, edit or discuss. **Agent** edits and runs commands behind approvals. |
-| **Tools that work on weak models** | ripgrep `grep` (files-only, context, case-insensitive), paged `readFile`, `editFile` with exact failure diagnostics, a shell that Stop really kills, keyless `webSearch`/`fetchUrl`, `askUser`, and every tool from your **MCP servers**. Old tool output is aged out of the prompt so long turns stay fast. |
-| **You stay in control** | Command approval: ask, safe allowlist, or shell off. Diff approval for writes. Paths can't escape the workspace. Checkpoints with real undo. A **Why this model?** popover on every reply. |
+| **It finishes** | A turn that hits its step cap or gets stuck stops *visibly* and offers **Continue** with full memory — nothing is redone. |
+| **Two modes** | **Plan** investigates and answers with a plan, never editing. **Agent** edits and runs commands behind approvals. |
+| **The agent is Cline** | The coding agent is [Cline](https://github.com/cline/cline)'s SDK — its loop, tools, prompt, rules and skills — running on TierMux's free-tier router, plus every tool from your **MCP servers**. Older conversation is compacted to each model's window so long turns stay fast. |
+| **You stay in control** | Command approval: ask, safe allowlist, or shell off. Diff approval for writes. Checkpoints with real undo. A **Why this model?** popover on every reply. |
 | **Bring your own** | Any OpenAI-compatible endpoint — vLLM, LiteLLM, LM Studio, Ollama, llama.cpp, Azure. Local servers are probed for their real context window. |
 
 ## How a turn is routed

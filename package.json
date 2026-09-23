@@ -237,7 +237,7 @@
       },
       {
         "command": "tiermux.editMemory",
-        "title": "Edit Style & Tone Memory",
+        "title": "Edit Agent Rules (AGENTS.md)",
         "category": "TierMux",
         "icon": "$(notebook)"
       },
@@ -385,41 +385,14 @@
           "default": true,
           "description": "Ask before the agent writes, creates or deletes a file (and before inline chat applies an edit). Off: file changes run without a prompt; shell commands still follow \"Command approval mode\"."
         },
-        "tiermux.agent.verifyCommand": {
-          "type": "string",
-          "default": "auto",
-          "description": "Command run automatically after a turn edits files, to verify the project still works (a non-zero exit triggers bounded fix-and-recheck rounds). 'auto' detects it from the project (package.json test/typecheck/lint/build script, Makefile check/test, cargo test, go test, pytest, composer test); the planner's 'Verify:' line overrides per task; any other value is used verbatim; 'off' disables."
-        },
-        "tiermux.agent.learnFromCorrections": {
-          "type": "string",
-          "enum": [
-            "ask",
-            "always",
-            "off"
-          ],
-          "default": "ask",
-          "description": "When a compaction records what you corrected or rejected, carry those notes into .tiermux/memory.md so later sessions start knowing them. 'ask' confirms first and shows what would be written, 'always' writes silently, 'off' never writes. Costs no extra model call either way — the summary already produced the notes."
-        },
         "tiermux.agent.toolCompaction": {
           "type": "string",
           "enum": [
-            "off",
-            "light",
-            "aggressive"
+            "auto",
+            "off"
           ],
-          "default": "light",
-          "description": "Compact bulky tool results before they enter the model's context. On every step, tool outputs from EARLIER steps are replaced by a one-line stub naming the tool and its arguments, so the model can re-run it if it truly needs the content again; 'light' stubs outputs over ~2,000 characters, 'aggressive' over ~800. The most recent step's results, short outputs, and error payloads always stay verbatim. File reads ARE included — they are the largest outputs and the reason this exists. 'off' keeps every result verbatim."
-        },
-        "tiermux.agent.autoCondense": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically compact the conversation (summarize older turns) when its history approaches ~80% of the routed model's context window, before a turn starts — so the model begins with headroom instead of losing tool evidence to mid-turn pruning. The manual Compact command still works regardless."
-        },
-        "tiermux.agent.autoCondenseTokenCap": {
-          "type": "number",
-          "default": 32000,
-          "minimum": 0,
-          "description": "Absolute token ceiling for auto-compact targeting, even when the routed model advertises a larger context window. 0 disables the cap (window-only sizing)."
+          "default": "auto",
+          "description": "Cline's context compaction. 'auto' compacts older conversation before a request would overflow the routed model's context window (deterministic, no extra model call). 'off' compacts only when a provider actually rejects a request as too long."
         },
         "tiermux.agent.diagTrace": {
           "type": "boolean",
@@ -439,12 +412,12 @@
             "Disable terminal command execution entirely."
           ],
           "default": "always",
-          "description": "How the agent's runCommand tool is gated before running shell commands."
+          "description": "How the agent's run_commands tool is gated before running shell commands."
         },
         "tiermux.agent.commandTimeoutMs": {
           "type": "number",
           "default": 120000,
-          "description": "Maximum time (ms) a single agent command may run before it is killed."
+          "description": "Maximum time (ms) one run_commands call may run before it is killed."
         },
         "tiermux.agent.commandAllowlist": {
           "type": "array",
@@ -453,11 +426,6 @@
           },
           "default": [],
           "description": "Extra command prefixes auto-runnable in 'allowlist' mode (e.g. \"php artisan migrate\"), in addition to the built-in safe defaults."
-        },
-        "tiermux.agent.autoCompactThreshold": {
-          "type": "number",
-          "default": 0.8,
-          "description": "Fraction of the routed model's context window at which the conversation is automatically compacted (older turns summarized, recent ones kept verbatim). Checked before a send and after a turn settles. tiermux.agent.autoCondenseTokenCap can lower the trigger further; tiermux.agent.autoCondense turns the whole thing off."
         },
         "tiermux.context.includeOpenEditors": {
           "type": "boolean",
@@ -475,16 +443,6 @@
           "type": "string",
           "default": "auto",
           "description": "Model used for short utility tasks (chat titles, commit messages). 'auto' prefers a strong keyless model so it works without an API key; or pick a specific model in Settings → Others."
-        },
-        "tiermux.plan.saveToFile": {
-          "type": "boolean",
-          "default": true,
-          "description": "Save actionable plans proposed in Plan mode as markdown checklist files you can read and edit. The plan and its live task checklist are also shown in chat."
-        },
-        "tiermux.plan.folder": {
-          "type": "string",
-          "default": ".tiermux/plans",
-          "description": "Workspace-relative folder where plan files are written (one markdown file per plan)."
         },
         "tiermux.completions.enabled": {
           "type": "boolean",
@@ -586,44 +544,22 @@
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
     "typecheck:lib": "tsc -p tsconfig.lib.json",
-    "test:e2e:abort-stops-shell": "esbuild scripts/abortStopsShell.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/abortStopsShell.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/abortStopsShell.e2e.cjs",
     "test:e2e:foundation": "esbuild scripts/foundation.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/foundation.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/foundation.e2e.cjs",
-    "test:e2e:delegate-task": "esbuild scripts/delegateTask.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/delegateTask.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/delegateTask.e2e.cjs",
-    "test:e2e:ask-user": "esbuild scripts/askUser.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/askUser.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/askUser.e2e.cjs",
-    "test:e2e:exit-plan-mode": "esbuild scripts/exitPlanMode.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/exitPlanMode.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/exitPlanMode.e2e.cjs",
     "test:e2e:think-split": "esbuild scripts/thinkSplit.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/thinkSplit.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/thinkSplit.e2e.cjs",
     "test:e2e:opencode-lane": "esbuild scripts/opencodeLane.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/opencodeLane.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/opencodeLane.e2e.cjs",
-    "test:e2e:verify-detect": "esbuild scripts/verifyDetect.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/verifyDetect.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/verifyDetect.e2e.cjs",
     "test:e2e:checkpoint-persist": "esbuild scripts/checkpointPersist.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/checkpointPersist.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/checkpointPersist.e2e.cjs",
-    "test:e2e:plan-structurer": "esbuild scripts/planStructurer.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planStructurer.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planStructurer.e2e.cjs",
     "test:e2e:command-classify": "esbuild scripts/commandClassify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/commandClassify.e2e.cjs && node dist/commandClassify.e2e.cjs",
     "test:e2e:local-servers": "esbuild scripts/localServers.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/localServers.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/localServers.e2e.cjs",
     "test:e2e:fit-messages": "esbuild scripts/fitMessages.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/fitMessages.e2e.cjs && node dist/fitMessages.e2e.cjs",
-    "test:e2e:condense-split": "esbuild scripts/condenseSplit.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/condenseSplit.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/condenseSplit.e2e.cjs",
     "test:e2e:rate-limit-zero": "esbuild scripts/rateLimitZero.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rateLimitZero.e2e.cjs && node dist/rateLimitZero.e2e.cjs",
     "test:e2e:quota-persist": "esbuild scripts/quotaPersist.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/quotaPersist.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/quotaPersist.e2e.cjs",
-    "test:e2e:edit-match": "esbuild scripts/editMatch.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/editMatch.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/editMatch.e2e.cjs",
-    "test:e2e:resolve-path": "esbuild scripts/resolvePath.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/resolvePath.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/resolvePath.e2e.cjs",
     "test:e2e:close-loop": "esbuild scripts/closeLoop.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/closeLoop.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/closeLoop.e2e.cjs",
     "test:e2e:length-continue": "esbuild scripts/lengthContinue.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/lengthContinue.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/lengthContinue.e2e.cjs",
     "test:e2e:session-store": "esbuild scripts/sessionStore.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/sessionStore.e2e.cjs && node dist/sessionStore.e2e.cjs",
-    "test:e2e:grep-options": "esbuild scripts/grepOptions.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/grepOptions.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/grepOptions.e2e.cjs",
-    "test:e2e:read-paging": "esbuild scripts/readPaging.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/readPaging.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/readPaging.e2e.cjs",
     "test:e2e:inline-tool-dialect": "esbuild scripts/inlineToolDialect.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/inlineToolDialect.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/inlineToolDialect.e2e.cjs",
-    "preview:plan": "node scripts/buildPlanPreview.mjs",
-    "test:e2e:tool-offer": "esbuild scripts/toolOffer.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/toolOffer.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/toolOffer.e2e.cjs",
-    "test:e2e:plan-paths": "esbuild scripts/planPaths.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/planPaths.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planPaths.e2e.cjs",
-    "test:e2e:code-intel": "esbuild scripts/codeIntel.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/codeIntel.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/codeIntel.e2e.cjs",
-    "test:e2e:session-files": "esbuild scripts/sessionFiles.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/sessionFiles.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/sessionFiles.e2e.cjs",
     "test:e2e:read-loop": "esbuild scripts/readLoop.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/readLoop.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/readLoop.e2e.cjs",
-    "test:e2e:plan-decisions": "esbuild scripts/planDecisions.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/planDecisions.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planDecisions.e2e.cjs",
-    "test:e2e:plan-resume": "esbuild scripts/planResume.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planResume.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planResume.e2e.cjs",
-    "test:e2e:compact-keep": "esbuild scripts/compactKeep.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/compactKeep.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/compactKeep.e2e.cjs",
-    "test:e2e:compact-budget": "esbuild scripts/compactBudget.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/compactBudget.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/compactBudget.e2e.cjs",
-    "test:e2e:tool-output-aging": "esbuild scripts/toolOutputAging.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/toolOutputAging.e2e.cjs && node dist/toolOutputAging.e2e.cjs",
     "test:e2e:cline-engine": "esbuild scripts/clineEngine.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/clineEngine.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/clineEngine.e2e.cjs",
     "test:e2e:routing-gates": "esbuild scripts/routingGates.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/routingGates.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/routingGates.e2e.cjs",
-    "test:e2e:write-stale": "esbuild scripts/writeStale.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/writeStale.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/writeStale.e2e.cjs",
     "test:e2e:edit-gate": "esbuild scripts/editGate.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/editGate.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/editGate.e2e.cjs",
     "package": "vsce package",
     "package:all": "bash scripts/package-targets.sh",
@@ -641,8 +577,6 @@
     "publish:dry": "node scripts/publish-targets.mjs --dry-run",
     "test:e2e:skill-catalog": "esbuild scripts/skillCatalog.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/skillCatalog.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/skillCatalog.e2e.cjs",
     "test:e2e:mcp-wire": "esbuild scripts/mcpWire.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/mcpWire.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/mcpWire.e2e.cjs",
-    "test:e2e:agent-registry": "esbuild scripts/agentRegistry.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/agentRegistry.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/agentRegistry.e2e.cjs",
-    "test:e2e:memory-learned": "esbuild scripts/memoryLearned.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/memoryLearned.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/memoryLearned.e2e.cjs",
     "test:e2e:router-sticky": "esbuild scripts/routerSticky.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/routerSticky.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/routerSticky.e2e.cjs",
     "test:e2e:rationale-served": "esbuild scripts/rationaleServed.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rationaleServed.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/rationaleServed.e2e.cjs",
     "test:e2e:rationale-wiring": "esbuild scripts/rationaleWiring.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rationaleWiring.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/rationaleWiring.e2e.cjs"
@@ -663,17 +597,15 @@
   },
   "dependencies": {
     "@ai-sdk/provider": "^4.0.17",
-    "@cline/agents": "^0.0.85",
-    "@cline/shared": "^0.0.85",
+    "@cline/agents": "0.0.85",
+    "@cline/core": "0.0.85",
+    "@cline/llms": "0.0.85",
+    "@cline/shared": "0.0.85",
     "@vscode/ripgrep": "^1.18.0",
-    "ai": "7.0.109",
     "diff2html": "^3.4.56",
-    "jsdom": "^29.0.2",
     "mammoth": "^1.12.0",
-    "minimatch": "^3.1.5",
     "pdf-parse": "^2.4.5",
-    "shell-quote": "^1.10.0",
-    "zod": "^4.4.3"
+    "shell-quote": "^1.10.0"
   },
   "overrides": {
     "ai": "7.0.109"

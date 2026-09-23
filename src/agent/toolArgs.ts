@@ -176,20 +176,19 @@ interface RescuedCall {
 }
 
 /** Imagined tool names weak models use in text dialects (`<invoke name="read">`), mapped to
- *  registry names. Without this a rescued call with an unknown name was dropped outright. */
+ *  Cline's tool names. Keys are normalized the way resolveDialectToolName normalizes (lowercase,
+ *  no `_`/`-`/space). Without this a rescued call with an unknown name was dropped outright. */
 const DIALECT_NAME_ALIASES: Record<string, string> = {
-  read: 'readFile', open: 'readFile', view: 'readFile',
-  write: 'writeFile', create: 'createFile', create_file: 'createFile', new_file: 'createFile',
-  edit: 'editFile', replace: 'editFile', modify: 'editFile', str_replace: 'editFile',
-  delete: 'deleteFile', remove: 'deleteFile',
-  search: 'grep', find: 'grep', grep_search: 'grep',
-  list: 'listDir', ls: 'listDir', list_files: 'listDir', glob_search: 'glob',
-  bash: 'runCommand', shell: 'runCommand', exec: 'runCommand', execute: 'runCommand', terminal: 'runCommand',
-  todo: 'todoWrite', update_plan: 'todoWrite', set_todos: 'todoWrite',
+  read: 'read_files', readfile: 'read_files', open: 'read_files', view: 'read_files',
+  write: 'editor', writefile: 'editor', create: 'editor', createfile: 'editor', newfile: 'editor',
+  edit: 'editor', editfile: 'editor', replace: 'editor', modify: 'editor', strreplace: 'editor',
+  search: 'search_codebase', find: 'search_codebase', grep: 'search_codebase', grepsearch: 'search_codebase', globsearch: 'search_codebase',
+  bash: 'run_commands', shell: 'run_commands', exec: 'run_commands', execute: 'run_commands',
+  terminal: 'run_commands', runcommand: 'run_commands', executecommand: 'run_commands',
 };
 
 /** Resolve a dialect-emitted tool name to a REGISTERED name: exact, then case/underscore-
- *  insensitive (`read_file` → `readFile`), then the alias table above. Never returns a tool
+ *  insensitive (`readFiles` → `read_files`), then the alias table above. Never returns a tool
  *  the caller didn't register, so a mode-withheld tool can't be smuggled in by an alias. */
 export function resolveDialectToolName(name: string, toolNames: Set<string>, allowAliases = true): string | undefined {
   if (!name) return undefined;
@@ -200,7 +199,7 @@ export function resolveDialectToolName(name: string, toolNames: Set<string>, all
   }
   // `allowAliases: false` is for the shapes that infer the tool name from a BARE tag word
   // (`<search>`, `<link>`) rather than from unambiguous call syntax (`name="…"` / `=NAME`).
-  // Those are real HTML elements, and aliasing them to grep/readFile would turn a page of
+  // Those are real HTML elements, and aliasing them to search/read tools would turn a page of
   // markup quoted in a chat answer into tool calls.
   if (!allowAliases) return undefined;
   const alias = DIALECT_NAME_ALIASES[key];
@@ -268,24 +267,43 @@ function argsFromDialectBody(body: string): Record<string, unknown> {
   return args;
 }
 
-/** Common parameter-name aliases for the tools a dialect tends to imagine: `file`/`filename`
- *  for readFile's `path`, `query`/`keyword` for grep's `pattern`, `cmd`/`command_to_run` for
- *  runCommand's `command`. Applied ONLY when the real parameter is absent — never overrides an
- *  argument the model got right. Cheap structural fixups: no schema, no coercion. */
+/** Common parameter-name aliases for the tools a dialect tends to imagine (`file` for `path`,
+ *  `old_string` for editor's `old_text`), then the single value a dialect sends where a Cline
+ *  tool takes a list (`{path}` → `files: [{path}]`, `{command}` → `commands: [command]`).
+ *  Applied ONLY when the real parameter is absent — never overrides an argument the model got
+ *  right. Cheap structural fixups: no schema, no coercion. */
+const PATH_ALIASES = { file: 'path', filename: 'path', file_path: 'path', filepath: 'path' };
 const DIALECT_PARAM_ALIASES: Record<string, Record<string, string>> = {
-  readFile: { file: 'path', filename: 'path', file_path: 'path', filepath: 'path' },
-  writeFile: { file: 'path', filename: 'path', file_path: 'path', filepath: 'path', text: 'content', contents: 'content' },
-  createFile: { file: 'path', filename: 'path', file_path: 'path', filepath: 'path', text: 'content', contents: 'content' },
-  editFile: { file: 'path', filename: 'path', file_path: 'path', filepath: 'path', old_text: 'search', old_string: 'search', find: 'search', new_text: 'replace', new_string: 'replace', replacement: 'replace' },
-  deleteFile: { file: 'path', filename: 'path', file_path: 'path', filepath: 'path' },
-  grep: { query: 'pattern', keyword: 'pattern', search: 'pattern', regex: 'pattern' },
-  runCommand: { cmd: 'command', command_to_run: 'command', shell_command: 'command' },
+  read_files: PATH_ALIASES,
+  editor: {
+    ...PATH_ALIASES,
+    search: 'old_text', old_string: 'old_text', find: 'old_text',
+    replace: 'new_text', new_string: 'new_text', replacement: 'new_text', content: 'new_text', contents: 'new_text', text: 'new_text',
+  },
+  search_codebase: { query: 'pattern', keyword: 'pattern', search: 'pattern', regex: 'pattern' },
+  run_commands: { cmd: 'command', command_to_run: 'command', shell_command: 'command' },
+};
+const DIALECT_LIST_WRAP: Record<string, { from: string; to: string; item: (v: unknown, rest: Record<string, unknown>) => unknown; consumes?: string[] }> = {
+  read_files: {
+    from: 'path', to: 'files', consumes: ['offset', 'limit'],
+    item: (v, rest) => {
+      const start = Number(rest.offset);
+      const count = Number(rest.limit);
+      return {
+        path: v,
+        ...(start > 0 ? { start_line: start } : {}),
+        ...(start > 0 && count > 0 ? { end_line: start + count - 1 } : {}),
+      };
+    },
+  },
+  search_codebase: { from: 'pattern', to: 'queries', item: (v) => v },
+  run_commands: { from: 'command', to: 'commands', item: (v) => v },
 };
 
 /** Rename a rescued call's imagined parameter names to the real ones (in place, on the parsed
  *  object). Returns the canonical arguments JSON string. Best-effort: an unparseable argument
- *  payload passes through untouched — schema validation downstream (repairToolArguments /
- *  Zod) reports anything still wrong as a fail-soft tool error the model can correct. */
+ *  payload passes through untouched — schema validation downstream reports anything still
+ *  wrong as a fail-soft tool error the model can correct. */
 function normalizeDialectParams(name: string, argsJson: string): string {
   const aliases = DIALECT_PARAM_ALIASES[name];
   if (!aliases) return argsJson;
@@ -295,6 +313,13 @@ function normalizeDialectParams(name: string, argsJson: string): string {
   let changed = false;
   for (const [from, to] of Object.entries(aliases)) {
     if (from in parsed && !(to in parsed)) { parsed[to] = parsed[from]; delete parsed[from]; changed = true; }
+  }
+  const wrap = DIALECT_LIST_WRAP[name];
+  if (wrap && wrap.from in parsed && !(wrap.to in parsed)) {
+    parsed[wrap.to] = [wrap.item(parsed[wrap.from], parsed)];
+    delete parsed[wrap.from];
+    for (const k of wrap.consumes ?? []) delete parsed[k];
+    changed = true;
   }
   return changed ? JSON.stringify(parsed) : argsJson;
 }

@@ -7,13 +7,12 @@ Setup lives in [PROVIDERS.md](PROVIDERS.md); model selection in [ROUTING.md](ROU
 
 ## Modes
 
-Three modes, picked in the composer. **Ask** is the default.
+Two modes, picked in the composer — Cline's plan and act.
 
 | Mode | What happens |
 |---|---|
-| **Ask** | Q&A only — streams answers, strictly read-only tools, touches nothing. |
-| **Plan** | Reads and searches read-only. `runCommand` is offered but every call is gated by an ask. Mutating tools are absent *and* policy-denied. The model ends the turn by calling `exitPlanMode` with a structured plan; you approve or reject the card. |
-| **Agent** | Full tool set — diffs (you approve), terminal (you approve), checkpoints, revert. |
+| **Plan** | Reads and searches; no editor tool, and every shell command asks. The plan comes back as the answer — switch to Agent to carry it out. |
+| **Agent** | Cline's full toolset — edits (you approve, or turn confirmation off), terminal (read-only commands auto-run, the rest follow your approval setting), checkpoints, revert. |
 
 ### Auto is a *model* choice, not a mode
 
@@ -22,13 +21,8 @@ pick the model for me" — TierMux classifies the message and routes it (see
 [ROUTING.md](ROUTING.md)). Pin a specific model instead and that turn goes to exactly that
 model; only `Auto` triggers smart routing.
 
-The two are independent: Ask + Auto, Agent + a pinned model, and every other combination
+The two are independent: Plan + Auto, Agent + a pinned model, and every other combination
 are all valid. Mode decides *what the agent may do*; the model picker decides *who does it*.
-
-An approved plan executes as one agent turn with its steps enumerated in the prompt; the
-model works the list with its tools and progress survives a reload (there's a Resume
-button). Step-level pause/resume is not implemented — see
-[PLAN_MODE_TOOL_BOUNDARY_2026-08-31.md](PLAN_MODE_TOOL_BOUNDARY_2026-08-31.md).
 
 ---
 
@@ -37,22 +31,19 @@ button). Step-level pause/resume is not implemented — see
 - **Self-healing routing** — per-model cooldowns, key rotation, tool-incompatible (400 with
   tools) and deprecated (404) quarantine, honest errors naming exactly which providers failed
   and why.
-- **Agent tools** — `readFile` (line-boundary paginated), `editFile`, `writeFile`,
-  `deleteFile`, `listDir`, `glob`, `grep`, `runCommand`, `getDiagnostics`, `todoWrite`,
-  `askUser`, `delegateTask`, `webSearch`, `fetchUrl`, plus `exitPlanMode` in plan mode.
-  `webSearch`/`fetchUrl` run on TierMux's own keyless engine (Yahoo + DuckDuckGo +
-  Marginalia, with a static-fetch reader) and are offered in **every** mode, so a plain
-  factual question is answered instead of deflected.
+- **The agent is Cline** — Cline's SDK runs the loop and its tools: `read_files`,
+  `search_codebase`, `run_commands`, `fetch_web_content`, `editor`, `skills`, `ask_question`.
+  TierMux serves every model request from its router. See [CLINE_AGENT.md](CLINE_AGENT.md).
 - **Safety rails** — the tool-approval policy (ask / safe allowlist / shell off; write
-  confirmation), every path argument confined to the workspace, a 60 s per-candidate connect
-  timeout with failover.
+  confirmation) and a 60 s per-candidate connect timeout with failover. Cline's tools take
+  absolute paths; reads are auto-approved, edits and non-read-only commands go through the
+  policy.
 - **Checkpoints** — the before-content of every write is captured *before* the mutation, so
   Undo genuinely restores.
-- **Codebase-aware** — ripgrep-backed `grep`/`glob` (files-only, context and case options),
-  ambient open-editor context, project rules and memory in `.tiermux/`.
-- **Skills** — Markdown skills from `.tiermux/skills/` and the cross-tool
-  `.agents/skills/<name>/SKILL.md` convention, invoked by `/name`. Install more with
-  `TierMux: Add Skill from GitHub`.
+- **Rules and skills** — Cline reads `AGENTS.md` and `.clinerules/` as rules and offers skills
+  from `.cline/skills/` and `.agents/skills/` to the model. TierMux's `/name` slash skills
+  (`.tiermux/skills/`, `.agents/skills/`) insert a skill's prompt yourself; install more with
+  `TierMux: Add Skill from GitHub`. Ambient open-editor context is attached each turn.
 - **MCP servers** — configure in `tiermux.mcpServers`, browse a registry, reconnect on demand.
 - **Editor-wide** — inline chat (`Cmd/Ctrl+I`), selection explain/fix/refactor/tests/docs,
   commit-message generation, inline completions, searchable history, handoff notes.
@@ -74,17 +65,12 @@ key where a provider allows it. Every key is a separate quota; failover and rota
 five-part task drops parts; given one part it finishes. Name the files (`@src/foo.ts`) when
 you know them — that is one fewer search for the model.
 
-**Plan first for anything that touches several files.** Plan mode reads before it proposes,
-asks when the request is ambiguous, and hands you a card to edit before anything runs. Execute
-from the card and the agent starts with the plan in front of it.
+**Plan first for anything that touches several files.** Plan mode reads before it proposes and
+asks when the request is ambiguous. When the plan looks right, switch to Agent and tell it to go.
 
-**Let the verify gate work.** With `agent.verifyCommand: auto` the project's own test /
-typecheck / build runs after every turn that edits files, and a failure goes back to the agent
-for `agent.verifyFixRounds` fixes. Set a specific command if auto-detection picks the wrong one.
-
-**Keep the prompt small.** `agent.toolCompaction: light` (default) stubs old tool output between
-steps; `agent.autoCondenseTokenCap` (default 32 000) summarizes older turns so every request
-stays bounded on gateways that don't cache prompts. Start a new chat when the topic changes.
+**Keep the prompt small.** Cline compacts older conversation before a request would overflow
+the routed model's window (`agent.toolCompaction: auto`); `/compact` does it now. Start a new
+chat when the topic changes.
 
 **Use Continue, not "continue".** A turn that stops at the step cap or gets stuck offers a
 Continue button with the full transcript in memory. Typing "continue" starts a new turn that

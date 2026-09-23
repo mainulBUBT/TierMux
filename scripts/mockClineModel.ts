@@ -1,12 +1,10 @@
-// Scripted Cline AgentModel for the cline-agent branch's e2e suites. Plays the SAME script
-// shape as mockModel.ts (MockResponse: text / toolCalls / error / hang) but emits Cline
-// AgentModelEvents, so engine scenarios port with their step lists intact. Differences from
-// the AI SDK mock are the loop's: there is no finish 'length' ladder here — Cline's runtime
-// owns output-limit recovery — and `hang` resolves on the abort signal.
+// Scripted Cline AgentModel for the e2e suites: a list of MockResponse steps (text / toolCalls /
+// error / hang) played back as Cline AgentModelEvents. Cline's runtime owns output-limit
+// recovery, so there is no 'length' ladder here, and `hang` resolves on the abort signal.
 
 import type { AgentModel, AgentModelEvent, AgentModelRequest } from '@cline/shared';
 
-/** One scripted model response. Same shape as mockModel's MockResponse. */
+/** One scripted model response. */
 export interface MockResponse {
   text?: string;
   reasoning?: string;

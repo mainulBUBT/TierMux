@@ -12,7 +12,7 @@ TierMux takes an SDK feature only when all three hold:
 1. **Stable** — no `experimental_*` prefix, no "may change" note in the changelog entry.
 2. **Engine work, not policy work** — it must be message/stream/loop mechanics (conversion,
    pruning, error shapes, finish reasons), not routing, provider selection, permissions, or
-   resilience. Those are TierMux's own layers (`Router`, `policies/permission.ts`, failover) and
+   resilience. Those are TierMux's own layers (`Router`, `permissions/policy.ts`, failover) and
    stay hand-written on purpose.
 3. **Replaces hand-written code** — it removes an existing workaround or mapping in `src/`, not
    adds a parallel path next to it.
@@ -22,40 +22,18 @@ major breaking releases roughly twice a year), and TierMux only stays cheap to u
 the SDK is held at a thin interface (`doGenerate`/`doStream` + `streamText` options). Every
 adopted API is future breakage surface; adopt only when it pays for that.
 
-## Adopted (verified against `src/` on 2026-08-30)
+## Adopted (verified against `src/` on 2026-09-23)
+
+Since 2026-09-23 the agent is Cline's SDK ([CLINE_AGENT.md](CLINE_AGENT.md)), so the AI SDK's
+loop, tools, approval and message APIs are no longer used anywhere, and the `ai` package was
+removed. What remains:
 
 | API | Where |
 |---|---|
-| `streamText` | agent loop, streaming (`core/engine.ts`) |
-| `generateText` | one-shot utility calls (`agent/planStructurer.ts`, `core/tools/workspaceRoot.ts`) |
-| `tool` + `ToolSet` | all tool definitions (`core/tools/`) |
-| `jsonSchema` | MCP tool bridging (`core/tools/mcp/mcp.ts`) |
-| `pruneMessages` | transcript compaction (`core/compact.ts`) |
-| `prepareStep` (`messages`) | compaction hook (`core/engine.ts`); the same hook gives the sub-agent's LAST step `toolChoice: 'none'` (`core/subagent.ts`) |
-| tool `execute` options `messages` | `writeFile` guard (`tools/v3/filesystemOps.ts`, `visibleRead.ts`) — the step's post-`prepareStep` transcript, i.e. what the model can actually see |
-| `repairToolCall` option | tool-call self-healing hook (`core/engine.ts`) |
-| `toolApproval` | permission gate (`core/engine.ts`) |
-| `stepCountIs`, `NoSuchToolError`, `InvalidToolInputError` | loop control, error handling |
-| `prepareStep` (`toolChoice`) | forcing a closing tool call on the plan-gap continuation (`core/engine.ts`) — note it only became REAL on 2026-09-01, when `core/routerProvider.ts` finally mapped it to the router's `tool_choice`; before that the adapter dropped it and the "wire-level guarantee" was prompt text |
-| `LanguageModelV4` spec types | the router-as-model adapter (`core/routerProvider.ts`) |
+| `LanguageModelV4` spec types (`@ai-sdk/provider`) | the router exposed as an AI SDK model for library consumers (`core/routerProvider.ts`, exported from `src/index.ts`) |
 
-### Listed as adopted before 2026-08-30, and NOT actually present
-
-The v3 rewrite retired `core/loop.ts` for `core/engine.ts` and this table was not re-checked,
-so it kept asserting three APIs the code no longer imported. That is worse than a stale doc:
-rule 3 below is evaluated AGAINST this table, so a hand-written replacement for a
-"already-adopted" API reads as compliant when it is really a regression. `pruneMessages` was
-the live case — `core/compact.ts` had grown a hand-rolled pass that stubbed every tool result
-in the older half of the transcript, while the SDK function it was supposed to be using
-appeared in zero files. It is restored above.
-
-| API | Doc claimed | Reality on 2026-08-30 | Status |
-|---|---|---|---|
-| `pruneMessages` | `core/loop.ts` | 0 files — hand-rolled stubbing in `core/compact.ts` | **restored** |
-| `wrapLanguageModel` | `core/middleware/telemetry.ts` | 0 files; that directory does not exist | still absent — a candidate, not adopted |
-| `Output` | structured output | never imported from `ai` | still absent — a candidate, not adopted |
-
-**When this table changes, re-verify it.** `grep -rn "from 'ai'" src/` is the whole check.
+**When this table changes, re-verify it.** `grep -rn "from 'ai'\|@ai-sdk" src/` is the whole
+check. The rest of this file is the policy for adopting anything further.
 
 ## Candidate list (checked 2026-08-24 against `ai@7.0.58` / `@ai-sdk/provider@4.0.3`)
 

@@ -1,5 +1,9 @@
 # AI SDK upgrade checklist
 
+> **Superseded 2026-09-23.** The agent loop no longer runs on the AI SDK — it is Cline's SDK
+> (see [CLINE_AGENT.md](CLINE_AGENT.md#upgrading-cline) for upgrading Cline). The only AI SDK
+> surface left is the `@ai-sdk/provider` spec behind `core/routerProvider.ts`. Kept as a record.
+
 TierMux's agent core (`src/agent/core/`) is built directly on the AI SDK (`ai`, `@ai-sdk/provider`)
 — see the "Architecture Principles" in the agent core's design: prefer extension over
 replacement, and remove a custom workaround the moment the SDK grows a native equivalent. This

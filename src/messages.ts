@@ -1,7 +1,7 @@
 // Wire protocol between the extension host and the chat webview.
-import type { AskQuestion, PlanDecision, CatalogModel, CustomEndpointType, CustomModel, FallbackEntry, KeyStatus, Mode, Platform, PlanRunState, ReasoningEffort, TodoItem } from './shared/types';
-import type { McpServerConfig } from './mcp/mcpClient';
-export type { McpServerConfig, McpLocalServerConfig, McpRemoteServerConfig, McpOAuthConfig } from './mcp/mcpClient';
+import type { AskQuestion, CatalogModel, CustomEndpointType, CustomModel, FallbackEntry, KeyStatus, Mode, Platform, ReasoningEffort } from './shared/types';
+import type { McpServerConfig } from './mcp/config';
+export type { McpServerConfig, McpLocalServerConfig, McpRemoteServerConfig, McpOAuthConfig } from './mcp/config';
 
 /** Anything a user attaches. 'file' / 'doc' / 'pdf' carry extracted `text` for any model;
  *  'image' / 'pdf' also carry a `dataUrl` for vision models. For PDFs on Gemini the dataUrl is
@@ -191,9 +191,6 @@ export interface MentionItem {
 export type InMessage =
   | { type: 'ready' }
   | { type: 'sendMessage'; requestId: string; text: string; mode: Mode; model: string; reasoningEffort: ReasoningEffort; attachments?: Attachment[]; attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'> }
-  | { type: 'approvePlan'; requestId: string; approved: boolean; steps: string }
-  | { type: 'executePlan'; requestId: string; steps: string }
-  | { type: 'deferPlan'; requestId: string; steps: string }
   | { type: 'renameSession'; title: string }
   | { type: 'renameSessionById'; sessionId: string; title: string }
   | { type: 'deleteSessionById'; sessionId: string }
@@ -201,7 +198,6 @@ export type InMessage =
   | { type: 'cancel'; requestId: string; sessionId?: string }
   | { type: 'editApprovalResponse'; id: string; approved: boolean; sessionId?: string }
   | { type: 'permissionAskResponse'; id: string; response: 'once' | 'always' | 'reject'; sessionId?: string }
-  | { type: 'openPlanFile'; uri: string }
   | { type: 'switchSession'; sessionId: string }
   | { type: 'requestConfig' }
   | { type: 'setFallbackConfig'; entries: FallbackEntry[] }
@@ -266,9 +262,7 @@ export type InMessage =
   /** Mark announcements seen (clears the unseen dot). `ids` marks just those items — sent
    *  when a tip card is actually expanded, so the dot survives merely opening the page.
    *  Omitting `ids` marks everything ("Mark all read"). */
-  | { type: 'markAnnouncementsSeen'; ids?: number[] }
-  /** Resume a paused plan run (see planProgress) from its persisted step state. */
-  | { type: 'resumePlan' };
+  | { type: 'markAnnouncementsSeen'; ids?: number[] };
 
 /** A single tool step shown inside a turn's "Worked for Ns" disclosure. Mirrors the live
  *  `toolStatus` event so a re-rendered (e.g. post-revert) message can rebuild its step list. */
@@ -359,8 +353,6 @@ export type OutMessage =
   | { type: 'switchSession'; sessionId: string; messages: TranscriptMessage[] }
   | { type: 'userEcho'; sessionId: string; requestId: string; text: string }
   | { type: 'assistantStart'; sessionId: string; requestId: string; platform: string; model: string }
-  | { type: 'planProposed'; sessionId: string; requestId: string; steps: string; decisions?: PlanDecision[]; discarded?: boolean; deferred?: boolean }
-  | { type: 'planDiscarded'; sessionId: string; requestId: string }
   | { type: 'editApproval'; sessionId: string; requestId: string; id: string; path: string; title: string; kind: 'write' | 'delete' }
   | { type: 'permissionAsk'; sessionId: string; requestId: string; id: string; title: string; pattern?: string | string[] }
   | { type: 'sessionTitle'; sessionId: string; title: string }
@@ -381,11 +373,6 @@ export type OutMessage =
   // card kinds (cmd-/edit-/perm- prefixes), so the webview can match it against whichever kind
   // is actually rendered without needing to know which.
   | { type: 'approvalDismissed'; sessionId: string; id: string }
-  | { type: 'todos'; sessionId: string; requestId: string; todos: TodoItem[]; followingPlan?: boolean }
-  /** AI Elements Plan component — the rich, sectioned progress card shown while an approved
-   *  plan executes (plan mode). Derived from the same `TodoItem[]` source as `todos`, so the
-   *  two stay in sync; the webview picks Plan vs legacy todo-list by current mode. */
-  | { type: 'planData'; sessionId: string; requestId: string; data: PlanDataPayload }
   | { type: 'failoverNotice'; sessionId: string; requestId: string; from: string; reason: string }
   | { type: 'selectionRationale'; sessionId: string; requestId: string; taskKind: string; picked?: string; entries: SelectionRationaleEntry[]; answered?: AnsweredModel[] }
   | { type: 'keyRotated'; sessionId: string; requestId: string; platform: string; platformName: string; keyIndex: number; keyTotal: number }
@@ -402,12 +389,9 @@ export type OutMessage =
   | { type: 'toggleHistory' }
   /** `icon` names a key in the webview's ICON set (media/src/icons.ts) — TierMux's own stroke-SVG
    *  style, never a raw emoji glyph in `text`. Omit for a plain notice with no leading icon. */
-  | { type: 'notice'; sessionId: string; text: string; icon?: 'check' | 'clipboard' | 'save' | 'compress' | 'trash' | 'revert'; action?: { kind: 'openPlanFile'; uri: string } }
-  /** Visual-only: an approved plan's execution window, keyed by requestId so an overlapping
-   *  or stale `executing:false` from a different run can never clear the wrong indicator. */
-  | { type: 'planExecuting'; sessionId: string; requestId: string; executing: boolean }
-  /** Host-driven mode switch (e.g. executing an approved plan flips the user's mode to Agent).
-   *  Unlike planExecuting (visual-only), this updates the user's actual mode selection. */
+  | { type: 'notice'; sessionId: string; text: string; icon?: 'check' | 'clipboard' | 'save' | 'compress' | 'trash' | 'revert' }
+  /** Host-driven mode switch (a Continue resuming in the mode that paused) — updates the
+   *  user's actual mode selection. */
   | { type: 'setMode'; sessionId: string; mode: Mode }
   | { type: 'error'; sessionId?: string; requestId?: string; message: string }
   | { type: 'busy'; sessionId: string; busy: boolean }
@@ -421,28 +405,11 @@ export type OutMessage =
    *  badges the individual cards that haven't been read yet. */
   | { type: 'announcements'; items: AnnouncementItem[]; lastUpdated?: string; unseen: number; unseenIds: number[] }
   /** Open the Tips page (from the "new announcement" toast's View button). */
-  | { type: 'openAnnouncements' }
-  /** Live state of a first-class plan execution (see core/planRunner.ts). Posted after every
-   *  step transition; `status: 'paused'` renders the Resume button in the webview. */
-  | { type: 'planProgress'; sessionId: string; requestId: string; state: PlanRunState };
+  | { type: 'openAnnouncements' };
 
 /** A single tip/announcement entry from the announcements worker. */
 export interface AnnouncementItem {
   id: number;
   title: string;
   details: string;
-}
-
-/** Payload for the AI Elements Plan component — mirrors `PlanData` in media/src/ui/components/Plan.ts. */
-export interface PlanDataPayload {
-  id: string;
-  title: string;
-  sections: Array<{
-    id: string;
-    title: string;
-    tasks: Array<{ id: string; title: string; completed: boolean; pending?: boolean; error?: boolean; running?: boolean }>;
-  }>;
-  createdAt: number;
-  completedTasks: number;
-  totalTasks: number;
 }

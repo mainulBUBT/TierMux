@@ -23,12 +23,7 @@ export type {
   FallbackEntry,
   ReasoningEffort,
   Mode,
-  TodoItem,
   KeyStatus,
-  PlanStep,
-  PlanStepStatus,
-  PlanRunStatus,
-  PlanRunState,
 } from './types';
 
 export type {

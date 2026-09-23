@@ -5,7 +5,7 @@
 // hop, no gateway registration.
 import type { AgentModel, AgentModelEvent, AgentToolDefinition, AgentMessage } from '@cline/shared';
 import type { ChatMessage, ChatToolCall, ChatToolDefinition, ReasoningEffort, TokenUsage } from '../../../shared/types';
-import { findCatalogModel, recordOutcome, recordRequest, rationaleForServed, type SelectionRationale } from '../../../router/picker';
+import { recordOutcome, recordRequest, rationaleForServed, type SelectionRationale } from '../../../router/picker';
 import { resolveCandidates } from '../routerProvider';
 import { resolveProvider } from '../../../providers';
 import { ProviderHttpError } from '../../../providers/base';
@@ -47,33 +47,22 @@ export function agentMessagesToChat(messages: readonly AgentMessage[]): ChatMess
   return out;
 }
 
-/** At/below this window the schema tax stops being affordable (mirrors the old engine). */
-const SMALL_WINDOW_MAX = 16_384;
-
 /** The opencode free lane rides two DECOY tools (`read`, `bash` — see opencodeLane.ts) past
  *  Zen's client gate, with "do not call" descriptions. A weak model sometimes calls them
- *  anyway, and the runtime would answer "Unknown tool" and burn a step. Their decoy schemas
- *  deliberately mirror the real tools ({path} / {command}), so rename the call to the real
- *  tool at the model boundary — the turn keeps its evidence instead of tripping on a decoy. */
-const TOOL_ALIASES: Record<string, string> = {
-  read: 'readFile',
-  bash: 'runCommand',
+ *  anyway, and the runtime would answer "Unknown tool" and burn a step. Rename the call to the
+ *  real Cline tool at the model boundary and reshape the decoy's {path} / {command} input. */
+const TOOL_ALIASES: Record<string, { name: string; input: (raw: Record<string, unknown>) => unknown }> = {
+  read: { name: 'read_files', input: (r) => ({ files: [{ path: r.path ?? r.filePath }] }) },
+  bash: { name: 'run_commands', input: (r) => ({ commands: [r.command].filter((c) => typeof c === 'string') }) },
 };
 
 function resolveToolName(name: string | undefined): string {
-  return (name && TOOL_ALIASES[name]) || name || '';
+  return (name && TOOL_ALIASES[name]?.name) || name || '';
 }
-/** Coordination tools withdrawn from small-window models' view (schema tax). */
-const COORDINATION_TOOLS = ['todoWrite'];
 
-/** The model's tool offer for a given context window: at/below SMALL_WINDOW_MAX the
- *  coordination tools are withdrawn from view (schema tax); undefined window (uncatalogued
- *  model) falls back to the FULL offer — never guess a model small. */
-export function offerForWindow<T extends AgentToolDefinition>(contextWindow: number | undefined, tools: readonly T[]): T[] {
-  if (contextWindow != null && contextWindow <= SMALL_WINDOW_MAX) {
-    return tools.filter((d) => !COORDINATION_TOOLS.includes(d.name));
-  }
-  return [...tools];
+function resolveToolInput(name: string | undefined, input: unknown): unknown {
+  const alias = name ? TOOL_ALIASES[name] : undefined;
+  return alias && input && typeof input === 'object' ? alias.input(input as Record<string, unknown>) : input;
 }
 
 /** Assembles streamed tool-call deltas (identified by slot index) into complete calls. */
@@ -163,11 +152,7 @@ export function createTierMuxAgentModel(opts: TierMuxAgentModelOptions): AgentMo
         yield { type: 'finish', reason: 'error', error: 'No usable model candidate resolved.', errorRetryable: false };
         return;
       }
-      // The head candidate is known only here (the router resolves inside stream()), so the
-      // small-window schema tax is applied at the same boundary that picks the model.
-      const head = chain[0];
-      const headWindow = head ? (findCatalogModel(head.platform, head.modelId)?.contextWindow ?? undefined) : undefined;
-      const tools: ChatToolDefinition[] = offerForWindow(headWindow, request.tools ?? []).map((d: AgentToolDefinition) => ({
+      const tools: ChatToolDefinition[] = (request.tools ?? []).map((d: AgentToolDefinition) => ({
         type: 'function',
         function: { name: d.name, description: d.description, parameters: d.inputSchema },
       }));
@@ -231,7 +216,7 @@ export function createTierMuxAgentModel(opts: TierMuxAgentModelOptions): AgentMo
             for (const call of assembler.complete()) {
               let input: unknown;
               try { input = JSON.parse(call.args || '{}'); } catch { input = {}; }
-              yield { type: 'tool-call-delta', toolCallId: call.id, toolName: resolveToolName(call.name), input };
+              yield { type: 'tool-call-delta', toolCallId: call.id, toolName: resolveToolName(call.name), input: resolveToolInput(call.name, input) };
             }
             if (usage) {
               const inputTokens = usage.prompt_tokens ?? 0;

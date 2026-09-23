@@ -35,13 +35,16 @@ Deliberately readable: you can look at the table and know which model answers wh
      **intelligence rank** (best first) and remaining declared quota, unranked models keeping
      your settings order.
 
-   The table **head is gated, layer-wise per task kind** (static catalog data — tiers and
-   speed ranks, no learned signal): on tool turns, `small`/`unknown`-tier models never lead;
-   real work (`agent`, `coding`, `debug`, `plan`) leads only with `frontier`/`strong`, and
-   `chat`/`longContext` with `mid` and up. A below-floor tier can still lead when it is fast
-   (`speedRank ≤ 2` — the groq/cerebras heads are mid-tier precisely because latency is the
-   product there), and no interactive kind leads with a `speedRank ≥ 4` row at all. Skipped
-   rows stay in the tail as failover, so the chain never empties.
+   **Agent turns (`work`) are smartest first**: no task table and no speed gate — the whole
+   enabled pool is ordered by quality tier (`frontier` → `strong` → `mid` → …), then
+   intelligence rank, then your 👍/👎, with speed only breaking ties. A fast mid-tier model
+   never leads over a frontier one; a slower model that finishes in fewer tool calls is the
+   faster turn.
+
+   For the other kinds the table **head is gated** (static catalog data — tiers and speed
+   ranks, no learned signal): on tool turns, `small`/`unknown`-tier models never lead;
+   `longContext` leads with `mid` and up, and never with a `speedRank ≥ 4` row. Skipped rows
+   stay in the tail as failover, so the chain never empties.
 3. **Filter** as the chain is built. A candidate is dropped — with the reason recorded for
    the popover — when it is: excluded for this retry, on a switched-off provider, missing
    a stored key, inside a failure cooldown, not enabled, or marked
@@ -97,13 +100,11 @@ rotation, and dropping a platform for the rest of the call when it answers at th
   model, not one global size. The **latest** user message (the task) and the **first** user
   message (the anchor, or the rolling summary once compaction has run) are reserved and can
   never be evicted.
-- Long sessions **auto-compact** older turns into a summary once they pass
-  `tiermux.agent.autoCompactThreshold` (default 80 % of the window).
-- Bulky tool output is **compacted in two tiers**: tier 1 shrinks command output to
-  head + tail; tier 2 (only if still over budget) reaches further, keeping file reads and
-  edits — the evidence later steps reason over — intact as long as possible.
+- Inside an agent turn, **Cline compacts** older conversation before a request would overflow
+  the routed model's window (deterministic, no extra model call), and recovers once from a
+  provider that still rejects a request as too long. The router reports each serving model's
+  window so compaction sizes to the model that actually answers.
 - Ambient open-editor context is sliced to a character budget.
-- Sub-agents return **only their report**, so the main conversation stays small.
 
 ---
 
@@ -173,7 +174,7 @@ All implemented natively — there is no external routing service in the path.
 | Technique | Where it runs | Role |
 |---|---|---|
 | Regex-first task classification, bilingual (English + romanized Bengali) | every turn | picks the task kind without a model call; routing is language-invariant |
-| Task table → intelligence-rank tail | picker | curated first choice per kind, then the whole enabled pool best-first — never a dead end |
+| Task table → intelligence-rank tail | picker | agent turns: the whole enabled pool by tier then rank; other kinds: a curated first choice, then the pool best-first — never a dead end |
 | Availability + quality failover | picker | an empty-but-HTTP-200 answer fails over exactly like a 429 |
 | Exponential per-model cooldown (30 s → 2 min) | picker | stops hammering a model that just failed; resets on success |
 | Round-robin platform diversity in the failover scan | picker | one provider's twenty models can't consume every retry |
@@ -183,10 +184,7 @@ All implemented natively — there is no external routing service in the path.
 | Time-boxed tool-incompatible / deprecated quarantine | secret store | models that advertise tools then reject them (or 404) self-heal after the window |
 | Conservative rate-limit floors for unknown quotas | rate tracker | a catalog limit of `0` means “unknown”, not “unlimited” — guessing low is the safe direction |
 | Per-model context fitting with reserved anchors | budget | the task and the conversation anchor can never be evicted by a fat tool result |
-| Two-tier tool-output compaction (head + tail) | compact | command output shrinks first; file reads/edits stay verbatim as long as possible |
-| Rolling-summary auto-condense | condense | older turns become a summary that carries the touched-file list forward |
+| Window-sized request compaction | Cline | older conversation is compacted to the serving model's window before a request overflows, with one recovery if a provider still rejects it |
 | Local-server context-window probing | providers | asks LM Studio / Ollama / llama.cpp / KoboldCpp / vLLM what window is *actually* loaded |
 | Streaming `<think>` stripping | router | reasoning tags that span chunks are folded, not dumped into the answer |
-| Task-pattern sub-agents (`delegateTask`) | tools | isolated research workers; only their report reaches the main context (~85–95 % fewer tokens on research passes) |
-| Explicit plan boundary as a tool call (`exitPlanMode`) | plan mode | the model *declares* the plan; the host never classifies prose to guess whether a reply “was a plan” |
 | Cassette record/replay + scripted mock fixtures | tests | real agent loops exercised with zero API tokens |

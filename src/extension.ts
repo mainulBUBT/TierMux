@@ -13,9 +13,8 @@ import { verifyGrounding, renderVerifyReport } from './backend/groundingVerify';
 import { EditGate } from './edits/applyEdit';
 import { registerCheckpointContentProvider } from './edits/checkpoints';
 
-import { setMcpManager } from './agent/core/tools/mcp/manager';
 
-import { McpManager } from './mcp/mcpManager';
+import { McpManager, setMcpManager } from './mcp/mcpManager';
 import { ChatViewProvider } from './chatViewProvider';
 import { allPlatformInfo, getPlatformInfo } from './providers';
 import { registerEditorCommands } from './editor/commands';
@@ -24,7 +23,6 @@ import { registerInlineChat } from './editor/inlineChat';
 import { registerInlineCompletions } from './completions/inlineCompletion';
 import { registerCommitMessage, generateCommitMessage } from './scm/commitMessage';
 import { watchGitCommits } from './scm/gitWatch';
-import { openMemoryForEdit } from './context/userMemory';
 import { invalidateSkillsCache } from './context/skills';
 import { installSkillPackage, checkNpxAvailable } from './context/skillInstaller';
 
@@ -231,7 +229,15 @@ export function activate(context: vscode.ExtensionContext): void {
           await vscode.window.showTextDocument(doc, { preview: true });
         }
       }),
-      vscode.commands.registerCommand('tiermux.editMemory', () => openMemoryForEdit()),
+      // Cline reads AGENTS.md (and .clinerules/) as the agent's standing rules.
+      vscode.commands.registerCommand('tiermux.editMemory', async () => {
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+        if (!root) { void vscode.window.showWarningMessage('Open a workspace folder first.'); return; }
+        const uri = vscode.Uri.joinPath(root, 'AGENTS.md');
+        try { await vscode.workspace.fs.stat(uri); }
+        catch { await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode('# Agent rules\n\n')); }
+        await vscode.commands.executeCommand('vscode.open', uri);
+      }),
       vscode.commands.registerCommand('tiermux.addSkill', async () => {
         const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (!root) { void vscode.window.showErrorMessage('TierMux: open a workspace folder first.'); return; }

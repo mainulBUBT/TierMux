@@ -188,7 +188,7 @@ async function main() {
     // NOTE: pdf-parse is loaded with `require()`, never `await import()` — it is "type":"module",
     // so a dynamic import picks its ESM entry, which the VS Code extension host fails to load
     // (every PDF then silently extracted as empty). See loadPdfParse in util/extractAttachments.
-    external: ['vscode', '@vscode/ripgrep', 'jsdom', 'pdf-parse'],
+    external: ['vscode', '@vscode/ripgrep', 'pdf-parse'],
     sourcemap: !production,
     minify: production,
     logLevel: 'info',
@@ -239,11 +239,11 @@ async function main() {
     outdir: 'dist',
     outExtension: { '.js': '.cjs' },
     // Same externalization rationale as the extension build — vscode and
-    // @vscode/ripgrep must stay Node-resolvable at runtime; jsdom and pdf-parse
-    // ship native/dynamic-import code paths that don't survive bundling. The
+    // @vscode/ripgrep must stay Node-resolvable at runtime; pdf-parse ships
+    // native/dynamic-import code paths that don't survive bundling. The
     // engine is otherwise pure (the `vscode` reads it does are isolated to a
     // handful of config/fs/root lookups covered by scripts/vscodeMock.cjs).
-    external: ['vscode', '@vscode/ripgrep', 'jsdom', 'pdf-parse'],
+    external: ['vscode', '@vscode/ripgrep', 'pdf-parse'],
     sourcemap: !production,
     minify: production,
     logLevel: 'info',

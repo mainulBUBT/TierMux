@@ -1,4 +1,3 @@
-import type { TodoItem } from '../shared/types';
 import { splitReasoning } from '../agent/content';
 
 /** Reduce a model's reply to a clean short title, or ''. Reasoning models leak chain-of-thought
@@ -34,53 +33,4 @@ export function deriveTitleFrom(text: string): string {
   if (!s) return 'New chat';
   const words = s.split(' ').slice(0, 6).join(' ').slice(0, 60);
   return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
-const PLAN_EDIT_VERB = /^(add|create|implement|build|writ|fix|refactor|rename|move|delete|remove|updat|chang|modif|edit|replac|wir|integrat|convert|migrat|install|configur|extract|split|merg|append|insert|expos|export|hook|connect|introduc|switch|drop|bump|upgrad|enabl|disabl|set ?up|scaffold|register|inject|guard|validat|sync|audit|document|correct|review|ensur|verify|test|apply|enforce|generat|wir)\w*\b/i;
-const PLAN_PATHISH = /[\w./-]+\.[a-z]{1,6}\b|\b[\w-]+\/[\w-]+/;
-
-/** An approved plan's text as an all-pending todo list. Four step shapes: list items, markdown
- *  headings, bold-only lines, and bare imperative PARAGRAPH lines naming a file — the shape free
- *  models produce most, which used to parse to zero steps so the plan card never opened. */
-export function planStepsToTodos(steps: string): TodoItem[] {
-  return (steps || '')
-    .split('\n')
-    .map((line) => {
-      // Numbered or bulleted list item.
-      let m = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.*)$/);
-      if (m) return m[1];
-      // Markdown heading: "## Step", "### Step".
-      m = line.match(/^\s*#{1,6}\s+(.+?)\s*#*\s*$/);
-      if (m) return m[1];
-      // Bold-only heading line: "**Step**".
-      m = line.match(/^\s*\*\*(.+?)\*\*\s*$/);
-      if (m) return m[1];
-      // Imperative paragraph line with no list marker but a clear edit verb AND a file/path
-      // reference — the "Create/Add/Update <file>" plan format weak models emit as prose.
-      const trimmed = line.trim();
-      if (trimmed && PLAN_EDIT_VERB.test(trimmed) && PLAN_PATHISH.test(trimmed)) return trimmed;
-      return null;
-    })
-    .filter((c): c is string => c !== null)
-    .map((c) => ({ content: c.replace(/\*\*/g, '').trim(), status: 'pending' as const }))
-    .filter((t) => t.content.length > 0)
-    .slice(0, 20);
-}
-
-/** True when plan text reads like ACTIONABLE changes rather than a descriptive answer — gates
- *  "Approve & Run". Counts edit-like steps plus imperative lines naming a file; true at ≥2, since
- *  a real plan touches more than one thing and prose Q&A rarely leads with edit verbs. */
-export function looksLikeActionablePlan(text: string): boolean {
-  const t = text || '';
-  const actionables = new Set<string>();
-  for (const step of planStepsToTodos(t).map((s) => s.content)) {
-    if (PLAN_EDIT_VERB.test(step) || PLAN_PATHISH.test(step)) actionables.add(step);
-  }
-  // Also scan raw lines for imperative+path paragraphs (covers the case where planStepsToTodos'
-  // 20-item cap or formatting kept them out, and keeps this independent of the todo builder).
-  for (const line of t.split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed && PLAN_EDIT_VERB.test(trimmed) && PLAN_PATHISH.test(trimmed)) actionables.add(trimmed);
-  }
-  return actionables.size >= 2;
 }

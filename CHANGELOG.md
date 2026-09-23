@@ -3,6 +3,34 @@
 All notable changes to TierMux are documented here. The format is loosely
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [Unreleased]
+
+### Changed — the agent is Cline
+
+- **Cline's SDK is the whole agent.** `@cline/agents` runs the loop and `@cline/core` now
+  supplies the tools (`read_files`, `search_codebase`, `run_commands`, `fetch_web_content`,
+  `editor`, `skills`, `ask_question`), the system prompt, rules (`AGENTS.md`, `.clinerules/`),
+  skills, request compaction and MCP. TierMux keeps the router and providers underneath and the
+  UI on top. See `docs/CLINE_AGENT.md`.
+- **Plan mode is Cline's.** The plan comes back as the answer and you switch to Agent to carry
+  it out; the plan card, plan files and tracked plan runs are gone.
+- **Removed with TierMux's own harness:** the v3 toolset, `delegateTask` sub-agents, todo list,
+  between-turn auto-condense and `.tiermux/memory.md` learning, and the web-search sources row.
+  `/compact` now runs Cline's compactor. "Edit Style & Tone Memory" became "Edit Agent Rules
+  (AGENTS.md)".
+- **Settings removed:** `agent.verifyCommand`, `agent.learnFromCorrections`,
+  `agent.autoCondense`, `agent.autoCondenseTokenCap`, `agent.autoCompactThreshold`,
+  `plan.saveToFile`, `plan.folder`. `agent.toolCompaction` is now `auto | off`;
+  `agent.commandTimeoutMs` now bounds Cline's `run_commands`.
+- Cline's tools take absolute paths and are not confined to the workspace; reads are
+  auto-approved, edits and non-read-only commands still go through the approval policy.
+- **Agent turns route smartest first.** Auto orders the enabled pool by tier, then
+  intelligence rank, with speed only as a tiebreak — the `work` task table and its speed gates
+  are gone, so a fast mid-tier model (gpt-oss-120b, nemotron-3.5-lightning) no longer leads an
+  agent turn over a frontier one. Other task kinds are unchanged.
+- Dependencies: `@cline/agents`, `@cline/core`, `@cline/llms`, `@cline/shared` pinned to 0.0.85;
+  `ai`, `jsdom`, `minimatch` and `zod` removed.
+
 ## [3.0.2] — 2026-09-17
 
 ### Fixed — an attachment can no longer be routed to a model that cannot see it

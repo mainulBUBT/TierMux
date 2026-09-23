@@ -4,7 +4,7 @@
 // a bare "fix this" resolves. The visible transcript is untouched. Null when nothing to add.
 
 import * as vscode from 'vscode';
-import { formatDiagnosticEntries } from '../agent/core/tools/workspace/formatDiagnostics';
+import { formatDiagnosticEntries } from './formatDiagnostics';
 
 /** Bound the selection snippet so a 2000-line highlight doesn't blow the prompt. */
 const MAX_SELECTION_CHARS = 8 * 1024;

@@ -1,8 +1,6 @@
-/* SUPERSEDED-IN-PART on the cline branch, ported 2026-09-22. The OLD engine's repeat-read
- * guard, ask-mode wrap-up, toolChoice-forced final step and EXPLORE_KEEP_RECENT stubbing are
- * gone: Cline's runtime owns the loop (iteration cap, its own stall protections, its own
- * compaction). What the branch still guarantees — and what this file now locks — is:
- *   1. a round-robin reader is BOUNDED by the step cap (the turn returns, never runs away);
+/* Cline's runtime owns the loop (iteration cap, stall protections, compaction). What TierMux
+ * still guarantees around it — and what this file locks — is:
+ *   1. a round-robin reader is BOUNDED by the step cap (a resumable pause, never a runaway);
  *   2. a stale persisted 'ask' session maps to the read-only plan toolset (no editors);
  *   3. the transcript stays faithful across many tool calls (agentToChatMessages round-trip).
  * Run: npm run test:e2e:read-loop */
@@ -12,7 +10,7 @@ import * as path from 'path';
 import { createMockModel } from './mockClineModel';
 import { runPlanStream, runAgentStream } from '../src/agent/agent';
 import { __setClineEngineModelForTests } from '../src/agent/core/cline/clineEngine';
-import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
+import { runWithWorkspaceRoot } from '../src/util/workspaceRoot';
 import type { AgentOpts } from '../src/agent/agent';
 
 let bad = 0;
@@ -24,7 +22,7 @@ for (const f of files) fs.writeFileSync(path.join(root, f), Array.from({ length:
 
 const baseOpts = (mode: 'ask' | 'agent', over: Partial<AgentOpts> = {}): AgentOpts => ({
   messages: [{ role: 'user', content: 'why does it fail?' }], mode, effort: 'medium',
-  onChunk: () => {}, onTool: () => {}, onReasoning: () => {}, onModel: () => {}, onFailover: () => {}, onStep: () => {}, onTodos: () => {},
+  onChunk: () => {}, onTool: () => {}, onReasoning: () => {}, onModel: () => {}, onFailover: () => {}, onStep: () => {},
   onAskUser: async () => ({ status: 'cancelled' as const, answers: [] }), onError: () => {},
   ...over,
 } as AgentOpts);
@@ -42,36 +40,33 @@ async function main() {
   // ── 1. A round-robin reader is bounded by the step cap (the old repeat guard's job) ─────────
   {
     const steps: Array<Record<string, unknown>> = [];
-    for (let i = 0; i < 30; i++) steps.push({ toolCalls: [{ toolName: 'readFile', input: { path: files[i % 4] } }] });
+    for (let i = 0; i < 30; i++) steps.push({ toolCalls: [{ toolName: 'read_files', input: { files: [{ path: path.join(root, files[i % 4]) }] } }] });
     steps.push({ text: 'The answer.' });
     const m = createMockModel(steps as never, 'read-loop');
     const r = await run(m, 'agent', { maxStepsPerTurn: 12 });
     ok('the turn hit the step cap, not the script end', m.calls.length <= 13, `${m.calls.length} model calls`);
-    ok('the capped turn RETURNED (no wedge, no throw)', !!r, `status=${r.status ?? '?'}`);
+    ok('the capped turn RETURNED as a resumable pause', !!r && r.paused === true && !r.failed, `paused=${r.paused} failed=${r.failed}`);
     ok('the transcript is present for the host to persist', (r.workMessages?.length ?? 0) > 0, `${r.workMessages?.length} messages`);
   }
 
   // ── 2. A stale persisted 'ask' session runs as read-only plan (editors never offered) ───────
   {
-    // completionPolicy: the answer DECLARES itself with outcome 'no-change' — prose alone
-    // cannot finish a plan-mode turn, so the stale-session answer closes via the tool.
     const steps: Array<Record<string, unknown>> = [
-      { toolCalls: [{ toolName: 'readFile', input: { path: 'A.php' } }] },
+      { toolCalls: [{ toolName: 'read_files', input: { files: [{ path: path.join(root, 'A.php') }] } }] },
       { text: 'It fails at line 3.' },
-      { toolCalls: [{ toolName: 'exitPlanMode', input: { outcome: 'no-change', title: 'Why it fails', finding: 'It fails at line 3.' } }] },
     ];
     const m = createMockModel(steps as never, 'ask-maps-to-plan');
     const r = await run(m, 'ask');
     const names = offered(m, 0);
-    ok("a persisted 'ask' turn still runs", (r.plan?.finding ?? r.text).includes('line 3'), `${r.text} ${r.plan?.finding ?? ''}`);
-    ok('its toolset is the read-only plan set — no editors', !names.includes('editFile') && !names.includes('writeFile') && !names.includes('deleteFile'), names.join(','));
-    ok('read tools survive the mapping', names.includes('readFile') && names.includes('grep'), names.join(','));
+    ok("a persisted 'ask' turn still runs", r.text.includes('line 3'), r.text);
+    ok('its toolset is the read-only plan set — no editor', !names.includes('editor') && !names.includes('apply_patch'), names.join(','));
+    ok('read tools survive the mapping', names.includes('read_files') && names.includes('search_codebase'), names.join(','));
   }
 
   // ── 3. Evidence retention across many tool calls (the old aging stubs are Cline's job now) ──
   {
-    const steps: Array<Record<string, unknown>> = [{ toolCalls: [{ toolName: 'readFile', input: { path: 'A.php' } }] }];
-    for (let i = 0; i < 6; i++) steps.push({ toolCalls: [{ toolName: 'grep', input: { pattern: `q${i}`, path: '.' } }] });
+    const steps: Array<Record<string, unknown>> = [{ toolCalls: [{ toolName: 'read_files', input: { files: [{ path: path.join(root, 'A.php') }] } }] }];
+    for (let i = 0; i < 6; i++) steps.push({ toolCalls: [{ toolName: 'search_codebase', input: { queries: [`q${i}`] } }] });
     steps.push({ text: 'done' });
     const m = createMockModel(steps as never, 'keep');
     const r = await run(m, 'agent');

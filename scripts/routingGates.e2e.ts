@@ -114,14 +114,35 @@ console.log('\n— the chain spends its bound on BREADTH, not on one provider �
     plats.slice(0, keyed.length).filter((p) => p === 'ollama').length === 1, plats.join(' → '));
   ok('only AFTER round 0 does a platform get a second model',
     plats.slice(keyed.length).every((p) => round0.includes(p)), plats.slice(keyed.length).join(' → ') || '<none>');
-  // Breadth assertions above are platform-level, which rotation preserves. The head is the
-  // work table's own pick: groq's entry has no key in this mock, so the table's second entry —
-  // cerebras::gpt-oss-120b, enabled and keyed — leads, and round 0 still reaches every other
-  // platform exactly once below it. (All mock ranks are 1, so rotation may reorder the
-  // multi-model ollama block, never the HEAD, on this first call.)
-  ok('the first choice is the task table\'s own pick',
-    `${cands[0].platform}::${cands[0].modelId}` === 'cerebras::gpt-oss-120b',
-    `${cands[0].platform}::${cands[0].modelId}`);
+}
+
+console.log('\n— work is smartest first: tier, then rank; speed only breaks ties —');
+{
+  __resetTaskRoundCounters();
+  // 2026-09-23 (user direction): a fast mid-tier head (gpt-oss-120b, lightning) led agent turns
+  // over frontier models and wandered through many tool calls. Tags carry the tier, as in the
+  // worker catalog.
+  const rows: Record<string, { intelligenceRank: number; speedRank: number; tags: string[] }> = {
+    'groq::openai/gpt-oss-120b': { intelligenceRank: 2, speedRank: 1, tags: ['mid'] },
+    'xkiro::qwen/qwen3.8-max:free': { intelligenceRank: 1, speedRank: 4, tags: ['frontier'] },
+    'nvidia::moonshotai/kimi-k3': { intelligenceRank: 2, speedRank: 3, tags: ['frontier'] },
+    'google::gemini-3.8-flash': { intelligenceRank: 2, speedRank: 2, tags: ['frontier'] },
+    'kilo::z-ai/glm-5.2:free': { intelligenceRank: 1, speedRank: 1, tags: ['strong'] },
+  };
+  const src = makeSources(Object.keys(rows).map((k, i) => entry(k.split('::')[0], k.split('::').slice(1).join('::'), i)), [],
+    ['groq', 'xkiro', 'nvidia', 'google', 'kilo']);
+  (src as unknown as { catalog: { find: (p: string, m: string) => unknown } }).catalog = {
+    find: (p: string, m: string) => ({ supportsTools: true, ...rows[`${p}::${m}`] }),
+  };
+  setModelSources(src);
+  const sel = await selectModel([{ role: 'user', content: 'fix this bug in the code' } as never], { taskKind: 'work', requireTools: true });
+  const order = [sel.model, ...sel.fallbackChain];
+  ok('the rank-1 frontier model leads even at speedRank 4', order[0] === 'xkiro::qwen/qwen3.8-max:free', order.join(' > '));
+  ok('among equal-rank frontier peers the faster one comes first',
+    order.indexOf('google::gemini-3.8-flash') < order.indexOf('nvidia::moonshotai/kimi-k3'), order.join(' > '));
+  ok('every frontier model precedes a strong one, even a faster rank-1 strong',
+    order.indexOf('kilo::z-ai/glm-5.2:free') === 3, order.join(' > '));
+  ok('the fast mid-tier model is last, not the head', order.at(-1) === 'groq::openai/gpt-oss-120b', order.join(' > '));
 }
 
 console.log('\n— one usable provider still gets a full-length chain —');

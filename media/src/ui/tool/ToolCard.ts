@@ -169,14 +169,11 @@ export function settleReasoningBlock(block: HTMLElement, durationMs?: number): v
 /** Tools eligible for grouping — genuinely side-effect-free inspection calls only. Anything
  *  that writes, runs a command, or has meaningfully different per-call output (diagnostics,
  *  the repo graph) stays its own card; grouping those would hide information, not noise. */
-export const GROUPABLE_TOOL_NAMES = new Set(['readFile', 'grep', 'glob', 'listDir', 'searchWorkspace']);
+export const GROUPABLE_TOOL_NAMES = new Set(['read_files', 'search_codebase']);
 
 const GROUP_VERB: Record<string, string> = {
-  readFile: 'Read',
-  grep: 'Searched',
-  searchWorkspace: 'Searched',
-  glob: 'Matched',
-  listDir: 'Explored',
+  read_files: 'Read',
+  search_codebase: 'Searched',
 };
 
 /** The short label for one item inside a grouped row — a path for file-shaped tools, the
@@ -184,13 +181,8 @@ const GROUP_VERB: Record<string, string> = {
  *  just without the "Analyzed"/"Searched" verb prefix each call would otherwise carry alone. */
 function groupTargetFor(name: string, args: unknown): string {
   const argsObj = args && typeof args === 'object' ? args as Record<string, unknown> : {};
-  if (name === 'grep' || name === 'searchWorkspace') {
-    const query = String((argsObj as { query?: string; pattern?: string; term?: string }).query
-      || (argsObj as { pattern?: string }).pattern || (argsObj as { term?: string }).term || '').trim();
-    return query || 'pattern';
-  }
-  const path = shortPath(String(firstArg(args) || ''));
-  return path || (name === 'listDir' ? 'files' : 'a file');
+  if (name === 'search_codebase') return listArg(argsObj, 'queries').join(', ') || 'pattern';
+  return filePaths(argsObj).map(shortPath).join(', ') || 'a file';
 }
 
 export interface ToolGroupItem {
@@ -274,15 +266,15 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
   card.appendChild(more);
 
   // Validation result styling
-  const isValidationStatic = step.name === 'runCommand' && /\b(tsc|eslint|prettier|lint|typecheck|check|jest|vitest|mocha|pytest|go\s+test|cargo\s+(check|test)|npm\s+test|yarn\s+test|pnpm\s+test)\b/.test(
-    String(step.args && typeof step.args === 'object' ? ((step.args as Record<string, unknown>).command ?? JSON.stringify(step.args)) : step.args || '')
+  const isValidationStatic = step.name === 'run_commands' && /\b(tsc|eslint|prettier|lint|typecheck|check|jest|vitest|mocha|pytest|go\s+test|cargo\s+(check|test)|npm\s+test|yarn\s+test|pnpm\s+test)\b/.test(
+    commandsOf(step.args).join(' && ')
   );
   if (isValidationStatic) {
     card.classList.add('validation');
   }
 
   // Handle edit/operation diffs
-  const isEditStatic = step.name === 'editFile' || step.name === 'writeFile' || step.name === 'createFile';
+  const isEditStatic = step.name === 'editor' || step.name === 'apply_patch';
   const editArgsStatic = isEditStatic && step.args && typeof step.args === 'object' ? step.args as Record<string, unknown> : null;
 
   // A markdown file the card already has the full text of (written, created, or read)
@@ -345,7 +337,7 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
  *  must not claim "Edited path" before anything happened. Read tools finish in milliseconds
  *  and keep the past tense. */
 const PRESENT_TENSE_WHILE_RUNNING: Record<string, string> = {
-  writeFile: 'Writing', createFile: 'Creating', editFile: 'Editing', deleteFile: 'Deleting', runCommand: 'Running',
+  editor: 'Editing', apply_patch: 'Patching', run_commands: 'Running',
 };
 
 /**
@@ -380,35 +372,30 @@ export function toolLabel(name: string, args: unknown, detail?: string, state?: 
     };
   }
 
-  // Special cases: the v3 toolset's coordination + network calls, whose target is a task, a
-  // URL or a question rather than a path/query — none of those read well through the generic
-  // M-map rows below, and three of them want a state-aware verb ("Delegating" vs "Delegated").
+  // Special cases whose target is a URL, a question or a skill rather than a path/query.
   // These live in toolLabel so the live upsert AND the static replay render identically.
-  const argFirst = String(firstArg(args) || '');
-  const argsObj = args && typeof args === 'object' ? args : {};
-  const path = shortPath(argFirst);
-  const query = String((argsObj as { query?: string; pattern?: string; term?: string }).query || (argsObj as { pattern?: string }).pattern || (argsObj as { term?: string }).term || '').trim();
+  const argsObj = args && typeof args === 'object' ? args as Record<string, unknown> : {};
+  const live = state === 'running' || state === 'queued';
+  const paths = filePaths(argsObj).map(shortPath);
+  const path = paths[0] ?? '';
+  const queries = listArg(argsObj, 'queries');
+  const commands = commandsOf(args);
 
-  if (name === 'fetchUrl') {
-    const u = shortUrl(String((argsObj as { url?: string }).url || argFirst || ''));
-    const live = state === 'running' || state === 'queued';
+  if (name === 'fetch_web_content') {
+    const urls = (Array.isArray(argsObj.requests) ? argsObj.requests : [])
+      .map((r) => shortUrl(String((r as { url?: string })?.url || ''))).filter(Boolean);
+    const u = urls[0] ? urls[0] + (urls.length > 1 ? ` (+${urls.length - 1})` : '') : '';
     return { icon: '⊙', title: u ? `${live ? 'Fetching' : 'Fetched'} ${u}` : live ? 'Fetching a page' : 'Fetched a page' };
   }
-  if (name === 'delegateTask') {
-    const task = String((argsObj as { task?: string }).task || '').replace(/\s+/g, ' ').trim();
-    const excerpt = task.length > 64 ? task.slice(0, 63) + '…' : task;
-    const live = state === 'running' || state === 'queued';
-    if (live) return { icon: '◎', title: excerpt ? `Delegating: "${excerpt}"` : 'Delegating to a sub-agent' };
-    return { icon: '◎', title: excerpt ? `Delegated: "${excerpt}"` : 'Delegated to a sub-agent' };
-  }
-  if (name === 'askUser') {
-    const a = argsObj as { question?: string; questions?: Array<{ question?: string }> };
-    const q = String(a.questions?.[0]?.question || a.question || '').replace(/\s+/g, ' ').trim();
-    const more = (a.questions?.length ?? 0) > 1 ? ` (+${a.questions!.length - 1} more)` : '';
-    const excerpt = (q.length > 64 ? q.slice(0, 63) + '…' : q) + (q ? more : '');
-    const live = state === 'running' || state === 'queued';
+  if (name === 'ask_question') {
+    const q = String(argsObj.question || '').replace(/\s+/g, ' ').trim();
+    const excerpt = q.length > 64 ? q.slice(0, 63) + '…' : q;
     if (live) return { icon: '◎', title: 'Asking…' };
     return { icon: '◎', title: excerpt ? `Asked: "${excerpt}"` : 'Asked the user' };
+  }
+  if (name === 'skills') {
+    const skill = String(argsObj.skill || '').trim();
+    return { icon: '✦', title: skill ? `${live ? 'Using' : 'Used'} skill ${skill}` : 'Used a skill' };
   }
 
   // Result summary from tool output
@@ -417,75 +404,28 @@ export function toolLabel(name: string, args: unknown, detail?: string, state?: 
   const firstLine = (lines[0] || '').trim().slice(0, 80);
   const results = (unit: string) => count > 0 ? `  · ${count} ${unit}${count !== 1 ? 's' : ''}` : '';
 
-  // grep's output is not one-match-per-line once `context` or `filesOnly` is set: context
-  // lines come back as `path-N-text` with `--` between groups, and filesOnly returns bare
-  // paths. Count only `path:N:` hit lines (or files, labelled as such) so "· 11 results"
-  // does not appear for a single match with context:5. "(no matches)" is zero, not one.
-  const grepResults = (): string => {
-    if (!count || /^\(no matches\)$/.test(lines[0]?.trim() ?? '')) return '';
-    const go = argsObj as { filesOnly?: boolean };
-    if (go.filesOnly) {
-      const n = lines.filter((l) => !l.startsWith('…[')).length;
-      return `  · ${n} file${n !== 1 ? 's' : ''}`;
-    }
-    const n = lines.filter((l) => /^.+?:\d+:/.test(l)).length;
-    return n > 0 ? `  · ${n} result${n !== 1 ? 's' : ''}` : '';
-  };
+  const more = (n: number) => n > 1 ? ` (+${n - 1})` : '';
+  const cmdTitle = (verb: string) => commands[0]
+    ? `${verb} ${commands[0].split(/\s+/).slice(0, 6).join(' ')}${more(commands.length)}`
+    : `${verb} a command`;
+  const created = name === 'editor' && argsObj.old_text == null && argsObj.insert_line == null;
 
-  // Special cases with rich formatting
-  if (name === 'readFile') {
-    const ao = argsObj as { offset?: number; startLine?: number; start_line?: number; limit?: number; count?: number };
-    const offset = ao.offset ?? ao.startLine ?? ao.start_line;
-    const limit = ao.limit ?? ao.count;
-    let title = path ? `Analyzed ${path}` : 'Analyzed a file';
-    if (path && offset != null && limit != null) title += `  #L${offset}–${offset + limit - 1}`;
-    else if (path && offset != null) title += `  #L${offset}+`;
-    return { icon: '⊞', title, hint: '' };
-  }
-
-  // Tool mappings
   const M: Record<string, [string, string]> = {
-    readFile: ['⊞', path ? `Analyzed ${path}` : 'Analyzed a file'],
-    listDir: ['⊟', `Explored ${path || 'files'}${results('entry')}`],
-    repoMap: ['⊕', 'Mapped the repository'],
-    searchWorkspace: ['⌕', `Searched "${query}"${results('result')}`],
-    glob: ['⊞', `Matched ${query || 'pattern'}${results('match')}`],
-    grep: ['⌕', `Searched "${query}"${grepResults()}`],
-    webSearch: ['⊙', `Searched the web "${query}"${results('result')}`],
-    // fetchUrl / delegateTask / askUser render through the special cases above (URL- and
-    // task-shaped targets, state-aware verbs) — not through this map.
-    getDiagnostics: ['⊘', 'Checked diagnostics'],
-    runCommand: ['▸', argFirst ? `Ran ${argFirst.split(/\s+/).slice(0, 6).join(' ')}` : 'Ran a command'],
-    writeFile: ['◈', path ? `Wrote ${path}` : 'Wrote a file'],
-    createFile: ['◈', path ? `Created ${path}` : 'Created a file'],
-    editFile: ['◈', path ? `Edited ${path}` : 'Edited a file'],
-    deleteFile: ['◉', path ? `Deleted ${path}` : 'Deleted a file'],
-    impactAnalysis: ['⊕', 'Analyzed impact'],
-    buildGraph: ['⊕', 'Built the call graph'],
-    outline: ['⊕', 'Read outline'],
-    findSymbol: ['⊕', 'Found symbol'],
-    references: ['⊕', 'Found references'],
-    definition: ['⊕', 'Found definition'],
-    hover: ['⊕', 'Read type info'],
-    // todoWrite: the TodoSheet is the rich display; the card stays a quiet count line so the
-    // raw todos JSON never dumps as the generic "TodoWrite" fallback it used to hit.
-    todoWrite: ['≣', `Updated todos${Array.isArray((argsObj as { todos?: unknown[] }).todos) ? ` (${(argsObj as { todos: unknown[] }).todos.length})` : ''}`],
-    // exitPlanMode IS plan mode's exit (the plan card is the real UI) — but the engine still
-    // fires a tool event for it, and that used to render as the generic "ExitPlanMode" card.
-    exitPlanMode: ['▦', 'Proposed the plan'],
-    lspCheck: ['⊘', path ? `Checked ${path}` : 'Checked language diagnostics'],
+    read_files: ['⊞', path ? `Analyzed ${paths.join(', ')}` : 'Analyzed a file'],
+    search_codebase: ['⌕', queries.length ? `Searched "${queries.join('", "')}"${results('result')}` : `Searched${results('result')}`],
+    run_commands: ['▸', cmdTitle('Ran')],
+    editor: ['◈', path ? `${created ? 'Wrote' : 'Edited'} ${path}` : created ? 'Wrote a file' : 'Edited a file'],
+    apply_patch: ['◈', 'Applied a patch'],
   };
 
   if (M[name]) {
-    const hint = (name === 'runCommand' || name === 'getDiagnostics') && firstLine ? firstLine : '';
+    const hint = name === 'run_commands' && firstLine ? firstLine : '';
     // Pending approval (or actively running) — say so in the present tense instead of the
     // past-tense title below, which would otherwise claim "Edited/Deleted/Ran…" before the
     // user has even clicked Approve/Reject.
     if ((state === 'running' || state === 'queued') && PRESENT_TENSE_WHILE_RUNNING[name]) {
       const verb = PRESENT_TENSE_WHILE_RUNNING[name];
-      const title = name === 'runCommand'
-        ? (argFirst ? `${verb} ${argFirst.split(/\s+/).slice(0, 6).join(' ')}` : `${verb} a command`)
-        : (path ? `${verb} ${path}` : `${verb} a file`);
+      const title = name === 'run_commands' ? cmdTitle(verb) : (path ? `${verb} ${path}` : `${verb} a file`);
       return { icon: M[name][0], title, hint };
     }
     return { icon: M[name][0], title: M[name][1], hint };
@@ -511,38 +451,20 @@ export function toolLabel(name: string, args: unknown, detail?: string, state?: 
  * Used in the rolling "Working…" status line.
  */
 export function activityFor(name: string, args: unknown): string {
-  const argsObj = args && typeof args === 'object' ? args : {};
-  const argFirst = String(firstArg(args) || '');
-  const path = shortPath(argFirst);
-  const query = String((argsObj as { query?: string; pattern?: string; term?: string }).query || (argsObj as { pattern?: string }).pattern || (argsObj as { term?: string }).term || '').trim();
-  const cmd = String((argsObj as { command?: string; cmd?: string }).command || (argsObj as { cmd?: string }).cmd || '').trim();
+  const argsObj = args && typeof args === 'object' ? args as Record<string, unknown> : {};
+  const path = shortPath(filePaths(argsObj)[0] ?? '');
+  const query = listArg(argsObj, 'queries')[0] ?? '';
+  const cmd = (commandsOf(args)[0] ?? '').split(/\s+/).slice(0, 5).join(' ');
 
   switch (name) {
-    case 'readFile': return path ? `Reading ${path}` : 'Reading a file';
-    case 'listDir': return path ? `Listing ${path}` : 'Listing files';
-    case 'searchWorkspace':
-    case 'grep': return query ? `Searching "${query}"` : 'Searching';
-    case 'glob': return query ? `Globbing ${query}` : 'Globbing files';
-    case 'runCommand': {
-      const c = cmd.split(/\s+/).slice(0, 5).join(' ');
-      return c ? `Running ${c}` : 'Running a command';
-    }
-    case 'writeFile':
-    case 'createFile': return path ? `Writing ${path}` : 'Writing a file';
-    case 'editFile': return path ? `Editing ${path}` : 'Editing';
-    case 'deleteFile': return path ? `Deleting ${path}` : 'Deleting';
-    case 'webSearch': return query ? `Searching the web for "${query}"` : 'Searching the web';
-    case 'fetchUrl': return argFirst ? `Fetching ${shortUrl(String((argsObj as { url?: string }).url || argFirst))}` : 'Fetching a page';
-    case 'delegateTask': {
-      const task = String((argsObj as { task?: string }).task || '').replace(/\s+/g, ' ').trim();
-      return task ? `Delegating: "${task.slice(0, 64)}${task.length > 64 ? '…' : ''}"` : 'Delegating to a sub-agent';
-    }
-    case 'askUser': return 'Asking the user';
-    case 'todoWrite': return 'Updating todos';
-    case 'exitPlanMode': return 'Presenting the plan';
-    case 'getDiagnostics': return 'Checking diagnostics';
-    case 'repoMap': return 'Mapping the repository';
-    case 'lspCheck': return path ? `Checking ${path}` : 'Checking language diagnostics';
+    case 'read_files': return path ? `Reading ${path}` : 'Reading a file';
+    case 'search_codebase': return query ? `Searching "${query}"` : 'Searching';
+    case 'run_commands': return cmd ? `Running ${cmd}` : 'Running a command';
+    case 'editor': return path ? `Editing ${path}` : 'Editing';
+    case 'apply_patch': return 'Applying a patch';
+    case 'fetch_web_content': return 'Fetching a page';
+    case 'ask_question': return 'Asking the user';
+    case 'skills': return argsObj.skill ? `Using skill ${String(argsObj.skill)}` : 'Using a skill';
     default:
       if (name && name.indexOf('mcp__') === 0) return `Calling ${name.split('__')[1] || 'MCP tool'}`;
       return name ? (name.charAt(0).toUpperCase() + name.slice(1) + '…') : 'Working.';
@@ -551,14 +473,28 @@ export function activityFor(name: string, args: unknown): string {
 
 // ========== Private Helpers ==========
 
-/**
- * Extract the first meaningful argument from a tool call args object.
- * Handles various argument shapes (path, file, query, command, etc.).
- */
-function firstArg(a: unknown): string {
-  if (!a || typeof a !== 'object') return '';
-  const argsObj = a as Record<string, unknown>;
-  return String(argsObj.path || argsObj.file || argsObj.filePath || argsObj.filename || argsObj.relativePath || argsObj.url || argsObj.query || argsObj.pattern || argsObj.dir || argsObj.directory || argsObj.term || argsObj.command || '');
+/** String entries of an array argument (`queries`, …). */
+function listArg(args: Record<string, unknown>, key: string): string[] {
+  const v = args[key];
+  return Array.isArray(v) ? v.map((x) => String(x ?? '').trim()).filter(Boolean) : [];
+}
+
+/** Paths a Cline call targets: `files[].path` (read_files) or `path` (editor). */
+function filePaths(args: Record<string, unknown>): string[] {
+  if (Array.isArray(args.files)) {
+    return args.files.map((f) => String((f as { path?: string })?.path ?? f ?? '')).filter(Boolean);
+  }
+  return typeof args.path === 'string' && args.path ? [args.path] : [];
+}
+
+/** run_commands entries as shell lines — strings or `{command, args}`. */
+function commandsOf(args: unknown): string[] {
+  if (!args || typeof args !== 'object') return [];
+  const list = (args as { commands?: unknown }).commands;
+  if (!Array.isArray(list)) return [];
+  return list.map((c) => typeof c === 'string' ? c
+    : c && typeof c === 'object' ? [String((c as { command?: string }).command ?? ''), ...((c as { args?: string[] }).args ?? [])].join(' ')
+    : '').map((c) => c.trim()).filter(Boolean);
 }
 
 /**
@@ -580,21 +516,21 @@ function shortUrl(u: string): string {
 
 const MARKDOWN_EXT = /\.(md|markdown|mdx)$/i;
 
-/** The full markdown a card can preview, or null. Only whole documents qualify (writeFile/
- *  createFile `content`, single-path readFile output); editFile's fragment is better as a diff. */
+/** The full markdown a card can preview, or null. Only whole documents qualify (an editor call
+ *  that writes a whole file, a single-file read); an edit's fragment is better as a diff. */
 function markdownDocSource(step: ToolStep): string | null {
   const args = step.args && typeof step.args === 'object' ? step.args as Record<string, unknown> : null;
   if (!args) return null;
-  const path = String(args.path ?? args.file ?? args.filePath ?? args.relativePath ?? '');
-  if (!MARKDOWN_EXT.test(path)) return null;
+  const paths = filePaths(args);
+  if (paths.length !== 1 || !MARKDOWN_EXT.test(paths[0])) return null;
 
-  if (step.name === 'writeFile' || step.name === 'createFile') {
-    return typeof args.content === 'string' && args.content.trim() ? args.content : null;
+  if (step.name === 'editor' && args.old_text == null && args.insert_line == null) {
+    return typeof args.new_text === 'string' && args.new_text.trim() ? args.new_text : null;
   }
-  if (step.name === 'readFile') {
+  if (step.name === 'read_files') {
     // A failed read returns a message, not a document — keep the plain output for that.
     const detail = typeof step.detail === 'string' ? step.detail : '';
-    if (!detail.trim() || /^File not found:/.test(detail)) return null;
+    if (!detail.trim() || /not found|no such file|ENOENT/i.test(detail.slice(0, 200))) return null;
     return detail;
   }
   return null;
@@ -674,6 +610,7 @@ export function editDiffArgs(args: unknown): { before: string; after: string; pa
       path,
     };
   }
+  if (typeof a.new_text === 'string') return { before: String(a.old_text ?? ''), after: a.new_text, path };
   if (typeof a.search === 'string') return { before: a.search, after: String(a.replace ?? ''), path };
   if (a.old_string != null && a.new_string != null) {
     return { before: String(a.old_string), after: String(a.new_string), path };
