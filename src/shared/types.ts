@@ -45,6 +45,7 @@ export type Platform =
   | 'naga'
   | 'nous'
   | 'vyceai'
+  | 'tokenharbor'
   | 'custom';
 
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';

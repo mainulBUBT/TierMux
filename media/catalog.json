@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Synced from remote /models JSON — 632 models from 41 providers.",
+  "note": "Synced from remote /models JSON — 643 models from 41 providers.",
   "models": [
     {
       "platform": "agnes",
@@ -2193,6 +2193,26 @@
     },
     {
       "platform": "kenari",
+      "modelId": "qwen3-8-27b:free",
+      "displayName": "Qwen 3.8 27B",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262000,
+      "rpmLimit": 5,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.33,
+      "origOutputPricePer1M": 2.4
+    },
+    {
+      "platform": "kenari",
       "modelId": "nemotron-3-super-120b-a12b:free",
       "displayName": "Nemotron 3 Super 120B",
       "intelligenceRank": 2,
@@ -2537,6 +2557,24 @@
     },
     {
       "platform": "openadapter",
+      "modelId": "GPT-120-OSS",
+      "displayName": "GPT 120 OSS",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 128000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "mid",
+        "free"
+      ]
+    },
+    {
+      "platform": "openadapter",
       "modelId": "GPT-20-OSS",
       "displayName": "GPT 20 OSS",
       "intelligenceRank": 3,
@@ -2658,24 +2696,6 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "small",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "Llama-3.2-Vision-90B",
-      "displayName": "Llama 3.2 Vision 90B",
-      "intelligenceRank": 2,
-      "speedRank": 4,
-      "contextWindow": 128000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "small",
@@ -2811,24 +2831,6 @@
       "supportsReasoning": true,
       "tags": [
         "mid",
-        "free"
-      ]
-    },
-    {
-      "platform": "openadapter",
-      "modelId": "Nemotron-4-340B",
-      "displayName": "Nemotron 4 340B",
-      "intelligenceRank": 1,
-      "speedRank": 5,
-      "contextWindow": null,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "small",
         "free"
       ]
     },
@@ -4504,7 +4506,7 @@
       "displayName": "Qwen/Qwen3.8-27B",
       "intelligenceRank": 3,
       "speedRank": 3,
-      "contextWindow": 131042,
+      "contextWindow": 131072,
       "rpmLimit": 30,
       "rpdLimit": 1000,
       "monthlyTokenBudget": "",
@@ -6603,26 +6605,6 @@
       "origOutputPricePer1M": 15
     },
     {
-      "platform": "kilo",
-      "modelId": "inclusionai/ling-3.0-flash-vl:free",
-      "displayName": "inclusionAI: Ling 3.0 Flash VL (free)",
-      "intelligenceRank": 3,
-      "speedRank": 2,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
       "platform": "openrouter",
       "modelId": "inclusionai/ling-3.0-flash-vl:free",
       "displayName": "inclusionAI: Ling 3.0 Flash VL (free)",
@@ -6636,8 +6618,7 @@
       "supportsVision": true,
       "supportsReasoning": true,
       "tags": [
-        "mid",
-        "free"
+        "mid"
       ],
       "origInputPricePer1M": 0,
       "origOutputPricePer1M": 0
@@ -9104,6 +9085,228 @@
       "monthlyTokenBudget": "",
       "supportsTools": false,
       "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "unknown",
+        "free"
+      ]
+    },
+    {
+      "platform": "kenari",
+      "modelId": "mimo-v2-6-flash:free",
+      "displayName": "Mimo V2 6 Flash Free",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 1048576,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "unknown",
+        "free"
+      ]
+    },
+    {
+      "platform": "aihubmix",
+      "modelId": "xiaomi-mimo-v2.6-pro-free",
+      "displayName": "Xiaomi Mimo V2.6 Pro Free",
+      "intelligenceRank": 4,
+      "speedRank": 4,
+      "contextWindow": null,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "unknown",
+        "free"
+      ]
+    },
+    {
+      "platform": "aihubmix",
+      "modelId": "xiaomi-mimo-v2.6-flash-free",
+      "displayName": "Xiaomi Mimo V2.6 Flash Free",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": null,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "unknown",
+        "free"
+      ]
+    },
+    {
+      "platform": "google",
+      "modelId": "antigravity-preview-latest",
+      "displayName": "Antigravity Agent Preview Latest",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": null,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "mid",
+        "free"
+      ]
+    },
+    {
+      "platform": "nvidia",
+      "modelId": "deepseek-ai/deepseek-v4.1-flash",
+      "displayName": "DeepSeek: DeepSeek V4.1 Flash (Free)",
+      "intelligenceRank": 1,
+      "speedRank": 2,
+      "contextWindow": 1048576,
+      "rpmLimit": 13,
+      "rpdLimit": 3409,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "frontier",
+        "free"
+      ],
+      "origInputPricePer1M": 0.15,
+      "origOutputPricePer1M": 0.6
+    },
+    {
+      "platform": "opencode",
+      "modelId": "mimo-v2.6-flash-free",
+      "displayName": "Mimo V2.6 Flash Free",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": null,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "unknown",
+        "free"
+      ]
+    },
+    {
+      "platform": "llm7",
+      "modelId": "jev-latest",
+      "displayName": "Jev",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 32000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.042,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "openadapter",
+      "modelId": "auto-pro",
+      "displayName": "Auto Pro",
+      "intelligenceRank": 2,
+      "speedRank": 4,
+      "contextWindow": null,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "unknown",
+        "free"
+      ]
+    },
+    {
+      "platform": "openadapter",
+      "modelId": "auto-lite",
+      "displayName": "Auto Lite",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": null,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "unknown",
+        "free"
+      ]
+    },
+    {
+      "platform": "openadapter",
+      "modelId": "auto-free",
+      "displayName": "Auto",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 287000,
+      "rpmLimit": 60,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "mid",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "openadapter",
+      "modelId": "MiMo-V2.6-Flash",
+      "displayName": "Mimo V2.6 Flash Free",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 1048576,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "tags": [
+        "unknown",
+        "free"
+      ]
+    },
+    {
+      "platform": "openadapter",
+      "modelId": "MiMo-V2.6-Pro",
+      "displayName": "MiMo V2.6 Pro",
+      "intelligenceRank": 4,
+      "speedRank": 4,
+      "contextWindow": null,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": true,
       "supportsReasoning": false,
       "tags": [
         "unknown",

@@ -269,7 +269,11 @@ async function main() {
   //    the column → cap at the RPM-implied ceiling (rpm × 1440).
   // Upstream re-priced a model the worker still tags free — keep the tag out or the
   // validator (correctly) fails the build on "users would be billed".
-  const NO_LONGER_FREE = new Set(['openrouter||openai/gpt-oss-20b:free']);
+  const NO_LONGER_FREE = new Set([
+    'openrouter||openai/gpt-oss-20b:free',
+    // 2026-09-24: OpenRouter kept the :free slug but lists $0.06/$0.18 per 1M.
+    'openrouter||inclusionai/ling-3.0-flash-vl:free',
+  ]);
   const sanitizeRates = (m) => {
     if (!m.rpmLimit || m.rpmLimit <= 0) m.rpmLimit = 10;
     if (!m.rpdLimit || m.rpdLimit <= 0) m.rpdLimit = 250;

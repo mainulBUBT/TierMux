@@ -54,6 +54,7 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'naga', name: "NagaAI", baseUrl: "https://api.naga.ac/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://naga.ac/" }, // auto-synced
   { platform: 'nous', name: "Nous Portal", baseUrl: "https://inference-api.nousresearch.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://portal.nousresearch.com/" }, // auto-synced
   { platform: 'vyceai', name: "Vyce AI", baseUrl: "https://vyceai.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://vyceai.com" }, // auto-synced
+  { platform: 'tokenharbor', name: "Token Harbor", baseUrl: "https://tokenharbor.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://tokenharbor.ai/dashboard/api-keys" }, // auto-synced
 ];
 
 const providers = new Map<Platform, BaseProvider>();
