@@ -15,6 +15,7 @@ import { classifyTask, type TaskKind } from '../agent/routing';
 import { RateTracker } from './rateTracker';
 import { TIER_ORDER, tierOf, type ModelTier } from '../catalog/discovery';
 import type { QuotaStore } from '../config/quotaStore';
+import type { TaskRoundStore } from '../config/taskRoundStore';
 import { diagLog } from '../util/diag';
 import { NoVisionModelError } from './errors';
 
@@ -31,13 +32,38 @@ const HEAD_MIN_TIER: Partial<Record<TaskKind, ModelTier>> = {
   agent: 'strong', coding: 'strong', debug: 'strong', plan: 'strong',
   chat: 'mid', longContext: 'mid',
 };
-/** Interactive kinds whose head never includes a slow row (speedRank ≥ 4) — a speed-5 head
- *  once answered a vision turn in ~5 minutes (2026-09-04). Not applied to `trivial` (speed
- *  IS the product) or `vision` (curated, capability-bound). Static catalog data, not a
- *  learned latency signal — see the file header. */
-const HEAD_SPEED_CAP_KINDS = new Set<TaskKind>(['agent', 'coding', 'debug', 'plan', 'chat', 'longContext']);
 /** A below-floor tier can still lead at this speedRank or better — fast buys its way in. */
 const HEAD_FAST_ENOUGH = 2;
+
+/** Whether tier/speed is allowed to LEAD taskKind on a tool turn — single source of truth
+ *  for both the table loop (chain membership) and the tail sort (so a gated-out candidate
+ *  can never outrank a gate-passing one after falling through to the enabled-tail pad,
+ *  2026-09-23: the head gate above used to only filter the table, and a demoted candidate
+ *  walked right back in via the unconditional tail pad and could still lead). `undefined`
+ *  = passes the gate. Only meaningful when the caller has already checked
+ *  `opts.requireTools` — this has no opinion on non-tool turns, same as the gate it
+ *  replaces. Every task kind not in HEAD_MIN_TIER (trivial, vision) keeps only the
+ *  small/unknown check — no speed cap, since speed IS trivial's product and vision is
+ *  curated/capability-bound (see HEAD_MIN_TIER's own comment).
+ *
+ *  Wording note: this string is shown twice — as a table-loop skip reason AND (via
+ *  blockedReason) as the tail's "why isn't this leading" label for a candidate that IS in
+ *  the chain. "Never leads" would be false in the all-blocked fallback case, so every
+ *  reason says "may serve if no eligible model exists" rather than an absolute. */
+function headGateSkipReason(taskKind: TaskKind, tier: ModelTier, speed: number): string | undefined {
+  if (tier === 'small' || tier === 'unknown') {
+    return `${tier} tier — utility/last-resort tier, demoted while an eligible model exists`;
+  }
+  const floor = HEAD_MIN_TIER[taskKind];
+  if (floor === undefined) return undefined;
+  if (TIER_ORDER[tier] > TIER_ORDER[floor] && speed > HEAD_FAST_ENOUGH) {
+    return `${tier} tier, speedRank ${speed} — below the ${taskKind} head floor; may serve if no eligible model exists`;
+  }
+  if (speed >= 4) {
+    return `speedRank ${speed} — tail last resort; may serve if no eligible model exists`;
+  }
+  return undefined;
+}
 
 /** platform::modelId → candidate chain per task kind. Ordered: best first. */
 export const TASK_ROUTING: Record<TaskKind, string[]> = {
@@ -312,9 +338,19 @@ function rankByModel(keys: Iterable<string>): Map<string, number> {
  *  Post-increment: the FIRST call returns 0 (no rotation — picker order stands until a
  *  same-rank peer has proven itself), then 1, 2, … walk the group. */
 const taskRoundCounters = new Map<string, number>();
+/** Optional persistent backing (2026-09-23) — without it, a window reload zeroes this Map,
+ *  which a rarely-exercised task kind (vision: often one turn per session) could never
+ *  outlive long enough to rotate past round 0, so its table head never moved off index 0 in
+ *  practice. See setTaskRoundStore/config/taskRoundStore.ts. */
+let taskRoundStore: TaskRoundStore | undefined;
+export function setTaskRoundStore(store: TaskRoundStore | undefined): void {
+  taskRoundStore = store;
+  if (store) for (const [kind, round] of store.snapshot()) taskRoundCounters.set(kind, round);
+}
 function nextTaskRound(kind: string): number {
   const cur = taskRoundCounters.get(kind) ?? 0;
   taskRoundCounters.set(kind, cur + 1);
+  taskRoundStore?.setRound(kind, cur + 1);
   return cur;
 }
 
@@ -540,24 +576,17 @@ export async function selectModel(
     // (the 2026-09-15 gpt-4.1-nano repro). Since 2026-09-22 the head is also LAYER-WISE per
     // task kind: below-floor tiers (mid on agent/coding/debug/plan) lead only when fast
     // enough, and no interactive kind leads with a speedRank ≥ 4 row. Skipped rows stay in
-    // the tail below as failover — the chain never empties.
+    // the tail below as failover — the chain never empties, and (2026-09-23) the tail sort
+    // now enforces the SAME gate so a skipped row can't silently re-lead from there either.
     if (opts.requireTools && opts.pinnedModel !== picked) {
       const [pPlatform, ...pRest] = picked.split('::');
       const pModelId = pRest.join('::');
       const meta = sources.catalog.find(pPlatform, pModelId);
       const tier = tierOf(meta, modelRank.get(canonicalModelId(pModelId)));
       const speed = meta?.speedRank ?? 5;
-      const floor = HEAD_MIN_TIER[taskKind];
-      if (tier === 'small' || tier === 'unknown') {
-        skip(picked, `${tier} tier — utility and last-resort only, never leads a tool turn`);
-        continue;
-      }
-      if (floor !== undefined && TIER_ORDER[tier] > TIER_ORDER[floor] && speed > HEAD_FAST_ENOUGH) {
-        skip(picked, `${tier} tier, speedRank ${speed} — below the ${taskKind} head floor; tail failover only`);
-        continue;
-      }
-      if (HEAD_SPEED_CAP_KINDS.has(taskKind) && speed >= 4) {
-        skip(picked, `speedRank ${speed} — too slow to lead a ${taskKind} turn; tail last resort`);
+      const reason = headGateSkipReason(taskKind, tier, speed);
+      if (reason) {
+        skip(picked, reason);
         continue;
       }
     }
@@ -586,7 +615,7 @@ export async function selectModel(
   // ALWAYS pad the chain with the rest of the usable enabled models, best intelligence rank
   // first (settings order let whichever model sat first serve every task — 2026-08-28,
   // nemotron-3-ultra-free). Pinned models are exempt.
-  const ranked: Array<{ key: string; tier: ReturnType<typeof tierOf>; rank: number; speed: number; vote: number; headroom: number }> = [];
+  const ranked: Array<{ key: string; tier: ReturnType<typeof tierOf>; rank: number; speed: number; vote: number; headroom: number; blockedReason: string | undefined }> = [];
   // A wildcard resolves to a model that may also be enabled in its own right, so dedupe on what
   // was PICKED — chain alone is not enough, it is filled only after this loop.
   const takenTail = new Set<string>();
@@ -606,17 +635,23 @@ export async function selectModel(
     const platform = picked.split('::')[0];
     const modelId = picked.split('::').slice(1).join('::');
     const meta = sources.catalog.find(platform, modelId);
+    const tailTier = tierOf(meta, modelRank.get(canonicalModelId(modelId)));
+    const tailSpeed = meta?.speedRank ?? 5;
     ranked.push({
       key: picked,
       // Hand-maintained quality band (worker tag); rank only as the legacy fallback, taken
       // from the MODEL's best rank so a twin's tier doesn't drift with its gateway row.
-      tier: tierOf(meta, modelRank.get(canonicalModelId(modelId))),
+      tier: tailTier,
       rank: modelRank.get(canonicalModelId(modelId)) ?? meta?.intelligenceRank ?? Number.POSITIVE_INFINITY,
-      speed: meta?.speedRank ?? 5,
+      speed: tailSpeed,
       // Net 👍−👎 for this task kind — the tiebreak that lets feedback pick the preferred
       // model among equal peers. Zero without a stats store or any votes.
       vote: voteScore(taskKind, picked),
       headroom: rateTracker.headroom(platform, modelId, meta?.rpmLimit ?? null, meta?.rpdLimit ?? null),
+      // Same gate the table loop applies (2026-09-23) — a candidate the table skipped must
+      // not silently re-lead from here just because it fell through to the unconditional
+      // pad. undefined when the gate doesn't apply (no tools offered) or it passes.
+      blockedReason: opts.requireTools ? headGateSkipReason(taskKind, tailTier, tailSpeed) : undefined,
     });
   }
   // Tail order: speed class, then MODEL rank, then user feedback, then this row's speed (the
@@ -627,10 +662,17 @@ export async function selectModel(
   // a last resort but is never rotated into the head (2026-09-04: a chat turn took ~5 minutes
   // that way).
   const slowCapable = (e: { speed: number }): number => (e.speed >= 4 ? 1 : 0);
+  // Blocked-by-the-head-gate sits ahead of everything else (2026-09-23): a candidate the
+  // table loop demoted must never outrank an eligible one just because it fell through to
+  // this unconditional pad — it can still lead when literally nothing else qualifies
+  // (chain never empties), just never ahead of something that clears the gate. Peers
+  // sharing tier+speed always share blockedReason too (it's derived from exactly those),
+  // so this can't split an equal-rank rotation group.
+  const blocked = (e: { blockedReason: string | undefined }): number => (e.blockedReason ? 1 : 0);
   // Tier sits directly after the slow-capable cap: the best HAND-MAINTAINED quality band
   // leads, and a small/unassessed model can only follow every judged one — rank (regex
   // derived, kept for ordering within a tier) no longer decides alone.
-  ranked.sort((a, b) => slowCapable(a) - slowCapable(b) || TIER_ORDER[a.tier] - TIER_ORDER[b.tier] || a.rank - b.rank || b.vote - a.vote || b.headroom - a.headroom || a.speed - b.speed);
+  ranked.sort((a, b) => blocked(a) - blocked(b) || slowCapable(a) - slowCapable(b) || TIER_ORDER[a.tier] - TIER_ORDER[b.tier] || a.rank - b.rank || b.vote - a.vote || b.headroom - a.headroom || a.speed - b.speed);
   // Quota-spreading among peers: rotate the head of each equal-tier, equal-rank, equal-speed,
   // equal-vote group so the NEXT turn leads with a different peer ("600 models, but it keeps
   // using the same 1-2"). Deterministic per taskKind via the SAME round counter the
@@ -658,7 +700,13 @@ export async function selectModel(
     }
   }
   for (const r of ranked) {
-    pickLabels.set(r.key, `enabled tail · ${r.tier} tier${Number.isFinite(r.rank) ? ` · rank ${r.rank}` : ''}`);
+    // A blocked-but-serving candidate keeps its real reason instead of the generic label,
+    // so the popover explains WHY it isn't leading rather than looking like an ordinary
+    // rank-based failover entry (2026-09-23).
+    const label = r.blockedReason
+      ? `enabled tail · ${r.blockedReason}`
+      : `enabled tail · ${r.tier} tier${Number.isFinite(r.rank) ? ` · rank ${r.rank}` : ''}`;
+    pickLabels.set(r.key, label);
     chain.push(r.key);
   }
   if (chain.length === 0) {

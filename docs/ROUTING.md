@@ -56,7 +56,7 @@ Deliberately readable: you can look at the table and know which model answers wh
   reasoning → also skipped in favour of the next candidate.
 
 **Per-model cooldown** — the only resilience state the picker keeps: exponential backoff
-from 30 s, capped at 2 min, reset on success. In-memory only; this is “don't hammer a
+from 30 s, capped at 10 min, reset on success. In-memory only; this is “don't hammer a
 model that just 429'd”, not durability.
 
 **Failover walks platforms round-robin**, not the flat chain order. Round 0 takes *every*
@@ -175,7 +175,7 @@ All implemented natively — there is no external routing service in the path.
 | Regex-first task classification, bilingual (English + romanized Bengali) | every turn | picks the task kind without a model call; routing is language-invariant |
 | Task table → intelligence-rank tail | picker | curated first choice per kind, then the whole enabled pool best-first — never a dead end |
 | Availability + quality failover | picker | an empty-but-HTTP-200 answer fails over exactly like a 429 |
-| Exponential per-model cooldown (30 s → 2 min) | picker | stops hammering a model that just failed; resets on success |
+| Exponential per-model cooldown (30 s → 10 min) | picker | stops hammering a model that just failed; resets on success |
 | Round-robin platform diversity in the failover scan | picker | one provider's twenty models can't consume every retry |
 | Per-key rotation with per-key cooldown | secret store | a dead/limited key rotates inside the provider before the platform is written off |
 | Equal-rank head rotation | picker | among models tied on intelligence rank — task table entries for the kind included — successive turns start at a different one, so quota spreads without the rationale naming a model that never ran |

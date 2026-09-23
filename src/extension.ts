@@ -8,7 +8,8 @@ import { UsageTracker } from './config/usage';
 import { UsageStore } from './config/usageStore';
 import { ModelStatsStore } from './config/modelStats';
 import { QuotaStore } from './config/quotaStore';
-import { setModelSources, setQuotaStore } from './router/picker';
+import { TaskRoundStore } from './config/taskRoundStore';
+import { setModelSources, setQuotaStore, setTaskRoundStore } from './router/picker';
 import { verifyGrounding, renderVerifyReport } from './backend/groundingVerify';
 import { EditGate } from './edits/applyEdit';
 import { registerCheckpointContentProvider } from './edits/checkpoints';
@@ -119,6 +120,10 @@ export function activate(context: vscode.ExtensionContext): void {
     setModelSources({ catalog, settings, secrets, stats: modelStats });
     // Declared rpm/rpd windows survive a reload (see picker.setQuotaStore).
     setQuotaStore(new QuotaStore(context.globalState));
+    // Equal-rank rotation survives a reload too (see picker.setTaskRoundStore) — otherwise a
+    // rarely-exercised task kind (vision) never got far enough into its own round counter
+    // before the next reload zeroed it, so its table head never rotated off index 0.
+    setTaskRoundStore(new TaskRoundStore(context.globalState));
 
     const editGate = new EditGate(() =>
       vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('requireWriteConfirmation', true),

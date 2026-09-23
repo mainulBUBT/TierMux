@@ -1,3 +1,8 @@
+// Known gap (2026-09-23, flagged not fixed): this is an EAGER top-level import, unlike the
+// lazy `require('vscode')` used elsewhere for headless callers (routeOnce.ts, routerProvider.ts)
+// — a genuinely vscode-less host throws here at module-load time, before enabled()'s try/catch
+// below ever runs. See scripts/agentSettingsHeadless.e2e.ts's Module._load hook, which works
+// around this rather than fixing it.
 import * as vscode from 'vscode';
 
 /**

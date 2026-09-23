@@ -72,9 +72,13 @@ export function isFailoverWorthy(e: unknown): boolean {
  *  exact historical values; nothing changes until the user sets the setting. Lazy require:
  *  this module also runs under test mocks without a real VS Code host (routeOnce pattern). */
 function agentNumberSetting(key: string, fallback: number): number {
-  const vscode = require('vscode') as typeof import('vscode');
-  const v = vscode?.workspace?.getConfiguration?.('tiermux.agent')?.get<number>(key, fallback);
-  return typeof v === 'number' && v > 0 ? v : fallback;
+  try {
+    const vscode = require('vscode') as typeof import('vscode');
+    const v = vscode?.workspace?.getConfiguration?.('tiermux.agent')?.get<number>(key, fallback);
+    return typeof v === 'number' && v > 0 ? v : fallback;
+  } catch {
+    return fallback; // headless/library caller with no vscode shim — routeOnce pattern
+  }
 }
 
 /** Per-candidate ceiling on TIME TO HEADERS while failing over — never on generation length; the

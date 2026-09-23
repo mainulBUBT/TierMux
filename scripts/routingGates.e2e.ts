@@ -449,6 +449,51 @@ console.log('\n— the trivial table is ordered by SPEED, because latency is the
     trivial.join(', '));
 }
 
+console.log('\n— the head gate holds through the tail too: a blocked candidate can\'t outrank an eligible one (2026-09-23 fix) —');
+{
+  __resetTaskRoundCounters();
+  // HEAD_MIN_TIER['agent'] = 'strong', HEAD_FAST_ENOUGH = 2. Neither model is in
+  // TASK_ROUTING['agent'], so both only ever reach the chain via the "ALWAYS pad" tail —
+  // this isolates the tail sort from the table loop's own (already-correct) gate.
+  // 'eligible-fast': mid tier but speedRank 2 (<= HEAD_FAST_ENOUGH) — fast buys its way in,
+  // NOT blocked, despite a worse (higher) intelligenceRank.
+  // 'blocked-slow': mid tier, speedRank 3 (> HEAD_FAST_ENOUGH) — below the floor and not
+  // fast enough, BLOCKED, but with a BETTER (lower) intelligenceRank. Before the fix the
+  // tail sorted purely by tier→rank with no gate check, so the better rank put this one
+  // ahead of the eligible one despite being blocked — the exact bug this fix closes.
+  const meta: Record<string, { intelligenceRank: number; speedRank: number; supportsTools: boolean; tags: string[] }> = {
+    'kilo::eligible-fast': { intelligenceRank: 5, speedRank: 2, supportsTools: true, tags: ['mid'] },
+    'kilo::blocked-slow': { intelligenceRank: 1, speedRank: 3, supportsTools: true, tags: ['mid'] },
+  };
+  const fallback = [entry('kilo', 'blocked-slow', 0), entry('kilo', 'eligible-fast', 1)];
+  const sources = makeSources(fallback, [], ['kilo']) as unknown as { catalog: { find: (p: string, m: string) => unknown } };
+  sources.catalog.find = (p: string, m: string) => meta[`${p}::${m}`];
+  setModelSources(sources as unknown as Parameters<typeof setModelSources>[0]);
+  const sel = await selectModel([{ role: 'user', content: 'x' } as never], { taskKind: 'agent', requireTools: true });
+  const chain = [sel.model, ...sel.fallbackChain];
+  ok('the eligible (fast) candidate leads, not the blocked one with the better raw rank',
+    sel.model === 'kilo::eligible-fast', chain.join(' → '));
+  ok('the blocked candidate is not lost — it still trails as failover (chain never empties)',
+    chain.includes('kilo::blocked-slow'), chain.join(' → '));
+  ok('…and the popover explains why it isn\'t leading, not a generic rank label',
+    /may serve if no eligible model exists/.test(sel.rationale?.entries.find((e) => e.model === 'kilo::blocked-slow')?.reason ?? ''),
+    sel.rationale?.entries.find((e) => e.model === 'kilo::blocked-slow')?.reason ?? '<no entry>');
+}
+{
+  __resetTaskRoundCounters();
+  // Nothing eligible enabled at all — the blocked candidate must still serve (chain never
+  // empties is the whole point of the tail pad; the gate only reorders, never excludes).
+  const meta: Record<string, { intelligenceRank: number; speedRank: number; supportsTools: boolean; tags: string[] }> = {
+    'kilo::only-option': { intelligenceRank: 1, speedRank: 4, supportsTools: true, tags: ['mid'] },
+  };
+  const sources = makeSources([entry('kilo', 'only-option', 0)], [], ['kilo']) as unknown as { catalog: { find: (p: string, m: string) => unknown } };
+  sources.catalog.find = (p: string, m: string) => meta[`${p}::${m}`];
+  setModelSources(sources as unknown as Parameters<typeof setModelSources>[0]);
+  const sel = await selectModel([{ role: 'user', content: 'x' } as never], { taskKind: 'agent', requireTools: true });
+  ok('the only enabled model still leads when it is the sole option, even though it is blocked',
+    sel.model === 'kilo::only-option', sel.model);
+}
+
 console.log(bad === 0 ? '\nAll routing gates hold.' : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);
 }
