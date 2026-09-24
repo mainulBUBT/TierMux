@@ -37,8 +37,9 @@ const TOOL_CALL_TEMPERATURE = 0.2;
 const FALLBACK_PROFILE = resolveExecutionProfile(undefined);
 
 // Withdrawn on small-window models (schema tax). delegateTask stays — on a small window it is
-// how exploration is kept OUT of the context. Never a capability tool.
-const COORDINATION_TOOLS = ['todoWrite'];
+// how exploration is kept OUT of the context. `skill` goes too: its listing can run ~1k tokens.
+// Never a capability tool.
+const COORDINATION_TOOLS = ['todoWrite', 'skill'];
 /** At/below this window the schema tax stops being affordable. */
 const SMALL_WINDOW_MAX = 16_384;
 
@@ -325,6 +326,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     onBeforeWrite: opts.onBeforeWrite,
     onAskUser: opts.onAskUser,
     onPlanProposed: (plan) => { proposedPlan = plan; },
+    skills: opts.skills,
   }) as ToolSet, (sig, count) => {
     if (count >= REPEAT_READ_LIMIT && !stuckSignature) {
       stuckSignature = sig;

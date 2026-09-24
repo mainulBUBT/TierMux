@@ -129,7 +129,12 @@ export function buildReasoningBlock(text: string, tc?: string, isStreaming?: boo
  *  segment and the next burst opens a fresh block, giving a think→tool→think timeline. */
 export function updateReasoningBlock(block: HTMLElement, text: string, done?: boolean, durationMs?: number): void {
   const body = block.querySelector<HTMLElement>('.tm-reasoning-body');
+  // The content box is height-capped with its own scrollbar; follow the stream while the
+  // reader is at the bottom, but leave them be if they scrolled up to re-read.
+  const content = block.querySelector<HTMLElement>('.tm-reasoning-content');
+  const pinned = !content || content.scrollHeight - content.scrollTop - content.clientHeight < 24;
   if (body) { body.innerHTML = ''; body.appendChild(renderMarkdown(text || '')); }
+  if (content && pinned) content.scrollTop = content.scrollHeight;
   if (done) { settleReasoningBlock(block, durationMs); return; }
   const label = block.querySelector<HTMLElement>('.tm-reasoning-label');
   block.classList.add('streaming', 'open');

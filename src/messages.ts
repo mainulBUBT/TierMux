@@ -371,7 +371,7 @@ export type OutMessage =
   | { type: 'planProposed'; sessionId: string; requestId: string; steps: string; decisions?: PlanDecision[]; discarded?: boolean; deferred?: boolean }
   | { type: 'planDiscarded'; sessionId: string; requestId: string }
   | { type: 'editApproval'; sessionId: string; requestId: string; id: string; path: string; title: string; kind: 'write' | 'delete' }
-  | { type: 'permissionAsk'; sessionId: string; requestId: string; id: string; title: string; pattern?: string | string[] }
+  | { type: 'permissionAsk'; sessionId: string; requestId: string; id: string; title: string; pattern?: string | string[]; command?: string; dangerous?: boolean }
   | { type: 'sessionTitle'; sessionId: string; title: string }
   | { type: 'assistantMessage'; sessionId: string; requestId: string; text: string; reasoning?: string; finishReason?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean }
   // Structured end-of-turn report — posted right after the assistantMessage it belongs to.
@@ -397,7 +397,8 @@ export type OutMessage =
   // click (e.g. the run ended/was cancelled first) — `id` is globally unique across all three
   // card kinds (cmd-/edit-/perm- prefixes), so the webview can match it against whichever kind
   // is actually rendered without needing to know which.
-  | { type: 'approvalDismissed'; sessionId: string; id: string }
+  // `approved`: settled by turning Auto-approve on, not by the run ending.
+  | { type: 'approvalDismissed'; sessionId: string; id: string; approved?: boolean }
   | { type: 'todos'; sessionId: string; requestId: string; todos: TodoItem[]; followingPlan?: boolean }
   /** AI Elements Plan component — the rich, sectioned progress card shown while an approved
    *  plan executes (plan mode). Derived from the same `TodoItem[]` source as `todos`, so the

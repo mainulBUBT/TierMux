@@ -46,7 +46,7 @@ import { resolveExecutionProfile } from './agent/executionProfile';
 import { structurePlanSteps, formatStructuredSteps, formatPlanForCard, isCleanNumberedList, renderPlanMarkdown } from './agent/planStructurer';
 import { deriveTitleFrom, looksLikeActionablePlan, sanitizeTitle, planStepsToTodos } from './session/titles';
 
-import { loadSkills, invalidateSkillsCache } from './context/skills';
+import { loadSkills, invalidateSkillsCache, skillInstructions } from './context/skills';
 import { fetchSkillCatalog, searchSkills } from './context/skillCatalog';
 import { checkNpxAvailable, installSkillPackage } from './context/skillInstaller';
 import { registerReadableRoot } from './agent/core/tools/resolvePath';
@@ -499,6 +499,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** One background-approval notification per (sessionId, requestId). */
   private approvalNotified = new Set<string>();
   private approvalSeqGlobal = 0;
+  /** Pending permissionAsk ids that Auto-approve would have run (not dangerous). */
+  private autoApprovableAsks = new Set<string>();
   /** Workspace-level Auto-approve toggle (composer): when true the permission policy runs
    *  commands/edits without a prompt (dangerous commands still ask). Defaults to true. */
   autoApprove = true;
@@ -514,7 +516,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     deps.settings.onDidChange(() => void this.sendConfig());
   }
 
-  /** Slash-command skills from `.tiermux/skills/*.md` (bundled defaults, per-workspace override).
+  /** Slash-command skills: bundled, global (`~/.claude/skills`, `~/.agents/skills`) and per-workspace.
    *  Cached in memory, invalidated via fs.watch. */
   private skills() {
     return loadSkills(this.extensionUri.fsPath, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
@@ -783,16 +785,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Ask the user to approve/deny a tool call the permission policy paused, inline in the
    *  run's own session. Three-way response: once / always / reject. */
-  requestPermissionAsk(sessionId: string, requestId: string, title: string, pattern?: string | string[]): Promise<'once' | 'always' | 'reject'> {
+  requestPermissionAsk(sessionId: string, requestId: string, ask: { title: string; pattern?: string | string[]; command?: string; dangerous?: boolean }): Promise<'once' | 'always' | 'reject'> {
     const s = this.sessions.get(sessionId);
     if (!this.view || !s) return Promise.resolve('reject'); // nowhere to ask → deny rather than hang
     try { this.view.show?.(true); } catch { /* reveal is best-effort */ }
     const id = `perm-${++this.approvalSeqGlobal}`;
     return new Promise<'once' | 'always' | 'reject'>((resolve) => {
-      s.pendingPermissions.set(id, resolve);
-      this.postCard(s, { type: 'permissionAsk', sessionId, requestId, id, title, pattern });
+      s.pendingPermissions.set(id, (r) => { this.autoApprovableAsks.delete(id); resolve(r); });
+      if (!ask.dangerous) this.autoApprovableAsks.add(id);
+      this.postCard(s, { type: 'permissionAsk', sessionId, requestId, id, ...ask });
       this.maybeNotifyApproval(sessionId, requestId, s);
     });
+  }
+
+  private settlePermission(s: Session, id: string, response: 'once' | 'always' | 'reject'): void {
+    const resolve = s.pendingPermissions.get(id);
+    if (!resolve) return;
+    s.pendingPermissions.delete(id);
+    this.removeCards(s, (c) => c.type === 'permissionAsk' && c.id === id);
+    resolve(response);
+    this.approvalNotified.delete(`${s.id}:${s.activeRequestId ?? ''}`);
+    if (s.activeRequestId) this.setStatus(s.id, 'running');
+  }
+
+  /** Turning Auto-approve on releases the cards it would have skipped; dangerous ones keep waiting. */
+  private releaseAutoApprovableAsks(): void {
+    for (const s of this.sessions.values()) {
+      for (const id of [...s.pendingPermissions.keys()]) {
+        if (!this.autoApprovableAsks.has(id)) continue;
+        this.settlePermission(s, id, 'once');
+        this.post({ type: 'approvalDismissed', sessionId: s.id, id, approved: true });
+      }
+    }
   }
 
   /** One background-approval notification per run, plus flipping the tab to "needs approval". */
@@ -1160,14 +1184,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'permissionAskResponse': {
         const s = this.sessions.get(m.sessionId ?? this.viewedSessionId);
-        const resolve = s?.pendingPermissions.get(m.id);
-        if (s && resolve) {
-          s.pendingPermissions.delete(m.id);
-          this.removeCards(s, (c) => c.type === 'permissionAsk' && c.id === m.id);
-          resolve(m.response);
-          this.approvalNotified.delete(`${s.id}:${s.activeRequestId ?? ''}`);
-          if (s.activeRequestId) this.setStatus(s.id, 'running');
-        }
+        if (s) this.settlePermission(s, m.id, m.response);
         break;
       }
       case 'openPlanFile': {
@@ -1400,6 +1417,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'setAutoApprove':
         this.autoApprove = m.enabled;
         await this.deps.workspaceState.update(AUTO_APPROVE_KEY, m.enabled);
+        if (m.enabled) this.releaseAutoApprovableAsks();
         break;
       case 'newChat':
         this.newChat();
@@ -2075,15 +2093,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // A skill that ships its own files may live outside the workspace (the bundled ones do),
       // where readFile's containment would refuse them — open that one directory for reading.
       registerReadableRoot(skill.dir);
-      // Skills are written for whichever agent their author used, so the instructions below may
-      // name that harness's tools. Say so once, up front, instead of paying a repair round per call.
-      const dirNote = `(This skill's files live at: ${skill.dir}. Resolve any relative path `
-        + `referenced below — references/, scripts/, examples/ — against that directory, and pass `
-        + `readFile the full path. The instructions may name another agent's tools: Read/View is `
-        + `readFile, Write is writeFile, Edit/apply_patch is editFile, Bash/shell is runCommand, `
-        + `Glob is glob, Grep is grep, Task is delegateTask, WebFetch is fetchUrl. Use YOUR tools `
-        + `and ignore any tool it names that you do not have.)\n\n`;
-      prompt = `${dirNote}${skill.prompt}\n\n${slash.rest}`;
+      prompt = `${skillInstructions(skill)}\n\n${slash.rest}`;
     }
     const s = this.current();
     s.model = m.model;
@@ -2835,6 +2845,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       sessionId: s.id,
       requestId,
       mentionCount: s.lastMentionCount,
+      skills: [...this.skills().values()],
       sessionFiles: async () => formatSessionFiles(await readSessionFileStates(s.checkpoints.touchedFiles())),
       abortSignal: s.cancel ? tokenToAbortSignal(s.cancel.token) : undefined,
       // Read by the engine's toolApproval policy (policyFromSettings).
@@ -3062,7 +3073,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // session — auto-approve matching calls, but NEVER a dangerous command (those keep asking).
         if (info.toolName && !dangerous && s.alwaysAllowTools.has(info.toolName)) return 'once';
 
-        const resp = await this.requestPermissionAsk(s.id, requestId, info.title, info.pattern);
+        const resp = await this.requestPermissionAsk(s.id, requestId, {
+          title: info.title,
+          ...(info.pattern ? { pattern: info.pattern } : {}),
+          ...(info.command ? { command: info.command } : {}),
+          ...(dangerous ? { dangerous } : {}),
+        });
         // "Always" = remember this tool kind for the rest of the session so we stop asking for it.
         // Skip dangerous commands so a one-off "Always" on a risky command can't disable its gate.
         if (resp === 'always' && info.toolName && !dangerous) s.alwaysAllowTools.add(info.toolName);

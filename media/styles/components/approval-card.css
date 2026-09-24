@@ -28,6 +28,19 @@
   word-break: break-all;
 }
 
+.tm-approval-command {
+  margin: var(--tm-gap-md) 0 0;
+  padding: var(--tm-gap-md) var(--tm-gap-lg);
+  max-height: 160px;
+  overflow: auto;
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-surface-code);
+  font-family: var(--tm-font-code);
+  font-size: var(--tm-text-sm);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .tm-approval-hint {
   font-size: var(--tm-text-xs);
   color: var(--tm-fg-muted);

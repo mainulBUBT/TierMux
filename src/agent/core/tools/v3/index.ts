@@ -12,6 +12,7 @@ export { createGetDiagnosticsTool } from './getDiagnostics';
 export { createAskUserTool } from './askUser';
 export { createDelegateTaskTool } from './delegateTask';
 export { createExitPlanModeTool } from './exitPlanMode';
+export { createSkillTool } from './skill';
 export { createOutlineTool, createFindSymbolTool, createReferencesTool, createDefinitionTool, createHoverTool } from './codeIntel';
 
 import type { ToolSet } from 'ai';
@@ -27,6 +28,8 @@ import { createGetDiagnosticsTool } from './getDiagnostics';
 import { createAskUserTool } from './askUser';
 import { createDelegateTaskTool } from './delegateTask';
 import { createExitPlanModeTool } from './exitPlanMode';
+import { createSkillTool } from './skill';
+import type { Skill } from '../../../../context/skills';
 import { checkPlanPaths } from './planPathCheck';
 import { createOutlineTool, createFindSymbolTool, createReferencesTool, createDefinitionTool, createHoverTool } from './codeIntel';
 import { createWebSearchTool } from '../network/webSearch';
@@ -43,6 +46,8 @@ export const READ_ONLY_TOOLS = new Set([
   // Approval of the PLAN happens on the card afterwards, so gating the tool itself would just
   // put an "Allow exitPlanMode?" prompt in front of the real approval UI.
   'exitPlanMode',
+  // Returns instructions text; anything the skill then asks for goes through its own tool's gate.
+  'skill',
 ]);
 
 export interface ToolsetBindings {
@@ -62,6 +67,8 @@ export interface ToolsetBindings {
    *  The engine captures it into AgentResult.plan and stops the turn; the host renders the
    *  plan card from this STRUCTURE instead of re-deriving it from the reply text. */
   onPlanProposed?: (plan: ProposedPlan) => void;
+  /** Installed skills; offered as the `skill` tool in every mode when any exist. */
+  skills?: Skill[];
 }
 
 /** Build the mode-filtered ToolSet. `plan`: read/search + shell (policy asks) + exitPlanMode,
@@ -88,6 +95,7 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
     definition: createDefinitionTool(),
     hover: createHoverTool(),
   };
+  const skill: ToolSet = bindings.skills?.length ? { skill: createSkillTool(bindings.skills) } : {};
 
   if (mode === 'plan') {
     return {
@@ -100,6 +108,7 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
       todoWrite,
       getDiagnostics,
       ...codeIntel,
+      ...skill,
       askUser: createAskUserTool(bindings.onAskUser, mode),
       delegateTask: createDelegateTaskTool(bindings),
       runCommand: createRunCommandTool(bindings),
@@ -119,6 +128,7 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
       todoWrite,
       getDiagnostics,
       ...codeIntel,
+      ...skill,
       askUser: createAskUserTool(bindings.onAskUser, mode),
       delegateTask: createDelegateTaskTool(bindings),
       runCommand: createRunCommandTool(bindings),
@@ -139,6 +149,7 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
     todoWrite,
     getDiagnostics,
     ...codeIntel,
+    ...skill,
     askUser: createAskUserTool(bindings.onAskUser, mode),
     delegateTask: createDelegateTaskTool(bindings),
     editFile: createEditFileTool(bindings),

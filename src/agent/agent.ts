@@ -105,6 +105,8 @@ export interface AgentOpts {
    *  routing.ts's classifyTaskCore, which uses this to route "work from what I gave you" turns
    *  (e.g. "reformat this @notes.md") to `chat` instead of an ambiguous default. */
   mentionCount?: number;
+  /** Skills the model may load on its own through the `skill` tool. */
+  skills?: import('../context/skills').Skill[];
 
   onChunk: (text: string) => void;
   /** Retract the live text draft: a tentative chat reply turned out to be tool-planning narration

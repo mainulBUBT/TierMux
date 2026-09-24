@@ -2,6 +2,7 @@
 // the body for the message text; the `/` autocomplete lists name + description.
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 export interface Skill {
@@ -22,7 +23,8 @@ function parseSkillFile(raw: string): { description: string; prompt: string } {
   const m = /^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/.exec(raw);
   if (!m) return { description: '', prompt: raw.trim() };
   const descMatch = /^description:\s*(.+)$/m.exec(m[1]);
-  return { description: descMatch ? descMatch[1].trim() : '', prompt: m[2].trim() };
+  const description = descMatch ? descMatch[1].trim().replace(/^(["'])(.*)\1$/, '$2') : '';
+  return { description, prompt: m[2].trim() };
 }
 
 function loadDir(dir: string, into: Map<string, Skill>): void {
@@ -39,19 +41,32 @@ function loadDir(dir: string, into: Map<string, Skill>): void {
 }
 
 /** `.agents/skills/<name>/SKILL.md` — the cross-tool convention `npx skills add` installs into. */
-function loadUniversalDir(dir: string, into: Map<string, Skill>): void {
+function loadUniversalDir(dir: string, into: Map<string, Skill>, removable = true): void {
   let entries: fs.Dirent[];
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
   catch { return; }
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    // Skill folders are often symlinked in from another tool's store.
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
     const name = entry.name.toLowerCase();
     try {
       const skillDir = path.join(dir, entry.name);
       const { description, prompt } = parseSkillFile(fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8'));
-      if (prompt) into.set(name, { name, description, prompt, dir: skillDir, removablePath: skillDir });
+      if (prompt) into.set(name, { name, description, prompt, dir: skillDir, ...(removable ? { removablePath: skillDir } : {}) });
     } catch { /* no SKILL.md in this subfolder */ }
   }
+}
+
+/** The skill's body as the model receives it, whether the user typed `/name` or the model called
+ *  the `skill` tool. Skills are written for whichever agent their author used, so the note maps
+ *  that harness's tool names once, up front, instead of paying a repair round per call. */
+export function skillInstructions(skill: Skill): string {
+  return `(This skill's files live at: ${skill.dir}. Resolve any relative path `
+    + `referenced below — references/, scripts/, examples/ — against that directory, and pass `
+    + `readFile the full path. The instructions may name another agent's tools: Read/View is `
+    + `readFile, Write is writeFile, Edit/apply_patch is editFile, Bash/shell is runCommand, `
+    + `Glob is glob, Grep is grep, Task is delegateTask, WebFetch is fetchUrl. Use YOUR tools `
+    + `and ignore any tool it names that you do not have.)\n\n${skill.prompt}`;
 }
 
 const cache = new Map<string, Map<string, Skill>>();
@@ -59,15 +74,15 @@ const watched = new Set<string>();
 
 function watchDir(dir: string, cacheKey: string): void {
   if (watched.has(dir)) return;
-  watched.add(dir);
   try {
     fs.watch(dir, () => cache.delete(cacheKey));
+    watched.add(dir);
   } catch { /* directory may not exist yet; next loadSkills() call will retry */ }
 }
 
-/** Bundled `.tiermux/skills/`, then the workspace's `.agents/skills/<name>/SKILL.md`, then the
- *  workspace's `.tiermux/skills/` — later sources win on a name collision. Cached; the fs.watch
- *  on each dir invalidates. */
+/** Bundled `.tiermux/skills/`, then the global `~/.claude/skills/` and `~/.agents/skills/`, then
+ *  the workspace's `.agents/skills/<name>/SKILL.md` and `.tiermux/skills/` — later sources win on
+ *  a name collision. Cached; the fs.watch on each dir invalidates. */
 export function loadSkills(extensionPath: string, workspaceRoot?: string): Map<string, Skill> {
   const cacheKey = `${extensionPath}|${workspaceRoot ?? ''}`;
   const cached = cache.get(cacheKey);
@@ -80,6 +95,13 @@ export function loadSkills(extensionPath: string, workspaceRoot?: string): Map<s
   // update, so the panel offers no delete for them.
   for (const s of skills.values()) delete s.removablePath;
   watchDir(bundledDir, cacheKey);
+  // Claude Code's folder belongs to Claude Code, so it is read here but never uninstalled from.
+  const claudeDir = path.join(os.homedir(), '.claude', 'skills');
+  loadUniversalDir(claudeDir, skills, false);
+  watchDir(claudeDir, cacheKey);
+  const globalDir = path.join(os.homedir(), '.agents', 'skills');
+  loadUniversalDir(globalDir, skills);
+  watchDir(globalDir, cacheKey);
   if (workspaceRoot) {
     const universalDir = path.join(workspaceRoot, '.agents', 'skills');
     loadUniversalDir(universalDir, skills);

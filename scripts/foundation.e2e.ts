@@ -1563,6 +1563,31 @@ async function main() {
       !Object.keys(buildV3ToolSet('agent')).some((k) => k.startsWith('mcp__')));
   }
 
+  // ── Scenario 31: the model loads an installed skill on its own ──────────────
+  // Global skills only reached the model when the user typed `/name`; Claude Code lets the model
+  // pick one from the listing. The body must arrive only when called, never in the offer.
+  {
+    const skills = [{ name: 'deploy', description: 'Ship the app to prod', prompt: 'SECRET-DEPLOY-STEPS', dir: '/tmp/skills/deploy' }];
+    const offered = buildV3ToolSet('ask', { skills });
+    const desc = String((offered.skill as { description?: string } | undefined)?.description ?? '');
+    ok('31. skill tool offered when skills exist, with name + description', desc.includes('deploy: Ship the app to prod'), desc.slice(-80));
+    ok('31. the listing does not carry the body', !desc.includes('SECRET-DEPLOY-STEPS'));
+    ok('31. no skills ⇒ no skill tool', !('skill' in buildV3ToolSet('agent')));
+
+    const ws = makeWorkspace();
+    const model = createMockModel([
+      { toolCalls: [{ toolName: 'skill', input: { name: 'deploy' } }] },
+      { text: 'done' },
+    ], 's31');
+    const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'deploy it' }],
+      mode: 'ask',
+      skills,
+    })));
+    const result = out.workMessages?.filter((m) => m.role === 'tool').map((m) => String(m.content)).join('') ?? '';
+    ok('31. calling it returns the skill body', result.includes('SECRET-DEPLOY-STEPS'), result.slice(0, 120));
+  }
+
   console.log(failures === 0 ? '\nALL 32 FOUNDATION SCENARIOS PASS — gate open for steps 9-10' : `\n${failures} FAILURE(S) — FOUNDATION GATE BLOCKED, adapt the plan before deleting`);
   process.exit(failures === 0 ? 0 : 1);
 }

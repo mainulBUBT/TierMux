@@ -2230,7 +2230,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     const text = input.value.slice(0, caret);
 
     // Slash command: only when '/' starts the whole input.
-    const slashMatch = /^\/(\w*)$/.exec(text);
+    const slashMatch = /^\/([\w-]*)$/.exec(text);
     if (slashMatch) {
       acMode = 'slash'; acStart = 0;
       const q = slashMatch[1].toLowerCase();
@@ -2272,11 +2272,13 @@ import { handleToolStatus } from './handlers/toolStatus';
     acPop.innerHTML = '';
     items.forEach((it, i) => {
       const row = document.createElement('div');
-      row.className = 'ac-item' + (i === 0 ? ' active' : '');
-      // Slash items' own label already starts with '/' (e.g. "/explain") — no separate icon,
-      // or it renders as a redundant double slash ("/ /explain").
-      const icon = it.kind === 'folder' ? ICON.folder : it.kind === 'symbol' ? '◈' : it.kind === 'slash' ? '' : it.kind === 'grep' ? ICON.search : ICON.file;
-      row.innerHTML = `<span class="ac-icon">${icon}</span><span class="ac-label"></span><span class="ac-detail muted"></span>`;
+      row.className = 'ac-item' + (it.kind === 'slash' ? ' ac-slash' : '') + (i === 0 ? ' active' : '');
+      // Slash items stack the name over its description, which is often a full sentence; their
+      // label already starts with '/', so no icon.
+      const icon = it.kind === 'folder' ? ICON.folder : it.kind === 'symbol' ? '◈' : it.kind === 'grep' ? ICON.search : ICON.file;
+      row.innerHTML = it.kind === 'slash'
+        ? `<span class="ac-text"><span class="ac-label"></span><span class="ac-detail muted"></span></span>`
+        : `<span class="ac-icon">${icon}</span><span class="ac-label"></span><span class="ac-detail muted"></span>`;
       row.querySelector('.ac-label').textContent = it.label;
       row.querySelector('.ac-detail').textContent = it.detail || '';
       row.addEventListener('mousedown', (e) => { e.preventDefault(); acIndex = i; acceptAc(); });
@@ -4754,6 +4756,16 @@ import { handleToolStatus } from './handlers/toolStatus';
         }
         text.appendChild(document.createTextNode('Do you approve this action?'));
         card.appendChild(text);
+        if (msg.command) {
+          const pre = document.createElement('pre'); pre.className = 'tm-approval-command';
+          pre.textContent = msg.command;
+          card.appendChild(pre);
+        }
+        if (msg.dangerous) {
+          const hint = document.createElement('div'); hint.className = 'tm-approval-hint';
+          hint.textContent = 'This command looks destructive, so it asks even with Auto-approve on.';
+          card.appendChild(hint);
+        }
         const actions = document.createElement('div'); actions.className = 'tm-approval-actions';
         const reject = document.createElement('button'); reject.className = 'secondary'; reject.textContent = 'Reject';
         const always = document.createElement('button'); always.className = 'secondary'; always.textContent = 'Always';
@@ -4877,10 +4889,10 @@ import { handleToolStatus } from './handlers/toolStatus';
           if (card.dataset.id === msg.id) {
             const actions = card.querySelector('.tm-approval-actions');
             if (actions) actions.remove();
-            card.classList.add('rejected');
+            card.classList.add(msg.approved ? 'approved' : 'rejected');
             const note = document.createElement('div');
             note.className = 'tm-approval-note';
-            note.textContent = '— run ended —';
+            note.textContent = msg.approved ? '✓ Auto-approved' : '— run ended —';
             card.appendChild(note);
           }
         });
@@ -5232,6 +5244,15 @@ import { handleToolStatus } from './handlers/toolStatus';
           const pane = msg.sessionId ? panes.get(msg.sessionId) : activePaneObj;
           const root = pane ? pane.el : activeThreadEl;
           root.querySelectorAll('.tm-reasoning.streaming').forEach((block) => settleReasoningBlock(block));
+          // Stop drops the host's callbacks, so a tool mid-call never gets its done/error update.
+          root.querySelectorAll('.tm-tool-card.running, .tm-tool-card.queued, .tm-tool-group.running').forEach((row) => {
+            row.classList.remove('running', 'queued');
+            row.classList.add('error');
+            row.querySelector('.tm-tool-card-progress')?.remove();
+            row.querySelector('.tm-spin-glyph.live')?.replaceWith(toolStateGlyph('error'));
+            const hint = row.querySelector('.tm-tool-card-hint');
+            if (hint) hint.textContent = 'stopped';
+          });
         }
         break;
       }
