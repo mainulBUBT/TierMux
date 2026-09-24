@@ -58,5 +58,5 @@ export const SETTINGS_META: SettingMeta[] = [
   // min 0, not 8000: 0 is the documented "no cap, window-only" value (package.json declares
   // minimum 0 too), and an 8k floor made the settings UI unable to express it at all.
   { key: 'agent.autoCondenseTokenCap', label: 'Auto-compact context cap (tokens)', type: 'number', min: 0, max: 200000,
-    desc: 'Fixed working-context ceiling for auto-compact, independent of the served model\'s window — keeps per-turn payload (and first-token latency) bounded. Raise it to compact less often at the cost of slower turns; 0 disables the cap (window-only).' },
+    desc: 'Optional fixed working-context ceiling for auto-compact, below the served model\'s own budget — bounds per-turn payload (and first-token latency) on gateways that don\'t cache. 0 (default) sizes compaction from the model\'s window alone.' },
 ];

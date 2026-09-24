@@ -15,7 +15,8 @@ import type {
 import type { ChatMessage, ChatToolChoice, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
 import { resolveProvider } from '../../providers';
 import { ProviderHttpError } from '../../providers/base';
-import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, rationaleForServed, isInCooldown, type ModelSources, type SelectionRationale } from '../../router/picker';
+import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, rationaleForServed, isInCooldown, findCatalogModel, type ModelSources, type SelectionRationale } from '../../router/picker';
+import { estimateMessagesTokens, estimateTokens } from '../budget';
 import { ThinkStripper, stripThinkTags, reasoningFromDelta } from '../../util/thinkTags';
 import { diagLog } from '../../util/diag';
 
@@ -408,6 +409,24 @@ export async function resolveCandidates(
   return chain;
 }
 
+/** A declared window must hold the prompt plus this much room for the reply. */
+const CONTEXT_HEADROOM = 1.25;
+
+/** Candidates whose declared window cannot hold this prompt go LAST, not away — the chain never
+ *  empties. Served by one, a long transcript either 400s or, from the next step on, is pruned to
+ *  that small window for the rest of the turn. Unknown windows keep their place. Exported for e2e. */
+export function preferFittingWindows<T extends { platform: string; modelId: string }>(chain: T[], promptTokens: number): T[] {
+  const need = promptTokens * CONTEXT_HEADROOM;
+  const tooSmall = (c: T): boolean => {
+    const w = findCatalogModel(c.platform, c.modelId)?.contextWindow;
+    return !!w && w > 0 && w < need;
+  };
+  const small = chain.filter(tooSmall);
+  if (small.length === 0) return chain;
+  diagLog('rp.fit', `~${promptTokens} prompt tokens — ${small.length} candidate(s) moved behind the chain: ${small.map((c) => `${c.platform}::${c.modelId}`).join(', ')}`);
+  return [...chain.filter((c) => !tooSmall(c)), ...small];
+}
+
 /** Wraps the picker as an AI-SDK LanguageModelV4 with bounded failover. */
 export function createRouterProvider(providerOpts: RouterProviderOptions = {}): LanguageModelV4 {
   return createPickerProvider(providerOpts);
@@ -460,9 +479,10 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
   /** The step's candidate list: `[sticky]` with the chain deferred, or the full chain. `extend`
    *  appends the (deduped) picker chain once the sticky head has failed — call it when the loop
    *  runs off the end; it is a no-op after the first time. */
-  const candidatesForStep = async (sel: { rationale?: SelectionRationale }): Promise<{ candidates: Candidate[]; extend: () => Promise<void> }> => {
+  const candidatesForStep = async (sel: { rationale?: SelectionRationale }, promptTokens: number): Promise<{ candidates: Candidate[]; extend: () => Promise<void> }> => {
+    const chain = async () => preferFittingWindows(await resolveCandidates(providerOpts, sel), promptTokens);
     const s = stickyRunnable();
-    if (!s) return { candidates: await resolveCandidates(providerOpts, sel), extend: async () => {} };
+    if (!s) return { candidates: await chain(), extend: async () => {} };
     diagLog('rp.sticky', `${s.platform}::${s.modelId} served this turn already — going first, chain deferred`);
     const candidates: Candidate[] = [s];
     let extended = false;
@@ -472,7 +492,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
         if (extended) return;
         extended = true;
         diagLog('rp.sticky', `${s.platform}::${s.modelId} failed — resolving the fallback chain`);
-        candidates.push(...(await resolveCandidates(providerOpts, sel)).filter((c) => !isSticky(c)));
+        candidates.push(...(await chain()).filter((c) => !isSticky(c)));
       },
     };
   };
@@ -487,7 +507,8 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
       const messages = toRouterMessages(options.prompt);
       const tools = toRouterTools(options.tools);
       const sel: { rationale?: SelectionRationale } = {};
-      const { candidates, extend } = await candidatesForStep(sel);
+      const promptTokens = estimateMessagesTokens(messages) + (tools ? estimateTokens(JSON.stringify(tools)) : 0);
+      const { candidates, extend } = await candidatesForStep(sel, promptTokens);
       /** Report the model that really served — and fix the rationale to name it, so the
        *  "Why this model?" popover can't credit a candidate that failed over. On a sticky hit
        *  there is no fresh rationale; the one emitted when it first served still names it. */
@@ -589,7 +610,8 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
       const messages = toRouterMessages(options.prompt);
       const tools = toRouterTools(options.tools);
       const sel: { rationale?: SelectionRationale } = {};
-      const { candidates, extend } = await candidatesForStep(sel);
+      const promptTokens = estimateMessagesTokens(messages) + (tools ? estimateTokens(JSON.stringify(tools)) : 0);
+      const { candidates, extend } = await candidatesForStep(sel, promptTokens);
       /** Report the model that really served — and fix the rationale to name it, so the
        *  "Why this model?" popover can't credit a candidate that failed over. On a sticky hit
        *  there is no fresh rationale; the one emitted when it first served still names it. */

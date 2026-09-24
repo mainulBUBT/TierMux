@@ -42,11 +42,20 @@ Deliberately readable: you can look at the table and know which model answers wh
    (`speedRank ≤ 2` — the groq/cerebras heads are mid-tier precisely because latency is the
    product there), and no interactive kind leads with a `speedRank ≥ 4` row at all. Skipped
    rows stay in the tail as failover, so the chain never empties.
+
+   **Large windows lead** (2026-09-24): after those gates, a model with a declared window of
+   128k+ goes ahead of a smaller or undeclared one — in the table and in the tail, ahead of
+   tier and rank. A small window forces early compaction and the session forgets what it read.
+   Rotation still spreads quota, but only among peers of the same window class.
 3. **Filter** as the chain is built. A candidate is dropped — with the reason recorded for
    the popover — when it is: excluded for this retry, on a switched-off provider, missing
    a stored key, inside a failure cooldown, not enabled, or marked
    `supportsTools: false` on a turn that offers tools.
-4. **Send** to `chain[0]`. Everything after it is failover order.
+4. **Fit** the chain to the prompt: a candidate whose declared context window cannot hold the
+   request (+25% for the reply) moves behind the rest — never out, so the chain never empties.
+   Unknown windows keep their place. Auto's first step is also compacted against the window of
+   the model the picker is about to try, not a flat 32k fallback.
+5. **Send** to `chain[0]`. Everything after it is failover order.
 
 **Two failover rules**, both reported back into the per-model cooldown:
 
@@ -182,6 +191,7 @@ All implemented natively — there is no external routing service in the path.
 | Declared-quota headroom nudge | picker / rate tracker | a candidate under ~25% of its declared rpm/rpd yields to a sibling with meaningfully more room, before `canSend`'s hard cliff would force a failover — deterministic, off the catalog's declared limits, not a learned/live signal |
 | Time-boxed tool-incompatible / deprecated quarantine | secret store | models that advertise tools then reject them (or 404) self-heal after the window |
 | Conservative rate-limit floors for unknown quotas | rate tracker | a catalog limit of `0` means “unknown”, not “unlimited” — guessing low is the safe direction |
+| Window-fit candidate ordering | router provider | a long transcript goes to a model that can hold it instead of being pruned down to a small one |
 | Per-model context fitting with reserved anchors | budget | the task and the conversation anchor can never be evicted by a fat tool result |
 | Two-tier tool-output compaction (head + tail) | compact | command output shrinks first; file reads/edits stay verbatim as long as possible |
 | Rolling-summary auto-condense | condense | older turns become a summary that carries the touched-file list forward |

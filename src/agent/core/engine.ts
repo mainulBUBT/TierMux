@@ -21,7 +21,7 @@ import { makeRepairViaModelSelfCorrection } from './repair';
 import { compactIfNeeded, ageToolOutputs } from './compact';
 import { resolveVerifyCommand, runVerifyCommand } from './tools/workspace/verifyCommand';
 import { resolvePolicy, policyFromSettings } from '../../permissions/policy';
-import { recordOutcome, findCatalogModel } from '../../router/picker';
+import { recordOutcome, findCatalogModel, peekTopModel } from '../../router/picker';
 import { resolveExecutionProfile } from '../executionProfile';
 import { composeSystemPrompt } from '../../context/system';
 import { gatherPromptContext } from '../../context/promptContext';
@@ -410,8 +410,16 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   /** diagTrace: when the first content delta arrived (TTFT). */
   let firstDeltaAt: number | undefined;
 
+  // Auto's step 0 has no serving model yet. Compacting it against FALLBACK_PROFILE's 32k pruned
+  // a long session's history before a 1M-window model ever saw it, and the prune is sticky for
+  // the turn (compact.ts) — so budget step 0 against the model the picker is about to try.
+  const autoHead = !modelOverride && (!opts.pinnedModel || opts.pinnedModel === 'auto')
+    ? await peekTopModel(taskKind)
+    : undefined;
+
   /** Serving model's ExecutionProfile, resolved per step. onModelSelected fires at step END,
-   *  so step 0 falls back (pinned model → explicit lookup; else FALLBACK_PROFILE). */
+   *  so step 0 falls back (pinned model → explicit lookup; Auto → the picker's head; else
+   *  FALLBACK_PROFILE). */
   const currentProfile = () => {
     let meta = served.platform && served.model
       ? findCatalogModel(served.platform, served.model)
@@ -420,6 +428,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       const [platform, ...rest] = opts.pinnedModel.split('::');
       meta = findCatalogModel(platform, rest.join('::'));
     }
+    meta ??= autoHead;
     return meta ? resolveExecutionProfile(meta) : FALLBACK_PROFILE;
   };
 

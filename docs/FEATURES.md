@@ -83,8 +83,9 @@ typecheck / build runs after every turn that edits files, and a failure goes bac
 for `agent.verifyFixRounds` fixes. Set a specific command if auto-detection picks the wrong one.
 
 **Keep the prompt small.** `agent.toolCompaction: light` (default) stubs old tool output between
-steps; `agent.autoCondenseTokenCap` (default 32 000) summarizes older turns so every request
-stays bounded on gateways that don't cache prompts. Start a new chat when the topic changes.
+steps; older turns are summarized once history nears the routed model's working budget
+(scaled to its context window); set `agent.autoCondenseTokenCap` for a smaller fixed ceiling
+on gateways that don't cache prompts. Start a new chat when the topic changes.
 
 **Use Continue, not "continue".** A turn that stops at the step cap or gets stuck offers a
 Continue button with the full transcript in memory. Typing "continue" starts a new turn that
