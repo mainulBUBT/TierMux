@@ -15,12 +15,27 @@ Everything provider-related lives in one place: **⚙ Manage Models & Keys**
 | Provider | Why it's keyless |
 |---|---|
 | **Kilo Gateway** | anonymous free gateway |
-| **OpenCode Zen** | free tier works without auth (a key unlocks more) |
+| **OpenCode Zen** | free-tier models answer anonymously, but a stored key is the reliable path |
 | **Pollinations** | fully anonymous |
 | **OVH AI Endpoints** | anonymous free tier |
 
 They show a **keyless** badge and a green dot the moment TierMux activates. If you never
 open the settings panel, these are what serve your turns.
+
+**OpenCode Zen is the exception, and it is worth knowing why.** Zen's *anonymous* free tier is
+gated to OpenCode's own client: a bare OpenAI-style request comes back `403 FreeTierError`, or
+`400 OpenCode's free tier can only be used in OpenCode` (its own gate moves, and the community
+workarounds — local proxies, header shims, the same patches in Hermes/OmniRoute — break every
+time it does). TierMux still reaches the anonymous tier with no key, but the **reliable path is a
+Zen account**: paste the key and requests go out identified as TierMux, carrying the
+`x-opencode-session` header Zen's relay requires. Front it in the panel as *keyless · optional
+key* — the button is there for a reason.
+
+Also, before you tick a free-period model, read Zen's § Privacy: **Muse Spark 1.3 Contributor
+Free** is "heavily discounted token pricing in exchange for permission to use your prompts and
+completions to train future Meta models"; **Big Pickle / MiMo-V2.5 Free / Ling 3.0 Flash Fin
+Free** may use collected data to improve the model; the **NVIDIA** trial rows say not to submit
+personal or confidential data. Treat those as opt-in, not as a default route for your code.
 
 ### 2. Adding an API key
 

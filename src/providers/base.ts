@@ -30,6 +30,28 @@ export function providerHttpError(res: Response, message: string): ProviderHttpE
   return new ProviderHttpError(message, res.status, parseRetryAfterMs(res.headers?.get('retry-after')));
 }
 
+/** The upstream failure a gateway smuggled INTO a 200 stream, if any. Live repro 2026-09-24,
+ *  opencode/nemotron-3-ultra-free:
+ *    data: {"error":{"type":"server_error","message":"Streaming response failed: [503]
+ *           Upstream error from Nvidia: Service temporarily overloaded"}}
+ *  The frame carries no `choices`, so the loop below parsed it as an unknown chunk: 0 chunks,
+ *  and the turn ended as "200 but empty" — a blank answer that hid the real cause AND skipped
+ *  failover (the router never saw an error to act on). Raised only while NOTHING has been yielded
+ *  yet: a stream that already delivered text and then reports an error keeps that text, which is
+ *  the behaviour it had before (and a real partial answer is not a blank one). Only frames
+ *  WITHOUT choices count here; a real delta that also carries a note is still a delta. */
+function streamFrameError(raw: unknown): { message: string; status: number } | null {
+  const err = (raw as { error?: unknown } | null)?.error;
+  if (!err || typeof err !== 'object') return null;
+  const choices = (raw as { choices?: unknown[] }).choices;
+  if (Array.isArray(choices) && choices.length > 0) return null;
+  const rawMessage = (err as { message?: unknown }).message;
+  const message = typeof rawMessage === 'string' && rawMessage.trim() ? rawMessage.trim() : 'upstream stream error';
+  // The upstream's own status rides inside the text ([503] above); without one, 502 is the honest
+  // "this came from downstream of us" code. Both are 5xx, which the router fails over on.
+  return { message, status: Number(/\[(\d{3})\]/.exec(message)?.[1] ?? 0) || 502 };
+}
+
 export abstract class BaseProvider {
   abstract readonly platform: Platform;
   abstract readonly name: string;
@@ -121,19 +143,31 @@ export abstract class BaseProvider {
           if (!trimmed || trimmed.startsWith(':') || !trimmed.startsWith('data:')) continue;
           const data = trimmed.slice(trimmed.indexOf(':') + 1).trim();
           if (data === '[DONE]') return;
+          let frameError: { message: string; status: number } | null = null;
           try {
             const chunk = JSON.parse(data) as ChatCompletionChunk;
-            chunkCount++;
-            // OpenAI-wire streams report reasoning tokens under
-            // usage.completion_tokens_details; lift them to our flat
-            // reasoning_tokens field (mirrors the non-stream path).
-            const details = (chunk.usage as unknown as { completion_tokens_details?: { reasoning_tokens?: number } } | undefined)?.completion_tokens_details;
-            if (chunk.usage && chunk.usage.reasoning_tokens === undefined && details?.reasoning_tokens !== undefined) {
-              chunk.usage.reasoning_tokens = details.reasoning_tokens;
+            // A 200 stream can carry the upstream's failure INSTEAD of text (streamFrameError).
+            // Deliberately outside the `catch` below: that catch means "unparseable frame", and an
+            // error frame is the opposite of unparseable — swallowing it here is what turned a
+            // dead provider into a blank answer.
+            frameError = streamFrameError(chunk);
+            if (!frameError) {
+              chunkCount++;
+              // OpenAI-wire streams report reasoning tokens under
+              // usage.completion_tokens_details; lift them to our flat
+              // reasoning_tokens field (mirrors the non-stream path).
+              const details = (chunk.usage as unknown as { completion_tokens_details?: { reasoning_tokens?: number } } | undefined)?.completion_tokens_details;
+              if (chunk.usage && chunk.usage.reasoning_tokens === undefined && details?.reasoning_tokens !== undefined) {
+                chunk.usage.reasoning_tokens = details.reasoning_tokens;
+              }
+              yield chunk;
             }
-            yield chunk;
           } catch (e) {
             diagLog('sse.parsefail', `content-type=${ctype} data=${JSON.stringify(data.slice(0, 200))} err=${(e as Error).message}`);
+          }
+          if (frameError && chunkCount === 0) {
+            diagLog('sse.errorframe', `content-type=${ctype} status=${frameError.status} message=${JSON.stringify(frameError.message)}`);
+            throw new ProviderHttpError(frameError.message, frameError.status);
           }
         }
       }

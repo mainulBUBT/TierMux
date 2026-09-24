@@ -225,8 +225,8 @@ export class SecretStore {
   }
 
   /** A snapshot of which platforms are configured (key present or keyless) + status. */
-  async snapshot(): Promise<Array<{ platform: Platform; configured: boolean; keyless: boolean; status: KeyStatus; keyCount: number; keyHints: string[]; cloudflareAccountId?: string }>> {
-    const out: Array<{ platform: Platform; configured: boolean; keyless: boolean; status: KeyStatus; keyCount: number; keyHints: string[]; cloudflareAccountId?: string }> = [];
+  async snapshot(): Promise<Array<{ platform: Platform; configured: boolean; keyless: boolean; keyOptional: boolean; status: KeyStatus; keyCount: number; keyHints: string[]; cloudflareAccountId?: string }>> {
+    const out: Array<{ platform: Platform; configured: boolean; keyless: boolean; keyOptional: boolean; status: KeyStatus; keyCount: number; keyHints: string[]; cloudflareAccountId?: string }> = [];
     const platforms = allPlatformInfo().filter((info) => info.platform !== 'custom');
     const [cfAccountId, keyPools] = await Promise.all([
       this.getCloudflareAccountIdHint(),
@@ -240,6 +240,7 @@ export class SecretStore {
         platform: info.platform,
         configured,
         keyless: info.keyless,
+        keyOptional: info.keyOptional ?? false,
         status: this.statuses.get(info.platform) ?? (configured ? 'unknown' : 'missing'),
         keyCount: keys.length,
         keyHints: hints,

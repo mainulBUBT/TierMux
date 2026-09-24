@@ -3181,16 +3181,22 @@ import { handleToolStatus } from './handlers/toolStatus';
         : p.status === 'rate_limited' ? 'rate_limited' : 'healthy';
       const isOpen = expandedProviders.has(p.platform);
       const keyCount = p.keyCount || 0;
+      // A `keyOptional` platform (OpenCode Zen) is keyless AND keyed: no key is required, but a
+      // stored key is the supported path — so the key UI must stay reachable instead of being
+      // replaced by the inert "Keyless" badge.
+      const keylessOnly = !!p.keyless && !p.keyOptional;
       // A rotation-pool count reads as a real badge, not just plain text — a glance should
       // tell you "this provider has more than one key" without opening it.
-      const keyStatusHtml = p.keyless ? 'keyless'
+      const keyStatusHtml = keylessOnly ? 'keyless'
         : keyCount > 1 ? `<span class="prov-badge" title="${keyCount} keys in the rotation pool">${keyCount}</span> keys`
         : keyCount === 1 ? 'key set'
+        : p.keyOptional ? 'keyless · optional key'
         : 'no key';
-      const keyBtnText = p.keyless ? 'Keyless'
+      const keyBtnText = keylessOnly ? 'Keyless'
         : keyCount > 0 ? 'Add key'
         : 'Set key';
-      const keyBtnTitle = p.keyless ? 'Keyless provider'
+      const keyBtnTitle = keylessOnly ? 'Keyless provider'
+        : p.keyOptional ? 'Optional: a key raises your limits (free tier works without one)'
         : keyCount > 0 ? 'Add another API key to the rotation pool'
         : 'Set API key';
       const provModels = modelsByPlatform[p.platform] || [];
@@ -3239,7 +3245,7 @@ import { handleToolStatus } from './handlers/toolStatus';
       if (provKeyBtn) {
         provKeyBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
-          if (p.keyless) return;
+          if (keylessOnly) return;
           send(keyCount > 0 ? { type: 'addKey', platform: p.platform } : { type: 'setKey', platform: p.platform });
         });
       }
@@ -3333,8 +3339,9 @@ import { handleToolStatus } from './handlers/toolStatus';
         body.appendChild(cfSection);
       }
 
-      // Key pool management (only for keyed, non-custom providers)
-      if (!p.keyless) {
+      // Key pool management (only for keyed, non-custom providers — and for a keyOptional one
+      // whose optional key is stored, so it can be rotated/removed like any other)
+      if (!keylessOnly) {
         const keyHints = p.keyHints || [];
         if (keyHints.length > 0) {
           const keySecTitle = document.createElement('div');

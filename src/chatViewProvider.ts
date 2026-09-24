@@ -1827,10 +1827,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  every send (each attempt is a real LLM call against rate-limited free tiers). */
   private autoCondenseAt = new Map<string, number>();
   private static readonly AUTO_CONDENSE_COOLDOWN_MS = 10 * 60_000;
-  /** Default working-context ceiling, independent of the model's window: 80% of a 200k window
-   *  let a trivial turn ship 65k input tokens at 20-30s TTFT (2026-09-04). Past the cap, older
-   *  turns are summarized. `tiermux.agent.autoCondenseTokenCap`; 0 = window-only. */
-  private static readonly AUTO_CONDENSE_TOKEN_CAP_DEFAULT = 32_000;
+  /** No fixed ceiling by default (2026-09-24, user direction): the flat 32k cap (2026-09-04, a
+   *  trivial turn shipped 65k tokens at 20-30s TTFT) summarized a 1M-window session after two or
+   *  three file-heavy tasks, and the details were gone. Trade accepted: bigger payloads on
+   *  gateways that don't cache. The window-scaled bound in maybeAutoCondense still applies;
+   *  `tiermux.agent.autoCondenseTokenCap` > 0 restores a fixed ceiling. */
+  private static readonly AUTO_CONDENSE_TOKEN_CAP_DEFAULT = 0;
 
   /** Implicit routing feedback from a finished turn — the verify exit code and the stuck stop.
    *  Pinned models are skipped (the user chose; nothing to learn for Auto). */
@@ -1896,7 +1898,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const cap = cfg.get<number>('autoCondenseTokenCap', ChatViewProvider.AUTO_CONDENSE_TOKEN_CAP_DEFAULT);
       const ratio = cfg.get<number>('autoCompactThreshold', 0.8);
       const byWindow = profile.contextWindow * (ratio > 0 ? ratio : 0.8);
-      const threshold = cap > 0 ? Math.min(byWindow, cap) : byWindow;
+      // Summarize before the engine's step compaction (0.8 × pruneTarget, compact.ts) would
+      // start dropping tool results mid-turn — a summary keeps what a prune throws away.
+      const byBudget = profile.pruneTarget * 0.8;
+      const threshold = Math.min(byWindow, byBudget, cap > 0 ? cap : Infinity);
       if (tokens <= threshold) return;
       const r = await condenseHistory(
         s.history,
@@ -1916,10 +1921,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // window, so a 200k-window model produced "~33k → ~8k (was approaching the model's ~200k
       // window)" — 33k is nowhere near 200k, and the real trigger was the working-context cap.
       // A user reading that has no way to find the setting that caused it.
-      const byCap = cap > 0 && cap < byWindow;
+      const byCap = cap > 0 && cap <= Math.min(byWindow, byBudget);
       const why = byCap
         ? `(passed the ~${Math.round(cap / 1000)}k working-context cap — \`tiermux.agent.autoCondenseTokenCap\`)`
-        : `(was approaching the model's ~${Math.round(profile.contextWindow / 1000)}k window)`;
+        : `(was approaching the ~${Math.round(threshold / 1000)}k working budget of the model's ~${Math.round(profile.contextWindow / 1000)}k window)`;
       this.post({
         type: 'notice', sessionId: s.id, icon: 'compress',
         text: `Context auto-compacted — ~${Math.round(tokens / 1000)}k → ~${Math.round(after / 1000)}k tokens `
@@ -3284,6 +3289,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         name: info?.name ?? s.platform,
         configured: s.configured || hasModelKey,
         keyless: s.keyless,
+        keyOptional: s.keyOptional,
         status: s.status,
         keyUrl: info?.keyUrl,
         defaultBaseUrl: info?.defaultBaseUrl ?? '',

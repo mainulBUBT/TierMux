@@ -35,6 +35,14 @@ const HEAD_MIN_TIER: Partial<Record<TaskKind, ModelTier>> = {
 /** A below-floor tier can still lead at this speedRank or better — fast buys its way in. */
 const HEAD_FAST_ENOUGH = 2;
 
+/** Auto leads with windows that can hold a long session (2026-09-24, user direction). A smaller
+ *  or undeclared window (budgeted as 32k, executionProfile.ts) forces early compaction and the
+ *  session forgets what it read. 1 = small, sorts after 0. */
+const LARGE_WINDOW = 128_000;
+function smallWindow(meta: CatalogModel | undefined): number {
+  return (meta?.contextWindow ?? 0) >= LARGE_WINDOW ? 0 : 1;
+}
+
 /** Whether tier/speed is allowed to LEAD taskKind on a tool turn — single source of truth
  *  for both the table loop (chain membership) and the tail sort (so a gated-out candidate
  *  can never outrank a gate-passing one after falling through to the enabled-tail pad,
@@ -176,11 +184,13 @@ export function setModelSources(s: ModelSources): void {
 /** API keys for a platform from the wired SecretStore — [''] for keyless platforms
  *  (BaseProvider.authHeader omits the header entirely). [] for a keyed platform with no
  *  stored key: the caller treats that as "candidate unavailable", so selection falls
- *  through to whatever the user CAN use instead of sending a guaranteed-401 request. */
+ *  through to whatever the user CAN use instead of sending a guaranteed-401 request.
+ *  A `keyOptional` platform (OpenCode Zen) is neither: its anonymous free tier serves with
+ *  no key, so the pool is preferred when it is non-empty and '' is the fallback. */
 export async function getApiKeysFor(platform: string): Promise<string[]> {
   const provider = allPlatformInfo().find((p) => p.platform === platform);
-  if (provider?.keyless) return [''];
-  if (!sources) return [];
+  if (provider?.keyless && !provider.keyOptional) return [''];
+  if (!sources) return provider?.keyOptional ? [''] : [];
   // Empty strings must not count as "usable": a stale '' entry in the pool passed the
   // platformUsable check, then died at provider key parsing instead of failing over
   // (live repro 2026-08-28: turns killed by `Cloudflare key must be "account_id:api_token"`
@@ -193,7 +203,7 @@ export async function getApiKeysFor(platform: string): Promise<string[]> {
     if (!accountId) return [];
     return keys.map((k) => (k.startsWith(accountId + ':') ? k : `${accountId}:${k}`));
   }
-  return keys;
+  return keys.length ? keys : (provider?.keyOptional ? [''] : []);
 }
 
 /** Whether a model key needs no API key — keyless platforms run free with zero setup. The
@@ -612,10 +622,15 @@ export async function selectModel(
   } else {
     for (const c of tableCandidates) if (!chain.includes(c.key)) chain.push(c.key);
   }
+  // Stable: rotation and the headroom yield still order each window class.
+  chain.sort((a, b) => {
+    const meta = (key: string) => sources?.catalog.find(key.split('::')[0], key.split('::').slice(1).join('::'));
+    return smallWindow(meta(a)) - smallWindow(meta(b));
+  });
   // ALWAYS pad the chain with the rest of the usable enabled models, best intelligence rank
   // first (settings order let whichever model sat first serve every task — 2026-08-28,
   // nemotron-3-ultra-free). Pinned models are exempt.
-  const ranked: Array<{ key: string; tier: ReturnType<typeof tierOf>; rank: number; speed: number; vote: number; headroom: number; blockedReason: string | undefined }> = [];
+  const ranked: Array<{ key: string; tier: ReturnType<typeof tierOf>; rank: number; speed: number; vote: number; headroom: number; small: number; blockedReason: string | undefined }> = [];
   // A wildcard resolves to a model that may also be enabled in its own right, so dedupe on what
   // was PICKED — chain alone is not enough, it is filled only after this loop.
   const takenTail = new Set<string>();
@@ -648,6 +663,7 @@ export async function selectModel(
       // model among equal peers. Zero without a stats store or any votes.
       vote: voteScore(taskKind, picked),
       headroom: rateTracker.headroom(platform, modelId, meta?.rpmLimit ?? null, meta?.rpdLimit ?? null),
+      small: smallWindow(meta),
       // Same gate the table loop applies (2026-09-23) — a candidate the table skipped must
       // not silently re-lead from here just because it fell through to the unconditional
       // pad. undefined when the gate doesn't apply (no tools offered) or it passes.
@@ -672,7 +688,9 @@ export async function selectModel(
   // Tier sits directly after the slow-capable cap: the best HAND-MAINTAINED quality band
   // leads, and a small/unassessed model can only follow every judged one — rank (regex
   // derived, kept for ordering within a tier) no longer decides alone.
-  ranked.sort((a, b) => blocked(a) - blocked(b) || slowCapable(a) - slowCapable(b) || TIER_ORDER[a.tier] - TIER_ORDER[b.tier] || a.rank - b.rank || b.vote - a.vote || b.headroom - a.headroom || a.speed - b.speed);
+  // Window class sits after both gates and before tier: a large window leads any tier, but never
+  // lifts a gated or slow row.
+  ranked.sort((a, b) => blocked(a) - blocked(b) || slowCapable(a) - slowCapable(b) || a.small - b.small || TIER_ORDER[a.tier] - TIER_ORDER[b.tier] || a.rank - b.rank || b.vote - a.vote || b.headroom - a.headroom || a.speed - b.speed);
   // Quota-spreading among peers: rotate the head of each equal-tier, equal-rank, equal-speed,
   // equal-vote group so the NEXT turn leads with a different peer ("600 models, but it keeps
   // using the same 1-2"). Deterministic per taskKind via the SAME round counter the
@@ -686,11 +704,12 @@ export async function selectModel(
       const groupRank = ranked[i].rank;
       const groupSpeed = ranked[i].speed;
       const groupVote = ranked[i].vote;
+      const groupSmall = ranked[i].small;
       let j = i;
-      // Peers = same tier, same model rank, same speed class AND same vote score, so rotation
+      // Peers = same tier, model rank, speed class, vote score AND window class, so rotation
       // never lifts a slower gateway above a faster one of the same quality, nor a disliked
       // model back above a liked one, nor a lower tier above a higher one.
-      while (j < ranked.length && ranked[j].tier === groupTier && ranked[j].rank === groupRank && ranked[j].speed === groupSpeed && ranked[j].vote === groupVote) j++;
+      while (j < ranked.length && ranked[j].tier === groupTier && ranked[j].rank === groupRank && ranked[j].speed === groupSpeed && ranked[j].vote === groupVote && ranked[j].small === groupSmall) j++;
       if (j - i > 1 && Number.isFinite(groupRank)) {
         const offset = counter % (j - i);          // 0..(groupSize-1)
         const rotated = [...ranked.slice(i, j).slice(offset), ...ranked.slice(i, j).slice(0, offset)];

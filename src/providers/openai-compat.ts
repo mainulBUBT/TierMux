@@ -11,6 +11,7 @@ import type {
 } from '../shared/types';
 import { BaseProvider, providerHttpError } from './base';
 import type { CompletionOptions } from './options';
+import { foldSseToCompletion, openCodeLaneHeaders, shapeOpenCodeRequest } from './opencodeLane';
 import { repairToolArguments, rescueInlineToolCalls, toolSchemaMap, sanitizeToolName, stripHarmonyTokens } from '../agent/toolArgs';
 import { flattenMessageContent, stripFileBlocks, contentToString } from '../agent/content';
 import { diagLog } from '../util/diag';
@@ -23,9 +24,17 @@ export interface OpenAICompatOpts {
   name: string;
   baseUrl: string;
   extraHeaders?: Record<string, string>;
-  /** Header that must carry a stable per-conversation id (OpenCode Zen: `x-opencode-session`,
-   *  required since 2026-09 — a request without it is refused with 400 MissingSessionID). */
+  /** Header that must carry a stable per-conversation id, for providers that route
+   *  or cache per session (OpenCode Zen: `x-opencode-session`; a request without it is
+   *  refused with 400 MissingSessionID). Sent on every request, keyed or keyless. */
   sessionHeader?: string;
+  /** Dress KEYLESS requests as the official OpenCode client so Zen's anonymous free lane
+   *  (locked to the official client since 2026-09-16) lets them through. Applies the client
+   *  headers, forces streaming with the two decoy tools the gate looks for, and folds the
+   *  stream back for non-streaming callers. A request carrying an API key never wears the
+   *  costume — that account is identified as TierMux and only the documented session header
+   *  rides along. See opencodeLane.ts. */
+  opencodeFreeLane?: boolean;
   timeoutMs?: number;
   keyless?: boolean;
   /** Free tier works anonymously, paid tier needs a key — see PlatformInfo.keyOptional. */
@@ -63,6 +72,12 @@ export class OpenAICompatProvider extends BaseProvider {
   private readonly baseUrl: string;
   private readonly extraHeaders: Record<string, string>;
   private readonly sessionHeader?: string;
+  private readonly opencodeFreeLane: boolean;
+  /** Anonymous free tier works with no key and a stored key is preferred on top — see
+   *  OpenAICompatOpts.keyOptional. Public so the picker can tell this apart from a platform
+   *  that is keyless and nothing else (Kilo/Pollinations/OVH), which must never be handed a
+   *  key: the router pins those to ''. */
+  readonly keyOptional: boolean;
   private readonly timeoutMs: number;
   private readonly forceSingleToolCall: boolean;
   private readonly reasoningStyle: ReasoningStyle;
@@ -80,6 +95,8 @@ export class OpenAICompatProvider extends BaseProvider {
     this.baseUrl = opts.baseUrl;
     this.extraHeaders = opts.extraHeaders ?? {};
     this.sessionHeader = opts.sessionHeader;
+    this.opencodeFreeLane = opts.opencodeFreeLane ?? false;
+    this.keyOptional = opts.keyOptional ?? false;
     this.timeoutMs = opts.timeoutMs ?? 60000;
     this.keyless = opts.keyless ?? false;
     this.forceSingleToolCall = opts.forceSingleToolCall ?? false;
@@ -96,6 +113,17 @@ export class OpenAICompatProvider extends BaseProvider {
     return o && o.length > 0 ? o.replace(/\/+$/, '') : this.baseUrl;
   }
 
+  /** The anonymous free lane — and ONLY that. With a key in hand the request is identified
+   *  honestly (TierMux's own User-Agent, the account's Authorization) and keeps the caller's
+   *  body shape: the costume exists to get anonymous traffic past Zen's official-client gate,
+   *  and a keyed account has no gate to get past. The decoy tools are the free lane's problem
+   *  alone — shipping `bash`/`read` on an authenticated request would offer tools this
+   *  extension never registered, which is the "refused tool subset" failure other clients on
+   *  this same gate keep fixing (OmniRoute #14464, #14148). */
+  private onFreeLane(apiKey: string): boolean {
+    return this.opencodeFreeLane && !apiKey;
+  }
+
   private requestHeaders(apiKey: string, options?: CompletionOptions): Record<string, string> {
     return {
       ...this.authHeader(apiKey),
@@ -103,14 +131,22 @@ export class OpenAICompatProvider extends BaseProvider {
       'User-Agent': USER_AGENT,
       ...this.extraHeaders,
       ...(this.sessionHeader ? { [this.sessionHeader]: sessionUuid(options?.sessionId) } : {}),
+      // Lane headers last: on the keyless lane the costume must win over our own User-Agent
+      // and any sessionHeader spelling.
+      ...(this.onFreeLane(apiKey) ? openCodeLaneHeaders(options?.sessionId) : {}),
     };
   }
 
   private authHeader(apiKey: string): Record<string, string> {
-    // Send no Authorization header when there's no key. `keyless` platforms always have none,
-    // and `keyOptional` platforms (e.g. OpenCode Zen) resolve to '' on their free tier — sending
-    // `Bearer ` (empty) there gets a 401 from servers that accept fully anonymous requests.
-    return (this.keyless || !apiKey) ? {} : { Authorization: `Bearer ${apiKey}` };
+    // Send no Authorization header when there's no key: keyless platforms have none, and a
+    // `keyOptional` platform (OpenCode Zen) resolves to '' while it runs on its anonymous free
+    // tier — sending `Bearer ` (empty) there gets a 401 from servers that accept fully anonymous
+    // requests. A keyOptional platform WITH a stored key is the documented case and sends it:
+    // `keyless` means "a key is not required", and reading it as "never send one" silently
+    // dropped every Zen key the user had stored.
+    if (!apiKey) return {};
+    if (this.keyless && !this.keyOptional) return {};
+    return { Authorization: `Bearer ${apiKey}` };
   }
 
   private resolveParallelToolCalls(options?: CompletionOptions): boolean | undefined {
@@ -127,7 +163,7 @@ export class OpenAICompatProvider extends BaseProvider {
     return { reasoning_effort: wire };
   }
 
-  private buildBody(messages: ChatMessage[], modelId: string, options: CompletionOptions | undefined, stream: boolean): string {
+  private buildBody(messages: ChatMessage[], modelId: string, options: CompletionOptions | undefined, stream: boolean, lane: boolean): string {
 
     // Assistant `content: null` alongside tool_calls is valid OpenAI wire, but plenty of
     // gateways/proxies choke on a literal null when replaying history — normalize to "".
@@ -143,7 +179,7 @@ export class OpenAICompatProvider extends BaseProvider {
       : modelId;
     // OpenAI reasoning models reject temperature/top_p.
     const fixedSampling = /(^|\/)(o[1-9]|gpt-5)/.test(wireModel);
-    return JSON.stringify({
+    const body: Record<string, unknown> = {
       model: wireModel,
       messages: wireMessages,
       ...(fixedSampling ? {} : { temperature: options?.temperature, top_p: options?.top_p }),
@@ -153,7 +189,8 @@ export class OpenAICompatProvider extends BaseProvider {
       parallel_tool_calls: this.resolveParallelToolCalls(options),
       ...this.reasoningFields(options?.reasoningEffort),
       ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
-    });
+    };
+    return JSON.stringify(lane ? shapeOpenCodeRequest(body) : body);
   }
 
   private rescueFailedGeneration(errBody: unknown, options?: CompletionOptions): ChatToolCall[] | null {
@@ -177,10 +214,11 @@ export class OpenAICompatProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
+    const lane = this.onFreeLane(apiKey);
     const res = await this.fetchWithTimeout(`${this.resolveBaseUrl(options)}/chat/completions`, {
       method: 'POST',
       headers: this.requestHeaders(apiKey, options),
-      body: this.buildBody(messages, modelId, options, false),
+      body: this.buildBody(messages, modelId, options, false, lane),
       signal: options?.abortSignal,
     }, options?.timeoutMs ?? this.timeoutMs);
     diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options)} modelId=${modelId} stream=false status=${res.status}`);
@@ -204,7 +242,9 @@ export class OpenAICompatProvider extends BaseProvider {
 
     let data: ChatCompletionResponse;
     try {
-      data = (await res.json()) as ChatCompletionResponse;
+      // The keyless free lane was forced to stream (the gate rejects non-streaming
+      // bodies), so fold the frames back into the single answer asked for.
+      data = lane ? foldSseToCompletion(await res.text(), modelId) : (await res.json()) as ChatCompletionResponse;
     } catch {
       throw new Error(
         `${this.name} returned a non-JSON 200 body — the endpoint may not be OpenAI-compatible. Check the base URL (e.g. Ollama needs the /v1 path).`,
@@ -233,7 +273,7 @@ export class OpenAICompatProvider extends BaseProvider {
     const res = await this.fetchWithTimeout(`${this.resolveBaseUrl(options)}/chat/completions`, {
       method: 'POST',
       headers: this.requestHeaders(apiKey, options),
-      body: this.buildBody(messages, modelId, options, true),
+      body: this.buildBody(messages, modelId, options, true, this.onFreeLane(apiKey)),
       signal: options?.abortSignal,
     }, options?.timeoutMs ?? this.timeoutMs);
     diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options)} modelId=${modelId} stream=true status=${res.status}`);

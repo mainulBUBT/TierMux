@@ -58,6 +58,9 @@ export interface KeyStatusInfo {
   name: string;
   configured: boolean;
   keyless: boolean;
+  /** The platform serves a free tier anonymously AND accepts a stored key on top (OpenCode
+   *  Zen). `keyless` alone would hide the key button, so the panel reads this too. */
+  keyOptional?: boolean;
   status: KeyStatus;
   keyUrl?: string;
   defaultBaseUrl: string;
