@@ -3,6 +3,16 @@
 All notable changes to TierMux are documented here. The format is loosely
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [3.0.3] — 2026-09-24
+
+### Added
+
+- **Model-loaded skills.** Skills load from the model side (`feat(skills)`).
+- **Window-fit routing.** Candidate ordering respects the context window, and auto-compact
+  compacts to the window size, not a fixed target.
+- **Key-optional OpenCode Zen.** Zen accepts a missing key (empty-Bearer trap avoided), a keyless
+  free lane, and upstream errors surfaced inside a 200 stream.
+
 ## [3.0.2] — 2026-09-17
 
 ### Fixed — an attachment can no longer be routed to a model that cannot see it
