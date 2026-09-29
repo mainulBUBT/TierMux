@@ -61,6 +61,8 @@ const STUCK_PLAN_WRAPUP = 'You keep re-reading the same files without converging
 /** Agent's version stays tool-less: the guard would stop the pass after one step anyway, and the
  *  verify gate skips stuck turns, so an edit made here would ship unverified. */
 const STUCK_AGENT_WRAPUP = 'You keep repeating the same tool call without making progress. Stop using tools and report to the user now from what you have already found: what you changed so far (paths), and what is still left to do with the exact path:line for each change. Say plainly what you could not confirm.';
+/** Shown when the user skipped an askUser card in agent/ask mode and the turn stopped there. */
+const DISMISSED_NOTE = '_Stopped — you skipped the question, so nothing more was done. Reply with how you want to proceed._';
 
 /** UI-facing copy of a tool's result (ToolEvent.detail) — the tool card's "View output" body
  *  and the crash-recovery snapshot both read it. Capped separately from what the model sees:
@@ -322,6 +324,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let proposedPlan: ProposedPlan | undefined;
   /** The signature that tripped REPEAT_FAILURE_LIMIT or REPEAT_READ_LIMIT — the stop condition's trigger. */
   let stuckSignature: string | undefined;
+  /** The user skipped an askUser card (agent/ask). A skip is a "no": the turn ends on that step
+   *  and no continuation pass runs — "proceed with the safest approach" read as consent and the
+   *  agent went on to edit (live report 2026-09-29). Plan mode keeps its re-ask/assumption rule. */
+  let askDismissed = false;
+  const userDismissed: StopCondition<ToolSet> = () => askDismissed;
   /** The task list as it stands: inherited on a Continue, replaced by each todoWrite. Drives
    *  the audit gate and the caller's remaining-items note. */
   let lastTodos: TodoItem[] | undefined = opts.todos;
@@ -331,7 +338,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     requestId: opts.requestId,
     onTodos: (todos) => { lastTodos = todos; opts.onTodos(todos); },
     onBeforeWrite: opts.onBeforeWrite,
-    onAskUser: opts.onAskUser,
+    onAskUser: async (questions) => {
+      const result = await opts.onAskUser(questions);
+      if (opts.mode !== 'plan' && result.status !== 'cancelled' && !result.answers.some((x) => x?.trim())) askDismissed = true;
+      return result;
+    },
     onPlanProposed: (plan) => { proposedPlan = plan; },
     skills: opts.skills,
   }) as ToolSet, (sig, count) => {
@@ -525,7 +536,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       // only narrate it a second time under the card. notMakingProgress reads the counter
       // onStepEnd fills below. Both are StopConditions, not aborts: the SDK finishes the step
       // cleanly and the turn returns paused/resumable like the step cap does.
-      stopWhen: [stepCountIs(maxSteps), planAccepted, notMakingProgress],
+      stopWhen: [stepCountIs(maxSteps), planAccepted, notMakingProgress, userDismissed],
       abortSignal: opts.abortSignal,
       maxRetries: 1,
 
@@ -766,6 +777,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   const planGap = opts.mode === 'plan' && !proposedPlan;
   if (
     (opts.mode === 'agent' || planGap)
+    && !askDismissed
     && !opts.abortSignal?.aborted
     && outcome.finishReason === 'stop'
     && !looksLikeQuestion
@@ -817,7 +829,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // as the other triggers; the turn still reports stopReason 'stuck', so Continue stays available.
   const stuckPlan = opts.mode === 'plan' && !proposedPlan;
   const stuckSilent = opts.mode !== 'plan' && outcome.text.trim().length === 0;
-  if (stuckSignature && !continued && !opts.abortSignal?.aborted && (stuckSilent || stuckPlan)) {
+  if (stuckSignature && !askDismissed && !continued && !opts.abortSignal?.aborted && (stuckSilent || stuckPlan)) {
     diagLog('engine.stuckWrapUp', `${opts.mode} turn stuck on ${stuckSignature.slice(0, 60)} with no ${stuckPlan ? 'plan' : 'answer'} — one continuation`);
     forceAnswerOnNextStep = !stuckPlan;
     forcePlanToolOnNextStep = stuckPlan;
@@ -840,7 +852,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // 2026-08-30 ×2, deepseek-r1-distill-qwen-32b). The partial answer stands and this pass
   // appends to the same draft. ai v7 never continues a 'length' step on its own. ONE
   // continuation per turn (`!continued`); a nudge pass that is itself cut ships truncated.
-  if (outcome.finishReason === 'length' && !opts.abortSignal?.aborted && !continued) {
+  if (outcome.finishReason === 'length' && !askDismissed && !opts.abortSignal?.aborted && !continued) {
     diagLog('engine.lengthContinue', `finish=length (textLen=${outcome.text.length}) — one continuation pass`);
     // Stitch both halves into the shipped reply: onEnd keeps the earlier text only when the
     // newer pass ends silent, but here pass 1's text is half the real answer.
@@ -881,7 +893,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let verifyAvailable = false;
   let fixRounds = 0;
   const mutated = changedFilesFrom(toChatMessages(outcome.responseMessages));
-  if (opts.mode === 'agent' && mutated.length > 0 && !opts.abortSignal?.aborted && !stuckSignature) {
+  if (opts.mode === 'agent' && mutated.length > 0 && !opts.abortSignal?.aborted && !stuckSignature && !askDismissed) {
     verifyCmd = resolveVerifyCommand();
     verifyAvailable = !!verifyCmd;
     if (!verifyCmd) {
@@ -935,7 +947,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let auditOutcome: AgentResult['auditOutcome'];
   const completedTodos = (lastTodos ?? []).filter((t) => t.status === 'completed');
   if ((opts.auditTodos ?? DEFAULT_AUDIT_TODOS) && opts.mode === 'agent' && completedTodos.length > 0
-    && !opts.abortSignal?.aborted && !stuckSignature) {
+    && !opts.abortSignal?.aborted && !stuckSignature && !askDismissed) {
     try {
       const list = completedTodos.map((t, i) => `${i + 1}. ${t.content}`).join('\n');
       const audit = await runSubagent({
@@ -1016,7 +1028,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   } satisfies WorkReportData : undefined;
 
   return {
-    text: outcome.text,
+    text: askDismissed ? [outcome.text.trim(), DISMISSED_NOTE].filter(Boolean).join('\n\n') : outcome.text,
     reasoning: reasoningText || undefined,
     finishReason: outcome.finishReason,
     platform: served.platform,

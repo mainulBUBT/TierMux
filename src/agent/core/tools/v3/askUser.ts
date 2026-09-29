@@ -34,7 +34,8 @@ const DISMISSED = {
   // Plan mode: a skipped question is an open premise, and a plan carries none — so it is asked
   // again (narrower) or written down as an explicit assumption, never silently guessed.
   plan: 'The user skipped this question. Do not guess: ask ONCE more with narrower options, or state your assumption explicitly in the plan\'s `interpretation`.',
-  other: 'The user dismissed the prompt or provided no answer. Proceed with the safest and best technical approach based on the available codebase context.',
+  // Agent/ask: a skip is a "no" — the engine also ends the turn on this step (engine.ts askDismissed).
+  other: 'The user skipped this question and chose not to go ahead. Do not act on it or guess an answer — stop and wait for their next message.',
 } as const;
 
 export function createAskUserTool(onAskUser?: (questions: AskQuestion[]) => Promise<AskResult>, mode?: Mode) {

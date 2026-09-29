@@ -245,7 +245,9 @@ plan, on the shared `askUser` card, and a plan that reaches the card is still se
 - **Skipped ≠ cancelled.** The host reports `{status: 'answered'|'dismissed'|'cancelled', answers}`;
   both used to be an empty string. In plan mode a `dismissed` result tells the model to ask ONCE more
   with narrower options or to state its assumption in `interpretation` — never the generic "proceed
-  with the safest approach".
+  with the safest approach". In agent/ask mode (2026-09-29) a skip is a "no": the tool says so and the
+  engine ends the turn on that step (`askDismissed` stop condition, no continuation pass) — the old
+  "proceed with the safest approach" read as consent and the agent went on to edit (live report).
 - **Decisions ride beside the plan, not in it.** The host keeps `s.planDecisions` (newest 12) from
   plan-mode answers; the card renders them in a "Decisions" block (DOM-only), the saved file gets a
   `## Decisions` section, and the execution prompt gets "Settled with the user…". They are NEVER
