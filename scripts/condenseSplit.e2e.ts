@@ -3,7 +3,7 @@
  * run, and returned null — so the largest sessions could never compact and fitMessages began
  * evicting the task. Scanning BACKWARD finds a boundary while keeping the verbatim tail on a
  * `user` turn, so nothing is orphaned. Run: npm run test:e2e:condense-split */
-import { condenseHistory, shouldCondense, capForHistory } from '../src/agent/condense';
+import { condenseHistory, shouldCondense, capForHistory, condensableTokens } from '../src/agent/condense';
 import { __setRouteOnceForTests } from '../src/agent/core/routeOnce';
 import type { ChatMessage } from '../src/shared/types';
 
@@ -177,18 +177,23 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log('\n— Persisting a turn caps tool results to what aging would show anyway —');
+  console.log('\n— Persisting a turn keeps what it read for the next turn; condense ignores tool bulk —');
   {
     const work: ChatMessage[] = [
-      { role: 'assistant', content: '', tool_calls: [{ id: 'p1', type: 'function', function: { name: 'grep', arguments: '{}' } }] },
+      { role: 'assistant', content: '', tool_calls: [{ id: 'p1', type: 'function', function: { name: 'readFile', arguments: '{}' } }] },
       { role: 'tool', tool_call_id: 'p1', content: 'Z'.repeat(20_000) },
       { role: 'tool', tool_call_id: 'p2', content: 'short' },
       { role: 'assistant', content: 'the reply' },
+      { role: 'tool', tool_call_id: 'p3', content: 'Q'.repeat(90_000) },
     ];
     const capped = capForHistory(work);
-    ok('fat tool result capped', String(capped[1].content).length < 2_300 && String(capped[1].content).includes('truncated'));
+    ok('a 20k read survives into history whole', capped[1].content === work[1].content);
+    ok('only past the per-tool maximum is it capped', String(capped[4].content).length < 31_000 && String(capped[4].content).includes('truncated'));
     ok('short tool result untouched', capped[2].content === 'short');
     ok('call and reply untouched', capped[0] === work[0] && capped[3] === work[3]);
+    const convo: ChatMessage[] = [{ role: 'user', content: 'q' }, { role: 'assistant', content: 'a' }];
+    ok('condense judges the conversation, not 20k of file content it can re-read',
+      condensableTokens([...convo, work[1]]) < condensableTokens(convo) + 1_000, `${condensableTokens([...convo, work[1]])} vs ${condensableTokens(convo)}`);
   }
 
   console.log(bad === 0 ? '\nALL PASS' : `\n${bad} FAILED`);

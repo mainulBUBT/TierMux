@@ -1190,9 +1190,7 @@ async function main() {
       { toolCalls: [{ toolName: 'editFile', input: bad }] },
       { toolCalls: [{ toolName: 'editFile', input: bad }] },
       { toolCalls: [{ toolName: 'editFile', input: bad }] },
-      { toolCalls: [{ toolName: 'editFile', input: bad }] },
-      { toolCalls: [{ toolName: 'editFile', input: bad }] },
-      { text: 'never reached' },
+      { text: 'The search text is not in foo.txt; nothing was changed.' },
     ], 's27');
     const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
       messages: [{ role: 'user', content: 'edit foo.txt' }],
@@ -1200,8 +1198,11 @@ async function main() {
       autoApprove: true,
       maxStepsPerTurn: 50,
     })));
-    ok('27. stopped at the third identical failure, not at the step cap',
-      model.calls.length === 3, `calls=${model.calls.length}`);
+    ok('27. stopped at the third identical failure, not at the step cap — then ONE tool-less wrap-up',
+      model.calls.length === 4 && (model.calls[3].toolChoice as { type?: string } | undefined)?.type === 'none',
+      `calls=${model.calls.length} toolChoice=${JSON.stringify(model.calls[3]?.toolChoice)}`);
+    ok('27. so the stuck turn tells the user what happened instead of nothing',
+      out.text.includes('nothing was changed'), JSON.stringify(out.text));
     ok('27. the turn is resumable rather than silently over', out.paused === true, `paused=${out.paused}`);
     ok('27. and reports WHY it stopped', out.stopReason === 'stuck', `stopReason=${out.stopReason}`);
     ok('27. the file was never touched', ws.read('foo.txt') === 'hello world', ws.read('foo.txt'));
@@ -1244,8 +1245,7 @@ async function main() {
       { toolCalls: [{ toolName: 'readFile', input: { path: 'foo.txt', offset: 1, limit: 1 } }] },
       { toolCalls: [{ toolName: 'readFile', input: same }] },
       { toolCalls: [{ toolName: 'readFile', input: same }] },
-      { toolCalls: [{ toolName: 'readFile', input: same }] },
-      { text: 'never reached' },
+      { text: 'foo.txt says hello world.' },
     ], 's27c');
     const out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
       messages: [{ role: 'user', content: 'what is in foo.txt' }],
@@ -1261,8 +1261,10 @@ async function main() {
     // content left it blind to a file it had already read (2026-09-16).
     ok('27c. later copies still carry the content',
       !!results[3] && results[3].includes('#3') && results[3].includes('hello world'), results[3]?.slice(0, 80));
-    ok('27c. the fourth identical read pauses the turn as stuck',
-      out.stopReason === 'stuck' && out.paused === true && model.calls.length === 5, `calls=${model.calls.length} stopReason=${out.stopReason}`);
+    ok('27c. the fourth identical read pauses the turn as stuck, after ONE tool-less wrap-up',
+      out.stopReason === 'stuck' && out.paused === true && model.calls.length === 6
+        && (model.calls[5].toolChoice as { type?: string } | undefined)?.type === 'none',
+      `calls=${model.calls.length} stopReason=${out.stopReason}`);
   }
 
   // ── Scenario 27e: an EDIT invalidates the read cache ────────────────────────

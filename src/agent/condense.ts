@@ -32,11 +32,12 @@ const SUMMARY_MAX_TOKENS = 2048;
  *  messages of tool stubs — 26k tokens that said nothing the model's own closing reply and the
  *  summary's Done/Next steps do not say better, and the next turn paid for them every step. */
 const TAIL_MAX_TOKENS = 8_000;
-/** Cap on a tool result as it is PERSISTED into session history after a turn. Anything above
- *  AGE_MIN_CHARS (2,000) is stubbed by tool-output aging before any later step sees it, so a
- *  30k grep result in history was 28k chars nobody could ever read again — only estimate,
- *  persist and summarize. Same value on purpose. */
-const PERSIST_TOOL_RESULT_CAP = 2_000;
+/** Cap on a tool result as it is PERSISTED into session history after a turn — the per-tool
+ *  maximum (readFile/runCommand), so the next turn sees what this one read. Tool-output aging
+ *  trims it at step time only when the window needs the room. */
+const PERSIST_TOOL_RESULT_CAP = 30_000;
+/** Tool bodies above this are aging's to stub at step time, so condense does not count them. */
+const AGEABLE_TOOL_RESULT_CHARS = 2_000;
 
 /** Minimum history length before condensing is worth an LLM call. Sessions with several
  *  tool-heavy turns balloon fast (large grep/read results), so compact a little sooner than the
@@ -273,6 +274,16 @@ export async function generateHandoff(history: ChatMessage[]): Promise<string | 
   ];
 
   return (await completeOnce(request, 'handoff'))?.text || null;
+}
+
+/** History size as condense should judge it: the conversation plus tool bodies up to the aging
+ *  threshold. Summarizing because of big tool output would trade the conversation for file
+ *  content the engine can stub (and the model can re-read) instead. */
+export function condensableTokens(messages: ChatMessage[]): number {
+  return estimateMessagesTokens(messages.map((m) => (
+    m.role === 'tool' && typeof m.content === 'string' && m.content.length > AGEABLE_TOOL_RESULT_CHARS
+      ? { ...m, content: m.content.slice(0, AGEABLE_TOOL_RESULT_CHARS) }
+      : m)));
 }
 
 /** A finished turn's work messages as they should enter session history: tool results capped

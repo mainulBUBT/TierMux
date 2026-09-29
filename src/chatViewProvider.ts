@@ -39,7 +39,7 @@ import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
 import { addDecisions, formatDecisionsForPrompt } from './agent/planDecisions';
 import { formatSessionFiles, readSessionFileStates } from './context/sessionFiles';
-import { condenseHistory, shouldCondense, generateHandoff, capForHistory } from './agent/condense';
+import { condenseHistory, shouldCondense, generateHandoff, capForHistory, condensableTokens } from './agent/condense';
 import { appendLearned } from './context/userMemory';
 import { invalidatePromptContext } from './context/promptContext';
 import { resolveExecutionProfile } from './agent/executionProfile';
@@ -1912,7 +1912,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (Date.now() - last < ChatViewProvider.AUTO_CONDENSE_COOLDOWN_MS) return;
       if (!shouldCondense(s.history)) return;
       const profile = resolveExecutionProfile(await peekTopModel('chat'));
-      const tokens = estimateMessagesTokens(s.history);
+      const tokens = condensableTokens(s.history);
       const cap = cfg.get<number>('autoCondenseTokenCap', ChatViewProvider.AUTO_CONDENSE_TOKEN_CAP_DEFAULT);
       const ratio = cfg.get<number>('autoCompactThreshold', 0.8);
       const byWindow = profile.contextWindow * (ratio > 0 ? ratio : 0.8);
@@ -1931,7 +1931,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.autoCondenseAt.set(s.id, Date.now());
         return;
       }
-      const after = estimateMessagesTokens(r.messages);
+      const after = condensableTokens(r.messages);
       s.history = r.messages;
       this.persist(s.id);
       void this.learnFromCompaction(r.corrections);
@@ -3360,7 +3360,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Estimated current conversation size vs the active model's context window. */
   private computeContext(s: Session): { tokens: number; window: number } {
-    const tokens = estimateMessagesTokens(s.history);
+    const tokens = condensableTokens(s.history);
     let window = s.lastWindow;
     if (!window) {
       const top = this.deps.settings.enabledByPriority()[0];
