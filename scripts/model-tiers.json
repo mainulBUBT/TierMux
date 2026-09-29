@@ -1563,6 +1563,10 @@
   "tier": "small",
   "note": "24B, sibling of mistral-small-3.1-24b"
  },
+ "mistral-small-3.2-24b-instruct-2506": {
+  "tier": "small",
+  "note": "Mistral Small 3.2 24B, same weights as mistral-small-3.2"
+ },
  "mistral-small-latest": {
   "tier": "mid",
   "note": "BenchLM 43.01 (Mistral Small 4)"
@@ -1594,6 +1598,10 @@
  "mixtral-8x7b-instruct": {
   "tier": "small",
   "note": "2023 gen"
+ },
+ "motif-3": {
+  "tier": "mid",
+  "note": "Motif-Technologies Motif 3, 314B-A13B MoE; no BenchLM score, Artificial Analysis index ~34 (est.)"
  },
  "muse-glimmer-30b": {
   "tier": "mid",
@@ -2071,6 +2079,10 @@
   "tier": "mid",
   "note": "BenchLM 47.89 (Qwen3.6-27B)"
  },
+ "qwen3.6-35b": {
+  "tier": "mid",
+  "note": "FreeInference's id for Qwen3.6-35B-A3B (BenchLM 43.99)"
+ },
  "qwen3.6-35b-a3b": {
   "tier": "mid",
   "note": "BenchLM 43.99 (Qwen3.6-35B-A3B)"
@@ -2098,6 +2110,10 @@
  "qwen3.7-plus": {
   "tier": "strong",
   "note": "BenchLM 61.78 (Qwen3.7 Plus)"
+ },
+ "qwen3.8-2.4t-a95b": {
+  "tier": "frontier",
+  "note": "open-weight checkpoint behind Qwen3.8-Max (BenchLM 71.76); text-only, thinking always on"
  },
  "qwen3.8-27b": {
   "tier": "strong",
@@ -2174,6 +2190,10 @@
  "sonar": {
   "tier": "mid",
   "note": "Perplexity search-grounded model"
+ },
+ "space-bunny": {
+  "tier": "frontier",
+  "note": "stealth model; every Space Bunny row is curated frontier (curate-space-bunny-alpha.sql)"
  },
  "starcoder2-15b": {
   "tier": "small",

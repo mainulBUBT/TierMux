@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Synced from remote /models JSON — 658 models from 42 providers.",
+  "note": "Synced from remote /models JSON — 689 models from 49 providers.",
   "models": [
     {
       "platform": "agnes",
@@ -1415,26 +1415,6 @@
       "origOutputPricePer1M": 2.4
     },
     {
-      "platform": "kenari",
-      "modelId": "mistral-medium-3-5:free",
-      "displayName": "Mistral Medium 3.5",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 5,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0.6,
-      "origOutputPricePer1M": 2.4
-    },
-    {
       "platform": "kilo",
       "modelId": "dots-studio/dots-3-note-preview:free",
       "displayName": "Dots Studio: Dots3-Note Preview",
@@ -1466,26 +1446,6 @@
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openrouter",
-      "modelId": "z-ai/glm-5.2:free",
-      "displayName": "Z.ai: GLM 5.2",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 32768,
-      "rpmLimit": 10,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
       "supportsReasoning": true,
       "tags": [
         "strong",
@@ -2329,26 +2289,6 @@
     },
     {
       "platform": "llm7",
-      "modelId": "gemini-3.1-flash-lite",
-      "displayName": "Gemini 3.1 Flash-Lite",
-      "intelligenceRank": 3,
-      "speedRank": 2,
-      "contextWindow": 1000000,
-      "rpmLimit": 30,
-      "rpdLimit": 1500,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0.25,
-      "origOutputPricePer1M": 1.5
-    },
-    {
-      "platform": "llm7",
       "modelId": "minimax-m2.7",
       "displayName": "MiniMax M2.7",
       "intelligenceRank": 2,
@@ -2922,24 +2862,6 @@
     },
     {
       "platform": "nvidia",
-      "modelId": "mistralai/mistral-nemotron",
-      "displayName": "Mistral Nemotron",
-      "intelligenceRank": 5,
-      "speedRank": 3,
-      "contextWindow": 128000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": false,
-      "tags": [
-        "small",
-        "free"
-      ]
-    },
-    {
-      "platform": "nvidia",
       "modelId": "mistralai/mixtral-8x22b-v0.1",
       "displayName": "Mixtral 8x22b V0.1",
       "intelligenceRank": 4,
@@ -3423,24 +3345,6 @@
     },
     {
       "platform": "ollama",
-      "modelId": "glm-5.1",
-      "displayName": "GLM 5.1",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 128000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ]
-    },
-    {
-      "platform": "ollama",
       "modelId": "mistral-large-3:675b",
       "displayName": "Mistral Large 3 675B",
       "intelligenceRank": 2,
@@ -3615,44 +3519,6 @@
       ],
       "origInputPricePer1M": 0.95,
       "origOutputPricePer1M": 4
-    },
-    {
-      "platform": "ollama",
-      "modelId": "qwen3.5:397b",
-      "displayName": "Qwen3.5 397B",
-      "intelligenceRank": 1,
-      "speedRank": 5,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ]
-    },
-    {
-      "platform": "ollama",
-      "modelId": "deepseek-v4-flash:0731",
-      "displayName": "DeepSeek V4 Flash",
-      "intelligenceRank": 2,
-      "speedRank": 2,
-      "contextWindow": 256000,
-      "rpmLimit": 5,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0.6,
-      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "ollama",
@@ -4294,46 +4160,6 @@
       "origOutputPricePer1M": 0
     },
     {
-      "platform": "openrouter",
-      "modelId": "inclusionai/ling-3.0-flash-fin:free",
-      "displayName": "Ling 3.0 Flash Fin (free)",
-      "intelligenceRank": 3,
-      "speedRank": 2,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "kilo",
-      "modelId": "inclusionai/ling-3.0-flash-fin:free",
-      "displayName": "Ling 3.0 Flash Fin (free)",
-      "intelligenceRank": 3,
-      "speedRank": 2,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
       "platform": "opencode",
       "modelId": "ling-3.0-flash-fin-free",
       "displayName": "Ling 3.0 Flash Fin (free)",
@@ -4548,8 +4374,8 @@
         "mid",
         "free"
       ],
-      "origInputPricePer1M": 0.06,
-      "origOutputPricePer1M": 0.19
+      "origInputPricePer1M": 0.01,
+      "origOutputPricePer1M": 0.06
     },
     {
       "platform": "airforce",
@@ -5610,46 +5436,6 @@
       "origOutputPricePer1M": 0.0002
     },
     {
-      "platform": "openrouter",
-      "modelId": "nex-agi/nex-n2.5-mini:free",
-      "displayName": "Nex AGI: Nex-N2.5-Mini (free)",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "small",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openrouter",
-      "modelId": "nex-agi/nex-n2.5-pro:free",
-      "displayName": "Nex AGI: Nex-N2.5-Pro (free)",
-      "intelligenceRank": 1,
-      "speedRank": 4,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
       "platform": "airforce",
       "modelId": "llama-instant",
       "displayName": "Llama Instant",
@@ -5666,46 +5452,6 @@
         "small",
         "free"
       ]
-    },
-    {
-      "platform": "kilo",
-      "modelId": "nex-agi/nex-n2.5-mini:free",
-      "displayName": "Nex AGI: Nex-N2.5-Mini (free)",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "small",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "kilo",
-      "modelId": "nex-agi/nex-n2.5-pro:free",
-      "displayName": "Nex AGI: Nex-N2.5-Pro (free)",
-      "intelligenceRank": 1,
-      "speedRank": 4,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
     },
     {
       "platform": "vyceai",
@@ -6333,26 +6079,6 @@
     {
       "platform": "modelscope",
       "modelId": "nex-agi/Nex-N2.5-Pro",
-      "displayName": "Nex AGI: Nex-N2.5-Pro (free)",
-      "intelligenceRank": 1,
-      "speedRank": 4,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": false,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "kenari",
-      "modelId": "nex-n2-5-pro:free",
       "displayName": "Nex AGI: Nex-N2.5-Pro (free)",
       "intelligenceRank": 1,
       "speedRank": 4,
@@ -7336,7 +7062,7 @@
       "displayName": "LongCat 2.0",
       "intelligenceRank": 2,
       "speedRank": 3,
-      "contextWindow": 1048576,
+      "contextWindow": 1048756,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -7832,26 +7558,6 @@
       "origOutputPricePer1M": 0
     },
     {
-      "platform": "kilo",
-      "modelId": "z-ai/glm-5.2:free",
-      "displayName": "Z.ai: GLM 5.2 (free)",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 32768,
-      "rpmLimit": 10,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
       "platform": "kenari",
       "modelId": "agnes-3-0-flash:free",
       "displayName": "Agnes 3 0 Flash Free",
@@ -7888,26 +7594,6 @@
       ],
       "origInputPricePer1M": 1.19,
       "origOutputPricePer1M": 4.4
-    },
-    {
-      "platform": "llm7",
-      "modelId": "GLM-5.3-Flash",
-      "displayName": "GLM 5.3 Flash",
-      "intelligenceRank": 2,
-      "speedRank": 2,
-      "contextWindow": 128000,
-      "rpmLimit": 60,
-      "rpdLimit": 10000,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0.0001,
-      "origOutputPricePer1M": 0.0002
     },
     {
       "platform": "orcarouter",
@@ -8198,26 +7884,6 @@
       ]
     },
     {
-      "platform": "llm7",
-      "modelId": "jev-latest",
-      "displayName": "Jev",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 32000,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0.042,
-      "origOutputPricePer1M": 0
-    },
-    {
       "platform": "kenari",
       "modelId": "space-bunny-alpha:free",
       "displayName": "Space Bunny Alpha Free",
@@ -8324,7 +7990,7 @@
       "intelligenceRank": 2,
       "speedRank": 3,
       "contextWindow": 1048576,
-      "rpmLimit": 10,
+      "rpmLimit": 60,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
@@ -8344,7 +8010,7 @@
       "intelligenceRank": 3,
       "speedRank": 3,
       "contextWindow": 1048576,
-      "rpmLimit": 10,
+      "rpmLimit": 60,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
@@ -8364,7 +8030,7 @@
       "intelligenceRank": 3,
       "speedRank": 2,
       "contextWindow": 1048576,
-      "rpmLimit": 10,
+      "rpmLimit": 60,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
@@ -8383,8 +8049,8 @@
       "displayName": "DeepSeek V4 Flash (Free)",
       "intelligenceRank": 1,
       "speedRank": 2,
-      "contextWindow": 1048576,
-      "rpmLimit": 10,
+      "contextWindow": 1000000,
+      "rpmLimit": 60,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
@@ -8404,7 +8070,7 @@
       "intelligenceRank": 1,
       "speedRank": 2,
       "contextWindow": 1048576,
-      "rpmLimit": 10,
+      "rpmLimit": 60,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
@@ -8423,13 +8089,1009 @@
       "displayName": "Qwen3.8 Flash (Free)",
       "intelligenceRank": 3,
       "speedRank": 2,
+      "contextWindow": 983616,
+      "rpmLimit": 60,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "experientiallabs",
+      "modelId": "mimo-v2.6-pro",
+      "displayName": "MiMo-V2.6-Pro",
+      "intelligenceRank": 3,
+      "speedRank": 4,
       "contextWindow": 1048576,
       "rpmLimit": 10,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
       "supportsTools": true,
       "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "unknown",
+        "free"
+      ]
+    },
+    {
+      "platform": "opencode",
+      "modelId": "longcat-2.5-preview-free",
+      "displayName": "Longcat 2.5 Preview Free",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1000000,
+      "rpmLimit": 100,
+      "rpdLimit": 100000,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.3,
+      "origOutputPricePer1M": 1.2
+    },
+    {
+      "platform": "routeway",
+      "modelId": "deepseek-v4-flash:free",
+      "displayName": "DeepSeek: DeepSeek V4 Flash (Free)",
+      "intelligenceRank": 2,
+      "speedRank": 2,
+      "contextWindow": 42000,
+      "rpmLimit": 5,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "routeway",
+      "modelId": "minimax-m2.7:free",
+      "displayName": "MiniMax: MiniMax M2.7 (Free)",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 42000,
+      "rpmLimit": 5,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "routeway",
+      "modelId": "muse-glimmer-30b:free",
+      "displayName": "Meta: Glimmer 30B (Free)",
+      "intelligenceRank": 3,
+      "speedRank": 4,
+      "contextWindow": 131072,
+      "rpmLimit": 5,
+      "rpdLimit": 200,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "mid",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "meganova",
+      "modelId": "meganova-ai/manta-mini-1.0",
+      "displayName": "Manta-Mini-1.0",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 8192,
+      "rpmLimit": 60,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "small",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "meganova",
+      "modelId": "meganova-ai/manta-flash-1.0",
+      "displayName": "Manta-Flash-1.0",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 16384,
+      "rpmLimit": 60,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "small",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "meganova",
+      "modelId": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+      "displayName": "Mistral-Small-3.2-24B-Instruct-2506",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 8192,
+      "rpmLimit": 60,
+      "rpdLimit": 50,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "small",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "typhoon",
+      "modelId": "typhoon-v2.5-30b-a3b-instruct",
+      "displayName": "typhoon-v2.5-30b-a3b-instruct",
+      "intelligenceRank": 3,
+      "speedRank": 4,
+      "contextWindow": null,
+      "rpmLimit": 200,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": false,
+      "supportsVision": false,
       "supportsReasoning": false,
+      "tags": [
+        "small",
+        "free"
+      ]
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "deepseek-v4.1-flash",
+      "displayName": "DeepSeek V4.1 Flash",
+      "intelligenceRank": 1,
+      "speedRank": 2,
+      "contextWindow": 1048576,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.3,
+      "origOutputPricePer1M": 1.2
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "deepseek-v4-pro-0813",
+      "displayName": "DeepSeek V4 Pro 0813",
+      "intelligenceRank": 1,
+      "speedRank": 4,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 1.437216,
+      "origOutputPricePer1M": 4.311648
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "deepseek-v4-flash-0731",
+      "displayName": "DeepSeek V4 Flash 0731",
+      "intelligenceRank": 1,
+      "speedRank": 2,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.44,
+      "origOutputPricePer1M": 1.32
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "deepseek-v4-pro",
+      "displayName": "DeepSeek V4 Pro",
+      "intelligenceRank": 1,
+      "speedRank": 4,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 2.4,
+      "origOutputPricePer1M": 4.8
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "deepseek-v4-flash",
+      "displayName": "DeepSeek V4 Flash",
+      "intelligenceRank": 1,
+      "speedRank": 2,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.2,
+      "origOutputPricePer1M": 0.4
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "kimi-k3",
+      "displayName": "Kimi K3",
+      "intelligenceRank": 1,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "frontier",
+        "free"
+      ],
+      "origInputPricePer1M": 3.2664,
+      "origOutputPricePer1M": 16.332
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "kimi-k2.7-code",
+      "displayName": "Kimi K2.7 Code",
+      "intelligenceRank": 1,
+      "speedRank": 3,
+      "contextWindow": 256000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 1.03436,
+      "origOutputPricePer1M": 4.3552
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "kimi-k2-thinking",
+      "displayName": "Kimi K2 Thinking",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "small",
+        "free"
+      ],
+      "origInputPricePer1M": 0.6,
+      "origOutputPricePer1M": 2.5
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "glm-5.3",
+      "displayName": "GLM 5.3",
+      "intelligenceRank": 1,
+      "speedRank": 3,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 1.52432,
+      "origOutputPricePer1M": 4.79072
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "glm-5.3-flash",
+      "displayName": "GLM 5.3 Flash",
+      "intelligenceRank": 1,
+      "speedRank": 2,
+      "contextWindow": 1048576,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.16332,
+      "origOutputPricePer1M": 0.5444
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "glm-5.2",
+      "displayName": "GLM-5.2",
+      "intelligenceRank": 1,
+      "speedRank": 3,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 1.52432,
+      "origOutputPricePer1M": 4.79072
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "minimax-m3",
+      "displayName": "MiniMax M3",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 512000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.32664,
+      "origOutputPricePer1M": 1.30656
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "minimax-m2.7",
+      "displayName": "MiniMax M2.7",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 262100,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.484,
+      "origOutputPricePer1M": 1.852
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "inkling",
+      "displayName": "Inkling",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 1.0888,
+      "origOutputPricePer1M": 4.40964
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "qwen3.8-max",
+      "displayName": "Qwen3.8-Max",
+      "intelligenceRank": 1,
+      "speedRank": 4,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "frontier",
+        "free"
+      ],
+      "origInputPricePer1M": 2,
+      "origOutputPricePer1M": 6
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "qwen3.8-flash",
+      "displayName": "Qwen3.8-Flash",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.15,
+      "origOutputPricePer1M": 0.47
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "qwen3.8-27b",
+      "displayName": "Qwen3.8-27B",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.5,
+      "origOutputPricePer1M": 3
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "qwen3.8-2.4t-a95b",
+      "displayName": "Qwen3.8-2.4T-A95B",
+      "intelligenceRank": 1,
+      "speedRank": 4,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "frontier",
+        "free"
+      ],
+      "origInputPricePer1M": 2,
+      "origOutputPricePer1M": 6
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "qwen3.7-max",
+      "displayName": "Qwen3.7-Max",
+      "intelligenceRank": 1,
+      "speedRank": 4,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 2.5,
+      "origOutputPricePer1M": 7.5
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "qwen3.7-plus",
+      "displayName": "Qwen3.7-Plus",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 1.2,
+      "origOutputPricePer1M": 4.8
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "qwen3.7-flash",
+      "displayName": "Qwen3.7-Flash",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "tags": [
+        "mid",
+        "free"
+      ],
+      "origInputPricePer1M": 0.2,
+      "origOutputPricePer1M": 0.8
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "gpt-oss-120b",
+      "displayName": "gpt-oss-120b",
+      "intelligenceRank": 2,
+      "speedRank": 4,
+      "contextWindow": 131072,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "mid",
+        "free"
+      ],
+      "origInputPricePer1M": 0.178,
+      "origOutputPricePer1M": 0.68
+    },
+    {
+      "platform": "charmhyper",
+      "modelId": "gemma-4-26b-a4b-it",
+      "displayName": "Gemma 4 26B A4B",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 256000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.098,
+      "origOutputPricePer1M": 0.334
+    },
+    {
+      "platform": "freeinference",
+      "modelId": "glm-5.3-flash",
+      "displayName": "GLM-5.3 Flash",
+      "intelligenceRank": 1,
+      "speedRank": 2,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.3,
+      "origOutputPricePer1M": 1
+    },
+    {
+      "platform": "freeinference",
+      "modelId": "minimax-m3",
+      "displayName": "MiniMax M3",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.5,
+      "origOutputPricePer1M": 2
+    },
+    {
+      "platform": "freeinference",
+      "modelId": "qwen3.6-35b",
+      "displayName": "Qwen3.6 35B (high speed)",
+      "intelligenceRank": 2,
+      "speedRank": 4,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": false,
+      "tags": [
+        "mid",
+        "free"
+      ],
+      "origInputPricePer1M": 0.08,
+      "origOutputPricePer1M": 0.28
+    },
+    {
+      "platform": "freeinference",
+      "modelId": "deepseek-v4-flash",
+      "displayName": "DeepSeek V4 Flash (high speed)",
+      "intelligenceRank": 1,
+      "speedRank": 2,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.44,
+      "origOutputPricePer1M": 1.32
+    },
+    {
+      "platform": "llmtr",
+      "modelId": "nvidia/nemotron-3-ultra-550b-a55b",
+      "displayName": "Nemotron 3 Ultra 550B A55B",
+      "intelligenceRank": 1,
+      "speedRank": 5,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "mid",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "llmtr",
+      "modelId": "poolside/laguna-xs-2.1",
+      "displayName": "Laguna XS 2.1",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "small",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "llmtr",
+      "modelId": "llmtr/space-bunny",
+      "displayName": "Space Bunny",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 131072,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "frontier",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "llmtr",
+      "modelId": "qwen/qwen3.8-27b-free",
+      "displayName": "Qwen3.8 27B",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 131042,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "llmtr",
+      "modelId": "nvidia/nemotron-3-super-120b-a12b",
+      "displayName": "Nemotron 3 Super 120B A12B",
+      "intelligenceRank": 2,
+      "speedRank": 4,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "mid",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "llmtr",
+      "modelId": "inclusionai/ling-3.0-flash-fin",
+      "displayName": "Ling 3.0 Flash Fin",
+      "intelligenceRank": 3,
+      "speedRank": 2,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "tags": [
+        "mid",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "llmtr",
+      "modelId": "dots-studio/dots-3-note-preview",
+      "displayName": "Dots3-Note Preview",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 512000,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "llmtr",
+      "modelId": "agnes/agnes-3.0-flash",
+      "displayName": "Agnes 3.0 Flash",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 524288,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "llmtr",
+      "modelId": "agnes/agnes-2.5-flash",
+      "displayName": "Agnes 2.5 Flash",
+      "intelligenceRank": 4,
+      "speedRank": 2,
+      "contextWindow": 524288,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "mid",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "llmtr",
+      "modelId": "motif/motif-3",
+      "displayName": "Motif 3",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 262144,
+      "rpmLimit": 10,
+      "rpdLimit": 250,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": false,
+      "supportsReasoning": false,
+      "tags": [
+        "mid",
+        "free"
+      ],
+      "origInputPricePer1M": 0,
+      "origOutputPricePer1M": 0
+    },
+    {
+      "platform": "vlmrun",
+      "modelId": "qwen/qwen3.8-27b",
+      "displayName": "Qwen3.8 27B",
+      "intelligenceRank": 3,
+      "speedRank": 3,
+      "contextWindow": 168000,
+      "rpmLimit": 10,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "strong",
+        "free"
+      ],
+      "origInputPricePer1M": 0.35,
+      "origOutputPricePer1M": 2.55
+    },
+    {
+      "platform": "orcarouter",
+      "modelId": "tencent/hy4-preview-free",
+      "displayName": "Tencent: Hy4 preview (Free)",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1000000,
+      "rpmLimit": 10,
+      "rpdLimit": 100,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "frontier",
+        "free"
+      ],
+      "origInputPricePer1M": 0.83,
+      "origOutputPricePer1M": 2.5
+    },
+    {
+      "platform": "llmtr",
+      "modelId": "minimax/minimax-m3.1-free",
+      "displayName": "MiniMax M3.1 (Ücretsiz)",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1000000,
+      "rpmLimit": 1000,
+      "rpdLimit": 100000,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "tags": [
+        "frontier",
+        "free"
+      ],
+      "origInputPricePer1M": 0.3,
+      "origOutputPricePer1M": 1.2
+    },
+    {
+      "platform": "nous",
+      "modelId": "meituan/longcat-2.5-preview:free",
+      "displayName": "Meituan: LongCat 2.5 Preview",
+      "intelligenceRank": 2,
+      "speedRank": 3,
+      "contextWindow": 1048576,
+      "rpmLimit": 100,
+      "rpdLimit": 100000,
+      "monthlyTokenBudget": "",
+      "supportsTools": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
       "tags": [
         "strong",
         "free"
@@ -9333,46 +9995,6 @@
         "frontier",
         "free"
       ]
-    },
-    {
-      "platform": "experientiallabs",
-      "modelId": "gpt-5.6-luna",
-      "displayName": "Gpt 5.6 Luna",
-      "intelligenceRank": 2,
-      "speedRank": 3,
-      "contextWindow": 1050000,
-      "rpmLimit": 3,
-      "rpdLimit": 5000,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0.2,
-      "origOutputPricePer1M": 1.2
-    },
-    {
-      "platform": "experientiallabs",
-      "modelId": "nemotron-3-ultra-550b-a55b",
-      "displayName": "Nemotron 3 Ultra",
-      "intelligenceRank": 1,
-      "speedRank": 5,
-      "contextWindow": 512288,
-      "rpmLimit": 3,
-      "rpdLimit": 4800,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0.6,
-      "origOutputPricePer1M": 2.4
     },
     {
       "platform": "google",

@@ -63,6 +63,13 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'nous', name: "Nous Portal", baseUrl: "https://inference-api.nousresearch.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://portal.nousresearch.com/" }, // auto-synced
   { platform: 'vyceai', name: "Vyce AI", baseUrl: "https://vyceai.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://vyceai.com" }, // auto-synced
   { platform: 'tokenharbor', name: "Token Harbor", baseUrl: "https://tokenharbor.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://tokenharbor.ai/dashboard/api-keys" }, // auto-synced
+  { platform: 'charmhyper', name: "Charm Hyper", baseUrl: "https://hyper.charm.land/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://hyper.charm.land" }, // auto-synced
+  { platform: 'freeinference', name: "FreeInference", baseUrl: "https://freeinference.org/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://freeinference.org" }, // auto-synced
+  { platform: 'llmtr', name: "LLMTR", baseUrl: "https://llmtr.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://llmtr.com" }, // auto-synced
+  { platform: 'meganova', name: "MegaNova", baseUrl: "https://api.meganova.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://meganova.ai" }, // auto-synced
+  { platform: 'routeway', name: "Routeway", baseUrl: "https://api.routeway.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://routeway.ai" }, // auto-synced
+  { platform: 'typhoon', name: "Typhoon", baseUrl: "https://api.opentyphoon.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://opentyphoon.ai" }, // auto-synced
+  { platform: 'vlmrun', name: "VLM Run", baseUrl: "https://gateway.vlm.run/v1/openai", skipPreflight: true, timeoutMs: 600000, keyless: true, keyUrl: "https://app.vlm.run/dashboard/settings/api-keys" }, // auto-synced
 ];
 
 const providers = new Map<Platform, BaseProvider>();

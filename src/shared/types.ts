@@ -46,6 +46,13 @@ export type Platform =
   | 'nous'
   | 'vyceai'
   | 'tokenharbor'
+  | 'charmhyper'
+  | 'freeinference'
+  | 'llmtr'
+  | 'meganova'
+  | 'routeway'
+  | 'typhoon'
+  | 'vlmrun'
   | 'custom';
 
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
