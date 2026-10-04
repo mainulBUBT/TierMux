@@ -54,6 +54,20 @@ function isAccountLevel(e: unknown): boolean {
   return status === 401 || status === 402 || status === 403;
 }
 
+/** Normalize a completion's content field to plain text. Some gateways return a parts array
+ *  (text/reasoning blocks) instead of a string; joining the text parts is what the rest of the
+ *  codebase does (engine.ts transcript fold, routerProvider stream fold) — stringifying the
+ *  envelope leaks raw JSON into utility outputs. */
+function contentToText(raw: unknown): string {
+  if (typeof raw === 'string') return raw;
+  if (Array.isArray(raw)) {
+    return raw
+      .map((p) => (p && typeof p === 'object' && typeof (p as { text?: unknown }).text === 'string' ? (p as { text: string }).text : ''))
+      .join('');
+  }
+  return raw ? JSON.stringify(raw) : '';
+}
+
 /** Test seam — mirrors the engine's `__setEngineModelForTests`. e2e suites that exercise a
  *  CALLER (condense's retry-on-blank, a commit-message prompt) need a scripted answer without
  *  a provider; production never sets this. */
@@ -116,7 +130,10 @@ export async function routeOnce(messages: ChatMessage[], opts: RouteOnceOptions 
         recordRequest(c.platform, c.modelId);
         recordOutcome(c.platform, c.modelId, true);
         const raw = data.choices?.[0]?.message?.content;
-        const text = stripThinkTags(typeof raw === 'string' ? raw : raw ? JSON.stringify(raw) : '');
+        // Live repro 2026-10-04: a gateway returned content as a parts array, JSON.stringify
+        // dumped [{"type":"text","text":"feat: …"}] into the commit-message input box garbled.
+        // Join text parts like engine.ts does instead of stringifying the envelope.
+        const text = stripThinkTags(contentToText(raw));
         return {
           text,
           platform: c.platform,

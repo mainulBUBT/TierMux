@@ -15,6 +15,16 @@ export function cleanCommitMessage(raw: string): string {
   s = s.replace(/^[\s\S]*?<\/think>/i, '').trim();
   s = s.replace(/<think>[\s\S]*$/i, '').trim();
 
+  // Literal "\n" escapes: free models emit JSON-shaped strings, which render in the single-line
+  // commit input box as one long line (user report 2026-10-04: "commit not showing properway").
+  // Only fires when the reply has no real newlines, so a legitimate body is untouched.
+  if (!s.includes('\n') && /\\n/.test(s)) {
+    s = s.replace(/\\n/g, '\n').replace(/\\t/g, ' ').replace(/\\"/g, '"');
+  }
+
+  // Surrounding paired quotes (straight or smart) wrapped around the whole message.
+  s = s.replace(/^(["'“”«»])([\s\S]+)\1$/, '$2').trim();
+
   s = s.replace(/```[a-zA-Z]*\n?/g, '').replace(/```/g, '').trim();
 
   const jsonMatch = s.match(/\{[\s\S]*\}/);
@@ -34,7 +44,13 @@ export function cleanCommitMessage(raw: string): string {
     } catch { /* not JSON, leave as-is */ }
   }
 
+  // A markdown header prefix on the FIRST line ("## feat: add X") keeps its content — a
+  // single-line reply must survive header stripping. A leading bullet ("- feat: add X") and
+  // full-line bold ("**feat: add X**", incl. the bullet'd bold shape) unwrap the same way.
+  s = s.replace(/^#{1,6}\s+/, '').trim();
   s = s.replace(/^#{1,6}\s*[^\n]*\n+/g, '').trim();
+  s = s.replace(/^[-*•]\s+/, '');
+  s = s.replace(/^\*\*(.+)\*\*$/, '$1').trim();
   s = s.replace(/^\*\*[^*]+:\*\*\s*/g, '').trim();
 
   s = s.replace(/^(?:sure[,!]?\s*)?here(?:'s| is)[^\n:]*:\s*/i, '').trim();
@@ -59,6 +75,11 @@ export function cleanCommitMessage(raw: string): string {
 
   const paragraphs = s.split(/\n{2,}/);
   if (paragraphs.length > 2) s = paragraphs.slice(0, 2).join('\n\n');
+
+  // Trailing chatter after the message: a horizontal rule + signature block, or a closing
+  // line like "Generated with X" / "Let me know if…". Free models append these constantly.
+  s = s.replace(/\n+[-*=~]{3,}\n[\s\S]*$/g, '').trim();
+  s = s.replace(/\n+(?:generated (?:with|by|using)[^\n]*|let me know[^\n]*|hope this helps[^\n]*|this commit message[^\n]*)$/gi, '').trim();
 
   s = s.replace(/^>+\s*/gm, '').trim();
 

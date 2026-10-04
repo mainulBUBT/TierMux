@@ -1208,7 +1208,7 @@ details[open].reasoning summary::before { content: '▾ '; }
 .input-wrap {
   position: relative;
   border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
-  border-radius: 22px;
+  border-radius: var(--tm-radius-xl);
   padding: 12px 10px 10px; display: flex; flex-direction: column; gap: 6px;
   transition: border-color .15s ease;
 }
