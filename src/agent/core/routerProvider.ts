@@ -15,7 +15,7 @@ import type {
 import type { ChatMessage, ChatToolChoice, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
 import { resolveProvider } from '../../providers';
 import { ProviderHttpError } from '../../providers/base';
-import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, rationaleForServed, isInCooldown, findCatalogModel, type ModelSources, type SelectionRationale } from '../../router/picker';
+import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, isModelUnavailable, rationaleForServed, isInCooldown, findCatalogModel, type ModelSources, type SelectionRationale } from '../../router/picker';
 import { estimateMessagesTokens, estimateTokens } from '../budget';
 import { ThinkStripper, stripThinkTags, reasoningFromDelta } from '../../util/thinkTags';
 import { diagLog } from '../../util/diag';
@@ -140,8 +140,6 @@ function connectTimeoutFor(platform: Platform): number | undefined {
   return platform === 'custom' ? undefined : failoverConnectTimeoutMs();
 }
 
-/** 401/402/403 are ACCOUNT-level (dead key, unpaid bill), so the platform's other models cannot
- *  succeed either (ollama/cerebras 402, 2026-08-30). 429 and 5xx are per-model and not here. */
 /** The turn-killing error, naming every candidate and its outcome so failover is visible — a
  *  bare "Cerebras API error 402" read as no failover (2026-08-30). */
 function chainExhaustedError(
@@ -158,9 +156,13 @@ function chainExhaustedError(
   return new Error(`TierMux: all ${candidates.length} model candidates failed${detail}`);
 }
 
-function isAccountLevel(e: unknown): boolean {
+/** 401/402/403 are ACCOUNT-level (dead key, unpaid bill), so the platform's other models cannot
+ *  succeed either (ollama/cerebras 402, 2026-08-30). 429 and 5xx are per-model and not here, and
+ *  neither is a 401 that names the model itself as unsupported. */
+export function isAccountLevel(e: unknown): boolean {
   return e instanceof ProviderHttpError
-    && (e.status === 401 || e.status === 402 || e.status === 403);
+    && (e.status === 401 || e.status === 402 || e.status === 403)
+    && !isModelUnavailable(e.message);
 }
 
 function toV4Usage(promptTokens?: number, completionTokens?: number): LanguageModelV4Usage {
@@ -590,7 +592,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             lastError = e;
             candidateError = e;
             recordOutcome(c.platform, c.modelId, false);
-            noteModelFailure(c.platform, c.modelId, e instanceof ProviderHttpError ? e.status : undefined, !!tools?.length);
+            noteModelFailure(c.platform, c.modelId, e instanceof ProviderHttpError ? e.status : undefined, !!tools?.length, e instanceof Error ? e.message : undefined);
             if (isFailoverWorthy(e)) {
               providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
               continue; // next key; when keys run out, the candidate loop advances
@@ -862,7 +864,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             candidateError = e;
             diagLog('rp.candidate', `${c.platform}::${c.modelId} failed after ${Date.now() - candidateStart}ms`);
             recordOutcome(c.platform, c.modelId, false);
-            noteModelFailure(c.platform, c.modelId, e instanceof ProviderHttpError ? e.status : undefined, !!tools?.length);
+            noteModelFailure(c.platform, c.modelId, e instanceof ProviderHttpError ? e.status : undefined, !!tools?.length, e instanceof Error ? e.message : undefined);
             if (isFailoverWorthy(e)) {
               providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
               continue; // next key; when keys run out, the candidate loop advances

@@ -5,7 +5,7 @@
  * whole chain in ~4s. Run: npm run test:e2e:routing-gates */
 import { selectModel, setModelSources, noteModelFailure, canonicalModelId, __resetTaskRoundCounters } from '../src/router/picker';
 import { NoVisionModelError } from '../src/router/errors';
-import { resolveCandidates, isFailoverWorthy } from '../src/agent/core/routerProvider';
+import { resolveCandidates, isFailoverWorthy, isAccountLevel } from '../src/agent/core/routerProvider';
 import { TASK_ROUTING } from '../src/router/picker';
 import { ProviderHttpError } from '../src/providers/base';
 import type { FallbackEntry } from '../src/shared/types';
@@ -166,15 +166,16 @@ console.log('\n— an account-level refusal condemns the platform, not just the 
   ok('429 still fails over', isFailoverWorthy(rate));
   ok('5xx still fails over', isFailoverWorthy(server));
 
-  // isAccountLevel is internal; assert the CLASSIFICATION it encodes, which is what decides
-  // whether a platform's remaining models are worth trying.
-  const accountLevel = (e: unknown) => e instanceof ProviderHttpError
-    && (e.status === 401 || e.status === 402 || e.status === 403);
+  const accountLevel = isAccountLevel;
   ok('402 is account-level (siblings cannot succeed)', accountLevel(billing));
   ok('401 is account-level', accountLevel(deadKey));
   ok('403 is account-level', accountLevel(forbidden));
   ok('429 is NOT account-level — the next model may serve', !accountLevel(rate));
   ok('5xx is NOT account-level', !accountLevel(server));
+  // Live 2026-10-06: Zen answers a delisted model with 401 ModelError; the platform's other
+  // models still serve, so this must not condemn opencode for the rest of the step.
+  ok('a 401 naming the model as unsupported is NOT account-level',
+    !accountLevel(new ProviderHttpError('OpenCode Zen API error 401: Model hy3-free is not supported', 401)));
 }
 
 console.log('— a 404 / a 400-with-tools quarantines the MODEL, not just the moment —');
@@ -190,14 +191,22 @@ console.log('— a 404 / a 400-with-tools quarantines the MODEL, not just the mo
     isToolIncompatible: (_p: string, m: string) => quarantined.get(m) === 'tools',
     isDeprecated: (_p: string, m: string) => quarantined.get(m) === 'gone',
     markToolIncompatible: (_p: string, m: string) => { quarantined.set(m, 'tools'); },
-    markDeprecated: (_p: string, m: string) => { quarantined.set(m, 'gone'); },
+    markDeprecated: (_p: string, m: string, ms?: number) => { quarantined.set(m, ms === undefined ? 'gone' : `down:${ms}`); },
   };
   setModelSources(src);
   ok('404 fails over instead of killing the turn', isFailoverWorthy(new ProviderHttpError('not found', 404)));
   noteModelFailure('groq', 'gone-model', 404, false);
   noteModelFailure('groq', 'no-tools', 400, true);
   noteModelFailure('groq', 'live-model', 429, true);
+  noteModelFailure('groq', 'delisted', 401, false, 'OpenCode Zen API error 401: Model delisted is not supported');
+  noteModelFailure('groq', 'outage', 400, true, 'OpenCode Zen API error 400: Error from provider (Console): Upstream request failed: Endpoint is unavailable.');
+  noteModelFailure('groq', 'bad-param', 400, false, 'Zen API error 400: only "auto" is supported for tool_choice. "none" is not supported');
+  noteModelFailure('groq', 'throttled', 429, true, 'OpenCode Zen API error 429: Error from provider (Console): Upstream request failed: Endpoint is unavailable.');
   ok('404 marks the model deprecated', quarantined.get('gone-model') === 'gone');
+  ok('a model-unavailable 401 sidelines the model for 1 h', quarantined.get('delisted') === 'down:3600000', String(quarantined.get('delisted')));
+  ok('"Endpoint is unavailable" sidelines it too (not tool-incompatible)', quarantined.get('outage') === 'down:3600000', String(quarantined.get('outage')));
+  ok('a parameter "not supported" is not a dead model', !quarantined.has('bad-param'));
+  ok('a 429 with the same "unavailable" text is a moment, not a dead model', !quarantined.has('throttled'), String(quarantined.get('throttled')));
   ok('400 with tools offered marks it tool-incompatible', quarantined.get('no-tools') === 'tools');
   ok('429 marks nothing (a moment, not the model)', !quarantined.has('live-model'));
   const sel = await selectModel([{ role: 'user', content: 'x' }], { requireTools: true });

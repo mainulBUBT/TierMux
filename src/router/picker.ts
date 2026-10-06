@@ -291,13 +291,22 @@ export function isInCooldown(platform: string, modelId: string): boolean {
   return !!h && h.cooldownUntil > Date.now();
 }
 
+/** The upstream names the MODEL as gone or down, whatever status carries it (OpenCode Zen:
+ *  401 "Model hy3-free is not supported", 400 "Endpoint is unavailable" — live 2026-10-06). */
+export function isModelUnavailable(message: string | undefined): boolean {
+  return !!message && /\bmodel \S+ is not supported\b|\bmodel is (currently )?unavailable\b|\bendpoint is unavailable\b/i.test(message);
+}
+
 /** Time-boxed quarantines on top of the cooldown, for failures that say something specific
  *  about the MODEL rather than the moment: a 400 while tools were offered means it rejects the
- *  tools payload (10 min), a 404 means it is gone from the provider (24 h). The old Router set
- *  these; the picker read them but nothing had set them since it was retired (2026-09-05). */
-export function noteModelFailure(platform: string, modelId: string, status: number | undefined, toolsOffered: boolean): void {
+ *  tools payload (10 min), a 404 means it is gone from the provider (24 h), a model-unavailable
+ *  answer sidelines it for 1 h. The old Router set these; the picker read them but nothing had
+ *  set them since it was retired (2026-09-05). */
+export function noteModelFailure(platform: string, modelId: string, status: number | undefined, toolsOffered: boolean, message?: string): void {
   if (!sources) return;
   if (status === 404) sources.secrets.markDeprecated?.(platform as never, modelId);
+  // 429 carries the same text when Zen rate-limits a model (ling-3.1-flash-free, live 2026-10-06).
+  else if ((status === 400 || status === 401) && isModelUnavailable(message)) sources.secrets.markDeprecated?.(platform as never, modelId, 3_600_000);
   else if ((status === 400 || status === 413) && toolsOffered) sources.secrets.markToolIncompatible?.(platform as never, modelId);
 }
 

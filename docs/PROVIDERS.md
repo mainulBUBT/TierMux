@@ -29,7 +29,9 @@ workarounds — local proxies, header shims, the same patches in Hermes/OmniRout
 time it does). TierMux still reaches the anonymous tier with no key, but the **reliable path is a
 Zen account**: paste the key and requests go out identified as TierMux, carrying the
 `x-opencode-session` header Zen's relay requires. Front it in the panel as *keyless · optional
-key* — the button is there for a reason.
+key* — the button is there for a reason. The `muse-spark-*` models answer only on Zen's
+`/responses` endpoint (500 on `/chat/completions`), so TierMux sends those there and reads the
+reply back as a normal chat stream.
 
 Also, before you tick a free-period model, read Zen's § Privacy: **Muse Spark 1.3 Contributor
 Free** is "heavily discounted token pricing in exchange for permission to use your prompts and
