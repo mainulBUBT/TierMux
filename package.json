@@ -661,6 +661,7 @@
     "test:e2e:rationale-wiring": "esbuild scripts/rationaleWiring.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/rationaleWiring.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/rationaleWiring.e2e.cjs",
     "test:e2e:agent-settings-headless": "esbuild scripts/agentSettingsHeadless.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/agentSettingsHeadless.e2e.cjs && node dist/agentSettingsHeadless.e2e.cjs",
     "test:e2e:task-round-persist": "esbuild scripts/taskRoundPersist.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/taskRoundPersist.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/taskRoundPersist.e2e.cjs",
+    "eval:models": "esbuild scripts/modelEval.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/modelEval.cjs --log-level=error && node -r ./scripts/vscodeMock.cjs dist/modelEval.cjs",
     "test:e2e:opencode-lane": "esbuild scripts/opencodeLane.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/opencodeLane.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/opencodeLane.e2e.cjs"
   },
   "devDependencies": {
