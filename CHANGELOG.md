@@ -3,6 +3,28 @@
 All notable changes to TierMux are documented here. The format is loosely
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [3.0.4] — 2026-09-29
+
+### Fixed
+
+- **The agent no longer forgets files it is still using.** Tool output used to be elided after a
+  fixed number of steps (3 in Agent mode), so a turn working across four or five files re-read the
+  same file again and again until the repeat guard stopped it — a live run re-read one file 12×
+  in 4.5 minutes. Output now stays in full until the conversation fills ~60% of the model's
+  context window, then the oldest results go first. Same question, same free model: 2 minutes,
+  each file read once or twice.
+- **Follow-up messages see what the last one read.** Tool results were cut to 2,000 characters
+  when a turn ended; they are now kept whole (up to 30,000 per result), so "now do it" does not
+  start by re-reading everything. Auto-compact judges the conversation itself, not file content
+  the agent can re-read, so it no longer summarizes early because of big files.
+- **Skipping a question means "no".** In Agent and Ask mode, skipping the agent's question used to
+  let it carry on "with the safest approach" — including editing files. The turn now stops there
+  and says so. Plan mode is unchanged (it asks once more or states its assumption in the plan,
+  which still needs your approval).
+- **A stuck turn still gives you something.** When the repeat guard stops a turn, Agent mode now
+  reports what it found, what it changed and what is left (path:line), and Plan mode is pushed to
+  propose its plan or ask you — instead of ending on "Stopped: no progress" alone.
+
 ## [3.0.3] — 2026-09-24
 
 ### Added

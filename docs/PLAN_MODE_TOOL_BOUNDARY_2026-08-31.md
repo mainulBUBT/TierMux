@@ -245,7 +245,9 @@ plan, on the shared `askUser` card, and a plan that reaches the card is still se
 - **Skipped ≠ cancelled.** The host reports `{status: 'answered'|'dismissed'|'cancelled', answers}`;
   both used to be an empty string. In plan mode a `dismissed` result tells the model to ask ONCE more
   with narrower options or to state its assumption in `interpretation` — never the generic "proceed
-  with the safest approach".
+  with the safest approach". In agent/ask mode (2026-09-29) a skip is a "no": the tool says so and the
+  engine ends the turn on that step (`askDismissed` stop condition, no continuation pass) — the old
+  "proceed with the safest approach" read as consent and the agent went on to edit (live report).
 - **Decisions ride beside the plan, not in it.** The host keeps `s.planDecisions` (newest 12) from
   plan-mode answers; the card renders them in a "Decisions" block (DOM-only), the saved file gets a
   `## Decisions` section, and the execution prompt gets "Settled with the user…". They are NEVER
@@ -255,6 +257,12 @@ plan, on the shared `askUser` card, and a plan that reaches the card is still se
   Plan Continue can still end on the card via the shared `proposePlanCard`. On a resume the original
   request and first-pass exploration are already in history, so only the new pass's work is held.
   A PAUSED turn's cut-off prose is never promoted to a card by the regex fallback.
+- **Stuck plan turns close too (2026-09-29).** The repeat-read guard stops a turn with finish
+  `'tool-calls'`, which the plan-gap nudge's `finish === 'stop'` gate never matched, so a stuck plan
+  turn paused with no plan and no text. It now gets the ask-mode stuck wrap-up's counterpart: ONE
+  continuation with `STUCK_PLAN_WRAPUP`, its first step forced onto `PLAN_CLOSERS` exactly like the
+  plan-gap nudge. Still one continuation per turn; `stopReason: 'stuck'` stays. Pinned by
+  `test:e2e:read-loop` (2b).
 - **Checked, no guard added:** a provider that ignores the forced `toolChoice` makes the SDK raise
   `ToolChoiceViolationError` on the plan-gap step. Reproduced with a mock: the turn still ends cleanly
   (second narration ships, not failed; `finishReason` reads `'error'`, which nothing consumes). Pinned

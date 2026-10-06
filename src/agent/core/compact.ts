@@ -62,16 +62,18 @@ export function compactIfNeeded(
   return { messages: pruneAggressive(gentle) };
 }
 
-// ── Tool-output aging — every step, budget-independent. compactIfNeeded fires only at 80% of
-// the window, so a big-window model re-sent every 30k readFile result on each of 15–25 round
-// trips (free gateways do not prompt-cache; 10–17s TTFT repros). Stubs name the tool + input
-// and say to re-run it. Errors and short outputs stay verbatim.
+// ── Tool-output aging — every step, against a budget below compactIfNeeded's. Free gateways do
+// not prompt-cache, so a big-window model re-sent every 30k readFile result on each of 15–25
+// round trips (10–17s TTFT repros); a fixed keep-count instead made the model forget files it
+// was still using (re-read loops, 2026-09-21 / 2026-09-29). Output stays verbatim while the
+// transcript fits the budget; past it the OLDEST big results are stubbed first. Stubs name the
+// tool + input and say to re-run it. Errors and short outputs stay verbatim.
 
 const AGE_MIN_CHARS = 2_000;
 
-/** Most recent tool messages kept verbatim. 1 → 3 (2026-09-05): with one, "read A, read B,
- *  edit A" had already stubbed A's content by the edit step while editFile.search must match it
- *  byte-for-byte. Three covers read→search→read→edit without a per-tool exemption list. */
+/** Most recent tool messages kept verbatim whatever the budget. 1 → 3 (2026-09-05): with one,
+ *  "read A, read B, edit A" had already stubbed A's content by the edit step while
+ *  editFile.search must match it byte-for-byte. */
 const KEEP_RECENT_TOOL_MESSAGES = 3;
 
 /** toolCallId → the ARGUMENTS that produced the result. The args live on the assistant
@@ -129,7 +131,9 @@ export interface AgeToolOutputsResult {
  *  thing the delegation produced, and a re-run means paying for the whole investigation again. */
 const AGE_EXEMPT_TOOLS = new Set(['delegateTask']);
 
-export function ageToolOutputs(messages: ModelMessage[], minChars = AGE_MIN_CHARS, keepRecent = KEEP_RECENT_TOOL_MESSAGES): AgeToolOutputsResult {
+/** `budgetTokens` 0 stubs every big result outside the recent window; above 0, only as many of
+ *  the oldest as it takes to bring the transcript under the budget. */
+export function ageToolOutputs(messages: ModelMessage[], minChars = AGE_MIN_CHARS, keepRecent = KEEP_RECENT_TOOL_MESSAGES, budgetTokens = 0): AgeToolOutputsResult {
   // The most recent `keepRecent` tool messages are the steps the model is still
   // working from — kept verbatim, parts and all. Everything before the oldest of them is fair
   // game. Walking backwards means the boundary is the OLDEST kept message's index.
@@ -139,28 +143,26 @@ export function ageToolOutputs(messages: ModelMessage[], minChars = AGE_MIN_CHAR
   }
   const keepFrom = recent.length ? recent[recent.length - 1] : -1;
   if (keepFrom <= 0) return { stubbedChars: 0 };
+  let over = budgetTokens > 0 ? estimateTokens(messages) - budgetTokens : Infinity;
+  if (over <= 0) return { stubbedChars: 0 };
 
   const inputById = toolCallInputs(messages);
   let stubbedChars = 0;
   let changed = false;
   const out = messages.map((m, i) => {
-    if (i >= keepFrom || m.role !== 'tool' || !Array.isArray(m.content)) return m;
+    if (over <= 0 || i >= keepFrom || m.role !== 'tool' || !Array.isArray(m.content)) return m;
     let touched = false;
     const content = (m.content as Array<Record<string, unknown>>).map((part) => {
-      if (part.type !== 'tool-result' || AGE_EXEMPT_TOOLS.has(String(part.toolName))) return part;
+      if (over <= 0 || part.type !== 'tool-result' || AGE_EXEMPT_TOOLS.has(String(part.toolName))) return part;
       const text = ageOutputText(part.output);
       if (text == null || text.length < minChars) return part;
       changed = true;
       stubbedChars += text.length;
       touched = true;
       const input = inputById.get(String(part.toolCallId ?? ''));
-      return {
-        ...part,
-        output: {
-          type: 'text',
-          value: `[${ageInputSummary(String(part.toolName ?? 'tool'), input)} — ${(text.length).toLocaleString()} chars / ${text.split('\n').length} lines returned in an earlier step; output elided to keep the prompt small. Re-run the tool (narrower, if needed) to see it again.]`,
-        },
-      };
+      const stub = `[${ageInputSummary(String(part.toolName ?? 'tool'), input)} — ${(text.length).toLocaleString()} chars / ${text.split('\n').length} lines returned in an earlier step; output elided to keep the prompt small. Re-run the tool (narrower, if needed) to see it again.]`;
+      over -= estimateTextTokens(text) - estimateTextTokens(stub);
+      return { ...part, output: { type: 'text', value: stub } };
     });
     return touched ? ({ ...m, content } as ModelMessage) : m;
   });

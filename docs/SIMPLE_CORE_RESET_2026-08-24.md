@@ -202,11 +202,24 @@ by `ageToolOutputs` / tier-2 prune / condense. Fixes, none of which judge answer
 - **Ask mode ends with an answer.** Live repro 2026-09-21 (ask, ~6 min, 70+ tool calls, the same four
   files re-read 7-9× each, no answer). Two causes, both fixed: (1) an earlier attempt to evict the
   dedupe cache when a read was stubbed reset the repeat count and removed the backstop entirely —
-  reverted, pinned by `test:e2e:read-loop`; (2) Ask/Plan keep the last 10 tool results verbatim
-  (`EXPLORE_KEEP_RECENT`; Agent stays at 3), so a round-robin over big files rarely needs a re-read.
+  reverted, pinned by `test:e2e:read-loop`; (2) tool output is no longer aged by a fixed count
+  (Ask/Plan kept 10, Agent 3 — the same loop recurred live on a read-only agent question,
+  2026-09-29). Since 2026-09-29 every mode keeps it verbatim until the transcript passes
+  `AGING_BUDGET_FRACTION` × pruneTarget (~60% of the window), then stubs the OLDEST big results first;
+  the last 3 tool messages are always kept. Between turns, results persist whole up to the per-tool
+  maximum (30k, `capForHistory`) instead of 2,000 chars, so a follow-up turn sees what the last one
+  read; auto-condense and the context meter judge `condensableTokens` (tool bodies counted to 2,000
+  chars) so big file content is stubbed at step time rather than triggering a summary. Pinned by
+  `test:e2e:tool-output-aging` (9) and `test:e2e:condense-split`.
   When the repeat guard still stops an ask turn with no answer it gets ONE tool-less continuation
   (`STUCK_WRAPUP`), and the last budgeted step of an ask turn is tool-less (`BUDGET_WRAPUP`). The
-  turn still reports `stopReason: 'stuck'`/paused, so Continue stays. Agent and Plan are unchanged.
+  turn still reports `stopReason: 'stuck'`/paused, so Continue stays. Plan gets the same single
+  continuation since 2026-09-29, forced onto `PLAN_CLOSERS` (`STUCK_PLAN_WRAPUP`): a mock probe showed
+  a stuck plan turn ending with no plan, no text and no continuation, because the plan-gap nudge is
+  gated on finish `'stop'` and a guard stop finishes `'tool-calls'`. Agent gets it too (2026-09-29,
+  live: a read-only agent question looped ~2 min and ended on "Stopped: no progress" alone), tool-less
+  (`STUCK_AGENT_WRAPUP`: what changed, what is left with path:line) — the guard would cut a tool pass
+  after one step and the verify gate skips stuck turns, so an edit there would ship unverified.
 - **Code intelligence, no extra rounds (2026-09-21).** Five read-only language-server tools —
   `outline`, `findSymbol`, `references` (with `kind`: references | implementations | incomingCalls |
   outgoingCalls), `definition`, `hover` — plus one METHOD line telling the model to prefer them when it

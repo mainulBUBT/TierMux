@@ -31,7 +31,7 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   // or 400 "free tier can only be used in OpenCode"). Anonymous access is undocumented and
   // refused intermittently; the free-period models also collect prompt/completion data — see
   // docs/PROVIDERS.md § OpenCode Zen.
-  { platform: 'opencode', name: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen/v1', keyless: true, keyOptional: true, skipPreflight: true, sessionHeader: 'x-opencode-session', opencodeFreeLane: true, keyUrl: 'https://opencode.ai/auth' },
+  { platform: 'opencode', name: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen/v1', keyless: true, keyOptional: true, skipPreflight: true, sessionHeader: 'x-opencode-session', opencodeFreeLane: true, responsesModels: /^muse-spark-/, keyUrl: 'https://opencode.ai/auth' },
   { platform: 'ovh', name: 'OVH AI Endpoints', baseUrl: 'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1', keyless: true },
   { platform: 'agnes', name: 'Agnes AI', baseUrl: 'https://apihub.agnes-ai.com/v1', timeoutMs: 120000, skipPreflight: true, keyUrl: 'https://platform.agnes-ai.com' },
   { platform: 'sambanova', name: 'SambaNova', baseUrl: 'https://api.sambanova.ai/v1', keyUrl: 'https://cloud.sambanova.ai/apis' },
@@ -63,6 +63,13 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'nous', name: "Nous Portal", baseUrl: "https://inference-api.nousresearch.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://portal.nousresearch.com/" }, // auto-synced
   { platform: 'vyceai', name: "Vyce AI", baseUrl: "https://vyceai.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://vyceai.com" }, // auto-synced
   { platform: 'tokenharbor', name: "Token Harbor", baseUrl: "https://tokenharbor.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://tokenharbor.ai/dashboard/api-keys" }, // auto-synced
+  { platform: 'charmhyper', name: "Charm Hyper", baseUrl: "https://hyper.charm.land/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://hyper.charm.land" }, // auto-synced
+  { platform: 'freeinference', name: "FreeInference", baseUrl: "https://freeinference.org/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://freeinference.org" }, // auto-synced
+  { platform: 'llmtr', name: "LLMTR", baseUrl: "https://llmtr.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://llmtr.com" }, // auto-synced
+  { platform: 'meganova', name: "MegaNova", baseUrl: "https://api.meganova.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://meganova.ai" }, // auto-synced
+  { platform: 'routeway', name: "Routeway", baseUrl: "https://api.routeway.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://routeway.ai" }, // auto-synced
+  { platform: 'typhoon', name: "Typhoon", baseUrl: "https://api.opentyphoon.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://opentyphoon.ai" }, // auto-synced
+  { platform: 'vlmrun', name: "VLM Run", baseUrl: "https://gateway.vlm.run/v1/openai", skipPreflight: true, timeoutMs: 600000, keyless: true, keyUrl: "https://app.vlm.run/dashboard/settings/api-keys" }, // auto-synced
 ];
 
 const providers = new Map<Platform, BaseProvider>();

@@ -5,7 +5,7 @@
  * idempotent across steps; user/assistant text is never touched.
  * Run: npm run test:e2e:tool-output-aging */
 import type { ModelMessage } from 'ai';
-import { ageToolOutputs } from '../src/agent/core/compact';
+import { ageToolOutputs, estimateTokens } from '../src/agent/core/compact';
 
 let bad = 0;
 const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? `   (${d})` : ''}`); if (!c) bad++; };
@@ -120,6 +120,23 @@ const call = (id: string, input: Record<string, unknown> = { path: `src/f${id}.t
   const r = ageToolOutputs(messages);
   ok('read → read → edit keeps the FIRST read verbatim', r.stubbedChars === 0 && r.messages === undefined,
     `stubbed=${r.stubbedChars}`);
+}
+
+// ── 9: with a budget, output stays verbatim until the transcript passes it, then oldest-first ──
+{
+  const messages: ModelMessage[] = [{ role: 'user', content: 'explore' }];
+  for (let i = 0; i < 6; i++) messages.push(call(`b${i}`), result(`b${i}`, String(i).repeat(30_000)));
+  const roomy = ageToolOutputs(messages, 2_000, 3, 100_000);
+  ok('under the budget nothing is elided, however many steps ago', roomy.stubbedChars === 0 && roomy.messages === undefined);
+  const tight = ageToolOutputs(messages, 2_000, 3, 40_000);
+  const values = (tight.messages ?? []).filter((m) => m.role === 'tool').map((m) => (m as any).content[0].output.value as string);
+  const stubbed = values.map((v) => v.includes('elided'));
+  ok('over the budget the OLDEST results go first', stubbed[0] && !stubbed[5] && stubbed.indexOf(false) > 0 && stubbed.slice(stubbed.indexOf(false)).every((x) => !x),
+    JSON.stringify(stubbed));
+  ok('only as many as it takes to fit', stubbed.filter(Boolean).length < 3 && estimateTokens(tight.messages!) <= 40_000, `${stubbed.filter(Boolean).length} stubbed`);
+  const floor = ageToolOutputs(messages, 2_000, 3, 1);
+  ok('a budget nothing fits still keeps the recent three verbatim',
+    floor.stubbedChars === 90_000 && (floor.messages![12] as any).content[0].output.value === '5'.repeat(30_000));
 }
 
 // ── 5: no tool messages at all → no-op ──

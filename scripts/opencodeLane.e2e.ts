@@ -10,6 +10,7 @@
 import { createServer } from 'http';
 import { OpenAICompatProvider } from '../src/providers/openai-compat';
 import { foldSseToCompletion, openCodeLaneHeaders, shapeOpenCodeRequest } from '../src/providers/opencodeLane';
+import { chatBodyToResponses } from '../src/providers/responsesWire';
 
 let bad = 0;
 const ok = (n: string, c: boolean, d = '') => {
@@ -17,7 +18,7 @@ const ok = (n: string, c: boolean, d = '') => {
   if (!c) bad++;
 };
 
-interface Captured { headers: Record<string, string | string[] | undefined>; body: Record<string, unknown> }
+interface Captured { url: string; headers: Record<string, string | string[] | undefined>; body: Record<string, unknown> }
 const captured: Captured[] = [];
 
 const SSE =
@@ -25,6 +26,22 @@ const SSE =
   'data: {"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"ng"}}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}\n\n' +
   'data: {"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' +
   'data: [DONE]\n\n';
+
+/** muse-spark on /responses, trimmed from a live capture (2026-10-06): encrypted reasoning, a
+ *  commentary message, then a function call whose arguments arrive as one delta. */
+const RESPONSES_SSE = [
+  { type: 'response.created', response: { id: 'resp_1', status: 'in_progress' } },
+  { type: 'response.output_item.added', output_index: 0, item: { type: 'reasoning', summary: [] } },
+  { type: 'response.output_item.done', output_index: 0, item: { type: 'reasoning', encrypted_content: 'x' } },
+  { type: 'response.output_item.added', output_index: 1, item: { type: 'message', role: 'assistant', content: [] } },
+  { type: 'response.output_text.delta', output_index: 1, delta: "I'll read " },
+  { type: 'response.output_text.delta', output_index: 1, delta: 'it.' },
+  { type: 'response.output_item.added', output_index: 2, item: { type: 'function_call', name: 'readFile', call_id: 'call_9', arguments: '' } },
+  { type: 'response.function_call_arguments.delta', output_index: 2, delta: '{"path":' },
+  { type: 'response.function_call_arguments.delta', output_index: 2, delta: '"package.json"}' },
+  { type: 'response.function_call_arguments.done', output_index: 2, arguments: '{"path":"package.json"}' },
+  { type: 'response.completed', response: { id: 'resp_1', status: 'completed', usage: { input_tokens: 653, output_tokens: 91, total_tokens: 744, output_tokens_details: { reasoning_tokens: 24 } } } },
+].map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('') + 'data: {"type":"ping","cost":"0"}\n\n';
 
 /** One raw request, outside the provider parser: status, content-type, a frame census and the
  *  head AND tail of the body. `readSseStream` can only report "0 chunks"; this says WHICH failure
@@ -64,7 +81,14 @@ async function main(): Promise<void> {
       req.on('data', (c) => (raw += c));
       req.on('end', () => {
         const body = JSON.parse(raw || '{}');
-        captured.push({ headers: req.headers, body });
+        captured.push({ url: req.url ?? '', headers: req.headers, body });
+        if (req.url?.endsWith('/responses')) {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          res.end(body.model === 'muse-spark-failed'
+            ? `data: ${JSON.stringify({ type: 'response.failed', response: { status: 'failed', error: { message: 'Upstream model overloaded' } } })}\n\n`
+            : RESPONSES_SSE);
+          return;
+        }
         // The wire shape of a dead upstream behind a live gateway: HTTP 200, text/event-stream,
         // one frame that carries an `error` and no `choices` (live repro 2026-09-24, Zen →
         // nemotron-3-ultra-free → "Upstream error from Nvidia: Service temporarily overloaded").
@@ -96,7 +120,7 @@ async function main(): Promise<void> {
   const lane = new OpenAICompatProvider({
     platform: 'opencode', name: 'OpenCode Zen',
     baseUrl: live ? 'https://opencode.ai/zen/v1' : `http://127.0.0.1:${port}/v1`,
-    keyless: true, skipPreflight: true, opencodeFreeLane: true,
+    keyless: true, skipPreflight: true, opencodeFreeLane: true, responsesModels: /^muse-spark-/,
   });
   const model = live ? 'big-pickle' : 'mock-free';
   const msg = [{ role: 'user' as const, content: 'Reply with exactly one word: pong' }];
@@ -252,6 +276,69 @@ async function main(): Promise<void> {
       'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n' +
       'data: [DONE]\n\n', 'm');
     const tc = foldedCalls.choices[0].message.tool_calls?.[0];
+    /* ---- muse-spark rides /responses: body translated, stream re-framed as chat ---- */
+    const readTool = { type: 'function' as const, function: { name: 'readFile', description: 'read', parameters: { type: 'object' as const, properties: { path: { type: 'string' } } } } };
+    let museText = '';
+    const museCalls = new Map<number, { id: string; name: string; args: string }>();
+    let museFinish: string | null = null;
+    const beforeMuse = captured.length;
+    for await (const c of lane.streamChatCompletion('', msg, 'muse-spark-1.3-contributor-free', { sessionId: 'conv-m', max_tokens: 64, tools: [readTool] })) {
+      const ch = c.choices?.[0];
+      museText += ch?.delta?.content ?? '';
+      for (const t of ch?.delta?.tool_calls ?? []) {
+        const s = museCalls.get(t.index ?? 0) ?? { id: '', name: '', args: '' };
+        if (t.id) s.id = t.id;
+        s.name += t.function?.name ?? '';
+        s.args += t.function?.arguments ?? '';
+        museCalls.set(t.index ?? 0, s);
+      }
+      if (ch?.finish_reason) museFinish = ch.finish_reason;
+    }
+    const mb = captured[beforeMuse];
+    ok('muse-spark goes to /responses', mb.url === '/v1/responses', mb.url);
+    ok('…with input items, not messages', Array.isArray(mb.body.input) && mb.body.messages === undefined);
+    const flatNames = ((mb.body.tools as Array<{ name?: string }>) ?? []).map((t) => t.name).sort();
+    ok('…tools in the flat shape, decoys included', JSON.stringify(flatNames) === '["bash","read","readFile"]', JSON.stringify(flatNames));
+    ok('…streamed, max_tokens renamed', mb.body.stream === true && mb.body.max_output_tokens === 64 && mb.body.stream_options === undefined);
+    ok('…still wears the costume', String(mb.headers['user-agent']).startsWith('opencode/'));
+    ok('streamed text re-framed', museText === "I'll read it.", JSON.stringify(museText));
+    const mc = museCalls.get(0);
+    ok('streamed function call re-framed', mc?.id === 'call_9' && mc?.name === 'readFile' && mc?.args === '{"path":"package.json"}', JSON.stringify(mc));
+    ok('arguments.done does not double the arguments', museCalls.size === 1 && mc?.args.length === '{"path":"package.json"}'.length);
+    ok('finish is tool_calls', museFinish === 'tool_calls', String(museFinish));
+
+    const museFolded = await lane.chatCompletion('', msg, 'muse-spark-1.3-contributor-free', { sessionId: 'conv-m', max_tokens: 64 });
+    const fm = museFolded.choices[0];
+    ok('non-stream caller gets the folded answer', fm.message.content === "I'll read it." && fm.message.tool_calls?.[0]?.function.name === 'readFile', JSON.stringify(fm.message));
+    ok('usage mapped from the responses shape', museFolded.usage.prompt_tokens === 653 && museFolded.usage.completion_tokens === 91 && museFolded.usage.reasoning_tokens === 24, JSON.stringify(museFolded.usage));
+    ok('tool_choice "none" is not sent to /responses (Zen: only "auto")', captured[captured.length - 1].body.tool_choice === undefined, String(captured[captured.length - 1].body.tool_choice));
+
+    let museErr: (Error & { status?: number }) | null = null;
+    try {
+      for await (const c of lane.streamChatCompletion('', msg, 'muse-spark-failed', { sessionId: 'conv-m', max_tokens: 32 })) void c;
+    } catch (e) {
+      museErr = e as Error & { status?: number };
+    }
+    ok('response.failed throws a failover-worthy error', !!museErr && /overloaded/.test(museErr.message) && (museErr.status ?? 0) >= 500, `${museErr?.message} ${museErr?.status}`);
+
+    const history = chatBodyToResponses({
+      model: 'm',
+      messages: [
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA' } }] },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'readFile', arguments: '{"path":"a"}' } }] },
+        { role: 'tool', tool_call_id: 'c1', content: 'file a' },
+      ],
+      tool_choice: 'auto',
+    });
+    ok('history translates to responses items', JSON.stringify(history.input) === JSON.stringify([
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: [{ type: 'input_text', text: 'look' }, { type: 'input_image', image_url: 'data:image/png;base64,AA' }] },
+      { type: 'function_call', call_id: 'c1', name: 'readFile', arguments: '{"path":"a"}' },
+      { type: 'function_call_output', call_id: 'c1', output: 'file a' },
+    ]), JSON.stringify(history.input));
+    ok('tool_choice "auto" survives', history.tool_choice === 'auto');
+
     ok('tool-call fragments join across frames', tc?.function.name === 'shell' && tc?.function.arguments === '{"cmd":"ls"}',
       `${tc?.function.name} ${tc?.function.arguments}`);
   }

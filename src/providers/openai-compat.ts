@@ -12,6 +12,7 @@ import type {
 import { BaseProvider, providerHttpError } from './base';
 import type { CompletionOptions } from './options';
 import { foldSseToCompletion, openCodeLaneHeaders, shapeOpenCodeRequest } from './opencodeLane';
+import { chatBodyToResponses, responsesSseAsChatSse } from './responsesWire';
 import { repairToolArguments, rescueInlineToolCalls, toolSchemaMap, sanitizeToolName, stripHarmonyTokens } from '../agent/toolArgs';
 import { flattenMessageContent, stripFileBlocks, contentToString } from '../agent/content';
 import { diagLog } from '../util/diag';
@@ -35,6 +36,8 @@ export interface OpenAICompatOpts {
    *  costume — that account is identified as TierMux and only the documented session header
    *  rides along. See opencodeLane.ts. */
   opencodeFreeLane?: boolean;
+  /** Models this platform serves only on /responses (see responsesWire.ts). */
+  responsesModels?: RegExp;
   timeoutMs?: number;
   keyless?: boolean;
   /** Free tier works anonymously, paid tier needs a key — see PlatformInfo.keyOptional. */
@@ -73,6 +76,7 @@ export class OpenAICompatProvider extends BaseProvider {
   private readonly extraHeaders: Record<string, string>;
   private readonly sessionHeader?: string;
   private readonly opencodeFreeLane: boolean;
+  private readonly responsesModels?: RegExp;
   /** Anonymous free tier works with no key and a stored key is preferred on top — see
    *  OpenAICompatOpts.keyOptional. Public so the picker can tell this apart from a platform
    *  that is keyless and nothing else (Kilo/Pollinations/OVH), which must never be handed a
@@ -96,6 +100,7 @@ export class OpenAICompatProvider extends BaseProvider {
     this.extraHeaders = opts.extraHeaders ?? {};
     this.sessionHeader = opts.sessionHeader;
     this.opencodeFreeLane = opts.opencodeFreeLane ?? false;
+    this.responsesModels = opts.responsesModels;
     this.keyOptional = opts.keyOptional ?? false;
     this.timeoutMs = opts.timeoutMs ?? 60000;
     this.keyless = opts.keyless ?? false;
@@ -122,6 +127,14 @@ export class OpenAICompatProvider extends BaseProvider {
    *  this same gate keep fixing (OmniRoute #14464, #14148). */
   private onFreeLane(apiKey: string): boolean {
     return this.opencodeFreeLane && !apiKey;
+  }
+
+  private onResponses(modelId: string): boolean {
+    return this.responsesModels?.test(modelId) ?? false;
+  }
+
+  private endpoint(modelId: string, options?: CompletionOptions): string {
+    return `${this.resolveBaseUrl(options)}${this.onResponses(modelId) ? '/responses' : '/chat/completions'}`;
   }
 
   private requestHeaders(apiKey: string, options?: CompletionOptions): Record<string, string> {
@@ -190,7 +203,8 @@ export class OpenAICompatProvider extends BaseProvider {
       ...this.reasoningFields(options?.reasoningEffort),
       ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
     };
-    return JSON.stringify(lane ? shapeOpenCodeRequest(body) : body);
+    const shaped = lane ? shapeOpenCodeRequest(body) : body;
+    return JSON.stringify(this.onResponses(modelId) ? chatBodyToResponses(shaped) : shaped);
   }
 
   private rescueFailedGeneration(errBody: unknown, options?: CompletionOptions): ChatToolCall[] | null {
@@ -215,7 +229,8 @@ export class OpenAICompatProvider extends BaseProvider {
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
     const lane = this.onFreeLane(apiKey);
-    const res = await this.fetchWithTimeout(`${this.resolveBaseUrl(options)}/chat/completions`, {
+    const responses = this.onResponses(modelId);
+    const res = await this.fetchWithTimeout(this.endpoint(modelId, options), {
       method: 'POST',
       headers: this.requestHeaders(apiKey, options),
       body: this.buildBody(messages, modelId, options, false, lane),
@@ -244,7 +259,9 @@ export class OpenAICompatProvider extends BaseProvider {
     try {
       // The keyless free lane was forced to stream (the gate rejects non-streaming
       // bodies), so fold the frames back into the single answer asked for.
-      data = lane ? foldSseToCompletion(await res.text(), modelId) : (await res.json()) as ChatCompletionResponse;
+      data = responses
+        ? foldSseToCompletion(await responsesSseAsChatSse(res, modelId).text(), modelId)
+        : lane ? foldSseToCompletion(await res.text(), modelId) : (await res.json()) as ChatCompletionResponse;
     } catch {
       throw new Error(
         `${this.name} returned a non-JSON 200 body — the endpoint may not be OpenAI-compatible. Check the base URL (e.g. Ollama needs the /v1 path).`,
@@ -270,7 +287,7 @@ export class OpenAICompatProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): AsyncGenerator<ChatCompletionChunk> {
-    const res = await this.fetchWithTimeout(`${this.resolveBaseUrl(options)}/chat/completions`, {
+    const res = await this.fetchWithTimeout(this.endpoint(modelId, options), {
       method: 'POST',
       headers: this.requestHeaders(apiKey, options),
       body: this.buildBody(messages, modelId, options, true, this.onFreeLane(apiKey)),
@@ -282,7 +299,7 @@ export class OpenAICompatProvider extends BaseProvider {
       const err = await res.json().catch(() => ({}));
       throw providerHttpError(res, `${this.name} API error ${res.status}: ${errMessage(err) ?? res.statusText}`);
     }
-    yield* this.readSseStream(res);
+    yield* this.readSseStream(this.onResponses(modelId) ? responsesSseAsChatSse(res, modelId) : res);
   }
 }
 

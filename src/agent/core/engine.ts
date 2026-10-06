@@ -43,17 +43,26 @@ const COORDINATION_TOOLS = ['todoWrite', 'skill'];
 /** At/below this window the schema tax stops being affordable. */
 const SMALL_WINDOW_MAX = 16_384;
 
-/** Tool messages kept verbatim per step. Ask and Plan are EXPLORATION: with agent's 3, a turn that
- *  reads four big files round-robin stubs each one before it comes round again and re-reads them
- *  until the repeat guard fires (live repro 2026-09-21, ask mode, ~6 min, no answer). Agent stays at
- *  3 — its edits need exact text and the write guard demands a current copy anyway. */
-const EXPLORE_KEEP_RECENT = 10;
+/** Tool output stays verbatim until the transcript passes this share of pruneTarget (~60% of the
+ *  window), then the oldest big results are stubbed first. A fixed keep-count forgot a four-file
+ *  round-robin on any window (live repros: ask 2026-09-21 ~6 min; agent 2026-09-29 ~7 min). */
+const AGING_BUDGET_FRACTION = 0.7;
 
 /** Ask mode ends with an ANSWER, not a silent pause. The last budgeted step is tool-less and a stuck
  *  turn gets one tool-less continuation — both mechanical (budget arithmetic / the repeat guard's own
  *  signal), neither judges the answer. */
 const BUDGET_WRAPUP = 'Step budget used up. Answer the user now from what you have already read — no more tool calls. Cite path:line and say plainly what you could not confirm.';
 const STUCK_WRAPUP = 'You keep re-reading the same files without converging. Stop using tools and answer the user\'s question now from what you have already found — cite path:line and say plainly what you could not confirm.';
+/** Plan mode's version: the only closes are tool calls, so the stuck continuation forces a closer
+ *  (PLAN_CLOSERS) instead of prose. Probe 2026-09-29: a stuck plan turn ended with no plan, no
+ *  text and no continuation — the plan-gap nudge is gated on finish 'stop', and a guard stop
+ *  finishes 'tool-calls'. */
+const STUCK_PLAN_WRAPUP = 'You keep re-reading the same files without converging. Close this turn with a tool call NOW: exitPlanMode with concrete steps built from the files you have already read (real paths, path:line for each step), or askUser if you are genuinely unsure which reading the user meant. Do not read anything else.';
+/** Agent's version stays tool-less: the guard would stop the pass after one step anyway, and the
+ *  verify gate skips stuck turns, so an edit made here would ship unverified. */
+const STUCK_AGENT_WRAPUP = 'You keep repeating the same tool call without making progress. Stop using tools and report to the user now from what you have already found: what you changed so far (paths), and what is still left to do with the exact path:line for each change. Say plainly what you could not confirm.';
+/** Shown when the user skipped an askUser card in agent/ask mode and the turn stopped there. */
+const DISMISSED_NOTE = '_Stopped — you skipped the question, so nothing more was done. Reply with how you want to proceed._';
 
 /** UI-facing copy of a tool's result (ToolEvent.detail) — the tool card's "View output" body
  *  and the crash-recovery snapshot both read it. Capped separately from what the model sees:
@@ -315,6 +324,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let proposedPlan: ProposedPlan | undefined;
   /** The signature that tripped REPEAT_FAILURE_LIMIT or REPEAT_READ_LIMIT — the stop condition's trigger. */
   let stuckSignature: string | undefined;
+  /** The user skipped an askUser card (agent/ask). A skip is a "no": the turn ends on that step
+   *  and no continuation pass runs — "proceed with the safest approach" read as consent and the
+   *  agent went on to edit (live report 2026-09-29). Plan mode keeps its re-ask/assumption rule. */
+  let askDismissed = false;
+  const userDismissed: StopCondition<ToolSet> = () => askDismissed;
   /** The task list as it stands: inherited on a Continue, replaced by each todoWrite. Drives
    *  the audit gate and the caller's remaining-items note. */
   let lastTodos: TodoItem[] | undefined = opts.todos;
@@ -324,7 +338,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     requestId: opts.requestId,
     onTodos: (todos) => { lastTodos = todos; opts.onTodos(todos); },
     onBeforeWrite: opts.onBeforeWrite,
-    onAskUser: opts.onAskUser,
+    onAskUser: async (questions) => {
+      const result = await opts.onAskUser(questions);
+      if (opts.mode !== 'plan' && result.status !== 'cancelled' && !result.answers.some((x) => x?.trim())) askDismissed = true;
+      return result;
+    },
     onPlanProposed: (plan) => { proposedPlan = plan; },
     skills: opts.skills,
   }) as ToolSet, (sig, count) => {
@@ -486,13 +504,13 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
         const forceAnswer = forceAnswerOnNextStep && stepNumber === 0;
         // Ask mode's last budgeted step: no tools, write the answer (unlimited budgets never reach it).
         const budgetWrapUp = opts.mode === 'ask' && Number.isFinite(maxSteps) && maxSteps > 1 && stepNumber === maxSteps - 1;
-        // Age FIRST (every step, no budget needed), then compact against the aged transcript.
+        // Age FIRST (every step, against the aging budget), then compact against the aged transcript.
         // tiermux.agent.toolCompaction sets only the aging threshold: 'off', 'light' (2,000
         // chars), 'aggressive' (800). Unknown values → light.
         const compactionMode = opts.toolCompaction ?? 'light';
         const aging = compactionMode === 'off'
           ? { stubbedChars: 0 as number, messages: undefined as ModelMessage[] | undefined }
-          : ageToolOutputs(messages, compactionMode === 'aggressive' ? 800 : 2_000, opts.mode === 'agent' ? undefined : EXPLORE_KEEP_RECENT);
+          : ageToolOutputs(messages, compactionMode === 'aggressive' ? 800 : 2_000, undefined, Math.floor(profile.pruneTarget * AGING_BUDGET_FRACTION));
         if (aging.stubbedChars > 0) {
           diagLog('engine.ageToolOutputs', `${aging.stubbedChars.toLocaleString()} chars of earlier tool output elided before step ${stepNumber}`);
         }
@@ -518,7 +536,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       // only narrate it a second time under the card. notMakingProgress reads the counter
       // onStepEnd fills below. Both are StopConditions, not aborts: the SDK finishes the step
       // cleanly and the turn returns paused/resumable like the step cap does.
-      stopWhen: [stepCountIs(maxSteps), planAccepted, notMakingProgress],
+      stopWhen: [stepCountIs(maxSteps), planAccepted, notMakingProgress, userDismissed],
       abortSignal: opts.abortSignal,
       maxRetries: 1,
 
@@ -759,6 +777,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   const planGap = opts.mode === 'plan' && !proposedPlan;
   if (
     (opts.mode === 'agent' || planGap)
+    && !askDismissed
     && !opts.abortSignal?.aborted
     && outcome.finishReason === 'stop'
     && !looksLikeQuestion
@@ -802,23 +821,29 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     }
   }
 
-  // STUCK WRAP-UP (ask mode) — the repeat guard cut the turn with tool calls still in flight, so no
-  // answer exists. ONE tool-less continuation asks for it from what was already read (live repro
-  // 2026-09-21: ~6 min of re-reads, then nothing). Same at-most-one rule as the other triggers;
-  // the turn still reports stopReason 'stuck', so Continue stays available.
-  if (opts.mode === 'ask' && stuckSignature && !continued && !opts.abortSignal?.aborted && outcome.text.trim().length === 0) {
-    diagLog('engine.stuckWrapUp', `ask turn stuck on ${stuckSignature.slice(0, 60)} with no answer — one tool-less continuation`);
-    forceAnswerOnNextStep = true;
+  // STUCK WRAP-UP — the repeat guard cut the turn with tool calls still in flight, so no answer
+  // exists. ONE continuation asks for it from what was already read: tool-less in ask (live repro
+  // 2026-09-21: ~6 min of re-reads, then nothing) and agent — repeated reads or a repeated failing
+  // edit (live repro 2026-09-29: ~2 min, then only "Stopped: no progress") — a forced closer in plan
+  // (probe 2026-09-29). Same at-most-one rule
+  // as the other triggers; the turn still reports stopReason 'stuck', so Continue stays available.
+  const stuckPlan = opts.mode === 'plan' && !proposedPlan;
+  const stuckSilent = opts.mode !== 'plan' && outcome.text.trim().length === 0;
+  if (stuckSignature && !askDismissed && !continued && !opts.abortSignal?.aborted && (stuckSilent || stuckPlan)) {
+    diagLog('engine.stuckWrapUp', `${opts.mode} turn stuck on ${stuckSignature.slice(0, 60)} with no ${stuckPlan ? 'plan' : 'answer'} — one continuation`);
+    forceAnswerOnNextStep = !stuckPlan;
+    forcePlanToolOnNextStep = stuckPlan;
     try {
       await runPass([
         ...modelMessages,
         ...outcome.responseMessages,
-        { role: 'user', content: STUCK_WRAPUP },
+        { role: 'user', content: stuckPlan ? STUCK_PLAN_WRAPUP : opts.mode === 'agent' ? STUCK_AGENT_WRAPUP : STUCK_WRAPUP },
       ]).consumeStream({ onError: passError('stuckWrapUp') });
     } catch {
       // Keep the paused turn rather than failing it.
     } finally {
       forceAnswerOnNextStep = false;
+      forcePlanToolOnNextStep = false;
     }
     continued = true;
   }
@@ -827,7 +852,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // 2026-08-30 ×2, deepseek-r1-distill-qwen-32b). The partial answer stands and this pass
   // appends to the same draft. ai v7 never continues a 'length' step on its own. ONE
   // continuation per turn (`!continued`); a nudge pass that is itself cut ships truncated.
-  if (outcome.finishReason === 'length' && !opts.abortSignal?.aborted && !continued) {
+  if (outcome.finishReason === 'length' && !askDismissed && !opts.abortSignal?.aborted && !continued) {
     diagLog('engine.lengthContinue', `finish=length (textLen=${outcome.text.length}) — one continuation pass`);
     // Stitch both halves into the shipped reply: onEnd keeps the earlier text only when the
     // newer pass ends silent, but here pass 1's text is half the real answer.
@@ -868,7 +893,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let verifyAvailable = false;
   let fixRounds = 0;
   const mutated = changedFilesFrom(toChatMessages(outcome.responseMessages));
-  if (opts.mode === 'agent' && mutated.length > 0 && !opts.abortSignal?.aborted && !stuckSignature) {
+  if (opts.mode === 'agent' && mutated.length > 0 && !opts.abortSignal?.aborted && !stuckSignature && !askDismissed) {
     verifyCmd = resolveVerifyCommand();
     verifyAvailable = !!verifyCmd;
     if (!verifyCmd) {
@@ -922,7 +947,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let auditOutcome: AgentResult['auditOutcome'];
   const completedTodos = (lastTodos ?? []).filter((t) => t.status === 'completed');
   if ((opts.auditTodos ?? DEFAULT_AUDIT_TODOS) && opts.mode === 'agent' && completedTodos.length > 0
-    && !opts.abortSignal?.aborted && !stuckSignature) {
+    && !opts.abortSignal?.aborted && !stuckSignature && !askDismissed) {
     try {
       const list = completedTodos.map((t, i) => `${i + 1}. ${t.content}`).join('\n');
       const audit = await runSubagent({
@@ -1003,7 +1028,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   } satisfies WorkReportData : undefined;
 
   return {
-    text: outcome.text,
+    text: askDismissed ? [outcome.text.trim(), DISMISSED_NOTE].filter(Boolean).join('\n\n') : outcome.text,
     reasoning: reasoningText || undefined,
     finishReason: outcome.finishReason,
     platform: served.platform,

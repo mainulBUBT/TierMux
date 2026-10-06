@@ -1,10 +1,17 @@
 // askUser e2e — the mid-turn clarifying-question tool: 1-4 questions on ONE card, a legacy
-// single-question shape, and dismissed ≠ cancelled.
+// single-question shape, dismissed ≠ cancelled, and a skip ends an agent/ask turn.
 // Run: npm run test:e2e:ask-user
 
 import { createAskUserTool } from '../src/agent/core/tools/v3/askUser';
 import { buildV3ToolSet } from '../src/agent/core/tools/v3/index';
 import type { AskQuestion, AskResult } from '../src/shared/types';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { createMockModel } from './mockModel';
+import { runAgentStream, runAskStream, runPlanStream, type AgentOpts } from '../src/agent/agent';
+import { __setEngineModelForTests } from '../src/agent/core/engine';
+import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
 
 let failures = 0;
 let caseNo = 0;
@@ -56,8 +63,8 @@ async function main(): Promise<void> {
   // ── 4. Dismissed is not cancelled ─────────────────────────────────────────
   const skipped = createAskUserTool(async () => ({ status: 'dismissed', answers: [] }), 'agent');
   const skippedAgent = await run(skipped, { question: 'Proceed?' });
-  ok('4a. a skipped question outside plan mode keeps the safe-proceed guidance',
-    typeof skippedAgent === 'string' && skippedAgent.includes('Proceed with the safest'), JSON.stringify(skippedAgent));
+  ok('4a. a skipped question outside plan mode is a "no", never "proceed with the safest approach"',
+    typeof skippedAgent === 'string' && /chose not to go ahead/.test(skippedAgent) && !/safest/.test(skippedAgent), JSON.stringify(skippedAgent));
   const skippedPlan = await run(createAskUserTool(async () => ({ status: 'dismissed', answers: [] }), 'plan'), { question: 'Which fix?' });
   ok('4b. in plan mode a skip means ask again or state the assumption — never "just guess"',
     typeof skippedPlan === 'string' && /ask ONCE more/.test(skippedPlan) && /interpretation/.test(skippedPlan) && !/safest/.test(skippedPlan), JSON.stringify(skippedPlan));
@@ -78,6 +85,54 @@ async function main(): Promise<void> {
   const neither = await run(tool, {});
   ok('5c. no question at all returns { error } that names `questions`',
     typeof neither === 'object' && neither !== null && 'error' in neither && /questions/.test((neither as { error: string }).error), JSON.stringify(neither));
+
+  // ── 6. The engine ends an agent/ask turn on a skip (live report 2026-09-29: skip → it edited) ──
+  {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-ask-'));
+    fs.writeFileSync(path.join(root, 'A.php'), 'hello world\n');
+    const script = (then: Record<string, unknown>) => [
+      { toolCalls: [{ toolName: 'askUser', input: { question: 'Change A.php?', options: ['Yes', 'No'] } }] },
+      then,
+      { text: 'done' },
+    ];
+    const edit = { toolCalls: [{ toolName: 'editFile', input: { path: 'A.php', search: 'hello', replace: 'bye' } }] };
+    const turn = async (mode: 'agent' | 'ask' | 'plan', steps: unknown[], reply: AskResult) => {
+      const m = createMockModel(steps as never, `ask-${mode}`);
+      __setEngineModelForTests(m);
+      const runner = mode === 'agent' ? runAgentStream : mode === 'ask' ? runAskStream : runPlanStream;
+      try {
+        const r = await runWithWorkspaceRoot(root, () => runner({
+          messages: [{ role: 'user', content: 'update A.php' }], mode, effort: 'medium', autoApprove: true,
+          onChunk: () => {}, onTool: () => {}, onReasoning: () => {}, onModel: () => {}, onFailover: () => {}, onStep: () => {}, onTodos: () => {},
+          onAskUser: async () => reply, onError: () => {},
+        } as unknown as AgentOpts));
+        return { m, r };
+      } finally { __setEngineModelForTests(undefined); }
+    };
+    const skip: AskResult = { status: 'dismissed', answers: [] };
+
+    const a = await turn('agent', script(edit), skip);
+    ok('6a. agent: a skip ends the turn on that step — the edit after it never runs',
+      a.m.calls.length === 1 && fs.readFileSync(path.join(root, 'A.php'), 'utf8') === 'hello world\n', `${a.m.calls.length} model calls`);
+    ok('6b. agent: the reply says it stopped because of the skip, and is not a paused turn',
+      /you skipped the question/.test(a.r.text) && !a.r.paused, JSON.stringify({ text: a.r.text, paused: a.r.paused }));
+
+    const q = await turn('ask', script({ text: 'I went ahead anyway.' }), skip);
+    ok('6c. ask: same stop', q.m.calls.length === 1 && /you skipped the question/.test(q.r.text), `${q.m.calls.length} model calls`);
+
+    const blank = await turn('agent', script(edit), answered('', ' '));
+    ok('6d. an "answered" card with only blank answers stops the same way', blank.m.calls.length === 1, `${blank.m.calls.length} model calls`);
+
+    const yes = await turn('agent', script(edit), answered('Yes'));
+    ok('6e. an answer resumes the turn as before (the edit runs)',
+      yes.m.calls.length >= 2 && fs.readFileSync(path.join(root, 'A.php'), 'utf8') === 'bye world\n' && !/you skipped/.test(yes.r.text), `${yes.m.calls.length} model calls`);
+
+    const PLAN = { outcome: 'plan', title: 'Change A', interpretation: 'r', steps: [{ what: 'change it', files: ['A.php'], evidence: 'A.php:1' }] };
+    const p = await turn('plan', script({ toolCalls: [{ toolName: 'exitPlanMode', input: PLAN }] }), skip);
+    ok('6f. plan mode keeps its rule: a skip continues to a plan (which still needs approval)',
+      p.m.calls.length === 2 && !!(p.r as { plan?: unknown }).plan && !/you skipped/.test(p.r.text), `${p.m.calls.length} model calls`);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 
   console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILED`);
   process.exit(failures ? 1 : 0);

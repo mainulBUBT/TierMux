@@ -6,14 +6,14 @@
  * backstop entirely — 30 reads ran, no stop. The count must survive stubbing.
  *
  * Ask mode then ends with an ANSWER instead of a silent pause: one tool-less continuation after the
- * stuck stop, and a tool-less last step at the step cap; Ask/Plan keep 10 tool results verbatim so a
- * round-robin rarely needs re-reading at all (Agent keeps 3).
+ * stuck stop, and a tool-less last step at the step cap; every mode keeps tool results verbatim until
+ * the aging budget (~60% of the window) so a round-robin rarely needs re-reading at all.
  * Run: npm run test:e2e:read-loop */
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createMockModel } from './mockModel';
-import { runAskStream, runAgentStream } from '../src/agent/agent';
+import { runAskStream, runAgentStream, runPlanStream } from '../src/agent/agent';
 import { __setEngineModelForTests } from '../src/agent/core/engine';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
 import type { AgentOpts } from '../src/agent/agent';
@@ -25,16 +25,16 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-loop-'));
 const files = ['A.php', 'B.php', 'C.php', 'D.php'];
 for (const f of files) fs.writeFileSync(path.join(root, f), Array.from({ length: 120 }, (_, i) => `// ${f} line ${i} ${'x'.repeat(40)}`).join('\n'));
 
-const baseOpts = (mode: 'ask' | 'agent', over: Partial<AgentOpts> = {}): AgentOpts => ({
+const baseOpts = (mode: 'ask' | 'agent' | 'plan', over: Partial<AgentOpts> = {}): AgentOpts => ({
   messages: [{ role: 'user', content: 'why does it fail?' }], mode, effort: 'medium',
   onChunk: () => {}, onTool: () => {}, onReasoning: () => {}, onModel: () => {}, onFailover: () => {}, onStep: () => {}, onTodos: () => {},
   onAskUser: async () => ({ status: 'cancelled' as const, answers: [] }), onError: () => {},
   ...over,
 } as AgentOpts);
 
-async function run(model: ReturnType<typeof createMockModel>, mode: 'ask' | 'agent', over: Partial<AgentOpts> = {}) {
+async function run(model: ReturnType<typeof createMockModel>, mode: 'ask' | 'agent' | 'plan', over: Partial<AgentOpts> = {}) {
   __setEngineModelForTests(model);
-  try { return await runWithWorkspaceRoot(root, () => (mode === 'ask' ? runAskStream : runAgentStream)(baseOpts(mode, over))); }
+  try { return await runWithWorkspaceRoot(root, () => (mode === 'ask' ? runAskStream : mode === 'plan' ? runPlanStream : runAgentStream)(baseOpts(mode, over))); }
   finally { __setEngineModelForTests(undefined); }
 }
 
@@ -50,7 +50,7 @@ async function main() {
     steps.push({ text: 'The answer.' });
     const m = createMockModel(steps as never, 'read-loop');
     const r = await run(m, 'ask');
-    // Ask keeps 10 tool messages verbatim, so the round-robin is served from cache and counted — no
+    // Four small files fit the aging budget, so the round-robin is served from cache and counted — no
     // stub-then-re-read cycle to reset anything. The guard fires at the 4th identical read.
     ok('the loop was stopped by the guard, then exactly one wrap-up call', m.calls.length === 14, `${m.calls.length} model calls`);
     ok('the stop is still a resumable pause (Continue stays available), not a failure', r.paused === true && !r.failed, JSON.stringify({ paused: r.paused, failed: r.failed }));
@@ -61,15 +61,33 @@ async function main() {
     ok('so the paused turn carries an answer instead of nothing', r.text.length > 0, JSON.stringify(r.text));
   }
 
-  // ── 2. Agent mode is unchanged: the same loop pauses with no forced answer ─────────────────
+  // ── 2. Agent mode: the same loop gets ONE tool-less wrap-up that reports found / changed / left ──
   {
     const steps: Array<Record<string, unknown>> = [];
-    for (let i = 0; i < 30; i++) steps.push({ toolCalls: [{ toolName: 'readFile', input: { path: files[i % 4] } }] });
-    steps.push({ text: 'The answer.' });
+    for (let i = 0; i < 13; i++) steps.push({ toolCalls: [{ toolName: 'readFile', input: { path: files[i % 4] } }] });
+    steps.push({ text: 'Found it; the change goes in A.php:10.' });
     const m = createMockModel(steps as never, 'read-loop-agent');
     const r = await run(m, 'agent');
-    ok('agent mode still stops on the guard', r.paused === true && (r as { stopReason?: string }).stopReason === 'stuck');
-    ok('and gets no extra wrap-up pass', !m.calls.some((c) => (c.toolChoice as { type?: string } | undefined)?.type === 'none'));
+    ok('agent mode stops on the guard, then exactly one wrap-up call', m.calls.length === 14, `${m.calls.length} model calls`);
+    ok('still a resumable stuck pause', r.paused === true && (r as { stopReason?: string }).stopReason === 'stuck');
+    const last = m.calls.at(-1);
+    ok('the wrap-up is tool-less and asks for what is changed and left',
+      (last?.toolChoice as { type?: string } | undefined)?.type === 'none' && JSON.stringify(last?.messages).includes('what is still left to do'), JSON.stringify(last?.toolChoice));
+    ok('so the paused agent turn carries a report instead of nothing', r.text.includes('A.php:10'), JSON.stringify(r.text));
+  }
+
+  // ── 2b. Plan mode: the same loop gets ONE continuation forced onto a closer (exitPlanMode/askUser) ──
+  {
+    const steps: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < 13; i++) steps.push({ toolCalls: [{ toolName: 'readFile', input: { path: files[i % 4] } }] });
+    steps.push({ toolCalls: [{ toolName: 'exitPlanMode', input: { outcome: 'plan', title: 'Fix', interpretation: 'r', steps: [{ what: 'change it', files: ['A.php'], evidence: 'A.php:1' }] } }] });
+    const m = createMockModel(steps as never, 'read-loop-plan');
+    const r = await run(m, 'plan');
+    ok('plan mode stops on the guard, then exactly one wrap-up call', m.calls.length === 14, `${m.calls.length} model calls`);
+    const last = m.calls.at(-1);
+    ok('the wrap-up step is forced onto a closer, not tool-less',
+      (last?.toolChoice as { type?: string } | undefined)?.type === 'required' && JSON.stringify(last?.messages).includes('Close this turn with a tool call'), JSON.stringify(last?.toolChoice));
+    ok('so the paused turn carries a plan instead of nothing', !!(r as { plan?: unknown }).plan && (r as { stopReason?: string }).stopReason === 'stuck');
   }
 
   // ── 3. The step cap: the LAST budgeted step is tool-less and asks for the answer (ask only) ───
@@ -94,7 +112,7 @@ async function main() {
     ok('agent mode at the cap is unchanged (a resumable pause, no forced step)', ra.paused === true && !ma.calls.some((c) => (c.toolChoice as { type?: string } | undefined)?.type === 'none'));
   }
 
-  // ── 4. Evidence retention: a big read survives ~10 tool results in ask, but only 3 in agent ───
+  // ── 4. Evidence retention: a big read survives six more tool results in every mode ───
   {
     const steps: Array<Record<string, unknown>> = [{ toolCalls: [{ toolName: 'readFile', input: { path: 'A.php' } }] }];
     for (let i = 0; i < 6; i++) steps.push({ toolCalls: [{ toolName: 'grep', input: { pattern: `q${i}`, path: '.' } }] });
@@ -104,7 +122,7 @@ async function main() {
     ok('ask: after six more tool results A.php is still verbatim in the final request', !stubbed(ask, ask.calls.length - 1));
     const agent = createMockModel(steps as never, 'keep-agent');
     await run(agent, 'agent');
-    ok('agent: the same read is already stubbed (3 kept)', stubbed(agent, agent.calls.length - 1));
+    ok('agent: the same read is still verbatim too', !stubbed(agent, agent.calls.length - 1));
   }
 
   fs.rmSync(root, { recursive: true, force: true });
