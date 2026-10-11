@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { tool } from 'ai';
 import { z } from 'zod';
 import { resolveWorkspacePath } from '../resolvePath';
+import { withPathLock } from '../pathLock';
 import type { ToolsetBindings } from './index';
 import { applyHunk } from './editMatch';
 import {
@@ -63,33 +64,37 @@ export function createEditFileTool(bindings: ToolsetBindings = {}) {
         if (!hunks) return { error: 'Missing required "search" argument (or pass "edits" for multiple hunks).' };
 
         const uri = resolveWorkspacePath(path);
-        let text: string;
-        try {
-          text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
-        } catch {
-          return { error: `File not found: ${path}` };
-        }
-        // Checkpoint baseline BEFORE mutating (timing is the whole point — see ToolsetBindings).
-        try { bindings.onBeforeWrite?.(uri, text); } catch { /* checkpointing must never block an edit */ }
-
-        // Baseline snapshot BEFORE mutating, so the note can name only NEWLY introduced errors.
-        let before = new Set<string>();
-        try { before = workspaceErrorSignatures(vscode.languages.getDiagnostics()); } catch { /* unavailable */ }
-
-        for (let i = 0; i < hunks.length; i++) {
-          const next = applyHunk(text, hunks[i].search, hunks[i].replace);
-          if ('error' in next) {
-            // WHICH hunk failed, and that none were written (hunks apply to an in-memory copy;
-            // the file is written once below), so the model knows to re-send all of them.
-            const where = hunks.length > 1 ? `Hunk ${i + 1} of ${hunks.length} failed: ` : '';
-            const rollback = hunks.length > 1 ? ' No changes were written — re-send all hunks once this one is fixed.' : '';
-            return { error: `${where}${next.error}${rollback}` };
+        const done = await withPathLock(uri, async (): Promise<{ error: string } | { before: Set<string> }> => {
+          let text: string;
+          try {
+            text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+          } catch {
+            return { error: `File not found: ${path}` };
           }
-          text = next.text;
-        }
+          // Checkpoint baseline BEFORE mutating (timing is the whole point — see ToolsetBindings).
+          try { bindings.onBeforeWrite?.(uri, text); } catch { /* checkpointing must never block an edit */ }
 
-        await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(text));
-        return `Edited ${path}.${await diagnosticsNote(uri, before)}`;
+          // Baseline snapshot BEFORE mutating, so the note can name only NEWLY introduced errors.
+          let before = new Set<string>();
+          try { before = workspaceErrorSignatures(vscode.languages.getDiagnostics()); } catch { /* unavailable */ }
+
+          for (let i = 0; i < hunks.length; i++) {
+            const next = applyHunk(text, hunks[i].search, hunks[i].replace);
+            if ('error' in next) {
+              // WHICH hunk failed, and that none were written (hunks apply to an in-memory copy;
+              // the file is written once below), so the model knows to re-send all of them.
+              const where = hunks.length > 1 ? `Hunk ${i + 1} of ${hunks.length} failed: ` : '';
+              const rollback = hunks.length > 1 ? ' No changes were written — re-send all hunks once this one is fixed.' : '';
+              return { error: `${where}${next.error}${rollback}` };
+            }
+            text = next.text;
+          }
+
+          await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(text));
+          return { before };
+        });
+        if ('error' in done) return done;
+        return `Edited ${path}.${await diagnosticsNote(uri, done.before)}`;
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) };
       }
