@@ -104,6 +104,9 @@ async function main() {
     release();
     await Promise.all([held, viaLink]);
     ok('the symlinked path waited for the held real path', order.join() === 'other,link', order.join());
+    const failing = withPathLock(Uri.file(file('real/x.txt')), async () => { throw new Error('boom'); });
+    const after = withPathLock(Uri.file(file('real/x.txt')), async () => 'ran');
+    ok('a write that throws reaches its caller and does not block the next', (await failing.catch((e: Error) => e.message)) === 'boom' && (await after) === 'ran');
   }
 
   fs.rmSync(root, { recursive: true, force: true });
