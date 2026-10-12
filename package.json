@@ -638,6 +638,7 @@
     "test:e2e:same-file-writes": "esbuild scripts/sameFileWrites.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/sameFileWrites.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/sameFileWrites.e2e.cjs",
     "test:e2e:syntax-check": "esbuild scripts/syntaxCheck.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/syntaxCheck.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/syntaxCheck.e2e.cjs",
     "test:e2e:file-map": "esbuild scripts/fileMap.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/fileMap.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/fileMap.e2e.cjs",
+    "test:e2e:inline-adopt-stream": "esbuild scripts/inlineAdoptStream.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/inlineAdoptStream.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/inlineAdoptStream.e2e.cjs",
     "test:e2e:edit-gate": "esbuild scripts/editGate.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/editGate.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/editGate.e2e.cjs",
     "package": "vsce package",
     "package:all": "bash scripts/package-targets.sh",

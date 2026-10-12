@@ -647,3 +647,57 @@ function coerceInlineArgValue(raw: string): unknown {
   if (t === '') return t;
   try { return JSON.parse(t); } catch { return t; }
 }
+
+/** A streamed tool call as routerProvider accumulates it. */
+export interface StreamedToolCall { id: string; name: string; args: string }
+
+const SPILLED_PARAM = /<parameter(?:\s+name\s*=\s*"([a-zA-Z0-9_-]+)"|=([a-zA-Z0-9_-]+))[^>]*>([\s\S]*?)<\/parameter>/g;
+
+/** Tool calls a reply put in its TEXT. With no native call, the text call is adopted (the Router
+ *  did this until it retired on 2026-09-05; since then a 200 reply's `<invoke …>` call shipped as
+ *  the answer). With native calls, keys missing from their arguments are filled from
+ *  `<parameter …>` tags in the text: kilo stepfun/step-5 sent exitPlanMode as outcome+title and
+ *  wrote steps/interpretation as text (agentBench, 2026-10-12). Undefined when nothing changes. */
+export function adoptInlineToolCalls(
+  text: string,
+  calls: StreamedToolCall[],
+  tools: Array<{ type?: string; function?: { name?: string; parameters?: unknown } }>,
+): StreamedToolCall[] | undefined {
+  if (!text.includes('<') || !tools.length) return undefined;
+  const schemas = toolSchemaMap(tools);
+  if (!calls.length) {
+    const names = new Set(tools.map((t) => t.function?.name).filter((n): n is string => !!n));
+    const rescue = rescueInlineToolCalls(text, names);
+    if (!rescue.detected || !rescue.calls.length) return undefined;
+    return rescue.calls.map((c, i) => ({ id: `call_inline_${i + 1}`, name: c.name, args: repairToolArguments(c.arguments, schemas.get(c.name)) }));
+  }
+  let changed = false;
+  const out = calls.map((c) => {
+    const args = fillSpilledParameters(c.args, text, schemas.get(c.name));
+    if (args === c.args) return c;
+    changed = true;
+    return { ...c, args };
+  });
+  return changed ? out : undefined;
+}
+
+function fillSpilledParameters(args: string, text: string, schema?: JsonSchemaish): string {
+  const props = schema?.properties;
+  if (!props) return args;
+  let obj: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(args.trim() || '{}');
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return args;
+    obj = parsed as Record<string, unknown>;
+  } catch {
+    return args;
+  }
+  let added = false;
+  for (const m of text.matchAll(SPILLED_PARAM)) {
+    const key = m[1] ?? m[2];
+    if (!(key in props) || key in obj) continue;
+    obj[key] = m[3].trim();
+    added = true;
+  }
+  return added ? repairToolArguments(JSON.stringify(obj), schema) : args;
+}

@@ -18,6 +18,7 @@ import { ProviderHttpError } from '../../providers/base';
 import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, isModelUnavailable, rationaleForServed, isInCooldown, findCatalogModel, type ModelSources, type SelectionRationale } from '../../router/picker';
 import { estimateMessagesTokens, estimateTokens } from '../budget';
 import { ThinkStripper, stripThinkTags, reasoningFromDelta } from '../../util/thinkTags';
+import { adoptInlineToolCalls, sanitizeToolName } from '../toolArgs';
 import { diagLog } from '../../util/diag';
 
 /** Post-headers STALL bound: a stream that has produced no chunk at all is abandoned after this
@@ -800,6 +801,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                 controller.enqueue({ type: 'reasoning-delta', id: reasoningId, delta: flushed.reasoning });
               }
               if (flushed.text) {
+                textAccum += flushed.text;
                 if (!textStarted) { textStarted = true; controller.enqueue({ type: 'text-start', id: textId }); }
                 controller.enqueue({ type: 'text-delta', id: textId, delta: flushed.text });
               }
@@ -810,6 +812,17 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                 continue;
               }
               break;
+            }
+
+            // gpt-oss leaks Harmony tokens into streamed names (`grep<|channel|>commentary`); the
+            // non-streaming path always cleaned them, this one did not (pollinations openai-fast, 2026-10-12).
+            for (const tc of acc.values()) tc.name = sanitizeToolName(tc.name);
+            // Tool calls written as text, or split between the call and the text (adoptInlineToolCalls).
+            const adopted = adoptInlineToolCalls(textAccum, [...acc.entries()].sort((a, b) => a[0] - b[0]).map(([, tc]) => tc), tools ?? []);
+            if (adopted) {
+              diagLog('rp.inline', `${c.platform}::${c.modelId} ${acc.size ? 'filled a split tool call from its text' : `adopted ${adopted.length} text tool call(s)`}`);
+              acc.clear();
+              adopted.forEach((tc, i) => acc.set(i, tc));
             }
 
             // Empty-final fold — see foldEmptyFinal. LAST RESORT for a candidate that already

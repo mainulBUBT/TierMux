@@ -4,7 +4,7 @@
  * ran). Guards in order: the generic decoder (shape 10), the streaming opener holding markup back
  * from the bubble, and adoption of the text call into a real one.
  * Run: npm run test:e2e:inline-tool-dialect */
-import { rescueInlineToolCalls } from '../src/agent/toolArgs';
+import { adoptInlineToolCalls, rescueInlineToolCalls } from '../src/agent/toolArgs';
 
 let bad = 0;
 const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? `   (${d})` : ''}`); if (!c) bad++; };
@@ -47,9 +47,30 @@ ok('edit replace keeps its braces byte for byte', edited.replace === 'function f
 const HTML = 'Here is the page:\n<div class="wrap"><h1>Hi</h1><p>Body</p><search><input name="q"></search></div>';
 ok('html answer yields no calls', parse(HTML).length === 0, parse(HTML).join(' | '));
 
-// ── 6. End to end — retired with the Router on 2026-09-05: the adoption it tested was a second
-// pass over a rescue that already happens one layer down (openai-compat.ts calls
-// rescueInlineToolCalls on every provider response). Sections 1-5 pin the helpers that use.
+// ── 6. Adoption on an ordinary response. When the Router retired (2026-09-05) this was believed to
+// happen one layer down, but openai-compat.ts only rescues Groq's failed_generation body — a 200
+// reply's text call shipped as the answer (agentBench, kilo stepfun/step-5, 2026-10-12).
+// routerProvider now calls adoptInlineToolCalls on every stream. ─────────────────────────────
+const DEFS = [
+  { type: 'function' as const, function: { name: 'readFile', parameters: { type: 'object', properties: { path: { type: 'string' } } } } },
+  { type: 'function' as const, function: { name: 'exitPlanMode', parameters: { type: 'object', properties: {
+    outcome: { type: 'string' }, title: { type: 'string' }, interpretation: { type: 'string' },
+    steps: { type: 'array', items: { type: 'object', properties: { what: { type: 'string' }, files: { type: 'array', items: { type: 'string' } } } } },
+  } } } },
+];
+const textOnly = adoptInlineToolCalls('Reading it.\n<function=readFile>{"path":"src/a.ts"}</function>', [], DEFS);
+ok('a text-only call is adopted', textOnly?.length === 1 && textOnly[0].name === 'readFile' && JSON.parse(textOnly[0].args).path === 'src/a.ts', JSON.stringify(textOnly));
+
+// The split call from the bench: the native call carried outcome+title, the rest sat in the text.
+const SPLIT = '<parameter name="interpretation">Add an optional discount field.</parameter>\n<parameter=steps>\n[{"what":"Parse the third field","files":["src/billing/invoice.js"]}]\n</parameter>\n<parameter name="title">ignored — native wins</parameter>\n<parameter name="nonsense">x</parameter>\n</invoke>';
+const split = adoptInlineToolCalls(SPLIT, [{ id: 'c1', name: 'exitPlanMode', args: '{"outcome":"plan","title":"Discounts"}' }], DEFS);
+const merged = split ? JSON.parse(split[0].args) : {};
+ok('a split call gains the keys its text carried', merged.interpretation === 'Add an optional discount field.' && Array.isArray(merged.steps) && merged.steps[0]?.what === 'Parse the third field', JSON.stringify(merged));
+ok('a key the native call already has is kept', merged.title === 'Discounts', merged.title);
+ok('a key outside the schema is not invented', !('nonsense' in merged));
+ok('the call keeps its id', split?.[0].id === 'c1');
+ok('prose with no tool markup changes nothing', adoptInlineToolCalls('Here is the plan: 1. edit a.ts', [], DEFS) === undefined);
+ok('a complete native call changes nothing', adoptInlineToolCalls(SPLIT, [{ id: 'c2', name: 'readFile', args: '{"path":"x"}' }], DEFS) === undefined);
 
 console.log(bad === 0 ? '\nAll inline-dialect checks passed.' : `\n${bad} check(s) FAILED.`);
 process.exit(bad === 0 ? 0 : 1);
