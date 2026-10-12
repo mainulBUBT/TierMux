@@ -9,6 +9,7 @@ import { resolveWorkspacePath } from '../resolvePath';
 import { withPathLock } from '../pathLock';
 import type { ToolsetBindings } from './index';
 import { applyHunk } from './editMatch';
+import { syntaxNote } from '../workspace/syntaxCheck';
 import {
   NEW_DIAGNOSTICS_MARKER,
   newErrorsSince,
@@ -94,7 +95,8 @@ export function createEditFileTool(bindings: ToolsetBindings = {}) {
           return { before };
         });
         if ('error' in done) return done;
-        return `Edited ${path}.${await diagnosticsNote(uri, done.before)}`;
+        const [syntax, diag] = await Promise.all([syntaxNote(uri.fsPath), diagnosticsNote(uri, done.before)]);
+        return `Edited ${path}.${syntax}${diag}`;
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) };
       }

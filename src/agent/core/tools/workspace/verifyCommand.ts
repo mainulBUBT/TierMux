@@ -102,7 +102,7 @@ function detectDeno(c: Ctx): Candidate | undefined {
 /** Is `bin` an executable on PATH? Only the syntax scan below needs this: it is the one command
  *  offered for a stack whose dependencies are NOT installed, so a missing runtime would report a
  *  perfectly fine project as broken. */
-function hasOnPath(bin: string): boolean {
+export function hasOnPath(bin: string): boolean {
   return (process.env.PATH ?? '').split(path.delimiter).filter(Boolean).some((dir) => {
     try { fs.accessSync(path.join(dir, bin), fs.constants.X_OK); return true; } catch { return false; }
   });

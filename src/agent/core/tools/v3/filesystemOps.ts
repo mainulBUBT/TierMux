@@ -11,6 +11,7 @@ import { withPathLock } from '../pathLock';
 import { visibleFileState } from './visibleRead';
 import { workspaceErrorSignatures } from '../workspace/formatDiagnostics';
 import { diagnosticsNote } from './editFile';
+import { syntaxNote } from '../workspace/syntaxCheck';
 import type { ToolsetBindings } from './index';
 
 /** Checkpoint baseline BEFORE mutating (timing is the whole point — see ToolsetBindings). */
@@ -65,7 +66,8 @@ export function createWriteFileTool(bindings: ToolsetBindings = {}) {
           return { before };
         });
         if ('error' in done) return done;
-        return `Wrote ${path}.${await diagnosticsNote(uri, done.before)}`;
+        const [syntax, diag] = await Promise.all([syntaxNote(uri.fsPath), diagnosticsNote(uri, done.before)]);
+        return `Wrote ${path}.${syntax}${diag}`;
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) };
       }
