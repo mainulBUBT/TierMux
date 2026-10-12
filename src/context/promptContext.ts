@@ -11,6 +11,7 @@ import { loadProjectRules } from './projectRules';
 import { loadUserMemory } from './userMemory';
 import { currentBranch, statusLines } from '../edits/gitSnapshot';
 import { resolveVerifyCommand } from '../agent/core/tools/workspace/verifyCommand';
+import { gatherFileMap } from './fileMap';
 
 /** Injection cap for project rules — loadProjectRules already caps at 8K, but a full 8K of
  *  rules on top of memory+env crowds small free-model context windows; 4K is the sane slice. */
@@ -35,6 +36,8 @@ export interface PromptContext {
   rules: string;
   memory: string;
   env: EnvFacts;
+  /** The workspace's file layout — rendered for plan mode only (see composeSystemPrompt). */
+  fileMap?: string;
 }
 
 async function gatherEnv(): Promise<EnvFacts> {
@@ -66,15 +69,16 @@ export async function gatherPromptContext(): Promise<PromptContext> {
   // Rules, memory and the environment block are independent reads — awaiting them
   // sequentially made the pre-turn gate pay the sum of five fs/git round-trips on every
   // message (2026-09-19). Run them concurrently; each is individually guarded.
-  const [rules, memory, env] = await Promise.all([
+  const [rules, memory, env, fileMap] = await Promise.all([
     loadProjectRules().catch(() => ''),
     loadUserMemory().catch(() => ''),
     gatherEnv(),
+    gatherFileMap().catch(() => undefined),
   ]);
   const safeRules = rules.length > MAX_RULES_INJECT
     ? rules.slice(0, MAX_RULES_INJECT) + '\n…[project rules truncated]'
     : rules;
-  const value: PromptContext = { rules: safeRules, memory, env };
+  const value: PromptContext = { rules: safeRules, memory, env, fileMap };
   cache = { at: Date.now(), value };
   return value;
 }

@@ -104,6 +104,7 @@ export function composeSystemPrompt(mode: Mode, ctx?: PromptContext, todos?: Rea
   if (ctx.rules.trim()) blocks.push(`<project_rules>\n${ctx.rules.trim()}\n</project_rules>`);
   if (ctx.memory.trim()) blocks.push(`<user_memory>\n${ctx.memory.trim()}\n</user_memory>`);
   if (ctx.env) blocks.push(`<environment_context>\n${formatEnvBlock(ctx.env)}\n</environment_context>`);
+  if (mode === 'plan' && ctx.fileMap) blocks.push(`<project_files>\nThe workspace's files (.gitignore applied). Read the relevant ones directly — together, in one step — instead of listing directories first.\n${ctx.fileMap}\n</project_files>`);
   const tail = blocks.length ? `\n\n${blocks.join('\n\n')}` : '';
   return `${BASE}\n\n${MODE_TAIL[mode]}${tail}${todoBlock}${mcpBlock}`;
 }

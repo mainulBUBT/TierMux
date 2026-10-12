@@ -2629,7 +2629,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const stepsText = planState.steps.map((st, i) => `${i + 1}. ${st.status === 'done' ? '[done] ' : ''}${st.text}`).join('\n');
       const decided = formatDecisionsForPrompt(s.planDecisions);
       s.planDecisions = [];
-      const planPrompt = `Execute this approved plan completely, step by step, using your tools. Verify each edit before moving on. Steps marked [done] are already finished — skip them. When finished, reply with a short summary of what changed.\n\n${stepsText}${decided ? `\n\n${decided}` : ''}`;
+      const planPrompt = `Execute this approved plan completely, step by step, using your tools. Steps marked [done] are already finished — skip them. When finished, reply with a short summary of what changed.\n\n${stepsText}${decided ? `\n\n${decided}` : ''}`;
       const seeded: TodoItem[] = planState.steps.map((st, i) => ({
         content: st.text,
         status: st.status === 'done' ? 'completed' : i === planState.steps.findIndex((x) => x.status !== 'done') ? 'in_progress' : 'pending',
