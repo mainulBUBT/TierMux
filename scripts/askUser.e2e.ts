@@ -128,7 +128,12 @@ async function main(): Promise<void> {
       yes.m.calls.length >= 2 && fs.readFileSync(path.join(root, 'A.php'), 'utf8') === 'bye world\n' && !/you skipped/.test(yes.r.text), `${yes.m.calls.length} model calls`);
 
     const PLAN = { outcome: 'plan', title: 'Change A', interpretation: 'r', steps: [{ what: 'change it', files: ['A.php'], evidence: 'A.php:1' }] };
-    const p = await turn('plan', script({ toolCalls: [{ toolName: 'exitPlanMode', input: PLAN }] }), skip);
+    // A.php is read alongside the question: exitPlanMode only takes evidence from something seen.
+    const p = await turn('plan', [
+      { toolCalls: [{ toolName: 'askUser', input: { question: 'Change A.php?', options: ['Yes', 'No'] } }, { toolName: 'readFile', input: { path: 'A.php' } }] },
+      { toolCalls: [{ toolName: 'exitPlanMode', input: PLAN }] },
+      { text: 'done' },
+    ], skip);
     ok('6f. plan mode keeps its rule: a skip continues to a plan (which still needs approval)',
       p.m.calls.length === 2 && !!(p.r as { plan?: unknown }).plan && !/you skipped/.test(p.r.text), `${p.m.calls.length} model calls`);
     fs.rmSync(root, { recursive: true, force: true });

@@ -43,6 +43,11 @@ const PLAN: ProposedPlan = {
   ],
 };
 
+/** The files PLAN cites, attached the way an @mention attaches them: exitPlanMode only accepts
+ *  evidence from something seen this turn (planPathCheck.unseenEvidence). */
+const PLAN_CONTEXT = { role: 'user' as const, content: ['src/settingsMeta.ts', 'media/src/main.ts', 'README.md']
+  .map((f) => `Context — file \`${f}\` (lines 1-300):\n\`\`\`\n…\n\`\`\``).join('\n\n') };
+
 function engineOpts(over: Partial<AgentOpts> & { messages: AgentOpts['messages'] }): AgentOpts {
   return {
     mode: 'plan',
@@ -57,6 +62,7 @@ function engineOpts(over: Partial<AgentOpts> & { messages: AgentOpts['messages']
     onAskUser: async () => ({ status: 'answered' as const, answers: ['yes'] }),
     onError: () => {},
     ...over,
+    messages: [PLAN_CONTEXT, ...over.messages],
   };
 }
 

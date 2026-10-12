@@ -7,6 +7,7 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 import type { ProposedPlan } from '../../../../shared/types';
+import { unseenEvidence } from './planPathCheck';
 
 /** `checkPaths` is the host's existence check (planPathCheck.ts); absent in e2e/headless contexts. */
 export function createExitPlanModeTool(
@@ -61,7 +62,7 @@ export function createExitPlanModeTool(
       // keeps them visible for execute() to reject with a message routing the doubt to askUser;
       // strip would swallow the doubt, strict would fail before execute could explain.
     }).passthrough(),
-    execute: async ({ outcome, title, description, finding, interpretation, steps, ...rest }): Promise<string | { error: string }> => {
+    execute: async ({ outcome, title, description, finding, interpretation, steps, ...rest }, options?: { messages?: ReadonlyArray<{ role: string; content: unknown }> }): Promise<string | { error: string }> => {
       try {
         // Every rejection below is RECOVERABLE: engine.ts stops the turn on an accepted RESULT
         // (planAccepted), not on the call, so an { error } goes back to the model as the next
@@ -108,6 +109,8 @@ export function createExitPlanModeTool(
         }
         const ungrounded = await checkPaths?.(clean);
         if (ungrounded) return { error: ungrounded };
+        const unseen = unseenEvidence(clean, options?.messages);
+        if (unseen) return { error: unseen };
         onPlanProposed({
           outcome: 'plan',
           title: title.trim() || 'Plan',

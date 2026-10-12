@@ -50,6 +50,24 @@ async function main() {
   const r = await bare.execute({ outcome: 'plan', title: 't', interpretation: 'r', steps: [{ what: 'x', files: ['ghost/y.ts'], evidence: 'ghost/y.ts:5' }] }, {});
   ok('without checkPaths, invented paths pass as before', !isError(r));
 
+  console.log('\n— evidence must come from something seen this turn, not from the file list —');
+  // Plan mode's prompt now lists every file NAME (context/fileMap.ts); existence + line count alone
+  // would pass a `path:line` the model never opened.
+  const call = (id: string, toolName: string, input: unknown) => ({ role: 'assistant', content: [{ type: 'tool-call', toolCallId: id, toolName, input }] });
+  const result = (id: string, toolName: string, value: string) => ({ role: 'tool', content: [{ type: 'tool-result', toolCallId: id, toolName, output: { type: 'text', value } }] });
+  const withMsgs = (messages: unknown[]) => runWithWorkspaceRoot(root, () => tool.execute(
+    { outcome: 'plan', title: 't', interpretation: 'r', steps: [{ what: 'Edit a', files: ['src/a.ts'], evidence: 'src/a.ts:2 has the bug' }] }, { messages }));
+  const unread = await withMsgs([{ role: 'user', content: 'fix the bug' }, call('g', 'glob', { pattern: '**/*.ts' }), result('g', 'glob', 'src/b.ts')]);
+  ok('a cited file never opened or found is rejected', isError(unread) && msg(unread).includes('src/a.ts:2'), msg(unread));
+  ok('the rejection says to read it', /read/i.test(msg(unread)), msg(unread));
+  ok('a readFile of the cited path counts', !isError(await withMsgs([call('r', 'readFile', { path: 'src/a.ts' }), result('r', 'readFile', '<file path="src/a.ts">\n1\tl1\n</file>')])));
+  ok('a multi-path readFile counts', !isError(await withMsgs([call('r', 'readFile', { path: ['src/b.ts', './src/a.ts'] }), result('r', 'readFile', '…')])));
+  ok('a grep hit naming the file counts', !isError(await withMsgs([call('g', 'grep', { pattern: 'bug' }), result('g', 'grep', 'src/a.ts:2: bug here')])));
+  ok('an aged read still counts (its call stays in the transcript)', !isError(await withMsgs([call('r', 'readFile', { path: 'src/a.ts' }), result('r', 'readFile', '[readFile src/a.ts — elided]')])));
+  ok('a file the user attached counts', !isError(await withMsgs([{ role: 'user', content: 'Context — file `src/a.ts` (lines 1-3):\n```\nl1\nl2\n```' }])));
+  ok('a path merely named in the request does not', isError(await withMsgs([{ role: 'user', content: 'fix the bug in src/a.ts' }])));
+  ok('no transcript, no check (sub-agent / bare tool)', !isError(await submit([{ what: 'Edit a', files: ['src/a.ts'], evidence: 'src/a.ts:2' }])));
+
   fs.rmSync(root, { recursive: true, force: true });
   console.log(bad === 0 ? '\nPlan paths are checked.' : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);
