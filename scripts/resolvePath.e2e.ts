@@ -5,6 +5,11 @@
  * from every path-taking tool and runCommand's cwd. Run: npm run test:e2e:resolve-path */
 import * as vscode from 'vscode';
 import { resolveWorkspacePath, resolveReadablePath, registerReadableRoot, __clearReadableRoots } from '../src/agent/core/tools/resolvePath';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { createRunCommandTool } from '../src/agent/core/tools/v3/runCommand';
+import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
 
 const ROOT = '/htdocs/Proj';
 (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = [
@@ -64,5 +69,13 @@ ok('the WRITE resolver never honours a readable root',
   resolved(`${SKILL}/design/references/preview.html`) === `${ROOT}${SKILL}/design/references/preview.html`);
 __clearReadableRoots();
 
-console.log(bad === 0 ? '\nALL PASS' : `\n${bad} FAILED`);
-process.exit(bad === 0 ? 0 : 1);
+// --- 4. runCommand's default cwd is the effective root, like every other path-taking tool ---
+void (async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-rc-root-'));
+  const run = createRunCommandTool() as unknown as { execute: (a: unknown, o?: unknown) => Promise<unknown> };
+  const out = String(await runWithWorkspaceRoot(dir, () => run.execute({ command: 'pwd' }, {})));
+  ok('runCommand without cwd runs in the ALS workspace root', out.includes(path.basename(dir)));
+  fs.rmSync(dir, { recursive: true, force: true });
+  console.log(bad === 0 ? '\nALL PASS' : `\n${bad} FAILED`);
+  process.exit(bad === 0 ? 0 : 1);
+})();

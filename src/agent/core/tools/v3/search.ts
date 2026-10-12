@@ -6,7 +6,7 @@ import { spawn } from 'child_process';
 import { rgPath } from '@vscode/ripgrep';
 import { tool } from 'ai';
 import { z } from 'zod';
-import { minimatch } from 'minimatch';
+import minimatch from 'minimatch';
 import * as path from 'path';
 import * as fsp from 'fs/promises';
 import { resolveWorkspacePath } from '../resolvePath';

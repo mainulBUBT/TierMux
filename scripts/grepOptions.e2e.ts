@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { createGrepTool } from '../src/agent/core/tools/v3/search';
+import { createGlobTool, createGrepTool } from '../src/agent/core/tools/v3/search';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
 
 let bad = 0;
@@ -128,6 +128,11 @@ async function main() {
   ok('but never node_modules, even though the ignore filters are off', !/node_modules/.test(opt), opt);
   const none = await run({ pattern: 'NOSUCHTHING', includeIgnored: true });
   ok('with includeIgnored an empty result is plain (nothing left to caveat)', none === '(no matches)', none);
+
+  console.log('\n— glob under a workspace-root override walks that root —');
+  const glob = createGlobTool() as { execute: (a: unknown, o?: unknown) => Promise<string | { error: string }> };
+  const g = await runWithWorkspaceRoot(root, async () => { const r = await glob.execute({ pattern: 'src/**/*.ts' }, {}); return typeof r === 'string' ? r : `ERROR: ${r.error}`; });
+  ok('glob lists the matching files', paths(g).join() === 'src/a.ts,src/b.ts,src/c.ts', g);
 
   console.log(`\n${bad === 0 ? 'ALL PASS' : `${bad} FAILED`}`);
 }

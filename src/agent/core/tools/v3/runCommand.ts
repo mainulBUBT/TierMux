@@ -1,12 +1,12 @@
 // runCommand — the toolApproval policy decides IF a command runs; this tool only runs it and
 // reports. Exit code is always reported so a failing test/build never looks like success.
 
-import * as vscode from 'vscode';
 import { tool } from 'ai';
 import { z } from 'zod';
 import { capToolOutput } from '../capOutput';
 import { resolveWorkspacePath } from '../resolvePath';
 import { runShell } from '../shell';
+import { effectiveRootUri } from '../workspaceRoot';
 import { isReadOnlyCommand } from '../../../../edits/commandClassify';
 
 const MAX_CHARS = 30_000;
@@ -45,8 +45,7 @@ export function createRunCommandTool(bindings: CommandBindings = {}) {
         if (bindings.readOnly && !isReadOnlyCommand(command)) {
           return { error: 'Only read-only commands are allowed here (git log/show/diff/status, ls, cat, grep, version checks). Report what needs to run instead.' };
         }
-        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        if (!root) return { error: 'No workspace folder is open.' };
+        const root = effectiveRootUri().fsPath;
         // Same containment as every other path-taking tool: `cwd: "../"` must not leave the
         // workspace (review 2026-09-05 — grep and runCommand were the two tools without it).
         const workdir = cwd && cwd.trim() ? resolveWorkspacePath(cwd).fsPath : root;
