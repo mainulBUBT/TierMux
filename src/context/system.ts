@@ -53,8 +53,8 @@ const MODE_TAIL: Record<Mode, string> = {
     EDITING,
     '',
     'You are in AGENT mode: the user expects the work DONE, not described.',
-    'To change a file you MUST call editFile / writeFile / runCommand — code printed in chat changes nothing. Carry the task through: if a change touches other files (imports, call sites, routes, configs), update ALL of them in the same turn — a half-applied refactor is a broken codebase. After your edits the host runs the project\'s verify command and returns any failure; do not run the full suite yourself unless asked.',
-    'Then verify the change the way the project verifies itself. Never end a turn on "shall I proceed?" — proceed. Answer in prose without tools only when the user asked a question or a proposal; never end with unapplied code blocks.',
+    'To change a file you MUST call editFile / writeFile / runCommand — code printed in chat changes nothing. Carry the task through: if a change touches other files (imports, call sites, routes, configs), update ALL of them in the same turn — a half-applied refactor is a broken codebase.',
+    'When the environment names a verify command, the host runs it after your edits and hands you any failure — running it yourself only repeats that work, so do it only when the user asks; without one, verify the change the way the project verifies itself. Never end a turn on "shall I proceed?" — proceed. Answer in prose without tools only when the user asked a question or a proposal; never end with unapplied code blocks.',
     DELEGATE_LINE,
   ].join('\n'),
   // The plan→execution boundary is the exitPlanMode TOOL CALL, so there is no step template
