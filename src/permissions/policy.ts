@@ -120,7 +120,10 @@ export function resolvePolicy(
     });
   }
   if (config.mode === 'full-auto') {
-    return Promise.resolve({ type: 'approved' });
+    // "Don't ask" stops short of a dangerous command — the host's rule since 2026-07-26, which this
+    // branch bypassed by approving before the host was asked (rm -rf ~ ran unasked).
+    const cmd = call.toolName === 'runCommand' ? commandFromInput(call.input) : undefined;
+    if (!(cmd && isDangerous(cmd))) return Promise.resolve({ type: 'approved' });
   }
   if (config.autoApproveWrites === true && MUTATING_FILE_TOOLS.has(call.toolName)) {
     return Promise.resolve({ type: 'approved' });

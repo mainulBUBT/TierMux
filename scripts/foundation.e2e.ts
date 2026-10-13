@@ -755,6 +755,20 @@ async function main() {
     ok('19c. file tools still ask in allowlist mode', w.type === 'denied' && asked === 3);
   }
 
+  // ── Scenario 19e: the Auto-approve toggle (full-auto) still asks before a dangerous command ──
+  // The host's rule since 2026-07-26 is "everything proceeds except dangerous commands", but the
+  // v3 policy approved every call in full-auto before the host was asked (rm -rf ~ ran unasked).
+  {
+    let asked = 0;
+    const ask = async () => { asked++; return 'reject' as const; };
+    const cfg = { alwaysAllow: new Set<string>(), alwaysDeny: new Set<string>(), autoModeAllowlist: new Set<string>(), mode: 'full-auto' as const, sessionMode: 'agent' as const };
+    const run = (command: string) => resolvePolicy({ toolName: 'runCommand', input: { command } }, cfg, ask);
+    ok('19e. full-auto: an ordinary command runs without a prompt', (await run('npm test')).type === 'approved' && asked === 0);
+    ok('19e. full-auto: rm -rf ~ asks', (await run('rm -rf ~')).type === 'denied' && asked === 1, `asked=${asked}`);
+    ok('19e. full-auto: git push --force asks', (await run('git push --force origin main')).type === 'denied' && asked === 2, `asked=${asked}`);
+    ok('19e. full-auto: file edits still run without a prompt', (await resolvePolicy({ toolName: 'editFile' }, cfg, ask)).type === 'approved' && asked === 2);
+  }
+
   // ── Scenario 20: always-allow persists across turns (session grants) ────────
   {
     clearSessionGrants('s20');
