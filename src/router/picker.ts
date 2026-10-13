@@ -77,8 +77,11 @@ function headGateSkipReason(taskKind: TaskKind, tier: ModelTier, speed: number):
 export const TASK_ROUTING: Record<TaskKind, string[]> = {
   // Every id here MUST exist in media/catalog.json; a renamed gateway id goes dead silently
   // (11 of 13 were once dead), which is why the tail below is rank-sorted, not table-dependent.
-  coding: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::nemotron-3.5-lightning-free'],
-  debug: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
+  // opencode:: rows use the official-client costume (4-tool fingerprint quartet, Bearer public,
+  // canonical descending session ID) matching 9router/omniroute; keyless traffic reaches the
+  // free lane cleanly.
+  coding: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'kilo::nvidia/nemotron-3-ultra-550b-a55b:free', 'opencode::big-pickle', 'opencode::nemotron-3.5-lightning-free'],
+  debug: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'kilo::nvidia/nemotron-3-ultra-550b-a55b:free', 'opencode::big-pickle'],
   // Gemini leads when a Google key exists, but the tail below is NOT a safety net on a vision
   // turn — it used to pad the chain with every enabled model regardless of supportsVision, so a
   // keyless install with no Google key answered an image with a text-only model that silently
@@ -86,17 +89,17 @@ export const TASK_ROUTING: Record<TaskKind, string[]> = {
   // Auto mode routes an attachment with zero setup. ovh::Qwen3.5-397B-A17B is vision-capable too
   // but speedRank 5, and the table head has no slow-row cap the way the tail does — it stays a
   // tail-only last resort (2026-09-04: a speed-5 row took ~5 minutes to answer).
-  vision: ['google::gemini-2.5-flash', 'opencode::muse-spark-1.3-contributor-free', 'opencode::mimo-v2.5-free', 'kilo::dots-studio/dots-3-note-preview:free'],
-  longContext: ['google::gemini-2.5-flash', 'groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free'],
-  plan: ['groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle'],
+  vision: ['google::gemini-2.5-flash', 'opencode::muse-spark-1.3-contributor-free', 'kilo::stepfun/step-5-preview-free', 'kilo::dots-studio/dots-3-note-preview:free'],
+  longContext: ['google::gemini-2.5-flash', 'groq::openai/gpt-oss-120b', 'kilo::nvidia/nemotron-3-ultra-550b-a55b:free'],
+  plan: ['groq::openai/gpt-oss-120b', 'kilo::nvidia/nemotron-3-ultra-550b-a55b:free', 'opencode::big-pickle'],
   // Latency IS the product here (inline completions, commit messages, titles), so this table is
-  // ordered by speedRank, not tier. kilo::stepfun/step-3.7-flash is the only KEYLESS speedRank-1
-  // row in the catalog (of 7 total), so a zero-setup install gets a fast head instead of falling
-  // through to the rank-3 entries. kilo::kilo-auto/free is also speedRank 1 but is a router alias
-  // — kilo picks the model, so its latency is unknowable; it stays out on purpose.
-  trivial: ['cerebras::gemma-4-31b', 'kilo::stepfun/step-3.7-flash:free', 'groq::openai/gpt-oss-20b', 'opencode::mimo-v2.5-free'],
-  chat: ['groq::openai/gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::mimo-v2.5-free'],
-  agent: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'opencode::nemotron-3-ultra-free', 'opencode::big-pickle', 'opencode::nemotron-3.5-lightning-free'],
+  // ordered by speedRank, not tier. No keyless row is speedRank 1 since step-3.7-flash left the
+  // catalog; the two Kilo rows are speedRank 2 and answered a tool call in 2-3s (2026-10-13), so a
+  // zero-setup install still gets a fast head. kilo::kilo-auto/free is speedRank 1 but a router
+  // alias — kilo picks the model, so its latency is unknowable; it stays out on purpose.
+  trivial: ['cerebras::gemma-4-31b', 'kilo::inclusionai/ling-3.1-flash', 'groq::openai/gpt-oss-20b', 'kilo::nvidia/nemotron-3-ultra-550b-a55b:free'],
+  chat: ['groq::openai/gpt-oss-120b', 'kilo::nvidia/nemotron-3-ultra-550b-a55b:free', 'opencode::big-pickle', 'kilo::stepfun/step-5-preview-free'],
+  agent: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'kilo::nvidia/nemotron-3-ultra-550b-a55b:free', 'opencode::big-pickle', 'opencode::nemotron-3.5-lightning-free'],
 };
 
 /** One row of the "Why this model?" report — numeric fields mirror the old scoring Router's

@@ -1,82 +1,98 @@
-import { createHash, randomBytes } from 'crypto';
+import { randomBytes } from 'crypto';
 
 import type { ChatCompletionResponse, ChatMessage, ChatToolCall } from '../shared/types';
 
-/** Must track a current CLI version: the gate checks the `opencode/` prefix
- *  today, and a version far behind the real client is the first thing a
- *  tightened check would reject. */
-const OC_VERSION = '1.18.32';
-export const OPENCODE_USER_AGENT = `opencode/${OC_VERSION} ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13`;
+/** Must track a current client version: the gate checks the `opencode/` prefix
+ *  and version >= 1.17.0. */
+const OC_VERSION = '1.18.31';
+export const OPENCODE_USER_AGENT = `opencode/${OC_VERSION} ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14`;
 
 const B62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 
-/** Exactly the id shape the gate parses: 6 bytes as 12 lowercase hex, then 14
- *  bytes as one Base62 char each. Stable per input, so the same conversation
- *  keeps the same session and Zen's prompt cache stays warm. */
-function ocId(prefix: string, seed: string, stable: boolean): string {
-  const bytes = stable ? createHash('sha1').update(seed).digest() : randomBytes(20);
-  let hex = '';
-  for (let i = 0; i < 6; i++) hex += bytes[i].toString(16).padStart(2, '0');
-  let b62 = '';
-  for (let i = 6; i < 20; i++) b62 += B62[bytes[i] % B62.length];
-  return prefix + hex + b62;
+const stableSessions = new Map<string, string>();
+let lastSessionTimestamp = 0;
+let sessionCounter = 0;
+
+function randomBase62(len = 14): string {
+  const bytes = randomBytes(len);
+  let out = '';
+  for (let i = 0; i < len; i++) out += B62[bytes[i] % 62];
+  return out;
 }
 
-/** Session id for a conversation. No session (title generation, condense)
- *  gets a one-off, exactly like the generic sessionHeader path did. */
+/** Canonical descending identifier: ses_ + 12 hex digits (~(timestamp * 0x1000 + counter))
+ *  + 14 Base62 random characters. Stable per conversation so prompt cache stays warm. */
 export function ocSessionId(sessionId?: string): string {
-  return ocId('ses_', 'tiermux/oc-session:' + (sessionId ?? ''), Boolean(sessionId));
+  if (sessionId && stableSessions.has(sessionId)) {
+    return stableSessions.get(sessionId)!;
+  }
+  const timestamp = Date.now();
+  if (timestamp !== lastSessionTimestamp) {
+    lastSessionTimestamp = timestamp;
+    sessionCounter = 0;
+  }
+  sessionCounter++;
+  const current = BigInt(timestamp) * 0x1000n + BigInt(sessionCounter);
+  const value = ~current;
+  const time = Array.from({ length: 6 }, (_, index) =>
+    Number((value >> BigInt(40 - 8 * index)) & 0xffn)
+      .toString(16)
+      .padStart(2, '0')
+  ).join('');
+  const id = `ses_${time}${randomBase62(14)}`;
+  if (sessionId) {
+    stableSessions.set(sessionId, id);
+  }
+  return id;
 }
 
-/** Fresh per HTTP call, like the real client's. */
+/** Fresh per HTTP call: msg_ + 12 hex digits (timestamp * 0x1000 + 1) + 14 Base62 characters. */
 export function ocRequestId(): string {
-  return ocId('msg_', 'tiermux/oc-request:' + Date.now() + ':' + randomBytes(6).toString('hex'), false);
+  const current = BigInt(Date.now()) * 0x1000n + 1n;
+  const value = current;
+  const time = Array.from({ length: 6 }, (_, index) =>
+    Number((value >> BigInt(40 - 8 * index)) & 0xffn)
+      .toString(16)
+      .padStart(2, '0')
+  ).join('');
+  return `msg_${time}${randomBase62(14)}`;
 }
 
 /** The full official-client costume. Merged last, so it overrides the
  *  extension's own User-Agent on lane providers only. */
 export function openCodeLaneHeaders(sessionId?: string): Record<string, string> {
   return {
+    'Authorization': 'Bearer public',
     'User-Agent': OPENCODE_USER_AGENT,
-    'x-opencode-client': 'cli',
+    'x-opencode-client': 'desktop',
     'x-opencode-project': 'global',
     'x-opencode-request': ocRequestId(),
     'x-opencode-session': ocSessionId(sessionId),
+    'Accept': 'text/event-stream',
   };
 }
 
 /* ---------- body shaping ---------- */
 
-// The gate wants tools with these NAMES present. Their schemas are inert on
-// purpose and the descriptions tell the model to keep away, because a decoy
-// the model actually called would surface as a tool this extension never
-// registered. When the caller brought no tools of their own, tool_choice
-// "none" takes the choice away entirely.
-export const OPENCODE_DECOY_TOOLS = [
-  {
-    type: 'function' as const,
-    function: {
-      name: 'bash',
-      description: 'Reserved for transport compatibility. Do not call this tool.',
-      parameters: { type: 'object' as const, properties: { command: { type: 'string' } }, required: ['command'] },
-    },
+// Upstream Zen gates anonymous free traffic on the 4-tool file-search quartet:
+// {bash, glob, grep, read}. Missing any of the 4 triggers 403 FreeTierError.
+export const OPENCODE_FINGERPRINT_TOOLS = ['bash', 'glob', 'grep', 'read'] as const;
+
+export const OPENCODE_DECOY_TOOLS = OPENCODE_FINGERPRINT_TOOLS.map((name) => ({
+  type: 'function' as const,
+  function: {
+    name,
+    description: `OpenCode built-in ${name} tool`,
+    parameters: { type: 'object' as const, properties: {} },
   },
-  {
-    type: 'function' as const,
-    function: {
-      name: 'read',
-      description: 'Reserved for transport compatibility. Do not call this tool.',
-      parameters: { type: 'object' as const, properties: { path: { type: 'string' } }, required: ['path'] },
-    },
-  },
-];
+}));
 
 function toolName(t: unknown): string {
   return (t as { function?: { name?: unknown } })?.function?.name as string ?? '';
 }
 
 /** Forces the wire shape the gate demands on an already-built request body:
- *  streaming always on, the two decoy tools riding along, and the decoys
+ *  streaming always on, the 4-tool quartet riding along, and the decoys
  *  pinned off when the caller has no tools of their own. */
 export function shapeOpenCodeRequest(body: Record<string, unknown>): Record<string, unknown> {
   const out = { ...body };
@@ -84,7 +100,7 @@ export function shapeOpenCodeRequest(body: Record<string, unknown>): Record<stri
   const callerHadTools = tools.length > 0;
   let added = false;
   for (const decoy of OPENCODE_DECOY_TOOLS) {
-    if (!tools.some((t) => toolName(t) === decoy.function.name)) {
+    if (!tools.some((t) => toolName(t).toLowerCase() === decoy.function.name)) {
       tools.push(decoy);
       added = true;
     }

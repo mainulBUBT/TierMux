@@ -59,6 +59,10 @@
   "tier": "mid",
   "note": "free coding/reasoning, mid-class"
  },
+ "agnes-3-flash": {
+  "tier": "strong",
+  "note": "Nara Router's spelling of Agnes 3.0 Flash (agnes-3.0-flash); same model, same tier"
+ },
  "agnes-3.0-flash": {
   "tier": "strong",
   "note": "AA index 36 = DeepSeek V4 Pro (66.6 band); weaker agentic, TB2 7%"
@@ -1275,6 +1279,10 @@
   "tier": "mid",
   "note": "Meituan MoE"
  },
+ "longcat-2.5": {
+  "tier": "strong",
+  "note": "LongCat 2.5 GA; same tier as the longcat-2.5-preview rows (OpenCode, Nous)"
+ },
  "longcat-flash-lite": {
   "tier": "small",
   "note": "lite variant"
@@ -2194,6 +2202,14 @@
  "space-bunny": {
   "tier": "frontier",
   "note": "stealth model; every Space Bunny row is curated frontier (curate-space-bunny-alpha.sql)"
+ },
+ "space-bunny-alpha": {
+  "tier": "frontier",
+  "note": "stealth model; every Space Bunny row is curated frontier (curate-space-bunny-alpha.sql)"
+ },
+ "space-bunny-alpha-bynara": {
+  "tier": "frontier",
+  "note": "Nara Router's own-served Space Bunny Alpha; same model as space-bunny-alpha"
  },
  "starcoder2-15b": {
   "tier": "small",

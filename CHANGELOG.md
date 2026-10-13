@@ -3,6 +3,44 @@
 All notable changes to TierMux are documented here. The format is loosely
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [3.0.5] — 2026-10-13
+
+### Added
+
+- **Send while the agent works.** A message sent during a running turn is queued and sent when
+  the turn ends, instead of stopping it. Stop clears the queue. A turn that finishes in a session
+  you are not looking at tells you so.
+- **Syntax check after every write.** `php -l`, Python's parser, `ruby -c` and `bash -n` run on the
+  file just written, so a parse error is fixed on the next step even without a language server or
+  test suite. Silent when the checker is not installed.
+- **Faster, grounded plans.** Plan mode gets a .gitignore-aware map of the project's file names up
+  front instead of spending its first turns listing directories, and plan execution no longer
+  re-checks after every edit when the project's verify step runs anyway. A plan's evidence must
+  come from a file actually read, searched or attached in the turn.
+- **OpenCode Zen models that only speak `/responses`** (muse-spark) now work.
+
+### Fixed
+
+- **Two edits to the same file at once no longer lose one.** Writes to one path now run one after
+  another.
+- **Auto-approve still asks before a dangerous command.** `rm -rf ~`, `git push --force` and
+  `git reset --hard` ran without a prompt under the default Auto-approve; everything else still
+  runs unasked.
+- **Free models' broken tool calls are repaired.** A tool call written as text, one split between
+  the call and the text, or a tool name with leaked tokens (`grep<|channel|>commentary`) now runs
+  instead of shipping as the answer.
+- **A model whose quota is spent rests until it resets.** Rate-limit and `Retry-After` headers now
+  set how long it is skipped.
+- **The model catalog stays safe and fresh.** It refreshes every ~6 hours (an unchanged catalog
+  costs one tiny 304), a sudden large shrink is held until it is seen twice, the remote catalog can
+  no longer repoint a built-in provider or use a non-https address, and models you switched off
+  stay off when they come back.
+- **Session titles** are retried and fall back to your first sentence.
+- **`/explore`** runs its questions one after another; in parallel they ran into rate limits.
+- `runCommand` and `glob` honor the workspace-root override; the agent no longer re-runs the full
+  test suite right before the host's own verify step; generated commit messages drop model
+  chatter and markdown.
+
 ## [3.0.4] — 2026-09-29
 
 ### Fixed

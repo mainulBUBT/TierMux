@@ -56,6 +56,7 @@ export function chatBodyToResponses(body: Record<string, unknown>): Record<strin
     ...(body.max_tokens !== undefined ? { max_output_tokens: body.max_tokens } : {}),
     ...(effort ? { reasoning: { effort } } : {}),
     stream: true,
+    store: false,
   };
 }
 

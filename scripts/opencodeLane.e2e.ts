@@ -177,7 +177,7 @@ async function main(): Promise<void> {
     ok('per-call request id sent', /^msg_/.test(h('x-opencode-request')), h('x-opencode-request'));
     ok('body streams', first.body.stream === true);
     const names = ((first.body.tools as Array<{ function: { name: string } }>) ?? []).map((t) => t.function.name).sort();
-    ok('decoy tools ride along', JSON.stringify(names) === '["bash","read"]', JSON.stringify(names));
+    ok('decoy tools ride along', JSON.stringify(names) === '["bash","glob","grep","read"]', JSON.stringify(names));
     ok('decoys pinned off without caller tools', first.body.tool_choice === 'none');
 
     /* ---- session stability, request-id freshness ---- */
@@ -198,7 +198,7 @@ async function main(): Promise<void> {
     const callerTool = { type: 'function' as const, function: { name: 'shell', description: 'run', parameters: { type: 'object' as const, properties: {} } } };
     await lane.chatCompletion('', msg, model, { sessionId: 'conv-3', max_tokens: 64, tools: [callerTool] });
     const sent = (captured[captured.length - 1].body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name).sort();
-    ok('caller tool kept, decoys appended', JSON.stringify(sent) === '["bash","read","shell"]', JSON.stringify(sent));
+    ok('caller tool kept, decoys appended', JSON.stringify(sent) === '["bash","glob","grep","read","shell"]', JSON.stringify(sent));
     ok("caller's tool_choice spelling kept", captured[captured.length - 1].body.tool_choice === undefined);
 
     /* ---- a provider without the lane is untouched ---- */
@@ -238,7 +238,7 @@ async function main(): Promise<void> {
     const beforeAnon = captured.length;
     await anon.chatCompletion('', msg, model, { sessionId: 'conv-1', max_tokens: 64 });
     ok('no key ⇒ the costume is back', String(captured[beforeAnon].headers['user-agent']).startsWith('opencode/'));
-    ok('no key ⇒ no Authorization header', captured[beforeAnon].headers.authorization === undefined, String(captured[beforeAnon].headers.authorization));
+    ok('no key ⇒ public Authorization header', captured[beforeAnon].headers.authorization === 'Bearer public', String(captured[beforeAnon].headers.authorization));
 
     /* ---- a 200 stream that carries an upstream error is NOT a blank answer ---- */
     let frameErr: (Error & { status?: number }) | null = null;
@@ -268,7 +268,7 @@ async function main(): Promise<void> {
     /* ---- unit: no duplicate decoys, split tool-call arguments merge ---- */
     const shaped = shapeOpenCodeRequest({ tools: [callerTool, { type: 'function', function: { name: 'bash', description: 'real', parameters: { type: 'object', properties: {} } } }] } as Record<string, unknown>);
     const shapedNames = (shaped.tools as Array<{ function: { name: string } }>).map((t) => t.function.name).sort();
-    ok('no duplicate bash when the caller ships one', JSON.stringify(shapedNames) === '["bash","read","shell"]', JSON.stringify(shapedNames));
+    ok('no duplicate bash when the caller ships one', JSON.stringify(shapedNames) === '["bash","glob","grep","read","shell"]', JSON.stringify(shapedNames));
 
     const foldedCalls = foldSseToCompletion(
       'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"shell","arguments":"{\\"cmd\\":"}}]}}]}\n\n' +
@@ -298,7 +298,7 @@ async function main(): Promise<void> {
     ok('muse-spark goes to /responses', mb.url === '/v1/responses', mb.url);
     ok('…with input items, not messages', Array.isArray(mb.body.input) && mb.body.messages === undefined);
     const flatNames = ((mb.body.tools as Array<{ name?: string }>) ?? []).map((t) => t.name).sort();
-    ok('…tools in the flat shape, decoys included', JSON.stringify(flatNames) === '["bash","read","readFile"]', JSON.stringify(flatNames));
+    ok('…tools in the flat shape, decoys included', JSON.stringify(flatNames) === '["bash","glob","grep","read","readFile"]', JSON.stringify(flatNames));
     ok('…streamed, max_tokens renamed', mb.body.stream === true && mb.body.max_output_tokens === 64 && mb.body.stream_options === undefined);
     ok('…still wears the costume', String(mb.headers['user-agent']).startsWith('opencode/'));
     ok('streamed text re-framed', museText === "I'll read it.", JSON.stringify(museText));
