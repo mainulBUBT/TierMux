@@ -238,6 +238,7 @@ export class OpenAICompatProvider extends BaseProvider {
     }, options?.timeoutMs ?? this.timeoutMs);
     diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options)} modelId=${modelId} stream=false status=${res.status}`);
 
+    try { options?.onResponseHeaders?.(res.headers); } catch { /* bookkeeping never fails a request */ }
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       const rescued = this.rescueFailedGeneration(err, options);
@@ -295,6 +296,7 @@ export class OpenAICompatProvider extends BaseProvider {
     }, options?.timeoutMs ?? this.timeoutMs);
     diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options)} modelId=${modelId} stream=true status=${res.status}`);
 
+    try { options?.onResponseHeaders?.(res.headers); } catch { /* bookkeeping never fails a request */ }
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw providerHttpError(res, `${this.name} API error ${res.status}: ${errMessage(err) ?? res.statusText}`);

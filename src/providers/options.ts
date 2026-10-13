@@ -10,6 +10,9 @@ export interface CompletionOptions {
   parallel_tool_calls?: boolean;
   /** Neutral reasoning effort; each adapter maps it to its provider's param. */
   reasoningEffort?: ReasoningEffort;
+  /** Every response's headers, ok or not — the router reads the provider's own quota
+   *  announcements (x-ratelimit-remaining-*, kenari's plan header) from them. */
+  onResponseHeaders?: (headers: Headers) => void;
   /** Per-call HTTP timeout override (ms). */
   timeoutMs?: number;
   /** External cancellation (the Stop button, a sub-agent's deadline). Combined with the

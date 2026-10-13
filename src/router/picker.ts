@@ -287,8 +287,70 @@ export function recordOutcome(platform: string, modelId: string, ok: boolean): v
   modelHealth.set(key, { failures, cooldownUntil: Date.now() + cooldownFor(failures) });
 }
 export function isInCooldown(platform: string, modelId: string): boolean {
-  const h = modelHealth.get(healthKey(platform, modelId));
-  return !!h && h.cooldownUntil > Date.now();
+  const key = healthKey(platform, modelId);
+  const h = modelHealth.get(key);
+  return (!!h && h.cooldownUntil > Date.now()) || (quotaUntil.get(key) ?? 0) > Date.now();
+}
+
+/** Windows a provider itself announced — remaining quota at zero, or a 429's retry-after. Kept
+ *  apart from modelHealth on purpose: the response that reports "0 left" SUCCEEDS, and its
+ *  recordOutcome(true) must not lift the window it just announced. */
+const quotaUntil = new Map<string, number>();
+const QUOTA_MIN_MS = 5_000;
+const QUOTA_MAX_MS = 24 * 3_600_000;
+const QUOTA_DEFAULT_MS = 60_000;
+/** kenari's plan quota names no reset; past it the next call bills the balance or swaps the model. */
+const PLAN_EXHAUSTED_MS = 3_600_000;
+
+/** "2m59.56s" / "6s" / "1h2m" (OpenAI, Groq), seconds, epoch seconds or epoch ms → ms from now. */
+function resetToMs(raw: string | null, now: number): number | undefined {
+  if (!raw) return undefined;
+  const v = raw.trim();
+  const units = /^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m(?!s))?(?:(\d+(?:\.\d+)?)s)?(?:(\d+(?:\.\d+)?)ms)?$/.exec(v);
+  if (units && units.slice(1).some((x) => x !== undefined)) {
+    const [, h, m, sec, ms] = units.map((x) => Number(x ?? 0));
+    return h * 3_600_000 + m * 60_000 + sec * 1000 + ms;
+  }
+  const n = Number(v);
+  if (!Number.isFinite(n)) return undefined;
+  if (n > 1e12) return n - now;
+  if (n > 1e9) return n * 1000 - now;
+  return n * 1000;
+}
+
+/** How long to skip a model whose response says its quota is spent; undefined when it is not. */
+export function quotaCooldownMs(headers: { get(name: string): string | null }, platform: string, now = Date.now()): number | undefined {
+  const pairs: Array<[string, string | undefined]> = [
+    ['x-ratelimit-remaining-requests', 'x-ratelimit-reset-requests'],
+    ['x-ratelimit-remaining-tokens', 'x-ratelimit-reset-tokens'],
+    ['ratelimit-remaining', 'ratelimit-reset'],
+    ['x-ratelimit-remaining', 'x-ratelimit-reset'],
+    ['x-kenari-plan-remaining', undefined],
+  ];
+  let wait: number | undefined;
+  for (const [remainingKey, resetKey] of pairs) {
+    const remaining = headers.get(remainingKey);
+    if (remaining === null || remaining.trim() === '' || Number(remaining) > 0) continue;
+    if (!Number.isFinite(Number(remaining))) continue;
+    const ms = resetKey ? resetToMs(headers.get(resetKey), now) : platform === 'kenari' ? PLAN_EXHAUSTED_MS : undefined;
+    const bounded = Math.min(Math.max(ms ?? QUOTA_DEFAULT_MS, QUOTA_MIN_MS), QUOTA_MAX_MS);
+    wait = Math.max(wait ?? 0, bounded);
+  }
+  return wait;
+}
+
+export function noteQuotaHeaders(platform: string, modelId: string, headers: { get(name: string): string | null }): void {
+  const ms = quotaCooldownMs(headers, platform);
+  if (ms === undefined) return;
+  const key = healthKey(platform, modelId);
+  quotaUntil.set(key, Math.max(quotaUntil.get(key) ?? 0, Date.now() + ms));
+  diagLog('picker.quota', `${key} reports its quota spent — skipped for ${Math.round(ms / 1000)}s`);
+}
+
+export function noteRetryAfter(platform: string, modelId: string, retryAfterMs: number): void {
+  const ms = Math.min(Math.max(retryAfterMs, QUOTA_MIN_MS), QUOTA_MAX_MS);
+  const key = healthKey(platform, modelId);
+  quotaUntil.set(key, Math.max(quotaUntil.get(key) ?? 0, Date.now() + ms));
 }
 
 /** The upstream names the MODEL as gone or down, whatever status carries it (OpenCode Zen:

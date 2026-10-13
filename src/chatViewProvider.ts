@@ -38,13 +38,15 @@ import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSu
 import { estimateMessagesTokens } from './agent/budget';
 import { TITLE_SYSTEM } from './agent/prompts';
 import { addDecisions, formatDecisionsForPrompt } from './agent/planDecisions';
+import { exploreQuestions, runExploreBatch, EXPLORE_PARALLEL } from './agent/exploreBatch';
+import { runSubagent } from './agent/core/subagent';
 import { formatSessionFiles, readSessionFileStates } from './context/sessionFiles';
 import { condenseHistory, shouldCondense, generateHandoff, capForHistory, condensableTokens } from './agent/condense';
 import { appendLearned } from './context/userMemory';
 import { invalidatePromptContext } from './context/promptContext';
 import { resolveExecutionProfile } from './agent/executionProfile';
 import { structurePlanSteps, formatStructuredSteps, formatPlanForCard, isCleanNumberedList, renderPlanMarkdown } from './agent/planStructurer';
-import { deriveTitleFrom, looksLikeActionablePlan, sanitizeTitle, planStepsToTodos } from './session/titles';
+import { deriveTitleFrom, looksLikeActionablePlan, sanitizeTitle, planStepsToTodos, titleDecision } from './session/titles';
 
 import { loadSkills, invalidateSkillsCache, skillInstructions } from './context/skills';
 import { fetchSkillCatalog, searchSkills } from './context/skillCatalog';
@@ -251,6 +253,11 @@ interface Session {
   transcript: TranscriptMessage[];
   title?: string;
   titleGenerated: boolean;
+  /** Messages sent while a turn was running: they wait for it instead of cancelling it, and run
+   *  in order once it settles (drainQueued). Stop drops them. */
+  queuedSends?: Array<Extract<InMessage, { type: 'sendMessage' }>>;
+  /** Failed title picks so far this run — see titleDecision. */
+  titleAttempts?: number;
   /** Set when the user manually renamed this session — suppresses auto-title overrides
    *  from OC's `session.updated` so a user-chosen name sticks. */
   userRenamedTitle?: boolean;
@@ -831,6 +838,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .then((choice) => { if (choice === 'Switch to it') this.openSession(sessionId); });
   }
 
+  /** A session the user is not looking at finished its run — say so once, like the approval
+   *  notice. Not while queued messages remain: the session is about to run again. */
+  private notifyFinishedInBackground(s: Session): void {
+    if (s.id === this.viewedSessionId || s.queuedSends?.length) return;
+    const name = s.title?.trim() || 'A session';
+    void vscode.window.showInformationMessage(`${name} finished.`, 'Switch to it')
+      .then((choice) => { if (choice === 'Switch to it') this.openSession(s.id); });
+  }
+
   /** Resolve every outstanding approval in a session (cancel / stop) so the agent never hangs,
    *  and pull the cards off the webview so a stale click is visibly a no-op. */
   private settlePendingApprovals(s: Session, approved: boolean): void {
@@ -1133,9 +1149,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.postAnnouncements(this.lastAnnouncements, this.lastAnnouncementsUpdated);
         break;
       }
-      case 'sendMessage':
+      case 'sendMessage': {
+        const target = this.current();
+        if (target.activeRequestId) {
+          (target.queuedSends ??= []).push(m);
+          this.post({ type: 'queuedMessage', sessionId: target.id, requestId: m.requestId, state: 'queued' });
+          break;
+        }
+        // Sent as queued, but the turn ended before it arrived: it still needs its bubble.
+        if (m.queued) this.post({ type: 'userEcho', sessionId: target.id, requestId: m.requestId, text: m.text });
         await this.handleSend(m);
         break;
+      }
       case 'approvePlan':
         await this.handleApprovePlan(m);
         break;
@@ -2051,16 +2076,60 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     ];
   }
 
-  private async handleSend(m: Extract<InMessage, { type: 'sendMessage' }>): Promise<void> {
+  /** `/explore` — one read-only explore sub-agent per line, one at a time (exploreBatch.ts).
+   *  The reports land in history, so the next turn works from them instead of the files. */
+  private async runExplore(m: Extract<InMessage, { type: 'sendMessage' }>, rest: string, target?: Session): Promise<void> {
+    const s = target ?? this.current();
+    const questions = exploreQuestions(rest);
+    if (!questions.length) {
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: 'Usage: `/explore` followed by one question per line — each runs in its own read-only explore agent, and only the reports come back.' });
+      return;
+    }
+    s.history.push({ role: 'user', content: m.text });
+    s.transcript.push({ role: 'user', text: m.text, requestId: m.requestId, ts: Date.now(), historyLen: s.history.length - 1 });
+    s.cancel?.cancel();
+    s.cancel?.dispose();
+    s.cancel = new vscode.CancellationTokenSource();
+    s.activeRequestId = m.requestId;
+    const signal = tokenToAbortSignal(s.cancel.token);
+    const release = await this.acquireRunSlot(s.id);
+    const sentAt = Date.now();
+    this.post({ type: 'busy', sessionId: s.id, busy: true });
+    try {
+      this.post({ type: 'notice', sessionId: s.id, text: `Exploring ${questions.length} question${questions.length > 1 ? 's' : ''}${EXPLORE_PARALLEL > 1 ? `, up to ${EXPLORE_PARALLEL} at a time` : ', one at a time'}…` });
+      const text = await runExploreBatch(questions, async (task) =>
+        (await runSubagent({ task, agent: 'explore', sessionId: s.id, requestId: m.requestId, abortSignal: signal })).summary);
+      s.history.push({ role: 'assistant', content: text });
+      s.transcript.push({ role: 'assistant', text, requestId: m.requestId, ts: Date.now(), secs: Math.max(0, Math.round((Date.now() - sentAt) / 1000)) });
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text });
+    } finally {
+      release();
+      if (s.activeRequestId === m.requestId) s.activeRequestId = undefined;
+      this.post({ type: 'busy', sessionId: s.id, busy: false });
+      if (this.sessions.has(s.id)) this.setStatus(s.id, 'idle');
+      this.persist(s.id);
+      this.drainQueued(s);
+    }
+  }
+
+  /** The next message sent while this session's turn was running, now that it has settled. */
+  private drainQueued(s: Session): void {
+    const next = s.queuedSends?.shift();
+    if (!next || !this.sessions.has(s.id)) return;
+    this.post({ type: 'userEcho', sessionId: s.id, requestId: next.requestId, text: next.text });
+    void this.handleSend(next, s);
+  }
+
+  private async handleSend(m: Extract<InMessage, { type: 'sendMessage' }>, target?: Session): Promise<void> {
     const slash = parseSlash(m.text);
     if (slash?.name === 'commit') {
-      const s = this.current();
+      const s = target ?? this.current();
       await this.deps.generateCommitMessage();
       this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: 'Generated a commit message in the Source Control input.' });
       return;
     }
     if (slash?.name === 'grep') {
-      const s = this.current();
+      const s = target ?? this.current();
       if (!slash.rest.trim()) {
         this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: 'Usage: `/grep <pattern>`' });
         return;
@@ -2087,6 +2156,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       return;
     }
+    if (slash?.name === 'explore') {
+      await this.runExplore(m, slash.rest, target);
+      return;
+    }
     let prompt = m.text;
     const skill = slash && this.skills().get(slash.name);
     if (slash && skill) {
@@ -2095,7 +2168,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       registerReadableRoot(skill.dir);
       prompt = `${skillInstructions(skill)}\n\n${slash.rest}`;
     }
-    const s = this.current();
+    const s = target ?? this.current();
     s.model = m.model;
     s.reasoningEffort = m.reasoningEffort;
     diagLog('sendMessage', `requestId=${m.requestId} mode=${m.mode} pinnedModel="${m.model ?? '<none>'}" reasoningEffort=${m.reasoningEffort ?? '<none>'}`);
@@ -2318,8 +2391,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.persist(s.id);
         this.post({ type: 'busy', sessionId: s.id, busy: false });
         this.setStatus(s.id, 'finished');
+        this.notifyFinishedInBackground(s);
         await this.maybeAutoCondense(s);
         void this.maybeGenerateTitle(s);
+        this.drainQueued(s);
       }
     }
   }
@@ -2700,7 +2775,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.persist(s.id);
         this.post({ type: 'busy', sessionId: s.id, busy: false });
         this.setStatus(s.id, 'finished');
+        this.notifyFinishedInBackground(s);
         await this.maybeAutoCondense(s);
+        this.drainQueued(s);
       }
     }
   }
@@ -2810,6 +2887,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // isActiveRun holds, which Stop breaks below — the mode pill stayed stuck on "Agent ⚡".
     const wasExecutingPlan = s.executingPlan;
     const executingRequestId = s.activeRequestId;
+    for (const q of s.queuedSends ?? []) this.post({ type: 'queuedMessage', sessionId: s.id, requestId: q.requestId, state: 'dropped' });
+    s.queuedSends = [];
     s.cancel?.cancel();
     s.activeRequestId = undefined; // invalidates the run's liveness guard (isActiveRun)
     this.settlePendingApprovals(s, false); // unblock any command/edit awaiting a click
@@ -3276,7 +3355,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.persist(s.id);
         this.post({ type: 'busy', sessionId: s.id, busy: false });
         this.setStatus(s.id, 'finished');
+        this.notifyFinishedInBackground(s);
         await this.maybeAutoCondense(s);
+        this.drainQueued(s);
       }
     }
   }
@@ -3457,9 +3538,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (cleaned && !/^(starting conversation|new chat|untitled|chat)$/i.test(cleaned)) title = cleaned;
     }
 
-    // Always commits: every model can fail, and an untitled session forever is worse than the
-    // derived fallback. Either way this is the FIRST and ONLY title the user ever sees.
-    this.commitTitle(s, title || deriveTitleFrom(messageText));
+    // A failed pick leaves the session untitled for the next message to try; only the last
+    // attempt commits the derived fallback. Either way the user sees exactly one title.
+    s.titleAttempts = (s.titleAttempts ?? 0) + 1;
+    const decision = titleDecision(title, s.titleAttempts, messageText);
+    if (decision.retry) { s.titleGenerated = false; return; }
+    this.commitTitle(s, decision.title ?? deriveTitleFrom(messageText));
   }
 
    private getHtml(webview: vscode.Webview): string {

@@ -2,7 +2,7 @@
  * Groq's failed_generation path — and fills a split call's missing keys from its text. Drives the
  * real doStream against a scripted SSE body. Run: npm run test:e2e:inline-adopt-stream */
 import { createRouterProvider } from '../src/agent/core/routerProvider';
-import { setModelSources, recordOutcome } from '../src/router/picker';
+import { setModelSources, recordOutcome, isInCooldown } from '../src/router/picker';
 
 let bad = 0;
 const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? `   (${d.slice(0, 220)})` : ''}`); if (!c) bad++; };
@@ -10,7 +10,8 @@ const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAI
 let sse = '';
 const chunk = (delta: unknown, finish: string | null = null) =>
   `data: ${JSON.stringify({ id: 'x', object: 'chat.completion.chunk', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
-globalThis.fetch = (async () => new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } })) as typeof fetch;
+let extraHeaders: Record<string, string> = {};
+globalThis.fetch = (async () => new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream', ...extraHeaders } })) as typeof fetch;
 
 setModelSources({
   catalog: { find: () => ({ intelligenceRank: 1, speedRank: 1, supportsTools: true }) },
@@ -70,6 +71,14 @@ async function main() {
   console.log('\n— ordinary prose stays prose —');
   sse = chunk({ role: 'assistant', content: 'The total is computed in invoice.js.' }) + chunk({}, 'stop') + 'data: [DONE]\n\n';
   ok('no tool call invented', (await toolCalls()).length === 0);
+
+  // Last: it leaves the only model in cooldown.
+  console.log('\n— a response announcing its quota spent puts that model in cooldown —');
+  extraHeaders = { 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-reset-requests': '1m' };
+  sse = chunk({ role: 'assistant', content: 'ok' }) + chunk({}, 'stop') + 'data: [DONE]\n\n';
+  await toolCalls();
+  ok('groq::m is skipped until the reset', isInCooldown('groq', 'm'));
+  extraHeaders = {};
 
   console.log(bad === 0 ? '\nInline adoption on the stream holds.' : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);

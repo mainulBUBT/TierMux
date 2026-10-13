@@ -14,6 +14,48 @@ const CACHE_KEY = 'tiermux.catalogCache';
 export const PROVIDER_DEFS_KEY = 'tiermux.catalogProviderDefs';
 /** Snapshot of the list as it was before the last provider sync (one level of undo). */
 const UNDO_KEY = 'tiermux.catalogSyncUndo';
+/** ETags of the last ACCEPTED /models and /providers bodies: an unchanged catalog comes back as a
+ *  bodiless 304. Sent only while the matching cache exists — a 304 with nothing cached is no catalog. */
+const MODELS_ETAG_KEY = 'tiermux.catalogEtag.models';
+const PROVIDERS_ETAG_KEY = 'tiermux.catalogEtag.providers';
+/** Fingerprint of a shrunken list held back once — the same list on the next refresh is accepted. */
+const PENDING_SHRINK_KEY = 'tiermux.catalogPendingShrink';
+const SHRINK_FLOOR = 0.7;
+const SHRINK_MIN_ROWS = 20;
+const PLATFORM_MIN_ROWS = 5;
+
+function fnv1a(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(16);
+}
+
+/** A refresh that drops most of the last ACCEPTED remote catalog, or empties a platform the Worker
+ *  still lists as enabled, is held until the next refresh shows the same list: a bad sync must not
+ *  win on the first try, and a real shrink must not be refused forever. The bundled snapshot is
+ *  never the baseline — it can legitimately differ from the live list by a third. */
+export function catalogShrinkDecision(
+  before: CatalogModel[] | undefined,
+  next: CatalogModel[],
+  disabledPlatforms: string[],
+  pending: string | undefined,
+): { accept: boolean; reason?: string; fingerprint: string } {
+  const fingerprint = `${next.length}:${fnv1a(next.map((m) => `${m.platform}::${m.modelId}`).sort().join('\n'))}`;
+  if (!before?.length) return { accept: true, fingerprint };
+  // A platform the Worker marks disabled is expected to leave; judge only the rest.
+  const live = (list: CatalogModel[]) => list.filter((m) => !disabledPlatforms.includes(m.platform));
+  const was = live(before);
+  const now = live(next);
+  const count = (list: CatalogModel[]) => list.reduce((m, r) => m.set(r.platform, (m.get(r.platform) ?? 0) + 1), new Map<string, number>());
+  const nowByPlatform = count(now);
+  const problems: string[] = [];
+  if (was.length >= SHRINK_MIN_ROWS && now.length < was.length * SHRINK_FLOOR) problems.push(`catalog shrank ${was.length} → ${now.length} models`);
+  for (const [platform, n] of count(was)) {
+    if (n >= PLATFORM_MIN_ROWS && !nowByPlatform.has(platform)) problems.push(`${platform} lost all ${n} models`);
+  }
+  if (!problems.length) return { accept: true, fingerprint };
+  return { accept: pending === fingerprint, reason: problems.join('; '), fingerprint };
+}
 /** Platforms the shared worker catalog currently reports `enabled: false` for. */
 const REMOTE_DISABLED_KEY = 'tiermux.catalogRemoteDisabled';
 
@@ -59,6 +101,8 @@ export class Catalog {
       this.remote = undefined;
       void mem.update(CACHE_KEY, undefined);
       void mem.update(PROVIDER_DEFS_KEY, undefined);
+      void mem.update(MODELS_ETAG_KEY, undefined);
+      void mem.update(PROVIDERS_ETAG_KEY, undefined);
       return;
     }
     const cached = mem.get<CatalogModel[]>(CACHE_KEY);
@@ -80,23 +124,30 @@ export class Catalog {
     const modelsUrl = joinBase(base, 'models');
     const providersUrl = joinBase(base, 'providers');
 
-    // Fetch both endpoints in parallel; each gets its own 8s timeout and fails over alone.
-    const [modelsText, providersText] = await Promise.all([
-      fetchText(modelsUrl),
-      fetchText(providersUrl),
+    // Both endpoints in parallel, each conditional on what is already cached.
+    const haveDefs = (mem.get<RemoteProviderDef[]>(PROVIDER_DEFS_KEY) ?? []).length > 0;
+    const [m, p] = await Promise.all([
+      fetchConditional(modelsUrl, this.remote?.length ? mem.get<string>(MODELS_ETAG_KEY) : undefined),
+      fetchConditional(providersUrl, haveDefs ? mem.get<string>(PROVIDERS_ETAG_KEY) : undefined),
     ]);
-    if (modelsText === null) return null; // offline / timeout / bad URL → keep what we have
+    if (m.status === 'failed') return null; // offline / timeout / bad URL → keep what we have
 
     // Register providers BEFORE reading the registry so a new platform in `/models` resolves.
     // `providersApplied` re-notifies the webview even when the model list is unchanged.
     let providersApplied = 0;
-    if (providersText) {
-      const defs = parseWorkerProviders(providersText);
+    if (p.status === 'ok' && p.text) {
+      const defs = parseWorkerProviders(p.text);
       if (defs.length) {
         providersApplied = upsertCompatFromCatalog(defs);
         void mem.update(PROVIDER_DEFS_KEY, defs);
+        if (p.etag) void mem.update(PROVIDERS_ETAG_KEY, p.etag);
       }
     }
+    if (m.status === 'not-modified') {
+      if (providersApplied > 0) this._onDidChange.fire();
+      return { added: [], removed: [], updated: this.all().length, skipped: [], changed: providersApplied > 0 };
+    }
+    const modelsText = m.text ?? '';
 
     // The /models endpoint may serve the TierMux worker JSON (nested providers→models) or a
     // legacy published-sheet CSV. Try the worker shape first; if it isn't JSON in that
@@ -109,6 +160,16 @@ export class Catalog {
       this.remoteDisabledPlatforms = worker.disabledPlatforms;
       await mem.update(REMOTE_DISABLED_KEY, worker.disabledPlatforms);
     }
+
+    const shrink = catalogShrinkDecision(this.remote, models, this.remoteDisabledPlatforms, mem.get<string>(PENDING_SHRINK_KEY));
+    if (!shrink.accept) {
+      await mem.update(PENDING_SHRINK_KEY, shrink.fingerprint);
+      console.warn(`[tiermux] catalog refresh held back (${shrink.reason}); keeping the last good catalog until a refresh shows the same list again`);
+      return null;
+    }
+    if (mem.get<string>(PENDING_SHRINK_KEY) !== undefined) await mem.update(PENDING_SHRINK_KEY, undefined);
+    // Only now: a held-back list must come back as a full body next time, not a 304.
+    if (m.etag) await mem.update(MODELS_ETAG_KEY, m.etag);
 
     const before = this.all();
     const modelsChanged = JSON.stringify(models) !== JSON.stringify(before);
@@ -233,6 +294,26 @@ export function joinBase(base: string, sub: string): string {
 
 /** GET `url` as text with an 8s abort timeout. Returns null on any failure
  *  (offline, non-OK, timeout) so callers can fail over per-endpoint. */
+export interface ConditionalFetch { status: 'ok' | 'not-modified' | 'failed'; text?: string; etag?: string }
+
+/** GET with If-None-Match, a 5s timeout, and one retry after a network failure. */
+export async function fetchConditional(url: string, etag?: string): Promise<ConditionalFetch> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 5000);
+      const res = await fetch(url, { signal: ctrl.signal, headers: etag ? { 'If-None-Match': etag } : {} });
+      clearTimeout(timer);
+      if (res.status === 304) return { status: 'not-modified' };
+      if (!res.ok) return { status: 'failed' };
+      return { status: 'ok', text: await res.text(), etag: res.headers.get('etag') ?? undefined };
+    } catch {
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+  return { status: 'failed' };
+}
+
 export async function fetchText(url: string): Promise<string | null> {
   try {
     const ctrl = new AbortController();

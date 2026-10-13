@@ -1641,10 +1641,27 @@ import { handleToolStatus } from './handlers/toolStatus';
   }
 
   function submitChat() {
-    if (busy) { send({ type: 'cancel', requestId: 'current', sessionId: viewedSessionId }); return; }
     const text = input.value.trim();
+    if (busy && !text && pendingAttachments.length === 0) { send({ type: 'cancel', requestId: 'current', sessionId: viewedSessionId }); return; }
     if (!text && pendingAttachments.length === 0) return;
     const requestId = newId();
+    if (busy) {
+      // Mid-turn: the host queues it behind the running turn instead of cancelling that turn;
+      // its bubble appears when it actually runs (userEcho), in order, below the finished turn.
+      queuedSends.set(requestId, { sessionId: viewedSessionId, text });
+      renderQueued();
+      send({
+        type: 'sendMessage', requestId, text, queued: true,
+        mode: currentMode, model: currentModel, reasoningEffort: currentReasoning,
+        attachments: pendingAttachments,
+        attachmentKinds: pendingAttachments.map((a) => a.kind),
+      });
+      input.value = '';
+      pendingAttachments = [];
+      renderChips();
+      syncComposer();
+      return;
+    }
     // Send a preview of pending visual attachments in the user bubble so the user
     // sees what they attached (data URLs only — the host keeps the canonical copy).
     const previews = pendingAttachments
@@ -1740,8 +1757,47 @@ import { handleToolStatus } from './handlers/toolStatus';
   function autoGrow() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 220) + 'px'; }
   // Disable the send button when there's nothing to send (no text and no attachments).
   // While busy it becomes the Stop button, which must stay clickable.
+  /** Send / spinner / stop — and, mid-turn with something typed, Send again (it queues). */
+  function paintSendButton() {
+    const sb = $('#btn-send');
+    if (!sb) return;
+    const hasDraft = input.value.trim().length > 0 || pendingAttachments.length > 0;
+    if (busy && hasDraft) {
+      sb.innerHTML = ICON.send;
+      sb.title = 'Queue — sends when the current turn finishes';
+      sb.classList.remove('stopping');
+      return;
+    }
+    sb.innerHTML = busy ? (streaming ? ICON.stop : SEND_SPINNER) : ICON.send;
+    sb.title = busy ? 'Stop' : 'Send (Enter)';
+    sb.classList.toggle('stopping', busy);
+  }
+
+  /** Messages waiting behind the viewed session's running turn, shown above the composer. */
+  const queuedSends = new Map(); // requestId -> { sessionId, text }
+  function renderQueued() {
+    let strip = $('#queued-strip');
+    if (!strip) {
+      strip = document.createElement('div');
+      strip.id = 'queued-strip';
+      strip.className = 'queued-strip';
+      composer.parentElement.insertBefore(strip, composer);
+    }
+    strip.textContent = '';
+    for (const [, q] of queuedSends) {
+      if (q.sessionId !== viewedSessionId) continue;
+      const row = document.createElement('div');
+      row.className = 'queued-item';
+      row.textContent = q.text;
+      row.title = 'Queued — runs when the current turn finishes';
+      strip.appendChild(row);
+    }
+    strip.hidden = strip.childElementCount === 0;
+  }
+
   function updateSendEnabled() {
     const sb = $('#btn-send');
+    paintSendButton();
     if (busy) { sb.disabled = false; return; }
     sb.disabled = input.value.trim().length === 0 && pendingAttachments.length === 0;
   }
@@ -4528,7 +4584,19 @@ import { handleToolStatus } from './handlers/toolStatus';
         break;
       case 'userEcho':
         addUserBubble(msg.text, msg.requestId);
+        if (queuedSends.delete(msg.requestId)) renderQueued();
         break;
+      case 'queuedMessage': {
+        // 'dropped' = Stop ended the turn the message was waiting on: hand its text back to the
+        // composer rather than losing it.
+        const q = queuedSends.get(msg.requestId);
+        if (msg.state === 'dropped' && q) {
+          queuedSends.delete(msg.requestId);
+          if (q.sessionId === viewedSessionId && !input.value.trim()) { input.value = q.text; syncComposer(); }
+          renderQueued();
+        }
+        break;
+      }
       case 'switchSession': {
         // A pane that already exists (streaming in the background) is just shown — no DOM
         // wipe. Only a brand-new pane replays the persisted transcript. Exception: the host
@@ -4544,6 +4612,7 @@ import { handleToolStatus } from './handlers/toolStatus';
         }
         composerState.delete(PENDING_SESSION);
         viewedSessionId = msg.sessionId;
+        renderQueued();
         if (settingsOpen) toggleSettings();
         showPane(viewedSessionId);
         // Visiting a session — whether via "+", the history dropdown, or a tab click — is what
@@ -4622,8 +4691,7 @@ import { handleToolStatus } from './handlers/toolStatus';
           // The stream is real now — swap the waiting spinner for the stop square.
           if (busy && !streaming) {
             streaming = true;
-            const sb = $('#btn-send');
-            if (sb) sb.innerHTML = ICON.stop;
+            paintSendButton();
           }
         }
         break;
@@ -5223,10 +5291,6 @@ import { handleToolStatus } from './handlers/toolStatus';
           // had not started. The spinner covers that gap; assistantStart flips it to the square.
           streaming = false;
           composer.classList.toggle('working', busy);
-          const sb = $('#btn-send');
-          sb.innerHTML = busy ? SEND_SPINNER : ICON.send;
-          sb.title = busy ? 'Stop' : 'Send (Enter)';
-          sb.classList.toggle('stopping', busy);
           updateSendEnabled();
           // Turn lifecycle finally: the serving indicator always returns to the user's pick.
           if (!busy) resetServingModel();

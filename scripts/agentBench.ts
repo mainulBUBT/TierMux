@@ -11,6 +11,7 @@
 //   TIERMUX_KEY_<PLATFORM>=...    a key for a keyed platform (e.g. TIERMUX_KEY_GROQ)
 //   BASELINE=.benchmarks/agent-bench-<stamp>.json   print the change against an earlier run
 //   TASK_TIMEOUT_MS=600000        abort a run after this long (default 10 min)
+//   DIAG=1                        write each run's timestamped diag trace to .benchmarks/diag-*.log
 //   KEEP=1                        leave each task workspace on disk (prints its path)
 //   GRADER_CHECK=1                a model that does nothing: every task must FAIL, or its check is broken
 //   BENCH_DIR=~/.cache/tiermux-bench   where task workspaces live (under $HOME: container php wrappers
@@ -18,12 +19,14 @@
 //                                 commands never touch it)
 
 import * as childProcess from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import * as vscode from 'vscode';
-import { runAgentStream, runPlanStream } from '../src/agent/agent';
+import { runAgentStream, runAskStream, runPlanStream } from '../src/agent/agent';
 import { capForHistory } from '../src/agent/condense';
+import { exploreQuestions, runExploreBatch } from '../src/agent/exploreBatch';
+import { runSubagent } from '../src/agent/core/subagent';
 import { formatPlanForCard } from '../src/agent/planStructurer';
 import { planStepsToTodos } from '../src/session/titles';
 import { __setEngineModelForTests } from '../src/agent/core/engine';
@@ -86,9 +89,11 @@ const BASE_BIG: Record<string, string> = {
 interface Task {
   id: string;
   prompt: string;
-  fixture?: 'node' | 'php' | 'big';
+  /** 'repo': a copy of TierMux's own src/ — a real-sized codebase for broad research. */
+  fixture?: 'node' | 'php' | 'big' | 'repo';
   /** 'plan': plan mode proposes, the bench approves and executes it the way the app's Execute does. */
-  mode?: 'agent' | 'plan';
+  /** 'explore': the /explore command — one explore sub-agent per prompt line, a few in parallel. */
+  mode?: 'agent' | 'plan' | 'ask' | 'explore';
   /** Plan mode: files the proposed plan must name — the "did it find the right code" check. */
   planFiles?: string[];
   setup?: (files: Record<string, string>) => void;
@@ -187,6 +192,25 @@ TASKS.push({
     + " const fs = require('fs'); assert.ok(fs.readdirSync('test').some((f) => fs.readFileSync('test/' + f, 'utf8').includes('ValidationError')), 'no test covers ValidationError');",
 });
 
+TASKS.push({
+  id: 'research',
+  fixture: 'repo',
+  mode: 'ask',
+  prompt: 'Answer three separate questions about this codebase, each with the file path: (1) Which file decides the order in which '
+    + 'models are tried in Auto mode? (2) Where are tool calls that a model wrote as plain text turned into real tool calls while '
+    + 'a response streams? (3) After a failed verify command, how many fix rounds run by default, and where is that defined?',
+  answer: [/picker\.ts/, /(toolArgs|routerProvider)\.ts/, /engine\.ts/],
+});
+
+TASKS.push({
+  ...TASKS.find((t) => t.id === 'research')!,
+  id: 'research-explore',
+  mode: 'explore',
+  prompt: 'Which file decides the order in which models are tried in Auto mode? Give the path.\n'
+    + 'Where are tool calls that a model wrote as plain text turned into real tool calls while a response streams? Give the path.\n'
+    + 'After a failed verify command, how many fix rounds run by default, and where is that defined? Give the path.',
+});
+
 const planOf = (id: string, planFiles: string[]): Task => ({ ...TASKS.find((t) => t.id === id)!, id: `plan-${id}`, mode: 'plan', planFiles });
 TASKS.push(
   planOf('feature', ['src/billing/invoice.js', 'src/billing/total.js', 'src/index.js']),
@@ -211,7 +235,8 @@ function snapshot(dir: string): Map<string, string> {
 }
 
 function seed(task: Task): { dir: string; files: Record<string, string> } {
-  const files = { ...(task.fixture === 'php' ? BASE_PHP : task.fixture === 'big' ? BASE_BIG : BASE) };
+  const files: Record<string, string> = task.fixture === 'repo' ? { 'README.md': '# TierMux\n\nVS Code extension: routes AI requests across free model tiers.\n' }
+    : { ...(task.fixture === 'php' ? BASE_PHP : task.fixture === 'big' ? BASE_BIG : BASE) };
   task.setup?.(files);
   mkdirSync(BENCH_ROOT, { recursive: true });
   const dir = mkdtempSync(join(BENCH_ROOT, `${task.id}-`));
@@ -219,7 +244,8 @@ function seed(task: Task): { dir: string; files: Record<string, string> } {
     mkdirSync(dirname(join(dir, f)), { recursive: true });
     writeFileSync(join(dir, f), body);
   }
-  if (task.fixture !== 'php') mkdirSync(join(dir, 'node_modules')); // "installed", so the engine's verify gate runs as it would for a user
+  if (task.fixture === 'repo') cpSync(join(ROOT, 'src'), join(dir, 'src'), { recursive: true });
+  if (task.fixture !== 'php' && task.fixture !== 'repo') mkdirSync(join(dir, 'node_modules')); // "installed", so the engine's verify gate runs as it would for a user
   return { dir, files };
 }
 
@@ -273,7 +299,7 @@ function instrument(): void {
   console.log = (...a: unknown[]) => {
     const line = a.map(String).join(' ');
     if (line.startsWith('[tiermux][diag]')) {
-      probe?.diag.push(line);
+      probe?.diag.push(`${Date.now()} ${line}`);
       if (line.includes('engine.step · ')) probe?.steps.push([]);
       return;
     }
@@ -368,6 +394,12 @@ async function runOnce(task: Task, rep: number, pinned: string | undefined, time
     } as Omit<AgentOpts, 'messages'>;
     const ask = [{ role: 'user' as const, content: task.prompt }];
     result = await runWithWorkspaceRoot(dir, async () => {
+      if (task.mode === 'explore') {
+        const text = await runExploreBatch(exploreQuestions(task.prompt), async (q) => (await runSubagent({ task: q, agent: 'explore', sessionId: opts.sessionId, abortSignal: abort.signal,
+          ...(process.env.GRADER_CHECK ? { model: createMockModel(Array.from({ length: 20 }, () => ({ text: 'Done.' })), 'noop-sub') } : {}) })).summary);
+        return { text } as AgentResult;
+      }
+      if (task.mode === 'ask') return runAskStream({ ...opts, mode: 'ask', messages: ask });
       if (task.mode !== 'plan') return runAgentStream({ ...opts, messages: ask });
       const planned = await runPlanStream({ ...opts, mode: 'plan', messages: ask });
       planMs = Date.now() - t0; planRequests = p.requests; planTraceLen = p.steps.length;
@@ -395,6 +427,7 @@ async function runOnce(task: Task, rep: number, pinned: string | undefined, time
   const wallMs = Date.now() - t0;
   const reply = result?.text ?? '';
   const fails = error && !result ? [`error: ${error}`] : grade(task, dir, before, reply, plan);
+  if (process.env.DIAG) writeFileSync(join(ROOT, '.benchmarks', `diag-${task.id}-${rep}-${t0}.log`), `t0=${t0} abortAt=${t0 + timeoutMs}\n${p.diag.join('\n')}\n`);
   if (process.env.KEEP) console.log(`   kept ${dir}`);
   else rmSync(dir, { recursive: true, force: true });
 
@@ -495,6 +528,8 @@ async function main(): Promise<void> {
     const shown = r.trace.map((st) => (st.length ? st.map(fmt).join(' + ') : '·'));
     if (r.planTraceLen !== undefined) shown.splice(r.planTraceLen, 0, '‖ EXECUTE ‖');
     console.log(`${r.task}#${r.rep}: ${shown.join(' | ')}`);
+    const dl = r.trace.map((st) => st.filter((t) => t.startsWith('delegateTask')).length);
+    if (dl.some((n) => n > 0)) console.log(`   delegateTask: ${dl.reduce((a, b) => a + b, 0)} call(s), at most ${Math.max(...dl)} in one step`);
     if (r.planMs !== undefined) console.log(`   plan: ${sec(r.planMs)}s, ${r.planRequests} req, ${r.planSteps ?? 0} step(s), files ${(r.planFiles ?? []).join(', ') || '-'}; asks ${r.asks}, permission prompts ${r.permAsks}`);
     if (!r.pass) console.log(`   reply: ${JSON.stringify(r.reply.slice(0, 300))}`);
     for (const t of r.pass ? [] : r.toolErrorText ?? []) console.log(`   ✗ ${t}`);

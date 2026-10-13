@@ -2265,3 +2265,13 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 .skill-card > button { align-self: flex-start; margin-top: 2px; }
 .skill-card > button:disabled { opacity: .6; cursor: default; }
 .skill-card-head .icon-btn { padding: 2px 6px; }
+
+/* Messages typed while a turn runs wait above the composer until it finishes. */
+.queued-strip { display: flex; flex-direction: column; gap: 4px; margin: 0 0 6px; }
+.queued-strip[hidden] { display: none; }
+.queued-item {
+  font-size: 12px; opacity: 0.8; padding: 4px 8px; border-radius: 6px;
+  border: 1px dashed var(--vscode-input-border, rgba(128,128,128,.4));
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.queued-item::before { content: 'Queued · '; opacity: 0.7; }

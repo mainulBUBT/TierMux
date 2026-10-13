@@ -15,7 +15,7 @@ import type {
 import type { ChatMessage, ChatToolChoice, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
 import { resolveProvider } from '../../providers';
 import { ProviderHttpError } from '../../providers/base';
-import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, isModelUnavailable, rationaleForServed, isInCooldown, findCatalogModel, type ModelSources, type SelectionRationale } from '../../router/picker';
+import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, noteQuotaHeaders, noteRetryAfter, isModelUnavailable, rationaleForServed, isInCooldown, findCatalogModel, type ModelSources, type SelectionRationale } from '../../router/picker';
 import { estimateMessagesTokens, estimateTokens } from '../budget';
 import { ThinkStripper, stripThinkTags, reasoningFromDelta } from '../../util/thinkTags';
 import { adoptInlineToolCalls, sanitizeToolName } from '../toolArgs';
@@ -558,6 +558,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             sessionId: providerOpts.sessionId,
             abortSignal: options.abortSignal,
             timeoutMs: connectTimeoutFor(c.platform),
+            onResponseHeaders: (h: Headers) => noteQuotaHeaders(c.platform, c.modelId, h),
           });
           recordRequest(c.platform, c.modelId);
           reportServed(c, provider.runtimeName);
@@ -594,6 +595,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             candidateError = e;
             recordOutcome(c.platform, c.modelId, false);
             noteModelFailure(c.platform, c.modelId, e instanceof ProviderHttpError ? e.status : undefined, !!tools?.length, e instanceof Error ? e.message : undefined);
+            if (e instanceof ProviderHttpError && e.status === 429 && e.retryAfterMs) noteRetryAfter(c.platform, c.modelId, e.retryAfterMs);
             if (isFailoverWorthy(e)) {
               providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
               continue; // next key; when keys run out, the candidate loop advances
@@ -731,6 +733,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                   sessionId: providerOpts.sessionId,
                   abortSignal: ttftSignal,
                   timeoutMs: connectTimeoutFor(c.platform),
+                  onResponseHeaders: (h: Headers) => noteQuotaHeaders(c.platform, c.modelId, h),
                 })) {
                   // First chunk: the stream is alive, so the headers gate is done and the
                   // content gate's clock starts HERE.
@@ -878,6 +881,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             diagLog('rp.candidate', `${c.platform}::${c.modelId} failed after ${Date.now() - candidateStart}ms`);
             recordOutcome(c.platform, c.modelId, false);
             noteModelFailure(c.platform, c.modelId, e instanceof ProviderHttpError ? e.status : undefined, !!tools?.length, e instanceof Error ? e.message : undefined);
+            if (e instanceof ProviderHttpError && e.status === 429 && e.retryAfterMs) noteRetryAfter(c.platform, c.modelId, e.retryAfterMs);
             if (isFailoverWorthy(e)) {
               providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
               continue; // next key; when keys run out, the candidate loop advances

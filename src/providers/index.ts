@@ -103,6 +103,10 @@ platformInfo.set('cloudflare', { platform: 'cloudflare', name: 'Cloudflare Worke
 
 for (const c of COMPAT) registerCompat(c);
 
+/** Shipped in the extension: where users keep API keys. The remote catalog may rename them, never
+ *  repoint them — a changed endpoint or key page would hand those keys to another host. */
+const BUILTIN_PLATFORMS = new Set<Platform>(platformInfo.keys());
+
 // Custom/local endpoints run with NO request timeout (2026-08-23, user direction): a
 // CPU-bound local model takes as long as it takes, the Stop button is the only brake, and
 // there is no faster pool to fail over to.
@@ -172,6 +176,10 @@ export function platformCarriesRawPdf(platform: Platform): boolean {
   return providers.get(platform)?.carriesRawPdf ?? false;
 }
 
+function isHttpsUrl(url: string): boolean {
+  try { return new URL(url).protocol === 'https:'; } catch { return false; }
+}
+
 /** A provider definition advertised by the remote catalog. `baseUrl` is required to
  *  act; the rest is optional polish. `platform` may be a built-in id or a brand-new one. */
 export interface RemoteProviderDef {
@@ -188,12 +196,16 @@ export interface RemoteProviderDef {
  *  changes so callers can skip noisy "changed" notifications. */
 export function upsertCompatFromCatalog(defs: RemoteProviderDef[]): number {
   let applied = 0;
-  for (const d of defs) {
-    if (!d.platform || !d.baseUrl) continue;
-    const platform = d.platform as Platform;
+  for (const raw of defs) {
+    if (!raw.platform || !raw.baseUrl || !isHttpsUrl(raw.baseUrl)) continue;
+    const platform = raw.platform as Platform;
     const existing = providers.get(platform);
     if (existing && !(existing instanceof OpenAICompatProvider)) continue; // keep dedicated impls
     const prev = platformInfo.get(platform);
+    const builtin = BUILTIN_PLATFORMS.has(platform);
+    const baseUrl: string = builtin && prev ? prev.defaultBaseUrl : raw.baseUrl;
+    const keyUrl = builtin && prev ? prev.keyUrl : raw.keyUrl && isHttpsUrl(raw.keyUrl) ? raw.keyUrl : undefined;
+    const d = { ...raw, baseUrl, keyUrl };
     // Skip when nothing actually differs from what's already registered.
     const sameBaseUrl = prev?.defaultBaseUrl === d.baseUrl;
     const sameName = !d.name || prev?.name === d.name;

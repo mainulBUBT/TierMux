@@ -28,9 +28,22 @@ function firstProseLine(text: string): string {
 
 /** A plain readable title from a message when the LLM title is unusable (first ~6 words
  *  of the first prose line, so a pasted command/log doesn't swamp the placeholder). */
+/** A title is picked once, but a failed pick no longer locks in the raw first words of the message
+ *  ("Just answer deo", 2026-10-13): the session stays untitled and the next message tries again;
+ *  only the last attempt falls back to the derived words. */
+export const TITLE_ATTEMPTS = 3;
+
+export function titleDecision(generated: string, attempt: number, messageText: string): { title?: string; retry: boolean } {
+  if (generated) return { title: generated, retry: false };
+  if (attempt < TITLE_ATTEMPTS) return { retry: true };
+  return { title: deriveTitleFrom(messageText), retry: false };
+}
+
 export function deriveTitleFrom(text: string): string {
   const line = firstProseLine(text);
-  const s = line.trim().replace(/\s+/g, ' ').replace(/[?.!,;:]+$/, '');
+  // First sentence only: six words straight across a full stop read as a fragment.
+  const sentence = line.trim().replace(/\s+/g, ' ').split(/(?<=[.?!])\s/)[0];
+  const s = sentence.replace(/[?.!,;:]+$/, '');
   if (!s) return 'New chat';
   const words = s.split(' ').slice(0, 6).join(' ').slice(0, 60);
   return words.charAt(0).toUpperCase() + words.slice(1);

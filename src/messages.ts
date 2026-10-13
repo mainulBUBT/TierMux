@@ -194,7 +194,7 @@ export interface MentionItem {
 // Webview -> Extension
 export type InMessage =
   | { type: 'ready' }
-  | { type: 'sendMessage'; requestId: string; text: string; mode: Mode; model: string; reasoningEffort: ReasoningEffort; attachments?: Attachment[]; attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'> }
+  | { type: 'sendMessage'; requestId: string; text: string; mode: Mode; model: string; reasoningEffort: ReasoningEffort; attachments?: Attachment[]; attachmentKinds?: Array<'file' | 'image' | 'pdf' | 'doc'>; /** Sent mid-turn: the webview holds its bubble until the host echoes it as it runs. */ queued?: boolean }
   | { type: 'approvePlan'; requestId: string; approved: boolean; steps: string }
   | { type: 'executePlan'; requestId: string; steps: string }
   | { type: 'deferPlan'; requestId: string; steps: string }
@@ -429,6 +429,8 @@ export type OutMessage =
   | { type: 'setMode'; sessionId: string; mode: Mode }
   | { type: 'error'; sessionId?: string; requestId?: string; message: string }
   | { type: 'busy'; sessionId: string; busy: boolean }
+  /** A message sent mid-turn waits for the turn ('queued'), or Stop dropped it unsent ('dropped'). */
+  | { type: 'queuedMessage'; sessionId: string; requestId: string; state: 'queued' | 'dropped' }
   | { type: 'newModelsAvailable'; message: string }
   /** Dismissible "new providers available" banner above the composer — mirrors the
    *  models banner but fires when a brand-new provider is merged in from the remote catalog. */

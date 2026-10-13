@@ -97,10 +97,10 @@ export function activate(context: vscode.ExtensionContext): void {
       }),
     );
 
-    // Remote catalog + announcements sync, once per window (VS Code or fork) at startup —
-    // no periodic timer; reopening/reloading the editor is the refresh trigger. refresh()
-    // reconciles wholesale (new rows added, vanished rows dropped) and no-ops on any network
-    // failure, keeping the cached list; toasts only fire when something actually changed.
+    // Remote catalog + announcements sync: at startup, then every ~6h (jittered, so installs do
+    // not arrive together). An unchanged catalog answers 304, so the repeat costs almost nothing.
+    // refresh() reconciles wholesale (new rows added, vanished rows dropped) and no-ops on any
+    // network failure, keeping the cached list; toasts only fire when something actually changed.
     const backgroundCatalogSync = async (): Promise<void> => {
       const url = vscode.workspace.getConfiguration('tiermux').get<string>('catalog.url', '');
       const report = await catalog.refresh(url, context.globalState);
@@ -112,7 +112,14 @@ export function activate(context: vscode.ExtensionContext): void {
         if (fresh.length) notifyNewAnnouncement(fresh[0].title || 'Untitled');
       }
     };
-    void backgroundCatalogSync();
+    const CATALOG_REFRESH_MS = 6 * 3_600_000;
+    let catalogTimer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleCatalogSync = (): void => {
+      catalogTimer = setTimeout(() => { void backgroundCatalogSync().catch(() => undefined).finally(scheduleCatalogSync); },
+        CATALOG_REFRESH_MS + Math.floor(Math.random() * 1_800_000));
+    };
+    void backgroundCatalogSync().catch(() => undefined).finally(scheduleCatalogSync);
+    context.subscriptions.push({ dispose: () => { if (catalogTimer) clearTimeout(catalogTimer); } });
     const usage = new UsageTracker();
     const usageStore = new UsageStore(context.globalState);
     const modelStats = new ModelStatsStore(context.globalState);

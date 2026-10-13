@@ -10,6 +10,9 @@ const ENDPOINTS_KEY = 'tiermux.endpoints';
 const DISABLED_PROVIDERS_KEY = 'tiermux.disabledProviders';
 const CUSTOM_ENDPOINTS_KEY = 'tiermux.customEndpoints';
 const NOTIFIED_MODELS_KEY = 'tiermux.notifiedModels';
+/** Models the user switched off. Outlives the fallback row, which a save drops while the model
+ *  is absent from the catalog — without it a returning model auto-enabled again. */
+const OPT_OUTS_KEY = 'tiermux.modelOptOuts';
 /** Platforms the user has already been told about — mirrors NOTIFIED_MODELS_KEY so a
  *  brand-new provider surfacing in the remote catalog notifies exactly once. */
 const NOTIFIED_PROVIDERS_KEY = 'tiermux.notifiedProviders';
@@ -49,6 +52,7 @@ export class SettingsStore {
       (e.platform === 'custom' && epIds.has(e.modelId.split('::')[0]))
     );
     const known = new Set(kept.map((e) => `${e.platform}::${e.modelId}`));
+    const optOuts = new Set(this.state.get<string[]>(OPT_OUTS_KEY, []));
 
     // A model the catalog gained since last reconcile goes live on its own — the user opted into
     // the PROVIDER, and enabledByPriority still filters out providers they never enabled. Staged
@@ -63,7 +67,7 @@ export class SettingsStore {
         kept.push({
           platform: m.platform,
           modelId: m.modelId,
-          enabled: autoEnable && m.ready !== false,
+          enabled: autoEnable && m.ready !== false && !optOuts.has(k),
           priority: nextPriority++,
         });
       }
@@ -119,6 +123,13 @@ export class SettingsStore {
 
   async setFallback(entries: FallbackEntry[]): Promise<void> {
     const normalized = entries.map((e, i) => ({ ...e, priority: i }));
+    const optOuts = new Set(this.state.get<string[]>(OPT_OUTS_KEY, []));
+    for (const e of normalized) {
+      if (e.platform === 'custom') continue;
+      const k = `${e.platform}::${e.modelId}`;
+      if (e.enabled) optOuts.delete(k); else optOuts.add(k);
+    }
+    await this.state.update(OPT_OUTS_KEY, [...optOuts]);
     await this.state.update(FALLBACK_KEY, normalized);
     this._onChange.fire();
   }
