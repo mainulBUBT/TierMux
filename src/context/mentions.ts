@@ -100,7 +100,7 @@ async function resolveLiteralPath(path: string): Promise<vscode.Uri | undefined>
   const clean = path.replace(/^\/+/, '');
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     const uri = vscode.Uri.joinPath(folder.uri, clean);
-    if (!uri.path.startsWith(folder.uri.path)) continue;
+    if (uri.path !== folder.uri.path && !uri.path.startsWith(folder.uri.path.replace(/\/+$/, '') + '/')) continue;
     try {
       const stat = await vscode.workspace.fs.stat(uri);
       if (stat.type === vscode.FileType.File) return uri;
@@ -180,7 +180,7 @@ async function resolveFolder(target: string): Promise<string | undefined> {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (!root) return undefined;
   const uri = vscode.Uri.joinPath(root, target.replace(/^\/+/, ''));
-  if (!uri.path.startsWith(root.path)) return undefined;
+  if (uri.path !== root.path && !uri.path.startsWith(root.path.replace(/\/+$/, '') + '/')) return undefined;
   try {
     const entries = await vscode.workspace.fs.readDirectory(uri);
     const listing = entries

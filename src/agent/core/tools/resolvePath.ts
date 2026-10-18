@@ -1,5 +1,6 @@
 
 
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { effectiveRootUri } from './workspaceRoot';
 
@@ -56,8 +57,10 @@ export function __clearReadableRoots(): void {
 export function resolveReadablePath(relPath: string): vscode.Uri {
   const raw = (relPath ?? '').trim().replace(/\\/g, '/');
   if (raw.startsWith('/')) {
+    // Normalise before the prefix test: `<root>/../../x` starts with the root but leaves it.
+    const uri = vscode.Uri.file(path.posix.normalize(raw));
     for (const root of readableRoots) {
-      if (raw === root || raw.startsWith(root + '/')) return vscode.Uri.file(raw);
+      if (isInsideRoot(uri, vscode.Uri.file(root))) return uri;
     }
   }
   return resolveWorkspacePath(relPath);

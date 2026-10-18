@@ -903,7 +903,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       diagLog('engine.verify', `${mutated.length} file(s) changed but no verify command — unverified`);
     } else {
       const maxFixRounds = Math.max(0, opts.verifyFixRounds ?? DEFAULT_VERIFY_FIX_ROUNDS);
-      let run = await runVerifyCommand(verifyCmd);
+      let run = await runVerifyCommand(verifyCmd, opts.abortSignal);
       diagLog('engine.verify', `\`${verifyCmd}\` → ${run.ok === null ? 'could not run' : run.ok ? 'passed' : 'FAILED'}`);
       while (run.ok === false && fixRounds < maxFixRounds && !opts.abortSignal?.aborted) {
         fixRounds++;
@@ -934,7 +934,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           break; // a failed fix round must not lose the turn's real work
         }
         keepSummary(beforeFix);
-        run = await runVerifyCommand(verifyCmd);
+        run = await runVerifyCommand(verifyCmd, opts.abortSignal);
         diagLog('engine.verify', `after fix round ${fixRounds}: ${run.ok === null ? 'could not run' : run.ok ? 'passed' : 'still failing'}`);
       }
       verifyOutcome = run.ok === true ? 'passed' : run.ok === false ? 'failed' : 'unverified';

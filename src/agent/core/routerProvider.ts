@@ -637,7 +637,10 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
       const stream = new ReadableStream<LanguageModelV4StreamPart>({ start(c) { controller = c; } });
       controller.enqueue({ type: 'stream-start', warnings: [] });
 
-      void (async () => {
+      // Anything thrown outside the per-candidate try (extend() → "Pinned model X could not run")
+      // must still error the stream, or the SDK's reader waits forever and the run slot is never
+      // released (live repro 2026-10-18: pinned model skipped by the rpm tracker on step N).
+      void (async () => { try {
         let lastError: unknown;
         // Platforms that answered 401/402/403 — their remaining models are skipped, and the
         // attempt log below reports WHY so an exhausted chain is legible instead of surfacing
@@ -647,7 +650,15 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
         const startedAt = Date.now();
         // Open-ended on purpose: when the sticky head fails, `extend` appends the picker chain
         // and the same loop keeps walking it.
+        // Shared across candidates: a part already enqueued cannot be retracted, so a candidate
+        // that takes over after a mid-stream drop writes into the SAME text/reasoning channel
+        // instead of opening a second `text-0`.
+        const textId = 'text-0';
+        let textStarted = false;
+        const reasoningId = 'reasoning-0';
+        let reasoningStarted = false;
         for (let i = 0; ; i++) {
+          if (options.abortSignal?.aborted) { controller.error(options.abortSignal.reason ?? new Error('aborted')); return; }
           if (i >= candidates.length) {
             await extend();
             if (i >= candidates.length) break;
@@ -673,10 +684,6 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
           // dead or quota'd key must not cost the whole platform.
           for (const apiKey of c.apiKeys) {
           try {
-            const textId = 'text-0';
-            let textStarted = false;
-            const reasoningId = 'reasoning-0';
-            let reasoningStarted = false;
             // Everything the reasoning channel carried — feeds the nudge decision and the
             // last-resort fold below.
             let reasoningAccum = '';
@@ -883,6 +890,9 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             noteModelFailure(c.platform, c.modelId, e instanceof ProviderHttpError ? e.status : undefined, !!tools?.length, e instanceof Error ? e.message : undefined);
             if (e instanceof ProviderHttpError && e.status === 429 && e.retryAfterMs) noteRetryAfter(c.platform, c.modelId, e.retryAfterMs);
             if (isFailoverWorthy(e)) {
+              // Text already on screen stays; the next candidate continues in the same channel
+              // behind a visible seam rather than restarting a second copy of the answer.
+              if (textStarted) controller.enqueue({ type: 'text-delta', id: textId, delta: '\n\n*(connection to the model dropped — continuing with another)*\n\n' });
               providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
               continue; // next key; when keys run out, the candidate loop advances
             }
@@ -898,7 +908,9 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
           }
         }
         controller.error(chainExhaustedError(candidates, attempts, lastError));
-      })();
+      } catch (e) {
+        try { controller.error(e); } catch { /* already closed or errored */ }
+      } })();
 
       return { stream };
     },

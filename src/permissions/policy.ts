@@ -66,8 +66,9 @@ export function resolvePolicy(
     if (READ_ONLY_TOOLS.has(call.toolName)) return Promise.resolve({ type: 'approved' });
     if (call.toolName === 'runCommand') {
       if (!requestApproval) return Promise.resolve({ type: 'denied', reason: 'no approval channel configured' });
+      const cmd = commandFromInput(call.input);
       return requestApproval({ tool: call.toolName, input: call.input }).then((d) => {
-        if (d === 'allow-always') config.alwaysAllow.add(call.toolName);
+        if (d === 'allow-always' && !(cmd && isDangerous(cmd))) config.alwaysAllow.add(call.toolName);
         return d === 'allow' || d === 'allow-always'
           ? { type: 'approved' as const }
           : { type: 'denied' as const, reason: 'user denied' };
@@ -96,7 +97,10 @@ export function resolvePolicy(
     });
   }
 
-  if (config.alwaysAllow.has(call.toolName)) {
+  // A dangerous command never rides an "Always" grant: the grant is per tool kind, so one
+  // "Always" on a risky card would otherwise unlock every later runCommand for the session.
+  const dangerousCmd = call.toolName === 'runCommand' && isDangerous(commandFromInput(call.input) ?? '');
+  if (config.alwaysAllow.has(call.toolName) && !dangerousCmd) {
     // A session-scoped "Always" grant from an agent-mode turn must never unlock mutation
     // in ask mode — plan mode returned above before reaching here, and ask-mode mutating
     // tools were denied above, so this is defense-in-depth. Shell is exempt: ask mode
@@ -148,7 +152,7 @@ export function resolvePolicy(
     return Promise.resolve({ type: 'denied', reason: 'no approval channel configured' });
   }
   return requestApproval({ tool: call.toolName, input: call.input }).then((d) => {
-    if (d === 'allow-always') config.alwaysAllow.add(call.toolName);
+    if (d === 'allow-always' && !dangerousCmd) config.alwaysAllow.add(call.toolName);
     return d === 'allow' || d === 'allow-always'
       ? { type: 'approved' as const }
       : { type: 'denied' as const, reason: 'user denied' };

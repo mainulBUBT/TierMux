@@ -10,6 +10,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { runShell } from '../shell';
 import { effectiveRootUri } from '../workspaceRoot';
+import { isDangerous } from '../../../../edits/commandClassify';
 
 /** npm's scaffold placeholder — running it "fails" (exit 1) or "passes" (exit 0) while proving
  *  nothing, and treating either as a verification result would block/green-light real work on
@@ -291,12 +292,15 @@ export interface VerifyRun {
  *  approval policy — it fires only after the agent already mutated the workspace under that
  *  policy, and the command comes from the project manifest or the user's setting — but
  *  `commandApproval: 'never'` still switches it off. */
-export async function runVerifyCommand(command: string): Promise<VerifyRun> {
+export async function runVerifyCommand(command: string, signal?: AbortSignal): Promise<VerifyRun> {
   try {
     if (vscode.workspace.getConfiguration('tiermux.agent').get<string>('commandApproval', 'always') === 'never') {
       return { ok: null, output: 'Command execution is disabled (tiermux.agent.commandApproval = "never").' };
     }
-    const res = await runShell(command, { cwd: effectiveRootUri().fsPath, timeoutMs: 120_000 });
+    // The manifest is writable by the agent and by a cloned repo, so it never gets to run what
+    // the approval policy would have stopped at.
+    if (isDangerous(command)) return { ok: null, output: `Verify command looks destructive and was not run: ${command}` };
+    const res = await runShell(command, { cwd: effectiveRootUri().fsPath, timeoutMs: 120_000, signal });
     const output = ((res.error ? res.error + '\n' : '') + res.stdout + (res.stderr ? '\n' + res.stderr : '')).trim();
     if (res.exitCode === null) return { ok: null, output };
     return { ok: res.exitCode === 0, output };

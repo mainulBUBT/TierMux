@@ -121,6 +121,8 @@ export class Catalog {
   async refresh(baseRaw: string | undefined, mem: vscode.Memento): Promise<CatalogSyncReport | null> {
     const base = (baseRaw ?? '').trim();
     if (!base) return null;
+    // The catalog can register providers, so it only ever arrives over TLS (or from a dev box).
+    if (!/^https:\/\//i.test(base) && !/^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(base)) return null;
     const modelsUrl = joinBase(base, 'models');
     const providersUrl = joinBase(base, 'providers');
 

@@ -105,7 +105,7 @@ for (const c of COMPAT) registerCompat(c);
 
 /** Shipped in the extension: where users keep API keys. The remote catalog may rename them, never
  *  repoint them — a changed endpoint or key page would hand those keys to another host. */
-const BUILTIN_PLATFORMS = new Set<Platform>(platformInfo.keys());
+export const BUILTIN_PLATFORMS = new Set<Platform>(platformInfo.keys());
 
 // Custom/local endpoints run with NO request timeout (2026-08-23, user direction): a
 // CPU-bound local model takes as long as it takes, the Stop button is the only brake, and

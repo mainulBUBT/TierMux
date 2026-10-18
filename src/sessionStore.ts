@@ -47,12 +47,17 @@ export class SessionStore<T extends { id: string }> {
     const out: T[] = [];
     const kept = new Set<string>();
     for (const id of this.ids()) {
-      try { out.push(JSON.parse(fs.readFileSync(this.file(id), 'utf8')) as T); kept.add(path.basename(this.file(id))); } catch { /* missing or corrupt file: drop from the list */ }
+      try { out.push(JSON.parse(fs.readFileSync(this.file(id), 'utf8')) as T); kept.add(path.basename(this.file(id))); }
+      catch {
+        // Unreadable today (half-written, EBUSY) is not the same as deleted: keep the bytes aside
+        // instead of letting the sweep below erase the chat.
+        try { fs.renameSync(this.file(id), this.file(id) + '.corrupt'); } catch { /* missing */ }
+      }
     }
     void this.memento.update(SessionStore.INDEX_KEY, out.map((s) => s.id));
     // Files the index no longer names (deleted chats, a crashed save's .tmp) go too.
     try {
-      for (const f of fs.readdirSync(this.dir)) if (!kept.has(f)) fs.rmSync(path.join(this.dir, f), { force: true });
+      for (const f of fs.readdirSync(this.dir)) if (!kept.has(f) && !f.endsWith('.corrupt')) fs.rmSync(path.join(this.dir, f), { force: true });
     } catch { /* best effort */ }
     return out;
   }

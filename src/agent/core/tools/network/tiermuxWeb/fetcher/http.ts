@@ -22,6 +22,34 @@ type JSDOMConstructor = new (html: string) => { window: { document: DomDocument 
 const cache = new LRUCache<FetcherResult>(TIERMUXWEB_CONFIG.cacheMaxEntries, TIERMUXWEB_CONFIG.cacheTTL);
 const inflight = new InflightMap<FetcherResult | null>();
 
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const BODY_READ_TIMEOUT_MS = 15_000;
+
+/** `res.text()` has no size or time limit once headers are in; a slow-drip or multi-GB body
+ *  would hold the turn. Reads up to `maxBytes`, then aborts the connection. */
+async function readTextCapped(res: Response, maxBytes: number, ctrl: AbortController): Promise<string> {
+  if (!res.body) return "";
+  const timer = setTimeout(() => ctrl.abort(), BODY_READ_TIMEOUT_MS);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let out = "";
+  let bytes = 0;
+  try {
+    while (bytes < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      out += decoder.decode(value, { stream: true });
+    }
+    out += decoder.decode();
+  } finally {
+    clearTimeout(timer);
+    if (bytes >= maxBytes) ctrl.abort();
+    reader.releaseLock();
+  }
+  return out;
+}
+
 /** jsdom (~15 MB) is loaded lazily on first use — the chain usually succeeds via markdown/RSS/
  *  github-raw first. Dynamic import() keeps it external in esbuild and resolved at runtime. */
 let jsdomCtorPromise: Promise<JSDOMConstructor> | undefined;
@@ -160,7 +188,7 @@ export const httpFetcher: Fetcher = {
           return null;
         }
 
-        const html = await res.text();
+        const html = await readTextCapped(res, MAX_BODY_BYTES, ctrl);
         if (html.length < 200) return null;
 
         // jsdom loaded lazily — only when we actually have HTML to parse.

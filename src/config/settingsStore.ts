@@ -3,11 +3,12 @@
 import * as vscode from 'vscode';
 import type { FallbackEntry, Platform, PlatformInfo, CustomEndpoint } from '../shared/types';
 import type { Catalog } from '../catalog/catalog';
-import { allPlatformInfo } from '../providers';
+import { allPlatformInfo, BUILTIN_PLATFORMS } from '../providers';
 
 const FALLBACK_KEY = 'tiermux.fallback';
 const ENDPOINTS_KEY = 'tiermux.endpoints';
 const DISABLED_PROVIDERS_KEY = 'tiermux.disabledProviders';
+const KNOWN_PLATFORMS_KEY = 'tiermux.knownPlatforms';
 const CUSTOM_ENDPOINTS_KEY = 'tiermux.customEndpoints';
 const NOTIFIED_MODELS_KEY = 'tiermux.notifiedModels';
 /** Models the user switched off. Outlives the fallback row, which a save drops while the model
@@ -144,14 +145,32 @@ export class SettingsStore {
 
   getDisabledProviders(): Platform[] {
     const stored = this.state.get<Platform[]>(DISABLED_PROVIDERS_KEY);
-    if (stored) return stored;
+    if (stored) return this.quarantineNewRemote(stored);
 
     const on = defaultEnabledPlatforms();
     const def = allPlatformInfo()
       .map((p) => p.platform)
       .filter((p) => !on.has(p));
     void this.state.update(DISABLED_PROVIDERS_KEY, def);
-    return def;
+    return this.quarantineNewRemote(def);
+  }
+
+  /** A platform the remote catalog registered that this install has never seen starts
+   *  disabled: its base URL is wherever the catalog said, and transcripts go there the moment
+   *  it is enabled, so that is the user's click to make. Built-ins are exempt. */
+  private quarantineNewRemote(disabled: Platform[]): Platform[] {
+    const known = new Set(this.state.get<Platform[]>(KNOWN_PLATFORMS_KEY) ?? []);
+    const all = allPlatformInfo().map((p) => p.platform);
+    if (known.size === 0) {
+      void this.state.update(KNOWN_PLATFORMS_KEY, all);
+      return disabled;
+    }
+    const fresh = all.filter((p) => !known.has(p) && !BUILTIN_PLATFORMS.has(p));
+    if (fresh.length === 0) return disabled;
+    const next = [...new Set([...disabled, ...fresh])];
+    void this.state.update(DISABLED_PROVIDERS_KEY, next);
+    void this.state.update(KNOWN_PLATFORMS_KEY, [...known, ...fresh]);
+    return next;
   }
 
   isProviderDisabled(platform: Platform): boolean {

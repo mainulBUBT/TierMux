@@ -89,14 +89,12 @@ export function fitMessages(messages: ChatMessage[], maxInputTokens: number): { 
     before.unshift(rest[i]);
     used += t;
   }
-  // The anchor leads the older-history window: it is chronologically first, and its user
-  // role satisfies the user-boundary invariant below on its own.
-  if (anchor) before.unshift(anchor);
-
   // Start the older-history window on a user boundary so a `tool` result or an assistant
   // tool-call whose partner was trimmed can't lead the list. Safe to empty: the reserved
-  // task still follows it.
+  // task still follows it. Runs before the anchor is prepended, otherwise the anchor's user
+  // role satisfies the check while an orphan `tool` result sits right behind it.
   while (before.length && before[0].role !== 'user') before.shift();
+  if (anchor) before.unshift(anchor);
 
   // No user message anywhere (unusual — e.g. a synthesis-only call) and nothing fit: keep the
   // newest message regardless, matching the old `kept.length > 0` floor. A request carrying only

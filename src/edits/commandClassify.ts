@@ -6,25 +6,46 @@ import { parse, type ParseEntry } from 'shell-quote';
  *  subcommand can mutate (`npm`, `git`, `node`, `docker`, `make`); `git`/`find` are special-cased
  *  below, the rest fall through to normal approval. */
 const ALWAYS_READ_ONLY = new Set([
-  'ls', 'pwd', 'whoami', 'date', 'env', 'printenv', 'uname', 'which', 'type', 'hostname', 'id',
+  'ls', 'pwd', 'whoami', 'date', 'uname', 'which', 'type', 'hostname', 'id',
   'cat', 'head', 'tail', 'wc', 'file', 'stat', 'du', 'df', 'ps', 'echo',
   'grep', 'egrep', 'fgrep',
 ]);
 
+/** Read-only binaries that read whatever path they are handed: "read-only" must also mean
+ *  "inside the workspace", or `cat ~/.ssh/id_rsa` runs unattended (sub-agents have no prompt). */
+const PATH_READERS = new Set(['ls', 'cat', 'head', 'tail', 'wc', 'file', 'stat', 'du', 'grep', 'egrep', 'fgrep']);
+
+function leavesWorkspace(token: string): boolean {
+  return /^[/~]/.test(token) || /(^|\/)\.\.(\/|$)/.test(token);
+}
+
 const GIT_READ_ONLY_SUBCOMMANDS = new Set([
-  'status', 'diff', 'log', 'show', 'branch', 'remote', 'ls-files', 'blame', 'rev-parse', 'describe', 'shortlog',
+  'status', 'diff', 'log', 'show', 'ls-files', 'blame', 'rev-parse', 'describe', 'shortlog',
 ]);
+const GIT_BRANCH_LIST_FLAGS = new Set(['-a', '-r', '-v', '-vv', '--all', '--remotes', '--verbose', '--list', '--show-current']);
 
 /** Destructive patterns that always prompt, even under Auto-approve. */
 const DANGEROUS = [
   /\brm\s+(-[a-z]*\s+)*-[a-z]*[rf]/i, // rm -rf / rm -fr / rm -r -f …
+  /\brm\b.*\s--(recursive|force)\b/i,
+  /\bfind\b.*\s(-delete|-exec\s+rm)\b/i,
   /\bgit\s+push\b.*(--force|-f\b)/i,
   /\bgit\s+reset\s+--hard/i,
   /\bgit\s+clean\b.*-[a-z]*f/i,
+  /\bgit\s+(checkout|restore)\s+(--\s+)?\.(\s|$)/i, // discards every uncommitted change
+  /\bgit\s+branch\s+.*-[a-z]*D\b/i,
+  /\bgit\s+stash\s+(drop|clear)\b/i,
+  /\bgit\s+remote\s+set-url\b/i,
   /\b(sudo|chmod|chown)\b/i,
-  /\b(mkfs|dd|shutdown|reboot|kill(all)?)\b/i,
+  /\b(mkfs|dd|shutdown|reboot|kill(all)?|pkill|truncate|shred|diskutil|launchctl)\b/i,
+  /\bcrontab\s+-r\b/i,
   /\bnpm\s+publish\b/i,
+  /\b(curl|wget)\b.*\|\s*(ba|z|da)?sh\b/i, // download-and-execute
+  /\b(ba|z|da)?sh\s+-c\b/i, // wraps any command the patterns above would catch
+  /\beval\b/,
   /[>]\s*\/dev\//i, // writing to device files
+  /[>]\s*\/etc\//i,
+  /[>]\s*~?\/?(\.[a-z_]*rc|\.(bash_)?profile|\.zprofile|\.gitconfig|\.ssh\/)/i, // shell/ssh dotfiles
   /:\s*\(\s*\)\s*\{/, // fork-bomb shape :(){ :|:& };:
 ];
 
@@ -65,13 +86,19 @@ const WRITE_REDIRECT_OPS = new Set(['>', '>>', '>|']);
 function isSegmentReadOnly(tokens: string[]): boolean {
   if (tokens.length === 0) return true; // empty segment (e.g. trailing `;`) — harmless
   const bin = tokens[0];
+  if (PATH_READERS.has(bin)) return !tokens.slice(1).some((t) => !t.startsWith('-') && leavesWorkspace(t));
   if (ALWAYS_READ_ONLY.has(bin)) return true;
   if (bin === 'find') {
     // find can mutate via -delete/-exec — only read-only when neither appears.
-    return !tokens.some((t) => t === '-delete' || t === '-exec' || t === '-execdir' || t === '-fprintf');
+    if (tokens.some((t) => t === '-delete' || t === '-exec' || t === '-execdir' || t === '-fprintf')) return false;
+    return !tokens.slice(1).some((t) => !t.startsWith('-') && leavesWorkspace(t));
   }
   if (bin === 'git') {
     const sub = tokens[1];
+    const rest = tokens.slice(2);
+    if (rest.some((t) => t.startsWith('--output'))) return false; // `git log --output=x` writes
+    if (sub === 'branch') return rest.every((t) => GIT_BRANCH_LIST_FLAGS.has(t)); // a bare name creates one
+    if (sub === 'remote') return rest.length === 0 || rest[0] === '-v' || rest[0] === 'show' || rest[0] === 'get-url';
     return typeof sub === 'string' && GIT_READ_ONLY_SUBCOMMANDS.has(sub);
   }
   return false;
@@ -84,7 +111,7 @@ function isSegmentReadOnly(tokens: string[]): boolean {
 export function isReadOnlyCommand(command: string): boolean {
   const cmd = command.trim();
   if (!cmd) return true;
-  if (/`|\$\(/.test(cmd)) return false; // command substitution can hide anything — don't parse around it
+  if (/`|\$/.test(cmd)) return false; // substitution or a variable can hide any path — don't parse around it
 
   let parsed: ParseEntry[];
   try {

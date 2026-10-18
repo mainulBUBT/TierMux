@@ -381,11 +381,13 @@
           "description": "Maximum number of chat sessions that run their agent at the same time. Extra sends queue and start as a slot frees, to respect free-tier rate limits."
         },
         "tiermux.agent.requireWriteConfirmation": {
+          "scope": "machine",
           "type": "boolean",
           "default": true,
           "description": "Ask before the agent writes, creates or deletes a file (and before inline chat applies an edit). Off: file changes run without a prompt; shell commands still follow \"Command approval mode\"."
         },
         "tiermux.agent.verifyCommand": {
+          "scope": "machine",
           "type": "string",
           "default": "auto",
           "description": "Command run automatically after a turn edits files, to verify the project still works (a non-zero exit triggers bounded fix-and-recheck rounds). 'auto' detects it from the project (package.json test/typecheck/lint/build script, Makefile check/test, cargo test, go test, pytest, composer test); the planner's 'Verify:' line overrides per task; any other value is used verbatim; 'off' disables."
@@ -439,6 +441,7 @@
           "description": "Log the model's path from picker → router → provider → AI SDK (pinned value, resolved candidate, runtimeName, raw usage) to the \"TierMux Diag\" output channel. Temporary diagnostic for the wrong-provider-name / 0-token issue."
         },
         "tiermux.agent.commandApproval": {
+          "scope": "machine",
           "type": "string",
           "enum": [
             "always",
@@ -459,6 +462,7 @@
           "description": "Maximum time (ms) a single agent command may run before it is killed."
         },
         "tiermux.agent.commandAllowlist": {
+          "scope": "machine",
           "type": "array",
           "items": {
             "type": "string"
@@ -514,21 +518,25 @@
           "description": "Debounce (ms) before requesting an inline completion."
         },
         "tiermux.catalog.url": {
+          "scope": "machine",
           "type": "string",
           "default": "https://tiermux.mainulislam3057.workers.dev/",
           "description": "URL that supplies the model catalog. Accepts the TierMux worker JSON ({ providers: [{ provider_id, enabled, models: [...] }] }) or a legacy published-sheet CSV. Fetched in the background when the editor starts; the last fetch is cached and used offline, falling back to the built-in catalog. Leave blank to use only the built-in catalog."
         },
         "tiermux.skillRegistrySearchUrl": {
+          "scope": "machine",
           "type": "string",
           "default": "https://skills.sh",
           "description": "Base URL of the agent-skills directory searched by the Skills panel's remote box (skills.sh by default). Results come from whoever published them, so they are never shown as first-party — read the source before installing. Blank disables remote search; the curated list still works."
         },
         "tiermux.skillRegistryUrl": {
+          "scope": "machine",
           "type": "string",
           "default": "",
           "description": "Replaces the live skill list. Left blank (the default), the Skills panel uses the catalog worker's /skills endpoint plus the list shipped with TierMux. Set this to browse a third-party catalog as well — e.g. https://cline.github.io/marketplace/catalog.json — any URL serving {entries:[{type:'skill', name, description, install:{args:['owner/repo','--skill','name']}}]} works. Because a skill runs with the agent's permissions, entries from a URL set here are merged in last: they can never replace a known skill or be shown as first-party."
         },
         "tiermux.mcpRegistryUrl": {
+          "scope": "machine",
           "type": "string",
           "default": "",
           "description": "Optional URL to a custom curated MCP list (JSON array or {servers:[…]} in this extension's format). When set, it replaces the bundled 'Add a server' list shown when the search box is empty."
@@ -539,6 +547,7 @@
           "description": "Base URL of the MCP registry queried by the remote search box in the MCP panel (official MCP registry by default). Blank disables remote search."
         },
         "tiermux.mcpServers": {
+          "scope": "machine",
           "type": "object",
           "default": {},
           "markdownDescription": "MCP (Model Context Protocol) stdio servers. Their tools are exposed to the agent. Example:\n\n```json\n\"tiermux.mcpServers\": {\n  \"filesystem\": { \"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \".\"] }\n}\n```",

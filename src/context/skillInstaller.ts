@@ -26,6 +26,11 @@ export function installSkillPackage(
   skill: string | undefined,
   onOutput: (chunk: string) => void,
 ): Promise<InstallSkillResult> {
+  // The strings come from a remote catalog via the webview: only `owner/repo` (or its GitHub URL)
+  // and a plain skill name reach the CLI, so a leading `-` cannot turn into a flag.
+  if (!/^(https:\/\/github\.com\/)?[\w.-]+\/[\w.-]+(\.git)?$/.test(source) || (skill && !/^[\w.-]+$/.test(skill))) {
+    return Promise.resolve({ ok: false, output: `Refused to install from "${source}"${skill ? ` (skill "${skill}")` : ''}: expected owner/repo.` });
+  }
   const args = ['skills', 'add', source, ...(skill ? ['--skill', skill] : []), '-y'];
   return new Promise((resolve) => {
     const child = execFile('npx', args, { cwd: workspaceRoot, timeout: 120_000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
