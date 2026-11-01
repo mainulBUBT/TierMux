@@ -31,7 +31,8 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   // or 400 "free tier can only be used in OpenCode"). Anonymous access is undocumented and
   // refused intermittently; the free-period models also collect prompt/completion data — see
   // docs/PROVIDERS.md § OpenCode Zen.
-  { platform: 'opencode', name: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen/v1', keyless: true, keyOptional: true, skipPreflight: true, sessionHeader: 'x-opencode-session', opencodeFreeLane: true, responsesModels: /^muse-spark-/, keyUrl: 'https://opencode.ai/auth' },
+  { platform: 'opencode', name: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen/v1', keyless: true, keyOptional: true, skipPreflight: true, sessionHeader: 'x-opencode-session', opencodeFreeLane: true, responsesModels: /^muse-spark-/, keyUrl: 'https://opencode.ai/go' },
+  { platform: 'opencode-go', name: 'OpenCode Go', baseUrl: 'https://opencode.ai/zen/go/v1', keyless: false, skipPreflight: true, sessionHeader: 'x-opencode-session', keyUrl: 'https://opencode.ai/go' },
   { platform: 'ovh', name: 'OVH AI Endpoints', baseUrl: 'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1', keyless: true },
   { platform: 'agnes', name: 'Agnes AI', baseUrl: 'https://apihub.agnes-ai.com/v1', timeoutMs: 120000, skipPreflight: true, keyUrl: 'https://platform.agnes-ai.com' },
   { platform: 'sambanova', name: 'SambaNova', baseUrl: 'https://api.sambanova.ai/v1', keyUrl: 'https://cloud.sambanova.ai/apis' },

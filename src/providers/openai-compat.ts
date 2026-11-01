@@ -113,9 +113,13 @@ export class OpenAICompatProvider extends BaseProvider {
     this.defaultMaxTokens = opts.defaultMaxTokens;
   }
 
-  private resolveBaseUrl(options?: CompletionOptions): string {
+  private resolveBaseUrl(options?: CompletionOptions, apiKey?: string): string {
     const o = options?.baseUrlOverride?.trim();
-    return o && o.length > 0 ? o.replace(/\/+$/, '') : this.baseUrl;
+    if (o && o.length > 0) return o.replace(/\/+$/, '');
+    if ((this.opencodeFreeLane || this.name.toLowerCase().includes('opencode')) && apiKey && this.baseUrl === 'https://opencode.ai/zen/v1') {
+      return 'https://opencode.ai/zen/go/v1';
+    }
+    return this.baseUrl;
   }
 
   /** The anonymous free lane — and ONLY that. With a key in hand the request is identified
@@ -133,8 +137,8 @@ export class OpenAICompatProvider extends BaseProvider {
     return this.responsesModels?.test(modelId) ?? false;
   }
 
-  private endpoint(modelId: string, options?: CompletionOptions): string {
-    return `${this.resolveBaseUrl(options)}${this.onResponses(modelId) ? '/responses' : '/chat/completions'}`;
+  private endpoint(modelId: string, options?: CompletionOptions, apiKey?: string): string {
+    return `${this.resolveBaseUrl(options, apiKey)}${this.onResponses(modelId) ? '/responses' : '/chat/completions'}`;
   }
 
   private requestHeaders(apiKey: string, options?: CompletionOptions): Record<string, string> {
@@ -230,13 +234,13 @@ export class OpenAICompatProvider extends BaseProvider {
   ): Promise<ChatCompletionResponse> {
     const lane = this.onFreeLane(apiKey);
     const responses = this.onResponses(modelId);
-    const res = await this.fetchWithTimeout(this.endpoint(modelId, options), {
+    const res = await this.fetchWithTimeout(this.endpoint(modelId, options, apiKey), {
       method: 'POST',
       headers: this.requestHeaders(apiKey, options),
       body: this.buildBody(messages, modelId, options, false, lane),
       signal: options?.abortSignal,
     }, options?.timeoutMs ?? this.timeoutMs);
-    diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options)} modelId=${modelId} stream=false status=${res.status}`);
+    diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options, apiKey)} modelId=${modelId} stream=false status=${res.status}`);
 
     try { options?.onResponseHeaders?.(res.headers); } catch { /* bookkeeping never fails a request */ }
     if (!res.ok) {
@@ -288,13 +292,13 @@ export class OpenAICompatProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): AsyncGenerator<ChatCompletionChunk> {
-    const res = await this.fetchWithTimeout(this.endpoint(modelId, options), {
+    const res = await this.fetchWithTimeout(this.endpoint(modelId, options, apiKey), {
       method: 'POST',
       headers: this.requestHeaders(apiKey, options),
       body: this.buildBody(messages, modelId, options, true, this.onFreeLane(apiKey)),
       signal: options?.abortSignal,
     }, options?.timeoutMs ?? this.timeoutMs);
-    diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options)} modelId=${modelId} stream=true status=${res.status}`);
+    diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options, apiKey)} modelId=${modelId} stream=true status=${res.status}`);
 
     try { options?.onResponseHeaders?.(res.headers); } catch { /* bookkeeping never fails a request */ }
     if (!res.ok) {

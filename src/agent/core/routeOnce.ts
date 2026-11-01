@@ -47,11 +47,15 @@ export class RouteOnceFailedError extends Error {
 
 /** Account-level refusals condemn the PLATFORM, not just the model: 401/403 mean the key is
  *  bad and 402 means the account cannot pay, so a sibling model on the same platform cannot
- *  possibly succeed. 429 and 5xx are per-model/transient and never condemn. Mirrors the same
+ *  possibly succeed. 429 and 5xx are per-model/transient and never condemn, except when the
+ *  gateway signals a platform-wide free limit (OpenCode Go quota block). Mirrors the same
  *  rule in routerProvider's chain walk. */
 function isAccountLevel(e: unknown): boolean {
   const status = (e as { status?: number } | undefined)?.status;
-  return status === 401 || status === 402 || status === 403;
+  const message = (e as { message?: string } | undefined)?.message;
+  if (status === 401 || status === 402 || status === 403) return true;
+  if (status === 429 && message && /\bfree usage limit reached\b|\bsubscribe to opencode go\b|\bfree models work in opencode\b/i.test(message)) return true;
+  return false;
 }
 
 /** Normalize a completion's content field to plain text. Some gateways return a parts array

@@ -15,7 +15,7 @@ import type {
 import type { ChatMessage, ChatToolChoice, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
 import { resolveProvider } from '../../providers';
 import { ProviderHttpError } from '../../providers/base';
-import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, noteQuotaHeaders, noteRetryAfter, isModelUnavailable, rationaleForServed, isInCooldown, findCatalogModel, type ModelSources, type SelectionRationale } from '../../router/picker';
+import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, noteQuotaHeaders, noteRetryAfter, isModelUnavailable, isFreeLimitReached, rationaleForServed, isInCooldown, findCatalogModel, type ModelSources, type SelectionRationale } from '../../router/picker';
 import { estimateMessagesTokens, estimateTokens } from '../budget';
 import { ThinkStripper, stripThinkTags, reasoningFromDelta } from '../../util/thinkTags';
 import { adoptInlineToolCalls, sanitizeToolName } from '../toolArgs';
@@ -149,6 +149,11 @@ function chainExhaustedError(
   lastError: unknown,
 ): Error {
   if (candidates.length <= 1) {
+    if (lastError instanceof Error && isFreeLimitReached(lastError.message)) {
+      return new Error(
+        `${lastError.message} (OpenCode requires an OpenCode Go subscription key at https://opencode.ai/go — configure it in TierMux, or switch to Auto mode / another free model).`
+      );
+    }
     return lastError instanceof Error
       ? lastError
       : new Error('TierMux: the only model candidate failed');
@@ -159,11 +164,13 @@ function chainExhaustedError(
 
 /** 401/402/403 are ACCOUNT-level (dead key, unpaid bill), so the platform's other models cannot
  *  succeed either (ollama/cerebras 402, 2026-08-30). 429 and 5xx are per-model and not here, and
- *  neither is a 401 that names the model itself as unsupported. */
+ *  neither is a 401 that names the model itself as unsupported. Platform-wide 429 free limits
+ *  (e.g. OpenCode "Free usage limit reached") are also account-level. */
 export function isAccountLevel(e: unknown): boolean {
-  return e instanceof ProviderHttpError
-    && (e.status === 401 || e.status === 402 || e.status === 403)
-    && !isModelUnavailable(e.message);
+  if (!(e instanceof ProviderHttpError)) return false;
+  if ((e.status === 401 || e.status === 402 || e.status === 403) && !isModelUnavailable(e.message)) return true;
+  if (e.status === 429 && isFreeLimitReached(e.message)) return true;
+  return false;
 }
 
 function toV4Usage(promptTokens?: number, completionTokens?: number): LanguageModelV4Usage {

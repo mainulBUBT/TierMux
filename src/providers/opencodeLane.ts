@@ -2,10 +2,11 @@ import { randomBytes } from 'crypto';
 
 import type { ChatCompletionResponse, ChatMessage, ChatToolCall } from '../shared/types';
 
-/** Must track a current client version: the gate checks the `opencode/` prefix
- *  and version >= 1.17.0. */
-const OC_VERSION = '1.18.31';
-export const OPENCODE_USER_AGENT = `opencode/${OC_VERSION} ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14`;
+/** Must track a current CLI version: the gate checks the `opencode/` prefix
+ *  today, and a version far behind the real client (e.g. legacy v1) is rejected
+ *  with 429 FreeUsageLimitError. Tracks OpenCode v2. */
+const OC_VERSION = '2.2.5';
+export const OPENCODE_USER_AGENT = `opencode/${OC_VERSION} ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13`;
 
 const B62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 
@@ -60,15 +61,20 @@ export function ocRequestId(): string {
 
 /** The full official-client costume. Merged last, so it overrides the
  *  extension's own User-Agent on lane providers only. */
+export const OPENCODE_GO_URL = 'https://opencode.ai/zen/go/v1';
+export const OPENCODE_ZEN_URL = 'https://opencode.ai/zen/v1';
+
 export function openCodeLaneHeaders(sessionId?: string): Record<string, string> {
   return {
     'Authorization': 'Bearer public',
     'User-Agent': OPENCODE_USER_AGENT,
     'x-opencode-client': 'desktop',
     'x-opencode-project': 'global',
+    'x-opencode-directory': 'global',
     'x-opencode-request': ocRequestId(),
     'x-opencode-session': ocSessionId(sessionId),
     'Accept': 'text/event-stream',
+    'TypeSafe-Danger-Zone-Images': 'true',
   };
 }
 

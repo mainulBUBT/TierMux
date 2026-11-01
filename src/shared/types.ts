@@ -17,6 +17,7 @@ export type Platform =
   | 'llm7'
   | 'huggingface'
   | 'opencode'
+  | 'opencode-go'
   | 'ovh'
   | 'agnes'
   | 'sambanova'

@@ -362,6 +362,11 @@ export function isModelUnavailable(message: string | undefined): boolean {
   return !!message && /\bmodel \S+ is not supported\b|\bmodel is (currently )?unavailable\b|\bendpoint is unavailable\b/i.test(message);
 }
 
+/** Detects free tier limit reached on OpenCode Zen or similar gateways. */
+export function isFreeLimitReached(message: string | undefined): boolean {
+  return !!message && /\bfree usage limit reached\b|\bsubscribe to opencode go\b|\bfree models work in opencode\b/i.test(message);
+}
+
 /** Time-boxed quarantines on top of the cooldown, for failures that say something specific
  *  about the MODEL rather than the moment: a 400 while tools were offered means it rejects the
  *  tools payload (10 min), a 404 means it is gone from the provider (24 h), a model-unavailable
@@ -371,7 +376,16 @@ export function noteModelFailure(platform: string, modelId: string, status: numb
   if (!sources) return;
   if (status === 404) sources.secrets.markDeprecated?.(platform as never, modelId);
   // 429 carries the same text when Zen rate-limits a model (ling-3.1-flash-free, live 2026-10-06).
-  else if ((status === 400 || status === 401) && isModelUnavailable(message)) sources.secrets.markDeprecated?.(platform as never, modelId, 3_600_000);
+  else if ((status === 400 || status === 401 || status === 429) && isModelUnavailable(message)) sources.secrets.markDeprecated?.(platform as never, modelId, 3_600_000);
+  else if (status === 429 && isFreeLimitReached(message)) {
+    sources.secrets.markDeprecated?.(platform as never, modelId, 900_000);
+    // Platform-wide 429: sideline all models on this platform for 15 minutes so Auto-routing fails over immediately
+    for (const entry of sources.settings.getFallback()) {
+      if (entry.platform === platform) {
+        sources.secrets.markDeprecated?.(platform as never, entry.modelId, 900_000);
+      }
+    }
+  }
   else if ((status === 400 || status === 413) && toolsOffered) sources.secrets.markToolIncompatible?.(platform as never, modelId);
 }
 
