@@ -9,7 +9,7 @@ import type { Catalog } from '../catalog/catalog';
 import type { SettingsStore } from '../config/settingsStore';
 import type { SecretStore } from '../config/secrets';
 import type { ModelStatsStore } from '../config/modelStats';
-import { allPlatformInfo, platformCarriesRawPdf, platformFlattensContent } from '../providers';
+import { allPlatformInfo, platformCarriesRawPdf, platformFlattensContent, setCustomEndpointSource } from '../providers';
 import type { ChatMessage, CatalogModel } from '../shared/types';
 import { classifyTask, type TaskKind } from '../agent/routing';
 import { RateTracker } from './rateTracker';
@@ -182,6 +182,7 @@ let sources: ModelSources | undefined;
 /** Wired once by extension.ts at activation. */
 export function setModelSources(s: ModelSources): void {
   sources = s;
+  setCustomEndpointSource(() => s.settings.getCustomEndpoints?.() ?? []);
 }
 
 /** API keys for a platform from the wired SecretStore — [''] for keyless platforms
@@ -190,7 +191,14 @@ export function setModelSources(s: ModelSources): void {
  *  through to whatever the user CAN use instead of sending a guaranteed-401 request.
  *  A `keyOptional` platform (OpenCode Zen) is neither: its anonymous free tier serves with
  *  no key, so the pool is preferred when it is non-empty and '' is the fallback. */
-export async function getApiKeysFor(platform: string): Promise<string[]> {
+export async function getApiKeysFor(platform: string, modelId?: string): Promise<string[]> {
+  // A custom endpoint's key is optional and stored per endpoint or per model, never in the platform pool.
+  if (platform === 'custom') {
+    const [epId, ...upstream] = (modelId ?? '').split('::');
+    if (!epId || !sources) return [''];
+    const key = await sources.secrets.getCustomModelKey?.(epId, upstream.join('::')) ?? await sources.secrets.getCustomKey?.(epId);
+    return [key ?? ''];
+  }
   const provider = allPlatformInfo().find((p) => p.platform === platform);
   if (provider?.keyless && !provider.keyOptional) return [''];
   if (!sources) return provider?.keyOptional ? [''] : [];
@@ -299,6 +307,14 @@ export function isInCooldown(platform: string, modelId: string): boolean {
  *  apart from modelHealth on purpose: the response that reports "0 left" SUCCEEDS, and its
  *  recordOutcome(true) must not lift the window it just announced. */
 const quotaUntil = new Map<string, number>();
+/** Models the picker last skipped for their declared rpm, and when their next slot frees up. */
+const rateLimitedUntil = new Map<string, number>();
+
+/** Time until the first cooled-down model is due back; undefined when none is cooling down. */
+export function soonestRecoveryMs(now = Date.now()): number | undefined {
+  const due = [...[...modelHealth.values()].map((h) => h.cooldownUntil), ...quotaUntil.values(), ...rateLimitedUntil.values(), ...laneExhaustedUntil.values()].filter((t) => t > now);
+  return due.length ? Math.min(...due) - now : undefined;
+}
 const QUOTA_MIN_MS = 5_000;
 const QUOTA_MAX_MS = 24 * 3_600_000;
 const QUOTA_DEFAULT_MS = 60_000;
@@ -354,6 +370,39 @@ export function noteRetryAfter(platform: string, modelId: string, retryAfterMs: 
   const ms = Math.min(Math.max(retryAfterMs, QUOTA_MIN_MS), QUOTA_MAX_MS);
   const key = healthKey(platform, modelId);
   quotaUntil.set(key, Math.max(quotaUntil.get(key) ?? 0, Date.now() + ms));
+}
+
+/** The anonymous free tier's own refusal. OpenCode v2 answers a client it does not recognise with
+ *  `429 "Free usage limit reached"` (the older spelling was `403 FreeTierError: OpenCode's free
+ *  tier can only be used from within OpenCode`). It is the GATE's verdict on the request, not this
+ *  account's quota, so retrying cannot spend it down and rotating models cannot dodge it — every
+ *  model on that keyless lane answers the same. */
+export function isFreeTierRefusal(message: string | undefined): boolean {
+  return !!message
+    && /free usage limit reached|freeusagelimiterror|free models work in opencode|free tier can only be used/i.test(message);
+}
+
+/** How long a shut keyless lane stays out of the chain: long enough that a turn which already
+ *  burned a candidate on it does not do so again, short enough that a shared pool that clears is
+ *  picked back up on its own. An upstream retry-after, when it sends one, still wins — it lands
+ *  in `quotaUntil` through noteRetryAfter and this map only ever extends a window. */
+const FREE_TIER_QUARANTINE_MS = 30 * 60_000;
+/** Per PLATFORM, unlike quotaUntil: the zero-key free lane is one shared pool behind one gate. */
+const laneExhaustedUntil = new Map<string, number>();
+
+export function noteFreeTierExhausted(platform: string, now = Date.now()): void {
+  const until = Math.max(laneExhaustedUntil.get(platform) ?? 0, now + FREE_TIER_QUARANTINE_MS);
+  laneExhaustedUntil.set(platform, until);
+  diagLog('picker.freetier', `${platform} answered "free usage limit reached" — keyless lane skipped for ${Math.round((until - now) / 1000)}s`);
+}
+
+export function isLaneExhausted(platform: string, now = Date.now()): boolean {
+  return (laneExhaustedUntil.get(platform) ?? 0) > now;
+}
+
+/** For a report or a wait message: how long the lane stays shut, 0 when it is open. */
+export function laneExhaustedMs(platform: string, now = Date.now()): number {
+  return Math.max(0, (laneExhaustedUntil.get(platform) ?? 0) - now);
 }
 
 /** The upstream names the MODEL as gone or down, whatever status carries it (OpenCode Zen:
@@ -537,6 +586,11 @@ export async function selectModel(
     // the chain prefers healthy models. The pinned model is exempt — explicit user choice,
     // only the Stop button cancels it.
     if (modelId && isInCooldown(platform, modelId) && key !== opts.pinnedModel) { skip(key, 'in failure cooldown (recent errors)'); return undefined; }
+    // A shut keyless lane has nothing to retry: the gate refuses the client, so its every model
+    // answers the same "free usage limit reached". Platform-wide, because the pool is. The pinned
+    // model keeps its exemption (explicit user choice, only Stop cancels it) — and pays for it with
+    // the one refusal that then explains itself.
+    if (isLaneExhausted(platform) && key !== opts.pinnedModel) { skip(key, 'the free tier refuses outside clients — Go or paid models only, not a key'); return undefined; }
     if (enabled.size > 0 && !enabled.has(key) && opts.pinnedModel !== key) { skip(key, 'not enabled in Manage Models & Keys'); return undefined; }
     // An agent turn offers tools, so a model the catalog marks supportsTools=false would
     // deflect ("I don't have access to…") and every tool would silently "not work".
@@ -547,6 +601,8 @@ export async function selectModel(
       const meta = sources.catalog.find(platform, modelId);
       if (meta && !rateTracker.canSend(platform, modelId, meta.rpmLimit, meta.rpdLimit)) {
         skip(key, 'at its declared rate limit (rpm/rpd) right now');
+        const slot = rateTracker.nextMinuteSlotMs(platform, modelId);
+        if (slot !== undefined) rateLimitedUntil.set(key, Date.now() + slot);
         return undefined;
       }
     }

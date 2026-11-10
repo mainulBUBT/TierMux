@@ -18,7 +18,8 @@ import { setMcpManager } from './agent/core/tools/mcp/manager';
 
 import { McpManager } from './mcp/mcpManager';
 import { ChatViewProvider } from './chatViewProvider';
-import { allPlatformInfo, getPlatformInfo } from './providers';
+import { allPlatformInfo, getPlatformInfo, acceptsKey } from './providers';
+import { registerBunInstaller } from './providers/bunInstaller';
 import { registerEditorCommands } from './editor/commands';
 import { registerCodeActions } from './editor/codeActions';
 import { registerInlineChat } from './editor/inlineChat';
@@ -162,6 +163,9 @@ export function activate(context: vscode.ExtensionContext): void {
       globalState: context.globalState,
       generateCommitMessage: () => generateCommitMessage(),
     });
+    // The keyless OpenCode lane runs through a local bun when one exists; this registers the
+    // consent prompt that offers to download one (into extension storage) if none does.
+    registerBunInstaller(context);
     chatProviderRef = chat;
 
     editGate.setConfirmHandler((req) => chat.requestEditApproval(req));
@@ -321,14 +325,17 @@ async function setApiKey(secrets: SecretStore, platformArg?: Platform): Promise<
   let platform = platformArg;
   if (!platform) {
     const options = allPlatformInfo()
-      .filter((p) => p.platform !== 'custom' && !p.keyless)
+      .filter((p) => p.platform !== 'custom' && acceptsKey(p.platform))
       .map((p) => ({ label: p.name, platform: p.platform }));
     const picked = await vscode.window.showQuickPick(options, { placeHolder: 'Select a provider to set its API key' });
     if (!picked) return;
     platform = picked.platform;
   }
   const info = getPlatformInfo(platform);
-  if (info?.keyless) { void vscode.window.showInformationMessage(`${info.name} is keyless — no API key needed.`); return; }
+  // Only `keyless` WITHOUT `keyOptional` means key entry is pointless. Folding the two together
+  // made OpenCode Zen — whose documented reliable path IS a stored key — refuse the prompt, so the
+  // one route past its free-tier gate could not be configured at all (see acceptsKey).
+  if (!acceptsKey(platform)) { void vscode.window.showInformationMessage(`${info?.name ?? platform} is keyless — no API key needed.`); return; }
   const existing = await secrets.getKeys(platform);
 
   if (platform === 'cloudflare') {

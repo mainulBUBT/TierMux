@@ -268,6 +268,19 @@ plan, on the shared `askUser` card, and a plan that reaches the card is still se
   (second narration ships, not failed; `finishReason` reads `'error'`, which nothing consumes). Pinned
   by `exitPlanMode.e2e.ts` 4d — do not add a handler without a live dead-end.
 
+- **Reading budget (2026-11-04).** On step 15 of a plan turn (`PLAN_STEP_BUDGET`) the only tools
+  offered are `PLAN_CLOSERS`, once, with `PLAN_BUDGET_WRAPUP`. It only counts steps and uses no
+  continuation pass. `toolChoice` stays free, so a plan-mode question can still be answered in
+  prose, and a rejected `exitPlanMode` gets its read tools back to recover. Repro is agentBench with
+  real providers, not a user session: plan-feature (20 steps) and plan-php-feature (17 steps) both
+  hit the 600s timeout with no plan. Pinned by `test:e2e:read-loop` (3b).
+
+- **Shell writes are denied (2026-11-04).** A plan-mode `runCommand` that plainly writes files
+  (`writesFiles`: a redirect, `tee`, `touch`, `mkdir`, `rm`, `rmdir`, `mv`, `cp`, `ln`, `sed -i`, or an
+  inline python/node/ruby/perl/php script) is denied without a prompt, and the reason sends the model to `exitPlanMode`. Every other command
+  still asks. Repro is agentBench: 3 of 6 plan runs wrote the change with `cat > file`, so approving
+  the prompt bypassed the plan. Pinned by `test:e2e:foundation` (19d).
+
 Verify: `npm run test:e2e:ask-user`, `test:e2e:plan-decisions`, `test:e2e:plan-resume`,
 `test:e2e:exit-plan-mode`, `test:e2e:foundation`.
 

@@ -9,8 +9,9 @@ import type {
   Platform,
   ReasoningEffort,
 } from '../shared/types';
-import { BaseProvider, providerHttpError } from './base';
+import { BaseProvider, ProviderHttpError, providerHttpError } from './base';
 import type { CompletionOptions } from './options';
+import { bunFetch, ensureBunForLane, isBunAvailable } from './bunTransport';
 import { foldSseToCompletion, openCodeLaneHeaders, shapeOpenCodeRequest } from './opencodeLane';
 import { chatBodyToResponses, responsesSseAsChatSse } from './responsesWire';
 import { repairToolArguments, rescueInlineToolCalls, toolSchemaMap, sanitizeToolName, stripHarmonyTokens } from '../agent/toolArgs';
@@ -31,10 +32,11 @@ export interface OpenAICompatOpts {
   sessionHeader?: string;
   /** Dress KEYLESS requests as the official OpenCode client so Zen's anonymous free lane
    *  (locked to the official client since 2026-09-16) lets them through. Applies the client
-   *  headers, forces streaming with the two decoy tools the gate looks for, and folds the
-   *  stream back for non-streaming callers. A request carrying an API key never wears the
-   *  costume — that account is identified as TierMux and only the documented session header
-   *  rides along. See opencodeLane.ts. */
+   *  headers, forces streaming, leads the messages with the decoy system prompt and appends
+   *  the 4-tool quartet the gate's body fingerprint looks for, and folds the stream back for
+   *  non-streaming callers. A request carrying an API key never wears the costume — that
+   *  account is identified as TierMux and only the documented session header rides along.
+   *  See opencodeLane.ts and opencodePrompt.ts. */
   opencodeFreeLane?: boolean;
   /** Models this platform serves only on /responses (see responsesWire.ts). */
   responsesModels?: RegExp;
@@ -59,6 +61,10 @@ export interface OpenAICompatOpts {
 }
 
 const USER_AGENT = 'tiermux/3.0.1';
+
+/** Mirrors picker.isFreeTierRefusal (importing the picker from here would be a cycle): the
+ *  texts Zen's anonymous gate answers unrecognised clients with, keyed or keyless. */
+const FREE_TIER_REFUSAL = /free usage limit reached|freeusagelimiterror|free models work in opencode|free tier can only be used/i;
 
 /** A stable UUID-shaped id for a conversation: the same session always maps to the same value,
  *  and a call with no session (title generation, condense) gets a one-off. */
@@ -113,13 +119,9 @@ export class OpenAICompatProvider extends BaseProvider {
     this.defaultMaxTokens = opts.defaultMaxTokens;
   }
 
-  private resolveBaseUrl(options?: CompletionOptions, apiKey?: string): string {
+  private resolveBaseUrl(options?: CompletionOptions): string {
     const o = options?.baseUrlOverride?.trim();
-    if (o && o.length > 0) return o.replace(/\/+$/, '');
-    if ((this.opencodeFreeLane || this.name.toLowerCase().includes('opencode')) && apiKey && this.baseUrl === 'https://opencode.ai/zen/v1') {
-      return 'https://opencode.ai/zen/go/v1';
-    }
-    return this.baseUrl;
+    return o && o.length > 0 ? o.replace(/\/+$/, '') : this.baseUrl;
   }
 
   /** The anonymous free lane — and ONLY that. With a key in hand the request is identified
@@ -129,19 +131,54 @@ export class OpenAICompatProvider extends BaseProvider {
    *  alone — shipping `bash`/`read` on an authenticated request would offer tools this
    *  extension never registered, which is the "refused tool subset" failure other clients on
    *  this same gate keep fixing (OmniRoute #14464, #14148). */
-  private onFreeLane(apiKey: string): boolean {
-    return this.opencodeFreeLane && !apiKey;
+  private onFreeLane(apiKey: string, modelId?: string): boolean {
+    return this.opencodeFreeLane
+      && (!apiKey || (modelId !== undefined && OpenAICompatProvider.lanePreferred.has(`${this.platform}:${modelId}`)));
+  }
+
+  /** Models whose KEYED request drew the free-tier refusal. OpenCode's docs are explicit that
+   *  free-tier models are served to their own client only — a key buys nothing for them, it
+   *  only pushes the request onto the direct path the gate refuses. Once a model is in here,
+   *  its requests ride the anonymous lane straight away instead of burning a keyed round-trip
+   *  first. Paid models never draw this refusal and keep the key. */
+  private static readonly lanePreferred = new Set<string>();
+
+  /** The lane's request path: through a locally installed bun when one is there (the only
+   *  network stack Zen's anonymous gate admits — see bunTransport.ts); a machine with none may
+   *  still get one via the consent-prompted installer before the first lane request. Otherwise
+   *  the direct fetch, which the gate answers with its honest 429. Keyed requests go direct. */
+  private async laneFetch(lane: boolean, url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+    if (lane && ((await isBunAvailable()) || (await ensureBunForLane()))) {
+      try {
+        return await bunFetch({
+          url,
+          method: init.method ?? 'POST',
+          headers: (init.headers ?? {}) as Record<string, string>,
+          body: String(init.body ?? ''),
+          timeoutMs,
+        }, this.name, init.signal as AbortSignal | undefined);
+      } catch (e) {
+        // The shim is an optimization of the wire, never a new failure mode: a spawn/pipe
+        // problem falls back to the direct fetch and lets the gate answer for itself.
+        if (!(e instanceof ProviderHttpError)) {
+          diagLog('bunshim.fallback', `${this.platform} shim failed, going direct: ${(e as Error).message.slice(0, 120)}`);
+          return this.fetchWithTimeout(url, init, timeoutMs);
+        }
+        throw e;
+      }
+    }
+    return this.fetchWithTimeout(url, init, timeoutMs);
   }
 
   private onResponses(modelId: string): boolean {
     return this.responsesModels?.test(modelId) ?? false;
   }
 
-  private endpoint(modelId: string, options?: CompletionOptions, apiKey?: string): string {
-    return `${this.resolveBaseUrl(options, apiKey)}${this.onResponses(modelId) ? '/responses' : '/chat/completions'}`;
+  private endpoint(modelId: string, options?: CompletionOptions): string {
+    return `${this.resolveBaseUrl(options)}${this.onResponses(modelId) ? '/responses' : '/chat/completions'}`;
   }
 
-  private requestHeaders(apiKey: string, options?: CompletionOptions): Record<string, string> {
+  private requestHeaders(apiKey: string, options: CompletionOptions | undefined, lane: boolean): Record<string, string> {
     return {
       ...this.authHeader(apiKey),
       'Content-Type': 'application/json',
@@ -150,7 +187,7 @@ export class OpenAICompatProvider extends BaseProvider {
       ...(this.sessionHeader ? { [this.sessionHeader]: sessionUuid(options?.sessionId) } : {}),
       // Lane headers last: on the keyless lane the costume must win over our own User-Agent
       // and any sessionHeader spelling.
-      ...(this.onFreeLane(apiKey) ? openCodeLaneHeaders(options?.sessionId) : {}),
+      ...(lane ? openCodeLaneHeaders(options?.sessionId) : {}),
     };
   }
 
@@ -232,15 +269,18 @@ export class OpenAICompatProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
-    const lane = this.onFreeLane(apiKey);
+    const lane = this.onFreeLane(apiKey, modelId);
+    // On the lane the request is anonymous by definition — a stored key would both leak the
+    // account onto the free tier and fight the costume's public Authorization.
+    const wireKey = lane ? '' : apiKey;
     const responses = this.onResponses(modelId);
-    const res = await this.fetchWithTimeout(this.endpoint(modelId, options, apiKey), {
+    const res = await this.laneFetch(lane, this.endpoint(modelId, options), {
       method: 'POST',
-      headers: this.requestHeaders(apiKey, options),
+      headers: this.requestHeaders(wireKey, options, lane),
       body: this.buildBody(messages, modelId, options, false, lane),
       signal: options?.abortSignal,
     }, options?.timeoutMs ?? this.timeoutMs);
-    diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options, apiKey)} modelId=${modelId} stream=false status=${res.status}`);
+    diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options)} modelId=${modelId} stream=false keyed=${wireKey ? 'yes' : 'no'} status=${res.status}`);
 
     try { options?.onResponseHeaders?.(res.headers); } catch { /* bookkeeping never fails a request */ }
     if (!res.ok) {
@@ -257,7 +297,16 @@ export class OpenAICompatProvider extends BaseProvider {
           _routed_via: { platform: this.platform, model: modelId },
         };
       }
-      throw providerHttpError(res, `${this.name} API error ${res.status}: ${errMessage(err) ?? res.statusText}`);
+      // A keyed request the free-tier gate refused: the key is useless for THIS model (their
+      // docs: free-tier models are served to their own client only), so the anonymous lane —
+      // costume + bun — is the one route left. Retry once there and remember the model.
+      const message = errMessage(err);
+      if (!lane && this.opencodeFreeLane && wireKey && message !== undefined && FREE_TIER_REFUSAL.test(message)) {
+        OpenAICompatProvider.lanePreferred.add(`${this.platform}:${modelId}`);
+        diagLog('provider.laneRetry', `${this.platform} modelId=${modelId} keyed request drew the free-tier refusal — retrying on the anonymous lane`);
+        return this.chatCompletion('', messages, modelId, options);
+      }
+      throw providerHttpError(res, `${this.name} API error ${res.status}: ${message ?? res.statusText}`);
     }
 
     let data: ChatCompletionResponse;
@@ -292,18 +341,29 @@ export class OpenAICompatProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): AsyncGenerator<ChatCompletionChunk> {
-    const res = await this.fetchWithTimeout(this.endpoint(modelId, options, apiKey), {
+    const lane = this.onFreeLane(apiKey, modelId);
+    const wireKey = lane ? '' : apiKey;
+    const res = await this.laneFetch(lane, this.endpoint(modelId, options), {
       method: 'POST',
-      headers: this.requestHeaders(apiKey, options),
-      body: this.buildBody(messages, modelId, options, true, this.onFreeLane(apiKey)),
+      headers: this.requestHeaders(wireKey, options, lane),
+      body: this.buildBody(messages, modelId, options, true, lane),
       signal: options?.abortSignal,
     }, options?.timeoutMs ?? this.timeoutMs);
-    diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options, apiKey)} modelId=${modelId} stream=true status=${res.status}`);
+    diagLog('provider.request', `${this.platform} name="${this.name}" baseUrl=${this.resolveBaseUrl(options)} modelId=${modelId} stream=true keyed=${wireKey ? 'yes' : 'no'} status=${res.status}`);
 
     try { options?.onResponseHeaders?.(res.headers); } catch { /* bookkeeping never fails a request */ }
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw providerHttpError(res, `${this.name} API error ${res.status}: ${errMessage(err) ?? res.statusText}`);
+      // Same story as chatCompletion: a keyed free-tier refusal means the key cannot serve
+      // this model — fall to the anonymous lane once, and straight there ever after.
+      const message = errMessage(err);
+      if (!lane && this.opencodeFreeLane && wireKey && message !== undefined && FREE_TIER_REFUSAL.test(message)) {
+        OpenAICompatProvider.lanePreferred.add(`${this.platform}:${modelId}`);
+        diagLog('provider.laneRetry', `${this.platform} modelId=${modelId} keyed request drew the free-tier refusal — retrying on the anonymous lane`);
+        yield* this.streamChatCompletion('', messages, modelId, options);
+        return;
+      }
+      throw providerHttpError(res, `${this.name} API error ${res.status}: ${message ?? res.statusText}`);
     }
     yield* this.readSseStream(this.onResponses(modelId) ? responsesSseAsChatSse(res, modelId) : res);
   }

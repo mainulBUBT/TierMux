@@ -3,6 +3,80 @@
 All notable changes to TierMux are documented here. The format is loosely
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [Unreleased]
+
+### Added
+
+- **A stored key no longer blocks the free models.** A saved Zen key made every OpenCode request
+  go keyed and direct — and the gate refuses free-tier models for ANY third-party client, key or
+  no key, so users with a key saw only the 429 while the keyless lane sat unused beside it. A
+  keyed request that draws the free-tier refusal now retries once on the anonymous lane (costume
+  + bun shim) and remembers the model: later requests go straight to the lane. Models the key
+  can actually serve — paid ones, with credits or Go — stay keyed; a dead key still errors
+  honestly rather than being quietly ignored.
+- **A one-time offer to install bun.** Without a bun on the machine the shim above has nothing to
+  ride, so the first keyless OpenCode request now asks: download bun (~40 MB from the official
+  GitHub release, ~90 MB on disk) into the extension's own storage — nothing system-wide, no PATH
+  change, gone when the extension is uninstalled? "Not now" is remembered for a week, "Never ask"
+  (or the *Offer to install bun* setting) forever, and the **TierMux: Install bun** command always
+  works. The installer walks the release zip with its own minimal reader, skips the launcher shim
+  by size, and verifies the binary answers `--version` before the lane uses it. `npm run
+  test:e2e:bun-install` covers the zip reader and the offer flow (one ask per session, acceptance
+  wires the lane to the shim); the download path itself was verified live end-to-end.
+- **The bun shim: keyless OpenCode works from the extension again.** Zen's gate also fingerprints
+  the TLS/HTTP stack, and the extension host's Node fetch never passes that layer. When a `bun` is
+  already installed on the machine (or `TIERMUX_BUN` points at one), every keyless lane request now
+  runs inside a short-lived `bun -e` child — bun's network stack is the official client's own
+  family — and the streamed answer is folded back into the provider's normal path. Nothing is
+  bundled or downloaded; keyed requests never use the shim; without bun the lane falls back to the
+  direct fetch, quarantines after one honest refusal, and the error names bun (and Go/Console) as
+  the routes that work. Verified live from Node: 3/3 free models answered through the shim
+  (`npm run test:e2e:bun-shim` covers the transport).
+
+- **The OpenCode free lane rides Zen's new body fingerprint.** Since ~2026-11 the anonymous gate no
+  longer judges the wire identity (headers, User-Agent, HTTP stack) — it fingerprints the request
+  *body*: the first system message must carry the official client's agent-prompt head followed by an
+  `<env>`-shaped block, and the bash/glob/grep/read quartet must ride in `tools`. Keyless requests
+  now lead with that decoy system message (the turn's own system prompt follows it and stays in
+  charge), the quartet still rides along, and the costume was re-captured from opencode 1.19.5
+  (UA, `x-opencode-client: cli`, the mirrored `x-opencode-session-id`). Verified against the real
+  gate — served, `billing_source: "free"`, prompt cache warm — by the new
+  `npm run test:e2e:opencode-lane:bun-live`, which runs the full provider path under bun.
+- **The gate's second layer is now measured and documented.** The same byte-perfect body is refused
+  with the same 429 when it arrives over Node, curl or python TLS — only the official client's
+  network family (bun/BoringSSL) passes; that layer is what the shim above bridges. `LIVE=1` from
+  node reports a shim-less refusal honestly instead of failing the costume, and
+  docs/PROVIDERS.md § OpenCode Zen now describes both layers plus the recipe for re-capturing the
+  decoy prompt when Zen moves it.
+
+### Fixed
+
+- **OpenCode Go works through a custom endpoint.** Go is the one OpenCode surface documented for
+  "other coding agents": it asks for an honest User-Agent (TierMux sends `tiermux/x.y.z`) and a
+  stable per-conversation `x-opencode-session`. Custom endpoints sent neither, so Go answered
+  `400 MissingSessionID` and the route was unreachable. TierMux now sends the session header to any
+  `opencode.ai` endpoint (hostname-matched — `opencode.ai.evil.tld` gets nothing). Point a custom
+  endpoint at `https://opencode.ai/inference/go/openai/v1` with a Console key from a Go/Go Plus
+  plan. Nothing is disguised: Go answers `401 Go requires a credential` with the session header and
+  `400 MissingSessionID` without it, exactly as its docs describe.
+
+### Fixed
+
+- **"Set key" now works for OpenCode Zen.** The panel already drew the button and labelled the card
+  *keyless · optional key*, but the command behind it read `keyless` alone and answered "OpenCode
+  Zen is keyless — no API key needed", so a key could never be stored. `keyless` and `keyOptional`
+  are opposites where it matters: the first means no key can be used at all (Kilo/Pollinations/OVH,
+  still refused), the second means the provider has a keyed product next to its anonymous tier — for
+  Zen that is paid Console models and Go, *not* its free-tier models (see below).
+- **OpenCode's "Free usage limit reached" no longer kills a turn.** Zen v2 answers any client it
+  does not recognise with `429 Free usage limit reached`, and it is the gate judging the *client*,
+  not your quota — so retrying spends nothing down and the next free model earns the same answer.
+  One refusal now quarantines the whole keyless OpenCode lane for 30 minutes, the remaining
+  candidates on it are skipped instead of costing a round-trip each, and the turn continues on your
+  other providers. The error names the route that actually works — **Go or a paid Console key, not a
+  free key**: OpenCode's own docs say free-tier chat models are served to their client only. A pinned
+  model keeps its exemption.
+
 ## [3.0.5] — 2026-10-13
 
 ### Added

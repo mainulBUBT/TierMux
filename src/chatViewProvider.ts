@@ -46,6 +46,7 @@ import { appendLearned } from './context/userMemory';
 import { invalidatePromptContext } from './context/promptContext';
 import { resolveExecutionProfile } from './agent/executionProfile';
 import { structurePlanSteps, formatStructuredSteps, formatPlanForCard, isCleanNumberedList, renderPlanMarkdown } from './agent/planStructurer';
+import { continuePrompt, DEFAULT_AUTO_CONTINUE_ROUNDS, shouldAutoContinue } from './session/autoContinue';
 import { deriveTitleFrom, looksLikeActionablePlan, sanitizeTitle, planStepsToTodos, titleDecision } from './session/titles';
 
 import { loadSkills, invalidateSkillsCache, skillInstructions } from './context/skills';
@@ -130,6 +131,10 @@ function stopReasonNote(stopReason: NonNullable<AgentResult['stopReason']>, rema
   if (stopReason === 'stuck') {
     return '\n\n---\n**Stopped: no progress — the model kept repeating the same tool call.** '
       + 'Continue to let it try again, say what to do differently, or pin a stronger model.' + list;
+  }
+  if (stopReason === 'provider') {
+    return '\n\n---\n**Stopped: no model could answer right now (free limits or provider errors) — this task is not finished.** '
+      + 'Continue picks up from here with the full transcript, so nothing is repeated.' + list;
   }
   return '';
 }
@@ -276,6 +281,8 @@ interface Session {
   /** Mode the previous user turn in this session ran under, so a switch can be announced to the
    *  model in the transcript itself — see withModeTag. Undefined until the first turn. */
   lastMode?: AgentMode;
+  /** Continues the host pressed itself since the user last sent a message. */
+  autoContinues?: number;
   /** The mode a Continue should resume in — set wherever a turn ends paused. `lastMode` cannot serve:
    *  executePlanRun never updates it, so after Execute it still read 'plan'. */
   resumeMode?: AgentMode;
@@ -2256,6 +2263,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // agent wrote a plan during THIS send" signal — the autonomous continuation loop below keys
     // off it so leftover completed/pending todos from a PRIOR turn can't trigger a false continue.
     const todosAtSendStart = s.lastTodos;
+    s.autoContinues = 0;
+    let autoNext = false;
 
     const release = await this.acquireRunSlot(s.id);
     diagLog('send.gate', `requestId=${m.requestId} · slot acquired`);
@@ -2336,9 +2345,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         totalTokens: after.totalTokens - before.totalTokens,
       };
 
-      // Unfinished todos surface the Continue button (`resumable`); the host never auto-resumes.
-      // Auto-resume lived here for a day (2026-09-04 → 05) and tripled free-tier spend on a
-      // decision one click away, while double-writing history.
+      // Unfinished todos surface the Continue button (`resumable`). The host presses it itself only
+      // within shouldAutoContinue's bounds: an unbounded auto-resume lived here for a day
+      // (2026-09-04 → 05), tripled free-tier spend and double-wrote history. This one goes through
+      // the button, so history is written exactly as a manual Continue writes it.
 
       // Final check, independent of WHY the turn ended (guardrail stop, round-cap exhaustion, or
       // plain completion): does the plan written this send still have unfinished items? Computed
@@ -2376,6 +2386,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
        *  Continue button for those stops instead of telling the user to type "continue". */
       const resumable = !result.failed && (result.paused
         || finalRemainingTodos.length > 0);
+      autoNext = this.wantsAutoContinue(s, sdkMode, resumable, result, (todosAtSendStart ?? []).filter((t) => t.status === 'completed').length);
 
       cbk.settleReasoning();
       s.resumeMode = resumable ? sdkMode : undefined;
@@ -2406,8 +2417,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         void this.maybeGenerateTitle(s);
         if (this.isActiveRun(s, m.requestId)) s.activeRequestId = undefined;
         this.drainQueued(s);
+        if (autoNext) this.pressContinue(s);
       }
     }
+  }
+
+  private wantsAutoContinue(s: Session, mode: string, resumable: boolean, result: AgentResult, completedBefore: number): boolean {
+    return shouldAutoContinue({
+      mode,
+      resumable,
+      cancelled: !!s.cancel?.token.isCancellationRequested,
+      stopReason: result.stopReason,
+      changedFiles: result.changedFiles?.length ?? 0,
+      completedBefore,
+      completedAfter: (s.lastTodos ?? []).filter((t) => t.status === 'completed').length,
+      used: s.autoContinues ?? 0,
+      max: vscode.workspace.getConfiguration('tiermux.agent').get<number>('autoContinueRounds', DEFAULT_AUTO_CONTINUE_ROUNDS),
+    });
+  }
+
+  /** Runs after the turn has fully settled; a queued message the user sent goes first. */
+  private pressContinue(s: Session): void {
+    if (s.activeRequestId) return;
+    s.autoContinues = (s.autoContinues ?? 0) + 1;
+    diagLog('send.autoContinue', `round ${s.autoContinues}`);
+    this.post({ type: 'autoContinue', sessionId: s.id });
   }
 
   /** A real git commit landed: the tracked edits are history now, not something "Undo all" should
@@ -3282,12 +3316,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (resumeMode !== 'agent') this.post({ type: 'setMode', sessionId: s.id, mode: resumeMode });
 
     const carried = (s.lastTodos ?? []).filter((t) => t.status !== 'completed');
+    const completedBefore = (s.lastTodos ?? []).filter((t) => t.status === 'completed').length;
+    let autoNext = false;
     s.history.push({
       role: 'user',
-      content: (resumeMode === 'plan'
+      content: resumeMode === 'plan'
         ? 'Continue from where you left off. Finish investigating — do not re-read what you already read — then close this turn with exitPlanMode (or askUser if a question is still open).'
-        : 'Continue from where you left off. Keep going with the remaining steps using the work already done above — do not restart or repeat completed steps.')
-        + (carried.length ? `\n\nStill open:\n${carried.map((t) => `- ${t.content}`).join('\n')}` : ''),
+          + (carried.length ? `\n\nStill open:\n${carried.map((t) => `- ${t.content}`).join('\n')}` : '')
+        : continuePrompt(carried.map((t) => t.content)),
     });
     // Cancel the previous run BEFORE replacing the token. CancellationTokenSource.dispose()
     // only drops listeners — it does NOT abort — so without cancel() a pre-empted in-flight
@@ -3349,8 +3385,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         s.voteCtx.set(m.requestId, { taskKind: result.taskKind, platform: result.platform, model: result.model, last: 'none' });
         this.recordTurnSignal(s, result);
       }
-      s.resumeMode = result.paused ? resumeMode : undefined;
-      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: shown.text, reasoning: result.reasoning, finishReason: result.finishReason, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: result.model, paused: result.paused });
+      // Same rule as a first send: unfinished todos keep Continue, or a resume that stopped early left no way on.
+      const resumable = !!result.paused || (s.lastTodos ?? []).some((t) => t.status !== 'completed');
+      autoNext = this.wantsAutoContinue(s, resumeMode, resumable, result, completedBefore);
+      s.resumeMode = resumable ? resumeMode : undefined;
+      this.post({ type: 'assistantMessage', sessionId: s.id, requestId: m.requestId, text: shown.text, reasoning: result.reasoning, finishReason: result.finishReason, usage, platform: turnPlatformLabel(s.model, result, this.deps), model: result.model, paused: resumable });
       this.post({ type: 'usageTotals', totals: this.currentUsageTotals(s) });
     } catch (e) {
       if (!this.isActiveRun(s, m.requestId)) return;
@@ -3372,6 +3411,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.maybeAutoCondense(s);
         if (this.isActiveRun(s, m.requestId)) s.activeRequestId = undefined;
         this.drainQueued(s);
+        if (autoNext) this.pressContinue(s);
       }
     }
   }

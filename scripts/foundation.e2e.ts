@@ -735,6 +735,17 @@ async function main() {
     const plan = { ...agent, sessionMode: 'plan' as const };
     const planned = await resolvePolicy({ toolName: 'runCommand', input: { command: 'ls' } }, plan, ask);
     ok('19d. plan mode still asks — it has its own profile', planned.type === 'denied' && asked === 1, `asked=${asked}`);
+
+    asked = 0;
+    const writes = ["cat > src/a.js <<'EOF'\nfunction a() {}\nEOF", 'printf x >> a.txt', 'ls && rm a.txt', 'cat a | tee b', 'sed -i s/a/b/ a.txt', 'mkdir d', "cd /app && python3 - <<'PY'\nopen('a','w')\nPY", 'node -e "x"'];
+    const writeVerdicts = await Promise.all(writes.map((command) => resolvePolicy({ toolName: 'runCommand', input: { command } }, plan, ask)));
+    ok('19d. plan mode denies a file-writing command without asking',
+      writeVerdicts.every((v) => v.type === 'denied' && /exitPlanMode/.test(v.reason)) && asked === 0, `asked=${asked}`);
+
+    asked = 0;
+    const kept = ['npm test', 'grep -r "a > b" src 2>/dev/null', 'php -l src/a.php', 'git log --oneline', 'sed -n 1,5p a.txt', 'node -v', 'python3 --version', 'node scripts/x.js'];
+    await Promise.all(kept.map((command) => resolvePolicy({ toolName: 'runCommand', input: { command } }, plan, ask)));
+    ok('19d. commands that do not plainly write still reach the prompt', asked === kept.length, `asked=${asked}`);
   }
 
   // ── Scenario 19c: commandApproval='allowlist' auto-runs allowlisted SHELL commands ──

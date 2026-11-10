@@ -2,7 +2,8 @@
  * optional params are stripped before any model repair; inputExamples reach the OpenAI-shaped
  * wire inside the description; reasoning models never receive a temperature; a short follow-up
  * inherits the previous turn's task kind. Run: npm run test:e2e:weak-model-plumbing */
-import { withoutNullKeys, resolveToolAlias } from '../src/agent/core/repair';
+import { InvalidToolInputError, NoSuchToolError } from 'ai';
+import { withoutNullKeys, resolveToolAlias, makeRepairViaModelSelfCorrection } from '../src/agent/core/repair';
 import { classifyConversation } from '../src/agent/routing';
 import { OpenAIResponsesProvider } from '../src/providers/openai-responses';
 import { OpenAICompatProvider } from '../src/providers/openai-compat';
@@ -87,6 +88,17 @@ async function main() {
     ok('25. an unknown name still goes to the model', a('Nonsense') === undefined && a('mcp__srv__tool') === undefined);
     ok('26. an alias for a tool this mode does not offer is not invented',
       resolveToolAlias('Bash', ['readFile', 'grep']) === undefined);
+
+    // agentBench 2026-11-04: `search {path, query}` became grep with no `pattern`, failed validation,
+    // and burned 14 of 26 steps at ~40s each.
+    const { repair } = makeRepairViaModelSelfCorrection({ model: undefined as never });
+    const fix = (toolName: string, input: string, error: unknown) => repair({
+      toolCall: { type: 'tool-call', toolCallId: 'c', toolName, input }, tools: { grep: {} } as never, inputSchema: async () => ({}), error, messages: [],
+    } as never);
+    const named = await fix('search', '{"path":"src","query":"x"}', new NoSuchToolError({ toolName: 'search' }));
+    ok('27. an aliased tool gets its argument names too', named?.toolName === 'grep' && JSON.parse(named.input).pattern === 'x' && !('query' in JSON.parse(named.input)), JSON.stringify(named));
+    const argsOnly = await fix('grep', '{"path":"src","query":"x"}', new InvalidToolInputError({ toolName: 'grep', toolInput: '{}', cause: new Error('bad') }));
+    ok('28. a right tool name with an imagined argument name needs no model call', JSON.parse(argsOnly?.input ?? '{}').pattern === 'x', JSON.stringify(argsOnly));
   }
 
   console.log(bad === 0 ? '\nALL PASS' : `\n${bad} FAILED`);

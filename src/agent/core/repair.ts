@@ -16,6 +16,7 @@ import {
   type ToolSet,
 } from 'ai';
 import type { LanguageModelV4ToolCall } from '@ai-sdk/provider';
+import { normalizeDialectParams } from '../toolArgs';
 
 const REPAIR_BUDGET_PER_TURN = 3;
 
@@ -101,13 +102,15 @@ export function makeRepairViaModelSelfCorrection(ctx: { model: LanguageModel; si
     // No-model first pass: a tool named the way some other harness names it.
     if (NoSuchToolError.isInstance(error)) {
       const real = resolveToolAlias(toolCall.toolName, Object.keys(tools));
-      if (real) return { ...toolCall, toolName: real };
+      if (real) return { ...toolCall, toolName: real, input: normalizeDialectParams(real, toolCall.input) };
     }
 
     // No-model first pass: weak models send `null` for an unset optional param, which zod rejects.
     if (InvalidToolInputError.isInstance(error)) {
       const stripped = withoutNullKeys(toolCall.input);
       if (stripped !== undefined) return { ...toolCall, input: stripped };
+      const renamed = normalizeDialectParams(toolCall.toolName, toolCall.input);
+      if (renamed !== toolCall.input) return { ...toolCall, input: renamed };
     }
 
     if (used >= REPAIR_BUDGET_PER_TURN) return null; // give up → SDK invalid-path takes over

@@ -9,6 +9,8 @@
 //   REPEAT=3                      runs per task (default 1)
 //   MODEL=opencode::big-pickle    pin one model (default: Auto)
 //   TIERMUX_KEY_<PLATFORM>=...    a key for a keyed platform (e.g. TIERMUX_KEY_GROQ)
+//   BENCH_CUSTOM_URL=https://host/v1  BENCH_CUSTOM_MODEL=id  [BENCH_CUSTOM_KEY=...]
+//                                 pin one model on your own OpenAI-compatible endpoint
 //   BASELINE=.benchmarks/agent-bench-<stamp>.json   print the change against an earlier run
 //   TASK_TIMEOUT_MS=600000        abort a run after this long (default 10 min)
 //   DIAG=1                        write each run's timestamped diag trace to .benchmarks/diag-*.log
@@ -29,6 +31,7 @@ import { exploreQuestions, runExploreBatch } from '../src/agent/exploreBatch';
 import { runSubagent } from '../src/agent/core/subagent';
 import { formatPlanForCard } from '../src/agent/planStructurer';
 import { planStepsToTodos } from '../src/session/titles';
+import { continuePrompt, DEFAULT_AUTO_CONTINUE_ROUNDS, shouldAutoContinue } from '../src/session/autoContinue';
 import { __setEngineModelForTests } from '../src/agent/core/engine';
 import { createMockModel } from './mockModel';
 import type { AgentOpts, AgentResult } from '../src/agent/agent';
@@ -39,7 +42,7 @@ import { SettingsStore } from '../src/config/settingsStore';
 import { SecretStore } from '../src/config/secrets';
 import { setModelSources } from '../src/router/picker';
 import { allPlatformInfo } from '../src/providers';
-import type { Platform, ProposedPlan } from '../src/shared/types';
+import type { Platform, ProposedPlan, TodoItem } from '../src/shared/types';
 
 const WORKER = 'https://tiermux.mainulislam3057.workers.dev/';
 const ROOT = join(__dirname, '..');
@@ -211,10 +214,71 @@ TASKS.push({
     + 'After a failed verify command, how many fix rounds run by default, and where is that defined? Give the path.',
 });
 
+const BIG_DEBUG_CHECK = "const s = require('./src'); require('./src/store').reset();"
+  + " const u = s.createUser({ name: 'A', email: 'a@b.c' }); const order = (price, qty) => s.createOrder({ userId: u.id, items: [{ productId: s.createProduct({ name: 'P', price }).id, qty }] });"
+  + " assert.strictEqual(order(4.35, 1).total, 4.35); assert.strictEqual(order(19.99, 3).total, 59.97); assert.strictEqual(order(1.15, 1).total, 1.15);"
+  + " s.createCoupon({ code: 'SAVE10', percent: 10 }); s.createCoupon({ code: 'mixedCase', percent: 50 });"
+  + " assert.strictEqual(s.applyCoupon({ total: 100 }, 'save10'), 90); assert.strictEqual(s.applyCoupon({ total: 100 }, 'SAVE10'), 90); assert.strictEqual(s.applyCoupon({ total: 100 }, 'MIXEDCASE'), 50);"
+  + " assert.strictEqual(s.applyCoupon({ total: 4.83 }, 'SAVE10'), 4.35);"
+  + " assert.throws(() => s.applyCoupon({ total: 1 }, 'nope'), /coupon nope/);"
+  + " const a = s.createProduct({ name: 'A', price: 1 }), b = s.createProduct({ name: 'B', price: 1 });"
+  + " s.createReview({ productId: a.id, rating: 5, text: 'x' }); s.createReview({ productId: a.id, rating: 3, text: 'x' }); s.createReview({ productId: b.id, rating: 1, text: 'x' });"
+  + " assert.strictEqual(s.averageRating(a.id), 4); assert.strictEqual(s.averageRating(b.id), 1); assert.strictEqual(s.averageRating(s.createProduct({ name: 'C', price: 1 }).id), 0);"
+  + " const fs = require('fs'), path = require('path'); const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]);"
+  + " const tests = [...walk('test'), ...walk('src')].filter((f) => /\\.test\\.js$/.test(f)).map((f) => fs.readFileSync(f, 'utf8')).join('\\n');"
+  + " for (const re of [/4\\.35/, /save10/i, /averageRating/]) assert.ok(re.test(tests), 'no regression test matches ' + re);";
+
+TASKS.push({
+  id: 'big-debug',
+  fixture: 'big',
+  prompt: 'Support forwarded three complaints about shop-api. Nobody knows where the causes are. Find the root causes, fix them without '
+    + 'special-casing these examples, and add a regression test for each.\n'
+    + '1. An order for one item priced 4.35 is recorded with a total of 4.34. Discounted totals are sometimes a cent short too.\n'
+    + '2. Coupon codes are meant to be case-insensitive, but after creating SAVE10 a customer who enters save10 is told the coupon does not exist.\n'
+    + "3. A product's average rating moves when customers review a different product.",
+  setup: (f) => {
+    const money = "const { tables, nextId } = require('../store');\nconst { roundCents } = require('../lib/money');";
+    f['src/lib/money.js'] = 'function roundCents(value) {\n  return Math.floor(value * 100) / 100;\n}\n\nmodule.exports = { roundCents };\n';
+    f['src/services/orders.js'] = f['src/services/orders.js']
+      .replace("const { tables, nextId } = require('../store');", money)
+      .replace('const total = items.reduce((sum, item) => sum + getProduct(item.productId).price * item.qty, 0);', 'const total = roundCents(items.reduce((sum, item) => sum + getProduct(item.productId).price * item.qty, 0));');
+    f['src/services/coupons.js'] = f['src/services/coupons.js']
+      .replace("const { tables, nextId } = require('../store');", money)
+      .replace('tables.coupons.set(code, coupon);', 'tables.coupons.set(code.toUpperCase(), coupon);')
+      .replace('return order.total * (1 - coupon.percent / 100);', 'return roundCents(order.total * (1 - coupon.percent / 100));');
+    f['src/services/reviews.js'] = f['src/services/reviews.js'].replace(
+      'module.exports = { createReview };',
+      'function averageRating(productId) {\n  getProduct(productId);\n  const all = [...tables.reviews.values()];\n  return all.length ? all.reduce((sum, review) => sum + review.rating, 0) / all.length : 0;\n}\n\nmodule.exports = { createReview, averageRating };',
+    );
+  },
+  check: BIG_DEBUG_CHECK,
+});
+
+const REPO_CONFIG_FILES = ['src/agent/core/engine.ts', 'src/agent/agent.ts', 'src/chatViewProvider.ts', 'src/settingsMeta.ts'];
+const REPO_CONFIG_CHECK = `const fs = require('fs'); const ts = require(${JSON.stringify(join(ROOT, 'node_modules/typescript'))}); const files = ${JSON.stringify(REPO_CONFIG_FILES)};`
+  + " const read = (f) => fs.readFileSync(f, 'utf8');"
+  + " assert.ok(/opts\\.repeatReadLimit/.test(read('src/agent/core/engine.ts')), 'engine ignores opts.repeatReadLimit');"
+  + " assert.ok(/repeatReadLimit\\??:\\s*number/.test(read('src/agent/agent.ts')), 'AgentOpts lacks repeatReadLimit');"
+  + " assert.ok(/repeatReadLimit/.test(read('src/chatViewProvider.ts')), 'host never passes the setting');"
+  + " assert.ok(/agent\\.repeatReadLimit/.test(read('src/settingsMeta.ts')), 'no settings entry');"
+  + " for (const f of files) { const d = ts.transpileModule(read(f), { fileName: f, reportDiagnostics: true }).diagnostics; assert.strictEqual(d.length, 0, 'syntax error in ' + f);"
+  + ` assert.ok(read(f).length > 0.95 * fs.readFileSync(${JSON.stringify(ROOT)} + '/' + f, 'utf8').length, 'gutted ' + f); }`;
+
+TASKS.push({
+  id: 'repo-config',
+  fixture: 'repo',
+  prompt: 'Make the limit behind the repeat-read guard configurable. Add a setting `tiermux.agent.repeatReadLimit` (number, default 4, '
+    + '0 = the guard never trips) that reaches the engine the same way `tiermux.agent.maxStepsPerTurn` does, including its entry in the '
+    + 'settings UI metadata. package.json is not in this workspace, so leave it out. Change nothing else.',
+  check: REPO_CONFIG_CHECK,
+});
+
 const planOf = (id: string, planFiles: string[]): Task => ({ ...TASKS.find((t) => t.id === id)!, id: `plan-${id}`, mode: 'plan', planFiles });
 TASKS.push(
   planOf('feature', ['src/billing/invoice.js', 'src/billing/total.js', 'src/index.js']),
   planOf('php-feature', ['src/Cart.php']),
+  planOf('big-debug', ['src/lib/money.js', 'src/services/coupons.js', 'src/services/reviews.js']),
+  planOf('repo-config', ['src/agent/core/engine.ts', 'src/agent/agent.ts', 'src/chatViewProvider.ts', 'src/settingsMeta.ts']),
 );
 
 const PHP_EQ = 'function eq($a, $b, $m) { if ($a !== $b) { fwrite(STDERR, "AssertionError: $m: " . var_export($a, true) . "\\n"); exit(1); } }';
@@ -347,6 +411,7 @@ interface Run {
   planMs?: number; planRequests?: number; planSteps?: number; planFiles?: string[]; planTraceLen?: number;
   inputTokens: number; outputTokens: number; failovers: number;
   models: string[]; verify?: string; finish?: string; stop?: string; paused?: boolean; error?: string;
+  autoRounds: number; todoWrites: number; todoReshapes: number;
 }
 
 async function runOnce(task: Task, rep: number, pinned: string | undefined, timeoutMs: number): Promise<Run> {
@@ -358,6 +423,9 @@ async function runOnce(task: Task, rep: number, pinned: string | undefined, time
   const models = new Set<string>();
   let asks = 0, inputTokens = 0, outputTokens = 0, failovers = 0, syntaxFlags = 0, permAsks = 0;
   let plan: ProposedPlan | undefined;
+  let planChanged: string[] = [];
+  let curTodos: TodoItem[] | undefined;
+  let todoWrites = 0, todoReshapes = 0, autoRounds = 0;
   const toolErrorText: string[] = [];
   let planMs: number | undefined, planRequests: number | undefined, planTraceLen: number | undefined;
   let firstActionMs: number | undefined;
@@ -373,7 +441,13 @@ async function runOnce(task: Task, rep: number, pinned: string | undefined, time
     const opts = {
       mode: 'agent', effort: 'medium', autoApprove: true, sessionId: `bench-${task.id}-${rep}-${t0}`,
       pinnedModel: pinned, abortSignal: abort.signal, verifyFixRounds: 1,
-      onChunk: () => {}, onReasoning: () => {}, onStep: () => {}, onTodos: () => {},
+      onChunk: () => {}, onReasoning: () => {}, onStep: () => {},
+      onTodos: (t) => {
+        todoWrites++;
+        const shape = (l: TodoItem[] | undefined) => (l ?? []).map((x) => x.content).join('\n');
+        if (curTodos?.length && shape(t) !== shape(curTodos)) todoReshapes++;
+        curTodos = t;
+      },
       onFailover: () => { failovers++; },
       usageSink: (u) => { inputTokens += u.inputTokens; outputTokens += u.outputTokens; },
       onModel: (platform, model) => { models.add(`${platform}::${model}`); },
@@ -393,6 +467,26 @@ async function runOnce(task: Task, rep: number, pinned: string | undefined, time
       onError: (m: string) => { error = m; },
     } as Omit<AgentOpts, 'messages'>;
     const ask = [{ role: 'user' as const, content: task.prompt }];
+    // What the host does: press Continue within shouldAutoContinue's bounds, with the same prompt.
+    const agentRun = async (messages: AgentOpts['messages'], todos?: TodoItem[]): Promise<AgentResult> => {
+      curTodos = todos;
+      const done = () => (curTodos ?? []).filter((t) => t.status === 'completed').length;
+      let completedBefore = done();
+      let history = messages;
+      let r = await runAgentStream({ ...opts, messages, ...(todos ? { todos } : {}) });
+      for (;;) {
+        const open = (curTodos ?? []).filter((t) => t.status !== 'completed');
+        const go = shouldAutoContinue({
+          mode: 'agent', resumable: !r.failed && (!!r.paused || open.length > 0), cancelled: abort.signal.aborted, stopReason: r.stopReason,
+          changedFiles: r.changedFiles?.length ?? 0, completedBefore, completedAfter: done(), used: autoRounds, max: Number(process.env.AUTO_CONTINUE ?? DEFAULT_AUTO_CONTINUE_ROUNDS),
+        });
+        if (!go) return r;
+        autoRounds++;
+        completedBefore = done();
+        history = [...history, ...capForHistory(r.workMessages ?? []), ...(r.text.trim() ? [{ role: 'assistant' as const, content: r.text }] : []), { role: 'user' as const, content: continuePrompt(open.map((t) => t.content)) }];
+        r = await runAgentStream({ ...opts, messages: history, ...(curTodos ? { todos: curTodos } : {}) });
+      }
+    };
     result = await runWithWorkspaceRoot(dir, async () => {
       if (task.mode === 'explore') {
         const text = await runExploreBatch(exploreQuestions(task.prompt), async (q) => (await runSubagent({ task: q, agent: 'explore', sessionId: opts.sessionId, abortSignal: abort.signal,
@@ -400,10 +494,11 @@ async function runOnce(task: Task, rep: number, pinned: string | undefined, time
         return { text } as AgentResult;
       }
       if (task.mode === 'ask') return runAskStream({ ...opts, mode: 'ask', messages: ask });
-      if (task.mode !== 'plan') return runAgentStream({ ...opts, messages: ask });
+      if (task.mode !== 'plan') return agentRun(ask);
       const planned = await runPlanStream({ ...opts, mode: 'plan', messages: ask });
       planMs = Date.now() - t0; planRequests = p.requests; planTraceLen = p.steps.length;
       plan = planned.plan;
+      planChanged = [...snapshot(dir)].filter(([f, body]) => before.get(f) !== body).map(([f]) => f);
       if (!plan || plan.outcome === 'no-change') return planned;
       // Mirrors handleExecutePlan + executePlanRun (chatViewProvider.ts): history, prompt and todos.
       const stepsText = formatPlanForCard(plan);
@@ -411,11 +506,10 @@ async function runOnce(task: Task, rep: number, pinned: string | undefined, time
       const prompt = steps.length >= 2
         ? `Execute this approved plan completely, step by step, using your tools. Steps marked [done] are already finished — skip them. When finished, reply with a short summary of what changed.\n\n${steps.map((st, i) => `${i + 1}. ${st}`).join('\n')}`
         : `Carry out this approved plan now, step by step:\n\n${stepsText}`;
-      return runAgentStream({
-        ...opts,
-        todos: steps.map((content, i) => ({ content, status: i === 0 ? 'in_progress' as const : 'pending' as const })),
-        messages: [...ask, ...capForHistory(planned.workMessages ?? []), { role: 'assistant', content: `Approved plan:\n\n${stepsText}` }, { role: 'user', content: prompt }],
-      });
+      return agentRun(
+        [...ask, ...capForHistory(planned.workMessages ?? []), { role: 'assistant', content: `Approved plan:\n\n${stepsText}` }, { role: 'user', content: prompt }],
+        steps.map((content, i) => ({ content, status: i === 0 ? 'in_progress' as const : 'pending' as const })),
+      );
     });
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
@@ -427,6 +521,7 @@ async function runOnce(task: Task, rep: number, pinned: string | undefined, time
   const wallMs = Date.now() - t0;
   const reply = result?.text ?? '';
   const fails = error && !result ? [`error: ${error}`] : grade(task, dir, before, reply, plan);
+  if (planChanged.length) fails.push(`plan turn changed ${planChanged.join(', ')}`);
   if (process.env.DIAG) writeFileSync(join(ROOT, '.benchmarks', `diag-${task.id}-${rep}-${t0}.log`), `t0=${t0} abortAt=${t0 + timeoutMs}\n${p.diag.join('\n')}\n`);
   if (process.env.KEEP) console.log(`   kept ${dir}`);
   else rmSync(dir, { recursive: true, force: true });
@@ -442,7 +537,7 @@ async function runOnce(task: Task, rep: number, pinned: string | undefined, time
     trace: p.steps, syntaxFlags, reply: reply.slice(0, fails.length ? 4000 : 400), permAsks, toolErrorText,
     planMs, planRequests, planTraceLen, planSteps: plan?.steps.length, planFiles: plan ? [...new Set(plan.steps.flatMap((st) => st.files ?? []))] : undefined, repeats: p.steps.flat().filter((t, i, all) => all.indexOf(t) !== i).length,
     models: [...models], verify: result?.verifyOutcome, finish: result?.finishReason, stop: result?.stopReason,
-    paused: result?.paused, error,
+    paused: result?.paused, error, autoRounds, todoWrites, todoReshapes,
   };
 }
 
@@ -492,13 +587,19 @@ async function main(): Promise<void> {
     const key = process.env[`TIERMUX_KEY_${platform.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`];
     if (key) { await secrets.set(platform as Platform, key); keyed.push(platform); }
   }
-  setModelSources({ catalog, settings: new SettingsStore(mem as never, catalog), secrets });
+  const settings = new SettingsStore(mem as never, catalog);
+  setModelSources({ catalog, settings, secrets });
 
   const onlyTasks = process.env.TASKS?.split(',').map((s) => s.trim()).filter(Boolean);
   const tasks = TASKS.filter((t) => !onlyTasks || onlyTasks.includes(t.id));
   const repeat = Math.max(1, Number(process.env.REPEAT ?? 1) || 1);
   const timeoutMs = Number(process.env.TASK_TIMEOUT_MS ?? 600_000) || 600_000;
-  const pinned = process.env.MODEL?.trim() || undefined;
+  let pinned = process.env.MODEL?.trim() || undefined;
+  if (process.env.BENCH_CUSTOM_URL && process.env.BENCH_CUSTOM_MODEL) {
+    await settings.upsertCustomEndpoint({ id: 'c_bench', name: 'Bench endpoint', baseUrl: process.env.BENCH_CUSTOM_URL, type: 'openai-chat', models: [{ id: process.env.BENCH_CUSTOM_MODEL }] as never, createdAt: Date.now() });
+    if (process.env.BENCH_CUSTOM_KEY) await secrets.setCustomKey('c_bench', process.env.BENCH_CUSTOM_KEY);
+    pinned = `custom::c_bench::${process.env.BENCH_CUSTOM_MODEL}`;
+  }
   const commit = childProcess.spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).stdout.trim();
   const dirty = childProcess.spawnSync('git', ['status', '--porcelain', '--', 'src'], { cwd: ROOT, encoding: 'utf8' }).stdout.trim() !== '';
 
@@ -530,6 +631,7 @@ async function main(): Promise<void> {
     console.log(`${r.task}#${r.rep}: ${shown.join(' | ')}`);
     const dl = r.trace.map((st) => st.filter((t) => t.startsWith('delegateTask')).length);
     if (dl.some((n) => n > 0)) console.log(`   delegateTask: ${dl.reduce((a, b) => a + b, 0)} call(s), at most ${Math.max(...dl)} in one step`);
+    if (r.autoRounds || r.todoWrites) console.log(`   auto-continue rounds ${r.autoRounds}; todoWrite ${r.todoWrites}, list reshaped ${r.todoReshapes}`);
     if (r.planMs !== undefined) console.log(`   plan: ${sec(r.planMs)}s, ${r.planRequests} req, ${r.planSteps ?? 0} step(s), files ${(r.planFiles ?? []).join(', ') || '-'}; asks ${r.asks}, permission prompts ${r.permAsks}`);
     if (!r.pass) console.log(`   reply: ${JSON.stringify(r.reply.slice(0, 300))}`);
     for (const t of r.pass ? [] : r.toolErrorText ?? []) console.log(`   ✗ ${t}`);

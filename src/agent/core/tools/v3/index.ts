@@ -55,6 +55,7 @@ export interface ToolsetBindings {
   sessionId?: string;
   requestId?: string;
   onTodos?: (todos: TodoItem[]) => void;
+  currentTodos?: () => TodoItem[] | undefined;
   /** Mid-turn clarifying-question channel — the toolset binds it as the `askUser` tool.
    *  The host implementation renders an in-chat card and resolves with the user's answer
    *  ('' when dismissed). Unset (e2e/sub-agent contexts) → the tool degrades to `{ error }`. */
@@ -80,7 +81,7 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
   const listDir = createListDirTool();
   const glob = createGlobTool();
   const grep = createGrepTool(bindings.abortSignal);
-  const todoWrite = createTodoWriteTool(bindings.onTodos);
+  const todoWrite = createTodoWriteTool(bindings.onTodos, bindings.currentTodos);
   // Web tools are read-only and keyless (TierMux's own engine: Yahoo/DDG/Marginalia + a
   // static-fetch reader) — offered in EVERY mode so "today's weather" style questions are
   // answerable instead of deflected. Restored from the v2 toolset after live deflections.

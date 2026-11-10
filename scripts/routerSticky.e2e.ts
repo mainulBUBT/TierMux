@@ -106,6 +106,29 @@ async function main() {
     ok('9. step 3 goes straight to the replacement — the cooled-down model is not retried', served[3] === other && served.length === 4, served.join(','));
   }
 
+  console.log('— a fallback holds the turn only until the preferred model is back —');
+  {
+    const strong = 'strong', weak = 'weak';
+    const base = makeSources([entry('groq', strong, 0), entry('groq', weak, 1)]);
+    setModelSources({ ...base, catalog: { find: (_p: string, m: string) => ({ intelligenceRank: m === strong ? 1 : 9, speedRank: 1, supportsTools: true }) } } as never);
+    __resetTaskRoundCounters();
+    for (const m of [strong, weak]) recordOutcome('groq', m, true);
+    served.length = 0;
+    failWith.set(strong, 429);
+    const turn4 = createRouterProvider({ taskKind: 'chat' });
+    await turn4.doGenerate(step());
+    ok('11. the preferred model failed and the fallback served', served.join(',') === `${strong},${weak}`, served.join(','));
+    failWith.clear();
+    await turn4.doGenerate(step());
+    ok('12. while it cools down the fallback keeps the turn', served[2] === weak && served.length === 3, served.join(','));
+    recordOutcome('groq', strong, true);
+    await turn4.doGenerate(step());
+    ok('13. once it is back the next step returns to it', served[3] === strong && served.length === 4, served.join(','));
+    await turn4.doGenerate(step());
+    ok('14. and it sticks from then on', served[4] === strong, served.join(','));
+    setModelSources(makeSources([entry('groq', A, 0), entry('groq', B, 1)]));
+  }
+
   console.log('— a pinned model is unaffected (it already runs alone) —');
   {
     served.length = 0;

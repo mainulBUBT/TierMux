@@ -127,6 +127,23 @@ export function sanitizeToolName(name: string): string {
   return n.trim();
 }
 
+/** A streamed fragment under a new index with no name is the tail of the call before it, when that
+ *  call's JSON is still unfinished. agentBench 2026-11-04, pollinations openai-fast: readFile got
+ *  `{"path":"a","limit":` and a tool named '' got `200}`, so both failed and the turn hit the 600s
+ *  timeout. Mutates `slots`. */
+export function foldNamelessToolCalls(slots: Map<number, { name: string; args: string }>): void {
+  const unfinished = (args: string) => { try { JSON.parse(args); return false; } catch { return true; } };
+  let prev: { name: string; args: string } | undefined;
+  for (const [idx, tc] of [...slots.entries()].sort((a, b) => a[0] - b[0])) {
+    if (!tc.name && prev && unfinished(prev.args)) {
+      prev.args += tc.args;
+      slots.delete(idx);
+    } else {
+      prev = tc;
+    }
+  }
+}
+
 /** Clean gpt-oss/Harmony output: keep only the `final` channel as visible text and fold any
  *  analysis/commentary into a <think> block. Deleting the tokens naively merged the reasoning
  *  INTO the answer. */
@@ -286,7 +303,7 @@ const DIALECT_PARAM_ALIASES: Record<string, Record<string, string>> = {
  *  object). Returns the canonical arguments JSON string. Best-effort: an unparseable argument
  *  payload passes through untouched — schema validation downstream (repairToolArguments /
  *  Zod) reports anything still wrong as a fail-soft tool error the model can correct. */
-function normalizeDialectParams(name: string, argsJson: string): string {
+export function normalizeDialectParams(name: string, argsJson: string): string {
   const aliases = DIALECT_PARAM_ALIASES[name];
   if (!aliases) return argsJson;
   let parsed: Record<string, unknown>;

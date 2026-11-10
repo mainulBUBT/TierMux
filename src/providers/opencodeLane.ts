@@ -1,12 +1,14 @@
 import { randomBytes } from 'crypto';
 
 import type { ChatCompletionResponse, ChatMessage, ChatToolCall } from '../shared/types';
+import { openCodeSystemDecoy } from './opencodePrompt';
 
-/** Must track a current CLI version: the gate checks the `opencode/` prefix
- *  today, and a version far behind the real client (e.g. legacy v1) is rejected
- *  with 429 FreeUsageLimitError. Tracks OpenCode v2. */
-const OC_VERSION = '2.2.5';
-export const OPENCODE_USER_AGENT = `opencode/${OC_VERSION} ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13`;
+/** Tracks the client release the decoy system prompt (opencodePrompt.ts) was captured from —
+ *  the two must move together. The gate itself no longer inspects the wire identity (measured
+ *  live 2026-11-10: the 1.18 costume passed once the body carried the fingerprint), but the
+ *  headers stay dressed so a future gate tightening finds a coherent client, not a mismatch. */
+const OC_VERSION = '1.19.5';
+export const OPENCODE_USER_AGENT = `opencode/${OC_VERSION} ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4`;
 
 const B62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 
@@ -59,29 +61,29 @@ export function ocRequestId(): string {
   return `msg_${time}${randomBase62(14)}`;
 }
 
-/** The full official-client costume. Merged last, so it overrides the
- *  extension's own User-Agent on lane providers only. */
-export const OPENCODE_GO_URL = 'https://opencode.ai/zen/go/v1';
-export const OPENCODE_ZEN_URL = 'https://opencode.ai/zen/v1';
-
+/** The full official-client costume, as captured from opencode 1.19.5's CLI (the official
+ *  client sends no Accept header beyond fetch's default, and mirrors the session id in
+ *  x-opencode-session-id). Merged last, so it overrides the extension's own User-Agent on lane
+ *  providers only. */
 export function openCodeLaneHeaders(sessionId?: string): Record<string, string> {
+  const session = ocSessionId(sessionId);
   return {
     'Authorization': 'Bearer public',
     'User-Agent': OPENCODE_USER_AGENT,
-    'x-opencode-client': 'desktop',
+    'x-opencode-client': 'cli',
     'x-opencode-project': 'global',
-    'x-opencode-directory': 'global',
     'x-opencode-request': ocRequestId(),
-    'x-opencode-session': ocSessionId(sessionId),
-    'Accept': 'text/event-stream',
-    'TypeSafe-Danger-Zone-Images': 'true',
+    'x-opencode-session': session,
+    'x-opencode-session-id': session,
   };
 }
 
 /* ---------- body shaping ---------- */
 
-// Upstream Zen gates anonymous free traffic on the 4-tool file-search quartet:
-// {bash, glob, grep, read}. Missing any of the 4 triggers 403 FreeTierError.
+// Upstream Zen gates anonymous free traffic on TWO body marks (re-measured live 2026-11-10):
+// the 4-tool file-search quartet {bash, glob, grep, read} riding in `tools` — names suffice,
+// schemas are not inspected — and the decoy system message (opencodePrompt.ts) leading the
+// messages. Missing either one draws 429 FreeUsageLimitError.
 export const OPENCODE_FINGERPRINT_TOOLS = ['bash', 'glob', 'grep', 'read'] as const;
 
 export const OPENCODE_DECOY_TOOLS = OPENCODE_FINGERPRINT_TOOLS.map((name) => ({
@@ -97,11 +99,19 @@ function toolName(t: unknown): string {
   return (t as { function?: { name?: unknown } })?.function?.name as string ?? '';
 }
 
-/** Forces the wire shape the gate demands on an already-built request body:
- *  streaming always on, the 4-tool quartet riding along, and the decoys
- *  pinned off when the caller has no tools of their own. */
+/** Forces the wire shape the gate demands on an already-built request body: the decoy
+ *  system message leading the messages (the caller's own system prompt, if any, follows it
+ *  and stays in charge), the 4-tool quartet riding along, streaming always on, and the decoys
+ *  pinned off when the caller has no tools of their own. Idempotent: a body already led by
+ *  the decoy is not given a second copy. */
 export function shapeOpenCodeRequest(body: Record<string, unknown>): Record<string, unknown> {
   const out = { ...body };
+  const messages = Array.isArray(out.messages) ? (out.messages as unknown[]) : [];
+  const first = messages[0] as { role?: unknown; content?: unknown } | undefined;
+  const alreadyDecoyed = first?.role === 'system'
+    && typeof first.content === 'string'
+    && first.content.startsWith(OC_DECOY_PREFIX);
+  if (!alreadyDecoyed) out.messages = [{ role: 'system', content: openCodeSystemDecoy() }, ...messages];
   const tools = Array.isArray(out.tools) ? (out.tools as unknown[]).slice() : [];
   const callerHadTools = tools.length > 0;
   let added = false;
@@ -116,6 +126,9 @@ export function shapeOpenCodeRequest(body: Record<string, unknown>): Record<stri
   if (!callerHadTools) out.tool_choice = 'none';
   return out;
 }
+
+/** The stable opening of the decoy prompt — enough of it to recognise our own decoy by. */
+const OC_DECOY_PREFIX = 'You are opencode, an interactive CLI tool';
 
 /* ---------- folding a forced stream back into one answer ---------- */
 

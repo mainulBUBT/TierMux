@@ -22,6 +22,8 @@ export const SETTINGS_META: SettingMeta[] = [
     desc: 'Log per-turn timing (model selection, first token) and engine events to the "TierMux Diag" output channel — for diagnosing slow turns.' },
   { key: 'agent.commandApproval', label: 'Command approval mode', type: 'enum', enum: ['always', 'allowlist', 'never'],
     desc: 'How the agent\'s runCommand tool is gated before running shell commands.' },
+  { key: 'agent.autoContinueRounds', label: 'Auto-Continue rounds', type: 'number', min: 0, max: 10,
+    desc: 'How many times per message TierMux presses Continue itself when an agent turn stops unfinished after real progress (files changed or a todo completed). Each round is more model requests. 0 = always wait for you.' },
   { key: 'agent.maxStepsPerTurn', label: 'Max steps per turn', type: 'number', min: 0, max: 200,
     desc: 'Hard cap on model round-trips in one agent turn. A turn stopped by this cap is marked resumable — the Continue button picks it up with the full transcript, nothing is repeated. Raise it for long unattended tasks; each step is a real request against a rate-limited free tier. 0 turns the cap off entirely — no resumable pause, the turn just keeps going.' },
   { key: 'agent.maxConcurrentRuns', label: 'Max concurrent runs', type: 'number', min: 1, max: 10,
@@ -48,6 +50,9 @@ export const SETTINGS_META: SettingMeta[] = [
     desc: 'Save actionable plans as markdown checklist files.' },
   { key: 'plan.folder', label: 'Plans folder', type: 'string',
     desc: 'Workspace-relative folder where plan files are written.' },
+  // -- Providers --
+  { key: 'opencode.bunInstall', label: 'Offer to install bun (OpenCode free lane)', type: 'enum', enum: ['prompt', 'never'],
+    desc: 'OpenCode Zen\'s anonymous gate admits only the official client\'s network family, so TierMux routes its keyless lane through a local bun. "prompt" offers once to download bun (~40 MB, kept in this extension\'s storage, nothing system-wide) when a free OpenCode model is used; "never" stops the offer. The "TierMux: Install bun" command always works.' },
   // -- Other --
   { key: 'agent.toolCompaction', label: 'Tool-result compaction', type: 'enum', enum: ['off', 'light', 'aggressive'],
     desc: 'Replace EARLIER steps\' bulky tool outputs with a one-line stub naming the tool and its arguments, so each step re-sends a small prompt; light stubs over ~2,000 characters, aggressive over ~800. The most recent step\'s results, short outputs and error payloads stay verbatim. File reads are included — they are the largest outputs and the reason this exists.' },

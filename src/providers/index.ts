@@ -26,13 +26,18 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   // OpenCode Zen: `keyOptional` — the anonymous free tier needs no key, and a stored Zen key is
   // preferred on top of it (the path https://opencode.ai/docs/zen documents). `sessionHeader`
   // carries the stable per-conversation id Zen's relay wants; `opencodeFreeLane` adds the
-  // official-client costume, forced streaming and decoy tools (opencodeLane.ts) for KEYLESS
-  // traffic only, since 2026-09-16 the anonymous tier admits nothing else (403 FreeTierError,
-  // or 400 "free tier can only be used in OpenCode"). Anonymous access is undocumented and
-  // refused intermittently; the free-period models also collect prompt/completion data — see
-  // docs/PROVIDERS.md § OpenCode Zen.
-  { platform: 'opencode', name: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen/v1', keyless: true, keyOptional: true, skipPreflight: true, sessionHeader: 'x-opencode-session', opencodeFreeLane: true, responsesModels: /^muse-spark-/, keyUrl: 'https://opencode.ai/go' },
-  { platform: 'opencode-go', name: 'OpenCode Go', baseUrl: 'https://opencode.ai/zen/go/v1', keyless: false, skipPreflight: true, sessionHeader: 'x-opencode-session', keyUrl: 'https://opencode.ai/go' },
+  // official-client costume, forced streaming, the decoy system prompt and the 4-tool quartet
+  // (opencodeLane.ts, opencodePrompt.ts) for KEYLESS traffic only — the gate has fingerprinted
+  // the request body since 2026-11, before that the wire identity (2026-09-16: 403
+  // FreeTierError, 400 "free tier can only be used in OpenCode"). Anonymous access is
+  // undocumented and refused intermittently; the free-period models also collect
+  // prompt/completion data — see docs/PROVIDERS.md § OpenCode Zen.
+  { platform: 'opencode', name: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen/v1', keyless: true, keyOptional: true, skipPreflight: true, sessionHeader: 'x-opencode-session', opencodeFreeLane: true, responsesModels: /^muse-spark-/, keyUrl: 'https://opencode.ai/auth' },
+  // OpenCode Go — the one surface OpenCode documents for other coding agents: keyed (a Console
+  // key from a Go/Go Plus plan), honest UA, stable x-opencode-session. The base URL is the
+  // documented inference route (probe-verified 2026-11-10: answers 401 "Go requires a
+  // credential" with the header, 400 MissingSessionID without). See docs/PROVIDERS.md § OpenCode Go.
+  { platform: 'opencode-go', name: 'OpenCode Go', baseUrl: 'https://opencode.ai/inference/go/openai/v1', keyless: false, skipPreflight: true, sessionHeader: 'x-opencode-session', keyUrl: 'https://opencode.ai/go' },
   { platform: 'ovh', name: 'OVH AI Endpoints', baseUrl: 'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1', keyless: true },
   { platform: 'agnes', name: 'Agnes AI', baseUrl: 'https://apihub.agnes-ai.com/v1', timeoutMs: 120000, skipPreflight: true, keyUrl: 'https://platform.agnes-ai.com' },
   { platform: 'sambanova', name: 'SambaNova', baseUrl: 'https://api.sambanova.ai/v1', keyUrl: 'https://cloud.sambanova.ai/apis' },
@@ -114,10 +119,32 @@ export const BUILTIN_PLATFORMS = new Set<Platform>(platformInfo.keys());
 const CUSTOM_TIMEOUT_MS = 0;
 const CUSTOM_TTFT_MS = 0;
 
+/** The saved custom endpoints. The request path calls resolveProvider without a list, so without
+ *  this no custom endpoint could ever serve: a pinned one died with "could not run" (probe 2026-11-04). */
+let customEndpointSource: (() => CustomEndpoint[]) | undefined;
+export function setCustomEndpointSource(source: () => CustomEndpoint[]): void {
+  customEndpointSource = source;
+}
+
+/** The per-conversation header a base URL needs, if any. OpenCode Go's documented client
+ *  requirement (opencode.ai/docs/console/go) is a stable session id: "Send a stable session ID in
+ *  `x-opencode-session` for each conversation so we can optimize routing and prompt caching." Go is
+ *  explicitly open to other coding agents — it asks for an honest User-Agent (TierMux's own is
+ *  `tiermux/x.y.z`) and nothing else — so a Go subscription works through the custom-endpoint path
+ *  once the session header rides along. Hostname-matched, not a substring: `foo.opencode.ai.evil.tld`
+ *  must not be handed a session header. */
+export function sessionHeaderFor(baseUrl: string): string | undefined {
+  try {
+    return /(^|\.)opencode\.ai$/i.test(new URL(baseUrl).hostname) ? 'x-opencode-session' : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function resolveProvider(
   platform: Platform,
   modelId?: string,
-  customEndpoints?: CustomEndpoint[],
+  customEndpoints: CustomEndpoint[] | undefined = customEndpointSource?.(),
 ): BaseProvider | undefined {
   if (platform === 'custom') {
     if (!modelId || !customEndpoints) return undefined;
@@ -133,6 +160,7 @@ export function resolveProvider(
       runtimeName: endpoint.name,
       baseUrl: endpoint.baseUrl.replace(/\/+$/, ''),
       extraHeaders: endpoint.extraHeaders,
+      sessionHeader: sessionHeaderFor(endpoint.baseUrl),
       timeoutMs: CUSTOM_TIMEOUT_MS,
       ttftTimeoutMs: CUSTOM_TTFT_MS,
       skipPreflight: true,
@@ -152,6 +180,18 @@ export function resolveProvider(
 /** Clear the cached provider for an endpoint (call on edit/remove). */
 export function invalidateCustomProvider(id: string): void {
   customProviderCache.delete(id);
+}
+
+/** Whether a stored API key for this platform could ever be used. `keyless` ALONE means no key can
+ *  be used at all — Kilo/Pollinations/OVH are pinned to '' by the router, so prompting for one is
+ *  noise. `keyOptional` is the opposite case and must not be folded in with it: the anonymous tier
+ *  works AND a stored key is the documented better path (OpenCode Zen). Reading the two together
+ *  made the Set key command answer "OpenCode Zen is keyless — no API key needed", so the reliable
+ *  path the gate actually honours could never be reached (2026-11). */
+export function acceptsKey(platform: Platform): boolean {
+  const info = platformInfo.get(platform);
+  if (!info) return true;
+  return !info.keyless || !!info.keyOptional;
 }
 
 export function getPlatformInfo(platform: Platform): PlatformInfo | undefined {

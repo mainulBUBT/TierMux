@@ -28,7 +28,7 @@ export interface AgentResult {
   /** Set when the turn STOPPED ITSELF: 'budget' — the step cap cut it mid-tool-calls; 'stuck'
    *  — the same tool call failed identically REPEAT_FAILURE_LIMIT times. Both also set
    *  `paused`. Undefined = the model concluded on its own terms. */
-  stopReason?: 'budget' | 'stuck';
+  stopReason?: 'budget' | 'stuck' | 'provider';
   /** The validated structure plan mode's `exitPlanMode` tool produced; the host renders the
    *  plan card from it. Undefined = no plan proposed this turn. */
   plan?: ProposedPlan;

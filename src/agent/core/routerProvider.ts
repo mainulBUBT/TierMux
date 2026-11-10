@@ -15,10 +15,10 @@ import type {
 import type { ChatMessage, ChatToolChoice, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
 import { resolveProvider } from '../../providers';
 import { ProviderHttpError } from '../../providers/base';
-import { selectModel, setModelSources, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, noteQuotaHeaders, noteRetryAfter, isModelUnavailable, isFreeLimitReached, rationaleForServed, isInCooldown, findCatalogModel, type ModelSources, type SelectionRationale } from '../../router/picker';
+import { selectModel, setModelSources, soonestRecoveryMs, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, noteQuotaHeaders, noteRetryAfter, isModelUnavailable, isFreeTierRefusal, noteFreeTierExhausted, rationaleForServed, isInCooldown, findCatalogModel, type ModelSources, type SelectionRationale } from '../../router/picker';
 import { estimateMessagesTokens, estimateTokens } from '../budget';
 import { ThinkStripper, stripThinkTags, reasoningFromDelta } from '../../util/thinkTags';
-import { adoptInlineToolCalls, sanitizeToolName } from '../toolArgs';
+import { adoptInlineToolCalls, foldNamelessToolCalls, sanitizeToolName } from '../toolArgs';
 import { diagLog } from '../../util/diag';
 
 /** Post-headers STALL bound: a stream that has produced no chunk at all is abandoned after this
@@ -49,6 +49,8 @@ export interface RouterProviderOptions {
    *  a provider with carriesRawPdf forwards. */
   requireRawPdf?: boolean;
   onFailover?: (from: string, reason: string) => void;
+  /** Every model is cooling down and this step is waiting `seconds` for the first one back. */
+  onCapacityWait?: (seconds: number) => void;
   onModelSelected?: (platform: string, model: string, runtimeName?: string) => void;
   onUsage?: (info: { inputTokens: number; outputTokens: number; model: string }) => void;
   /** "Why this model?" report from selection — forwarded to the host so the footer's
@@ -147,31 +149,75 @@ function chainExhaustedError(
   candidates: Candidate[],
   attempts: string[],
   lastError: unknown,
+  refusals?: FreeTierRefusals,
 ): Error {
+  const remedy = freeTierRemedy(lastError, refusals) ?? '';
   if (candidates.length <= 1) {
-    if (lastError instanceof Error && isFreeLimitReached(lastError.message)) {
-      return new Error(
-        `${lastError.message} (OpenCode requires an OpenCode Go subscription key at https://opencode.ai/go — configure it in TierMux, or switch to Auto mode / another free model).`
-      );
-    }
     return lastError instanceof Error
-      ? lastError
+      ? remedy ? new Error(`${lastError.message}${remedy}`) : lastError
       : new Error('TierMux: the only model candidate failed');
   }
   const detail = attempts.length ? ` — ${attempts.join('; ')}` : '';
-  return new Error(`TierMux: all ${candidates.length} model candidates failed${detail}`);
+  return new Error(`TierMux: all ${candidates.length} model candidates failed${detail}${remedy}`);
 }
+
+/** Which advice a free-tier refusal deserves — and `undefined` when this turn was not refused.
+ *  Exported for e2e: the anonymous and keyed remedies must never be swapped. */
+export function freeTierRemedy(lastError: unknown, refusals?: FreeTierRefusals): string | undefined {
+  const refused = isFreeTierRefusal(lastError instanceof Error ? lastError.message : undefined)
+    || refusals?.anonymous || refusals?.keyed;
+  if (!refused) return undefined;
+  return ` — ${refusals?.keyed ? FREE_TIER_KEYED_REMEDY : FREE_TIER_ANONYMOUS_REMEDY}`;
+}
+
+/** No key was sent. Their own docs are explicit (opencode.ai/docs/console/models): "Free-tier chat
+ *  models require OpenCode; use paid models or Go from other clients." A key therefore does NOT
+ *  unlock these models here — only Go, or Console credits spent on paid models, do. The one free
+ *  route from TierMux is the bun shim: the gate admits only the official client's network family,
+ *  and bun is in it (see bunTransport.ts). */
+const FREE_TIER_ANONYMOUS_REMEDY =
+  "OpenCode's free-tier chat models are served to its own client's network stack only — install bun (https://bun.sh) and TierMux will route its keyless OpenCode lane through it, or use OpenCode Go (https://opencode.ai/go), or a Console key with credits for paid models; a key alone does not unlock the free models.";
+
+/** A refusal that came back on a request that DID carry a key. The key is already being sent, so
+ *  the allowance being empty is the account's — and a free-tier model is not on offer to this
+ *  client either way. */
+const FREE_TIER_KEYED_REMEDY =
+  "the key was sent with this request, so this is the account's own allowance — OpenCode serves its free-tier models only to its own client; add credits at https://opencode.ai/console for paid models, subscribe to Go, or route this task elsewhere.";
 
 /** 401/402/403 are ACCOUNT-level (dead key, unpaid bill), so the platform's other models cannot
  *  succeed either (ollama/cerebras 402, 2026-08-30). 429 and 5xx are per-model and not here, and
- *  neither is a 401 that names the model itself as unsupported. Platform-wide 429 free limits
- *  (e.g. OpenCode "Free usage limit reached") are also account-level. */
+ *  neither is a 401 that names the model itself as unsupported. */
 export function isAccountLevel(e: unknown): boolean {
-  if (!(e instanceof ProviderHttpError)) return false;
-  if ((e.status === 401 || e.status === 402 || e.status === 403) && !isModelUnavailable(e.message)) return true;
-  if (e.status === 429 && isFreeLimitReached(e.message)) return true;
-  return false;
+  return e instanceof ProviderHttpError
+    && (e.status === 401 || e.status === 402 || e.status === 403)
+    && !isModelUnavailable(e.message);
 }
+
+/** What a failed candidate teaches the picker, shared by the generate and stream loops: a 429's
+ *  retry-after, and the free-tier refusal — which condemns the whole KEYLESS LANE for this turn,
+ *  because the gate rejects the client rather than any one model, so the remaining models on that
+ *  platform would only repeat the same answer at one round-trip each.
+ *
+ *  `hadKey` is recorded because the remedy differs: a refusal on an ANONYMOUS attempt means "store
+ *  a key", while the same refusal on a KEYED attempt means the key is already being sent and its
+ *  own allowance is spent — telling that user to add a key is advice they already followed. */
+function noteCandidateRefusal(
+  c: Candidate,
+  e: unknown,
+  deadPlatforms: Set<string>,
+  hadKey: boolean,
+  refusals: FreeTierRefusals,
+): void {
+  if (e instanceof ProviderHttpError && e.status === 429 && e.retryAfterMs) noteRetryAfter(c.platform, c.modelId, e.retryAfterMs);
+  if (isFreeTierRefusal(e instanceof Error ? e.message : undefined)) {
+    noteFreeTierExhausted(c.platform);
+    deadPlatforms.add(c.platform);
+    if (hadKey) refusals.keyed = true; else refusals.anonymous = true;
+  }
+}
+
+/** Which way the free-tier gate refused this turn — see noteCandidateRefusal. */
+export interface FreeTierRefusals { anonymous: boolean; keyed: boolean }
 
 function toV4Usage(promptTokens?: number, completionTokens?: number): LanguageModelV4Usage {
   return {
@@ -378,7 +424,7 @@ export async function resolveCandidates(
     const modelId = rest.join('::');
     if (!modelId || modelId === 'auto') continue;
     if (!resolveProvider(platform as Platform, modelId)) continue;
-    const apiKeys = await keysFor(platform);
+    const apiKeys = platform === 'custom' ? await getApiKeysFor(platform, modelId) : await keysFor(platform);
     if (apiKeys.length === 0) continue;
     let bucket = buckets.get(platform);
     if (!bucket) { bucket = []; buckets.set(platform, bucket); platformOrder.push(platform); }
@@ -467,7 +513,36 @@ export function foldEmptyFinal(textStarted: boolean, toolCallCount: number, reas
   return '';
 }
 
+/** How long one Auto step may wait for a cooled-down model before the turn stops. agentBench
+ *  2026-11-04: ovh announced "quota spent, 49s" and kilo/opencode answered 429, so a task died
+ *  18s in with 24 tool calls done, and every later task failed in 0.0s, when waiting 49s was enough. */
+const CAPACITY_WAIT_MAX_MS = 120_000;
+/** One drop retried before the turn stops. agentBench 2026-11-04: a single `fetch failed` ended a
+ *  pinned run 128s in, with the service edits done and the tests still to write. */
+const NETWORK_RETRY_MS = 2_000;
+
+function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+  });
+}
+
+function isNetworkDrop(e: unknown): boolean {
+  return !(e instanceof ProviderHttpError) && isFailoverWorthy(e);
+}
+
 function createPickerProvider(providerOpts: RouterProviderOptions): LanguageModelV4 {
+  const waitForCapacity = async (waited: { ms: number }, signal: AbortSignal | undefined): Promise<boolean> => {
+    if (providerOpts.pinnedModel && providerOpts.pinnedModel !== 'auto') return false;
+    const ms = soonestRecoveryMs();
+    if (ms === undefined || signal?.aborted || waited.ms + ms > CAPACITY_WAIT_MAX_MS) return false;
+    waited.ms += ms;
+    diagLog('rp.capacityWait', `no model free — waiting ${Math.ceil(ms / 1000)}s (${Math.round(waited.ms / 1000)}s this step)`);
+    providerOpts.onCapacityWait?.(Math.ceil(ms / 1000));
+    await abortableSleep(ms + 100, signal);
+    return !signal?.aborted;
+  };
   // ── Turn-level stickiness (2026-09-06) ──────────────────────────────────────────────────
   // One provider instance = one turn (engine.ts creates it per runTurn). The SDK calls
   // doStream once per STEP, and selectModel's equal-rank rotation counter post-increments on
@@ -479,9 +554,22 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
   // handling and cooldowns are untouched, they just stop firing mid-turn for no reason.
   let sticky: Candidate | undefined;
   const isSticky = (c: Candidate): boolean => !!sticky && c.platform === sticky.platform && c.modelId === sticky.modelId;
+  /** The models the picker preferred over the sticky one, when it took over by failover. Stickiness
+   *  must not outlive their cooldown. agentBench 2026-11-04: kilo answered 429 once, pollinations
+   *  took over and kept all 17 remaining steps at ~50s each, hitting the 900s timeout, where kilo's
+   *  steps took ~4s. Going back to a preferred model is not routing to a weaker one. */
+  let displaced: Candidate[] = [];
+  const noteServed = (c: Candidate, chain: Candidate[]): void => {
+    if (!isSticky(c)) displaced = chain.slice(0, chain.findIndex((x) => x.platform === c.platform && x.modelId === c.modelId));
+    sticky = c;
+  };
   const stickyRunnable = (): Candidate | undefined => {
     const s = sticky;
     if (!s) return undefined;
+    if (displaced.some((p) => !isInCooldown(p.platform, p.modelId))) {
+      diagLog('rp.sticky', `a model preferred over ${s.platform}::${s.modelId} is back — re-resolving the chain`);
+      return undefined;
+    }
     if (providerOpts.excludeModels?.includes(`${s.platform}::${s.modelId}`)) return undefined;
     if (isInCooldown(s.platform, s.modelId) || !resolveProvider(s.platform, s.modelId)) return undefined;
     return s;
@@ -523,7 +611,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
        *  "Why this model?" popover can't credit a candidate that failed over. On a sticky hit
        *  there is no fresh rationale; the one emitted when it first served still names it. */
       const reportServed = (c: Candidate, runtimeName?: string): void => {
-        sticky = c;
+        noteServed(c, candidates);
         providerOpts.onModelSelected?.(c.platform, c.modelId, runtimeName);
         if (sel.rationale) providerOpts.onSelectionRationale?.(rationaleForServed(sel.rationale, c.platform, c.modelId));
       };
@@ -531,6 +619,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
 
       let lastError: unknown;
       const deadPlatforms = new Set<string>();
+      const refusals: FreeTierRefusals = { anonymous: false, keyed: false };
       const attempts: string[] = [];
       const startedAt = Date.now();
       // Open-ended on purpose: when the sticky head fails, `extend` appends the picker chain
@@ -602,7 +691,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             candidateError = e;
             recordOutcome(c.platform, c.modelId, false);
             noteModelFailure(c.platform, c.modelId, e instanceof ProviderHttpError ? e.status : undefined, !!tools?.length, e instanceof Error ? e.message : undefined);
-            if (e instanceof ProviderHttpError && e.status === 429 && e.retryAfterMs) noteRetryAfter(c.platform, c.modelId, e.retryAfterMs);
+            noteCandidateRefusal(c, e, deadPlatforms, !!apiKey, refusals);
             if (isFailoverWorthy(e)) {
               providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
               continue; // next key; when keys run out, the candidate loop advances
@@ -615,7 +704,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
           if (isAccountLevel(candidateError)) deadPlatforms.add(c.platform);
         }
       }
-      throw chainExhaustedError(candidates, attempts, lastError);
+      throw chainExhaustedError(candidates, attempts, lastError, refusals);
     },
 
     async doStream(options: LanguageModelV4CallOptions): Promise<LanguageModelV4StreamResult> {
@@ -623,12 +712,16 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
       const tools = toRouterTools(options.tools);
       const sel: { rationale?: SelectionRationale } = {};
       const promptTokens = estimateMessagesTokens(messages) + (tools ? estimateTokens(JSON.stringify(tools)) : 0);
-      const { candidates, extend } = await candidatesForStep(sel, promptTokens);
+      const waited = { ms: 0 };
+      let { candidates, extend } = await candidatesForStep(sel, promptTokens);
+      while (candidates.length === 0 && await waitForCapacity(waited, options.abortSignal)) {
+        ({ candidates, extend } = await candidatesForStep(sel, promptTokens));
+      }
       /** Report the model that really served — and fix the rationale to name it, so the
        *  "Why this model?" popover can't credit a candidate that failed over. On a sticky hit
        *  there is no fresh rationale; the one emitted when it first served still names it. */
       const reportServed = (c: Candidate, runtimeName?: string): void => {
-        sticky = c;
+        noteServed(c, candidates);
         providerOpts.onModelSelected?.(c.platform, c.modelId, runtimeName);
         if (sel.rationale) providerOpts.onSelectionRationale?.(rationaleForServed(sel.rationale, c.platform, c.modelId));
       };
@@ -653,8 +746,9 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
         // attempt log below reports WHY so an exhausted chain is legible instead of surfacing
         // one provider's raw error as if no failover had run.
         const deadPlatforms = new Set<string>();
+        const refusals: FreeTierRefusals = { anonymous: false, keyed: false };
         const attempts: string[] = [];
-        const startedAt = Date.now();
+        let startedAt = Date.now();
         // Open-ended on purpose: when the sticky head fails, `extend` appends the picker chain
         // and the same loop keeps walking it.
         // Shared across candidates: a part already enqueued cannot be retracted, so a candidate
@@ -664,11 +758,26 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
         let textStarted = false;
         const reasoningId = 'reasoning-0';
         let reasoningStarted = false;
+        let networkRetried = false;
         for (let i = 0; ; i++) {
           if (options.abortSignal?.aborted) { controller.error(options.abortSignal.reason ?? new Error('aborted')); return; }
           if (i >= candidates.length) {
             await extend();
-            if (i >= candidates.length) break;
+            if (i >= candidates.length) {
+              if (textStarted || reasoningStarted) break;
+              if (!networkRetried && isNetworkDrop(lastError)) {
+                networkRetried = true;
+                diagLog('rp.networkRetry', `every candidate dropped — one retry in ${NETWORK_RETRY_MS}ms`);
+                await abortableSleep(NETWORK_RETRY_MS, options.abortSignal);
+                i = -1;
+                continue;
+              }
+              if (!(await waitForCapacity(waited, options.abortSignal))) break;
+              candidates.push(...preferFittingWindows(await resolveCandidates(providerOpts, sel), promptTokens));
+              startedAt = Date.now();
+              i--;
+              continue;
+            }
           }
           const c = candidates[i];
           const provider = resolveProvider(c.platform, c.modelId);
@@ -834,6 +943,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             // gpt-oss leaks Harmony tokens into streamed names (`grep<|channel|>commentary`); the
             // non-streaming path always cleaned them, this one did not (pollinations openai-fast, 2026-10-12).
             for (const tc of acc.values()) tc.name = sanitizeToolName(tc.name);
+            foldNamelessToolCalls(acc);
             // Tool calls written as text, or split between the call and the text (adoptInlineToolCalls).
             const adopted = adoptInlineToolCalls(textAccum, [...acc.entries()].sort((a, b) => a[0] - b[0]).map(([, tc]) => tc), tools ?? []);
             if (adopted) {
@@ -895,7 +1005,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             diagLog('rp.candidate', `${c.platform}::${c.modelId} failed after ${Date.now() - candidateStart}ms`);
             recordOutcome(c.platform, c.modelId, false);
             noteModelFailure(c.platform, c.modelId, e instanceof ProviderHttpError ? e.status : undefined, !!tools?.length, e instanceof Error ? e.message : undefined);
-            if (e instanceof ProviderHttpError && e.status === 429 && e.retryAfterMs) noteRetryAfter(c.platform, c.modelId, e.retryAfterMs);
+            noteCandidateRefusal(c, e, deadPlatforms, !!apiKey, refusals);
             if (isFailoverWorthy(e)) {
               // Text already on screen stays; the next candidate continues in the same channel
               // behind a visible seam rather than restarting a second copy of the answer.
@@ -914,7 +1024,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             if (isAccountLevel(candidateError)) deadPlatforms.add(c.platform);
           }
         }
-        controller.error(chainExhaustedError(candidates, attempts, lastError));
+        controller.error(chainExhaustedError(candidates, attempts, lastError, refusals));
       } catch (e) {
         try { controller.error(e); } catch { /* already closed or errored */ }
       } })();

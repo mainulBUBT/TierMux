@@ -213,6 +213,13 @@ const planAccepted: StopCondition<ToolSet> = ({ steps }) =>
  *  and been documented since v3 while the engine hardcoded 50, so changing it did nothing. */
 const DEFAULT_MAX_STEPS = 50;
 
+/** Plan mode's reading budget: on this step only the closers are offered, once. A count, never a
+ *  judgment. Prose stays possible because a plan-mode question is answered, not planned. Repro:
+ *  agentBench at 1e008b8, real providers: plan-feature 20 steps and plan-php-feature 17 steps both
+ *  ran into the 600s timeout with no plan. */
+const PLAN_STEP_BUDGET = 15;
+const PLAN_BUDGET_WRAPUP = 'Reading budget used up. Decide now from the files you have already read: exitPlanMode with concrete steps (real paths, path:line for each), askUser if you are genuinely unsure which reading the user meant, or, if the user asked a question, answer it directly.';
+
 /** Todos this turn declared complete get ONE evidence check, then at most one fix pass — the
  *  same bounded shape as the verify gate, and for the same reason: the user should not have to
  *  re-check the agent's own "done". Only fires on turns that used todoWrite. */
@@ -337,6 +344,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     sessionId: opts.sessionId,
     requestId: opts.requestId,
     onTodos: (todos) => { lastTodos = todos; opts.onTodos(todos); },
+    currentTodos: () => lastTodos,
     onBeforeWrite: opts.onBeforeWrite,
     onAskUser: async (questions) => {
       const result = await opts.onAskUser(questions);
@@ -368,6 +376,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       failovers++;
       opts.onFailover?.(...args);
     },
+    onCapacityWait: (seconds) => opts.onStep('thinking', `Free models are busy — retrying in ${seconds}s…`),
     onSelectionRationale: opts.onSelectionRationale,
     onModelSelected: (platform, mdl, runtimeName) => {
       served = { platform, model: mdl, runtimeName };
@@ -411,6 +420,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     diagLog(`engine.${tag}StreamError`, (error instanceof Error ? error.message : String(error)).slice(0, 160));
   // True while the current step has streamed reply text but no tool call yet (see onChunk).
   let narrationSinceToolCall = false;
+  /** Finished steps of the running pass. onEnd never fires when the stream errors, so without this
+   *  a provider failure lost the whole transcript and Continue re-read everything from scratch
+   *  (agentBench 2026-11-04: tools=24, steps=0). */
+  let unsettledWork: ModelMessage[] = [];
   // Armed for the plan-gap continuation only: step 0 must close the turn with a tool call
   // (toolChoice 'required' + PLAN_CLOSERS). Does not pin WHICH closer — pinning exitPlanMode
   // forced a plan out of a hesitating model (2026-09-01); askUser is the other legitimate close.
@@ -463,6 +476,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     // Per-PASS state, reset here so onChunk can close over it. Leaking it across passes fired
     // a second onRetractDraft for an already-retracted draft (exitPlanMode.e2e plan-gap case).
     narrationSinceToolCall = false;
+    unsettledWork = [];
     // The onStep seam (host → webview status label) was wired end-to-end but never fired, so
     // the status line sat on the send-time activity verb for the whole turn. A pass that
     // follows tool results is synthesizing; the first pass is thinking. The phase string is
@@ -522,6 +536,13 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
             toolChoice: 'none' as const,
           };
         }
+        if (opts.mode === 'plan' && !proposedPlan && stepNumber > 0 && stepNumber === Math.min(PLAN_STEP_BUDGET, maxSteps) - 1) {
+          diagLog('engine.planBudget', `step ${stepNumber}: only the closers are offered`);
+          return {
+            messages: [...(stepMessages ?? messages), { role: 'user' as const, content: PLAN_BUDGET_WRAPUP }],
+            activeTools: PLAN_CLOSERS,
+          };
+        }
         return {
           ...(stepMessages ? { messages: stepMessages } : {}),
           ...(forceAnswer ? { toolChoice: 'none' as const } : {}),
@@ -561,6 +582,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       },
 
       onStepEnd: (step) => {
+        unsettledWork.push(...step.response.messages);
         // Per-step wall-clock (diagTrace): the split that localizes a slow turn — this one
         // number per step, plus rp.ttft's per-candidate first-chunk times in routerProvider.
         const started = stepStartAt.get(step.stepNumber);
@@ -636,6 +658,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       },
 
       onEnd: ({ steps, finishReason }) => {
+        unsettledWork = [];
         // V4 finishReason is an OBJECT ({unified, raw}) — String() gave "[object Object]" and
         // silently disabled every finish-based recovery. Use the unified string.
         const fr = typeof finishReason === 'string'
@@ -708,6 +731,8 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       changedFiles: changedFilesFrom(toChatMessages(outcome.responseMessages)),
     };
   }
+
+  outcome.responseMessages.push(...unsettledWork);
 
   // Dead-at-start abort, RESOLVED path: consumeStream resolves on abort (ai v7), so the catch
   // block's guard never ran and Stop within the first second returned a "successful" blank
@@ -879,7 +904,10 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // LAST-RESORT reasoning fold: every pass's content channel empty ⇒ promote the accumulated
   // thinking as the reply (repro: gemini-2.5-flash 11:49 PM — 2 files edited correctly, all
   // narration in the thinking channel). A little duplication beats an empty bubble.
-  if (!outcome.text.trim() && reasoningText.trim()) {
+  // Not after a provider failure: agentBench 2026-11-04 shipped half a thought ("We need to
+  // investigate…") as the answer, with no error and no Continue, once every model had failed.
+  const providerCut = !!streamError && !opts.abortSignal?.aborted;
+  if (!outcome.text.trim() && reasoningText.trim() && !providerCut) {
     diagLog('engine.reasoningFold', `empty reply after all passes — promoting ${reasoningText.length} chars of reasoning as the reply`);
     outcome.text = reasoningText.trim();
   }
@@ -893,7 +921,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let verifyAvailable = false;
   let fixRounds = 0;
   const mutated = changedFilesFrom(toChatMessages(outcome.responseMessages));
-  if (opts.mode === 'agent' && mutated.length > 0 && !opts.abortSignal?.aborted && !stuckSignature && !askDismissed) {
+  if (opts.mode === 'agent' && mutated.length > 0 && !opts.abortSignal?.aborted && !stuckSignature && !askDismissed && !providerCut) {
     verifyCmd = resolveVerifyCommand();
     verifyAvailable = !!verifyCmd;
     if (!verifyCmd) {
@@ -947,7 +975,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let auditOutcome: AgentResult['auditOutcome'];
   const completedTodos = (lastTodos ?? []).filter((t) => t.status === 'completed');
   if ((opts.auditTodos ?? DEFAULT_AUDIT_TODOS) && opts.mode === 'agent' && completedTodos.length > 0
-    && !opts.abortSignal?.aborted && !stuckSignature && !askDismissed) {
+    && !opts.abortSignal?.aborted && !stuckSignature && !askDismissed && !providerCut) {
     try {
       const list = completedTodos.map((t, i) => `${i + 1}. ${t.content}`).join('\n');
       const audit = await runSubagent({
@@ -984,7 +1012,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   const workMessages = toChatMessages(outcome.responseMessages);
   // A turn cut by the step cap or by no-progress is NOT finished: `paused` shows the Continue
   // button and stopReason names the stop. `stuck` outranks `budget` (the more specific fact).
-  const stopReason = stuckSignature ? 'stuck' as const : hitStepCap ? 'budget' as const : undefined;
+  const stopReason = stuckSignature ? 'stuck' as const : hitStepCap ? 'budget' as const : providerCut ? 'provider' as const : undefined;
 
   // ── WORK REPORT — emitted only for turns that CHANGED something; a card saying "0 files,
   // unverified" is worse than no card.

@@ -68,6 +68,18 @@ async function main() {
   const h = await toolCalls();
   ok('the call reaches readFile', h.length === 1 && h[0].toolName === 'readFile', JSON.stringify(h));
 
+  console.log('\n— a nameless fragment under a new index finishes the call before it —');
+  sse = chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'n1', type: 'function', function: { name: 'readFile', arguments: '{"path":"src/a.ts","limit":' } }] })
+    + chunk({ tool_calls: [{ index: 1, function: { arguments: '200}' } }] })
+    + chunk({}, 'tool_calls') + 'data: [DONE]\n\n';
+  const n = await toolCalls();
+  ok('one whole readFile call, no tool named ""', n.length === 1 && n[0].toolName === 'readFile' && JSON.parse(n[0].input).limit === 200, JSON.stringify(n));
+
+  sse = chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'p1', type: 'function', function: { name: 'readFile', arguments: '{"path":"a"}' } }] })
+    + chunk({ tool_calls: [{ index: 1, id: 'p2', type: 'function', function: { name: 'readFile', arguments: '{"path":"b"}' } }] })
+    + chunk({}, 'tool_calls') + 'data: [DONE]\n\n';
+  ok('parallel calls stay separate', (await toolCalls()).length === 2);
+
   console.log('\n— ordinary prose stays prose —');
   sse = chunk({ role: 'assistant', content: 'The total is computed in invoice.js.' }) + chunk({}, 'stop') + 'data: [DONE]\n\n';
   ok('no tool call invented', (await toolCalls()).length === 0);

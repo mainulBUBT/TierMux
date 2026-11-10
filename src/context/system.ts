@@ -13,7 +13,7 @@ export const METHOD = [
   '2. Then locate the code path: findSymbol/references/outline if you know a name, else grep or glob; read only that; several paths in one readFile, independent calls in one step.',
   '3. Name a cause only when it fits every fact. Check it against each observed value; a fact it cannot explain means it is not the cause — keep looking.',
   '4. When evidence changes the picture, add ONE short sentence with the finding and what it rules out — never restate the request or your plan.',
-  '5. Gather as much as the task needs, and never repeat a call whose result you already have.',
+  '5. Stop reading once you can name the path:line to change or answer the question. Never repeat a call you already ran.',
 ].join('\n');
 
 /** Agent-only: ask and plan have no editFile/writeFile, so these rules were dead weight (and a

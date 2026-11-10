@@ -373,6 +373,7 @@ export type OutMessage =
   | { type: 'editApproval'; sessionId: string; requestId: string; id: string; path: string; title: string; kind: 'write' | 'delete' }
   | { type: 'permissionAsk'; sessionId: string; requestId: string; id: string; title: string; pattern?: string | string[]; command?: string; dangerous?: boolean }
   | { type: 'sessionTitle'; sessionId: string; title: string }
+  | { type: 'autoContinue'; sessionId: string }
   | { type: 'assistantMessage'; sessionId: string; requestId: string; text: string; reasoning?: string; finishReason?: string; usage?: UsagePayload; platform?: string; model?: string; paused?: boolean }
   // Structured end-of-turn report — posted right after the assistantMessage it belongs to.
   // The webview mounts a ResultCard on the live turn target AND stores it for replay parity

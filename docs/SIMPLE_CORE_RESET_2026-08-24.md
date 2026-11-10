@@ -70,10 +70,10 @@ detector, stop and re-read this file.
    trigger the mechanical continuation (Test B).
 5. **`askQuestions` is a legitimate terminal state.** The questions ARE the response; the turn
    ends; no auto-continuation, no forced answer (Test C).
-6. **The incremental stream transcript must survive stream errors.** The AI SDK's `steps`
-   promise REJECTS when the stream errors mid-step — a pre-reset gap that lost a failed
-   attempt's tool results. `streamWork` (collected part-by-part in the stream loop) is the
-   fallback; keep it.
+6. **The incremental stream transcript must survive stream errors.** `onEnd` never fires when
+   the stream errors, so a failed turn would lose its tool results. `unsettledWork` (filled in
+   `onStepEnd`) is the fallback; keep it. (`streamWork`, named here before 2026-11-04, was no longer
+   in the code, and agentBench showed `tools=24 steps=0`. `test:e2e:read-loop` 3c now pins this.)
 7. **A step-cap hit is a resumable pause, not a terminal stop.** `finishReason === 'max-steps'`
    ⇒ `paused: true` ⇒ the UI's Continue/Resume affordance.
 8. **Verify runs once, then bounded mechanical fix rounds.** After a mutating turn, the
@@ -176,6 +176,28 @@ A weak model may answer "Sure, you should inspect X and Y…" instead of editing
 narration SHIPS as the answer. The harness does not decide "this model should have acted,
 therefore retry." If users report a recurring failure shape, gather a live repro first, then
 add ONE targeted guard citing it. The tower is gone; keep it gone.
+
+## 2026-11-04 additions (all mechanical; repro: agentBench, keyless free tiers)
+
+- **Auto waits for capacity.** When every model is cooling down, one step waits for the first due
+  back, up to `CAPACITY_WAIT_MAX_MS` (routerProvider.ts). It never waits after text or reasoning has
+  streamed, for a pinned model, or past Stop. Test: `test:e2e:capacity-wait`.
+- **One retry on a network drop.** When every candidate of a step dropped with no HTTP status, the
+  step retries once after 2s (routerProvider.ts), pinned models included.
+- **Bounded auto-Continue (host, not the engine).** `shouldAutoContinue` presses the existing
+  Continue button at most `tiermux.agent.autoContinueRounds` times per message (default 2), in agent
+  mode, after files changed or a todo completed, never after Stop or a `stuck` stop. It replaces
+  the "never auto-resume" rule at the owner's request: the Continue button itself was the complaint.
+  Test: `test:e2e:auto-continue`.
+- **A fallback does not keep the turn.** A model that took over by failover stays sticky only while
+  the models preferred over it cool down; the next step after one is back re-resolves the chain
+  (`displaced`, routerProvider.ts). A model that served first choice stays sticky as before. Test:
+  `test:e2e:router-sticky`.
+- **The todo list stays one list.** `mergeTodos` (todoWrite.ts) keeps an item's wording and position,
+  keeps a finished item finished and appends only new work, for the rest of a turn and across a
+  Continue. A fresh user message still starts its own list. Test: `test:e2e:todo-merge`.
+- **A provider stop is a resumable pause.** A later-step failure reports `stopReason: 'provider'`
+  with Continue, skips the verify and audit gates, and no longer promotes reasoning to the reply.
 
 ## 2026-09-21 additions (all mechanical; live repro: "the agent deletes existing code")
 

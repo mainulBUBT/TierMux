@@ -41,6 +41,12 @@ export class RateTracker {
     return true;
   }
 
+  /** Time until this model's next per-minute slot frees up; undefined when it used none. */
+  nextMinuteSlotMs(platform: string, modelId: string, now = Date.now()): number | undefined {
+    const recent = this.prune(`${platform}::${modelId}`, now).filter((t) => now - t < MIN_MS);
+    return recent.length ? Math.min(...recent) + MIN_MS - now : undefined;
+  }
+
   /** Call after every outbound HTTP attempt (success or failure — both count against limits). */
   record(platform: string, modelId: string): void {
     const key = `${platform}::${modelId}`;

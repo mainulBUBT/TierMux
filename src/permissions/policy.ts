@@ -7,7 +7,7 @@
 import * as vscode from 'vscode';
 import type { ToolApprovalStatus } from 'ai';
 import { READ_ONLY_TOOLS } from '../agent/core/tools/v3';
-import { commandFromInput, isDangerous, isReadOnlyCommand, matchesAllowlist, DEFAULT_COMMAND_ALLOWLIST } from '../edits/commandClassify';
+import { commandFromInput, isDangerous, isReadOnlyCommand, matchesAllowlist, writesFiles, DEFAULT_COMMAND_ALLOWLIST } from '../edits/commandClassify';
 
 export type PermissionMode = 'ask' | 'auto' | 'full-auto';
 
@@ -67,6 +67,12 @@ export function resolvePolicy(
     if (call.toolName === 'runCommand') {
       if (!requestApproval) return Promise.resolve({ type: 'denied', reason: 'no approval channel configured' });
       const cmd = commandFromInput(call.input);
+      // agentBench 2026-11-04, kilo::reflection/beam-free: 3 of 6 plan runs wrote the change with
+      // `cat > file` (later, `python3 - <<EOF`) and asked approval each time; approving it bypassed
+      // the plan entirely.
+      if (cmd && writesFiles(cmd)) {
+        return Promise.resolve({ type: 'denied', reason: 'plan mode is read-only and this command can write files. Do not make the change now: put it in the steps of exitPlanMode; it runs after the user approves the plan.' });
+      }
       return requestApproval({ tool: call.toolName, input: call.input }).then((d) => {
         if (d === 'allow-always' && !(cmd && isDangerous(cmd))) config.alwaysAllow.add(call.toolName);
         return d === 'allow' || d === 'allow-always'

@@ -104,6 +104,40 @@ function isSegmentReadOnly(tokens: string[]): boolean {
   return false;
 }
 
+const FILE_WRITERS = new Set(['tee', 'touch', 'mkdir', 'rm', 'rmdir', 'mv', 'cp', 'ln']);
+
+const INLINE_SCRIPT_RUNNERS = new Set(['python', 'python3', 'node', 'ruby', 'perl', 'php']);
+const INLINE_SCRIPT_FLAGS = new Set(['-', '-c', '-e', '-E', '-r']);
+
+/** True when the command plainly changes files, or runs an inline script, which can. Not the inverse
+ *  of isReadOnlyCommand: `npm test` is neither. A command that cannot be parsed returns false, so the
+ *  caller still asks. */
+export function writesFiles(command: string): boolean {
+  let parsed: ParseEntry[];
+  try {
+    parsed = parse(command.trim());
+  } catch {
+    return false;
+  }
+  let bin: string | undefined;
+  for (let i = 0; i < parsed.length; i++) {
+    const entry = parsed[i];
+    if (typeof entry === 'string') {
+      if (bin === undefined) {
+        bin = entry;
+        if (FILE_WRITERS.has(bin)) return true;
+      } else if (bin === 'sed' && (entry.startsWith('-i') || entry === '--in-place')) return true;
+      else if (bin && INLINE_SCRIPT_RUNNERS.has(bin) && INLINE_SCRIPT_FLAGS.has(entry)) return true;
+      continue;
+    }
+    const op = (entry as { op?: string }).op;
+    if (op && WRITE_REDIRECT_OPS.has(op) && parsed[i + 1] !== '/dev/null') return true;
+    if (op === '<' && bin && INLINE_SCRIPT_RUNNERS.has(bin) && parsed[i + 1] && typeof parsed[i + 1] === 'object') return true; // heredoc
+    if (op === '&&' || op === '||' || op === ';' || op === '|' || op === '&') bin = undefined;
+  }
+  return false;
+}
+
 /** Conservative read-only classifier: a confidently read-only command skips the approval prompt.
  *  Fails closed — a parse failure, substitution, unknown operator, redirection or unlisted
  *  binary returns false. A false negative costs one prompt; a false positive skips approval

@@ -112,6 +112,44 @@ async function main() {
     ok('agent mode at the cap is unchanged (a resumable pause, no forced step)', ra.paused === true && !ma.calls.some((c) => (c.toolChoice as { type?: string } | undefined)?.type === 'none'));
   }
 
+  // ── 3b. Plan mode's reading budget: step 15 offers only the closers, and prose stays possible ───
+  {
+    const reads = (): Array<Record<string, unknown>> => [
+      { toolCalls: [{ toolName: 'readFile', input: { path: 'A.php' } }] },
+      ...Array.from({ length: 13 }, (_, i) => ({ toolCalls: [{ toolName: 'grep', input: { pattern: `b${i}`, path: '.' } }] })),
+    ];
+    const offered = (c: { tools: string[] } | undefined) => [...(c?.tools ?? [])].sort().join(',');
+
+    const planned = createMockModel([...reads(), { toolCalls: [{ toolName: 'exitPlanMode', input: { outcome: 'plan', title: 'Fix', interpretation: 'r', steps: [{ what: 'change it', files: ['A.php'], evidence: 'A.php:1' }] } }] }] as never, 'plan-budget');
+    const rp = await run(planned, 'plan');
+    const budgetCall = planned.calls[14];
+    ok('steps before the budget keep the read tools', offered(planned.calls[13]).includes('readFile'), offered(planned.calls[13]));
+    ok('the budget step offers only the closers', offered(budgetCall) === 'askUser,exitPlanMode', offered(budgetCall));
+    ok('and asks for a decision', JSON.stringify(budgetCall?.messages).includes('Reading budget used up'));
+    ok('so the turn ends on a plan, not a pause', !!(rp as { plan?: unknown }).plan && !rp.paused, JSON.stringify({ paused: rp.paused }));
+
+    const answered = createMockModel([...reads(), { text: 'It fails because of A.php:1.' }] as never, 'plan-budget-question');
+    const ra = await run(answered, 'plan');
+    ok('a plan-mode question can still be answered in prose on the budget step',
+      answered.calls.length === 15 && (answered.calls[14]?.toolChoice as { type?: string } | undefined)?.type !== 'required' && ra.text.includes('A.php:1'), `${answered.calls.length} model calls`);
+
+    const short = createMockModel([{ toolCalls: [{ toolName: 'readFile', input: { path: 'A.php' } }] }, { text: 'done' }] as never, 'plan-no-budget');
+    await run(short, 'plan');
+    ok('a short plan turn never sees the budget', !JSON.stringify(short.calls).includes('Reading budget used up'));
+  }
+
+  // ── 3c. Every model failed mid-turn: a resumable stop, never half a thought shipped as the answer ──
+  {
+    const m = createMockModel([
+      { reasoning: 'We need to investigate', toolCalls: [{ toolName: 'readFile', input: { path: 'A.php' } }] },
+      { error: new Error('TierMux: all 6 model candidates failed') },
+    ] as never, 'provider-cut');
+    const r = await run(m, 'agent');
+    ok('the turn pauses and names the provider stop', r.paused === true && (r as { stopReason?: string }).stopReason === 'provider' && !r.failed, JSON.stringify({ paused: r.paused, stop: (r as { stopReason?: string }).stopReason, failed: r.failed }));
+    ok('the reasoning is not promoted to the reply', !r.text.includes('We need to investigate'), JSON.stringify(r.text));
+    ok('the work done so far survives for Continue, once', (r.workMessages ?? []).filter((x) => x.role === 'tool').length === 1 && JSON.stringify(r.workMessages).includes('readFile'), JSON.stringify(r.workMessages).slice(0, 200));
+  }
+
   // ── 4. Evidence retention: a big read survives six more tool results in every mode ───
   {
     const steps: Array<Record<string, unknown>> = [{ toolCalls: [{ toolName: 'readFile', input: { path: 'A.php' } }] }];

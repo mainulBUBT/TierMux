@@ -4483,7 +4483,8 @@ import { handleToolStatus } from './handlers/toolStatus';
   // Message types scoped to one session's pane: when one carries a sessionId, the pane-bound
   // state is repointed at that session BEFORE its case body runs. 'switchSession' is included
   // so its body can use the returned `existed` flag.
-  const PANE_SCOPED = new Set(['switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'planData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'workReport', 'planProposed', 'planDiscarded', 'editApproval', 'permissionAsk', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
+  const continueButtons = new Map<string, HTMLButtonElement>();
+  const PANE_SCOPED = new Set(['autoContinue', 'switchSession', 'userEcho', 'assistantStart', 'agentStep', 'toolStatus', 'todos', 'planData', 'failoverNotice', 'selectionRationale', 'keyRotated', 'assistantMessage', 'assistantChunk', 'workReport', 'planProposed', 'planDiscarded', 'editApproval', 'permissionAsk', 'askUserPrompt', 'askUserDismissed', 'approvalDismissed', 'checkpoint', 'notice', 'error', 'busy']);
 
   // ---------- inbound messages ----------
   // Diagnostic ring of the last 150 host messages; `__tmLog()` in devtools prints them, which is
@@ -5131,8 +5132,15 @@ import { handleToolStatus } from './handlers/toolStatus';
           btn.addEventListener('click', () => { resume.remove(); send({ type: 'resume', requestId: newId() }); });
           resume.appendChild(btn);
           t.el.appendChild(resume);
+          continueButtons.set(msg.sessionId, btn);
         }
         scrollDown();
+        break;
+      }
+      case 'autoContinue': {
+        const btn = continueButtons.get(msg.sessionId);
+        continueButtons.delete(msg.sessionId);
+        if (btn?.isConnected) btn.click();
         break;
       }
       case 'workReport': {

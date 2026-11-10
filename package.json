@@ -251,6 +251,11 @@
         "command": "tiermux.verifyGrounding",
         "title": "Verify Grounding",
         "category": "TierMux"
+      },
+      {
+        "command": "tiermux.installBun",
+        "title": "Install bun for OpenCode Free Models",
+        "category": "TierMux"
       }
     ],
     "menus": {
@@ -351,6 +356,11 @@
     "configuration": {
       "title": "TierMux",
       "properties": {
+        "tiermux.agent.autoContinueRounds": {
+          "type": "number",
+          "default": 2,
+          "description": "How many times per message TierMux presses Continue itself when an agent turn stops unfinished after real progress (files changed or a todo completed). Each round is more model requests. 0 = always wait for you."
+        },
         "tiermux.agent.maxStepsPerTurn": {
           "type": "number",
           "default": 50,
@@ -598,6 +608,15 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically enable models newly discovered in the catalog. Models on providers you haven't enabled stay inactive regardless. Turn off to review each new model manually."
+        },
+        "tiermux.opencode.bunInstall": {
+          "type": "string",
+          "enum": [
+            "prompt",
+            "never"
+          ],
+          "default": "prompt",
+          "description": "Whether TierMux may offer to download bun into its own storage so OpenCode Zen's keyless free models work (the gate only admits the official client's network family). 'never' disables the offer; the Install bun command always works."
         }
       }
     }
@@ -636,6 +655,10 @@
     "test:e2e:plan-paths": "esbuild scripts/planPaths.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/planPaths.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planPaths.e2e.cjs",
     "test:e2e:code-intel": "esbuild scripts/codeIntel.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/codeIntel.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/codeIntel.e2e.cjs",
     "test:e2e:session-files": "esbuild scripts/sessionFiles.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/sessionFiles.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/sessionFiles.e2e.cjs",
+    "test:e2e:capacity-wait": "esbuild scripts/capacityWait.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/capacityWait.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/capacityWait.e2e.cjs",
+    "test:e2e:custom-endpoint": "esbuild scripts/customEndpoint.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/customEndpoint.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/customEndpoint.e2e.cjs",
+    "test:e2e:auto-continue": "esbuild scripts/autoContinue.e2e.ts --bundle --platform=node --format=cjs --outfile=dist/autoContinue.e2e.cjs && node dist/autoContinue.e2e.cjs",
+    "test:e2e:todo-merge": "esbuild scripts/todoMerge.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/todoMerge.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/todoMerge.e2e.cjs",
     "test:e2e:read-loop": "esbuild scripts/readLoop.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/readLoop.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/readLoop.e2e.cjs",
     "test:e2e:plan-decisions": "esbuild scripts/planDecisions.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/planDecisions.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planDecisions.e2e.cjs",
     "test:e2e:plan-resume": "esbuild scripts/planResume.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planResume.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planResume.e2e.cjs",
@@ -651,6 +674,9 @@
     "test:e2e:explore-batch": "esbuild scripts/exploreBatch.e2e.ts --bundle --platform=node --format=cjs --outfile=dist/exploreBatch.e2e.cjs && node dist/exploreBatch.e2e.cjs",
     "test:e2e:session-title": "esbuild scripts/sessionTitle.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/sessionTitle.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/sessionTitle.e2e.cjs",
     "test:e2e:quota-headers": "esbuild scripts/quotaHeaders.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/quotaHeaders.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/quotaHeaders.e2e.cjs",
+    "test:e2e:opencode-gate": "esbuild scripts/opencodeGate.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/opencodeGate.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/opencodeGate.e2e.cjs",
+    "probe:opencode": "esbuild scripts/opencodeKeyProbe.ts --bundle --platform=node --format=cjs --outfile=dist/opencodeKeyProbe.cjs && node dist/opencodeKeyProbe.cjs",
+    "test:e2e:key-entry": "esbuild scripts/keyEntry.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/keyEntry.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/keyEntry.e2e.cjs",
     "test:e2e:provider-override": "esbuild scripts/providerOverride.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/providerOverride.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/providerOverride.e2e.cjs",
     "test:e2e:catalog-shrink": "esbuild scripts/catalogShrink.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/catalogShrink.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/catalogShrink.e2e.cjs",
     "test:e2e:model-opt-out": "esbuild scripts/modelOptOut.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/modelOptOut.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/modelOptOut.e2e.cjs",
@@ -683,7 +709,10 @@
     "test:e2e:task-round-persist": "esbuild scripts/taskRoundPersist.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/taskRoundPersist.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/taskRoundPersist.e2e.cjs",
     "eval:models": "esbuild scripts/modelEval.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/modelEval.cjs --log-level=error && node -r ./scripts/vscodeMock.cjs dist/modelEval.cjs",
     "bench:agent": "esbuild scripts/agentBench.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/agentBench.cjs --log-level=error && node -r ./scripts/vscodeMock.cjs dist/agentBench.cjs",
-    "test:e2e:opencode-lane": "esbuild scripts/opencodeLane.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/opencodeLane.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/opencodeLane.e2e.cjs"
+    "test:e2e:opencode-lane": "esbuild scripts/opencodeLane.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/opencodeLane.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/opencodeLane.e2e.cjs",
+    "test:e2e:opencode-lane:bun-live": "command -v bun >/dev/null || { echo 'bun is required for the live costume check: the Zen network fingerprint refuses Node. Install it from https://bun.sh'; exit 2; } && esbuild scripts/opencodeLane.e2e.ts --bundle --platform=node --format=cjs --alias:vscode=$(pwd)/scripts/vscodeMockAlias.cjs --outfile=dist/opencodeLaneBun.e2e.cjs && LIVE=1 bun dist/opencodeLaneBun.e2e.cjs",
+    "test:e2e:bun-shim": "esbuild scripts/bunShim.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bunShim.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/bunShim.e2e.cjs",
+    "test:e2e:bun-install": "esbuild scripts/bunInstall.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bunInstall.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/bunInstall.e2e.cjs"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",
