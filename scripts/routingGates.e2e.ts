@@ -461,32 +461,32 @@ console.log('\n— the trivial table is ordered by SPEED, because latency is the
 console.log('\n— the head gate holds through the tail too: a blocked candidate can\'t outrank an eligible one (2026-09-23 fix) —');
 {
   __resetTaskRoundCounters();
-  // HEAD_MIN_TIER['agent'] = 'strong', HEAD_FAST_ENOUGH = 2. Neither model is in
-  // TASK_ROUTING['agent'], so both only ever reach the chain via the "ALWAYS pad" tail —
-  // this isolates the tail sort from the table loop's own (already-correct) gate.
-  // 'eligible-fast': mid tier but speedRank 2 (<= HEAD_FAST_ENOUGH) — fast buys its way in,
-  // NOT blocked, despite a worse (higher) intelligenceRank.
-  // 'blocked-slow': mid tier, speedRank 3 (> HEAD_FAST_ENOUGH) — below the floor and not
-  // fast enough, BLOCKED, but with a BETTER (lower) intelligenceRank. Before the fix the
-  // tail sorted purely by tier→rank with no gate check, so the better rank put this one
-  // ahead of the eligible one despite being blocked — the exact bug this fix closes.
+  // HEAD_MIN_TIER['agent'] = 'strong'. Neither model is in TASK_ROUTING['agent'], so both
+  // only ever reach the chain via the "ALWAYS pad" tail — this isolates the tail sort from
+  // the table loop's own (already-correct) gate.
+  // 'eligible-strong': strong tier, worse (higher) intelligenceRank — above the floor, eligible.
+  // 'blocked-mid': mid tier with a BETTER (lower) intelligenceRank — below the agent floor and,
+  //  since 2026-11-11, speed no longer buys the lead (the fast-mid head was the audit's
+  //  "slow AND weak on big tasks" root). BLOCKED, but must still trail as failover.
   const meta: Record<string, { intelligenceRank: number; speedRank: number; supportsTools: boolean; tags: string[] }> = {
-    'kilo::eligible-fast': { intelligenceRank: 5, speedRank: 2, supportsTools: true, tags: ['mid'] },
-    'kilo::blocked-slow': { intelligenceRank: 1, speedRank: 3, supportsTools: true, tags: ['mid'] },
+    'kilo::eligible-strong': { intelligenceRank: 5, speedRank: 2, supportsTools: true, tags: ['strong'] },
+    'kilo::blocked-mid': { intelligenceRank: 1, speedRank: 1, supportsTools: true, tags: ['mid'] },
   };
-  const fallback = [entry('kilo', 'blocked-slow', 0), entry('kilo', 'eligible-fast', 1)];
+  const fallback = [entry('kilo', 'blocked-mid', 0), entry('kilo', 'eligible-strong', 1)];
   const sources = makeSources(fallback, [], ['kilo']) as unknown as { catalog: { find: (p: string, m: string) => unknown } };
   sources.catalog.find = (p: string, m: string) => meta[`${p}::${m}`];
   setModelSources(sources as unknown as Parameters<typeof setModelSources>[0]);
   const sel = await selectModel([{ role: 'user', content: 'x' } as never], { taskKind: 'agent', requireTools: true });
   const chain = [sel.model, ...sel.fallbackChain];
-  ok('the eligible (fast) candidate leads, not the blocked one with the better raw rank',
-    sel.model === 'kilo::eligible-fast', chain.join(' → '));
+  ok('the eligible strong candidate leads, not the blocked mid with the better raw rank',
+    sel.model === 'kilo::eligible-strong', chain.join(' → '));
+  ok('a fast mid tier no longer buys the agent lead (2026-11-11)',
+    chain[0] === 'kilo::eligible-strong' && chain.includes('kilo::blocked-mid'), chain.join(' → '));
   ok('the blocked candidate is not lost — it still trails as failover (chain never empties)',
-    chain.includes('kilo::blocked-slow'), chain.join(' → '));
+    chain.includes('kilo::blocked-mid'), chain.join(' → '));
   ok('…and the popover explains why it isn\'t leading, not a generic rank label',
-    /may serve if no eligible model exists/.test(sel.rationale?.entries.find((e) => e.model === 'kilo::blocked-slow')?.reason ?? ''),
-    sel.rationale?.entries.find((e) => e.model === 'kilo::blocked-slow')?.reason ?? '<no entry>');
+    /may serve if no eligible model exists/.test(sel.rationale?.entries.find((e) => e.model === 'kilo::blocked-mid')?.reason ?? ''),
+    sel.rationale?.entries.find((e) => e.model === 'kilo::blocked-mid')?.reason ?? '<no entry>');
 }
 {
   __resetTaskRoundCounters();

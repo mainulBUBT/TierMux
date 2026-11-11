@@ -23,17 +23,18 @@ import { NoVisionModelError } from './errors';
  *  can claim it, never reported (see the skipList filter). */
 const PROVIDER_OFF = 'provider switched off in Manage Models & Keys';
 
-/** Layer-wise head floor (2026-09-22, user direction): the minimum quality tier allowed to
- *  LEAD each task kind — real work (agent/coding/debug/plan) leads only with frontier/strong.
- *  A below-floor row may still lead when it is fast (speedRank ≤ HEAD_FAST_ENOUGH): the
- *  curated groq/cerebras heads are mid-tier precisely because latency is the product there.
+/** Layer-wise head floor (2026-09-22, tightened 2026-11-11): the minimum quality tier allowed
+ *  to LEAD each task kind — real work (agent/coding/debug/plan) leads only with frontier/strong.
+ *  Until 2026-11-11 a below-floor row could buy the lead with speedRank ≤ 2 ("latency is the
+ *  product") — which in practice meant every curated fast-mid head led real work, and the
+ *  2026-11-11 audit traced "slow AND weak on big tasks" straight to it: the fast head was
+ *  neither fast enough to matter nor strong enough to finish. Speed no longer buys the lead
+ *  for a floored kind; the all-blocked fallback below still guarantees the chain never empties.
  *  Kinds absent from the map (trivial, vision) keep the legacy small/unknown-only gate. */
 const HEAD_MIN_TIER: Partial<Record<TaskKind, ModelTier>> = {
   agent: 'strong', coding: 'strong', debug: 'strong', plan: 'strong',
   chat: 'mid', longContext: 'mid',
 };
-/** A below-floor tier can still lead at this speedRank or better — fast buys its way in. */
-const HEAD_FAST_ENOUGH = 2;
 
 /** Auto leads with windows that can hold a long session (2026-09-24, user direction). A smaller
  *  or undeclared window (budgeted as 32k, executionProfile.ts) forces early compaction and the
@@ -64,7 +65,7 @@ function headGateSkipReason(taskKind: TaskKind, tier: ModelTier, speed: number):
   }
   const floor = HEAD_MIN_TIER[taskKind];
   if (floor === undefined) return undefined;
-  if (TIER_ORDER[tier] > TIER_ORDER[floor] && speed > HEAD_FAST_ENOUGH) {
+  if (TIER_ORDER[tier] > TIER_ORDER[floor]) {
     return `${tier} tier, speedRank ${speed} — below the ${taskKind} head floor; may serve if no eligible model exists`;
   }
   if (speed >= 4) {

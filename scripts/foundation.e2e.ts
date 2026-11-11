@@ -1364,7 +1364,13 @@ async function main() {
   // turn used todoWrite, one read-only sub-agent, at most one fix pass.
   {
     const { __setSubagentModelForTests } = await import('../src/agent/core/subagent');
-    const todos = [{ content: 'Add min:0 validation to distance', status: 'completed' }];
+    // 3 items: the audit gate (2026-11-11) runs only on multi-todo turns — one declared-done
+    // item is trivia, three is a plan worth checking.
+    const todos = [
+      { content: 'Locate the distance rule', status: 'completed' },
+      { content: 'Add min:0 validation to distance', status: 'completed' },
+      { content: 'Report the change', status: 'pending' },
+    ];
 
     // (a) the auditor finds no evidence → the turn gets one more pass, then ships
     {

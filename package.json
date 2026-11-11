@@ -652,7 +652,7 @@
     "test:e2e:inline-tool-dialect": "esbuild scripts/inlineToolDialect.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/inlineToolDialect.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/inlineToolDialect.e2e.cjs",
     "preview:plan": "node scripts/buildPlanPreview.mjs",
     "test:e2e:tool-offer": "esbuild scripts/toolOffer.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/toolOffer.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/toolOffer.e2e.cjs",
-    "test:e2e:plan-paths": "esbuild scripts/planPaths.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/planPaths.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planPaths.e2e.cjs",
+    "test:e2e:plan-paths": "esbuild scripts/planPaths.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/planPaths.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planPaths.e2e.cjs",
     "test:e2e:code-intel": "esbuild scripts/codeIntel.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/codeIntel.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/codeIntel.e2e.cjs",
     "test:e2e:session-files": "esbuild scripts/sessionFiles.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/sessionFiles.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/sessionFiles.e2e.cjs",
     "test:e2e:capacity-wait": "esbuild scripts/capacityWait.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/capacityWait.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/capacityWait.e2e.cjs",

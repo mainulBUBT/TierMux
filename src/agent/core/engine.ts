@@ -1013,7 +1013,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // sub-agent, at most one fix pass, skipped on abort or a stuck stop.
   let auditOutcome: AgentResult['auditOutcome'];
   const completedTodos = (lastTodos ?? []).filter((t) => t.status === 'completed');
-  if ((opts.auditTodos ?? DEFAULT_AUDIT_TODOS) && opts.mode === 'agent' && completedTodos.length > 0
+  if ((opts.auditTodos ?? DEFAULT_AUDIT_TODOS) && opts.mode === 'agent' && completedTodos.length > 0 && (lastTodos?.length ?? 0) >= 3
     && !opts.abortSignal?.aborted && !stuckSignature && !askDismissed && !providerCut) {
     try {
       const list = completedTodos.map((t, i) => `${i + 1}. ${t.content}`).join('\n');

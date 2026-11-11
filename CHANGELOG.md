@@ -7,6 +7,19 @@ All notable changes to TierMux are documented here. The format is loosely
 
 ### Changed
 
+- **Real work leads with strong models again.** Since 2026-09-22 a below-floor tier could buy the
+  agent/coding/debug/plan LEAD with speedRank ≤ 2 — in practice every curated fast-mid head led
+  real work, and the 2026-11-11 audit traced "slow AND weak on big tasks" straight to it. Speed no
+  longer buys a floored lead; the all-blocked fallback still guarantees the chain never empties.
+- **The plan-mode file map carries symbols** (Aider's repo-map lesson, regex-sized): one ripgrep
+  pass over PHP/TS/JS/Py files annotates the small-tree map with up to 10 declared names per file
+  (`OrderController [placeOrder, refund]`) — the plan's first read lands on the right file instead
+  of the first plausible name.
+- **Research sub-agents run to 30 steps** (was 15): an unfamiliar codebase routinely needed more
+  than 15 read/grep steps; the budget is the subagent's isolated context (only its summary
+  returns), not its step count. Read-only by design stays.
+- **The todo audit fires only on multi-todo turns** (≥3 items): one declared-done item is trivia,
+  three is a plan worth checking — and the audit pass is a full-context model call.
 - **Week-2 harness fixes: long turns stay on track, and verification stops costing the whole
   suite.**
   - *Focus pulse (Cline Focus-Chain style):* on every 6th step of a turn, when the todo list has

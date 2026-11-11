@@ -27,7 +27,7 @@ export interface SubagentOpts {
   abortSignal?: AbortSignal;
   /** Registry name of the agent to run (see agents.ts); defaults to `explore`. */
   agent?: string;
-  /** Max sub-agent steps — default 8, capped at 15. */
+  /** Max sub-agent steps — default 8, capped at 30. */
   maxSteps?: number;
   /** Test seam: inject a model directly instead of routing through the live picker. */
   model?: LanguageModelV4;
@@ -79,7 +79,10 @@ export function resolveAgent(name?: string): AgentDef {
 
 export async function runSubagent(opts: SubagentOpts): Promise<SubagentResult> {
   const def = resolveAgent(opts.agent);
-  const maxSteps = Math.min(Math.max(1, opts.maxSteps ?? def.maxSteps ?? 8), 15);
+  // Cap 30 (was 15, 2026-11-11): a real investigation of an unfamiliar codebase routinely
+  // needed more than 15 read/grep steps; the budget the parent pays for is the subagent's
+  // isolated context, not its step count — and only the synthesized summary comes back.
+  const maxSteps = Math.min(Math.max(1, opts.maxSteps ?? def.maxSteps ?? 8), 30);
   diagLog('subagent.start', `agent=${def.name} task="${opts.task.slice(0, 80)}" maxSteps=${maxSteps}`);
 
   const tools = subagentTools(opts, def.tools);

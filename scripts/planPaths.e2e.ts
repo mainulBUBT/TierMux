@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { ProposedPlan } from '../src/shared/types';
+import { attachSymbolsToMap } from '../src/context/fileMap';
 import { createExitPlanModeTool } from '../src/agent/core/tools/v3/exitPlanMode';
 import { checkPlanPaths } from '../src/agent/core/tools/v3/planPathCheck';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
@@ -67,6 +68,16 @@ async function main() {
   ok('a file the user attached counts', !isError(await withMsgs([{ role: 'user', content: 'Context — file `src/a.ts` (lines 1-3):\n```\nl1\nl2\n```' }])));
   ok('a path merely named in the request does not', isError(await withMsgs([{ role: 'user', content: 'fix the bug in src/a.ts' }])));
   ok('no transcript, no check (sub-agent / bare tool)', !isError(await submit([{ what: 'Edit a', files: ['src/a.ts'], evidence: 'src/a.ts:2' }])));
+
+  // fileMap symbol annotation (2026-11-11): the small-tree map gains per-file declared names —
+  // pure attachSymbolsToMap, so the prompt shape (one line per directory) is unchanged.
+  {
+    const annotated = attachSymbolsToMap(
+      './: a.php, b.ts, notes.md\nsrc/: c.py',
+      new Map([['a.php', ['OrderController', 'placeOrder']], ['src/c.py', ['build_order']]]));
+    ok('symbols ride inside the map lines', annotated.includes('a.php [OrderController, placeOrder]') && annotated.includes('c.py [build_order]'), annotated);
+    ok('files without symbols are untouched', annotated.includes('b.ts, notes.md') && !annotated.includes('notes.md ['), annotated);
+  }
 
   fs.rmSync(root, { recursive: true, force: true });
   console.log(bad === 0 ? '\nPlan paths are checked.' : `\n${bad} FAILED`);

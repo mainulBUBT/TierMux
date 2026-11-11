@@ -17,7 +17,59 @@ export async function gatherFileMap(): Promise<string | undefined> {
       resolve(String(stdout ?? '').split('\n').filter(Boolean));
     });
   });
-  return files.length ? formatFileMap(files) : undefined;
+  if (!files.length) return undefined;
+  const base = formatFileMap(files);
+  // Aider's repo-map lesson, the TierMux-sized way: file NAMES say what lives where, symbol
+  // names say what a file DOES — the pair skips the first read of every wrong candidate. One
+  // rg pass over code files, capped per file; any failure keeps the plain name map.
+  if (files.length <= MAX_FILES_LISTED) {
+    const symbols = await new Promise<Map<string, string[]> | undefined>((resolve) => {
+      execFile(rgPath,
+        ['-o', '--no-heading', '-g', '*.{php,ts,tsx,js,jsx,py}', '--max-count', String(SYMS_PER_FILE), DECL_RE],
+        { cwd: root, timeout: 4000, maxBuffer: 8 * 1024 * 1024 },
+        (_err, stdout) => {
+          if (!stdout) return resolve(undefined);
+          const per = new Map<string, string[]>();
+          for (const line of String(stdout).split('\n')) {
+            const sep = line.lastIndexOf(':');
+            if (sep <= 0) continue;
+            const file = line.slice(0, sep).replace(/\\/g, '/').replace(/^\.\//, '');
+            const name = declName(line.slice(sep + 1));
+            if (!name) continue;
+            const list = per.get(file) ?? [];
+            if (list.length < SYMS_PER_FILE && !list.includes(name)) list.push(name);
+            per.set(file, list);
+          }
+          resolve(per.size ? per : undefined);
+        });
+    });
+    return symbols ? attachSymbolsToMap(base, symbols) : base;
+  }
+  return base;
+}
+
+/** Declaration shapes across PHP, TS/JS and Python — full match printed, the NAME extracted
+ *  afterwards (rg has no lookahead and two alternations need two capture groups). */
+const DECL_RE = '^(?:export )?(?:public |abstract |final |static |async )*(?:function|class|interface|trait|enum|def) +[A-Za-z_][A-Za-z0-9_]*|^(?:export )?(?:const|let) +[A-Za-z_][A-Za-z0-9_]*';
+const SYMS_PER_FILE = 10;
+
+/** The declared identifier at the end of a matched declaration line. */
+function declName(match: string): string | undefined {
+  return /[A-Za-z_][A-Za-z0-9_]*$/.exec(match.trim())?.[0];
+}
+
+/** Pure: annotate small-tree map lines with each file's symbols — `OrderController [placeOrder,
+ *  refund]` — names riding inside the existing one-line-per-directory shape. Exported for e2e. */
+export function attachSymbolsToMap(map: string, symbols: Map<string, string[]>): string {
+  return map.split('\n').map((line) => {
+    const ci = line.indexOf('/: ');
+    if (ci === -1) return line;
+    const dir = line.slice(0, ci) === '.' ? '' : `${line.slice(0, ci)}/`;
+    return line.slice(0, ci + 3) + line.slice(ci + 3).split(', ').map((name) => {
+      const syms = symbols.get(dir + name);
+      return syms?.length ? `${name} [${syms.join(', ')}]` : name;
+    }).join(', ');
+  }).join('\n');
 }
 
 /** Small tree: every file, one line per directory. Big tree: directories with file counts,
