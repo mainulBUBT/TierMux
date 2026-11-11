@@ -427,8 +427,10 @@ export function isFreeLimitReached(message: string | undefined): boolean {
 export function noteModelFailure(platform: string, modelId: string, status: number | undefined, toolsOffered: boolean, message?: string): void {
   if (!sources) return;
   if (status === 404) sources.secrets.markDeprecated?.(platform as never, modelId);
-  // A 429 carrying the same "unavailable" text is still a MOMENT, not the model (Zen rate-limits
-  // ling-3.1-flash-free with it, live 2026-10-06) — 400/401 mean the model itself; 429 does not.
+  // A 429 carries the same text when Zen rate-limits a model (ling-3.1-flash-free, live
+  // 2026-10-06) — a moment, not a dead model, so 429 stays OUT of this dead-mark branch (the
+  // free-limit branch below and the plain cooldown own it). 30d434b folded 429 in here and a
+  // throttled-but-healthy model sat out an hour.
   else if ((status === 400 || status === 401) && isModelUnavailable(message)) sources.secrets.markDeprecated?.(platform as never, modelId, 3_600_000);
   else if (status === 429 && isFreeLimitReached(message)) {
     sources.secrets.markDeprecated?.(platform as never, modelId, 900_000);

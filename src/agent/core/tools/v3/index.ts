@@ -7,6 +7,7 @@ export { createEditFileTool } from './editFile';
 export { createWriteFileTool, createDeleteFileTool } from './filesystemOps';
 export { createListDirTool, createGlobTool, createGrepTool } from './search';
 export { createRunCommandTool } from './runCommand';
+export { createTaskOutputTool } from './taskOutput';
 export { createTodoWriteTool } from './todoWrite';
 export { createGetDiagnosticsTool } from './getDiagnostics';
 export { createAskUserTool } from './askUser';
@@ -23,6 +24,7 @@ import { createEditFileTool } from './editFile';
 import { createWriteFileTool, createDeleteFileTool } from './filesystemOps';
 import { createListDirTool, createGlobTool, createGrepTool } from './search';
 import { createRunCommandTool } from './runCommand';
+import { createTaskOutputTool } from './taskOutput';
 import { createTodoWriteTool } from './todoWrite';
 import { createGetDiagnosticsTool } from './getDiagnostics';
 import { createAskUserTool } from './askUser';
@@ -34,6 +36,7 @@ import { checkPlanPaths } from './planPathCheck';
 import { createOutlineTool, createFindSymbolTool, createReferencesTool, createDefinitionTool, createHoverTool } from './codeIntel';
 import { createWebSearchTool } from '../network/webSearch';
 import { createFetchUrlTool } from '../network/fetchUrl';
+import { createBrowserVerifyTool } from '../network/browserVerify';
 import { createMcpTools } from '../mcp/mcp';
 import { getMcpManager } from '../mcp/manager';
 
@@ -48,12 +51,23 @@ export const READ_ONLY_TOOLS = new Set([
   'exitPlanMode',
   // Returns instructions text; anything the skill then asks for goes through its own tool's gate.
   'skill',
+  // Observes/stops background tasks the agent itself started — the spawn already went through
+  // runCommand's approval; stopping only removes a process, it never starts anything.
+  'taskOutput',
+  // Drives the user's own headless Chrome against a URL the agent names and reports verdicts —
+  // observe-only (subresources are policy-gated inside the tool), so every mode could auto-run
+  // it; offered in agent mode only because a verification pass has no point mid-plan/question.
+  'browserVerify',
 ]);
 
 export interface ToolsetBindings {
   abortSignal?: AbortSignal;
   sessionId?: string;
   requestId?: string;
+  /** Call-time probe: does the CURRENTLY routed model accept images? browserVerify gates its
+   *  screenshot on this at execute() time — routing can switch models mid-session, so a
+   *  session-start snapshot would go stale on failover. */
+  visionCapable?: () => boolean;
   onTodos?: (todos: TodoItem[]) => void;
   currentTodos?: () => TodoItem[] | undefined;
   /** Mid-turn clarifying-question channel — the toolset binds it as the `askUser` tool.
@@ -156,6 +170,12 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
     editFile: createEditFileTool(bindings),
     writeFile: createWriteFileTool(bindings),
     deleteFile: createDeleteFileTool(bindings),
-    runCommand: createRunCommandTool(bindings),
+    // `background: true` (and the taskOutput tool that reads/stops those tasks) is agent-mode
+    // only: plan/ask have no approval-free way to babysit a server, and sub-agents' read-only
+    // runCommand refuses it outright. The policy path is unchanged — it reads the command from
+    // the input, so a background dev server costs the same approval as a synchronous one.
+    runCommand: createRunCommandTool({ ...bindings, allowBackground: true }),
+    taskOutput: createTaskOutputTool(bindings),
+    browserVerify: createBrowserVerifyTool(bindings),
   };
 }

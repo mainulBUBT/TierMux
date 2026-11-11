@@ -15,6 +15,7 @@ import { PRODUCT_NAME } from './shared/branding';
 import { SETTINGS_META, defaultForSetting } from './settingsMeta';
 import { AllModelsFailedError } from './router/errors';
 import { routeOnceOrUndefined, utilityModelPreference } from './agent/core/routeOnce';
+import { killSessionTasks } from './agent/core/tools/taskRegistry';
 import { peekTopModel, rationaleForServed, type SelectionRationale as PickerRationale } from './router/picker';
 import type { McpManager } from './mcp/mcpManager';
 import { CheckpointManager, type SerializedCheckpoint } from './edits/checkpoints';
@@ -1097,6 +1098,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
     this.stopRun(id); // cancel only this session's run — it's about to be deleted
+    killSessionTasks(id); // its background tasks must not orphan past the session (Stop alone ends a TURN, not the server)
     this.sessions.delete(id);
     this.statusOf.delete(id);
     this.store.remove(id);

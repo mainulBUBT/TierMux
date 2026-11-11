@@ -11,7 +11,7 @@ import { loadProjectRules } from './projectRules';
 import { loadUserMemory } from './userMemory';
 import { currentBranch, statusLines } from '../edits/gitSnapshot';
 import { resolveVerifyCommand } from '../agent/core/tools/workspace/verifyCommand';
-import { gatherFileMap } from './fileMap';
+import { gatherProjectMap, formatFileMap, formatSymbolMap, attachSymbolsToMap, MAX_FILES_LISTED } from './fileMap';
 
 /** Injection cap for project rules — loadProjectRules already caps at 8K, but a full 8K of
  *  rules on top of memory+env crowds small free-model context windows; 4K is the sane slice. */
@@ -36,8 +36,11 @@ export interface PromptContext {
   rules: string;
   memory: string;
   env: EnvFacts;
-  /** The workspace's file layout — rendered for plan mode only (see composeSystemPrompt). */
+  /** The workspace's file layout — plan mode renders it (see composeSystemPrompt). */
   fileMap?: string;
+  /** `path — symbol, symbol` sketch of source files, freshest first — rendered for agent/ask
+   *  turns. Undefined when the symbol map is off (setting or small model window). */
+  symbolMap?: string;
 }
 
 async function gatherEnv(): Promise<EnvFacts> {
@@ -62,25 +65,48 @@ async function gatherEnv(): Promise<EnvFacts> {
   return env;
 }
 
-let cache: { at: number; value: PromptContext } | undefined;
+let cache: { at: number; value: PromptContext; budget?: number } | undefined;
 
-export async function gatherPromptContext(): Promise<PromptContext> {
-  if (cache && Date.now() - cache.at < TTL_MS) return cache.value;
+/** `symbolBudget` — chars for the source-symbol sketch, from the routed model's window
+ *  (engine computes symbolBudgetForWindow). undefined skips the sketch entirely; the cache is
+ *  keyed on it so a small-window turn never reuses a big-window sketch. */
+export async function gatherPromptContext(symbolBudget?: number): Promise<PromptContext> {
+  if (cache && Date.now() - cache.at < TTL_MS && cache.budget === symbolBudget) return cache.value;
   // Rules, memory and the environment block are independent reads — awaiting them
   // sequentially made the pre-turn gate pay the sum of five fs/git round-trips on every
   // message (2026-09-19). Run them concurrently; each is individually guarded.
-  const [rules, memory, env, fileMap] = await Promise.all([
+  const [rules, memory, env, projectMap, symbolsOn] = await Promise.all([
     loadProjectRules().catch(() => ''),
     loadUserMemory().catch(() => ''),
     gatherEnv(),
-    gatherFileMap().catch(() => undefined),
+    gatherProjectMap().catch(() => undefined),
+    symbolMapEnabled(),
   ]);
   const safeRules = rules.length > MAX_RULES_INJECT
     ? rules.slice(0, MAX_RULES_INJECT) + '\n…[project rules truncated]'
     : rules;
-  const value: PromptContext = { rules: safeRules, memory, env, fileMap };
-  cache = { at: Date.now(), value };
+  // Plan mode renders the symbol-ANNOTATED tree (names + inline symbols, 09b961b); agent/ask
+  // render the flat sketch below instead — never both.
+  const fileMap = projectMap
+    ? (projectMap.symbols.size && projectMap.files.length <= MAX_FILES_LISTED
+        ? attachSymbolsToMap(formatFileMap(projectMap.files), projectMap.symbols)
+        : formatFileMap(projectMap.files))
+    : undefined;
+  const symbolMap = projectMap && symbolsOn && symbolBudget !== undefined && projectMap.symbols.size
+    ? formatSymbolMap(projectMap, symbolBudget)
+    : undefined;
+  const value: PromptContext = { rules: safeRules, memory, env, fileMap, symbolMap };
+  cache = { at: Date.now(), value, budget: symbolBudget };
   return value;
+}
+
+/** `tiermux.agent.symbolMap`, default on — a per-workspace opt-out for monorepos whose sketch
+ *  crowds the prompt (and for anyone who pays per input token). Guarded: headless hosts degrade
+ *  to ON, never to an error. */
+function symbolMapEnabled(): boolean {
+  try {
+    return vscode.workspace.getConfiguration('tiermux.agent').get<boolean>('symbolMap', true);
+  } catch { return true; }
 }
 
 /** Test hook — drops the memoized snapshot so the next gather re-reads everything. */

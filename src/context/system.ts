@@ -55,6 +55,9 @@ const MODE_TAIL: Record<Mode, string> = {
     'You are in AGENT mode: the user expects the work DONE, not described.',
     'To change a file you MUST call editFile / writeFile / runCommand — code printed in chat changes nothing. Carry the task through: if a change touches other files (imports, call sites, routes, configs), update ALL of them in the same turn — a half-applied refactor is a broken codebase.',
     'When the environment names a verify command, the host runs it after your edits and hands you any failure — running it yourself only repeats that work, so do it only when the user asks; without one, verify the change the way the project verifies itself. Never end a turn on "shall I proceed?" — proceed. Answer in prose without tools only when the user asked a question or a proposal; never end with unapplied code blocks.',
+    // browserVerify guardrails — same pattern as other tool guardrail lines: when to call it,
+    // then the negative so a weak model does not fire a browser at backend-only edits.
+    'After a change to UI-rendering code (component, template, style, client script) and a dev server is or can be running, verify the page with browserVerify BEFORE reporting done — its console/HTTP/nav verdicts are evidence, and its errors are your next fix. Start the server with runCommand {"background":true} and keep working; browserVerify reads it while it runs. Do NOT browser-verify backend-only or non-visual changes, and do not report a UI change as verified from code reading alone.',
     DELEGATE_LINE,
   ].join('\n'),
   // The plan→execution boundary is the exitPlanMode TOOL CALL, so there is no step template
@@ -105,6 +108,12 @@ export function composeSystemPrompt(mode: Mode, ctx?: PromptContext, todos?: Rea
   if (ctx.memory.trim()) blocks.push(`<user_memory>\n${ctx.memory.trim()}\n</user_memory>`);
   if (ctx.env) blocks.push(`<environment_context>\n${formatEnvBlock(ctx.env)}\n</environment_context>`);
   if (mode === 'plan' && ctx.fileMap) blocks.push(`<project_files>\nThe workspace's files (.gitignore applied). Read the relevant ones directly — together, in one step — instead of listing directories first.\n${ctx.fileMap}\n</project_files>`);
+  // Agent/ask get the SYMBOL sketch, not the raw name tree — `Widget — render, mount` says
+  // which file to open, so a turn spends its first step reading code instead of grepping for
+  // names. Rendered only when a budget produced a sketch (the engine always passes one in
+  // production); a bare context (small model, setting off, no source files) adds nothing, so
+  // Q&A prompts stay lean.
+  if (mode !== 'plan' && ctx.symbolMap) blocks.push(`<project_files>\nSource files with their definitions (freshest first; non-source layout via listDir/glob):\n${ctx.symbolMap}\n</project_files>`);
   const tail = blocks.length ? `\n\n${blocks.join('\n\n')}` : '';
   return `${BASE}\n\n${MODE_TAIL[mode]}${tail}${todoBlock}${mcpBlock}`;
 }

@@ -1,5 +1,8 @@
 // runCommand — the toolApproval policy decides IF a command runs; this tool only runs it and
 // reports. Exit code is always reported so a failing test/build never looks like success.
+// `background: true` hands the process to the task registry and returns immediately — same
+// approval path (the policy reads the command from the input, the flag changes only WHERE the
+// process lives), because a dev server should not cost the turn its whole timeout.
 
 import { tool } from 'ai';
 import { z } from 'zod';
@@ -8,6 +11,7 @@ import { resolveWorkspacePath } from '../resolvePath';
 import { runShell } from '../shell';
 import { effectiveRootUri } from '../workspaceRoot';
 import { isReadOnlyCommand } from '../../../../edits/commandClassify';
+import { taskRegistryFor } from '../taskRegistry';
 
 const MAX_CHARS = 30_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -20,6 +24,8 @@ export interface CommandBindings {
   requestId?: string;
   /** Accept only classifier-read-only commands (callers with no approval flow). */
   readOnly?: boolean;
+  /** Offer `background: true` — agent mode only (plan/ask and sub-agents stay synchronous). */
+  allowBackground?: boolean;
 }
 
 export function createRunCommandTool(bindings: CommandBindings = {}) {
@@ -27,19 +33,23 @@ export function createRunCommandTool(bindings: CommandBindings = {}) {
     description:
       'Run a shell command in the workspace and return its output (stdout+stderr+exit code). '
       + 'Commands are killed after the default timeout (~2 min) — for installs/builds/test '
-      + 'suites pass `timeoutMs` up front (capped at 10 min). Use it to OBSERVE — run the failing '
-      + 'test, query the data, read a log, check git history — not to read or edit files (readFile/editFile do that).',
+      + 'suites pass `timeoutMs` up front (capped at 10 min). For a DEV SERVER, watcher or '
+      + 'anything that must KEEP RUNNING while you work, pass `background: true` instead — it '
+      + 'returns a task id at once and you read it later with the taskOutput tool. '
+      + 'Use it to OBSERVE — run the failing test, query the data, read a log, check git history — '
+      + 'not to read or edit files (readFile/editFile do that).',
     inputExamples: [
       { input: { command: 'git log --oneline -10' } },
       { input: { command: 'git diff --stat' } },
-      { input: { command: 'tail -n 100 logs/app.log' } },
+      { input: { command: 'npm run dev', background: true } },
     ],
     inputSchema: z.object({
       command: z.string().describe('The shell command to run.'),
       cwd: z.string().optional().describe('Workspace-relative working directory (optional).'),
       timeoutMs: z.number().optional().describe('Timeout for this command in milliseconds (capped at 600000).'),
+      background: z.boolean().optional().describe('Run as a background task that outlives this call (dev servers, watchers). Returns a task id immediately; read/stop it with taskOutput.'),
     }),
-    execute: async ({ command, cwd, timeoutMs }, options: { abortSignal?: AbortSignal } = {}): Promise<string | { error: string }> => {
+    execute: async ({ command, cwd, timeoutMs, background }, options: { abortSignal?: AbortSignal } = {}): Promise<string | { error: string }> => {
       try {
         if (!command) return { error: 'Missing required "command" argument.' };
         if (bindings.readOnly && !isReadOnlyCommand(command)) {
@@ -49,6 +59,19 @@ export function createRunCommandTool(bindings: CommandBindings = {}) {
         // Same containment as every other path-taking tool: `cwd: "../"` must not leave the
         // workspace (review 2026-09-05 — grep and runCommand were the two tools without it).
         const workdir = cwd && cwd.trim() ? resolveWorkspacePath(cwd).fsPath : root;
+
+        if (background) {
+          if (!bindings.allowBackground) {
+            return { error: 'Background tasks are available in agent mode only — run the command synchronously here.' };
+          }
+          const { task, error } = taskRegistryFor(bindings.sessionId)
+            .start(command, { cwd: workdir, sessionId: bindings.sessionId });
+          if (error || !task) return { error: error ?? 'Failed to start the background task.' };
+          if (task.status === 'exited' && task.note?.startsWith('spawn failed')) return task.note;
+          return `Background task ${task.id} started: ${command}\n`
+            + `Read new output: taskOutput {"taskId":"${task.id}"} · stop: taskOutput {"taskId":"${task.id}","action":"stop"} · list all: taskOutput {"action":"list"}`;
+        }
+
         const merged = bindings.abortSignal || options.abortSignal
           ? AbortSignal.any([bindings.abortSignal, options.abortSignal].filter((s): s is AbortSignal => !!s))
           : undefined;

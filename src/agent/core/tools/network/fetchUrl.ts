@@ -35,7 +35,7 @@ export function createFetchUrlTool() {
         if (result.title) parts.push(result.title);
         if (result.finalUrl && result.finalUrl !== url) parts.push(`Final URL: ${result.finalUrl}`);
         if (result.dateWarning) parts.push(result.dateWarning);
-        parts.push(result.content || '[No readable content extracted — the page may be JavaScript-rendered.]');
+        parts.push(result.content || '[No readable content extracted — the page may be JavaScript-rendered. browserVerify can render it in a real browser if this page matters to the task.]');
 
         // Tag AFTER capping so the safety notice and closing tag cannot be truncated off. Untagged
         // web text used to sit next to a live runCommand tool with zero framing.

@@ -286,7 +286,7 @@ function toolResultToText(output: unknown): string {
   return typeof output === 'string' ? output : JSON.stringify(output ?? '');
 }
 
-function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): ChatMessage[] {
+export function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): ChatMessage[] {
   const msgs: ChatMessage[] = [];
   for (const msg of prompt) {
     if (msg.role === 'system') {
@@ -518,7 +518,13 @@ export function createRouterProvider(providerOpts: RouterProviderOptions = {}): 
 }
 
 /** True when the text ends in the same block three times in a row — a decoding loop. Live
- *  repro 2026-09-06: a free model repeated one paragraph ~30 times to the token cap. */
+ *  repro 2026-09-06: a free model repeated one paragraph ~30 times to the token cap.
+ *  2026-11-12: token-level collapse added. The exact-suffix check missed a model that
+ *  degenerated into `function. Function. f f f. functions.` (live repro 2026-11-11) — case and
+ *  spelling churn on every repetition, so no byte-identical tail ever forms. The word-collapse
+ *  metric catches that class: after 60+ words, one word alone covering ≥55% of the reply, or a
+ *  vocabulary shrunk below 12% unique. Real prose sits far above both lines (a varied list of
+ *  100 identifiers is 100% unique), so a healthy answer cannot trip it. */
 export function isDegenerateRepeat(text: string): boolean {
   if (text.length < 600) return false;
   const max = Math.min(1500, Math.floor(text.length / 3));
@@ -526,7 +532,21 @@ export function isDegenerateRepeat(text: string): boolean {
     const tail = text.slice(-period);
     if (text.endsWith(tail + tail + tail)) return true;
   }
-  return false;
+  return isWordCollapse(text);
+}
+
+function isWordCollapse(text: string): boolean {
+  // Alphanumeric runs as tokens — punctuation churn (`function.` vs `function`) folds to one
+  // token, braces/operators in code listings count as nothing, and NUMBERS count (dropping
+  // them made a numeric-findings list look collapsed: its variety WAS the numbers).
+  const words = text.toLowerCase().split(/[^a-z0-9']+/).filter(Boolean);
+  if (words.length < 60) return false;
+  const counts = new Map<string, number>();
+  for (const w of words) counts.set(w, (counts.get(w) ?? 0) + 1);
+  let top = 0;
+  for (const n of counts.values()) if (n > top) top = n;
+  if (top >= Math.ceil(words.length * 0.55)) return true;
+  return counts.size / words.length < 0.12;
 }
 
 /** Degenerate stream end: reasoning present, NO text, NO tool calls. ONE continuation is

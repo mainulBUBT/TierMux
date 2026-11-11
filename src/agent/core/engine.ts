@@ -25,6 +25,7 @@ import { recordOutcome, findCatalogModel, peekTopModel } from '../../router/pick
 import { resolveExecutionProfile } from '../executionProfile';
 import { composeSystemPrompt } from '../../context/system';
 import { gatherPromptContext } from '../../context/promptContext';
+import { symbolBudgetForWindow } from '../../context/fileMap';
 import { diagLog } from '../../util/diag';
 import type { WorkReportData } from '../../shared/workReport';
 import { classifyConversation, attachmentKindsFromContent, type TaskKind } from '../routing';
@@ -94,9 +95,16 @@ function blocksToUserContent(content: ChatContentBlock[] | string): string | Arr
         const mediaType = url.slice(5, url.indexOf(';')) || 'image/png';
         parts.push({ type: 'file', data: url, mediaType });
       }
+    } else if (b?.type === 'file') {
+      // Raw PDF bytes (scanned attachment the webview could not render into pages). Forwarded
+      // as an AI SDK file part: a carriesRawPdf provider (Gemini inlineData) delivers them, every
+      // other provider swaps the block for an explicit not-delivered note in stripFileBlocks —
+      // the model is told what it did NOT get instead of guessing at the file's contents.
+      const f = (b as { file?: { file_data?: unknown; mime?: unknown } }).file;
+      if (typeof f?.file_data === 'string' && f.file_data.startsWith('data:')) {
+        parts.push({ type: 'file', data: f.file_data, mediaType: typeof f.mime === 'string' && f.mime ? f.mime : 'application/pdf' });
+      }
     }
-    // Raw PDF `file` blocks: dropped here — the old extractAttachments pipeline converted
-    // them host-side before they ever reached the engine; v3.1 restores that flow.
   }
   return parts.length === 1 && parts[0].type === 'text' ? parts[0].text : parts;
 }
@@ -385,6 +393,13 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     },
     onPlanProposed: (plan) => { proposedPlan = plan; },
     skills: opts.skills,
+    // Call-time vision probe for browserVerify's screenshot gate. `served` (declared below,
+    // updated by onModelSelected) is the model that LAST settled a step — failover can switch
+    // models mid-session, so the gate must read the live one, not a session-start snapshot.
+    visionCapable: () => {
+      if (!served.platform || !served.model) return false;
+      try { return findCatalogModel(served.platform, served.model)?.supportsVision === true; } catch { return false; }
+    },
   }) as ToolSet, (sig, count) => {
     if (count >= REPEAT_READ_LIMIT && !stuckSignature) {
       stuckSignature = sig;
@@ -498,9 +513,14 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   };
 
   // System prompt + context gathered ONCE per turn: both passes share the identical prefix
-  // (provider prompt-cache friendly) and the async reads never happen per-pass.
+  // (provider prompt-cache friendly) and the async reads never happen per-pass. The symbol
+  // sketch's budget comes from the turn's model class (autoHead = the picker's head; a pin
+  // resolves its own window below in currentProfile, but the sketch is composed pre-turn).
   const sessionFilesBlock = await opts.sessionFiles?.().catch(() => undefined);
-  const system = composeSystemPrompt(opts.mode, await gatherPromptContext(), opts.todos,
+  const symbolBudget = opts.mode === 'agent' || opts.mode === 'ask'
+    ? symbolBudgetForWindow(autoHead?.contextWindow)
+    : undefined;
+  const system = composeSystemPrompt(opts.mode, await gatherPromptContext(symbolBudget), opts.todos,
     opts.mode === 'agent' ? getMcpManager()?.instructions() : undefined)
     + (sessionFilesBlock ? `\n\n${sessionFilesBlock}` : '');
   const runPass = (messages: ModelMessage[]) => {

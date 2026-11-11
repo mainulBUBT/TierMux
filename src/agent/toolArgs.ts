@@ -475,6 +475,49 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): { d
     }
   }
 
+  if (calls.length === 0) {
+    // Shape 7: the @@-block dialect a stealth-lab model emits as content (xKiro
+    // stealth/big-pickle, live 2026-11-12) — trained for a gateway whose calls look like:
+    //   @@CALL_TOOL
+    //   @@ARG tool_name@@read@@END_ARG
+    //   @@ARG file@@src/app.ts@@END_ARG
+    //   @@END_CALL
+    // No `<` anywhere, so every tag-based shape above is blind to it; the name sometimes
+    // arrives quoted, and the parameters either as named @@ARGs or ONE JSON object.
+    const atAnchor = /@@CALL_TOOL/g;
+    while ((m = atAnchor.exec(text)) !== null) {
+      const endRe = /@@END_CALL/g;
+      endRe.lastIndex = atAnchor.lastIndex;
+      const end = endRe.exec(text);
+      const body = text.slice(atAnchor.lastIndex, end ? end.index : text.length);
+      atAnchor.lastIndex = end ? end.index + end[0].length : text.length;
+      const args: Record<string, unknown> = {};
+      let name: string | undefined;
+      const argRe = /@@ARG\s+([a-zA-Z0-9_]+)\s*@@([\s\S]*?)(?:@@END_ARG|$)/g;
+      let p: RegExpExecArray | null;
+      while ((p = argRe.exec(body)) !== null) {
+        const key = p[1];
+        const raw = p[2].trim();
+        if (key === 'tool_name' || key === 'tool' || key === 'name' || key === 'function') {
+          name = raw.replace(/^[`"']+|[`"']+$/g, '');
+          continue;
+        }
+        if (key === 'input' || key === 'arguments' || key === 'parameters' || key === 'args') {
+          const lifted = coerceInlineArgValue(raw);
+          if (lifted !== null && typeof lifted === 'object' && !Array.isArray(lifted)) Object.assign(args, lifted);
+          else args[key] = lifted;
+          continue;
+        }
+        // Multi-line values are code payloads (editFile search) — keep raw, skip JSON coercion.
+        args[key] = raw.includes('\n') ? raw : coerceInlineArgValue(raw);
+      }
+      if (!name) continue;
+      const resolved = resolveDialectToolName(name, toolNames);
+      if (!resolved) continue;
+      calls.push({ name: resolved, arguments: normalizeDialectParams(resolved, JSON.stringify(args)) });
+    }
+  }
+
   {
     // Shape 6 (Hermes/Qwen): <function=NAME> with <parameter=KEY> tags instead of a JSON body.
     // Not gated on `calls.length === 0`: a reply mixing dialects used to lose the second call.
@@ -680,7 +723,8 @@ export function adoptInlineToolCalls(
   calls: StreamedToolCall[],
   tools: Array<{ type?: string; function?: { name?: string; parameters?: unknown } }>,
 ): StreamedToolCall[] | undefined {
-  if (!text.includes('<') || !tools.length) return undefined;
+  // `@@CALL_TOOL` blocks (shape 7) carry no `<`, so the tag fast-path must not gate them out.
+  if ((!text.includes('<') && !text.includes('@@CALL_TOOL')) || !tools.length) return undefined;
   const schemas = toolSchemaMap(tools);
   if (!calls.length) {
     const names = new Set(tools.map((t) => t.function?.name).filter((n): n is string => !!n));

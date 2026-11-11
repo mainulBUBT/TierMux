@@ -38,18 +38,34 @@ button). Step-level pause/resume is not implemented — see
   tools) and deprecated (404) quarantine, honest errors naming exactly which providers failed
   and why.
 - **Agent tools** — `readFile` (line-boundary paginated), `editFile`, `writeFile`,
-  `deleteFile`, `listDir`, `glob`, `grep`, `runCommand`, `getDiagnostics`, `todoWrite`,
-  `askUser`, `delegateTask`, `webSearch`, `fetchUrl`, plus `exitPlanMode` in plan mode.
-  `webSearch`/`fetchUrl` run on TierMux's own keyless engine (Yahoo + DuckDuckGo +
-  Marginalia, with a static-fetch reader) and are offered in **every** mode, so a plain
-  factual question is answered instead of deflected.
+  `deleteFile`, `listDir`, `glob`, `grep`, `runCommand`, `taskOutput`, `getDiagnostics`,
+  `todoWrite`, `askUser`, `delegateTask`, `webSearch`, `fetchUrl`, `browserVerify`, plus
+  `exitPlanMode` in plan mode. `webSearch`/`fetchUrl` run on TierMux's own keyless engine
+  (Yahoo + DuckDuckGo + Marginalia, with a static-fetch reader) and are offered in **every**
+  mode, so a plain factual question is answered instead of deflected.
+- **Background tasks** — `runCommand {background: true}` starts a dev server, watcher or long
+  build and returns at once with a task id; `taskOutput` reads new output (cursor-based),
+  lists every task, and stops one. Cap of 3 concurrent; a task nothing reads and that prints
+  nothing for 30 minutes is reaped; deleting the session (or reloading the window) kills its
+  tasks — the Stop button does not, because stopping the turn is not stopping the server.
+- **Browser verification** — `browserVerify` renders a page in your own headless Chrome/Edge
+  over the DevTools pipe (zero new dependencies) and reports navigation, page JS exceptions,
+  console errors, HTTP status, and — for vision-capable models, decided per turn — a
+  screenshot. Cross-origin subresources are blocked and counted, so verifying a page cannot
+  become an SSRF hop. `fetchUrl`'s "JavaScript-rendered" dead end points here.
+- **Codebase-aware** — ripgrep-backed `grep`/`glob` (files-only, context and case options),
+  ambient open-editor context, project rules and memory in `.tiermux/`, and a symbol sketch
+  of source files (`src/app.ts — alpha, Widget`) in agent/ask turns — freshest-touched first,
+  sized to the model's window (`tiermux.agent.symbolMap`, default on).
+- **Attachments** — images for vision models, PDF text extraction host-side, scanned PDFs as
+  page images — and raw PDF bytes for providers that can carry them, with an explicit
+  not-delivered note where a provider cannot, so the model never guesses at a file it
+  never saw.
 - **Safety rails** — the tool-approval policy (ask / safe allowlist / shell off; write
   confirmation), every path argument confined to the workspace, a 60 s per-candidate connect
   timeout with failover.
 - **Checkpoints** — the before-content of every write is captured *before* the mutation, so
   Undo genuinely restores.
-- **Codebase-aware** — ripgrep-backed `grep`/`glob` (files-only, context and case options),
-  ambient open-editor context, project rules and memory in `.tiermux/`.
 - **Skills** — Markdown skills from `.tiermux/skills/` and the cross-tool
   `.agents/skills/<name>/SKILL.md` convention, invoked by `/name`. Install more with
   `TierMux: Add Skill from GitHub`.

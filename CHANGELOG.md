@@ -128,6 +128,10 @@ All notable changes to TierMux are documented here. The format is loosely
   endpoint at `https://opencode.ai/inference/go/openai/v1` with a Console key from a Go/Go Plus
   plan. Nothing is disguised: Go answers `401 Go requires a credential` with the session header and
   `400 MissingSessionID` without it, exactly as its docs describe.
+- **The symbol pass actually ran.** The declaration-scan rg call carried no PATH argument, so rg
+  read STDIN — a pipe nobody closes — hung until its own timeout killed it, and every workspace
+  silently degraded to the plain name map. One explicit `.` (the gathered root is already the
+  cwd) and the symbols flow. Found while merging the two symbol-map lines of work (2026-11-12).
 
 ### Fixed
 
@@ -145,6 +149,62 @@ All notable changes to TierMux are documented here. The format is loosely
   other providers. The error names the route that actually works — **Go or a paid Console key, not a
   free key**: OpenCode's own docs say free-tier chat models are served to their client only. A pinned
   model keeps its exemption.
+## [3.0.6] — 2026-11-12
+
+### Added
+
+- **Background tasks.** `runCommand {background: true}` starts a dev server, watcher or long
+  build and returns a task id at once instead of eating the turn's whole timeout. The new
+  `taskOutput` tool reads new output (cursor-based, waits up to 30 s), lists every task when
+  called without an id, and stops one. Cap of 3 concurrent tasks — the refusal names the running
+  tasks so the agent can pick one to stop. A task nothing reads and that prints nothing for 30
+  minutes is killed to free its slot (`browserVerify` refreshes the clock, so a verified-but-quiet
+  dev server survives). Deleting a session kills its tasks; reloading the window kills all of
+  them; the Stop button deliberately does not — stopping the turn is not stopping the server.
+  Same approval path as a synchronous command: the permission policy reads the command, the flag
+  only changes where the process lives.
+- **Browser verification** (`browserVerify`). Renders a page in the user's own headless
+  Chrome/Edge over the DevTools pipe — zero new dependencies, no bundled browser, no key — and
+  reports the four machine-checkable layers: navigation (a refused connection says "is the dev
+  server running?"), page JS exceptions and console errors (the fix loop's signal), HTTP status,
+  and a screenshot for vision-capable models, decided at call time so a mid-session failover
+  re-evaluates. Cross-origin subresources are blocked and counted (same-origin, localhost and
+  data/blob load), so a verify run cannot become an SSRF/exfil hop; a missing favicon 404 is
+  filtered as universal dev noise. Hard 60 s deadline — a page that never settles returns a
+  timeout verdict instead of hanging the tool. `fetchUrl`'s "JavaScript-rendered" dead end now
+  points here. No browser installed → a disabled-tool message with the fix, not a failed turn.
+
+- **A symbol sketch of the workspace in agent and ask turns.** Plan mode's file map (names
+  only) now extends to working turns: `src/app.ts — alpha, Widget, Shape` says which file to
+  open, so the model spends its first step reading code instead of grepping for names
+  (aider's repo-map idea, regex-grade, no new dependency). Sized to the routed model's window
+  (~2.5%, floored/ceilinged, off below 16k), rendered freshest-touched first so active files
+  survive the cut, cached per file on path+mtime so a per-turn gather is one stat per file.
+  `tiermux.agent.symbolMap` (default on) turns it off.
+- **Scanned PDFs reach models that can read them.** A PDF the webview could not render into
+  page images was silently dropped at the engine door — even Gemini never saw it. Raw PDF
+  blocks now forward as file parts (a carries-RawPdf provider delivers the bytes), and where a
+  provider cannot take PDFs the model is told exactly that ("PDF \"scan.pdf\" not delivered")
+  instead of silently guessing at a file it never saw.
+
+### Fixed
+
+- **A rate-limited model no longer sits out an hour.** 3.0.5's free-limit handling folded 429
+  into the "model unavailable" dead-mark, but Zen sends that exact text when THROTTLING a model
+  (live 2026-10-06) — a healthy model got benched 60 min for one 429. 429 is back to
+  moment-only: the cooldown and the free-limit cooldown own it.
+- **Token-level collapse is caught, not streamed.** The degeneration guard only recognized a
+  byte-identical block repeated three times; a model degenerating into `function. Function.
+  f f f.` (case/spelling churn on every repetition, live 2026-11-11) slipped through and
+  shipped pages of it. A word-collapse metric now cuts the stream within ~400 chars — one word
+  over half the reply, or a vocabulary under 12% unique — numbers counted, varied prose
+  provably untouched.
+- **The @@-block tool dialect is adopted.** A stealth-lab model (xKiro `stealth/big-pickle`,
+  live 2026-11-12) writes tool calls as `@@CALL_TOOL / @@ARG key@@value@@END_ARG / @@END_CALL`
+  in its text — no `<` anywhere, so every tag-shaped rescue was blind to it and the calls
+  shipped as prose with confused protocol narration. The blocks are now parsed as tool calls
+  (quoted names, JSON-object parameters, unterminated mid-stream chunks), with the existing
+  alias tables mapping `read`→`readFile` and `file`→`path`.
 
 ## [3.0.5] — 2026-10-13
 

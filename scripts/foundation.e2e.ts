@@ -613,7 +613,10 @@ async function main() {
       const fatPrompt = composeSystemPrompt('agent', ctx);
       // 2026-09-24: main@2eeeb82 measures 9200 here (up ~100 since the pin was set) — bound
       // intent unchanged (rules still capped at 8K, truncation marker still required), pin raised.
-      ok('17. prompt length pinned < 9_300 with max-size rules', fatPrompt.length < 9_300 && fatPrompt.includes('[project rules truncated]'), `len=${fatPrompt.length}`);
+      // 2026-11-12: 9749 — the agent tail gained the browserVerify guardrail line (~450 chars,
+      // 3.0.6). Rules/memory/env caps unchanged; the symbol sketch rides a SEPARATE budget and
+      // is absent in this unbudgeted path. Pin raised to 9_800.
+      ok('17. prompt length pinned < 9_800 with max-size rules', fatPrompt.length < 9_800 && fatPrompt.includes('[project rules truncated]'), `len=${fatPrompt.length}`);
     } finally {
       (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = prevFolders;
       invalidatePromptContext();

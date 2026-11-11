@@ -70,16 +70,21 @@ export function normalizeAttachmentBlocks(content: ChatContent): AttachmentBlock
   return out;
 }
 
-/** Wire shape for OpenAI-compat endpoints: drop `type: 'file'` blocks (the extracted text is
- *  already in the message) and narrow `image_url` to `{ url }` — extra fields make
+/** Wire shape for OpenAI-compat endpoints: `type: 'file'` blocks become a plain text note
+ *  (a raw PDF has NO extracted text in the message — silently dropping it let the model guess at
+ *  a file it never saw) and `image_url` is narrowed to `{ url }` — extra fields make
  *  schema-validating gateways 400. */
 export function stripFileBlocks(content: ChatContent): ChatContent {
   if (!Array.isArray(content)) return content;
   const out: ChatContent = [];
   for (const block of content) {
     if (!block || typeof block !== 'object') { out.push(block as never); continue; }
-    const b = block as { type?: string; image_url?: { url?: unknown } };
-    if (b.type === 'file') continue;
+    const b = block as { type?: string; image_url?: { url?: unknown }; file?: { filename?: unknown; mime?: unknown } };
+    if (b.type === 'file') {
+      const name = typeof b.file?.filename === 'string' && b.file.filename ? `"${b.file.filename}"` : '';
+      out.push({ type: 'text', text: `[PDF ${name} not delivered — this model cannot read PDF bytes. Say so and ask for it another way (page images or extracted text) instead of guessing at its contents.]` } as never);
+      continue;
+    }
     if (b.type === 'image_url' && typeof b.image_url?.url === 'string') {
       out.push({ type: 'image_url', image_url: { url: b.image_url.url } } as never);
       continue;

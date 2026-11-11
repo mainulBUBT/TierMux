@@ -1,7 +1,36 @@
-# Browser verification tool — design notes (WIP)
+# Browser verification tool — design notes (IMPLEMENTED in 3.0.6)
 
-Status: research/design only, not implemented. Captures the reasoning from the
-2026-08-12 design discussion so it can be picked up later without re-deriving it.
+Status: **shipped** as the `browserVerify` tool (`src/agent/core/tools/network/browserVerify.ts`
++ the CDP client in `cdp.ts`). This doc keeps the original 2026-08-12 reasoning and records
+what changed when it was built (2026-11-12).
+
+**What was built, and the deltas from this design:**
+
+- **Raw CDP over `--remote-debugging-pipe` instead of playwright-core.** fd mapping verified
+  empirically against Chrome 156 (write fd 3, read fd 4, NUL-terminated JSON): zero new
+  dependencies, where the design doc had settled for bundling playwright-core. The temp
+  profile is removed on exit; every CDP send carries a timeout and all pending sends reject
+  when Chrome dies, so a crashed browser degrades into a verdict.
+- **The vision question resolved call-time.** The screenshot is captured only when the
+  CURRENTLY routed model is vision-capable — routing can switch models mid-session, so the
+  engine passes a live probe (`ToolsetBindings.visionCapable`), not a session-start snapshot.
+  Text-only models skip the capture entirely; the text verdicts are always the primary result.
+- **Subresource policy added** (not in the original design): CDP `Fetch` interception allows
+  same-origin, localhost and data/blob subresources; everything else is blocked and counted —
+  the tool must not become an SSRF/exfil hop. A favicon 404 is filtered as universal dev
+  noise.
+- **Hard 60 s deadline** wraps the whole call; a page that never settles returns a timeout
+  verdict instead of hanging the turn.
+- Chrome discovery: `TIERMUX_CHROME_PATH` → platform candidates (Chrome → Edge → Chromium);
+  an explicit-but-missing override surfaces as a disabled-tool message rather than silently
+  substituting. `--allow-private-network`-style third-party backends (Obscura et al.) were
+  evaluated and rejected — see `OPEN_SOURCE_AGENTS_2026-11.md`.
+- Verification refreshes the background-task idle clock (`taskRegistryFor(...).touch()`), so
+  verifying a quiet dev server cannot idle-reap it mid-check.
+
+The sections below are the original design reasoning, kept for context.
+
+
 
 ## Problem
 

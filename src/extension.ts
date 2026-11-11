@@ -15,6 +15,7 @@ import { EditGate } from './edits/applyEdit';
 import { registerCheckpointContentProvider } from './edits/checkpoints';
 
 import { setMcpManager } from './agent/core/tools/mcp/manager';
+import { killAllBackgroundTasks } from './agent/core/tools/taskRegistry';
 
 import { McpManager } from './mcp/mcpManager';
 import { ChatViewProvider } from './chatViewProvider';
@@ -319,6 +320,9 @@ export function deactivate(): void {
   // No external engine process or router-proxy server to tear down anymore — the engine calls
   // Router.route() directly, in-process. Model cooldowns are deliberately NOT persisted here
   // (see picker.ts): a stale cooldown outliving the reload shadows a model that recovered.
+  // Background tasks (agent-started dev servers) ARE killed: a window reload must not orphan
+  // processes nobody can see or stop anymore.
+  killAllBackgroundTasks();
 }
 
 async function setApiKey(secrets: SecretStore, platformArg?: Platform): Promise<void> {

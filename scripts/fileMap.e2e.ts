@@ -28,11 +28,13 @@ async function main() {
   ok('says how many files and switches to directory counts', big.startsWith('450 files') && big.includes('app/Module0/ (15)'), big);
   ok('stays small', big.length < 6000, String(big.length));
 
-  console.log('\n— only plan mode carries it —');
+  console.log('\n— plan renders the name tree; agent/ask render the symbol sketch only —');
   const ctx = { rules: '', memory: '', env: { date: '2026-10-12', os: 'darwin' }, fileMap: map };
   ok('plan prompt has <project_files>', composeSystemPrompt('plan', ctx).includes('<project_files>'));
-  ok('agent prompt does not', !composeSystemPrompt('agent', ctx).includes('<project_files>'));
-  ok('ask prompt does not', !composeSystemPrompt('ask', ctx).includes('<project_files>'));
+  ok('agent prompt without a sketch adds no block (lean Q&A)', !composeSystemPrompt('agent', ctx).includes('<project_files>'));
+  ok('ask prompt without a sketch adds no block', !composeSystemPrompt('ask', ctx).includes('<project_files>'));
+  ok('plan stays names-only (no symbol section)', !composeSystemPrompt('plan', { ...ctx, symbolMap: 'src/app.ts — alpha, Widget' }).includes('Source files with their definitions'));
+  ok('agent with a sketch shows it', composeSystemPrompt('agent', { ...ctx, symbolMap: 'src/app.ts — alpha, Widget' }).includes('Source files with their definitions'));
   ok('no map, no block', !composeSystemPrompt('plan', { ...ctx, fileMap: undefined }).includes('<project_files>'));
 
   fs.rmSync(root, { recursive: true, force: true });

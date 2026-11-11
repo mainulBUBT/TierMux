@@ -8,6 +8,7 @@ import { classifyConversation } from '../src/agent/routing';
 import { OpenAIResponsesProvider } from '../src/providers/openai-responses';
 import { OpenAICompatProvider } from '../src/providers/openai-compat';
 import { isDegenerateRepeat } from '../src/agent/core/routerProvider';
+import { rescueInlineToolCalls, adoptInlineToolCalls } from '../src/agent/toolArgs';
 
 let bad = 0;
 const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? `   (${d})` : ''}`); if (!c) bad++; };
@@ -73,6 +74,17 @@ async function main() {
   ok('17. the same paragraph three times is a loop', isDegenerateRepeat('Intro text. ' + para.repeat(3)));
   ok('18. twice is not (a legitimate restatement)', !isDegenerateRepeat('Intro text. ' + para.repeat(2)));
   ok('19. long varied prose is not', !isDegenerateRepeat(Array.from({ length: 40 }, (_, i) => `Finding ${i}: value ${i * 7} differs from ${i * 3}.`).join(' ')));
+
+  console.log('— token-level collapse (live repro 2026-11-11: function. Function. f f f. functions.) —');
+  // The live shape: case and spelling churn on every repetition, so no byte-identical tail ever
+  // forms — the exact-suffix check above cannot fire on this class.
+  const churn = Array.from({ length: 90 }, (_, i) => (i % 7 === 0 ? 'functions' : i % 3 === 0 ? 'Function' : i % 5 === 0 ? 'f f f f' : 'function')).join('. ') + '. ';
+  ok('17a. varied-case token churn collapses (the live repro)', isDegenerateRepeat(churn), churn.slice(0, 80));
+  ok('17b. one word over half the reply is a collapse', isDegenerateRepeat('alpha '.repeat(120) + 'beta. '), '');
+  ok('17c. vocabulary collapse without a dominant word is caught too', isDegenerateRepeat(Array.from({ length: 320 }, (_, i) => ['x', 'y', 'z', 'w', 'q', 'v', 'u', 'k'][i % 8]).join(' ')));
+  ok('17d. under 600 chars the guard stays silent (short replies are not judged)', !isDegenerateRepeat('function. Function. f f f. '.repeat(8)));
+  ok('17e. a long healthy identifier list is not a collapse', !isDegenerateRepeat(Array.from({ length: 110 }, (_, i) => `handler${i}`).join(', ')));
+  ok('17f. prose repeating one common word often is still fine', !isDegenerateRepeat(Array.from({ length: 40 }, (_, i) => `The file ${i} uses the parser and the ${i}th test checks the parser output for file ${i}.`).join(' ')));
   ok('20. "why X not set?" routes as debug', classifyConversation(['100058 order why minus in distance? and why vehicles id not set here?']).kind === 'debug');
 
   console.log('— another harness\'s tool names resolve without a model call —');
@@ -99,6 +111,44 @@ async function main() {
     ok('27. an aliased tool gets its argument names too', named?.toolName === 'grep' && JSON.parse(named.input).pattern === 'x' && !('query' in JSON.parse(named.input)), JSON.stringify(named));
     const argsOnly = await fix('grep', '{"path":"src","query":"x"}', new InvalidToolInputError({ toolName: 'grep', toolInput: '{}', cause: new Error('bad') }));
     ok('28. a right tool name with an imagined argument name needs no model call', JSON.parse(argsOnly?.input ?? '{}').pattern === 'x', JSON.stringify(argsOnly));
+  }
+
+  console.log('— the @@-block dialect (xKiro stealth/big-pickle, live 2026-11-12) —');
+  {
+    const NAMES = new Set(['readFile', 'grep', 'runCommand', 'editFile']);
+    // The live shape: @@CALL_TOOL / @@ARG key@@value@@END_ARG / @@END_CALL, name sometimes quoted,
+    // parameters as named @@ARGs or ONE JSON object, and the block often unterminated mid-stream.
+    const named =
+      'Let me check that file.\n\n@@CALL_TOOL\n@@ARG tool_name@@"read"@@END_ARG\n@@ARG file@@src/app.ts@@END_ARG\n@@END_CALL\n';
+    const r1 = rescueInlineToolCalls(named, NAMES);
+    ok('27. named @@ARGs adopt, alias read→readFile, file→path',
+      r1.detected && r1.calls[0]?.name === 'readFile' && JSON.parse(r1.calls[0].arguments).path === 'src/app.ts',
+      JSON.stringify(r1.calls));
+    const asObject =
+      '@@CALL_TOOL\n@@ARG tool_name@@grep@@END_ARG\n@@ARG arguments@@{"pattern":"killTree","path":"src"}@@END_ARG\n@@END_CALL';
+    const r2 = rescueInlineToolCalls(asObject, NAMES);
+    ok('28. a JSON-object parameter lifts as the arguments',
+      r2.calls[0]?.name === 'grep' && JSON.parse(r2.calls[0].arguments).pattern === 'killTree', JSON.stringify(r2.calls));
+    const unterminated = '@@CALL_TOOL\n@@ARG tool_name@@runCommand@@END_ARG\n@@ARG command@@git status@@END_ARG';
+    const r3 = rescueInlineToolCalls(unterminated, NAMES);
+    ok('29. an unterminated block still adopts (chunk cut mid-call)',
+      r3.calls[0]?.name === 'runCommand' && JSON.parse(r3.calls[0].arguments).command === 'git status', JSON.stringify(r3.calls));
+    const two = '@@CALL_TOOL\n@@ARG tool_name@@read@@END_ARG\n@@ARG file@@a.ts@@END_ARG\n@@END_CALL\nmid-text\n@@CALL_TOOL\n@@ARG tool_name@@read@@END_ARG\n@@ARG file@@b.ts@@END_ARG\n@@END_CALL\n';
+    const r4 = rescueInlineToolCalls(two, NAMES);
+    ok('30. two blocks → two calls, in order',
+      r4.calls.length === 2 && JSON.parse(r4.calls[1].arguments).path === 'b.ts', JSON.stringify(r4.calls));
+    const unknown = '@@CALL_TOOL\n@@ARG tool_name@@dance@@END_ARG\n@@ARG style@@free@@END_ARG\n@@END_CALL\n';
+    const r5 = rescueInlineToolCalls(unknown, NAMES);
+    ok('31. an unregistered tool is not invented', !r5.detected || r5.calls.length === 0, JSON.stringify(r5.calls));
+    const tools = [
+      { type: 'function', function: { name: 'readFile', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
+    ];
+    const noAngle = 'Sure.\n@@CALL_TOOL\n@@ARG tool_name@@readFile@@END_ARG\n@@ARG path@@README.md@@END_ARG\n@@END_CALL\n';
+    const adopted = adoptInlineToolCalls(noAngle, [], tools);
+    ok('32. adoptInlineToolCalls no longer needs a `<` in the text',
+      !!adopted && adopted[0]?.name === 'readFile' && JSON.parse(adopted[0].args).path === 'README.md', JSON.stringify(adopted));
+    const plain = 'The killTree function lives in shell.ts and is used by the registry. No calls needed here.';
+    ok('33. prose without blocks is untouched', rescueInlineToolCalls(plain, NAMES).detected === false);
   }
 
   console.log(bad === 0 ? '\nALL PASS' : `\n${bad} FAILED`);
