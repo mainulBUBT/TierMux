@@ -11,10 +11,13 @@ All notable changes to TierMux are documented here. The format is loosely
   agent/coding/debug/plan LEAD with speedRank ≤ 2 — in practice every curated fast-mid head led
   real work, and the 2026-11-11 audit traced "slow AND weak on big tasks" straight to it. Speed no
   longer buys a floored lead; the all-blocked fallback still guarantees the chain never empties.
-- **The plan-mode file map carries symbols** (Aider's repo-map lesson, regex-sized): one ripgrep
-  pass over PHP/TS/JS/Py files annotates the small-tree map with up to 10 declared names per file
-  (`OrderController [placeOrder, refund]`) — the plan's first read lands on the right file instead
-  of the first plausible name.
+- **The plan-mode file map carries symbols, in every mainstream language** (Aider's repo-map
+  lesson, regex-sized): one ripgrep pass annotates the small-tree map with up to 10 declared
+  names per file (`OrderController [placeOrder, refund]`) — the plan's first read lands on the
+  right file instead of the first plausible name. The declaration shapes cover PHP, TS/JS, Python,
+  Go (methods with receivers, types), Rust (incl. `impl` first-segment), Java/C# (classes,
+  records, structs), Ruby, Kotlin, Swift, Scala, Dart — a repo of any framework, not just the
+  maintainer's stack.
 - **Research sub-agents run to 30 steps** (was 15): an unfamiliar codebase routinely needed more
   than 15 read/grep steps; the budget is the subagent's isolated context (only its summary
   returns), not its step count. Read-only by design stays.

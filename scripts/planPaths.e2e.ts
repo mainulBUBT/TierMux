@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { ProposedPlan } from '../src/shared/types';
-import { attachSymbolsToMap } from '../src/context/fileMap';
+import { attachSymbolsToMap, DECLARATION_PATTERN, declNameOf } from '../src/context/fileMap';
 import { createExitPlanModeTool } from '../src/agent/core/tools/v3/exitPlanMode';
 import { checkPlanPaths } from '../src/agent/core/tools/v3/planPathCheck';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
@@ -77,6 +77,32 @@ async function main() {
       new Map([['a.php', ['OrderController', 'placeOrder']], ['src/c.py', ['build_order']]]));
     ok('symbols ride inside the map lines', annotated.includes('a.php [OrderController, placeOrder]') && annotated.includes('c.py [build_order]'), annotated);
     ok('files without symbols are untouched', annotated.includes('b.ts, notes.md') && !annotated.includes('notes.md ['), annotated);
+  }
+
+  // The declaration pattern is GLOBAL (2026-11-11): any framework, any stack — each major
+  // language's declaration shapes must yield its name through the same last-identifier rule.
+  {
+    const re = new RegExp(DECLARATION_PATTERN);
+    const cases: Array<[string, string | undefined]> = [
+      ['public function placeOrder(', 'placeOrder'],                       // PHP
+      ['class OrderController extends Controller', 'OrderController'],     // PHP/Ruby/Java
+      ['def build_order():', 'build_order'],                               // Python/Ruby
+      ['export async function handler(', 'handler'],                       // TS/JS
+      ['func (s *Server) Start(ctx context.Context) error {', 'Start'],    // Go method
+      ['type OrderStatus int', 'OrderStatus'],                             // Go type
+      ['pub fn place_order(', 'place_order'],                              // Rust
+      ['impl OrderRepository<Db> for PgOrders', 'OrderRepository'],        // Rust impl (first segment, not the generic)
+      ['fun onCreateView(', 'onCreateView'],                               // Kotlin
+      ['func viewDidLoad()', 'viewDidLoad'],                               // Swift
+      ['public record OrderDto(', 'OrderDto'],                             // Java record / C# record
+      ['struct OrderRow {', 'OrderRow'],                                   // Rust/C#/Swift struct
+      ['const prepareInvoice =', 'prepareInvoice'],                        // JS/TS const
+    ];
+    for (const [line, want] of cases) {
+      const m = re.exec(line)?.[0];
+      ok(`decl → ${want} (${line.trim().slice(0, 34)}…)`, m !== undefined && declNameOf(m) === want, `match=${JSON.stringify(m)} name=${JSON.stringify(m && declNameOf(m))}`);
+    }
+    ok('a plain call line is not a declaration', !re.test('  return order.placeOrder(args)'), 'call matched');
   }
 
   fs.rmSync(root, { recursive: true, force: true });

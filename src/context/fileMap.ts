@@ -25,7 +25,7 @@ export async function gatherFileMap(): Promise<string | undefined> {
   if (files.length <= MAX_FILES_LISTED) {
     const symbols = await new Promise<Map<string, string[]> | undefined>((resolve) => {
       execFile(rgPath,
-        ['-o', '--no-heading', '-g', '*.{php,ts,tsx,js,jsx,py}', '--max-count', String(SYMS_PER_FILE), DECL_RE],
+        ['-o', '--no-heading', ...LANGUAGE_GLOBS.map((g) => ['-g', g]).flat(), '--max-count', String(SYMS_PER_FILE), DECLARATION_PATTERN],
         { cwd: root, timeout: 4000, maxBuffer: 8 * 1024 * 1024 },
         (_err, stdout) => {
           if (!stdout) return resolve(undefined);
@@ -48,14 +48,38 @@ export async function gatherFileMap(): Promise<string | undefined> {
   return base;
 }
 
-/** Declaration shapes across PHP, TS/JS and Python — full match printed, the NAME extracted
- *  afterwards (rg has no lookahead and two alternations need two capture groups). */
-const DECL_RE = '^(?:export )?(?:public |abstract |final |static |async )*(?:function|class|interface|trait|enum|def) +[A-Za-z_][A-Za-z0-9_]*|^(?:export )?(?:const|let) +[A-Za-z_][A-Za-z0-9_]*';
+/** Code files the symbol pass looks at — every mainstream language TierMux can be pointed at,
+ *  not just the maintainer's stack (raw C/C++ deliberately out: a keyword-free
+ *  `int foo(` declaration has no honest regex shape, and noise beats silence only once). */
+export const LANGUAGE_GLOBS = [
+  '*.{php,ts,tsx,js,jsx,mjs,cjs,py,go,rs,java,cs,rb,kt,swift,scala,dart}',
+];
+
+/** Declaration shapes across the globs above — full match printed, the NAME taken as the last
+ *  identifier of the match (rg has no lookahead, so multi-language alternations stay
+ *  group-free). Exported with the matcher for e2e. Exported for e2e. */
+export const DECLARATION_PATTERN =
+  // keyword-led declarations, any modifier soup in front (PHP/TS/JS/Py/Java/C#/Kotlin/Swift/Scala/Dart/Ruby)
+  '^(?:export |public |private |protected |internal |open |abstract |final |sealed |static |override |async |suspend |default |unsafe )*'
+  + '(?:function|func|fun|fn|def|class|interface|trait|enum|struct|object|record|module|impl) +[A-Za-z_][A-Za-z0-9_]*'
+  // Go: methods carry a receiver before the name; types declare with their own keyword
+  + '|^func (?:\\([^)]*\\) )?[A-Za-z_][A-Za-z0-9_]*'
+  + '|^type [A-Za-z_][A-Za-z0-9_]*'
+  // Rust: pub(/crate) may prefix anything
+  + '|^pub(?:\\([^)]*\\))? (?:fn|struct|enum|trait|mod) [A-Za-z_][A-Za-z0-9_]*'
+  + '|^impl(?:<[^>]*>)? [A-Za-z0-9_]+'  // the type BEING implemented — the match stops before its generics, so the name is the first segment
+  // JS/TS value declarations (also Go's vanished-in-1.18 var-free const)
+  + '|^(?:export )?(?:const|let) +[A-Za-z_$][A-Za-z0-9_$]*';
 const SYMS_PER_FILE = 10;
 
 /** The declared identifier at the end of a matched declaration line. */
 function declName(match: string): string | undefined {
   return /[A-Za-z_][A-Za-z0-9_]*$/.exec(match.trim())?.[0];
+}
+
+/** e2e seam: the name a map line would carry for one matched declaration. */
+export function declNameOf(match: string): string | undefined {
+  return declName(match);
 }
 
 /** Pure: annotate small-tree map lines with each file's symbols — `OrderController [placeOrder,
