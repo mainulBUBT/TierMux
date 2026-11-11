@@ -36,6 +36,14 @@ async function main(): Promise<void> {
     req.on('end', () => {
       const body = JSON.parse(raw || '{}');
       if (body.model === 'mock-wait-forever') { /* never answer: the timeout path */ return; }
+      // Sends the SSE headers and one chunk, then holds the connection open forever: the
+      // transport's body-idle guard must abort it (the engine's stall gates are disarmed for
+      // pinned models, so nothing else would).
+      if (body.model === 'mock-stall') {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write(SSE_CHUNKS[0]);
+        return;
+      }
       if (body.model === 'mock-500') {
         res.writeHead(500, { 'content-type': 'application/json', 'x-probe': 'kept' });
         res.end(JSON.stringify({ error: { message: 'boom' } }));
@@ -75,6 +83,24 @@ async function main(): Promise<void> {
   const plain = await lane.chatCompletion('', [{ role: 'user', content: 'hi' }], 'mock-free', { sessionId: 'conv-1', max_tokens: 8, timeoutMs: 10_000 });
   ok('provider answers with the shim unavailable/direct', plain.choices[0].message.content === 'pong', JSON.stringify(plain.choices[0].message.content));
 
+  /* ---- a missing bun binary must reject promptly, never hang (live 2026-11-11: the dev
+   *  host's 42-minute "Orchestra…" turn was `spawn bun ENOENT` with no error listener, so the
+   *  request promise never settled) ---- */
+  process.env.TIERMUX_BUN = '/nonexistent/tiermux-test-bun';
+  const goneStart = Date.now();
+  let goneErr: unknown = null;
+  try {
+    const gone = await bunFetch({ url: `${base}/chat/completions`, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: post('mock-free'), timeoutMs: 10_000 }, 'test');
+    await gone.text(); // it must not come to this
+  } catch (e) { goneErr = e; }
+  const goneMs = Date.now() - goneStart;
+  ok('a missing bun binary rejects, not hangs', goneErr instanceof Error && /could not start/.test(goneErr.message), `${goneErr ?? 'resolved cleanly'}`);
+  ok('…within seconds, not the hard timeout', goneMs < 5000, `${goneMs}ms`);
+  // …and the lane degrades to the direct fetch instead of dying with it
+  const viaFallback = await lane.chatCompletion('', [{ role: 'user', content: 'hi' }], 'mock-free', { sessionId: 'conv-gone', max_tokens: 8, timeoutMs: 10_000 });
+  ok('the lane falls back to direct when the shim cannot start', viaFallback.choices[0].message.content === 'pong', JSON.stringify(viaFallback.choices[0].message.content));
+  delete process.env.TIERMUX_BUN;
+
   if (!haveBun) {
     skip('bunFetch round-trips status, headers and body');
     skip('bunFetch streams incrementally');
@@ -82,6 +108,7 @@ async function main(): Promise<void> {
     skip('a never-answering server times out as a 408 ProviderHttpError');
     skip('aborting kills the child and rejects');
     skip('meta line and body on the same stdout chunk');
+    skip('a stalled body is cut by the idle guard');
     skip('the lane provider routes through the shim');
   } else {
     __resetBunShimCallCount();
@@ -144,6 +171,29 @@ async function main(): Promise<void> {
     const r5 = await bunFetch({ url: `${base}/chat/completions`, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: post('mock-free'), timeoutMs: 10_000 }, 'test');
     const j5 = await r5.json() as { choices?: Array<{ message?: { content?: string } }> };
     ok('body bytes sharing the meta chunk are not lost', j5.choices?.[0]?.message?.content === 'pong', JSON.stringify(j5.choices?.[0]?.message?.content));
+
+    /* ---- a body that starts then goes silent is cut by the idle guard ----
+     * The engine's stall gates are disarmed for pinned models, so a held-open stream would
+     * hang a pinned turn forever (live repro 2026-11-11: 22 minutes and counting). */
+    const stallStart = Date.now();
+    let stallErr: unknown = null;
+    let stallGot = 0;
+    try {
+      const r6 = await bunFetch({ url: `${base}/chat/completions`, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: post('mock-stall'), timeoutMs: 30_000, bodyIdleMs: 1200 }, 'test');
+      const reader6 = r6.body!.getReader();
+      for (;;) {
+        const { done, value } = await reader6.read();
+        if (done) break;
+        stallGot += value.length;
+      }
+    } catch (e) { stallErr = e; }
+    const stallMs = Date.now() - stallStart;
+    ok('a stalled body errors instead of hanging forever', stallErr !== null, `read ended cleanly after ${stallMs}ms with ${stallGot} bytes`);
+    ok('…within the idle window, not the 30s timeout', stallMs < 5000, `${stallMs}ms`);
+    // …while chunks arriving steadily keep a slow-but-live stream alive under the same guard
+    const r7 = await bunFetch({ url: `${base}/chat/completions`, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: post('mock-sse'), timeoutMs: 10_000, bodyIdleMs: 1000 }, 'test');
+    const s7 = await r7.text();
+    ok('a live stream outlives the idle guard (each chunk resets it)', s7.includes('"po') && s7.includes('[DONE]'), s7.slice(0, 40));
 
     /* ---- the provider really routes the lane through the shim ---- */
     __resetBunShimCallCount();

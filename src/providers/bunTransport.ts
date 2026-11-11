@@ -26,13 +26,27 @@ const BUN_FETCH_SCRIPT = `
 const spec = JSON.parse(await new Response(Bun.stdin).text());
 const ac = new AbortController();
 const timer = setTimeout(() => ac.abort(new Error('timeout')), spec.timeoutMs || 60000);
+// A body that starts and then goes silent (an upstream holding the connection open) must not
+// hang the caller forever — the engine's stall gates are disarmed for pinned models, so this
+// transport enforces its own: no bytes for bodyIdleMs ⇒ abort. Each chunk resets it.
+let idle = setTimeout(() => ac.abort(new Error('body stalled: no bytes for ' + (spec.bodyIdleMs || 90000) + 'ms')), spec.bodyIdleMs || 90000);
+let bodyStarted = false;
 try {
   const res = await fetch(spec.url, { method: spec.method || 'POST', headers: spec.headers, body: spec.body, signal: ac.signal });
   clearTimeout(timer);
   await Bun.write(Bun.stdout, ${JSON.stringify(MAGIC)} + JSON.stringify({ status: res.status, headers: [...res.headers] }) + '\\n');
-  if (res.body) for await (const chunk of res.body) await Bun.write(Bun.stdout, chunk);
+  if (res.body) for await (const chunk of res.body) {
+    clearTimeout(idle);
+    idle = setTimeout(() => ac.abort(new Error('body stalled: no bytes for ' + (spec.bodyIdleMs || 90000) + 'ms')), spec.bodyIdleMs || 90000);
+    bodyStarted = true;
+    await Bun.write(Bun.stdout, chunk);
+  }
+  clearTimeout(idle);
 } catch (e) {
-  await Bun.write(Bun.stdout, ${JSON.stringify(MAGIC)} + JSON.stringify({ error: String(e && e.message || e) }) + '\\n');
+  clearTimeout(idle);
+  // Only the pre-body phase may write the error meta line — once body bytes have flowed it
+  // would land mid-stream and read as content.
+  if (!bodyStarted) await Bun.write(Bun.stdout, ${JSON.stringify(MAGIC)} + JSON.stringify({ error: String(e && e.message || e) }) + '\\n');
   process.exit(1);
 }
 `;
@@ -117,13 +131,25 @@ export interface BunFetchRequest {
   headers: Record<string, string>;
   body: string;
   timeoutMs: number;
+  /** No-body-bytes tolerance once the response has started (default 90s, TIERMUX_BUN_IDLE_MS
+   *  overrides). SSE keep-alives count as bytes, so a live stream never trips it. */
+  bodyIdleMs?: number;
+}
+
+function bodyIdleDefault(): number {
+  const v = Number(process.env.TIERMUX_BUN_IDLE_MS);
+  return Number.isFinite(v) && v > 0 ? v : 90_000;
 }
 
 /** fetch() over bun, returning a standard streaming Response. `name` labels timeout errors
  *  like BaseProvider.fetchWithTimeout does. */
 export async function bunFetch(req: BunFetchRequest, name: string, outerSignal?: AbortSignal): Promise<Response> {
   shimCalls++;
-  const bin = process.env.TIERMUX_BUN?.trim() || 'bun';
+  // Same resolution as isBunAvailable (env override → installed copy → PATH): the caller checked
+  // availability through that order, so fetching through any other spelling would spawn a binary
+  // that was never probed — the live 2026-11-11 hang spawned a bare `bun` (ENOENT, unhandled)
+  // while the installed copy sat in extension storage.
+  const bin = bunBinary();
   const child = spawn(bin, ['-e', BUN_FETCH_SCRIPT], { stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '';
   child.stderr.on('data', (c: Buffer) => { stderr += c.toString(); if (stderr.length > 2000) stderr = stderr.slice(-2000); });
@@ -143,13 +169,21 @@ export async function bunFetch(req: BunFetchRequest, name: string, outerSignal?:
   const onOuterAbort = () => kill();
   outerSignal?.addEventListener('abort', onOuterAbort, { once: true });
 
+  // A spawn failure (ENOENT, EACCES) emits 'error', NOT 'exit' — without this listener the
+  // await below would never settle and the turn would hang forever (live repro 2026-11-11:
+  // "spawn bun ENOENT" at 14:38:29, turn still spinning 42 minutes later).
+  const spawnFailed = new Promise<never>((_, reject) => {
+    child.on('error', (e) => reject(new Error(`bun transport could not start (${(e as NodeJS.ErrnoException).code ?? e.message})`)));
+  });
+
   try {
-    child.stdin.write(JSON.stringify({ ...req, timeoutMs: req.timeoutMs }));
+    child.stdin.write(JSON.stringify({ ...req, timeoutMs: req.timeoutMs, bodyIdleMs: req.bodyIdleMs ?? bodyIdleDefault() }));
     child.stdin.end();
 
     // Phase 1: the meta line (MAGIC + JSON + \n). Any bytes after it on the same chunk are the
     // start of the body — kept for the stream below.
-    const meta = await new Promise<{ status?: number; headers?: [string, string][]; error?: string }>((resolve, reject) => {
+    const meta = await Promise.race([
+      new Promise<{ status?: number; headers?: [string, string][]; error?: string }>((resolve, reject) => {
       let buf = '';
       const onData = (c: Buffer) => {
         buf += c.toString('utf8');
@@ -167,7 +201,9 @@ export async function bunFetch(req: BunFetchRequest, name: string, outerSignal?:
       };
       child.stdout.on('data', onData);
       child.on('exit', (code, signal) => reject(new Error(`bun transport exited before answering (code=${code} signal=${signal})${stderr ? ` — ${stderr.slice(0, 200)}` : ''}`)));
-    });
+      }),
+      spawnFailed,
+    ]);
     if (meta.error) throw new Error(`bun transport fetch failed: ${meta.error}`);
 
     // Phase 2: the body, as a ReadableStream fed by the child's stdout.
@@ -175,9 +211,12 @@ export async function bunFetch(req: BunFetchRequest, name: string, outerSignal?:
       start(controller) {
         if (leftover) controller.enqueue(leftover);
         child.stdout.on('data', (c: Buffer) => controller.enqueue(new Uint8Array(c)));
-        child.stdout.on('end', () => { try { controller.close(); } catch { /* already errored */ } cleanup(); });
         child.stdout.on('error', (e) => { controller.error(e); cleanup(); });
-        child.on('exit', (code, signal) => {
+        // The ONE close-vs-error decision, on the child's 'close' (fires after stdio has fully
+        // drained): stdout 'end' alone must not read as a clean finish — the script exits 1 on
+        // an aborted body (idle guard, upstream cut), and that must surface as a stream error
+        // the engine can fail over on, not as a truncated-but-normal answer.
+        child.on('close', (code, signal) => {
           if (code !== 0 || signal) controller.error(new Error(`bun transport ended mid-body (code=${code} signal=${signal})${stderr ? ` — ${stderr.slice(0, 200)}` : ''}`));
           else { try { controller.close(); } catch { /* already errored */ } }
           cleanup();

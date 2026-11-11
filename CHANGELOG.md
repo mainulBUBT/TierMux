@@ -7,6 +7,21 @@ All notable changes to TierMux are documented here. The format is loosely
 
 ### Added
 
+- **The shim can no longer hang a turn when bun cannot start.** Live repro (2026-11-11, found in
+  the extension-host log): `spawn bun ENOENT` at 14:38, the turn still spinning 42 minutes
+  later. Two faults in one — the request spawned a bare `bun` from PATH instead of the binary
+  availability had just probed (the installed copy in extension storage), and a spawn failure
+  emits `error`, which nobody listened to, so the request promise never settled. Both fixed:
+  the fetch resolves the binary exactly as the availability check does (env override → installed
+  copy → PATH), and a spawn failure rejects within milliseconds, letting the lane fall back to
+  the direct request and its honest refusal instead of hanging.
+- **A stalled OpenCode stream can no longer hang a turn forever.** Live repro (2026-11-11): a
+  pinned free model's stream started, went silent, and sat there for 22+ minutes — pinned turns
+  disarm the engine's stall gates by design, and the bun shim had no timeout once headers had
+  arrived. The shim now carries its own body-idle guard: no bytes for 90 seconds (SSE keep-alives
+  count — a live stream never trips it; `TIERMUX_BUN_IDLE_MS` tunes it) aborts the request, which
+  surfaces as a stream error the engine can fail over on instead of silence. A body-phase abort
+  now also reaches the caller as an error rather than a clean-but-truncated end.
 - **A stored key no longer blocks the free models.** A saved Zen key made every OpenCode request
   go keyed and direct — and the gate refuses free-tier models for ANY third-party client, key or
   no key, so users with a key saw only the 429 while the keyless lane sat unused beside it. A

@@ -43,6 +43,10 @@
   "tier": "mid",
   "note": "35B/A3B open MoE"
  },
+ "acestep-v15-xl-sft": {
+  "tier": "small",
+  "note": "ACE-Step 1.5 XL SFT: 4B music-generation DiT, not a chat model"
+ },
  "agnes-2-0-flash": {
   "tier": "mid",
   "note": "free coding/reasoning, mid-class"
@@ -103,6 +107,10 @@
   "tier": "mid",
   "note": "agentic coding product model"
  },
+ "apodex-1.1-mini": {
+  "tier": "mid",
+  "note": "Apodex 1.1 Mini, 35B/A3B; unranked on BenchLM"
+ },
  "aqa": {
   "tier": "small",
   "note": "exam-grading model"
@@ -147,6 +155,22 @@
   "tier": "mid",
   "note": "edge variant"
  },
+ "beam": {
+  "tier": "strong",
+  "note": "Reflection Beam 1.0 (501B/A23B); not on BenchLM yet. Vendor tables put it level with GLM-5.2 (66.8) on Terminal-Bench, below it and Kimi K3 on HLE/GPQA"
+ },
+ "beam-1.0": {
+  "tier": "strong",
+  "note": "Kenari's id for Reflection Beam 1.0 (beam-1-0:free); see beam"
+ },
+ "beam-1.0-501b-a23b": {
+  "tier": "strong",
+  "note": "Reflection Beam 1.0; see beam"
+ },
+ "beam-free:free": {
+  "tier": "strong",
+  "note": "BazaarLink's double-suffixed id for Reflection Beam 1.0 (reflection/beam-free:free); see beam"
+ },
  "bielik-11b-v3.0": {
   "tier": "small",
   "note": "11B Polish instruct"
@@ -159,9 +183,17 @@
   "tier": "mid",
   "note": "Cohere Aya vision 32B"
  },
+ "cat-jam": {
+  "tier": "mid",
+  "note": "stealth on OpenCode/Kilo (1M ctx, text-only reasoning); admin-tagged mid 2026-10-13, no benchmark; both delisted it by 2026-10-17"
+ },
  "ch.at": {
   "tier": "small",
   "note": "ch.at relay, GPT-4o backend = 38.95"
+ },
+ "classify": {
+  "tier": "small",
+  "note": "ScaleDown single-purpose classifier (LLMTR scaledown/classify-free)"
  },
  "claude-fable-5.1": {
   "tier": "frontier",
@@ -234,6 +266,10 @@
  "coding-glm-5.3": {
   "tier": "strong",
   "note": "GLM-5.3 = 67.1"
+ },
+ "coding-glm-5.3-flash": {
+  "tier": "strong",
+  "note": "AIHubMix coding-plan id for GLM-5.3-Flash; same tier as glm-5.3-flash"
  },
  "coding-kimi-k3": {
   "tier": "frontier",
@@ -399,6 +435,10 @@
   "tier": "strong",
   "note": "V4.1 successor of V4 Flash"
  },
+ "deepseek-v4.1-flash-1017": {
+  "tier": "strong",
+  "note": "BenchLM 65.67 (DeepSeek V4.1 Flash 1017, the 2026-10-17 snapshot of V4.1 Flash), read 2026-10-20"
+ },
  "default": {
   "tier": "small",
   "note": "LLM7 default: random pick over its free pool, floor Mistral Nemo"
@@ -466,6 +506,10 @@
  "ernie-4.5-vl-28b-a3b-pt": {
   "tier": "mid",
   "note": "ERNIE 4.5 VL mid"
+ },
+ "extract": {
+  "tier": "small",
+  "note": "ScaleDown single-purpose extractor (LLMTR scaledown/extract-free)"
  },
  "fast": {
   "tier": "strong",
@@ -598,6 +642,10 @@
  "gemini-3.8-live-extended-thinking": {
   "tier": "small",
   "note": "single-purpose Gemini surface (realtime speech)"
+ },
+ "gemini-4-argon": {
+  "tier": "frontier",
+  "note": "BenchLM 80.94 (Gemini 4 Argon, #7, 2026-10-16)"
  },
  "gemini-embedding-001": {
   "tier": "small",
@@ -819,6 +867,10 @@
   "tier": "small",
   "note": "2024 reasoning preview"
  },
+ "glyph-cluster": {
+  "tier": "mid",
+  "note": "Kilo stealth (stealth/glyph-cluster), no identity or score published; admin-tagged mid"
+ },
  "gpt-120-oss": {
   "tier": "mid",
   "note": "GPT-OSS 120B = 45.9"
@@ -995,6 +1047,10 @@
   "tier": "strong",
   "note": "BenchLM 61"
  },
+ "hy4-preview": {
+  "tier": "strong",
+  "note": "BenchLM 61.25 (Hy4 preview) -- bench-align v5.8 (2026-09-30) scale"
+ },
  "inkling": {
   "tier": "strong",
   "note": "BenchLM 60.52 (Inkling)"
@@ -1011,6 +1067,10 @@
   "tier": "small",
   "note": "mini reasoner"
  },
+ "intern-s2": {
+  "tier": "strong",
+  "note": "Intern-S2 GA; same tier as intern-s2-preview, unranked on BenchLM"
+ },
  "intern-s2-preview": {
   "tier": "strong",
   "note": "S2 successor of S1"
@@ -1023,9 +1083,17 @@
   "tier": "small",
   "note": "calibration/QA"
  },
+ "jais-3-mova-36b-a4b": {
+  "tier": "mid",
+  "note": "IFM Jais 3 MoVA, 36B/A4B Arabic-English model; unranked on BenchLM (only SWE-bench Verified 72.8, one unverified row), so the 30B/A3B Nemotron 3.5 Lightning band"
+ },
  "jamba-1.5-large-instruct": {
   "tier": "small",
   "note": "2024 gen"
+ },
+ "k2-horizon-375b-a23b": {
+  "tier": "strong",
+  "note": "IFM K2 Horizon 375B/A23B; not on BenchLM. Artificial Analysis Intelligence Index 47 (MiniMax M3.1 Flash = 42.7 at BenchLM 67.1); Terminal-Bench 2.1 66.9 after IFM's reward-hacking audit"
  },
  "k2.6-code-preview": {
   "tier": "strong",
@@ -1138,6 +1206,14 @@
  "ling-3.0-tiny": {
   "tier": "small",
   "note": "tiny variant"
+ },
+ "ling-3.1-flash": {
+  "tier": "strong",
+  "note": "BenchLM 68.02 (Ling 3.1 Flash) -- bench-align v5.8 (2026-09-30) scale"
+ },
+ "ll-alpha": {
+  "tier": "mid",
+  "note": "OpenCode Zen stealth \"best in class local model\", no identity published; deprecated by 2026-10-17. Local-class, so the cat-jam band"
  },
  "llama-3.1-405b": {
   "tier": "small",
@@ -1283,6 +1359,10 @@
   "tier": "strong",
   "note": "LongCat 2.5 GA; same tier as the longcat-2.5-preview rows (OpenCode, Nous)"
  },
+ "longcat-2.5-preview": {
+  "tier": "strong",
+  "note": "same model as longcat-2.5 (OpenCode, Nous, Kenari, xKiro rows)"
+ },
  "longcat-flash-lite": {
   "tier": "small",
   "note": "lite variant"
@@ -1351,6 +1431,10 @@
   "tier": "strong",
   "note": "BenchLM 62.89 (MiMo-V2.5-Pro)"
  },
+ "mimo-v2.6-flash": {
+  "tier": "strong",
+  "note": "BenchLM 64.5 (MiMo-V2.6-Flash) -- bench-align v5.8 (2026-09-30) scale"
+ },
  "minimax-2.5": {
   "tier": "mid",
   "note": "BenchLM 54.89 (MiniMax M2.5)"
@@ -1398,6 +1482,10 @@
  "minimax-m3": {
   "tier": "strong",
   "note": "BenchLM 61.47 (MiniMax M3)"
+ },
+ "minimax-m3.1-flash": {
+  "tier": "strong",
+  "note": "BenchLM 67.1 (MiniMax M3.1 Flash, 428B), read 2026-10-20; AA Intelligence Index 42.7"
  },
  "ministral-14b": {
   "tier": "mid",
@@ -1490,6 +1578,14 @@
  "mistral-large-3:675b": {
   "tier": "mid",
   "note": "BenchLM 45.6 (Mistral Large 3)"
+ },
+ "mistral-large-4": {
+  "tier": "strong",
+  "note": "BenchLM 61.5 (Mistral Large 4) -- bench-align v5.8 (2026-09-30) scale"
+ },
+ "mistral-large-4-0": {
+  "tier": "strong",
+  "note": "xKiro's id for Mistral Large 4; see mistral-large-4"
  },
  "mistral-large-instruct-2407": {
   "tier": "mid",
@@ -1643,6 +1739,10 @@
   "tier": "frontier",
   "note": "same model as Muse Spark 1.3"
  },
+ "muse-spark-open": {
+  "tier": "strong",
+  "note": "BenchLM 62.65 (Muse Spark Open, 816B/A42B)"
+ },
  "nano-banana-pro-preview": {
   "tier": "small",
   "note": "image generation"
@@ -1710,6 +1810,18 @@
  "nemotron-3.5-lightning-30b-a3b": {
   "tier": "small",
   "note": "30B/A3B"
+ },
+ "nemotron-3.5-lightning-free:free": {
+  "tier": "mid",
+  "note": "BazaarLink's double-suffixed id (nvidia/nemotron-3.5-lightning-free:free); see nemotron-3.5-lightning"
+ },
+ "nemotron-3.5-super-vl": {
+  "tier": "mid",
+  "note": "BenchLM 49.38 (Nemotron 3.5 Super VL 120B A12B)"
+ },
+ "nemotron-3.5-super-vl-120b-a12b": {
+  "tier": "mid",
+  "note": "BenchLM 49.38 (Nemotron 3.5 Super VL 120B A12B)"
  },
  "nemotron-4-340b": {
   "tier": "small",
@@ -1890,6 +2002,10 @@
  "pixtral-large-2411": {
   "tier": "mid",
   "note": "size/naming heuristic"
+ },
+ "prism": {
+  "tier": "strong",
+  "note": "Charm Hyper's router (8B decision model) over Kimi K3, GLM-5.3, GLM-5.3 Flash, DeepSeek V4.1 Flash, Qwen3.8 Flash: tier of the weakest, all strong"
  },
  "qwen-plus-2025-07-28": {
   "tier": "mid",
@@ -2127,6 +2243,10 @@
   "tier": "strong",
   "note": "BenchLM 64.65 (Qwen3.8-27B)"
  },
+ "qwen3.8-27b-heabsy": {
+  "tier": "mid",
+  "note": "community finetune of Qwen3.8-27B served free on LLMTR; a step below the base"
+ },
  "qwen3.8-flash": {
   "tier": "strong",
   "note": "Qwen3.8-Flash-Next = 57"
@@ -2138,6 +2258,10 @@
  "qwen3.8-max": {
   "tier": "frontier",
   "note": "BenchLM 71.76 (Qwen3.8 Max)"
+ },
+ "qwen3.8-omni-flash": {
+  "tier": "mid",
+  "note": "unranked on BenchLM (19 benchmarks, no overall); omni variant, same band as qwen3-omni-flash"
  },
  "qwenvl": {
   "tier": "mid",
@@ -2191,6 +2315,10 @@
   "tier": "small",
   "note": "flash-lite"
  },
+ "solar-mini4": {
+  "tier": "small",
+  "note": "Upstage Solar Mini 4, mini line below solar-pro4; unranked on BenchLM"
+ },
  "solar-pro4": {
   "tier": "mid",
   "note": "Upstage Pro line"
@@ -2227,9 +2355,17 @@
   "tier": "mid",
   "note": "BenchLM 49.98 (Step 3.7 Flash)"
  },
+ "step-5-preview": {
+  "tier": "strong",
+  "note": "BenchLM 69.45 (Step 5 Preview) -- bench-align v5.8 (2026-09-30) scale"
+ },
  "stepfun-3.7-flash": {
   "tier": "mid",
   "note": "BenchLM 49.98 (Step 3.7 Flash)"
+ },
+ "summarize": {
+  "tier": "small",
+  "note": "ScaleDown single-purpose summarizer (LLMTR scaledown/summarize-free)"
  },
  "swe-1.6": {
   "tier": "strong",
@@ -2282,6 +2418,14 @@
  "xiaomi-mimo-v2.5-pro": {
   "tier": "strong",
   "note": "MiMo-V2.5-Pro = 63"
+ },
+ "xiaomi-mimo-v2.6-flash": {
+  "tier": "strong",
+  "note": "AIHubMix's id for MiMo-V2.6-Flash; see mimo-v2.6-flash"
+ },
+ "xing4.0-29b-a4b": {
+  "tier": "mid",
+  "note": "China Telecom Xing4.0 29B/A4B; not on BenchLM. Vendor card sets it between Qwen3.6-35B-A3B (44.0) and Gemma 4 26B-A4B (55.1): ahead on agentic, behind on math/IF"
  },
  "xiyansql-qwencoder-32b-2412": {
   "tier": "small",
