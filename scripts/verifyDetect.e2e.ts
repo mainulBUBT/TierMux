@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
-import { detectVerifyCommand } from '../src/agent/core/tools/workspace/verifyCommand';
+import { detectVerifyCommand, scopeToChangedTests } from '../src/agent/core/tools/workspace/verifyCommand';
 
 /** The PHP syntax scan is only offered where a php binary exists, so the fixture below expects
  *  what THIS machine can honestly run. Probed independently of the detector's own PATH lookup. */
@@ -117,6 +117,28 @@ expect('make', { Makefile: 'test:\n\techo hi\n' }, 'make test');
 console.log('\n── 6. Nothing detectable ⇒ undefined (the caller then stays quiet) ──');
 expect('docs-only', { 'README.md': '# docs', 'notes/plan.md': 'x' }, undefined);
 expect('empty', { '.keep': '' }, undefined);
+
+console.log('\n── 7. Scoped runs: changed TEST files narrow the suite (2026-11-11) ──');
+{
+  const eq = (n: string, got: string | undefined, want: string | undefined) => {
+    const passC = got === want;
+    console.log(`${passC ? '✅' : '❌'} ${n}${passC ? '' : ` — got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`}`);
+    if (passC) pass++; else failed++;
+  };
+  eq('npm test + two changed test files scopes to them',
+    scopeToChangedTests('npm test', ['src/app.ts', 'tests/a.test.ts', 'tests/b.spec.ts']),
+    "npm test -- 'tests/a.test.ts' 'tests/b.spec.ts'");
+  eq('php artisan test scopes Test.php files',
+    scopeToChangedTests('php artisan test', ['app/Http/User.php', 'tests/Feature/OrderTest.php']),
+    "php artisan test 'tests/Feature/OrderTest.php'");
+  eq('pytest scopes test_*.py',
+    scopeToChangedTests('python -m pytest', ['lib/x.py', 'tests/test_order.py']),
+    "python -m pytest 'tests/test_order.py'");
+  eq('non-test edits keep the full suite', scopeToChangedTests('npm test', ['src/app.ts', 'src/lib.ts']), undefined);
+  eq('more than 8 test files is a full run, not a path salad',
+    scopeToChangedTests('npm test', Array.from({ length: 10 }, (_, i) => `tests/t${i}.test.ts`)), undefined);
+  eq('a non-runner command is left alone', scopeToChangedTests('go test ./...', ['tests/a_test.go']), undefined);
+}
 
 fs.rmSync(tmpRoot, { recursive: true, force: true });
 

@@ -712,7 +712,8 @@
     "test:e2e:opencode-lane": "esbuild scripts/opencodeLane.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/opencodeLane.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/opencodeLane.e2e.cjs",
     "test:e2e:opencode-lane:bun-live": "command -v bun >/dev/null || { echo 'bun is required for the live costume check: the Zen network fingerprint refuses Node. Install it from https://bun.sh'; exit 2; } && esbuild scripts/opencodeLane.e2e.ts --bundle --platform=node --format=cjs --alias:vscode=$(pwd)/scripts/vscodeMockAlias.cjs --outfile=dist/opencodeLaneBun.e2e.cjs && LIVE=1 bun dist/opencodeLaneBun.e2e.cjs",
     "test:e2e:bun-shim": "esbuild scripts/bunShim.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bunShim.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/bunShim.e2e.cjs",
-    "test:e2e:bun-install": "esbuild scripts/bunInstall.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bunInstall.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/bunInstall.e2e.cjs"
+    "test:e2e:bun-install": "esbuild scripts/bunInstall.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bunInstall.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/bunInstall.e2e.cjs",
+    "test:e2e:focus-pulse": "esbuild scripts/focusPulse.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/focusPulse.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/focusPulse.e2e.cjs"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

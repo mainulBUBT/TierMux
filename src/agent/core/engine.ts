@@ -213,11 +213,36 @@ const planAccepted: StopCondition<ToolSet> = ({ steps }) =>
  *  and been documented since v3 while the engine hardcoded 50, so changing it did nothing. */
 const DEFAULT_MAX_STEPS = 50;
 
+/** Focus pulse (2026-11-11, Cline Focus-Chain style): the system prompt's todo block is a
+ *  turn-START snapshot — a 30-step turn drifts from it. Every FOCUS_PULSE_EVERY steps, when the
+ *  live todo list has actually changed since the last pulse, a compact <progress> note rides as
+ *  the last message: n/m done, what is still open, what just closed. Cache cost is bounded —
+ *  it fires only on change, at most every 6th step. */
+const FOCUS_PULSE_EVERY = 6;
+
+/** The pulse body. Pure — exported for e2e. */
+export function formatProgressPulse(todos: ReadonlyArray<{ content: string; status: string }>): string {
+  const done = todos.filter((t) => t.status === 'completed').length;
+  const open = todos.filter((t) => t.status !== 'completed');
+  const lastDone = [...todos].reverse().find((t) => t.status === 'completed');
+  const lines = open.slice(0, 8).map((t) => `- ${t.content}`);
+  return `<progress>\n${done}/${todos.length} todos done.`
+    + (lines.length ? `\nStill open:\n${lines.join('\n')}` : '\nEverything on the list is done — close the turn.')
+    + (lastDone ? `\nLast completed: ${lastDone.content}` : '')
+    + '\nWork the open items in order; no prose recaps of finished work.\n</progress>';
+}
+
 /** Plan mode's reading budget: on this step only the closers are offered, once. A count, never a
  *  judgment. Prose stays possible because a plan-mode question is answered, not planned. Repro:
  *  agentBench at 1e008b8, real providers: plan-feature 20 steps and plan-php-feature 17 steps both
  *  ran into the 600s timeout with no plan. */
 const PLAN_STEP_BUDGET = 15;
+/** Plan-mode closers step. Scales with the caller's step cap — a raised maxStepsPerTurn (the
+ *  big-task opt-in) used to be nullified by the flat 15. Floor 15, ceiling 60: beyond that a
+ *  plan turn is wandering, not planning. */
+function planBudgetFor(maxSteps: number): number {
+  return Math.min(60, Math.max(PLAN_STEP_BUDGET, Math.floor(maxSteps / 3)));
+}
 const PLAN_BUDGET_WRAPUP = 'Reading budget used up. Decide now from the files you have already read: exitPlanMode with concrete steps (real paths, path:line for each), askUser if you are genuinely unsure which reading the user meant, or, if the user asked a question, answer it directly.';
 
 /** Todos this turn declared complete get ONE evidence check, then at most one fix pass — the
@@ -339,6 +364,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   /** The task list as it stands: inherited on a Continue, replaced by each todoWrite. Drives
    *  the audit gate and the caller's remaining-items note. */
   let lastTodos: TodoItem[] | undefined = opts.todos;
+  let lastPulseSignature = '';
   const tools: ToolSet = dedupeReads(buildV3ToolSet(opts.mode, {
     abortSignal: opts.abortSignal,
     sessionId: opts.sessionId,
@@ -530,21 +556,34 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
         }
         const compaction = compactIfNeeded(aging.messages ?? messages, profile.pruneTarget);
         const stepMessages = compaction.messages ?? aging.messages;
+        // Focus pulse state (see FOCUS_PULSE_EVERY): inject only on a todo CHANGE at a pulse
+        // step — an unchanged list would restate what the system prompt already says.
+        const todos = lastTodos;
+        let pulse: ModelMessage | undefined;
+        if (todos?.length && stepNumber >= 2 && stepNumber % FOCUS_PULSE_EVERY === 0) {
+          const sig = todos.map((t) => `${t.status}:${t.content}`).join('|');
+          if (sig !== lastPulseSignature) {
+            lastPulseSignature = sig;
+            pulse = { role: 'user' as const, content: formatProgressPulse(todos) };
+            diagLog('engine.focusPulse', `step ${stepNumber}: ${todos.filter((t) => t.status === 'completed').length}/${todos.length} done`);
+          }
+        }
+        const baseMessages: ModelMessage[] = pulse ? [...(stepMessages ?? messages), pulse] : (stepMessages ?? messages);
         if (budgetWrapUp) {
           return {
-            messages: [...(stepMessages ?? messages), { role: 'user' as const, content: BUDGET_WRAPUP }],
+            messages: [...baseMessages, { role: 'user' as const, content: BUDGET_WRAPUP }],
             toolChoice: 'none' as const,
           };
         }
-        if (opts.mode === 'plan' && !proposedPlan && stepNumber > 0 && stepNumber === Math.min(PLAN_STEP_BUDGET, maxSteps) - 1) {
+        if (opts.mode === 'plan' && !proposedPlan && stepNumber > 0 && stepNumber === planBudgetFor(maxSteps) - 1) {
           diagLog('engine.planBudget', `step ${stepNumber}: only the closers are offered`);
           return {
-            messages: [...(stepMessages ?? messages), { role: 'user' as const, content: PLAN_BUDGET_WRAPUP }],
+            messages: [...baseMessages, { role: 'user' as const, content: PLAN_BUDGET_WRAPUP }],
             activeTools: PLAN_CLOSERS,
           };
         }
         return {
-          ...(stepMessages ? { messages: stepMessages } : {}),
+          ...(stepMessages || pulse ? { messages: baseMessages } : {}),
           ...(forceAnswer ? { toolChoice: 'none' as const } : {}),
           // forcePlan's activeTools wins over the small-window offer: on this one step the turn
           // has to close, and every tool outside PLAN_CLOSERS is a way not to.
@@ -922,7 +961,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let fixRounds = 0;
   const mutated = changedFilesFrom(toChatMessages(outcome.responseMessages));
   if (opts.mode === 'agent' && mutated.length > 0 && !opts.abortSignal?.aborted && !stuckSignature && !askDismissed && !providerCut) {
-    verifyCmd = resolveVerifyCommand();
+    verifyCmd = resolveVerifyCommand(mutated);
     verifyAvailable = !!verifyCmd;
     if (!verifyCmd) {
       // Nothing detectable and nothing configured: the turn is unverified as a property of the

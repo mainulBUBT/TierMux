@@ -269,15 +269,43 @@ export function detectVerifyCommand(root: string): string | undefined {
 
 /** Resolves the verify command for THIS turn: an explicit `tiermux.agent.verifyCommand` value
  *  wins ('off' disables, 'auto'/empty auto-detects), otherwise auto-detect from the workspace
- *  manifest. Returns undefined when verification is off or nothing detectable exists. */
-export function resolveVerifyCommand(): string | undefined {
+ *  manifest. Returns undefined when verification is off or nothing detectable exists.
+ *
+ *  `changed` scopes a detected TEST suite (never an explicit user command): when the turn
+ *  itself created or edited test files, running just those beats a full-suite pass that costs
+ *  minutes on the free tier. Non-test edits map to no honest file list, so they keep the full
+ *  suite — the wrong subset would verify nothing. */
+export function resolveVerifyCommand(changed?: Array<{ path: string }>): string | undefined {
   const setting = vscode.workspace.getConfiguration('tiermux.agent').get<string>('verifyCommand', 'auto');
   const v = setting.trim();
   if (!v || v.toLowerCase() === 'auto') {
-    try { return detectVerifyCommand(effectiveRootUri().fsPath); } catch { return undefined; }
+    let cmd: string | undefined;
+    try { cmd = detectVerifyCommand(effectiveRootUri().fsPath); } catch { return undefined; }
+    if (cmd && changed?.length) cmd = scopeToChangedTests(cmd, changed.map((c) => c.path)) ?? cmd;
+    return cmd;
   }
   if (v.toLowerCase() === 'off') return undefined;
   return v;
+}
+
+/** Files the major runners treat as test files, by path shape. */
+const TEST_FILE_RE = /(^|[\\/])(tests?|spec)[\\/].*\.(test|spec)\.[cm]?[jt]sx?$|(^|[\\/])(tests?|__tests__)[\\/][^\\/]+\.(php|py|ts|js)$|(^|[\\/])test_[^\\/]+\.py$|(^|[\\/])[^\\/]+Test\.php$|\.(test|spec)\.[cm]?[jt]sx?$/i;
+/** How many scoped paths are worth passing before a full run is simpler than a path salad. */
+const MAX_SCOPED = 8;
+
+/** Appends the changed TEST files to a runner command that accepts file arguments. Returns
+ *  undefined when the command is not a recognisable runner, the changed set holds no test
+ *  files, or there are too many to bother. Exported for e2e. */
+export function scopeToChangedTests(command: string, changed: string[]): string | undefined {
+  const matching = changed.filter((p) => TEST_FILE_RE.test(p));
+  if (matching.length === 0 || matching.length > MAX_SCOPED) return undefined;
+  const files = matching;
+  const q = (f: string) => `'${f.replaceAll("'", `'\\''`)}'`;
+  const args = files.map(q).join(' ');
+  // npm-family: the runner takes paths AFTER `--`. PHPUnit/artisan and pytest take them bare.
+  if (/\b(npm|pnpm|yarn|bun)( +test| +run +test)\b/.test(command)) return `${command} -- ${args}`;
+  if (/php artisan test|(^|\/)phpunit(|\.phar)\b|(^|\/)pytest\b|(^|\/)python +(-m +)?pytest\b/.test(command)) return `${command} ${args}`;
+  return undefined;
 }
 
 export interface VerifyRun {

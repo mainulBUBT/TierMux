@@ -7,6 +7,18 @@ All notable changes to TierMux are documented here. The format is loosely
 
 ### Changed
 
+- **Week-2 harness fixes: long turns stay on track, and verification stops costing the whole
+  suite.**
+  - *Focus pulse (Cline Focus-Chain style):* on every 6th step of a turn, when the todo list has
+    actually changed, the engine appends a compact `<progress>` note — n/m done, what is still
+    open, what just closed. The system prompt's todo block was a turn-start snapshot a long turn
+    drifted from; unchanged lists are never restated (cache-friendly).
+  - *Verify runs only the changed TEST files* when the turn itself edited test files (npm/pnpm/
+    yarn/bun test, php artisan test / phpunit, pytest) — a full-suite pass that costs minutes on
+    the free tier now costs seconds. Non-test edits keep the full suite: the wrong subset would
+    verify nothing, and >8 files is a full run, not a path salad.
+  - *Plan mode's closers step scales with the step cap* (floor 15, ceiling 60): raising
+    `maxStepsPerTurn` — the big-task opt-in — used to be nullified by the flat 15-step plan budget.
 - **Week-1 harness fixes (the 2026-11-11 audit): four changes that attack "slow, cannot finish
   big work" at the routing layer.**
   - *The failover chain stops starting new candidates after 60s, not 120s* (`chainDeadlineMs`
