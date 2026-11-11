@@ -211,7 +211,13 @@ const planAccepted: StopCondition<ToolSet> = ({ steps }) =>
 
 /** Default step cap. `tiermux.agent.maxStepsPerTurn` overrides it — the setting has existed
  *  and been documented since v3 while the engine hardcoded 50, so changing it did nothing. */
-const DEFAULT_MAX_STEPS = 50;
+/** Default step cap: NONE (2026-11-11). Production coding agents (opencode, Claude Code) do not
+ *  count steps — they run until the work is done and are bounded by PROGRESS guards, and
+ *  TierMux already has them all: notMakingProgress (the repeat/stuck signature), the
+ *  tool-failure limit, auto-compact keeping context sane, per-step failover deadlines, and the
+ *  user's Stop. A number here (or the maxStepsPerTurn setting) re-imposes a hard cap whose hit
+ *  pauses the turn as resumable — kept for quota-constrained unattended runs. */
+const DEFAULT_MAX_STEPS = 0;
 
 /** Focus pulse (2026-11-11, Cline Focus-Chain style): the system prompt's todo block is a
  *  turn-START snapshot — a 30-step turn drifts from it. Every FOCUS_PULSE_EVERY steps, when the

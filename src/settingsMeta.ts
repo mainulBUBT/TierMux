@@ -25,7 +25,7 @@ export const SETTINGS_META: SettingMeta[] = [
   { key: 'agent.autoContinueRounds', label: 'Auto-Continue rounds', type: 'number', min: 0, max: 10,
     desc: 'How many times per message TierMux presses Continue itself when an agent turn stops unfinished after real progress (files changed or a todo completed). Each round is more model requests. 0 = always wait for you.' },
   { key: 'agent.maxStepsPerTurn', label: 'Max steps per turn', type: 'number', min: 0, max: 200,
-    desc: 'Hard cap on model round-trips in one agent turn. A turn stopped by this cap is marked resumable — the Continue button picks it up with the full transcript, nothing is repeated. Raise it for long unattended tasks; each step is a real request against a rate-limited free tier. 0 turns the cap off entirely — no resumable pause, the turn just keeps going.' },
+    desc: 'Cap on model round-trips in one agent turn. 0 (the default, 2026-11-11) = no step cap — the turn runs until the work is done, bounded by the progress guards (repeat/stuck detection, auto-compact, the Stop button), exactly like the production coding agents. A number re-imposes a hard cap; a turn stopped by it is marked resumable and the Continue button picks it up with the full transcript.' },
   { key: 'agent.maxConcurrentRuns', label: 'Max concurrent runs', type: 'number', min: 1, max: 10,
     desc: 'Maximum number of chat sessions that run their agent at the same time.' },
   { key: 'agent.commandTimeoutMs', label: 'Command timeout (ms)', type: 'number', min: 1000, max: 300000,

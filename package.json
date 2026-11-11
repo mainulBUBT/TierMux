@@ -363,8 +363,8 @@
         },
         "tiermux.agent.maxStepsPerTurn": {
           "type": "number",
-          "default": 50,
-          "description": "Hard ceiling on the number of tool-loop steps in a SINGLE agent turn (0 = no limit). A backstop for the one runaway shape the other brakes miss: many distinct mutating tool calls (none exact-repeating, all 'real progress') that nonetheless sprawl. Fires as a budget-style cutoff (bounded by maxBudgetContinuations), not a resumable pause. Default 50: a legit task rarely exceeds 50 steps in one turn — long tasks span auto-continue rounds instead."
+          "default": 0,
+          "description": "Cap on tool-loop steps in a SINGLE agent turn. 0 (default) = no step cap — like the production coding agents, the turn runs until the work is done and is bounded by the PROGRESS guards (repeat/stuck detection, auto-compact, the Stop button), not a step count. Set a number to re-impose a hard cap that pauses the turn as resumable."
         },
         "tiermux.agent.connectTimeoutMs": {
           "type": "number",

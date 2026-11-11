@@ -7,6 +7,12 @@ All notable changes to TierMux are documented here. The format is loosely
 
 ### Changed
 
+- **No step cap by default — turns run until the work is done.** Production coding agents
+  (opencode, Claude Code) don't count steps, and TierMux already carries every guard that makes
+  that safe: the repeat/stuck progress signature, the tool-failure limit, auto-compact, per-step
+  failover deadlines and the Stop button. `maxStepsPerTurn` defaults to 0 (was 50); a number
+  re-imposes the hard cap with its resumable-pause Continue flow for quota-constrained
+  unattended runs.
 - **Real work leads with strong models again.** Since 2026-09-22 a below-floor tier could buy the
   agent/coding/debug/plan LEAD with speedRank ≤ 2 — in practice every curated fast-mid head led
   real work, and the 2026-11-11 audit traced "slow AND weak on big tasks" straight to it. Speed no
