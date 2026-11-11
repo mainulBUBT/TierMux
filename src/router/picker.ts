@@ -97,8 +97,10 @@ export const TASK_ROUTING: Record<TaskKind, string[]> = {
   // catalog; the two Kilo rows are speedRank 2 and answered a tool call in 2-3s (2026-10-13), so a
   // zero-setup install still gets a fast head. kilo::kilo-auto/free is speedRank 1 but a router
   // alias — kilo picks the model, so its latency is unknowable; it stays out on purpose.
-  trivial: ['cerebras::gemma-4-31b', 'kilo::inclusionai/ling-3.1-flash', 'groq::openai/gpt-oss-20b', 'kilo::nvidia/nemotron-3-ultra-550b-a55b:free'],
-  chat: ['groq::openai/gpt-oss-120b', 'kilo::nvidia/nemotron-3-ultra-550b-a55b:free', 'opencode::big-pickle', 'kilo::stepfun/step-5-preview-free'],
+  // 2026-11-11: inclusionai/ling-3.1-flash and stepfun/step-5-preview-free left Kilo's catalog —
+  // ernie-5.5-flash-preview:free is the current speedRank-2 keyless head.
+  trivial: ['cerebras::gemma-4-31b', 'kilo::baidu/ernie-5.5-flash-preview:free', 'groq::openai/gpt-oss-20b', 'kilo::nvidia/nemotron-3-ultra-550b-a55b:free'],
+  chat: ['groq::openai/gpt-oss-120b', 'kilo::nvidia/nemotron-3-ultra-550b-a55b:free', 'opencode::big-pickle', 'kilo::nvidia/nemotron-3.5-lightning:free'],
   agent: ['groq::openai/gpt-oss-120b', 'cerebras::gpt-oss-120b', 'kilo::nvidia/nemotron-3-ultra-550b-a55b:free', 'opencode::big-pickle', 'opencode::nemotron-3.5-lightning-free'],
 };
 
@@ -424,8 +426,9 @@ export function isFreeLimitReached(message: string | undefined): boolean {
 export function noteModelFailure(platform: string, modelId: string, status: number | undefined, toolsOffered: boolean, message?: string): void {
   if (!sources) return;
   if (status === 404) sources.secrets.markDeprecated?.(platform as never, modelId);
-  // 429 carries the same text when Zen rate-limits a model (ling-3.1-flash-free, live 2026-10-06).
-  else if ((status === 400 || status === 401 || status === 429) && isModelUnavailable(message)) sources.secrets.markDeprecated?.(platform as never, modelId, 3_600_000);
+  // A 429 carrying the same "unavailable" text is still a MOMENT, not the model (Zen rate-limits
+  // ling-3.1-flash-free with it, live 2026-10-06) — 400/401 mean the model itself; 429 does not.
+  else if ((status === 400 || status === 401) && isModelUnavailable(message)) sources.secrets.markDeprecated?.(platform as never, modelId, 3_600_000);
   else if (status === 429 && isFreeLimitReached(message)) {
     sources.secrets.markDeprecated?.(platform as never, modelId, 900_000);
     // Platform-wide 429: sideline all models on this platform for 15 minutes so Auto-routing fails over immediately
