@@ -5,7 +5,8 @@
  * provider instance = one turn (engine.ts creates it per runTurn); stickiness lives there.
  * Cross-turn rotation, failover and cooldowns must keep working. Run: npm run test:e2e:router-sticky */
 import { setModelSources, recordOutcome, __resetTaskRoundCounters } from '../src/router/picker';
-import { createRouterProvider } from '../src/agent/core/routerProvider';
+import { createRouterProvider, dropUnfit, isContextOverflow } from '../src/agent/core/routerProvider';
+import { ProviderHttpError } from '../src/providers/base';
 import type { FallbackEntry } from '../src/shared/types';
 import type { LanguageModelV4CallOptions } from '@ai-sdk/provider';
 
@@ -136,6 +137,71 @@ async function main() {
     await pinned.doGenerate(step());
     await pinned.doGenerate(step());
     ok('10. both steps ran the pin', served.join(',') === `${B},${B}`, served.join(','));
+  }
+
+  console.log('— the next TURN in the same conversation resumes on the model that served (2026-11-11) —');
+  {
+    __resetTaskRoundCounters();
+    for (const m of [A, B]) recordOutcome('groq', m, true);
+    served.length = 0;
+    const t1 = createRouterProvider({ taskKind: 'chat', sessionId: 'conv-s1' });
+    await t1.doGenerate(step());
+    const firstServed = served[0];
+    served.length = 0;
+    const t2 = createRouterProvider({ taskKind: 'chat', sessionId: 'conv-s1' });
+    await t2.doGenerate(step());
+    ok('15. a new turn of the same session opens on the model that served before', served[0] === firstServed, `${firstServed} → ${served[0]}`);
+    // …and degrades gracefully when that model now fails: sticky first, chain behind it
+    failWith.set(firstServed, 429);
+    served.length = 0;
+    const t3 = createRouterProvider({ taskKind: 'chat', sessionId: 'conv-s1' });
+    await t3.doGenerate(step());
+    const other = firstServed === A ? B : A;
+    ok('16. a failing session-sticky fails over inside the turn', served[0] === firstServed && served[1] === other, served.join(','));
+    failWith.clear();
+    // a pin always beats the session memory
+    served.length = 0;
+    const t4 = createRouterProvider({ taskKind: 'chat', sessionId: 'conv-s1', pinnedModel: `groq::${other}` });
+    await t4.doGenerate(step());
+    ok('17. an explicit pin is never overridden by the session memory', served[0] === other, served.join(','));
+  }
+
+  console.log('— a confirmed context overflow drops the candidates that cannot fit (2026-11-11) —');
+  {
+    __resetTaskRoundCounters();
+    // windows: A=100k, B=8k, C=1M; a ~76k-token prompt needs ~95k with headroom. A fits, B is
+    // impossible, C fits. A answers 413 ⇒ B must be DROPPED (never tried), C takes over.
+    const big = entry('groq', 'big-m', 0), small = entry('groq', 'small-m', 1), huge = entry('groq', 'huge-m', 2);
+    setModelSources({
+      ...makeSources([big, small, huge]),
+      catalog: {
+        find: (_p: string, m: string) => ({
+          intelligenceRank: 1, speedRank: 1, supportsTools: true,
+          contextWindow: m === 'big-m' ? 100_000 : m === 'small-m' ? 8_192 : 1_000_000,
+        }),
+      },
+    } as unknown as Parameters<typeof setModelSources>[0]);
+    served.length = 0;
+    // the picker puts the biggest window first, so the OVERFLOW lands on huge-m (1M, priority
+    // aside); after its 413, small-m (8k < ~95k needed) must be DROPPED, big-m (100k) serves.
+    failWith.set('huge-m', 413);
+    const bigStep = (): LanguageModelV4CallOptions => ({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'x'.repeat(250_000) }] }],
+    } as unknown as LanguageModelV4CallOptions);
+    const t = createRouterProvider({ taskKind: 'chat' });
+    await t.doGenerate(bigStep());
+    ok('18. the overflow model was tried, the too-small one dropped, the fitting one served',
+      served.includes('huge-m') && served.includes('big-m') && !served.includes('small-m'), served.join(','));
+    failWith.clear();
+    ok('19. isContextOverflow recognises the shapes', isContextOverflow(new ProviderHttpError('X API error 413: too large', 413))
+      && isContextOverflow(new ProviderHttpError("X API error 400: This model's maximum context length is 8192 tokens", 400))
+      && !isContextOverflow(new ProviderHttpError('X API error 400: bad parameter', 400)));
+    const { kept, dropped } = dropUnfit(
+      [{ platform: 'groq', modelId: 'cur' }, { platform: 'groq', modelId: 'small-m' }, { platform: 'groq', modelId: 'huge-m' }],
+      0, 76_000);
+    ok('20. dropUnfit keeps the current + fitting, names the dropped',
+      kept.length === 2 && dropped.length === 1 && dropped[0].includes('small-m'), JSON.stringify(dropped));
+    setModelSources(makeSources([entry('groq', A, 0), entry('groq', B, 1)]));
   }
 
   globalThis.fetch = realFetch;

@@ -5,6 +5,26 @@ All notable changes to TierMux are documented here. The format is loosely
 
 ## [Unreleased]
 
+### Changed
+
+- **Week-1 harness fixes (the 2026-11-11 audit): four changes that attack "slow, cannot finish
+  big work" at the routing layer.**
+  - *The failover chain stops starting new candidates after 60s, not 120s* (`chainDeadlineMs`
+    default). A silent multi-minute walk to a first token reads as a hang; past a minute the
+    honest chain report beats another cold candidate. The setting still tunes it.
+  - *A confirmed context overflow (413, or a 400 naming the prompt size) drops the remaining
+    candidates whose declared window cannot fit the prompt* instead of re-buying the same error
+    from each — `preferFittingWindows` demoted them to the tail, the walk replayed them anyway.
+    The chain report now names every skipped model with its window.
+  - *The model that served a turn now leads the next turn of the same conversation*
+    (session-sticky, cooldown-/exclusion-checked, never against an explicit pin). Cross-turn
+    prompt caches stay warm instead of being thrown away at every turn boundary; a failing
+    sticky degrades to the normal chain exactly like the in-turn one.
+  - *The prune target's 120k ceiling is now 400k.* It silently clipped real working sets — a
+    200k-window model pruned at 120k, losing 40% of usable context mid-task, and tier-2 pruning
+    then dropped reads the exact-match edits still needed. Every catalog window is now left
+    whole; only ~1M-window models still see a fraction cap.
+
 ### Added
 
 - **The shim can no longer hang a turn when bun cannot start.** Live repro (2026-11-11, found in

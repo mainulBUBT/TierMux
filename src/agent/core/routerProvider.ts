@@ -105,9 +105,11 @@ function firstContentTimeoutMs(): number {
 /** Stop STARTING new candidates once the chain has burned this long. Never interrupts a
  *  candidate already streaming — it only declines to open another one. Bounds the pathological
  *  case (every candidate unresponsive) at roughly this plus one connect timeout, instead of
- *  candidates × timeout. `tiermux.agent.chainDeadlineMs` (default 120 000). */
+ *  candidates × timeout. `tiermux.agent.chainDeadlineMs` (default 60 000, lowered from 120 000
+ *  on 2026-11-11: a silent multi-minute walk to a first token reads as a hang to the user —
+ *  past a minute the honest chain report beats another cold candidate). */
 function chainDeadlineMs(): number {
-  return agentNumberSetting('chainDeadlineMs', 120_000);
+  return agentNumberSetting('chainDeadlineMs', 60_000);
 }
 
 /** Every way an OpenAI-compatible provider spells "ran out of output budget". Only the exact
@@ -468,6 +470,33 @@ export async function resolveCandidates(
 /** A declared window must hold the prompt plus this much room for the reply. */
 const CONTEXT_HEADROOM = 1.25;
 
+/** The conversation, not the candidate, is the failure: 413s outright, and the 400s whose text
+ *  names the prompt size. Walking the rest of the chain with the SAME oversized prompt re-buys
+ *  the same answer from every too-small model (preferFittingWindows only demotes them to the
+ *  tail, it never drops them). Exported for e2e. */
+export function isContextOverflow(e: unknown): boolean {
+  return e instanceof ProviderHttpError
+    && (e.status === 413
+      || (e.status === 400 && /context length|context window|too many tokens|maximum context|prompt is too long|tokens.*exceed|exceeds.*tokens/i.test(e.message)));
+}
+
+/** After a confirmed overflow, the candidates whose declared window cannot hold this prompt are
+ *  no longer "later" — they are impossible. Drop them (unknown windows keep their place: the
+ *  error text may miscount). Returns the survivors plus a one-line reason per drop for the
+ *  chain report. Exported for e2e. */
+export function dropUnfit<T extends { platform: string; modelId: string }>(chain: T[], after: number, promptTokens: number): { kept: T[]; dropped: string[] } {
+  const need = promptTokens * CONTEXT_HEADROOM;
+  const kept: T[] = [];
+  const dropped: string[] = [];
+  for (let i = 0; i < chain.length; i++) {
+    if (i <= after) { kept.push(chain[i]); continue; }
+    const w = findCatalogModel(chain[i].platform, chain[i].modelId)?.contextWindow;
+    if (w && w > 0 && w < need) dropped.push(`${chain[i].platform}::${chain[i].modelId} skipped (window ~${Math.round(w / 1000)}k < ~${Math.round(need / 1000)}k needed)`);
+    else kept.push(chain[i]);
+  }
+  return { kept, dropped };
+}
+
 /** Candidates whose declared window cannot hold this prompt go LAST, not away — the chain never
  *  empties. Served by one, a long transcript either 400s or, from the next step on, is pruned to
  *  that small window for the rest of the turn. Unknown windows keep their place. Exported for e2e. */
@@ -521,6 +550,12 @@ const CAPACITY_WAIT_MAX_MS = 120_000;
  *  pinned run 128s in, with the service edits done and the tests still to write. */
 const NETWORK_RETRY_MS = 2_000;
 
+/** Last model that served each conversation, so the next TURN starts on it (cross-turn prompt
+ *  cache stays warm; see the session-sticky seed inside candidatesForStep). Provider instances
+ *  are per-turn, so this map is the only thing that carries the choice across the boundary. */
+const sessionSticky = new Map<string, { platform: Platform; modelId: string }>();
+const SESSION_STICKY_MAX = 64;
+
 function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(resolve, ms);
@@ -562,6 +597,12 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
   const noteServed = (c: Candidate, chain: Candidate[]): void => {
     if (!isSticky(c)) displaced = chain.slice(0, chain.findIndex((x) => x.platform === c.platform && x.modelId === c.modelId));
     sticky = c;
+    // Remember it for the next TURN in the same conversation (see the session-sticky seed in
+    // candidatesForStep); bounded, oldest-first eviction.
+    if (providerOpts.sessionId) {
+      if (sessionSticky.size >= SESSION_STICKY_MAX) sessionSticky.delete(sessionSticky.keys().next().value as string);
+      sessionSticky.set(providerOpts.sessionId, { platform: c.platform, modelId: c.modelId });
+    }
   };
   const stickyRunnable = (): Candidate | undefined => {
     const s = sticky;
@@ -579,6 +620,23 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
    *  runs off the end; it is a no-op after the first time. */
   const candidatesForStep = async (sel: { rationale?: SelectionRationale }, promptTokens: number): Promise<{ candidates: Candidate[]; extend: () => Promise<void> }> => {
     const chain = async () => preferFittingWindows(await resolveCandidates(providerOpts, sel), promptTokens);
+    // Session-sticky seed (2026-11-11): the turn-level sticky above dies with the provider
+    // instance, so turn N+1 re-selected from scratch — a healthy model's warm prompt cache
+    // thrown away at every turn boundary. The candidate that served the LAST turn in this
+    // conversation goes first again (cooldown-, exclusion- and resolution-checked by
+    // stickyRunnable below, and never against an explicit pin). Costs nothing when it fails
+    // the checks — the normal chain resolves as if no sticky existed.
+    if (!sticky && !providerOpts.pinnedModel && providerOpts.sessionId) {
+      const prev = sessionSticky.get(providerOpts.sessionId);
+      if (prev && !providerOpts.excludeModels?.includes(`${prev.platform}::${prev.modelId}`)) {
+        const keys = await getApiKeysFor(prev.platform);
+        if (keys.length > 0) {
+          sticky = { platform: prev.platform, modelId: prev.modelId, apiKeys: keys };
+          displaced = [];
+          diagLog('rp.sticky', `session resumes on ${prev.platform}::${prev.modelId} (served the previous turn)`);
+        }
+      }
+    }
     const s = stickyRunnable();
     if (!s) return { candidates: await chain(), extend: async () => {} };
     diagLog('rp.sticky', `${s.platform}::${s.modelId} served this turn already — going first, chain deferred`);
@@ -694,6 +752,18 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             noteCandidateRefusal(c, e, deadPlatforms, !!apiKey, refusals);
             if (isFailoverWorthy(e)) {
               providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
+              // A confirmed overflow condemns every remaining too-small candidate — drop them
+              // instead of re-buying the same error from each; the loop then ends with the
+              // chain report naming the overflow and every skip.
+              if (isContextOverflow(e)) {
+                const { kept, dropped } = dropUnfit(candidates, i, promptTokens);
+                if (dropped.length) {
+                  diagLog('rp.fit', `overflow on ${c.platform}::${c.modelId} — dropping ${dropped.length} impossible candidate(s)`);
+                  attempts.push(...dropped);
+                  candidates.length = kept.length;
+                  candidates.push(...kept);
+                }
+              }
               continue; // next key; when keys run out, the candidate loop advances
             }
             throw e;
@@ -1011,6 +1081,17 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
               // behind a visible seam rather than restarting a second copy of the answer.
               if (textStarted) controller.enqueue({ type: 'text-delta', id: textId, delta: '\n\n*(connection to the model dropped — continuing with another)*\n\n' });
               providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
+              // Same as doGenerate: a confirmed overflow makes the remaining too-small
+              // candidates impossible — drop them rather than replay the error on each.
+              if (isContextOverflow(e)) {
+                const { kept, dropped } = dropUnfit(candidates, i, promptTokens);
+                if (dropped.length) {
+                  diagLog('rp.fit', `overflow on ${c.platform}::${c.modelId} — dropping ${dropped.length} impossible candidate(s)`);
+                  attempts.push(...dropped);
+                  candidates.length = kept.length;
+                  candidates.push(...kept);
+                }
+              }
               continue; // next key; when keys run out, the candidate loop advances
             }
             controller.error(e);

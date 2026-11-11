@@ -40,6 +40,7 @@ console.log('— the budget tracks the model\'s own window —');
   ok('an 8k model gets a budget UNDER its window', small < 8_192, `${small}`);
   ok('...which the old flat 32k could never reach', small < 32_768, `${small} vs 32768`);
   ok('a 200k model gets far more than the old flat 32k', large > 32_768, `${large}`);
+  ok('...and is no longer clipped to the old 120k ceiling (2026-11-11)', large === 170_000, `${large}`);
   ok('unknown model still yields a usable fallback', resolveExecutionProfile(undefined).pruneTarget > 0);
 }
 

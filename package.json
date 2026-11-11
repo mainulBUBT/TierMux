@@ -380,7 +380,7 @@
         },
         "tiermux.agent.chainDeadlineMs": {
           "type": "number",
-          "default": 120000,
+          "default": 60000,
           "minimum": 5000,
           "description": "Auto mode stops STARTING new failover candidates once the chain has spent this long on one request (a candidate already streaming is never interrupted). Lower it to fail faster when every gateway is unresponsive."
         },
