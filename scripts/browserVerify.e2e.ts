@@ -10,8 +10,8 @@ import * as net from 'net';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { createBrowserVerifyTool, subresourceAllowed, cleanUrlForReport } from '../src/agent/core/tools/network/browserVerify';
-import { findChromePath } from '../src/agent/core/tools/network/cdp';
+import { createBrowserVerifyTool, subresourceAllowed, cleanUrlForReport, publicPageChromeArgs, firstArgText } from '../src/agent/core/tools/network/browserVerify';
+import { CdpPipeClient, findChromePath } from '../src/agent/core/tools/network/cdp';
 import { taskRegistryFor } from '../src/agent/core/tools/taskRegistry';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
 
@@ -69,6 +69,12 @@ async function main(): Promise<void> {
     check('same-origin https allowed', subresourceAllowed('https://localhost:3000/x', 'https://localhost:3000'));
     check('localhost other port allowed (dev API)', subresourceAllowed('http://127.0.0.1:8080/api', top));
     check('cross-origin public blocked', !subresourceAllowed('https://cdn.example.com/lib.js', top));
+    check('console.error(err) reads as the error, not [object Object]',
+      firstArgText([{ type: 'string', value: 'failed:' }, { type: 'object', subtype: 'error', className: 'TypeError', description: 'TypeError: x is not a function' }]) === 'failed: TypeError: x is not a function');
+    const args = publicPageChromeArgs('evil.example.com', '93.184.216.34').join(' ');
+    check('public page: only its host bypasses the dead proxy, loopback included', /--proxy-bypass-list=<-loopback>;evil\.example\.com(\s|$)/.test(args) && args.includes('--proxy-server='), args);
+    check('…and its host is pinned to the checked address (no rebinding)', args.includes('--host-resolver-rules=MAP evil.example.com 93.184.216.34'), args);
+    check('…IPv6 address pinned in brackets', publicPageChromeArgs('v6.example.com', '2606:2800::1').join(' ').includes('MAP v6.example.com [2606:2800::1]'));
     check('cross-origin private blocked (SSRF)', !subresourceAllowed('http://192.168.1.10/admin', top));
     check('https localhost on http top allowed by host rule? no — protocol checked', (() => {
       // localhost on a DIFFERENT scheme: http-only rule applies to the localhost branch; https
@@ -171,6 +177,36 @@ async function main(): Promise<void> {
       check('returns near the deadline (<6s), not the default 60s', took < 6_000, `${took}ms`);
       check('reports the timeout/failed navigation', isStr(r) && /TIMED OUT|FAILED/.test(r), String(r));
     });
+
+    console.log('\n— A public page cannot open a WebSocket to localhost (Fetch interception misses WS) —');
+    {
+      let upgrades = 0;
+      const wsSrv = http.createServer((_q, r) => r.end());
+      wsSrv.on('upgrade', (_q, sock) => { upgrades++; sock.destroy(); });
+      await new Promise<void>((r) => wsSrv.listen(0, '127.0.0.1', () => r()));
+      const wsPort = (wsSrv.address() as net.AddressInfo).port;
+      const pageSrv = http.createServer((_q, r) => {
+        r.writeHead(200, { 'content-type': 'text/html' });
+        r.end(`<script>new WebSocket('ws://127.0.0.1:${wsPort}/a');setTimeout(()=>{const i=document.createElement('iframe');document.documentElement.appendChild(i);new i.contentWindow.WebSocket('ws://localhost:${wsPort}/b')},50)</script>`);
+      });
+      await new Promise<void>((r) => pageSrv.listen(0, '127.0.0.1', () => r()));
+      const pagePort = (pageSrv.address() as net.AddressInfo).port;
+      // "public.test" stands in for a public host: pinned to the fixture's address, like a real lookup.
+      const c = CdpPipeClient.launch(chrome, publicPageChromeArgs('public.test', '127.0.0.1'));
+      let docStatus = 0;
+      try {
+        const { sessionId } = await c.newPage();
+        await c.send('Network.enable', undefined, sessionId);
+        c.on('Network.responseReceived', (p, sid) => { if (sid === sessionId && p.type === 'Document') docStatus = (p.response as { status: number }).status; });
+        await c.send('Page.navigate', { url: `http://public.test:${pagePort}/` }, sessionId);
+        await new Promise((r) => setTimeout(r, 1500));
+      } finally {
+        c.dispose();
+        wsSrv.close(); pageSrv.close();
+      }
+      check('the public page itself loads directly', docStatus === 200, String(docStatus));
+      check('no WebSocket handshake reached localhost (main frame or fresh iframe)', upgrades === 0, `${upgrades} upgrade(s)`);
+    }
 
     console.log('\n— Verifying refreshes the dev-server idle clock —');
     await runWithWorkspaceRoot(root, async () => {

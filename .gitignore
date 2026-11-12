@@ -47,3 +47,6 @@ scripts/tmp/
 # (npm run build / package:all / publish all run it), so tracking this only added ~5k-line
 # diffs to every commit that touched the webview.
 media/main.js
+
+# Local agent plan files (another tool's session state)
+.zcode/

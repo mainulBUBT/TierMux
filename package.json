@@ -95,6 +95,7 @@
     "dist/shared/index.d.ts",
     "dist/shared/index.d.ts.map",
     "media/**/*",
+    ".tiermux/skills/**/*",
     "node_modules/**/*",
     "scripts/vscodeMock.cjs",
     "NOTICE",
@@ -256,9 +257,29 @@
         "command": "tiermux.installBun",
         "title": "Install bun for OpenCode Free Models",
         "category": "TierMux"
+      },
+      {
+        "command": "tiermux.previewGraphic",
+        "title": "Preview Graphic",
+        "category": "TierMux",
+        "icon": "$(open-preview)"
       }
     ],
     "menus": {
+      "explorer/context": [
+        {
+          "command": "tiermux.previewGraphic",
+          "when": "resourceExtname =~ /^\\.(html?|svg|png|jpe?g|webp)$/i",
+          "group": "navigation@99"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "tiermux.previewGraphic",
+          "when": "resourceExtname =~ /^\\.(html?|svg|png|jpe?g|webp)$/i",
+          "group": "navigation"
+        }
+      ],
       "view/title": [
         {
           "command": "tiermux.newChat",
@@ -720,6 +741,9 @@
     "test:e2e:bun-install": "esbuild scripts/bunInstall.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bunInstall.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/bunInstall.e2e.cjs",
     "test:e2e:background-tasks": "esbuild scripts/backgroundTasks.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/backgroundTasks.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/backgroundTasks.e2e.cjs",
     "test:e2e:browser-verify": "esbuild scripts/browserVerify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/browserVerify.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/browserVerify.e2e.cjs",
+    "test:e2e:render-image": "esbuild scripts/renderImage.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/renderImage.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/renderImage.e2e.cjs",
+    "test:e2e:generate-image": "esbuild scripts/generateImage.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/generateImage.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/generateImage.e2e.cjs",
+    "test:e2e:graphic-preview": "esbuild scripts/graphicPreview.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/graphicPreview.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/graphicPreview.e2e.cjs",
     "test:e2e:file-map-symbols": "esbuild scripts/fileMapSymbols.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/fileMapSymbols.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/fileMapSymbols.e2e.cjs",
     "test:e2e:pdf-block": "esbuild scripts/pdfBlock.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/pdfBlock.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/pdfBlock.e2e.cjs"
   },

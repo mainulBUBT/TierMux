@@ -10,7 +10,7 @@ import { execFileSync } from 'child_process';
 import { deflateRawSync } from 'zlib';
 
 import { OpenAICompatProvider } from '../src/providers/openai-compat';
-import { pickBunBinary, readZipEntries } from '../src/providers/bunInstaller';
+import { pickBunBinary, readZipEntries, shaFor } from '../src/providers/bunInstaller';
 import { bunShimCallCount, ensureBunForLane, isBunAvailable, setBunInstaller, setBunPathOverride, __resetBunOfferState, __resetBunShimCallCount } from '../src/providers/bunTransport';
 
 let bad = 0;
@@ -100,6 +100,9 @@ async function main(): Promise<void> {
   const picked = pickBunBinary(entries, 'darwin');
   ok('the picker takes the big binary, not the launcher shim', picked?.length === big.length, String(picked?.length));
   ok('…by the platform\'s binary name', pickBunBinary(entries, 'win32')?.length === 480, 'win32 should pick bun.exe (shim here — size check happens in installBun)');
+  const sums = `${'a'.repeat(64)}  bun-darwin-aarch64-profile.zip\n${'B'.repeat(64)}  bun-darwin-aarch64.zip\n`;
+  ok('the checksum is the exact asset\'s, not its -profile twin', shaFor(sums, 'bun-darwin-aarch64.zip') === 'b'.repeat(64));
+  ok('…and an asset missing from SHASUMS has none', shaFor(sums, 'bun-linux-x64.zip') === undefined);
   let threw = false;
   try { readZipEntries(Buffer.from('not a zip')); } catch { threw = true; }
   ok('a malformed archive throws, not silently empty', threw);

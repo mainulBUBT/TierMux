@@ -11,7 +11,7 @@ import type {
 } from '../shared/types';
 import { BaseProvider, ProviderHttpError, providerHttpError } from './base';
 import type { CompletionOptions } from './options';
-import { bunFetch, ensureBunForLane, isBunAvailable } from './bunTransport';
+import { bunFetch, ensureBunForLane, isBunAvailable, resetBunAvailability } from './bunTransport';
 import { foldSseToCompletion, openCodeLaneHeaders, shapeOpenCodeRequest } from './opencodeLane';
 import { chatBodyToResponses, responsesSseAsChatSse } from './responsesWire';
 import { repairToolArguments, rescueInlineToolCalls, toolSchemaMap, sanitizeToolName, stripHarmonyTokens } from '../agent/toolArgs';
@@ -158,9 +158,11 @@ export class OpenAICompatProvider extends BaseProvider {
           timeoutMs,
         }, this.name, init.signal as AbortSignal | undefined);
       } catch (e) {
-        // The shim is an optimization of the wire, never a new failure mode: a spawn/pipe
-        // problem falls back to the direct fetch and lets the gate answer for itself.
-        if (!(e instanceof ProviderHttpError)) {
+        // A bun that cannot start falls back to the direct fetch and lets the gate answer. A
+        // running bun's request failure is a network error: going direct would only buy the
+        // gate's "free usage limit" refusal and shut the lane for 30 minutes.
+        if (!(e instanceof ProviderHttpError) && /could not start/.test((e as Error).message)) {
+          resetBunAvailability();
           diagLog('bunshim.fallback', `${this.platform} shim failed, going direct: ${(e as Error).message.slice(0, 120)}`);
           return this.fetchWithTimeout(url, init, timeoutMs);
         }

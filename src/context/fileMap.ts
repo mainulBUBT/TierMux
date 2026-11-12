@@ -15,9 +15,12 @@ import * as path from 'path';
 import { rgPath } from '@vscode/ripgrep';
 import { effectiveRootUri } from '../agent/core/tools/workspaceRoot';
 
-/** Above this, the tree degrades to directory counts and symbols are skipped entirely —
- *  exported so the prompt context can apply the same gate to its own rendering. */
+/** Above this, the tree degrades to directory counts and plan mode drops its symbol-annotated
+ *  tree — exported so the prompt context can apply the same gate to its own rendering. The
+ *  agent/ask sketch is budget-cut, so it keeps symbols at any size (up to MAX_SYMBOL_FILES). */
 export const MAX_FILES_LISTED = 200;
+/** Bound on symbol-bearing files kept (one stat each for the freshness order). */
+const MAX_SYMBOL_FILES = 3_000;
 const MAX_DIRS_LISTED = 120;
 
 export interface ProjectMap {
@@ -56,7 +59,7 @@ export async function gatherProjectMap(): Promise<ProjectMap | undefined> {
   // Aider's repo-map lesson, the TierMux-sized way: file NAMES say what lives where, symbol
   // names say what a file DOES — the pair skips the first read of every wrong candidate. One
   // rg pass over code files, capped per file; any failure keeps the plain name map.
-  if (files.length <= MAX_FILES_LISTED) {
+  {
     const per = await new Promise<Map<string, string[]> | undefined>((resolve) => {
       execFile(rgPath,
         // The explicit '.' PATH is load-bearing: with no paths rg reads STDIN, and execFile's
@@ -82,6 +85,7 @@ export async function gatherProjectMap(): Promise<ProjectMap | undefined> {
     });
     if (per) {
       for (const [file, names] of per) {
+        if (symbols.size >= MAX_SYMBOL_FILES) break;
         symbols.set(file, names);
         // The sketch's freshness order: one stat per symbol-bearing file (bounded by the map
         // itself), so recently touched files lead and survive the budget cut.

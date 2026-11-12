@@ -462,6 +462,8 @@ export function toolLabel(name: string, args: unknown, detail?: string, state?: 
     getDiagnostics: ['⊘', 'Checked diagnostics'],
     runCommand: ['▸', argFirst ? `Ran ${argFirst.split(/\s+/).slice(0, 6).join(' ')}` : 'Ran a command'],
     writeFile: ['◈', path ? `Wrote ${path}` : 'Wrote a file'],
+    renderImage: ['◈', (argsObj as { out?: string }).out ? `Rendered ${(argsObj as { out?: string }).out}` : 'Rendered an image'],
+    generateImage: ['◈', (argsObj as { out?: string }).out ? `Generated ${(argsObj as { out?: string }).out}` : 'Generated an image'],
     createFile: ['◈', path ? `Created ${path}` : 'Created a file'],
     editFile: ['◈', path ? `Edited ${path}` : 'Edited a file'],
     deleteFile: ['◉', path ? `Deleted ${path}` : 'Deleted a file'],

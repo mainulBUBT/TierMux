@@ -43,7 +43,7 @@ const DANGEROUS = [
   /\b(curl|wget)\b.*\|\s*(ba|z|da)?sh\b/i, // download-and-execute
   /\b(ba|z|da)?sh\s+-c\b/i, // wraps any command the patterns above would catch
   /\beval\b/,
-  /[>]\s*\/dev\//i, // writing to device files
+  /[>]\s*\/dev\/(?!null\b|stdout\b|stderr\b|tty\b)/i, // writing to device files (not `2>/dev/null`)
   /[>]\s*\/etc\//i,
   /[>]\s*~?\/?(\.[a-z_]*rc|\.(bash_)?profile|\.zprofile|\.gitconfig|\.ssh\/)/i, // shell/ssh dotfiles
   /:\s*\(\s*\)\s*\{/, // fork-bomb shape :(){ :|:& };:
@@ -52,6 +52,65 @@ const DANGEROUS = [
 /** True for commands too destructive to run unattended; these always ask, even in Auto-approve. */
 export function isDangerous(command: string): boolean {
   return DANGEROUS.some((re) => re.test(command));
+}
+
+/** The short list that still asks under Auto-approve (2026-11-12, owner: "auto-approve on means
+ *  full permission — ask only for the most dangerous"). isDangerous also flags routine dev work
+ *  (`kill` a port, `chmod +x`, `rm -rf node_modules`, `sh -c`), which made Auto-approve keep
+ *  asking. This tier is what cannot be undone and reaches past the project: the machine, the
+ *  user's uncommitted work, a remote, a registry. */
+const CATASTROPHIC = [
+  /\bsudo\b/i,
+  /\b(mkfs(\.\w+)?|shutdown|reboot|halt|poweroff|shred)\b/i,
+  /\bdiskutil\s+(erase\w*|partition\w*|zero\w*|secureErase)\b/i,
+  /\bdd\b[^|;&]*\bof=\/dev\//i,
+  /\bgit\s+push\b.*(--force|-f\b|--mirror|--delete\b)/i,
+  /\bgit\s+reset\s+--hard/i,
+  /\bgit\s+clean\b.*-[a-z]*f/i,
+  /\bgit\s+(checkout|restore)\s+(--\s+)?\.(\s|$)/i,
+  /\bgit\s+stash\s+(drop|clear)\b/i,
+  /\bgit\s+remote\s+set-url\b/i,
+  /\b(npm|pnpm|yarn|cargo)\s+publish\b/i,
+  /\bcrontab\s+-r\b/i,
+  /\b(curl|wget)\b.*\|\s*(sudo\s+)?(ba|z|da)?sh\b/i,
+  /[>]\s*\/dev\/(?!null\b|stdout\b|stderr\b|tty\b)/i,
+  /[>]\s*\/etc\//i,
+  /[>]\s*~?\/?(\.[a-z_]*rc|\.(bash_)?profile|\.zprofile|\.gitconfig|\.ssh\/)/i,
+  /:\s*\(\s*\)\s*\{/,
+  /\b(chmod|chown)\b[^|;&]*\s-[a-zA-Z]*R[a-zA-Z]*\b[^|;&]*\s(\/|~|\$HOME)/i,
+];
+
+/** A delete target that reaches past the project: the filesystem root, home, a parent dir, the
+ *  whole project (`.`, `*`), or an absolute path outside `workspaceRoot`. */
+function deleteTargetEscapes(target: string, workspaceRoot?: string): boolean {
+  const t = target.replace(/^['"]|['"]$/g, '');
+  if (!t || t.startsWith('-')) return false;
+  if (t === '/' || t === '.' || t === './' || t === '*' || t === './*' || t === '.*') return true;
+  if (/^~|^\$\{?HOME\b/.test(t)) return true;
+  if (/(^|\/)\.\.(\/|$)/.test(t)) return true;
+  if (/^\/|^[A-Za-z]:[\\/]/.test(t)) {
+    const root = workspaceRoot?.replace(/[\\/]+$/, '');
+    return !root || !(t === root || t.startsWith(root + '/') || t.startsWith(root + '\\'));
+  }
+  return false;
+}
+
+/** True for the commands Auto-approve still asks about — see CATASTROPHIC. */
+export function isCatastrophic(command: string, workspaceRoot?: string): boolean {
+  if (CATASTROPHIC.some((re) => re.test(command))) return true;
+  for (const segment of command.split(/;|&&|\|\||\|/)) {
+    const tokens = segment.trim().split(/\s+/).map((t) => t.replace(/^['"]|['"]$/g, ''));
+    for (let i = 0; i < tokens.length; i++) {
+      if (tokens[i] === 'rm' || tokens[i] === 'rmdir') {
+        if (tokens.slice(i + 1).some((t) => deleteTargetEscapes(t, workspaceRoot))) return true;
+      }
+      if (tokens[i] === 'find' && tokens.some((t) => t === '-delete' || t === '-exec' || t === '-execdir')) {
+        const start = tokens[i + 1];
+        if (start && !start.startsWith('-') && deleteTargetEscapes(start, workspaceRoot) && start !== '.' && start !== './') return true;
+      }
+    }
+  }
+  return false;
 }
 
 /** Safe-by-default inspection/test/build commands that `commandApproval: 'allowlist'` runs

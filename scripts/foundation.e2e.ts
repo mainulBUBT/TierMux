@@ -1519,6 +1519,38 @@ async function main() {
       out.text.includes('attempted fix 1') && out.text.includes('attempted fix 2'), JSON.stringify(out.text));
   }
 
+  // ── Scenario 28d: a fix round that dies on the wire keeps its edits in the transcript ──
+  // onEnd never fires for an errored stream; pass 1 folded its finished steps back in, the
+  // continuation passes did not — the fix round's edit was on disk but missing from the
+  // transcript and the changed-files list (review 2026-11-12).
+  {
+    const ws = makeWorkspace();
+    const g = globalThis as { __tiermuxTestConfig?: Record<string, unknown> };
+    const prev = g.__tiermuxTestConfig;
+    g.__tiermuxTestConfig = { ...(prev ?? {}), verifyCommand: 'exit 1' };
+    let out: AgentResult;
+    try {
+      const model = createMockModel([
+        { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'broken' } }] },
+        { text: 'edited' },
+        { toolCalls: [{ toolName: 'editFile', input: { path: 'bar.txt', search: 'second', replace: 'fixed' } }] },
+        { error: new Error('TierMux: all candidates failed: 503') },
+      ], 's28d');
+      out = await runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+        messages: [{ role: 'user', content: 'edit foo.txt' }],
+        mode: 'agent',
+        autoApprove: true,
+        verifyFixRounds: 1,
+      })));
+    } finally {
+      g.__tiermuxTestConfig = prev;
+    }
+    ok('28d. the fix round\'s edit landed on disk', ws.read('bar.txt') === 'fixed file', ws.read('bar.txt'));
+    ok('28d. …and is in the changed-files list', (out.changedFiles ?? []).some((f) => f.path === 'bar.txt'), JSON.stringify(out.changedFiles));
+    ok('28d. …and in the transcript the next turn reads',
+      JSON.stringify(out.workMessages ?? []).includes('bar.txt'), `${(out.workMessages ?? []).length} work message(s)`);
+  }
+
   // ── Scenario 28c: no mutation ⇒ no gate, no card ─────────────────────────────
   {
     const ws = makeWorkspace();

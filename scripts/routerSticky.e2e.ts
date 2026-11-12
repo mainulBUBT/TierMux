@@ -164,6 +164,14 @@ async function main() {
     const t4 = createRouterProvider({ taskKind: 'chat', sessionId: 'conv-s1', pinnedModel: `groq::${other}` });
     await t4.doGenerate(step());
     ok('17. an explicit pin is never overridden by the session memory', served[0] === other, served.join(','));
+    // the webview sends 'auto' for Auto — that is no pin (2026-11-12: it disabled the session seed)
+    for (const lastServed of [A, B]) {
+      const sid = `conv-auto-${lastServed}`;
+      await createRouterProvider({ taskKind: 'chat', sessionId: sid, pinnedModel: `groq::${lastServed}` }).doGenerate(step());
+      served.length = 0;
+      for (let i = 0; i < 3; i++) await createRouterProvider({ taskKind: 'chat', sessionId: sid, pinnedModel: 'auto' }).doGenerate(step());
+      ok(`17b. Auto ('auto' from the webview) resumes the session's model (${lastServed}), turn after turn`, served.length === 3 && served.every((m) => m === lastServed), served.join(','));
+    }
   }
 
   console.log('— a confirmed context overflow drops the candidates that cannot fit (2026-11-11) —');

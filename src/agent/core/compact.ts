@@ -9,8 +9,14 @@ import { estimateTokens as estimateTextTokens } from '../budget';
 /** Message-level estimate — same 3.3 chars/token heuristic as budget.ts (code/JSON heavy),
  *  plus per-message framing overhead. Single estimator everywhere so step-level aging,
  *  prepareStep compaction, and between-turn condense all trigger off the same numbers. */
+/** Chars charged for one inline image/file payload. Counting base64 as text made one screenshot
+ *  look like ~25k tokens and fired pruning early; a vision model bills an image at roughly a
+ *  thousand tokens. */
+const INLINE_FILE_CHARS = 3_300;
+
 export function estimateTokens(messages: ModelMessage[]): number {
-  const text = JSON.stringify(messages);
+  const text = JSON.stringify(messages, (key, value) =>
+    key === 'data' && typeof value === 'string' && value.length > INLINE_FILE_CHARS ? 'x'.repeat(INLINE_FILE_CHARS) : value);
   return estimateTextTokens(text) + messages.length * 4;
 }
 

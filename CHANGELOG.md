@@ -5,6 +5,80 @@ All notable changes to TierMux are documented here. The format is loosely
 
 ## [Unreleased]
 
+### Added — graphics without an image model (2026-11-12)
+
+- **`renderImage` tool (agent mode):** HTML/SVG → PNG through the user's own headless Chrome (the
+  browserVerify launcher) — banners, OG/social images, posters, cards, diagrams. Zero model cost,
+  no new dependency. Relative paths resolve against the workspace (inline markup) or the source
+  file's folder (`file`); requests follow the fetchUrl line (no loopback/private hosts — WebSockets
+  included — no files outside the workspace). The result reports what can be checked mechanically: content larger than
+  the canvas, text past the edge or clipped, broken images, failed fonts. Writes a file, so it is
+  approved like one. Codex's imagegen skill makes the same call: text-and-layout graphics are
+  HTML/SVG, not a bitmap model.
+- **`graphic` skill:** canvas sizes per destination, find the project's brand first, fixed-canvas
+  layout rules, render → fix the reported issues → render again.
+- **`generateImage` tool (agent mode):** photos and illustrations from AI Horde's anonymous,
+  keyless queue — SDXL (AlbedoBase XL, ~1024×576, ~2–3 min) by default, SD 1.5 `draft` (~20–80 s).
+  Waits up to 6 min, cancels the Horde job on Stop/deadline/fault/censor, never overwrites a file
+  it was not told to, converts Horde's WebP to PNG/JPEG through the local Chrome, and shows vision
+  models a preview. Pollinations' keyless image endpoint was probed and rejected (one weak model,
+  watermark). The `graphic` skill sends photos/illustrations here and keeps text/logos in
+  renderImage on top.
+- **Live graphic preview** (`TierMux: Preview Graphic`, editor title / explorer menu on
+  .html/.svg/.png/.jpg/.webp): HTML/SVG rendered at a fixed canvas (auto-detected or OG/X/square/
+  story/YouTube presets) as you type, scripts off in a sandboxed frame; images scaled to fit with
+  their pixel size. An open panel follows renderImage's output.
+
+- **Vision models see what they rendered.** renderImage (and browserVerify's screenshot) attach a
+  ≤1024px JPEG to the tool result; the router sends it as pixels only to candidates the catalog
+  marks vision-capable (as a user message after the tool results — OpenAI-shaped tool messages are
+  text-only) and as a one-line note to the rest, per candidate, so failover between vision and
+  text models just works. Only the newest two images ride as pixels; history keeps text only;
+  the token estimate charges an image ~1k tokens instead of its base64 length.
+- **Auto-approve means full permission.** With the toggle on, only a short catastrophic tier
+  still asks (deletes outside the project, sudo, lost uncommitted work, force-push, publish,
+  curl|sh, writes to /etc or dotfiles). `kill`, `chmod +x`, `rm -rf node_modules`, `sh -c` run;
+  `2>/dev/null` no longer counts as "writing a device" at all.
+
+### Fixed — review follow-ups (2026-11-12)
+
+- **Auto was treated as a pinned model.** The webview sends `'auto'`; two router checks read any
+  pin as a real one, so in Auto the session-sticky model never resumed and the no-first-chunk stall
+  gate was off (a stalled stream never failed over). agentBench passes no pin, which hid it.
+- **A slow sticky model stops being sticky.** First byte after 20 s (pollinations took ~41 s on
+  every step) ⇒ the next step re-ranks the chain normally. It keeps its rank — never a route to a
+  weaker model, only no longer jumping the queue.
+- **PDF follow-ups.** An earlier turn's raw PDF rides along in the transcript, but routing only
+  looked at the latest message, so a follow-up could land on a provider that drops it ("I don't
+  see a PDF"). Providers that deliver raw PDF now go first, the normal chain after them.
+- **Verify scoping.** Changed test files narrow the suite only when nothing else changed — a
+  source or config edit runs everything. `conftest.py`/helpers under `tests/` are no longer taken
+  for test files (pytest's exit 5 started a phantom fix round).
+- **bun installer:** zip and SHA256SUMS from the same pinned release, checksum verified, 5-min
+  download timeout, truncated downloads refused, written beside and renamed only after
+  `--version` answers (a half-written file could pass for an install), `--version` probes time out.
+  A running bun's request failure is now a network error — falling back to a direct request only
+  bought the gate's "free usage limit" and shut the OpenCode lane for 30 minutes.
+  The install question is a modal dialog now — the toast slid into the bell unseen and the lane
+  stayed shut all session. After installing, TierMux restarts its extension host once no chat turn
+  is running, so the lane starts clean (the bun-less "free usage limit" quarantine is in memory).
+- **browserVerify / renderImage: WebSockets.** CDP's Fetch interception and setBlockedURLs both
+  miss WebSocket handshakes (live probe: a page reached `ws://127.0.0.1`, once from a fresh iframe).
+  A public page now runs behind a dead proxy that only its own (DNS-pinned) host bypasses; renderImage
+  maps loopback/private literals to unresolvable.
+- **Stop ends Chrome and `taskOutput` waits** (abort signal reaches both tools).
+- **A continuation pass that dies on the wire keeps its edits** in the transcript and changed-files
+  list (only pass 1 folded its finished steps back in; foundation 28d).
+- **The agent/ask symbol sketch survives repos over 200 files** (it was skipped entirely — this repo
+  has 336); bounded at 3,000 symbol files.
+- **browserVerify reports `console.error(err)` as the error**, not `[object Object]`.
+- `.zcode/` (another tool's local plan files) is ignored and untracked.
+
+### Fixed
+
+- **Bundled skills now ship in the extension.** `.tiermux/skills/` was missing from `files` in
+  package.json, so the packaged extension carried none of them (design, landing, code-review, …).
+
 ### Fixed — open-source agent parity, wave 0+1 (2026-11-12)
 
 Source-level study of OpenCode, Cline, Codex CLI, aider and Gemini CLI (clones of 2026-11-11/12);

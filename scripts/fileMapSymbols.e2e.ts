@@ -119,6 +119,17 @@ function fake() {}
     check('…and names no unmentioned non-source file', !composeSystemPrompt('agent', lean).includes('readme.md'));
   });
 
+  console.log('\n— A repo past the 200-file tree cap keeps its agent sketch (review 2026-11-12: this repo has 336) —');
+  const big = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-syms-big-'));
+  fs.mkdirSync(path.join(big, 'src'));
+  for (let i = 0; i < 260; i++) fs.writeFileSync(path.join(big, 'src', `m${i}.ts`), `export function handler${i}() {}\n`);
+  await runWithWorkspaceRoot(big, async () => {
+    const map = await gatherProjectMap();
+    check('symbols are still extracted above MAX_FILES_LISTED', map.symbols.size === 260, String(map.symbols.size));
+    check('…and the budgeted sketch renders them', formatSymbolMap(map, 4_000).includes('handler'));
+  });
+  fs.rmSync(big, { recursive: true, force: true });
+
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
 }

@@ -37,6 +37,8 @@ import { createOutlineTool, createFindSymbolTool, createReferencesTool, createDe
 import { createWebSearchTool } from '../network/webSearch';
 import { createFetchUrlTool } from '../network/fetchUrl';
 import { createBrowserVerifyTool } from '../network/browserVerify';
+import { createRenderImageTool } from '../network/renderImage';
+import { createGenerateImageTool } from '../network/generateImage';
 import { createMcpTools } from '../mcp/mcp';
 import { getMcpManager } from '../mcp/manager';
 
@@ -177,5 +179,8 @@ export function buildV3ToolSet(mode: Mode, bindings: ToolsetBindings = {}): Tool
     runCommand: createRunCommandTool({ ...bindings, allowBackground: true }),
     taskOutput: createTaskOutputTool(bindings),
     browserVerify: createBrowserVerifyTool(bindings),
+    // Writes a PNG: approval like any file write (policy.ts MUTATING_FILE_TOOLS), agent mode only.
+    renderImage: createRenderImageTool(),
+    generateImage: createGenerateImageTool(),
   };
 }

@@ -13,7 +13,7 @@ import type {
   LanguageModelV4Usage,
 } from '@ai-sdk/provider';
 import type { ChatMessage, ChatToolChoice, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
-import { resolveProvider } from '../../providers';
+import { platformFlattensContent, resolveProvider } from '../../providers';
 import { ProviderHttpError } from '../../providers/base';
 import { selectModel, setModelSources, soonestRecoveryMs, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, noteQuotaHeaders, noteRetryAfter, isModelUnavailable, isFreeTierRefusal, noteFreeTierExhausted, rationaleForServed, isInCooldown, findCatalogModel, type ModelSources, type SelectionRationale } from '../../router/picker';
 import { estimateMessagesTokens, estimateTokens } from '../budget';
@@ -48,6 +48,9 @@ export interface RouterProviderOptions {
   /** The attachment is a raw PDF block (the webview could not render page images), which only
    *  a provider with carriesRawPdf forwards. */
   requireRawPdf?: boolean;
+  /** An earlier turn's raw PDF is still in the transcript: providers that deliver it go first,
+   *  the normal chain after them (which gets a not-delivered note instead of the bytes). */
+  preferRawPdf?: boolean;
   onFailover?: (from: string, reason: string) => void;
   /** Every model is cooling down and this step is waiting `seconds` for the first one back. */
   onCapacityWait?: (seconds: number) => void;
@@ -280,14 +283,68 @@ function toolResultToText(output: unknown): string {
   if (output && typeof output === 'object') {
     const o = output as { type?: string; value?: unknown; reason?: string };
     if (o.type === 'execution-denied') return o.reason ? `Tool execution denied by the user: ${o.reason}` : 'Tool execution denied by the user.';
+    // Text parts only — image parts travel in the user message that follows (toRouterMessages).
+    if (o.type === 'content' && Array.isArray(o.value)) {
+      return (o.value as Array<{ type?: string; text?: unknown }>).filter((p) => p?.type === 'text').map((p) => String(p.text ?? '')).join('\n');
+    }
     if (typeof o.value === 'string') return o.value; // 'text' | 'error-text'
     if (o.value !== undefined) return JSON.stringify(o.value); // 'json' | 'error-json'
   }
   return typeof output === 'string' ? output : JSON.stringify(output ?? '');
 }
 
+/** Lead text of the user message that carries a tool's image (OpenAI-shaped tool messages are
+ *  text-only, so the picture rides in a user message right after the tool results — the shape
+ *  Cline/OpenCode use). withoutToolImages finds these by this prefix. */
+export const TOOL_IMAGE_LEAD = '[Image returned by the ';
+/** Tool images kept as pixels in a request; older ones become a one-line note. Each costs a
+ *  vision model ~1k+ tokens on every following step. */
+const MAX_TOOL_IMAGES = 2;
+
+/** Image parts of a `content` tool output, as data URLs. */
+function toolOutputImages(output: unknown): string[] {
+  const o = output as { type?: string; value?: unknown } | undefined;
+  if (o?.type !== 'content' || !Array.isArray(o.value)) return [];
+  const urls: string[] = [];
+  for (const p of o.value as Array<{ type?: string; mediaType?: string; data?: unknown }>) {
+    if (p?.type !== 'file' || !String(p.mediaType ?? '').startsWith('image')) continue;
+    const url = filePartToDataUrl(p as unknown as LanguageModelV4FilePart);
+    if (url) urls.push(url);
+  }
+  return urls;
+}
+
+/** For a candidate that cannot see images: each tool-image message becomes a text note, so a
+ *  text-only model (or a provider that flattens blocks) is never sent pixels it would drop or
+ *  reject. Decided per candidate, so failover between vision and text models just works. */
+export function withoutToolImages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((m) => {
+    if (m.role !== 'user' || !Array.isArray(m.content)) return m;
+    const first = m.content[0] as { type?: string; text?: unknown } | undefined;
+    if (first?.type !== 'text' || typeof first.text !== 'string' || !first.text.startsWith(TOOL_IMAGE_LEAD)) return m;
+    return { role: 'user' as const, content: `${first.text.replace(/:$/, '')} — not shown: this model cannot see images.` };
+  });
+}
+
+/** Whether this candidate gets tool images as pixels: the catalog says the model reads images
+ *  and the platform does not flatten content blocks to text. */
+function candidateSeesImages(c: { platform: Platform; modelId: string }): boolean {
+  try {
+    return findCatalogModel(c.platform, c.modelId)?.supportsVision === true && !platformFlattensContent(c.platform);
+  } catch {
+    return false;
+  }
+}
+
 export function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): ChatMessage[] {
   const msgs: ChatMessage[] = [];
+  // Newest tool images first get pixels; count them up front.
+  let imagesLeft = 0;
+  for (const msg of prompt) {
+    if (msg.role !== 'tool') continue;
+    for (const part of msg.content) if (part.type === 'tool-result' && toolOutputImages(part.output).length) imagesLeft++;
+  }
+  let skipOld = Math.max(0, imagesLeft - MAX_TOOL_IMAGES);
   for (const msg of prompt) {
     if (msg.role === 'system') {
       msgs.push({ role: 'system', content: msg.content });
@@ -325,10 +382,22 @@ export function toRouterMessages(prompt: LanguageModelV4CallOptions['prompt']): 
           : undefined,
       });
     } else if (msg.role === 'tool') {
+      const images: Array<{ tool: string; urls: string[] }> = [];
       for (const part of msg.content) {
         if (part.type === 'tool-result') {
           msgs.push({ role: 'tool', content: toolResultToText(part.output), tool_call_id: part.toolCallId });
+          const urls = toolOutputImages(part.output);
+          if (urls.length) images.push({ tool: part.toolName, urls });
         }
+      }
+      for (const img of images) {
+        const lead = `${TOOL_IMAGE_LEAD}${img.tool} call above`;
+        if (skipOld > 0) {
+          skipOld--;
+          msgs.push({ role: 'user', content: `${lead} — omitted (older image; re-run the tool to see it again).` });
+          continue;
+        }
+        msgs.push({ role: 'user', content: [{ type: 'text', text: `${lead}:` }, ...img.urls.map((url) => ({ type: 'image_url', image_url: { url } }))] });
       }
     }
   }
@@ -381,6 +450,17 @@ export async function resolveCandidates(
    *  this for the chain alone and have no popover to feed. */
   out?: { rationale?: SelectionRationale },
 ): Promise<Candidate[]> {
+  if (opts.preferRawPdf && !opts.requireRawPdf && !opts.pinnedModel) {
+    const rest = await resolveCandidates({ ...opts, preferRawPdf: false }, out);
+    let pdf: Candidate[] = [];
+    try {
+      pdf = await resolveCandidates({ ...opts, preferRawPdf: false, requireVision: true, requireRawPdf: true });
+    } catch { /* nothing forwards raw PDF bytes */ }
+    const key = (c: Candidate) => `${c.platform}::${c.modelId}`;
+    const first = new Set(pdf.map(key));
+    if (pdf.length) diagLog('rp.chain', `earlier PDF in the transcript — ${pdf.length} raw-PDF candidate(s) first`);
+    return [...pdf, ...rest.filter((c) => !first.has(key(c)))];
+  }
   const selectT0 = Date.now();
   const selection = await selectModel([], {
     pinnedModel: opts.pinnedModel,
@@ -514,7 +594,9 @@ export function preferFittingWindows<T extends { platform: string; modelId: stri
 
 /** Wraps the picker as an AI-SDK LanguageModelV4 with bounded failover. */
 export function createRouterProvider(providerOpts: RouterProviderOptions = {}): LanguageModelV4 {
-  return createPickerProvider(providerOpts);
+  // The webview sends 'auto' for Auto; below, a pin means a real model id (session sticky, stall gate).
+  const pinnedModel = providerOpts.pinnedModel === 'auto' ? undefined : providerOpts.pinnedModel;
+  return createPickerProvider({ ...providerOpts, pinnedModel });
 }
 
 /** True when the text ends in the same block three times in a row — a decoding loop. Live
@@ -569,6 +651,7 @@ const CAPACITY_WAIT_MAX_MS = 120_000;
 /** One drop retried before the turn stops. agentBench 2026-11-04: a single `fetch failed` ended a
  *  pinned run 128s in, with the service edits done and the tests still to write. */
 const NETWORK_RETRY_MS = 2_000;
+const STICKY_SLOW_FIRST_BYTE_MS = 20_000;
 
 /** Last model that served each conversation, so the next TURN starts on it (cross-turn prompt
  *  cache stays warm; see the session-sticky seed inside candidatesForStep). Provider instances
@@ -589,7 +672,7 @@ function isNetworkDrop(e: unknown): boolean {
 
 function createPickerProvider(providerOpts: RouterProviderOptions): LanguageModelV4 {
   const waitForCapacity = async (waited: { ms: number }, signal: AbortSignal | undefined): Promise<boolean> => {
-    if (providerOpts.pinnedModel && providerOpts.pinnedModel !== 'auto') return false;
+    if (providerOpts.pinnedModel) return false;
     const ms = soonestRecoveryMs();
     if (ms === undefined || signal?.aborted || waited.ms + ms > CAPACITY_WAIT_MAX_MS) return false;
     waited.ms += ms;
@@ -623,6 +706,15 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
       if (sessionSticky.size >= SESSION_STICKY_MAX) sessionSticky.delete(sessionSticky.keys().next().value as string);
       sessionSticky.set(providerOpts.sessionId, { platform: c.platform, modelId: c.modelId });
     }
+  };
+  /** agentBench 2026-11-12: pollinations took ~41s to first byte on every step and stayed first
+   *  as the sticky. A slow sticky loses only its stickiness; the next step re-ranks normally. */
+  const unstick = (c: Candidate, ttftMs: number): void => {
+    if (!isSticky(c)) return;
+    diagLog('rp.sticky', `${c.platform}::${c.modelId} took ${Math.round(ttftMs / 1000)}s to first byte — not sticky, next step re-ranks`);
+    sticky = undefined;
+    displaced = [];
+    if (providerOpts.sessionId) sessionSticky.delete(providerOpts.sessionId);
   };
   const stickyRunnable = (): Candidate | undefined => {
     const s = sticky;
@@ -723,7 +815,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
         // abandoning it for the next candidate.
         for (const apiKey of c.apiKeys) {
           try {
-          const data = await provider.chatCompletion(apiKey, messages, c.modelId, {
+          const data = await provider.chatCompletion(apiKey, candidateSeesImages(c) ? messages : withoutToolImages(messages), c.modelId, {
             temperature: options.temperature,
             max_tokens: options.maxOutputTokens,
             tools,
@@ -907,9 +999,13 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             while (true) {
               // Fresh splitter per attempt — attempt 1 was fully flushed before the nudge.
               const splitter = createStreamTextSplitter();
+              const sees = candidateSeesImages(c);
+              const base = sees ? messages : withoutToolImages(messages);
+              const toolImages = messages.filter((m) => m.role === 'user' && Array.isArray(m.content) && JSON.stringify(m.content).includes(TOOL_IMAGE_LEAD)).length;
+              if (toolImages) diagLog('rp.toolImage', `${toolImages} tool image(s) → ${c.platform}::${c.modelId} ${sees ? 'as pixels' : 'as a note (no vision)'}`);
               const attemptMessages = nudged
-                ? [...messages, { role: 'user' as const, content: 'You produced reasoning but no final answer and called no tool. Reply now with your final answer to the user — concise, no meta-commentary, no tool calls.' }]
-                : messages;
+                ? [...base, { role: 'user' as const, content: 'You produced reasoning but no final answer and called no tool. Reply now with your final answer to the user — concise, no meta-commentary, no tool calls.' }]
+                : base;
 
               // Stall failover, two gates. Headers gate: no chunk AT ALL within ttftGateMsFor ⇒
               // abandon. Content gate: armed on the FIRST chunk, so a stream that heartbeats
@@ -1066,6 +1162,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
 
             recordRequest(c.platform, c.modelId);
           reportServed(c, provider.runtimeName);
+            if (firstChunkAt !== undefined && firstChunkAt - candidateStart > STICKY_SLOW_FIRST_BYTE_MS) unstick(c, firstChunkAt - candidateStart);
             // A FOLDED turn (reasoning only, no content, no tool call) is not a success: reporting
             // it healthy kept Auto re-picking nemotron-3-ultra-free every turn (×3, 2026-08-28).
             // The answer still ships; the cooldown steers the NEXT turn elsewhere.

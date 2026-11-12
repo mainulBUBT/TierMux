@@ -7,12 +7,13 @@
 import * as vscode from 'vscode';
 import type { ToolApprovalStatus } from 'ai';
 import { READ_ONLY_TOOLS } from '../agent/core/tools/v3';
-import { commandFromInput, isDangerous, isReadOnlyCommand, matchesAllowlist, writesFiles, DEFAULT_COMMAND_ALLOWLIST } from '../edits/commandClassify';
+import { effectiveRootUri } from '../agent/core/tools/workspaceRoot';
+import { commandFromInput, isCatastrophic, isDangerous, isReadOnlyCommand, matchesAllowlist, writesFiles, DEFAULT_COMMAND_ALLOWLIST } from '../edits/commandClassify';
 
 export type PermissionMode = 'ask' | 'auto' | 'full-auto';
 
 /** The tools that write to disk — denied outright in plan and ask session modes. */
-const MUTATING_FILE_TOOLS = new Set(['editFile', 'writeFile', 'deleteFile', 'editMatch']);
+const MUTATING_FILE_TOOLS = new Set(['editFile', 'writeFile', 'deleteFile', 'editMatch', 'renderImage', 'generateImage']);
 
 export interface PolicyConfig {
   mode: PermissionMode;
@@ -33,6 +34,9 @@ export interface PolicyConfig {
    *  Until 2026-09-05 the setting only reached inline chat's EditGate; the agent's own
    *  editFile/writeFile/deleteFile never read it, so its description was false. */
   autoApproveWrites?: boolean;
+  /** Workspace root, so Auto-approve can tell `rm -rf <root>/dist` (routine) from a delete
+   *  outside the project (still asks). */
+  workspaceRoot?: string;
 }
 
 export const defaultPolicy: PolicyConfig = {
@@ -133,7 +137,9 @@ export function resolvePolicy(
     // "Don't ask" stops short of a dangerous command — the host's rule since 2026-07-26, which this
     // branch bypassed by approving before the host was asked (rm -rf ~ ran unasked).
     const cmd = call.toolName === 'runCommand' ? commandFromInput(call.input) : undefined;
-    if (!(cmd && isDangerous(cmd))) return Promise.resolve({ type: 'approved' });
+    // Full permission (2026-11-12): only the catastrophic tier still asks — not every
+    // isDangerous match (`kill`, `chmod +x`, `rm -rf node_modules` are routine dev work).
+    if (!(cmd && isCatastrophic(cmd, config.workspaceRoot))) return Promise.resolve({ type: 'approved' });
   }
   if (config.autoApproveWrites === true && MUTATING_FILE_TOOLS.has(call.toolName)) {
     return Promise.resolve({ type: 'approved' });
@@ -206,5 +212,6 @@ export function policyFromSettings(
     // for it back.
     shellDisabled: approval === 'never',
     autoApproveWrites: cfg.get<boolean>('requireWriteConfirmation', true) === false,
+    workspaceRoot: (() => { try { return effectiveRootUri().fsPath; } catch { return undefined; } })(),
   };
 }

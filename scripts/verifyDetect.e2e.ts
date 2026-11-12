@@ -126,14 +126,22 @@ console.log('\n── 7. Scoped runs: changed TEST files narrow the suite (2026-
     if (passC) pass++; else failed++;
   };
   eq('npm test + two changed test files scopes to them',
-    scopeToChangedTests('npm test', ['src/app.ts', 'tests/a.test.ts', 'tests/b.spec.ts']),
+    scopeToChangedTests('npm test', ['tests/a.test.ts', 'tests/b.spec.ts', 'README.md']),
     "npm test -- 'tests/a.test.ts' 'tests/b.spec.ts'");
   eq('php artisan test scopes Test.php files',
-    scopeToChangedTests('php artisan test', ['app/Http/User.php', 'tests/Feature/OrderTest.php']),
+    scopeToChangedTests('php artisan test', ['tests/Feature/OrderTest.php']),
     "php artisan test 'tests/Feature/OrderTest.php'");
   eq('pytest scopes test_*.py',
-    scopeToChangedTests('python -m pytest', ['lib/x.py', 'tests/test_order.py']),
-    "python -m pytest 'tests/test_order.py'");
+    scopeToChangedTests('python -m pytest', ['tests/test_order.py', 'tests/order_test.py']),
+    "python -m pytest 'tests/test_order.py' 'tests/order_test.py'");
+  eq('source + test edits keep the full suite (regressions land anywhere)',
+    scopeToChangedTests('npm test', ['src/app.ts', 'tests/a.test.ts']), undefined);
+  eq('conftest.py is not a test file (pytest exit 5 → fake fix round)',
+    scopeToChangedTests('python -m pytest', ['tests/conftest.py', 'tests/test_a.py']), undefined);
+  eq('a tests/ helper alone is not a test file',
+    scopeToChangedTests('npm test', ['tests/helpers.ts']), undefined);
+  eq('a config edit keeps the full suite',
+    scopeToChangedTests('npm test', ['package.json', 'tests/a.test.ts']), undefined);
   eq('non-test edits keep the full suite', scopeToChangedTests('npm test', ['src/app.ts', 'src/lib.ts']), undefined);
   eq('more than 8 test files is a full run, not a path salad',
     scopeToChangedTests('npm test', Array.from({ length: 10 }, (_, i) => `tests/t${i}.test.ts`)), undefined);

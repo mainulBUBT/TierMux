@@ -19,7 +19,9 @@ import { capToolOutput } from '../capOutput';
 import { effectiveRootUri } from '../workspaceRoot';
 import { taskRegistryFor } from '../taskRegistry';
 import { CdpPipeClient, findChromePath } from './cdp';
-import { isHostResolvingToPrivate } from './tiermuxWeb/fetcher/safe-fetch';
+import * as dns from 'dns';
+import { isHostResolvingToPrivate, isPrivateIp } from './tiermuxWeb/fetcher/safe-fetch';
+import { keepToolImage, toolImageOutput } from './toolImages';
 
 const HARD_DEADLINE_MS = 60_000;
 const NAV_TIMEOUT_MS = 15_000;
@@ -60,6 +62,17 @@ export function subresourceAllowed(url: string, topOrigin: string): boolean {
   return LOCAL_HOSTS.has(u.hostname) && LOCAL_HOSTS.has(topHost);
 }
 
+/** Chrome flags for a PUBLIC top page. WebSocket handshakes skip CDP Fetch interception and
+ *  Network.setBlockedURLs (live probe 2026-11-12: a page reached ws://127.0.0.1 twice, once from a
+ *  fresh iframe), so the network layer enforces subresourceAllowed's public-page rule: only the
+ *  top host connects directly, at the address checked here; everything else, loopback included,
+ *  goes to a dead proxy. Exported for e2e. */
+export function publicPageChromeArgs(topHost: string, address: string | undefined): string[] {
+  const args = ['--proxy-server=http://127.0.0.1:1', `--proxy-bypass-list=<-loopback>;${topHost}`];
+  if (address && address !== topHost) args.push(`--host-resolver-rules=MAP ${topHost} ${address.includes(':') ? `[${address}]` : address}`);
+  return args;
+}
+
 /** Strip query strings and tokens from a URL before it reaches the summary or a filename. */
 export function cleanUrlForReport(url: string): string {
   try {
@@ -79,11 +92,14 @@ function slugForFilename(url: string): string {
   }
 }
 
-function firstArgText(args: unknown[]): string {
+/** console arguments arrive as CDP RemoteObjects: primitives carry `value`, an Error or object
+ *  only `description` (String() of it printed "[object Object]"). Exported for e2e. */
+export function firstArgText(args: unknown[]): string {
   return args.map((a) => {
-    if (a === null || a === undefined) return String(a);
-    if (typeof a === 'object' && 'value' in (a as Record<string, unknown>)) return String((a as { value: unknown }).value);
-    return String(a);
+    if (a === null || a === undefined || typeof a !== 'object') return String(a);
+    const o = a as { value?: unknown; description?: string; className?: string; type?: string };
+    if ('value' in o) return typeof o.value === 'object' && o.value !== null ? JSON.stringify(o.value) : String(o.value);
+    return o.description ?? o.className ?? o.type ?? 'object';
   }).join(' ').slice(0, ERROR_TEXT_CAP);
 }
 
@@ -104,7 +120,11 @@ export function createBrowserVerifyTool(bindings: BrowserVerifyBindings = {}) {
       url: z.string().url().describe('The page to verify — usually the dev server URL you already know is running.'),
       waitMs: z.number().optional().describe('Extra settle time after load before reading errors/screenshot (default 1500, max 10000).'),
     }),
-    execute: async ({ url, waitMs }): Promise<string | { error: string }> => {
+    toModelOutput: ({ toolCallId, output }) => toolImageOutput(toolCallId, output,
+      'The page screenshot follows — check what the verdicts cannot: layout, overlap, contrast, missing or broken visuals.'),
+    execute: async ({ url, waitMs }, options?: { toolCallId?: string; abortSignal?: AbortSignal }): Promise<string | { error: string }> => {
+      if (options?.abortSignal?.aborted) return { error: 'Stopped.' };
+      const onAbort = (): void => client?.dispose();
       const deadlineAt = Date.now() + (bindings.deadlineMs ?? HARD_DEADLINE_MS);
       let client: CdpPipeClient | undefined;
       try {
@@ -132,7 +152,18 @@ export function createBrowserVerifyTool(bindings: BrowserVerifyBindings = {}) {
         if (!chrome) {
           return { error: 'No local Chrome/Edge/Chromium found — install one, or point TIERMUX_CHROME_PATH (or the tiermux.chromePath setting) at the executable. browserVerify is disabled until then.' };
         }
-        client = CdpPipeClient.launch(chrome);
+        let chromeArgs: string[] = [];
+        if (!LOCAL_HOSTS.has(topHost)) {
+          const bare = topHost.replace(/^\[|\]$/g, '');
+          const address = await dns.promises.lookup(bare).then((r) => r.address, () => undefined);
+          if (address && isPrivateIp(address)) {
+            return { error: `Refusing to open ${topHost}: it resolves to a private or internal address. Verify the dev server on localhost instead.` };
+          }
+          chromeArgs = publicPageChromeArgs(topHost, address);
+        }
+        client = CdpPipeClient.launch(chrome, chromeArgs);
+        // Stop ends the turn; Chrome must not outlive it (dispose rejects every pending send).
+        options?.abortSignal?.addEventListener('abort', onAbort, { once: true });
 
         const page = await withDeadline(client.newPage(), deadlineAt, 'deadline hit while opening a page');
         const sid = page.sessionId;
@@ -261,7 +292,17 @@ export function createBrowserVerifyTool(bindings: BrowserVerifyBindings = {}) {
             fs.mkdirSync(dir, { recursive: true });
             const file = path.join(dir, `verify-${slugForFilename(url)}-${Date.now()}.png`);
             fs.writeFileSync(file, Buffer.from(shot.data, 'base64'));
-            lines.push(`SCREENSHOT: ${file}`);
+            lines.push(`SCREENSHOT: ${file} (attached below)`);
+            // The model's copy: a JPEG sized for a vision model (~1k tokens), not the full PNG.
+            try {
+              const metrics = await client.send('Page.getLayoutMetrics', undefined, sid) as { cssVisualViewport?: { clientWidth?: number; clientHeight?: number } };
+              const vw = metrics.cssVisualViewport?.clientWidth ?? 1280;
+              const vh = metrics.cssVisualViewport?.clientHeight ?? 800;
+              const jpeg = await withDeadline(client.send('Page.captureScreenshot', {
+                format: 'jpeg', quality: 70, clip: { x: 0, y: 0, width: vw, height: vh, scale: Math.min(1, 1024 / Math.max(vw, vh)) },
+              }, sid), deadlineAt, 'deadline hit at the preview') as { data: string };
+              keepToolImage(options?.toolCallId, jpeg.data);
+            } catch { /* the saved file and the text verdicts still stand */ }
           } catch (e) {
             lines.push(`SCREENSHOT: failed — ${e instanceof Error ? e.message : String(e)}`);
           }
@@ -279,6 +320,7 @@ export function createBrowserVerifyTool(bindings: BrowserVerifyBindings = {}) {
         if (/deadline/.test(msg)) return `browserVerify ${cleanUrlForReport(String(url))}\nVERDICT: TIMED OUT — ${msg}. A page that never settles is itself a finding (hanging request? infinite loader?).`;
         return { error: msg };
       } finally {
+        options?.abortSignal?.removeEventListener('abort', onAbort);
         client?.dispose();
       }
     },
@@ -287,7 +329,7 @@ export function createBrowserVerifyTool(bindings: BrowserVerifyBindings = {}) {
 
 /** Race a promise against the hard deadline so no stage (a hanging Chrome, a never-loading
  *  page, a stuck screenshot) can hold the tool past its budget. */
-function withDeadline<T>(p: Promise<T>, deadlineAt: number, message: string): Promise<T> {
+export function withDeadline<T>(p: Promise<T>, deadlineAt: number, message: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const left = deadlineAt - Date.now();
     if (left <= 0) { reject(new Error(message)); return; }

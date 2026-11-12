@@ -411,6 +411,27 @@ console.log('\n— an attachment turn is gated on vision, tail included (the Aut
     /Gemini/.test((pdfThrown as Error | undefined)?.message ?? ''), (pdfThrown as Error | undefined)?.message?.slice(0, 60) ?? '');
 }
 
+console.log('\n— an earlier turn\'s raw PDF: providers that deliver it go first, the rest stay behind (2026-11-12) —');
+{
+  __resetTaskRoundCounters();
+  const fallback = [entry('kilo', 'coder', 0), entry('google', 'gemini-flash', 1)];
+  const meta: Record<string, { intelligenceRank: number; speedRank: number; supportsTools: boolean; supportsVision: boolean }> = {
+    'kilo::coder': { intelligenceRank: 1, speedRank: 1, supportsTools: true, supportsVision: false },
+    'google::gemini-flash': { intelligenceRank: 1, speedRank: 1, supportsTools: true, supportsVision: true },
+  };
+  const sources = makeSources(fallback, [], ['kilo', 'google']) as unknown as { catalog: { find: (p: string, m: string) => unknown } };
+  sources.catalog.find = (p: string, m: string) => meta[`${p}::${m}`];
+  setModelSources(sources as unknown as Parameters<typeof setModelSources>[0]);
+  const plain = await resolveCandidates({ taskKind: 'chat', requireTools: true });
+  const pdf = await resolveCandidates({ taskKind: 'chat', requireTools: true, preferRawPdf: true });
+  ok('without the PDF the chain is the normal order', plain[0]?.platform === 'kilo', plain.map((c) => c.platform).join(' → '));
+  ok('with an earlier PDF the raw-PDF provider leads', pdf[0]?.platform === 'google', pdf.map((c) => c.platform).join(' → '));
+  ok('…and the rest of the chain still follows (no hard gate)', pdf.some((c) => c.platform === 'kilo') && pdf.length === new Set(pdf.map((c) => `${c.platform}::${c.modelId}`)).size, pdf.map((c) => `${c.platform}::${c.modelId}`).join(' → '));
+  setModelSources(makeSources([entry('kilo', 'coder', 0)], [], ['kilo']));
+  const none = await resolveCandidates({ taskKind: 'chat', requireTools: true, preferRawPdf: true });
+  ok('no raw-PDF provider at all ⇒ the normal chain, no error', none.length > 0 && none[0].platform === 'kilo', none.map((c) => c.platform).join(' → '));
+}
+
 console.log('\n— a utility `model` is a PREFERENCE (heads the chain), not a cage —');
 {
   __resetTaskRoundCounters();

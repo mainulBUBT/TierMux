@@ -19,7 +19,8 @@ import { killSessionTasks } from './agent/core/tools/taskRegistry';
 import { peekTopModel, rationaleForServed, type SelectionRationale as PickerRationale } from './router/picker';
 import type { McpManager } from './mcp/mcpManager';
 import { CheckpointManager, type SerializedCheckpoint } from './edits/checkpoints';
-import { isDangerous } from './edits/commandClassify';
+import { isCatastrophic, isDangerous } from './edits/commandClassify';
+import { effectiveRootUri } from './agent/core/tools/workspaceRoot';
 import { statusLines } from './edits/gitSnapshot';
 import type { ModelStatsStore, Vote } from './config/modelStats';
 import { loadMcpRegistry, searchRemoteMcp } from './mcp/registry';
@@ -911,6 +912,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private maxConcurrent(): number {
     return Math.max(1, vscode.workspace.getConfiguration('tiermux.agent').get<number>('maxConcurrentRuns', 3));
+  }
+
+  /** Resolves once no agent run is live or waiting for a slot. */
+  async whenIdle(): Promise<void> {
+    while (this.runningSessions.size > 0 || this.runQueue.length > 0) await new Promise((r) => setTimeout(r, 2_000));
   }
 
   /** Acquire a concurrent-run slot, queueing (tab marked "queued") at the cap. The returned
@@ -3201,8 +3207,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!live()) return 'reject';
 
         const dangerous = !!(info.command && isDangerous(info.command));
-        // Global Auto-approve toggle: everything proceeds except dangerous commands.
-        if (this.autoApprove && !dangerous) return 'once';
+        // Global Auto-approve toggle = full permission: only the catastrophic tier still asks
+        // (outside-the-project deletes, sudo, lost uncommitted work, force-push, publish…).
+        if (this.autoApprove && !(info.command && isCatastrophic(info.command, (() => { try { return effectiveRootUri().fsPath; } catch { return undefined; } })()))) return 'once';
         // Per-tool session allowlist: the user already clicked "Always" for this tool kind this
         // session — auto-approve matching calls, but NEVER a dangerous command (those keep asking).
         if (info.toolName && !dangerous && s.alwaysAllowTools.has(info.toolName)) return 'once';

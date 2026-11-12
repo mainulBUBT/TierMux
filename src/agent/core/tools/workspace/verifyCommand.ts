@@ -273,9 +273,8 @@ export function detectVerifyCommand(root: string): string | undefined {
  *  manifest. Returns undefined when verification is off or nothing detectable exists.
  *
  *  `changed` scopes a detected TEST suite (never an explicit user command): when the turn
- *  itself created or edited test files, running just those beats a full-suite pass that costs
- *  minutes on the free tier. Non-test edits map to no honest file list, so they keep the full
- *  suite — the wrong subset would verify nothing. */
+ *  edited ONLY test files, running just those beats a full-suite pass that costs minutes on the
+ *  free tier. Any source/config edit keeps the full suite — a regression can land anywhere. */
 /** What the verify-fix round can show the model (engine.ts caps the prompt to the same). */
 const VERIFY_OUTPUT_CHARS = 6_000;
 
@@ -292,8 +291,11 @@ export function resolveVerifyCommand(changed?: Array<{ path: string }>): string 
   return v;
 }
 
-/** Files the major runners treat as test files, by path shape. */
-const TEST_FILE_RE = /(^|[\\/])(tests?|spec)[\\/].*\.(test|spec)\.[cm]?[jt]sx?$|(^|[\\/])(tests?|__tests__)[\\/][^\\/]+\.(php|py|ts|js)$|(^|[\\/])test_[^\\/]+\.py$|(^|[\\/])[^\\/]+Test\.php$|\.(test|spec)\.[cm]?[jt]sx?$/i;
+/** Files the major runners treat as test files, by name (a `tests/` folder also holds conftest,
+ *  fixtures and helpers, which are not runnable on their own). */
+const TEST_FILE_RE = /\.(test|spec)\.[cm]?[jt]sx?$|(^|[\\/])__tests__[\\/][^\\/]+\.[cm]?[jt]sx?$|(^|[\\/])test_[^\\/]+\.py$|_test\.py$|(^|[\\/])[^\\/]+Test\.php$/i;
+/** Changed files that cannot break a test run, so they do not force the full suite. */
+const INERT_FILE_RE = /\.(md|mdx|txt|rst)$/i;
 /** How many scoped paths are worth passing before a full run is simpler than a path salad. */
 const MAX_SCOPED = 8;
 
@@ -303,6 +305,8 @@ const MAX_SCOPED = 8;
 export function scopeToChangedTests(command: string, changed: string[]): string | undefined {
   const matching = changed.filter((p) => TEST_FILE_RE.test(p));
   if (matching.length === 0 || matching.length > MAX_SCOPED) return undefined;
+  // A changed source/config file can break tests the turn never touched: full suite.
+  if (changed.some((p) => !TEST_FILE_RE.test(p) && !INERT_FILE_RE.test(p))) return undefined;
   const files = matching;
   const q = (f: string) => `'${f.replaceAll("'", `'\\''`)}'`;
   const args = files.map(q).join(' ');

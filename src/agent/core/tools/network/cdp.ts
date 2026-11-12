@@ -80,7 +80,7 @@ export class CdpPipeClient {
     this.child.on('error', (e) => this.die(new Error(`Chrome failed to start: ${e.message}`)));
   }
 
-  static launch(chromePath: string): CdpPipeClient {
+  static launch(chromePath: string, extraArgs: string[] = []): CdpPipeClient {
     const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-cdp-'));
     const child = spawn(chromePath, [
       '--headless=new',
@@ -90,6 +90,7 @@ export class CdpPipeClient {
       '--no-default-browser-check',
       '--disable-extensions',
       '--disable-component-update',
+      ...extraArgs,
       'about:blank',
     ], {
       stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],

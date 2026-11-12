@@ -30,6 +30,7 @@ import { watchGitCommits } from './scm/gitWatch';
 import { openMemoryForEdit } from './context/userMemory';
 import { invalidateSkillsCache } from './context/skills';
 import { installSkillPackage, checkNpxAvailable } from './context/skillInstaller';
+import { registerGraphicPreview } from './preview/graphicPreview';
 
 let chatProviderRef: ChatViewProvider | undefined;
 
@@ -166,7 +167,7 @@ export function activate(context: vscode.ExtensionContext): void {
     });
     // The keyless OpenCode lane runs through a local bun when one exists; this registers the
     // consent prompt that offers to download one (into extension storage) if none does.
-    registerBunInstaller(context);
+    registerBunInstaller(context, () => chat.whenIdle());
     chatProviderRef = chat;
 
     editGate.setConfirmHandler((req) => chat.requestEditApproval(req));
@@ -307,6 +308,7 @@ export function activate(context: vscode.ExtensionContext): void {
       registerInlineChat(editGate),
       ...registerInlineCompletions(),
       registerCommitMessage(),
+      registerGraphicPreview(),
     );
   } catch (error) {
     console.error('[tiermux] Extension activation failed:', error);

@@ -43,7 +43,7 @@ export function createTaskOutputTool(bindings: TaskOutputBindings = {}) {
       action: z.enum(['read', 'stop', 'list']).optional().describe('"read" (default): tail new output. "stop": kill the task. "list": list all tasks.'),
       waitMs: z.number().optional().describe('How long to wait for new output before returning (max 30000, default 5000).'),
     }),
-    execute: async ({ taskId, action, waitMs }): Promise<string | { error: string }> => {
+    execute: async ({ taskId, action, waitMs }, options: { abortSignal?: AbortSignal } = {}): Promise<string | { error: string }> => {
       try {
         const registry = taskRegistryFor(bindings.sessionId);
 
@@ -72,6 +72,7 @@ export function createTaskOutputTool(bindings: TaskOutputBindings = {}) {
           task.status === 'running'
           && task.buffer.length <= task.readCursor
           && Date.now() < deadline
+          && !options.abortSignal?.aborted
         ) {
           await new Promise((r) => setTimeout(r, POLL_MS));
         }

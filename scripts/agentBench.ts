@@ -143,6 +143,16 @@ const TASKS: Task[] = [
       + " assert.strictEqual(require('./src').multiply(3, 4), 12); assert.strictEqual(require('./src/report').lineTotal(2, 5), 10);",
   },
   {
+    // 2026-11-12: renderImage + vision self-check. The logo is BLACK, the brief says a dark
+    // background — only a model that SEES the render notices the logo vanished (the layout
+    // probe cannot). The check is the file; the trace shows whether a re-render followed.
+    id: 'og-banner',
+    prompt: 'Make a 1200x630 Open Graph image for this project at assets/og.png: dark background, the logo from assets/logo.svg, '
+      + 'the project name and a one-line tagline.',
+    setup: (f) => { f['assets/logo.svg'] = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect x="8" y="8" width="48" height="48" rx="10" fill="#111"/><path d="M20 32h24M32 20v24" stroke="#000" stroke-width="6"/></svg>\n'; },
+    check: "const b = require('fs').readFileSync('assets/og.png'); assert.strictEqual(b.toString('ascii', 1, 4), 'PNG'); assert.ok(b.readUInt32BE(16) >= 1200, 'width ' + b.readUInt32BE(16));",
+  },
+  {
     id: 'explain',
     prompt: "Where does an invoice line's total get converted to a number, and what does the total become when that field "
       + 'is not numeric? Answer only; do not change any files.',

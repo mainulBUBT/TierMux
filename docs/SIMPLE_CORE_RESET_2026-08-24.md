@@ -74,6 +74,8 @@ detector, stop and re-read this file.
    the stream errors, so a failed turn would lose its tool results. `unsettledWork` (filled in
    `onStepEnd`) is the fallback; keep it. (`streamWork`, named here before 2026-11-04, was no longer
    in the code, and agentBench showed `tools=24 steps=0`. `test:e2e:read-loop` 3c now pins this.)
+   Continuation passes too: each folds its leftover `unsettledWork` back via `settleUnsettled`
+   (2026-11-12 — a fix round that died on the wire lost its edit from the transcript; foundation 28d).
 7. **A step-cap hit is a resumable pause, not a terminal stop.** `finishReason === 'max-steps'`
    ⇒ `paused: true` ⇒ the UI's Continue/Resume affordance.
 8. **Verify runs once, then bounded mechanical fix rounds.** After a mutating turn, the

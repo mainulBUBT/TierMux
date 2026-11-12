@@ -64,13 +64,20 @@ export function isBunAvailable(): Promise<boolean> {
   availability ??= new Promise<boolean>((resolve) => {
     const bin = bunBinary();
     const child = spawn(bin, ['--version'], { stdio: 'ignore' });
-    child.on('error', () => { diagLog('bunshim.unavailable', `${bin} not runnable`); resolve(false); });
+    const timer = setTimeout(() => { diagLog('bunshim.unavailable', `${bin} --version hung`); child.kill('SIGKILL'); resolve(false); }, 10_000);
+    child.on('error', () => { clearTimeout(timer); diagLog('bunshim.unavailable', `${bin} not runnable`); resolve(false); });
     child.on('exit', (code) => {
+      clearTimeout(timer);
       diagLog('bunshim.available', `${bin} --version exit=${code}`);
       resolve(code === 0);
     });
   });
   return availability;
+}
+
+/** A spawn that failed after a good probe (binary removed or replaced): probe again next time. */
+export function resetBunAvailability(): void {
+  availability = undefined;
 }
 
 /** The installer calls this after dropping a bun into extension storage; the next

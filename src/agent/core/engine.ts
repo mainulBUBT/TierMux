@@ -168,10 +168,17 @@ function toChatMessages(messages: ModelMessage[]): ChatMessage[] {
     } else if (m.role === 'tool') {
       for (const part of m.content) {
         if (part.type === 'tool-result') {
+          const o = part.output as { type?: string; value?: unknown } | undefined;
+          // A `content` output (text + an image for vision models): history keeps the text and
+          // a note — base64 pixels never go into the persisted transcript.
           const value = typeof part.output === 'string' ? part.output
-            : (part.output as { type?: string; value?: unknown })?.type === 'text'
-              ? String((part.output as { value?: unknown }).value ?? '')
-              : JSON.stringify(part.output);
+            : o?.type === 'text'
+              ? String(o.value ?? '')
+              : o?.type === 'content' && Array.isArray(o.value)
+                ? (o.value as Array<{ type?: string; text?: unknown; mediaType?: unknown }>)
+                    .map((p) => (p?.type === 'text' ? String(p.text ?? '') : `[${String(p?.mediaType ?? 'file')} shown to the model in that step]`))
+                    .join('\n')
+                : JSON.stringify(part.output);
           out.push({ role: 'tool', content: value, tool_call_id: part.toolCallId });
         }
       }
@@ -187,12 +194,14 @@ function changedFilesFrom(messages: ChatMessage[]): Array<{ path: string; status
   for (const m of messages) {
     if (m.role !== 'assistant' || !m.tool_calls) continue;
     for (const tc of m.tool_calls) {
-      let input: { path?: string } = {};
+      let input: { path?: string; out?: string } = {};
       try { input = JSON.parse(tc.function.arguments || '{}'); } catch { continue; }
+      if (tc.function.name === 'renderImage' && input.out) input = { path: input.out.replace(/\.[A-Za-z0-9]+$/, '') + '.png' };
+      if (tc.function.name === 'generateImage' && input.out) input = { path: input.out };
       if (!input.path || seen.has(`${tc.function.name}:${input.path}`)) continue;
       seen.add(`${tc.function.name}:${input.path}`);
       if (tc.function.name === 'editFile') out.push({ path: input.path, status: 'modified' });
-      if (tc.function.name === 'writeFile') out.push({ path: input.path, status: 'created' });
+      if (tc.function.name === 'writeFile' || tc.function.name === 'renderImage' || tc.function.name === 'generateImage') out.push({ path: input.path, status: 'created' });
       if (tc.function.name === 'deleteFile') out.push({ path: input.path, status: 'deleted' });
     }
   }
@@ -400,6 +409,8 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     // means a raw file block, which only a carriesRawPdf provider forwards.
     requireVision: latestKinds.some((k) => k === 'image' || k === 'pdf'),
     requireRawPdf: latestKinds.includes('pdf'),
+    preferRawPdf: modelMessages.slice(0, -1).some((m) => m.role === 'user' && Array.isArray(m.content)
+      && m.content.some((p) => p.type === 'file' && p.mediaType === 'application/pdf')),
     onFailover: (...args: Parameters<NonNullable<typeof opts.onFailover>>) => {
       failovers++;
       opts.onFailover?.(...args);
@@ -442,6 +453,13 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // ai v7 consumeStream() RESOLVES on stream errors (they go to its onError option) — the
   // try/catch below never sees provider failures; captured here for the post-pass guard.
   let streamError: string | undefined;
+  /** A continuation pass that dies on the wire never reaches onEnd: its finished steps — edits
+   *  included — join the transcript here instead of vanishing (the pass-1 path does the same
+   *  after its catch). After a clean pass onEnd already emptied unsettledWork, so this is a no-op. */
+  const settleUnsettled = (): void => {
+    outcome.responseMessages.push(...unsettledWork);
+    unsettledWork = [];
+  };
   /** consumeStream() RESOLVES on stream errors, so a continuation pass that dies on the wire
    *  is invisible unless this option catches it. */
   const passError = (tag: string) => (error: unknown) =>
@@ -864,7 +882,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
               ? 'You ran tools but ended the turn without a final answer. CLOSE the task now: tell the user what you found or changed (with file paths) and the result. If the task is not actually finished, keep working with your tools instead of stopping. Never end a turn silently.'
               : 'You stopped after describing what you would do — no tool ran and no file changed. Continue NOW: perform the task yourself with your tools (readFile to inspect, editFile/writeFile to change, then re-read the changed region to verify). Only reply in prose, without tools, if the task genuinely requires no file change.',
         },
-      ]).consumeStream({ onError: passError('nudge') });
+      ]).consumeStream({ onError: passError('nudge') }).then(settleUnsettled, (e: unknown) => { settleUnsettled(); throw e; });
     } catch {
       // Keep the pass-1 output rather than failing the turn.
     } finally {
@@ -897,7 +915,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
         ...modelMessages,
         ...outcome.responseMessages,
         { role: 'user', content: stuckPlan ? STUCK_PLAN_WRAPUP : opts.mode === 'agent' ? STUCK_AGENT_WRAPUP : STUCK_WRAPUP },
-      ]).consumeStream({ onError: passError('stuckWrapUp') });
+      ]).consumeStream({ onError: passError('stuckWrapUp') }).then(settleUnsettled, (e: unknown) => { settleUnsettled(); throw e; });
     } catch {
       // Keep the paused turn rather than failing it.
     } finally {
@@ -924,7 +942,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           role: 'user',
           content: 'Your previous reply was cut off mid-sentence by the output token limit. Continue from exactly where it stopped. Do not repeat any earlier text, do not restart the answer, and do not mention the cutoff.',
         },
-      ]).consumeStream({ onError: passError('lengthContinue') });
+      ]).consumeStream({ onError: passError('lengthContinue') }).then(settleUnsettled, (e: unknown) => { settleUnsettled(); throw e; });
       // Mechanical de-dup only: a model that ignored "do not restart" and re-emitted the whole
       // answer already CONTAINS the partial, so concatenating would ship it twice.
       const cont = outcome.text;
@@ -991,7 +1009,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
                   + 'Otherwise reply with ONE sentence saying why it still fails — no preamble, no restating what you changed, '
                   + `no advice. Do not revert your work and do not re-run the command yourself.\n\nOutput:\n${capMiddle(run.output, 6_000)}`,
             },
-          ]).consumeStream({ onError: passError('verifyFix') });
+          ]).consumeStream({ onError: passError('verifyFix') }).then(settleUnsettled, (e: unknown) => { settleUnsettled(); throw e; });
         } catch {
           break; // a failed fix round must not lose the turn's real work
         }
@@ -1035,7 +1053,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
               + 'Finish it now, or — if the check is wrong and the work IS there — say where in one line and stop. '
               + `Do not restart the task or re-plan.\n\n${verdict.slice(0, 2_000)}`,
           },
-        ]).consumeStream({ onError: passError('auditFix') });
+        ]).consumeStream({ onError: passError('auditFix') }).then(settleUnsettled, (e: unknown) => { settleUnsettled(); throw e; });
         keepSummary(beforeAudit);
       }
     } catch {
