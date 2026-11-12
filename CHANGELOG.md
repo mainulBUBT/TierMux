@@ -5,6 +5,15 @@ All notable changes to TierMux are documented here. The format is loosely
 
 ## [Unreleased]
 
+## [3.0.6] — 2026-11-12
+
+### Fixed — catalog
+
+- **Seven OpenRouter rows that would have billed users or 404'd are gone.** OpenRouter is off in the
+  admin, so its bundled rows were carried verbatim; upstream has since priced four `:free` models
+  (nemotron-3-super-120b, inkling, inkling-small, ling-3.1-flash) and retired three (laguna-s-2.1,
+  laguna-xs-2.1, apodex-1.1-mini). Catalog synced: 549 models.
+
 ### Added — graphics without an image model (2026-11-12)
 
 - **`renderImage` tool (agent mode):** HTML/SVG → PNG through the user's own headless Chrome (the
@@ -258,8 +267,6 @@ every item is mechanical — no extra model call, no answer judging.
   other providers. The error names the route that actually works — **Go or a paid Console key, not a
   free key**: OpenCode's own docs say free-tier chat models are served to their client only. A pinned
   model keeps its exemption.
-## [3.0.6] — 2026-11-12
-
 ### Added
 
 - **Background tasks.** `runCommand {background: true}` starts a dev server, watcher or long

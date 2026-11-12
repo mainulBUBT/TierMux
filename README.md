@@ -88,7 +88,7 @@ Details: [Routing](docs/ROUTING.md).
 ## Providers
 
 <!-- catalog:start -->
-**664 models** across **49 providers**, and the catalog updates itself —
+**549 models** across **49 providers**, and the catalog updates itself —
 new free models and whole new providers appear without an extension update.
 
 | | |

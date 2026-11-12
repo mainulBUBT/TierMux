@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Synced from remote /models JSON — 558 models from 49 providers.",
+  "note": "Synced from remote /models JSON — 549 models from 49 providers.",
   "models": [
     {
       "platform": "cloudflare",
@@ -1346,26 +1346,6 @@
     },
     {
       "platform": "llm7",
-      "modelId": "gpt-oss:20b",
-      "displayName": "GPT-OSS 20B",
-      "intelligenceRank": 4,
-      "speedRank": 3,
-      "contextWindow": 131072,
-      "rpmLimit": 60,
-      "rpdLimit": 200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0.6,
-      "origOutputPricePer1M": 2.4
-    },
-    {
-      "platform": "llm7",
       "modelId": "mistral-Nemo-Instruct-2407",
       "displayName": "Mistral Nemo Instruct 2407",
       "intelligenceRank": 5,
@@ -1380,7 +1360,9 @@
       "tags": [
         "small",
         "free"
-      ]
+      ],
+      "origInputPricePer1M": 0.029,
+      "origOutputPricePer1M": 0.03
     },
     {
       "platform": "kilo",
@@ -1439,7 +1421,9 @@
       "tags": [
         "strong",
         "free"
-      ]
+      ],
+      "origInputPricePer1M": 0.3,
+      "origOutputPricePer1M": 2.5
     },
     {
       "platform": "nvidia",
@@ -1457,7 +1441,9 @@
       "tags": [
         "small",
         "free"
-      ]
+      ],
+      "origInputPricePer1M": 0.05,
+      "origOutputPricePer1M": 0.15
     },
     {
       "platform": "nvidia",
@@ -1475,7 +1461,9 @@
       "tags": [
         "small",
         "free"
-      ]
+      ],
+      "origInputPricePer1M": 0.05,
+      "origOutputPricePer1M": 0.1
     },
     {
       "platform": "nvidia",
@@ -1541,7 +1529,7 @@
       "displayName": "Mixtral 8x22b V0.1",
       "intelligenceRank": 4,
       "speedRank": 3,
-      "contextWindow": null,
+      "contextWindow": 65536,
       "rpmLimit": 40,
       "rpdLimit": 250,
       "monthlyTokenBudget": "",
@@ -1670,7 +1658,9 @@
       "tags": [
         "frontier",
         "free"
-      ]
+      ],
+      "origInputPricePer1M": 0.192,
+      "origOutputPricePer1M": 16
     },
     {
       "platform": "ollama",
@@ -1928,7 +1918,9 @@
       "tags": [
         "strong",
         "free"
-      ]
+      ],
+      "origInputPricePer1M": 0.0399,
+      "origOutputPricePer1M": 0.0784
     },
     {
       "platform": "xkiro",
@@ -2086,7 +2078,9 @@
       "tags": [
         "strong",
         "free"
-      ]
+      ],
+      "origInputPricePer1M": 0.0699,
+      "origOutputPricePer1M": 1.4
     },
     {
       "platform": "cohere",
@@ -2140,7 +2134,9 @@
       "tags": [
         "strong",
         "free"
-      ]
+      ],
+      "origInputPricePer1M": 0.75,
+      "origOutputPricePer1M": 4.5
     },
     {
       "platform": "chatanywhere",
@@ -2158,7 +2154,9 @@
       "tags": [
         "strong",
         "free"
-      ]
+      ],
+      "origInputPricePer1M": 0.2,
+      "origOutputPricePer1M": 1.25
     },
     {
       "platform": "google",
@@ -2176,7 +2174,9 @@
       "tags": [
         "frontier",
         "free"
-      ]
+      ],
+      "origInputPricePer1M": 0.825,
+      "origOutputPricePer1M": 4.125
     },
     {
       "platform": "bailu",
@@ -3013,7 +3013,9 @@
       "tags": [
         "unknown",
         "free"
-      ]
+      ],
+      "origInputPricePer1M": 0.435,
+      "origOutputPricePer1M": 0.87
     },
     {
       "platform": "aihubmix",
@@ -3795,24 +3797,6 @@
     },
     {
       "platform": "naga",
-      "modelId": "xingchen-agi/xing4.0-29b-a4b:free",
-      "displayName": "Xing4.0 29B A4B",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 10,
-      "rpdLimit": 100,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ]
-    },
-    {
-      "platform": "naga",
       "modelId": "nvidia/nemotron-3.5-super-vl:free",
       "displayName": "Nemotron 3.5 Super VL",
       "intelligenceRank": 2,
@@ -4029,29 +4013,6 @@
     },
     {
       "platform": "openrouter",
-      "modelId": "nvidia/nemotron-3-super-120b-a12b:free",
-      "displayName": "Nemotron 3 Super 120B (OpenRouter)",
-      "intelligenceRank": 6,
-      "speedRank": 4,
-      "released": "2025-08",
-      "sizeLabel": "Frontier",
-      "contextWindow": 262144,
-      "rpmLimit": 20,
-      "rpdLimit": 200,
-      "monthlyTokenBudget": "~free",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "insight": "Smaller Ultra variant; $10 top-up unlocks 1000 RPD",
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openrouter",
       "modelId": "google/gemma-4-31b-it:free",
       "displayName": "Gemma 4 31B IT (OpenRouter)",
       "intelligenceRank": 9,
@@ -4117,46 +4078,6 @@
         "free"
       ],
       "insight": "Randomly routes to available free models",
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openrouter",
-      "modelId": "poolside/laguna-s-2.1:free",
-      "displayName": "Poolside Laguna S 2.1",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 20,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openrouter",
-      "modelId": "poolside/laguna-xs-2.1:free",
-      "displayName": "Poolside: Laguna XS 2.1 (free)",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 262144,
-      "rpmLimit": 20,
-      "rpdLimit": 50,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "small",
-        "free"
-      ],
       "origInputPricePer1M": 0,
       "origOutputPricePer1M": 0
     },
@@ -4359,46 +4280,6 @@
       ],
       "origInputPricePer1M": 0.65,
       "origOutputPricePer1M": 3.25
-    },
-    {
-      "platform": "openrouter",
-      "modelId": "thinkingmachines/inkling-small:free",
-      "displayName": "Thinking Machines: Inkling Small (free)",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": 1048576,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openrouter",
-      "modelId": "thinkingmachines/inkling:free",
-      "displayName": "Thinking Machines: Inkling (free)",
-      "intelligenceRank": 3,
-      "speedRank": 3,
-      "contextWindow": 1048576,
-      "rpmLimit": 10,
-      "rpdLimit": 250,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": true,
-      "supportsReasoning": true,
-      "tags": [
-        "strong",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
     },
     {
       "platform": "openrouter",
@@ -7546,46 +7427,6 @@
         "mid",
         "free"
       ]
-    },
-    {
-      "platform": "openrouter",
-      "modelId": "apodex/apodex-1.1-mini:free",
-      "displayName": "Apodex: Apodex 1.1 Mini (free)",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": 262144,
-      "rpmLimit": 20,
-      "rpdLimit": 200,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
-    },
-    {
-      "platform": "openrouter",
-      "modelId": "inclusionai/ling-3.1-flash",
-      "displayName": "inclusionAI: Ling 3.1 Flash",
-      "intelligenceRank": 4,
-      "speedRank": 2,
-      "contextWindow": 262144,
-      "rpmLimit": 40,
-      "rpdLimit": 100,
-      "monthlyTokenBudget": "",
-      "supportsTools": true,
-      "supportsVision": false,
-      "supportsReasoning": true,
-      "tags": [
-        "mid",
-        "free"
-      ],
-      "origInputPricePer1M": 0,
-      "origOutputPricePer1M": 0
     },
     {
       "platform": "tokenharbor",

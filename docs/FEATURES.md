@@ -39,8 +39,8 @@ button). Step-level pause/resume is not implemented — see
   and why.
 - **Agent tools** — `readFile` (line-boundary paginated), `editFile`, `writeFile`,
   `deleteFile`, `listDir`, `glob`, `grep`, `runCommand`, `taskOutput`, `getDiagnostics`,
-  `todoWrite`, `askUser`, `delegateTask`, `webSearch`, `fetchUrl`, `browserVerify`, plus
-  `exitPlanMode` in plan mode. `webSearch`/`fetchUrl` run on TierMux's own keyless engine
+  `todoWrite`, `askUser`, `delegateTask`, `webSearch`, `fetchUrl`, `browserVerify`,
+  `renderImage`, `generateImage`, plus `exitPlanMode` in plan mode. `webSearch`/`fetchUrl` run on TierMux's own keyless engine
   (Yahoo + DuckDuckGo + Marginalia, with a static-fetch reader) and are offered in **every**
   mode, so a plain factual question is answered instead of deflected.
 - **Background tasks** — `runCommand {background: true}` starts a dev server, watcher or long
@@ -53,6 +53,12 @@ button). Step-level pause/resume is not implemented — see
   console errors, HTTP status, and — for vision-capable models, decided per turn — a
   screenshot. Cross-origin subresources are blocked and counted, so verifying a page cannot
   become an SSRF hop. `fetchUrl`'s "JavaScript-rendered" dead end points here.
+- **Graphics** — `renderImage` turns HTML/SVG into a PNG through the same local Chrome
+  (banners, OG/social images, posters, diagrams) and reports layout defects: overflow,
+  clipped text, broken images, failed fonts. `generateImage` makes photos and illustrations
+  from AI Horde's keyless queue (SDXL by default, ~2–3 min). Use `/graphic` to run the
+  brand-first workflow, and `TierMux: Preview Graphic` for a live preview at the target size
+  while you edit.
 - **Codebase-aware** — ripgrep-backed `grep`/`glob` (files-only, context and case options),
   ambient open-editor context, project rules and memory in `.tiermux/`, and a symbol sketch
   of source files (`src/app.ts — alpha, Widget`) in agent/ask turns — freshest-touched first,
